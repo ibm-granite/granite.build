@@ -1,0 +1,1259 @@
+# metrics: loss
+# search_alg: random, lds, hyperopt, bohb, blds
+# scheduler: fifo, asha, hyperbandforbohb
+# precision: bf16
+# https://docs.ray.io/en/latest/tune/api_docs/search_space.html#tune-sample-docs
+# lr scheduler: ['linear', 'cosine', 'polynomial', 'constant']
+
+# Config used for Ray/Tune
+tune_config:
+  search_alg: 
+    description: "Search algorithm used by ray/tune to explore the hyperparameter search space"
+    default: "lds"
+    values: ["lds", "hyperopt", "random", "bohb", "blds"]
+    min_val: null
+    max_val: null
+    type: str
+    required: true
+  scheduler:
+    description: "The scheduler used by ray/tune to schedult the trials"
+    default: "fifo"
+    values: ["fifo", "asha", "hyperbandforbohb"]
+    min_val: null
+    max_val: null
+    type: str
+    required: true
+  num_samples:
+    description: "Number of samples from the hyperparameter search space" 
+    default: 32
+    values: null
+    min_val: 1
+    max_val: 10000
+    type: int
+    required: true
+  max_concurrent_trials:
+    description: "Maximum number of trials running concurrently"
+    default: 8
+    values: null
+    min_val: 1
+    max_val: 8
+    type: int
+    required: true
+  max_discrepancy:
+    description: "Maximum discrepancy value for LDS / BLDS"
+    default: 6
+    values: null
+    min_val: 1
+    max_val: 100
+    type: int
+    search_alg: ["lds", "blds"]
+    required: true
+  fidelity_schedule:
+    description: "BLDS fidelity ladder: monotone-increasing list of hpo_dataset_percentage rungs in (0, 1]; max defines the top rung (need not be 1.0)"
+    default: [0.1, 0.25, 0.5]
+    values: null
+    min_val: null
+    max_val: null
+    type: list
+    search_alg: ["blds"]
+    required: true
+  blds_delta:
+    description: "BLDS confidence parameter delta in (0,1); smaller delta widens UCB/LCB"
+    default: 0.1
+    values: null
+    min_val: 0.001
+    max_val: 0.999
+    type: float
+    search_alg: ["blds"]
+    required: true
+  blds_c:
+    description: "BLDS exploration constant c (must be > 4)"
+    default: 4.0001
+    values: null
+    min_val: 4.0001
+    max_val: 100.0
+    type: float
+    search_alg: ["blds"]
+    required: false
+  blds_log_exploration:
+    description: "Use the paper's log-based exploration term in UCB/LCB; if false, use the simpler reference formula"
+    default: true
+    values: null
+    min_val: null
+    max_val: null
+    type: bool
+    search_alg: ["blds"]
+    required: false
+  asha_time_attr:
+    description: "ASHA: which reported attribute to track for rung decisions"
+    default: "training_iteration"
+    values: null
+    min_val: null
+    max_val: null
+    type: str
+    scheduler: ["asha"]
+    required: false
+  asha_grace_period:
+    description: "ASHA: minimum time_attr count before a trial may be stopped"
+    default: 1
+    values: null
+    min_val: 1
+    max_val: 100000
+    type: int
+    scheduler: ["asha"]
+    required: true
+  asha_reduction_factor:
+    description: "ASHA: trials at each rung are culled by 1/reduction_factor"
+    default: 3
+    values: null
+    min_val: 2
+    max_val: 100
+    type: int
+    scheduler: ["asha"]
+    required: true
+  asha_brackets:
+    description: "ASHA: number of brackets (parallel SHA runs)"
+    default: 1
+    values: null
+    min_val: 1
+    max_val: 100
+    type: int
+    scheduler: ["asha"]
+    required: false
+  time_budget_s:
+    description: "Maximum allowed time for completing the hyperparameter search."
+    default: null
+    values: null
+    min_val: 60
+    max_val: 1209600 # Setting max value to 2 weeks 
+    type: int
+    required: false
+
+# Config used for the finetuning trainer
+training_config:
+  num_train_epochs:
+    description: "Number of training epochs"
+    default: 10
+    values: null
+    min_val: 1
+    max_val: 100
+    type: int
+    required: true
+  ds_strategy:
+    description: "DeepSpeed strategy used for distributed training"
+    default: "auto"
+    values: ["auto", "zero1_gpu", "zero2_gpu", "zero3_gpu", "zero2_cpu", "zero3_cpu"]
+    min_val: null
+    max_val: null
+    type: str
+    train_implementation: ["DeepSpeed"]
+    required: true
+  fsdp_strategy:
+    description: "FSDP strategy used for distributed training"
+    default: "auto"
+    values: ["auto", "no_shard", "shard_grad_op", "full_shard", "hybrid_shard"]
+    min_val: null
+    max_val: null
+    type: str
+    train_implementation: ["FSDP"]
+    required: true
+  train_implementation: 
+    description: "Distributed training implementation (DeepSpeed or FSDP)"
+    default: "FSDP"
+    values: ["DeepSpeed", "FSDP"]
+    min_val: null
+    max_val: null
+    type: str
+    required: true
+  use_flash_attention:
+    description: "Use flash attention (eager or flash_attention_2)"
+    default: "flash_attention_2"
+    values: ["eager", "flash_attention_2"]
+    min_val: null
+    max_val: null
+    type: str
+    required: true
+  precision:
+    description: "Compute precision: bf16 (GPU/MPS macOS>=14) or fp32 (MPS/CPU fallback)"
+    default: "bf16"
+    values: ["bf16", "fp32"]
+    min_val: null
+    max_val: null
+    type: str
+    required: false
+  num_gpus_per_trial: 
+    description: "GPUs per trial (worker)"
+    default: 1
+    values: null
+    min_val: 1
+    max_val: 8
+    type: int
+    required: true
+  max_length:
+    description: "Maximum sequence length used by the tokenizer (input + output)" 
+    default: 1024
+    values: null
+    min_val: 1
+    max_val: 128000
+    type: int
+    required: true
+  hpo_dataset_percentage:
+    description: "Percentage training data used for HPO" 
+    default: 0.1
+    values: null
+    min_val: 0.01
+    max_val: 1.0
+    type: float
+    required: true
+  hpo_num_epochs:
+    description: "Number of training epochs used for HPO" 
+    default: 1
+    values: null
+    min_val: 1
+    max_val: 10
+    type: int
+    required: true
+  data_backend:
+    description: "Data backend for sharding during distributed training"
+    default: "arrow"
+    values: ["arrow", "ray_data"]
+    min_val: null
+    max_val: null
+    type: str
+    required: true
+
+# Config for additional parameters used by the RL training algorithms (PPO, GRPO)
+training_rl_config:
+  reward_function_path:
+    description: "Path to custom reward function Python script (for verl online RL)"
+    default: "autotune/rewards/gsm8k_reward.py"
+    values: null
+    min_val: null
+    max_val: null
+    type: str
+  reward_function_name:
+    description: "Function name inside the reward function script"
+    default: "compute_score"
+    values: null
+    min_val: null
+    max_val: null
+    type: str
+  reward_model_path:
+    description: "Path to a learned reward model (for verl online RL)"
+    default: null
+    values: null
+    min_val: null
+    max_val: null
+    type: str
+  rollout_temperature:
+    description: "Temperature for vLLM generation during rollout"
+    default: 1.0
+    values: null
+    min_val: 0.0
+    max_val: 2.0
+    type: float
+  rollout_top_p:
+    description: "Top-p sampling for vLLM generation during rollout"
+    default: 1.0
+    values: null
+    min_val: 0.0
+    max_val: 1.0
+    type: float
+  rollout_n:
+    description: "Number of generations per prompt for GRPO group sampling"
+    default: 5
+    values: null
+    min_val: 1
+    max_val: 64
+    type: int
+  max_prompt_length:
+    description: "Maximum prompt token length for online RL"
+    default: 1024
+    values: null
+    min_val: 1
+    max_val: 128000
+    type: int
+  max_response_length:
+    description: "Maximum response token length for online RL"
+    default: 512
+    values: null
+    min_val: 1
+    max_val: 128000
+    type: int
+  gpu_memory_utilization:
+    description: "vLLM GPU memory utilization fraction for rollout"
+    default: 0.5
+    values: null
+    min_val: 0.1
+    max_val: 0.95
+    type: float
+  tensor_model_parallel_size:
+    description: "Tensor parallelism degree for vLLM rollout. null=auto-detect from model size."
+    default: null
+    values: null
+    min_val: 1
+    max_val: 8
+    type: int
+
+# Config used for setting up the Offline RL tuners (DPO, ORPO, KP))
+# Offline RL must be paired with a training_config.tuning_algorithm and the two 
+# hyperparameter search spaces are combined. The online RL algorithms (PPO, GRPO)
+# have their own separate hyperparameter search space since they require additional parameters (rollout generation, reward model etc.)
+tuners_rl_config:
+  dpo:
+    description: "Direct Preference Optimization (DPO)"
+    tuner_name: "tuner.dpo"
+    title: "DPO"
+    dataset_type: "dataset_type_b"
+    hyperparams:
+      beta:
+        description: "DPO beta value"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.1, 1.0, 10.0]
+        min_val: 0.1
+        max_val: 10.0
+        default: 1.0
+        type: float
+        for_tuner: true
+      loss_type:
+        description: "DPO loss type"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["sigmoid", "hinge", "ipo", "kto_pair"]
+        default: "sigmoid"
+        min_val: null
+        max_val: null
+        type: str
+        for_tuner: true
+  kto:
+    description: "Kahneman-Tversky Optimization (KTO)"
+    tuner_name: "tuner.kto"
+    title: "KTO"
+    dataset_type: "dataset_type_c"
+    hyperparams:
+      desirable_weight:
+        description: "KTO desirable weight"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [1.0, 5.0, 10.0]
+        min_val: 0.1
+        max_val: 10.0
+        default: 1.0
+        type: float
+        for_tuner: true
+      undesirable_weight:
+        description: "KTO undesirable weight"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [1.0, 5.0, 10.0]
+        min_val: 0.1
+        max_val: 10.0
+        default: 1.0
+        type: float
+        for_tuner: true
+  ppo:
+    description: "Proximal Policy Optimization (PPO)"
+    tuner_name: "tuner.ppo"
+    title: "PPO"
+    dataset_type: "dataset_type_d"
+    hyperparams:
+      kl_coef:
+        description: "KL penalty coefficient controlling divergence from reference policy"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.001, 0.002, 0.003]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.001
+        type: float
+        for_tuner: true
+      clip_range:
+        description: "PPO clipping range for the policy loss"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.1, 0.2, 0.3]
+        min_val: 0.01
+        max_val: 1.0
+        default: 0.2
+        type: float
+        for_tuner: true
+      entropy_coef:
+        description: "Entropy penalty coefficient"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.001, 0.01, 0.1]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.01
+        type: float
+        for_tuner: true
+      learning_rate:
+        description: "Learning rate for the actor"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000005, 0.00001]
+        min_val: 0.0000001
+        max_val: 0.001
+        default: 0.000001
+        type: float
+        for_tuner: true
+      per_device_train_batch_size:
+        description: "Micro-batch size per device during training"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [2, 4, 8]
+        min_val: 1
+        max_val: 128
+        default: 4
+        type: int
+        for_tuner: true
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [1, 2, 4]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: true
+  grpo:
+    description: "Group Relative Policy Optimization (GRPO)"
+    tuner_name: "tuner.grpo"
+    title: "GRPO"
+    dataset_type: "dataset_type_d"
+    hyperparams:
+      kl_coef:
+        description: "KL penalty coefficient controlling divergence from reference policy"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.001, 0.01, 0.1]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.001
+        type: float
+        for_tuner: true
+      rollout_n:
+        description: "Number of generations per prompt for group sampling"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [3, 5, 8]
+        min_val: 1
+        max_val: 64
+        default: 5
+        type: int
+        for_tuner: true
+      rollout_temperature:
+        description: "Temperature for vLLM generation during rollout"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.7, 1.0, 1.2]
+        min_val: 0.0
+        max_val: 2.0
+        default: 1.0
+        type: float
+        for_tuner: true
+      learning_rate:
+        description: "Learning rate for the actor"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000005, 0.00001]
+        min_val: 0.0000001
+        max_val: 0.001
+        default: 0.000001
+        type: float
+        for_tuner: true
+      per_device_train_batch_size:
+        description: "Micro-batch size per device during training"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [2, 4, 8]
+        min_val: 1
+        max_val: 128
+        default: 4
+        type: int
+        for_tuner: true
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [1, 2, 4]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: true
+  dapo:
+    description: "Decoupled Alignment via Process Optimization (DAPO)"
+    tuner_name: "tuner.dapo"
+    title: "DAPO"
+    dataset_type: "dataset_type_d"
+    hyperparams:
+      kl_coef:
+        description: "KL penalty coefficient (typically 0 for DAPO)"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.0, 0.001, 0.01]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.0
+        type: float
+        for_tuner: true
+      rollout_n:
+        description: "Number of generations per prompt for group sampling"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [8, 16, 32]
+        min_val: 1
+        max_val: 64
+        default: 16
+        type: int
+        for_tuner: true
+      rollout_temperature:
+        description: "Temperature for vLLM generation during rollout"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.7, 1.0, 1.2]
+        min_val: 0.0
+        max_val: 2.0
+        default: 1.0
+        type: float
+        for_tuner: true
+      overlong_buffer_len:
+        description: "Buffer length for DAPO overlong penalty"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [128, 256, 512]
+        min_val: 64
+        max_val: 1024
+        default: 256
+        type: int
+        for_tuner: true
+      overlong_penalty_factor:
+        description: "Penalty factor for overlong responses in DAPO"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.5, 1.0, 2.0]
+        min_val: 0.1
+        max_val: 5.0
+        default: 1.0
+        type: float
+        for_tuner: true
+      learning_rate:
+        description: "Learning rate for the actor"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000005, 0.00001]
+        min_val: 0.0000001
+        max_val: 0.001
+        default: 0.000001
+        type: float
+        for_tuner: true
+      per_device_train_batch_size:
+        description: "Micro-batch size per device during training"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [2, 4, 8]
+        min_val: 1
+        max_val: 128
+        default: 4
+        type: int
+        for_tuner: true
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [1, 2, 4]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: true
+
+# Config used for setting up the PEFT/SFT tuners (SFT, LoRA, aLoRA, LoHA, LoKR, VeRA)
+# One of these tuners must be selected in the training_config.peft_algorithm field 
+# for the hyperparameter search to be performed on it.
+tuners_config:
+  alora:
+    description: "Activated Low rank adapter fine-tuning"
+    tuner_name: "tuner.alora"
+    title: "aLoRA"
+    dataset_type: "dataset_type_a"
+    hyperparams:
+      alpha_ratio:
+        description: "Scaling ratio"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.5, 1.0, 2.0]
+        min_val: 0.1
+        max_val: 10.0
+        default: 1.0
+        type: float
+        for_tuner: false
+      lora_dropout:
+        description: "Dropout rate"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [ 0.0, 0.05, 0.1 ]
+        min_val: 0.0
+        max_val: 0.1
+        default: 0.0
+        type: float
+        for_tuner: true
+      r:
+        description: "Rank size"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [ 16, 32, 64 ]
+        min_val: 0
+        max_val: 1024
+        default: 32
+        type: int
+        for_tuner: true
+      bias:
+        description: "Bias value"
+        options: [ "choice" ]
+        strategy: "choice"
+        values: [ "none", "lora_only" ]
+        default: "none"
+        min_val: null
+        max_val: null
+        type: str
+        for_tuner: true
+      invocation_string:
+        description: "aLoRA invocation prompt"
+        options: [ "string" ]
+        strategy: "string"
+        values: [ "<guardian>" ]
+        default: "<guardian>"
+        min_val: null
+        max_val: null
+        type: str
+        for_tuner: true      
+      learning_rate:
+        description: "Learning rate"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000003, 0.000005]
+        min_val: 0.000001
+        max_val: 0.00005
+        default: 0.000001
+        type: float
+        for_tuner: false
+      lr_scheduler_type:
+        description: "Learning rate scheduler type"
+        options: [ "choice" ]
+        strategy: "choice"
+        values: [ "linear", "cosine" ]
+        min_val: null
+        max_val: null
+        default: "linear"
+        type: str
+        for_tuner: false
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [ 1 ]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: false
+      per_device_train_batch_size:
+        description: "Batch size used during training"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [ 8, 16, 32 ]
+        min_val: 1
+        max_val: 128
+        default: 16
+        type: int
+        for_tuner: false
+      warmup_ratio: 
+        description: "Warmup ratio"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [0.1, 0.2]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.1
+        type: float
+        for_tuner: false
+  lora:
+    description: "Low rank adapter fine-tuning"
+    tuner_name: "tuner.lora"
+    title: "LoRA"
+    dataset_type: "dataset_type_a"
+    hyperparams:
+      alpha_ratio:
+        description: "Scaling ratio"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.5, 1.0, 2.0]
+        min_val: 0.1
+        max_val: 10.0
+        default: 2.0
+        type: float
+        for_tuner: false
+      lora_dropout:
+        description: "Dropout rate"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.0, 0.05, 0.1]
+        min_val: 0.0
+        max_val: 0.1
+        default: 0.05
+        type: float
+        for_tuner: true
+      r:
+        description: "Rank size"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [8, 16, 32]
+        min_val: 0
+        max_val: 1024
+        default: 32
+        type: int
+        for_tuner: true
+      bias:
+        description: "Bias value"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["none"]
+        default: "none"
+        min_val: null
+        max_val: null
+        type: str
+        for_tuner: true
+      learning_rate:
+        description: "Learning rate"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000003, 0.000005]
+        min_val: 0.000001
+        max_val: 0.00005
+        default: 0.000001
+        type: float
+        for_tuner: false
+      lr_scheduler_type:
+        description: "Learning rate scheduler type"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["linear", "cosine"]
+        min_val: null
+        max_val: null
+        default: "cosine"
+        type: str
+        for_tuner: false
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [ 1 ]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: false
+      per_device_train_batch_size:
+        description: "Batch size used during training"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [8, 16, 32]
+        min_val: 1
+        max_val: 128
+        default: 16
+        type: int
+        for_tuner: false
+      warmup_ratio:
+        description: "Warmup ratio"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [0.1, 0.2]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.1
+        type: float
+        for_tuner: false
+  qlora:
+    # QLoRA = LoRA on a 4-bit (NF4) bitsandbytes-quantized base. The quantized
+    # base load is triggered by the "qlora" tuning-algorithm name in the driver;
+    # the tunable surface below is identical to LoRA.
+    description: "Quantized (4-bit NF4) low rank adapter fine-tuning"
+    tuner_name: "tuner.qlora"
+    title: "QLoRA"
+    dataset_type: "dataset_type_a"
+    hyperparams:
+      alpha_ratio:
+        description: "Scaling ratio"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.5, 1.0, 2.0]
+        min_val: 0.1
+        max_val: 10.0
+        default: 2.0
+        type: float
+        for_tuner: false
+      lora_dropout:
+        description: "Dropout rate"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.0, 0.05, 0.1]
+        min_val: 0.0
+        max_val: 0.1
+        default: 0.05
+        type: float
+        for_tuner: true
+      r:
+        description: "Rank size"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [8, 16, 32]
+        min_val: 0
+        max_val: 1024
+        default: 32
+        type: int
+        for_tuner: true
+      bias:
+        description: "Bias value"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["none"]
+        default: "none"
+        min_val: null
+        max_val: null
+        type: str
+        for_tuner: true
+      learning_rate:
+        description: "Learning rate"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000003, 0.000005]
+        min_val: 0.000001
+        max_val: 0.00005
+        default: 0.000001
+        type: float
+        for_tuner: false
+      lr_scheduler_type:
+        description: "Learning rate scheduler type"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["linear", "cosine"]
+        min_val: null
+        max_val: null
+        default: "cosine"
+        type: str
+        for_tuner: false
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [ 1 ]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: false
+      per_device_train_batch_size:
+        description: "Batch size used during training"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [8, 16, 32]
+        min_val: 1
+        max_val: 128
+        default: 16
+        type: int
+        for_tuner: false
+      warmup_ratio:
+        description: "Warmup ratio"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [0.1, 0.2]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.1
+        type: float
+        for_tuner: false
+  loha:
+    description: "Low rank adapter with Hadamard product"
+    tuner_name: "tuner.loha"
+    title: "LoHA"
+    dataset_type: "dataset_type_a"
+    hyperparams:
+      alpha_ratio:
+        description: "Scaling ratio"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.5, 1.0, 2.0]
+        min_val: 0.1
+        max_val: 10.0
+        default: 1.0
+        type: float
+        for_tuner: false
+      rank_dropout:
+        description: "Rank dropout rate"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.0, 0.1]
+        min_val: 0.0
+        max_val: 0.1
+        default: 0.0
+        type: float
+        for_tuner: true
+      module_dropout:
+        description: "Module dropout rate"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.0, 0.1]
+        min_val: 0.0
+        max_val: 0.1
+        default: 0.0
+        type: float
+        for_tuner: true
+      r:
+        description: "Rank matrix value"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [8, 16, 32]
+        min_val: 1
+        max_val: 1024
+        default: 32
+        type: int
+        for_tuner: true
+      learning_rate:
+        description: "Learning rate"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000003, 0.000005]
+        min_val: 0.000001
+        max_val: 0.00005
+        default: 0.000001
+        type: float
+        for_tuner: false
+      lr_scheduler_type:
+        description: "Learning rate scheduler type"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["linear", "cosine"]
+        min_val: null
+        max_val: null
+        default: "linear"
+        type: str
+        for_tuner: false
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [1, 2, 4]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: false
+      per_device_train_batch_size:
+        description: "Batch size used during training"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [4, 8, 16, 32]
+        min_val: 1
+        max_val: 128
+        default: 16
+        type: int
+        for_tuner: false
+      warmup_ratio: 
+        description: "Warmup ratio"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [0.1, 0.2]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.1
+        type: float
+        for_tuner: false
+  lokr:
+    description: "Low rank adapter with Kroneker product"
+    tuner_name: "tuner.lokr"
+    title: "LoKr"
+    dataset_type: "dataset_type_a"
+    hyperparams:
+      alpha_ratio:
+        description: "Scaling ratio"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.5, 1.0, 2.0]
+        min_val: 0.1
+        max_val: 10.0
+        default: 2.0
+        type: float
+        for_tuner: false
+      rank_dropout:
+        description: "Rank dropout rate"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.0, 0.1]
+        min_val: 0.0
+        max_val: 0.1
+        default: 0.0
+        type: float
+        for_tuner: true
+      module_dropout:
+        description: "Module dropout rate"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.0, 0.1]
+        min_val: 0.0
+        max_val: 0.1
+        default: 0.0
+        type: float
+        for_tuner: true
+      r:
+        description: "Rank matrix value"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [8, 16, 32]
+        min_val: 1
+        max_val: 1024
+        default: 32
+        type: int
+        for_tuner: true
+      decompose_both:
+        description: "Decompose both matrices"
+        options: ["choice"]
+        strategy: "choice"
+        values: [false, true]
+        min_val: null
+        max_val: null
+        default: false
+        type: bool
+        for_tuner: true
+      learning_rate:
+        description: "Learning rate"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000003, 0.000005]
+        min_val: 0.000001
+        max_val: 0.00005
+        default: 0.000001
+        type: float
+        for_tuner: false
+      lr_scheduler_type:
+        description: "Learning rate scheduler type"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["linear", "cosine"]
+        min_val: null
+        max_val: null
+        default: "linear"
+        type: str
+        for_tuner: false
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [1, 2, 4]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: false
+      per_device_train_batch_size:
+        description: "Batch size used during training"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [4, 8, 16, 32]
+        min_val: 1
+        max_val: 128
+        default: 16
+        type: int
+        for_tuner: false
+      warmup_ratio: 
+        description: "Warmup ratio"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [0.1, 0.2]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.1
+        type: float
+        for_tuner: false
+  vera:
+    description: "Very efficient low rank adapter"
+    tuner_name: "tuner.vera"
+    title: "VeRA"
+    dataset_type: "dataset_type_a"
+    hyperparams:
+      vera_dropout:
+        description: "Dropout rate"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [0.0, 0.1]
+        min_val: 0.0
+        max_val: 0.1
+        default: 0.0
+        type: float
+        for_tuner: true
+      r:
+        description: "Rank matrix value"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [128, 256, 512]
+        min_val: 64
+        max_val: 1024
+        default: 256
+        type: int
+        for_tuner: true
+      bias:
+        description: "Bias value for the modules"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["none", "all", "vera_only"]
+        min_val: null
+        max_val: null
+        default: "none"
+        type: str
+        for_tuner: true
+      d_initial:
+        description: "Initial d-value used by the adapter"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.001, 0.1]
+        min_val: 0.0001
+        max_val: 0.1
+        default: 0.1
+        type: float
+        for_tuner: true
+      learning_rate:
+        description: "Learning rate"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000003, 0.000005]
+        min_val: 0.000001
+        max_val: 0.00005
+        default: 0.000001
+        type: float
+        for_tuner: false
+      lr_scheduler_type:
+        description: "Learning rate scheduler type"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["linear", "cosine"]
+        min_val: null
+        max_val: null
+        default: "linear"
+        type: str
+        for_tuner: false
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [1, 2, 4]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: false
+      per_device_train_batch_size:
+        description: "Batch size used during training"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [4, 8, 16, 32]
+        min_val: 1
+        max_val: 128
+        default: 8
+        type: int
+        for_tuner: false
+      warmup_ratio: 
+        description: "Warmup ratio"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [0.1, 0.2]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.1
+        type: float
+        for_tuner: false
+  sft:
+    description: "Supervised fine-tuning"
+    tuner_name: "tuner.sft"
+    title: "SFT"
+    dataset_type: "dataset_type_a"
+    hyperparams:
+      learning_rate:
+        description: "Learning rate"
+        options: ["choice", "uniform", "loguniform"]
+        strategy: "choice"
+        values: [0.000001, 0.000003, 0.000005]
+        min_val: 0.000001
+        max_val: 0.00005
+        default: 0.000001
+        type: float
+        for_tuner: false
+      lr_scheduler_type:
+        description: "Learning rate scheduler type"
+        options: ["choice"]
+        strategy: "choice"
+        values: ["linear", "cosine"]
+        min_val: null
+        max_val: null
+        default: "cosine"
+        type: str
+        for_tuner: false
+      gradient_accumulation_steps:
+        description: "Gradient accumulation steps"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [1, 2, 4]
+        min_val: 1
+        max_val: 50
+        default: 1
+        type: int
+        for_tuner: false
+      per_device_train_batch_size:
+        description: "Batch size used during training"
+        options: ["choice", "uniform"]
+        strategy: "choice"
+        values: [4, 8, 16, 32]
+        min_val: 1
+        max_val: 128
+        default: 16
+        type: int
+        for_tuner: false
+      warmup_ratio: 
+        description: "Warmup ratio"
+        options: [ "choice", "uniform" ]
+        strategy: "choice"
+        values: [0.1, 0.2]
+        min_val: 0.0
+        max_val: 1.0
+        default: 0.1
+        type: float
+        for_tuner: false
+
+# Tokenizer customization (optional, all fields default to null)
+tokenizer_config:
+  tokenizer_name_or_path:
+    description: "Path or name for a custom tokenizer (defaults to model_name_or_path if null)"
+    default: null
+    type: str
+  additional_special_tokens:
+    description: "List of new special tokens to add to the tokenizer"
+    default: null
+    type: list
+  additional_tokens:
+    description: "List of new regular tokens to add to the vocabulary"
+    default: null
+    type: list
+  pad_token:
+    description: "Override the pad token (default: use eos_token)"
+    default: null
+    type: str
+  eos_token:
+    description: "Override the eos token"
+    default: null
+    type: str
+  bos_token:
+    description: "Override the bos token"
+    default: null
+    type: str

@@ -57,12 +57,16 @@ environment_configs:
         - bsub_monitor
     monitors:
       bsub_monitor:
-        type: bsub_monitor
+        # References the shared LSF monitor library (builtins/monitors/lsf) for the
+        # standard artifact + step-metadata convention, and appends the default
+        # workload-status / validation-data events every gbstep-based LSF step needs.
+        ref: space://monitors/lsf
         config:
-          event_configs:
           # Workload-status / validation-data markers are standardized on the
           # GB_ prefix; the legacy LLMB_ prefix is still accepted for backwards
-          # compatibility (each regex matches both).
+          # compatibility (each regex matches both). Appended to the referenced
+          # lsf monitor's events via the reserved extra_event_configs key.
+          extra_event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "^(?:GB_|LLMB_)EVENT_WORKLOAD_STATUS:.+"
             is_json: False

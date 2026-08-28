@@ -1,0 +1,307 @@
+# syntax=docker/dockerfile:1
+
+# =============================================================================
+# Dockerfile.aio — all-in-one AutoTuneX stack (dev / demo / evaluation)
+#
+# One image, four processes supervised by supervisord:
+#   * AutoTuneX API + SvelteKit SPA      :8000  (exposed)
+#   * front proxy (Caddy)                :8080  (exposed) → gbserver 127.0.0.1:8090
+#   * granite.build gbserver + dashboard :8090  (loopback only; standalone, HTTP)
+#   * api-bridge (MySQL write-path)      :8001  (loopback only — NOT exposed)
+#
+# Why the proxy: gbserver's standalone/apikey auth grants access only to loopback
+# peers (api/auth.py:_is_localhost). Behind any NAT (the Podman bridge, an
+# OpenShift Route) a browser arrives as a non-loopback IP and every /api/* 401s.
+# Caddy is co-located with gbserver and dials it over loopback, so gbserver sees
+# 127.0.0.1 for every caller — identical fix in Podman and on OpenShift. Clients
+# keep using :8080 unchanged. See docker/aio/Caddyfile.
+#
+# granite.build is installed via its PUBLIC standalone path from the fork branch
+# (no internal Artifactory). AutoTuneX submits builds to the co-located gbserver
+# through the `llmb` CLI (job_backend=llmb, GB_ENVIRONMENT=standalone).
+#
+# All secrets and internal hostnames are injected at RUN time via --env-file
+# (see .env.aio.example); nothing sensitive is baked into this tracked file.
+#
+# Design: docs/superpowers/specs/2026-08-18-unified-aio-docker-image-design.md
+# =============================================================================
+
+ARG PYTHON_VERSION=3.12
+ARG NODE_VERSION=20
+ARG GB_REPO=https://github.com/priyanshu891/granite.build.git
+ARG GB_REF=feat/autotunex-endpoint-migration
+
+# -----------------------------------------------------------------------------
+# Stage 1 — build the AutoTuneX SvelteKit SPA (adapter-static, base path /autotune)
+# -----------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-slim AS ux-builder
+
+WORKDIR /app/ux
+
+# Same-origin by default: the SPA appends /api/v1, /auth, /health to this root
+# itself, so an empty value makes it call the API on the origin it is served from.
+ARG PUBLIC_AUTOTUNEX_API_URL=""
+
+# Install deps first for layer caching (re-runs only when the lockfile changes).
+COPY src/ux/package.json src/ux/package-lock.json ./
+RUN npm ci
+
+COPY src/ux/ ./
+RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
+    && npm run build
+# Output: /app/ux/build
+
+# -----------------------------------------------------------------------------
+# Stage 2 — clone granite.build (fork branch) and build its dashboard UI
+# -----------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-slim AS gb-builder
+
+ARG GB_REPO
+ARG GB_REF
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+# Full commit history + tags (NOT --depth 1): granite.build versions itself with
+# setuptools_scm, which derives the version from the nearest version tag
+# (v0.3.3 → 0.3.4.devN). A shallow clone carries no tags, so scm falls back to
+# 0.0.1.dev1 — which the llmb CLI's version check reads as "outdated" and then
+# EXITS NONZERO before running ANY `build` subcommand, breaking build list/start/
+# cancel both from AutoTuneX and by hand in the pod. --filter=blob:none keeps it
+# lean: full history + tags for scm, blobs fetched lazily at checkout for the
+# frontend build below.
+RUN git clone --filter=blob:none --branch "${GB_REF}" "${GB_REPO}" /opt/granite.build
+
+WORKDIR /opt/granite.build/frontend
+
+# corepack ships with Node 20; it activates the yarn version the frontend
+# declares. This mirrors the repo's `make build-frontend` recipe: build the
+# Next.js dashboard, then stage the static export where gbserver serves it from
+# (src/gbserver/static/ui/). If the fork already commits static/ui, this simply
+# rebuilds it — harmless.
+RUN corepack enable \
+    && yarn install --frozen-lockfile \
+    && yarn build \
+    && mkdir -p ../src/gbserver/static/ui \
+    && rsync -a --delete out/ ../src/gbserver/static/ui/ \
+    # Drop the frontend build artifacts once the static export is staged into
+    # src/gbserver/static/ui/ — node_modules + the .next webpack cache are
+    # hundreds of MB of pure waste that must not be copied into later stages.
+    && rm -rf node_modules .next out
+
+# -----------------------------------------------------------------------------
+# Stage 3 — build three isolated virtualenvs (conflicting pins across services)
+# -----------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS py-builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Opt-in: also install the autotune training core (see venv 1 below).
+# 0/false (default) → lean image; 1/true → adds the `granite-build` extra and
+# the vendored fm-tune core.
+ARG INSTALL_AUTOTUNE_CORE=0
+
+# git + a compiler for any sdist-only wheels; confined to this builder stage.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git build-essential ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- venv 1: AutoTuneX ----------------------------------------------------------
+# Default: the `mysql` extra ONLY (asyncmy + cryptography for MySQL 8.4
+# caching_sha2_password). With job_backend=llmb, AutoTuneX shells out to the
+# `llmb` CLI rather than importing a trainer, so the image stays lean.
+#
+# Opt-in (--build-arg INSTALL_AUTOTUNE_CORE=1): also install the `granite-build`
+# extra AND the autotune training core used by the in-process `local` job
+# backend. The core is now vendored in-tree at src/fm-tune (already COPYed in
+# below) and is installed from `src/fm-tune[core,mlx]` — no credentials and no
+# private repo needed. Build it with:
+#
+#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.aio \
+#     --build-arg INSTALL_AUTOTUNE_CORE=1 .
+#
+# NOTE: `fm-tune[core,mlx]` includes torch/ray (+ mlx, which is Apple-silicon
+# oriented) — a large, heavier build; enable it only when you need the local
+# backend, and set AUTOTUNEX_JOB_BACKEND=local at run time to use it.
+COPY pyproject.toml README.md LICENSE /build/autotunex/
+COPY src /build/autotunex/src
+RUN python -m venv /opt/venv/autotunex \
+    && /opt/venv/autotunex/bin/pip install --upgrade pip \
+    && case "$INSTALL_AUTOTUNE_CORE" in \
+         1|true|TRUE|yes|on) EXTRAS="[mysql,granite-build]" ;; \
+         *)                  EXTRAS="[mysql]" ;; \
+       esac \
+    && echo "Installing autotunex${EXTRAS}" \
+    && /opt/venv/autotunex/bin/pip install "/build/autotunex${EXTRAS}" \
+    && case "$INSTALL_AUTOTUNE_CORE" in \
+         1|true|TRUE|yes|on) \
+             echo "Installing vendored fm-tune core (src/fm-tune[core,mlx])" \
+             && /opt/venv/autotunex/bin/pip install "/build/autotunex/src/fm-tune[core,mlx]" \
+             ;; \
+         *) ;; \
+       esac
+
+# --- venv 2: granite.build — the public `standalone` extra ----------------------
+# Editable install (like the fork's own Dockerfile) so gbserver resolves its
+# bundled dashboard from the repo tree at /opt/granite.build — which is built in
+# the gb-builder stage above and kept at the SAME path in the runtime stage, so
+# the egg-link stays valid across the stage copy.
+COPY --from=gb-builder /opt/granite.build /opt/granite.build
+RUN python -m venv /opt/venv/gb \
+    && /opt/venv/gb/bin/pip install --upgrade pip \
+    && /opt/venv/gb/bin/pip install -e "/opt/granite.build[standalone]"
+
+# --- venv 3: api-bridge (synchronous MySQL write-path) --------------------------
+RUN python -m venv /opt/venv/apibridge \
+    && /opt/venv/apibridge/bin/pip install --upgrade pip \
+    && /opt/venv/apibridge/bin/pip install /build/autotunex/src/api-bridge
+
+# -----------------------------------------------------------------------------
+# Stage 4 — runtime
+# -----------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+# HOME=/data so any service writing under $HOME (e.g. gbserver's local SQLite
+# state) lands on the persistent volume.
+# XDG_* point Caddy's config/data dirs at /tmp so the non-root appuser needs no
+# root-owned paths (with admin/auto_https off it writes essentially nothing).
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/data \
+    XDG_CONFIG_HOME=/tmp \
+    XDG_DATA_HOME=/tmp
+
+# git + rsync are used by gbserver at runtime (rsync backs its sync_or_copy();
+# without it gbserver logs a noisy ERROR and falls back to a slower Python copy).
+# supervisor runs the three processes.
+#
+# sqlite3 is a debugging affordance, not a runtime dependency: gbserver keeps its
+# standalone metadata in a SQLite file under $HOME (=/data, the persistent volume,
+# GBSERVER_METADATA_STORAGE=sqlite), and AutoTuneX itself falls back to SQLite
+# whenever AUTOTUNEX_DATABASE_URL is not pointed at MySQL. Inspecting either from
+# inside a running pod (`oc rsh` → `sqlite3 <file> '.tables'`) otherwise means
+# hand-writing Python against the stdlib sqlite3 module. It costs ~0.6 MB and
+# pulls no extra dependency (libsqlite3 is already in the image — CPython links
+# it), and adds no attack surface: a local CLI over files the process owns.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates supervisor rsync sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The three virtualenvs and the granite.build repo (needed at runtime for its
+# spaces/steps/configurations and the built dashboard under static/ui).
+COPY --from=py-builder /opt/venv /opt/venv
+COPY --from=py-builder /opt/granite.build /opt/granite.build
+
+# The vendored fm-tune trainer SOURCE (not just the venv-installed package): the
+# standalone bash build step runs `pip install -e $FM_TUNE_ROOT[$EXTRA]` into its
+# own venv, so it needs the tree on disk. Shipping it makes the default llmb/bash
+# path use this local checkout (AUTOTUNEX_BASH_FM_TUNE_ROOT below) — no trainer
+# clone, no GB_TOKEN/GITHUB_HOST git credentials. Overriding FM_TUNE_ROOT with a
+# repo URL restores the clone path. The editable install writes .egg-info into the
+# tree, so appuser must own it (chown below).
+COPY src/fm-tune /opt/fm-tune
+
+# The prebuilt AutoTuneX SPA, the supervisor program definitions, and the
+# runtime entrypoint (provisions git credentials from env, then execs supervisord).
+COPY --from=ux-builder /app/ux/build /app/ux-build
+COPY docker/aio/supervisord.conf /etc/supervisor/conf.d/aio.conf
+COPY docker/aio/entrypoint.sh /usr/local/bin/aio-entrypoint.sh
+
+# Front reverse proxy: the static Caddy binary lifted from its official image
+# (Apache-2.0), plus the Caddyfile. Caddy owns the exposed :8080 and dials
+# gbserver over loopback so gbserver always sees a 127.0.0.1 peer — see the
+# header comment and docker/aio/Caddyfile.
+COPY --from=caddy:2-alpine /usr/bin/caddy /usr/local/bin/caddy
+COPY docker/aio/Caddyfile /etc/caddy/Caddyfile
+
+# Put the granite.build CLI on PATH so AutoTuneX's launcher finds `llmb` (its
+# console-script shebang pins the gb venv, so it works from any PATH entry), and
+# make the entrypoint executable.
+#
+# git credential helper at the SYSTEM level (/etc/gitconfig): the bash step's
+# trainer is the vendored /opt/fm-tune by default (no clone). ONLY when
+# FM_TUNE_ROOT is overridden with a repo URL does the step `git clone` the trainer
+# from $GITHUB_HOST — and that clone runs under a CURATED env that does NOT carry
+# HOME (see gbserver's
+# environment/bash.py). Without HOME, git can't find the per-user ~/.gitconfig
+# the entrypoint writes, so the clone fails with "could not read Username" (exit
+# 128) and the whole build fails. The system config is read regardless of HOME,
+# so the helper is always found; it points at the runtime credential file the
+# entrypoint populates from $GB_TOKEN/$GITHUB_HOST (no secret is baked here — the
+# directive only names a path). Must be set as root, before USER appuser below.
+#
+# safe.directory '*': a tuning build's editable `pip install -e fm-tune-src[core]`
+# runs git to introspect the package version. The clone lives on the /data volume,
+# whose tree is owned by the image's build-time user (uid 1000) while the build may
+# run as a different uid (e.g. runAsUser:0 on OpenShift), so git aborts with
+# "detected dubious ownership" (exit 128) and the step fails. Trusting every repo
+# dir at the SYSTEM level fixes it regardless of HOME (the bash step runs without
+# one, same reason the credential helper is system-level); single-tenant image, so
+# '*' is acceptable.
+RUN ln -sf /opt/venv/gb/bin/llmb /usr/local/bin/llmb \
+    && ln -sf /opt/venv/gb/bin/gb /usr/local/bin/gb \
+    && ln -sf /opt/venv/gb/bin/gbserver /usr/local/bin/gbserver \
+    && git config --system credential.helper "store --file=/tmp/aio-git-credentials" \
+    && git config --system --add safe.directory '*' \
+    && chmod +x /usr/local/bin/aio-entrypoint.sh
+
+# Non-secret, self-contained defaults. Every one is overridable at run time.
+# Secrets and hostnames (DATABASE_URL, DATABASE_SSL_CA, GB_TOKEN, SESSION_SECRET)
+# are NOT baked — supply them via --env-file (.env.aio); see .env.aio.example.
+#
+# AUTOTUNEX_AUTH_PROVIDERS is intentionally NOT baked: its default is already
+# ["disabled"] (standalone), and it is a JSON-list field, so a baked ENV value
+# would need brittle quote-escaping (Buildah/Docker strip unescaped quotes) and
+# an env-file value must be UNQUOTED JSON — `AUTOTUNEX_AUTH_PROVIDERS=["disabled"]`,
+# never wrapped in single quotes. Leave it to the default; override via env-file
+# only to select a real provider.
+ENV AUTOTUNEX_ENVIRONMENT=dev \
+    AUTOTUNEX_JOB_BACKEND=llmb \
+    GB_ENVIRONMENT=standalone \
+    AUTOTUNEX_LLMB_COMMAND=llmb \
+    AUTOTUNEX_GB_TOKEN_ENV=GB_TOKEN \
+    AUTOTUNEX_GB_SERVER_URL=http://localhost:8080 \
+    AUTOTUNEX_JOB_CALLBACK_URL=http://localhost:8001 \
+    AUTOTUNEX_STANDALONE_ROLE=admin \
+    AUTOTUNEX_FRONTEND_DIR=/app/ux-build \
+    AUTOTUNEX_FRONTEND_BASE_PATH=/autotune \
+    AUTOTUNEX_ARTIFACT_DIR=/data/artifacts \
+    AUTOTUNEX_DATASET_STORAGE_DIR=/data/artifacts/datasets \
+    AUTOTUNEX_LOCAL_OUTPUT_DIR=/data/artifacts/local \
+    API_BRIDGE_SERVER_PORT=8001 \
+    AUTOTUNE_SERVER_URL=http://localhost:8001
+
+# Bash build step (standalone gbserver → space://steps/autotune) trainer defaults.
+# FM_TUNE_ROOT points at the vendored trainer source COPYed above, so the default
+# build needs no clone or git credentials (override with a repo URL to clone).
+# BACKEND=torch because this is a linux/amd64 CPU image (`mlx` is Apple-silicon
+# only). FM_TUNE_EXTRA=core,mlx installs the lean stack — the step does
+# `pip install -e $FM_TUNE_ROOT[$EXTRA]`, and `full` would build flash-attn from
+# source and fail on CPU (`mlx` is a marker-guarded no-op off Apple silicon).
+# All overridable via --env-file.
+ENV AUTOTUNEX_BASH_FM_TUNE_ROOT=/opt/fm-tune \
+    AUTOTUNEX_BASH_BACKEND=torch \
+    AUTOTUNEX_BASH_FM_TUNE_EXTRA=core,mlx
+
+# Non-root; own the writable state and the gb repo (gbserver writes its local
+# standalone state within it).
+RUN useradd --create-home --uid 1000 appuser \
+    && mkdir -p /data/artifacts/datasets /data/artifacts/local \
+    && chown -R appuser:appuser /data /app /opt/granite.build /opt/fm-tune
+USER appuser
+
+WORKDIR /app
+VOLUME /data
+# 8000 = AutoTuneX (API + UI), 8080 = front proxy → gbserver (API + UI).
+# 8001 (api-bridge) and 8090 (gbserver) are loopback only — deliberately NOT exposed.
+EXPOSE 8000 8080
+
+# slim has no curl; probe AutoTuneX /health with the venv's Python.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD ["/opt/venv/autotunex/bin/python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status == 200 else 1)"]
+
+# The entrypoint provisions runtime git credentials from $GB_TOKEN/$GITHUB_HOST
+# (if both are set), then exec's supervisord (PID 1) to run all three services.
+CMD ["/usr/local/bin/aio-entrypoint.sh"]

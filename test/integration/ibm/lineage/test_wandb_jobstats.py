@@ -181,7 +181,10 @@ class TestWandBLineageStore:
         self.mock_service.emit_event.assert_called_once()
         event = self.mock_service.emit_event.call_args[0][0]
         assert event["eventType"] == "COMPLETE"
-        assert event["run"]["runId"] == "target-001-out-1"
+        # Run ids are random uuids, not derived from the target or its output, so
+        # only the target_id tag ties a run back to its target.
+        assert event["run"]["runId"] != "target-001"
+        assert event["run"]["facets"]["tags"]["target_id"] == "target-001"
         assert event["run"]["facets"]["job_details"]["job_id"] == "target-001"
         assert event["job"]["name"] == "train"
         assert event["job"]["namespace"] == "public/test-build"
@@ -269,12 +272,15 @@ class TestWandBLineageStore:
         assert len(events_list) == 1
         assert "model" in events_dict
         assert len(events_dict["model"]) == 1
-        assert events_list[0]["run"]["runId"] == "target-001-out-1"
+        assert events_list[0]["run"]["runId"] != "target-001"
+        assert events_list[0]["run"]["facets"]["tags"]["target_id"] == "target-001"
         assert events_list[0]["run"]["facets"]["job_details"]["job_id"] == "target-001"
         assert events_list[0]["inputs"][0]["name"] == "data"
         assert events_list[0]["outputs"][0]["name"] == "model"
 
     def test_create_jobstats_for_target_no_outputs(self):
+        """A target with inputs but no outputs still has a real edge and gets one
+        "no-output" event so that edge is recorded."""
         input_art = _make_artifact("in-1", "data", "s3://b/data")
         build = _make_build()
         target = _make_target(
@@ -291,6 +297,24 @@ class TestWandBLineageStore:
         assert "no-output" in events_dict
         assert events_list[0]["outputs"] == []
         assert len(events_list[0]["inputs"]) == 1
+
+    def test_create_jobstats_for_target_no_inputs_or_outputs(self):
+        """A fully artifact-less target emits nothing: the standalone UI shows
+        target nodes from admin storage regardless of artifacts, so wandb no
+        longer needs a run just to make it appear as a node."""
+        build = _make_build()
+        target = _make_target(
+            input_artifacts={},
+            output_artifacts={},
+        )
+        storage = _make_mock_storage(build, [target], {})
+
+        events_list, events_dict = self.storage_impl.create_jobstats_for_target(
+            storage, target, build
+        )
+
+        assert events_list == []
+        assert events_dict == {}
 
     def test_create_jobstats_for_retried_target(self):
         """A re-run (retry) target records lineage from its OWN outputs.
@@ -525,6 +549,9 @@ class TestWandBLineageStore:
         )
 
     def test_count_release_ids_no_results(self):
+        # Pins the 0-in -> 0-out passthrough: does_release_id_exist compares
+        # count == expected_count, so a non-zero/None return on an empty tag
+        # query would mis-report an artifact-less build as recorded.
         self.mock_service.count_runs_by_tags.return_value = 0
         count = self.storage_impl.count_release_ids("nonexistent")
         assert count == 0

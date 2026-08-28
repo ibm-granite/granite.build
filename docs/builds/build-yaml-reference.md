@@ -225,6 +225,12 @@ floor (values under `launcher_config.resources` override them). GPU/accelerator
 selection and node count are supplied via `launcher_config.resources` on the step
 (e.g. `accelerators: "A100:8"`), not via `num_gpus_per_node`/`num_nodes`.
 
+For **lsf**, an unset `num_gpus_per_node` defaults to **1** GPU, unlike k8s which
+defaults to `0`. A non-GPU step (e.g. a pull/push step) must therefore set
+`num_gpus_per_node: 0` explicitly; otherwise the `bsub` job requests a GPU and
+waits for one to free up instead of being scheduled immediately on the normal
+queue.
+
 Per-environment specifics (k8s `affinity`, skypilot `cluster`/`zone`, lsf
 `queue`, etc.) are documented in the per-type
 [environment pages](../environments/README.md).

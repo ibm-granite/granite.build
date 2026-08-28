@@ -245,13 +245,15 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
             release_id=build.uuid, expected_count=output_count
         ), f"Did not create {output_count} JobStats"
 
-    def test_target_with_no_artifacts_still_emits_one_event(self):
-        """A successful target with no inputs and no outputs must still record.
+    def test_target_with_no_artifacts_emits_nothing(self):
+        """A target with neither inputs nor outputs is not recorded to wandb.
 
-        Regression: the event builder only emitted from output artifacts, with a
-        "no-output" fallback gated on having inputs. A target with neither (e.g.
-        a pure generation/compute target) produced zero events, so recording was
-        a silent backend no-op the reconciler still marked "recorded".
+        The standalone UI reads target nodes straight from admin storage
+        regardless of artifacts, so a wandb run is no longer needed to make a
+        fully artifact-less target appear as a node. ``select_recordable_targets``
+        drops such targets before this builder is reached; this pins the builder
+        itself to agree, because ``api/lineage.py`` reaches it without consulting
+        the selector.
         """
         build_storage = self.storage.build_storage
         target_storage = self.storage.target_storage
@@ -272,11 +274,81 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
             self.storage, targetrun, build
         )
 
-        assert len(events) == 1, "Expected exactly one event for artifact-less target"
+        assert events == [], "artifact-less target must emit no events"
+        assert events_dict == {}
+
+    def test_empty_output_list_with_inputs_still_emits_one_event(self):
+        """An output *name* holding no artifacts must not suppress the event.
+
+        ``output_artifacts={"out0": []}`` has a key but no artifact, so the
+        per-output loop emits nothing. With inputs present the target still has
+        real lineage and the no-output branch must cover it, matching both
+        ``select_recordable_targets`` (which keeps such a target) and
+        ``expected_run_count`` (which returns 1 for it). A guard keyed on
+        ``len(output_artifacts)`` instead of its values emits zero events here,
+        leaving the target unconfirmable: it is reported unrecorded on every scan
+        and, since run ids are random, each scan writes a fresh duplicate run set
+        while pinning the checkpoint forever.
+        """
+        build_storage = self.storage.build_storage
+        target_storage = self.storage.target_storage
+        artifact_registry = self.storage.artifact_registry
+
+        tsts, bsts, ssts, asts = get_test_support()
+
+        build = bsts._get_test_item(0)
+        build_storage.add(build)
+
+        in0 = asts._get_test_item(0)
+        artifact_registry.add(in0)
+
+        targetrun = tsts._get_test_item(0)
+        targetrun.build_id = build.uuid
+        targetrun.input_artifacts = {"in0": in0.uuid}
+        targetrun.output_artifacts = {"out0": []}
+        target_storage.add(targetrun)
+
+        lineage_storage = self._get_tested_lineage_storage()
+        events, events_dict = lineage_storage.create_jobstats_for_target(
+            self.storage, targetrun, build
+        )
+
+        assert len(events) == 1, "an empty output list must not suppress the event"
         assert "no-output" in events_dict
-        assert events[0].get("inputs", []) == []
-        assert events[0].get("outputs", []) == []
-        # The reconciler's in-memory count must match what the builder emits.
+        assert expected_run_count(targetrun) == len(events)
+
+    def test_dangling_input_uuids_still_emit_one_event(self):
+        """Inputs that do not resolve in the registry must not suppress the event.
+
+        The builder's ``inputs`` list is post-filter: only uuids that resolve as an
+        ``ArtifactRegistration`` survive. ``select_recordable_targets`` checks the
+        raw ``input_artifacts`` dict, so an inputs-only target whose input rows were
+        pruned is still selected and still expected to have one run. Gating the
+        no-output branch on the filtered list would emit nothing, producing the
+        same never-confirmed, duplicate-writing loop as an empty output list.
+        """
+        build_storage = self.storage.build_storage
+        target_storage = self.storage.target_storage
+
+        tsts, bsts, ssts, asts = get_test_support()
+
+        build = bsts._get_test_item(0)
+        build_storage.add(build)
+
+        # Deliberately never added to artifact_registry.
+        targetrun = tsts._get_test_item(0)
+        targetrun.build_id = build.uuid
+        targetrun.input_artifacts = {"in0": "does-not-resolve"}
+        targetrun.output_artifacts = {}
+        target_storage.add(targetrun)
+
+        lineage_storage = self._get_tested_lineage_storage()
+        events, events_dict = lineage_storage.create_jobstats_for_target(
+            self.storage, targetrun, build
+        )
+
+        assert len(events) == 1, "a dangling input must not suppress the event"
+        assert events[0]["inputs"] == []
         assert expected_run_count(targetrun) == len(events)
 
     def test_expected_run_count_matches_events_built(self):
@@ -355,7 +427,10 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
 
         without_outputs = tsts._get_test_item(1)
         without_outputs.build_id = build.uuid
-        without_outputs.input_artifacts = {}
+        # Inputs but no outputs: this is the "no-output" emission branch. A
+        # target with neither inputs nor outputs emits nothing at all now, so it
+        # cannot stand in for that branch here.
+        without_outputs.input_artifacts = {"in0": out0.uuid}
         without_outputs.output_artifacts = {}
         target_storage.add(without_outputs)
 
@@ -405,7 +480,10 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
 
         without_outputs = tsts._get_test_item(1)
         without_outputs.build_id = build.uuid
-        without_outputs.input_artifacts = {}
+        # Inputs but no outputs: this is the "no-output" emission branch. A
+        # target with neither inputs nor outputs emits nothing at all now, so it
+        # cannot stand in for that branch here.
+        without_outputs.input_artifacts = {"in0": out0.uuid}
         without_outputs.output_artifacts = {}
         target_storage.add(without_outputs)
 
@@ -467,7 +545,10 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
 
         without_outputs = tsts._get_test_item(1)
         without_outputs.build_id = build.uuid
-        without_outputs.input_artifacts = {}
+        # Inputs but no outputs: this is the "no-output" emission branch. A
+        # target with neither inputs nor outputs emits nothing at all now, so it
+        # cannot stand in for that branch here.
+        without_outputs.input_artifacts = {"in0": out0.uuid}
         without_outputs.output_artifacts = {}
         target_storage.add(without_outputs)
 

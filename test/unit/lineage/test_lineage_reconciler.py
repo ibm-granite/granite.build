@@ -66,6 +66,7 @@ def _target(
     uuid: str,
     status: Status = Status.SUCCESS,
     finished_at: datetime = None,
+    input_artifacts: dict[str, str] = None,
     output_artifacts: dict[str, list[str]] = None,
     retry_of_target_id: str = "",
     name: str = "",
@@ -80,6 +81,7 @@ def _target(
         environment_uri="env://test",
         status=status,
         finished_at=finished_at,
+        input_artifacts=input_artifacts or {},
         output_artifacts=output_artifacts or {},
         retry_of_target_id=retry_of_target_id,
         name=name or uuid,
@@ -389,8 +391,14 @@ class TestSelectRecordableTargets:
     def test_selects_only_successful_targets(self):
         storage = _admin_storage_with(
             [
-                _target("b1", "t1", finished_at=_BASE),
-                _target("b1", "t2", status=Status.FAILED, finished_at=_BASE),
+                _target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]}),
+                _target(
+                    "b1",
+                    "t2",
+                    status=Status.FAILED,
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o2"]},
+                ),
             ]
         )
 
@@ -402,8 +410,8 @@ class TestSelectRecordableTargets:
         """Only the named build's targets, so no unrelated history is recorded."""
         storage = _admin_storage_with(
             [
-                _target("b1", "t1", finished_at=_BASE),
-                _target("b2", "t2", finished_at=_BASE),
+                _target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]}),
+                _target("b2", "t2", finished_at=_BASE, output_artifacts={"a": ["o2"]}),
             ]
         )
 
@@ -416,8 +424,15 @@ class TestSelectRecordableTargets:
         storage = _admin_storage_returning(
             [
                 [
-                    _target("b1", "t-null", finished_at=None),
-                    _target("b1", "t1", finished_at=_BASE),
+                    _target(
+                        "b1",
+                        "t-null",
+                        finished_at=None,
+                        output_artifacts={"a": ["o1"]},
+                    ),
+                    _target(
+                        "b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o2"]}
+                    ),
                 ]
             ]
         )
@@ -428,16 +443,74 @@ class TestSelectRecordableTargets:
 
     def test_pages_past_a_full_first_page(self):
         page = [
-            _target("b1", f"t{i}", finished_at=_BASE + timedelta(seconds=i))
+            _target(
+                "b1",
+                f"t{i}",
+                finished_at=_BASE + timedelta(seconds=i),
+                output_artifacts={"a": [f"o{i}"]},
+            )
             for i in range(_SCAN_PAGE_SIZE)
         ]
         storage = _admin_storage_returning(
-            [page, [_target("b1", "tail", finished_at=_BASE)]]
+            [
+                page,
+                [
+                    _target(
+                        "b1",
+                        "tail",
+                        finished_at=_BASE,
+                        output_artifacts={"a": ["o-tail"]},
+                    )
+                ],
+            ]
         )
 
         found = select_recordable_targets(storage, build_id="b1")
 
         assert len(found) == _SCAN_PAGE_SIZE + 1
+
+    def test_no_input_or_output_artifacts_is_skipped(self):
+        """The standalone UI shows target nodes from admin storage regardless of
+        artifacts, so a fully artifact-less target no longer needs a wandb run."""
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]}),
+                _target("b1", "t2", finished_at=_BASE),
+            ]
+        )
+
+        found = select_recordable_targets(storage, build_id="b1")
+
+        assert [t.uuid for t in found] == ["t1"]
+
+    def test_inputs_only_target_is_still_recorded(self):
+        """A target with only inputs still has a real edge and must be kept."""
+        storage = _admin_storage_with(
+            [
+                _target(
+                    "b1",
+                    "t1",
+                    finished_at=_BASE,
+                    input_artifacts={"data": "in-1"},
+                ),
+            ]
+        )
+
+        found = select_recordable_targets(storage, build_id="b1")
+
+        assert [t.uuid for t in found] == ["t1"]
+
+    def test_outputs_only_target_is_still_recorded(self):
+        """A target with only outputs still has a real edge and must be kept."""
+        storage = _admin_storage_with(
+            [
+                _target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]}),
+            ]
+        )
+
+        found = select_recordable_targets(storage, build_id="b1")
+
+        assert [t.uuid for t in found] == ["t1"]
 
     def test_dedupes_repeated_success_runs_to_the_latest(self):
         """In-place retry reuses one build id, so a target can have >1 SUCCESS run
@@ -447,14 +520,27 @@ class TestSelectRecordableTargets:
         """
         storage = _admin_storage_with(
             [
-                _target("b1", "t-old", name="targetA", finished_at=_BASE),
+                _target(
+                    "b1",
+                    "t-old",
+                    name="targetA",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o-old"]},
+                ),
                 _target(
                     "b1",
                     "t-new",
                     name="targetA",
                     finished_at=_BASE + timedelta(minutes=5),
+                    output_artifacts={"a": ["o-new"]},
                 ),
-                _target("b1", "t-other", name="targetB", finished_at=_BASE),
+                _target(
+                    "b1",
+                    "t-other",
+                    name="targetB",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o-other"]},
+                ),
             ]
         )
 
@@ -468,8 +554,13 @@ class TestReconcileBuild:
     def test_records_each_unrecorded_target(self):
         storage = _admin_storage_with(
             [
-                _target("b1", "t1", finished_at=_BASE),
-                _target("b1", "t2", finished_at=_BASE + timedelta(minutes=1)),
+                _target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]}),
+                _target(
+                    "b1",
+                    "t2",
+                    finished_at=_BASE + timedelta(minutes=1),
+                    output_artifacts={"a": ["o2"]},
+                ),
             ]
         )
         store = _StubStore()
@@ -482,7 +573,9 @@ class TestReconcileBuild:
 
     def test_already_recorded_targets_are_skipped(self):
         """Dedup is the only thing preventing duplicates with random run ids."""
-        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        storage = _admin_storage_with(
+            [_target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]})]
+        )
         store = _StubStore(already_recorded={"t1"})
 
         result = reconcile_build(store, storage, build_id="b1")
@@ -509,8 +602,13 @@ class TestReconcileBuild:
         """
         storage = _admin_storage_with(
             [
-                _target("b1", "t1", finished_at=_BASE),
-                _target("b1", "t2", finished_at=_BASE + timedelta(minutes=1)),
+                _target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]}),
+                _target(
+                    "b1",
+                    "t2",
+                    finished_at=_BASE + timedelta(minutes=1),
+                    output_artifacts={"a": ["o2"]},
+                ),
             ]
         )
         store = _StubStore(fail={"t1"})
@@ -521,7 +619,9 @@ class TestReconcileBuild:
         assert result.all_confirmed is False
 
     def test_on_error_callback_receives_the_failure(self):
-        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        storage = _admin_storage_with(
+            [_target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]})]
+        )
         store = _StubStore(fail={"t1"})
         seen: list[tuple[str, str, Exception]] = []
 
@@ -536,7 +636,9 @@ class TestReconcileBuild:
         assert seen[0][0] == "b1" and seen[0][1] == "t1"
 
     def test_on_success_callback_fires_per_recorded_target(self):
-        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        storage = _admin_storage_with(
+            [_target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]})]
+        )
         store = _StubStore()
         seen: list[tuple[str, str]] = []
 
@@ -552,7 +654,9 @@ class TestReconcileBuild:
         Holding the mark instead would wedge every newer build behind lineage that
         will never land — what the durable drop set exists to prevent.
         """
-        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        storage = _admin_storage_with(
+            [_target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]})]
+        )
         store = _StubStore()
 
         result = reconcile_build(store, storage, build_id="b1", skip={"t1"})
@@ -571,7 +675,12 @@ class TestReconcileBuild:
                     finished_at=_BASE,
                     output_artifacts={"a": ["o1", "o2"]},
                 ),
-                _target("b1", "t2", finished_at=_BASE),
+                _target(
+                    "b1",
+                    "t2",
+                    finished_at=_BASE,
+                    output_artifacts={"a": ["o3"]},
+                ),
             ]
         )
         store = _StubStore()
@@ -637,7 +746,9 @@ class TestReconcileBuild:
 
     def test_dedup_failure_records_nothing(self):
         """Writing on an unanswered query would duplicate runs, not resume them."""
-        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        storage = _admin_storage_with(
+            [_target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]})]
+        )
         store = _StubStore(query_error=RuntimeError("timeout"))
 
         result = reconcile_build(store, storage, build_id="b1")
@@ -651,7 +762,9 @@ class TestReconcileBuild:
         ``all_confirmed`` staying False is what stops the caller advancing its
         checkpoint over work that was never done.
         """
-        storage = _admin_storage_with([_target("b1", "t1", finished_at=_BASE)])
+        storage = _admin_storage_with(
+            [_target("b1", "t1", finished_at=_BASE, output_artifacts={"a": ["o1"]})]
+        )
         failure = RuntimeError("timeout")
         store = _StubStore(query_error=failure)
 
@@ -724,7 +837,24 @@ class TestExpectedRunCount:
         assert expected_run_count(t) == 3
 
     def test_no_outputs_expects_one_run(self):
-        assert expected_run_count(_target("b1", "t1")) == 1
+        t = _target("b1", "t1", input_artifacts={"data": "in-1"})
+        assert expected_run_count(t) == 1
+
+    def test_empty_output_lists_with_inputs_expects_one_run(self):
+        """An output name holding no artifacts is not an output.
+
+        The emitter's per-output loop yields nothing for it and its no-output
+        branch covers the target instead, so the count must be 1 rather than 0.
+        Counting output *keys* here would disagree with the emitter and leave the
+        target permanently unconfirmable.
+        """
+        t = _target(
+            "b1",
+            "t1",
+            input_artifacts={"data": "in-1"},
+            output_artifacts={"model": []},
+        )
+        assert expected_run_count(t) == 1
 
 
 class TestRecordSelectedTargets:

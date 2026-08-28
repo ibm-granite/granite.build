@@ -454,6 +454,32 @@ def select_recordable_targets(
     is a skip, never an early stop -- NULL rows can be interleaved rather than
     sorted last.
 
+    Targets with no input artifacts AND no output artifacts are also skipped: the
+    standalone UI reads target nodes straight from admin storage regardless of
+    artifacts (see ``__build_target_records`` in ``api/builds.py``), so wandb no
+    longer needs to carry a run for a fully artifact-less target just to make it
+    appear as a node. A target with only inputs, or only outputs, is still
+    recorded -- it still has real lineage (an edge) to represent. An output-artifact
+    name mapped to an empty list does not count as an output, which is why the
+    check reads the dict's *values*; ``_build_events_for_target`` emits nothing for
+    such a name, and a selector that kept the target would leave it permanently
+    unconfirmable.
+
+    Note what the artifact-less skip does to state keyed on targets this function
+    no longer returns. Such a target never reaches ``candidates``, so it is also
+    absent from ``ReconcileResult.dropped`` -- meaning the watcher's
+    "permanently-dropped lineage" ERROR line stops naming an artifact-less target
+    that is still sitting in the durable drop set from before this skip existed.
+    The gap that line reports is therefore not exhaustive; an operator reading
+    only the logs would conclude the target's gap had been resolved. Nothing is
+    lost or mis-recorded (the target has no lineage to record, which is the whole
+    point of the skip), and the checkpoint is unaffected -- the build reports
+    ``all_confirmed`` with ``sink_unqueried`` and advances normally. The stale
+    ``gb_kv_pairs`` drop-set entry is dead weight only, clearable with
+    ``lineage-init --clear-dropped-targets``. Same for runs such a target already
+    has in wandb from before the skip: nothing selects it, so nothing revisits
+    them.
+
     Args:
         storage: Admin storage to read targets from.
         build_id: Build whose successful targets to select.
@@ -462,6 +488,7 @@ def select_recordable_targets(
         The build's recordable target runs, newest-finished first.
     """
     selected: list[StoredTargetRun] = []
+    artifact_less = 0
     page_index = 0
     while True:
         page = _successful_targets_page(storage, page_index, build_id=build_id)
@@ -470,10 +497,34 @@ def select_recordable_targets(
         for target in page:
             if target.finished_at is None:
                 continue
+            if not target.input_artifacts and not any(target.output_artifacts.values()):
+                artifact_less += 1
+                logger.debug(
+                    "Skipping wandb lineage recording for target %s (build %s): "
+                    "no input or output artifacts.",
+                    target.uuid,
+                    build_id,
+                )
+                continue
             selected.append(target)
         if len(page) < _SCAN_PAGE_SIZE:
             break
         page_index += 1
+    # One aggregate line per build rather than one per skipped target, and only
+    # when something was actually skipped. This function re-runs for the same
+    # build on every scan -- the watcher's build cutoff is inclusive, so the
+    # anchor build stays in range indefinitely in steady state -- so a per-target
+    # info line means a build with many artifact-less targets reprints its whole
+    # skip list every monitoring interval, forever. The per-target detail is
+    # still available at debug, same tradeoff as the recorded-cache hit log in
+    # WandBLineageStore.filter_unrecorded.
+    if artifact_less:
+        logger.info(
+            "Skipped wandb lineage recording for %d target(s) of build %s: "
+            "no input or output artifacts.",
+            artifact_less,
+            build_id,
+        )
     # In-place retry reuses one build id, so a target can hold more than one
     # SUCCESS run (a prior success with unregistered artifacts is re-run; a
     # reuse-disabled build re-runs every target). Record only the latest per
@@ -486,11 +537,14 @@ def expected_run_count(target: StoredTargetRun) -> int:
 
     Must mirror how ``WandBLineageStore._build_events_for_target`` emits events:
     one run per output artifact (summed across every output-artifact list), or a
-    single "no-output" run when the target produced no outputs. Inputs do not add
-    runs — they are attached to each output's run — so only outputs are counted.
-    This is derived from the in-memory ``StoredTargetRun`` (already loaded by the
-    scan) to avoid any extra storage read. Keep this in lockstep with
-    ``_build_events_for_target``; the count-vs-events coherence test guards drift.
+    single "no-output" run when the target has inputs but no outputs. Inputs
+    otherwise do not add runs — they are attached to each output's run — so only
+    outputs are counted when there are any. ``select_recordable_targets`` excludes
+    fully artifact-less targets, so every target reaching here has at least one
+    real edge. This is derived from the in-memory
+    ``StoredTargetRun`` (already loaded by the scan) to avoid any extra storage
+    read. Keep this in lockstep with ``_build_events_for_target``; the
+    count-vs-events coherence test guards drift.
     """
     n = sum(len(uuids) for uuids in target.output_artifacts.values())
     return n if n > 0 else 1

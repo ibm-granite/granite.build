@@ -108,6 +108,24 @@ class TestLineageInitCommand:
         seed.assert_not_called()
         self.storage.kv_pair_storage.set_value.assert_not_called()
 
+    def test_show_writes_nothing_through_the_real_seeding_path(self):
+        """The same read-only guarantee, with ``seed_if_absent`` NOT patched.
+
+        The test above patches the seeding function out, so it can only prove the
+        call site is not reached -- it cannot catch a write performed *inside* the
+        real seeding path if ``--show`` ever starts reaching it. Running the
+        unpatched path and asserting on ``set_value`` covers that: the write is
+        what actually matters, and it is observable regardless of which layer
+        would have made it.
+        """
+        self._stored[LINEAGE_WATCHER_CHECKPOINT_KEY] = _CHECKPOINT
+
+        result = self._run("--show")
+
+        assert result.exit_code == 0, result.output
+        assert "b-1" in result.output
+        self.storage.kv_pair_storage.set_value.assert_not_called()
+
     def test_show_says_so_when_nothing_is_seeded_yet(self):
         """The unseeded state is the one an operator is diagnosing; name it."""
         self._stored.clear()
@@ -234,15 +252,6 @@ class TestLineageInitCommand:
         for flag in (a for a in extra_args if a.startswith("--")):
             assert flag in result.output, f"{flag} was not named in: {result.output}"
         seed.assert_not_called()
-        self.storage.kv_pair_storage.set_value.assert_not_called()
-
-    def test_show_alone_still_works(self):
-        """The guard must not break the read-only path it protects."""
-        self._stored[LINEAGE_WATCHER_CHECKPOINT_KEY] = _CHECKPOINT
-        result = self._run("--show")
-
-        assert result.exit_code == 0, result.output
-        assert "b-1" in result.output
         self.storage.kv_pair_storage.set_value.assert_not_called()
 
     @pytest.mark.parametrize("stored", [{}, [], ""])

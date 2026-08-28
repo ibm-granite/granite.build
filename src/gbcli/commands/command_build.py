@@ -1233,10 +1233,11 @@ def restart_build_cmd(ctx, build_id, format, skip_version_check, quiet):
             details_page = f"{WEB_UI_URL}/builds/{restarted_build_id}"
             if not quiet:
                 click.echo(f"✅ Restarting build {restarted_build_id}: {details_page}")
-                click.echo(f"""To get the build status:
+                markdown_str = f"""To get the build status:
 ```
 gb build status {restarted_build_id}
-```""")
+```"""
+                click.echo(f"\n{parse_markdown_str(markdown_str)}")
             if format == "json":
                 click.echo(json.dumps({"build_id": restarted_build_id}))
 

@@ -1,0 +1,21 @@
+# Pre-commit hooks for AutoTune.
+#
+# Install once per clone:
+#     pip install pre-commit  # (or: uv pip install pre-commit)
+#     pre-commit install
+#
+# After installation, `git commit` runs ruff check + ruff format on staged
+# files. Bypass with `git commit --no-verify` in a pinch.
+#
+# Update hook versions:
+#     pre-commit autoupdate
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      # Run the linter first (with --fix) so format doesn't re-wrap lines
+      # that the fixer is about to rewrite.
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

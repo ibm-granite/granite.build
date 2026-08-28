@@ -18,6 +18,7 @@ config:
       type: ''
   compute_config:
     total_memory_per_node: 10Gi
+    num_gpus_per_node: 0
 environment_configs:
   Lsf:
     launchers:
@@ -27,4 +28,4 @@ environment_configs:
         - bsub_monitor
     monitors:
       bsub_monitor:
-        type: bsub_monitor
+        ref: space://monitors/lsf

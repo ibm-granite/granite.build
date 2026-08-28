@@ -15,10 +15,12 @@ config:
       event_fields:
         - field_name: msg
           field_regex: .*
-    # env:// artifact: a line that BEGINS with
+    # filesystem-path artifact: a line that BEGINS with
     #   GB_ARTIFACT_ID:<output> GB_ARTIFACT_PATH:<path>
     # (or the legacy LLMB_ prefix) registers <path> as the artifact for the named
-    # output. The `^` anchor is required because the command step echoes the
+    # output. Consumed by any filesystem-backed store (file://, hf://, cos://,
+    # lh://, env://); the output's uri scheme in build.yaml picks the handler, not
+    # this marker. The `^` anchor is required because the command step echoes the
     # command back ("command step start: <cmd>"); other steps print the marker at
     # column 0, so the anchor still matches them.
     - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT

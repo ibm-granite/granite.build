@@ -1,0 +1,92 @@
+# Base monitor for the `bsub_monitor` type, shared by all LSF steps. A step
+# references this via `ref: space://monitors/lsf` and overrides only what
+# differs (e.g. appends extra event_configs). Modeled on
+# builtins/monitors/skypilot/monitor.yaml, but adapted for LSF:
+#
+#   * No poll_interval_seconds / log_retrieval keys. Unlike SkyPilot (which
+#     polls job status and retrieves logs on a schedule), the LSF runtime
+#     (LSFBsubMonitor + a live LogFileMonitor tail) has no consumer for these
+#     keys, so shipping them would be inert config. See lsf.py / lsf_bsub_monitor.py.
+#
+#   * The two artifact rules are NOT anchored to the start of line — matching the
+#     skypilot/docker monitors, and kept unanchored for backwards compatibility
+#     with artifact markers already emitted mid-line by existing steps/workloads.
+#     The STEP_METADATA_UPDATE rule, by contrast, IS anchored with a plain `^`
+#     (see the security note below): it is a new marker with no legacy emissions
+#     to preserve, so it can require column-0 emission from day one. (ANSI is
+#     stripped centrally in Environment.get_events_from_log_line, so no ANSI
+#     handling belongs here.)
+#
+# Marker convention (shared with the bash/docker/skypilot monitors):
+#   * filesystem-path artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>
+#     registers <path> for the named output. The artifact event emits a `binding`
+#     payload ({"path": <path>}) that downstream targets dereference as
+#     {{ bindings.<x>.binding.path }}; it enables retry-transparent NEWARTIFACT
+#     deduplication. This form is NOT env://-specific: it is consumed by every
+#     filesystem-backed store — file://, hf://, cos://, lh://, env:// — with the
+#     output's uri scheme in build.yaml (not this marker) selecting the handler.
+#   * mem:// artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_STATE:<value>
+#     registers <value> as the output's `state` (no path normalisation). PATH and
+#     STATE markers are mutually exclusive per line.
+#   * step metadata — LLMB_STEP_METADATA_KEY:<key> LLMB_STEP_METADATA_VALUE:<value>
+#     merges <value> into the step's StoredStepRun.metadata under <key> (e.g. a
+#     git commit_hash resolved at runtime), surfacing as build provenance in lineage.
+#
+# To extend the events a step listens for (rather than replace these), a
+# referencing step MUST use the reserved `extra_event_configs` key — a plain
+# `event_configs` overlay is rejected because it would drop the base rules below.
+#
+# SECURITY NOTE: Step metadata surfaces in lineage as authoritative build
+# provenance, so its marker must not be injectable by arbitrary mid-line output
+# from cloned-repo (byoc) code echoing the marker substring. The
+# STEP_METADATA_UPDATE rule is therefore anchored with a plain `^`, as on the
+# bash/docker monitors. LSF tails the job's raw stdout log (no worker prefix), so
+# `^` matches a real emission at column 0 while rejecting an embedded one. Do not
+# un-anchor it to match the artifact rules — the trade-off is deliberate.
+type: bsub_monitor
+config:
+  event_configs:
+    # filesystem-path artifact: registers <path> for the named output. Consumed by
+    # any filesystem-backed store (file://, hf://, cos://, lh://, env://); the
+    # output's uri scheme in build.yaml picks the handler, not this marker.
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: path
+          field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "path": "{{ fields.data.path }}" }'
+          is_json: true
+    # mem:// artifact: registers <value> as the output's `state`, passed verbatim
+    # to a consumer via {{ bindings.<x>.binding.state }} (no path normalisation).
+    - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
+      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+      event_fields:
+        - field_name: binding_id
+          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+        - field_name: state
+          field_regex: "(?<=LLMB_ARTIFACT_STATE:).*"
+          is_data: true
+        - field_name: binding
+          field_value_template: '{ "state": "{{ fields.data.state }}" }'
+          is_json: true
+    # step metadata: merges <value> into the step's StoredStepRun.metadata under
+    # <key>. Both fields are top-level, so they are splatted into
+    # StepMetadataUpdateEventPayload.
+    # Anchored with a plain `^` — provenance must not be injectable (see security
+    # note in the header). EMISSION CONTRACT: whatever emits this marker must echo
+    # it bare at column 0 (like the artifact lines in llmb_lsf_wrapper.sh), NOT with
+    # the `${LLMB_LSF_JOB_NAME}: ` prefix the wrapper uses for its status/info
+    # lines — a leading prefix would make `^` silently drop the event.
+    - event_type: STEP_METADATA_UPDATE_EVENT
+      line_regex: '^LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*'
+      event_fields:
+        - field_name: metadata_key
+          field_regex: "(?<=LLMB_STEP_METADATA_KEY:)[^ ]+"
+        - field_name: metadata_value
+          # Trim trailing whitespace/carriage-return (CRLF logs) so it is not
+          # folded into the value; internal spaces are preserved.
+          field_regex: '(?<=LLMB_STEP_METADATA_VALUE:).*?(?=\s*$)'
