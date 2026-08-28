@@ -176,7 +176,8 @@ def merge_hf_push_config(
     """
     merged: dict = {}
     for level in _hf_push_config_levels(storepush_config, output_config):
-        merged.update(level)
+        # A yaml null means "not set here", so it must not erase a lower level.
+        merged.update({k: v for k, v in level.items() if v is not None})
     return merged
 
 
@@ -203,6 +204,11 @@ def _hf_push_config_levels(
         else {}
     )
     return env_level, output_level
+
+
+def _bool_or(value: Optional[object], default: bool) -> bool:
+    """Return ``default`` when ``value`` is ``None`` (unset), else ``bool(value)``."""
+    return default if value is None else bool(value)
 
 
 def sanitize_hf_step_overlay(hf_cfg: dict) -> dict:
@@ -259,8 +265,10 @@ def resolve_hfpush_resource_group_id(
     hf_cfg = merge_hf_push_config(storepush_config, output_config)
     resource_group_id = hf_cfg.get("resource_group_id") or None
     resource_group_name = hf_cfg.get("resource_group_name") or None
-    private = hf_cfg.get("private", True)
-    use_resource_group = hf_cfg.get(USE_RESOURCE_GROUP_KEY, True)
+    # _bool_or, not .get(key, default): a null is present, so the default would
+    # not apply, and a None reaching a worker template stringifies as "None".
+    private = _bool_or(hf_cfg.get("private"), True)
+    use_resource_group = _bool_or(hf_cfg.get(USE_RESOURCE_GROUP_KEY), True)
 
     organization = hfuri.get_owner()
     enterprise = is_enterprise_hf_org(

@@ -461,3 +461,88 @@ class TestUseResourceGroupAcrossLevels:
 
         assert rg_id == "rg-on"
         mock_resolve.assert_called_once()
+
+
+class TestNullConfigValuesTreatedAsUnset:
+    """An explicit yaml null means "not set here", not "override with None".
+
+    A bare `private:` in build.yaml parses as None. Merging it wholesale would
+    erase a value inherited from environment.yaml, and a None reaching the step
+    config renders as the string "None" in the worker templates — failing their
+    `== "True"` test, so a repo meant to be private would be created public.
+    """
+
+    @pytest.mark.parametrize(
+        "env_hf,output_hf,expected",
+        [
+            # A null at the output level must not erase the environment value.
+            ({"private": False}, {"private": None}, False),
+            # A real value at the output level still wins.
+            ({"private": False}, {"private": True}, True),
+            # A null with nothing to inherit falls back to the default (True).
+            (None, {"private": None}, True),
+            ({"private": None}, {"private": None}, True),
+            # Unchanged behavior for values that are actually set.
+            (None, {"private": False}, False),
+            ({"private": False}, None, False),
+            (None, None, True),
+        ],
+    )
+    def test_private_resolution(self, env_hf, output_hf, expected):
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        _, private, _ = resolve_hfpush_resource_group_id(
+            hfuri=_make_hfuri(owner="my-user"),
+            assetstore=_make_assetstore([]),  # non-Enterprise: skips RG resolution
+            space_name="public",
+            storepush_config=_storepush_config(env_hf) if env_hf is not None else None,
+            output_config=_output_config(output_hf) if output_hf is not None else None,
+        )
+
+        assert private is expected, f"expected {expected}, got {private!r}"
+
+    def test_private_is_always_a_bool(self):
+        """Never a None: the worker templates stringify whatever they are given."""
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        _, private, _ = resolve_hfpush_resource_group_id(
+            hfuri=_make_hfuri(owner="my-user"),
+            assetstore=_make_assetstore([]),
+            space_name="public",
+            output_config=_output_config({"private": None}),
+        )
+
+        assert isinstance(private, bool)
+
+    def test_null_use_resource_group_does_not_disable_resolution(self):
+        """`use_resource_group:` with no value must not read as an opt-out."""
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        with patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            return_value="rg",
+        ) as mock_resolve:
+            rg_id, _, _ = resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                output_config=_output_config({"use_resource_group": None}),
+            )
+
+        assert rg_id == "rg"
+        mock_resolve.assert_called_once()
+
+    def test_null_resource_group_id_does_not_pin(self):
+        """A null id must not count as a pinned group on a non-Enterprise org."""
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        rg_id, _, _ = resolve_hfpush_resource_group_id(
+            hfuri=_make_hfuri(owner="my-user"),
+            assetstore=_make_assetstore(["ibm-research"]),
+            space_name="public",
+            output_config=_output_config(
+                {"resource_group_id": None, "resource_group_name": None}
+            ),
+        )
+
+        assert rg_id is None

@@ -324,3 +324,57 @@ class TestLsfHfpushNoResourceGroup:
             ["bash", "-c", snippet], capture_output=True, text=True, check=True
         )
         assert result.stdout.strip() == "WITHOUT_RG"
+
+
+class TestEnterpriseOrgListParity:
+    """The CLI and server Enterprise lists must agree.
+
+    The list is maintained in two places by necessity: the server reads
+    `config.enterprise_organizations` from the hf asset store's store.yaml (which
+    lives in a space's git repo), and the CLI cannot read that file, so it carries
+    the same list on GBEnvConfig. If they diverge, the CLI and server disagree on
+    whether an org is Enterprise — the CLI would reject a --resource-group-id the
+    server requires, or vice versa. Only the shipped standalone store.yaml can be
+    checked here; a remote space's copy is outside the repo.
+    """
+
+    @staticmethod
+    def _shipped_store_orgs() -> list:
+        path = (
+            Path(__file__).resolve().parents[3]
+            / "configurations"
+            / "assets"
+            / "assetstores"
+            / "hf"
+            / "store.yaml"
+        )
+        return yaml.safe_load(path.read_text())["config"]["enterprise_organizations"]
+
+    def test_shipped_store_yaml_matches_every_environment_config(self):
+        from gbcommon.types.gbenvconfig import _GB_ENVIRONMENT_CONFIGS
+
+        expected = self._shipped_store_orgs()
+        for env, config in _GB_ENVIRONMENT_CONFIGS.items():
+            assert config.hf_enterprise_organizations == expected, (
+                f"{env}'s hf_enterprise_organizations "
+                f"({config.hf_enterprise_organizations}) does not match "
+                f"enterprise_organizations in the shipped hf store.yaml "
+                f"({expected}) — update both together"
+            )
+
+    def test_cli_constant_matches_the_shipped_store_yaml(self):
+        """The value gbcli actually reads, not just the config it comes from."""
+        from gbcli.utils.gbconstants import HF_ENTERPRISE_ORGANIZATIONS
+
+        assert HF_ENTERPRISE_ORGANIZATIONS == self._shipped_store_orgs()
+
+    def test_both_sides_classify_the_same_orgs(self):
+        """Parity where it matters: the classifier agrees for either source."""
+        from gbcli.utils.gbconstants import HF_ENTERPRISE_ORGANIZATIONS
+        from gbcommon.utils.hf_utils import is_enterprise_hf_org
+
+        store_orgs = self._shipped_store_orgs()
+        for org in (*store_orgs, "my-user", "some-community-org", ""):
+            assert is_enterprise_hf_org(org, HF_ENTERPRISE_ORGANIZATIONS) == (
+                is_enterprise_hf_org(org, store_orgs)
+            ), f"CLI and server disagree on '{org}'"
