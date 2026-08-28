@@ -859,7 +859,7 @@ def push(
 )
 @click.option(
     "--revision",
-    help="Model revision. For a HuggingFace artifact, specify the revision in the --uri instead (hf:///owner/repo/<revision>); --revision cannot be combined with an hf:// URI.",
+    help="Model revision. Only for a model registered without --uri; when --uri is given the revision comes from the URI (lh:// or hf:///owner/repo/<revision>) and --revision cannot be combined with it.",
 )
 @click.option(
     "--version",
