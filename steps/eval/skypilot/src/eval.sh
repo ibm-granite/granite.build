@@ -5,7 +5,7 @@
 # It performs a PLACEHOLDER "evaluation": it reads the same parameters the step
 # passes (from config.eval_config) and writes a single results file to a fixed,
 # well-known path (<output-dir>/results.json). Like a real evaluator it does NOT
-# print the Granite.build LLMB_ARTIFACT_ID line: the output path is known to the
+# print the Granite.build GB_ARTIFACT_ID line: the output path is known to the
 # step, so the step.yaml run/command block registers it (keeping this script free
 # of the artifact convention).
 #

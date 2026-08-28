@@ -62,7 +62,7 @@ class BuildEventType(StrEnum):
     """Internal sentinel: a target has emitted all its output-artifact events.
     Used by TargetRun/BuildRun to barrier on output-push enqueuing. """
     STEP_METADATA_UPDATE_EVENT = auto()
-    """A step pushed a runtime key/value (via the LLMB_STEP_METADATA_KEY/VALUE stdout
+    """A step pushed a runtime key/value (via the GB_STEP_METADATA_KEY/VALUE stdout
     hook) to be merged into its StoredStepRun.metadata. """
     # LOG_EVENT = auto()
     # """Log events are typically internal log messages produced by the internals of gbserver, but which may still be useful to both developers and end users. """

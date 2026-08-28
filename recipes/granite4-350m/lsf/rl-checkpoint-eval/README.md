@@ -129,8 +129,8 @@ Lower values detect sooner at the cost of more `sky logs`/status calls.
 ## Trainer step change
 
 `configurations/.../steps/openinstruct-rl/step.yaml` now runs a background
-watcher during training that emits `LLMB_ARTIFACT_ID:checkpoint_<step>
-LLMB_ARTIFACT_PATH:<dir>` per new checkpoint dir, in addition to the
+watcher during training that emits `GB_ARTIFACT_ID:checkpoint_<step>
+GB_ARTIFACT_PATH:<dir>` per new checkpoint dir, in addition to the
 backward-compatible final `checkpoint` line the older recipes bind to. The
 per-step ids match the generated `checkpoint_<step>` training outputs.
 

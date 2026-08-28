@@ -5,7 +5,7 @@ granite.build:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       outputs:
         # Declare the artifact the openinstruct-sft step emits via its
-        # `LLMB_ARTIFACT_ID:checkpoint` line. Without this declaration the
+        # `GB_ARTIFACT_ID:checkpoint` line. Without this declaration the
         # buildrun resolver drops the NEWARTIFACT event on the floor and
         # the checkpoint never gets recorded for downstream consumption.
         #

@@ -301,7 +301,7 @@ environment_configs:
                 done
                 [ "$complete" -eq 1 ] || continue
                 touch "$marker"
-                echo "LLMB_ARTIFACT_ID:checkpoint_${step} LLMB_ARTIFACT_PATH:${ckpt}"
+                echo "GB_ARTIFACT_ID:checkpoint_${step} GB_ARTIFACT_PATH:${ckpt}"
               done
             }
 
@@ -413,7 +413,7 @@ environment_configs:
             # epoch_hf_* conversion), so the artifact path is output_dir. In the
             # checkpoint-fanout builds this id has no matching output and is
             # harmlessly ignored (buildrun logs a warning and continues).
-            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:{{ config.rl_config.output_dir }}"
+            echo "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:{{ config.rl_config.output_dir }}"
     monitors:
       skypilot_monitor:
         # Artifact convention (incl. binding) comes from the monitor library

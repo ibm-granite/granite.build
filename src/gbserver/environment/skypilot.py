@@ -24,7 +24,6 @@ from tenacity import (
     wait_exponential,
 )
 
-from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.spaces.resource_group import resolve_space_resource_group_id
@@ -826,6 +825,79 @@ class Skypilot(Environment):
                 resources["memory"] = f"{mem_str}+"
         return resources
 
+    @staticmethod
+    def _first_hf_token(bindings: Optional[Dict]) -> Optional[str]:
+        """Return the first HF token found among inline hfpull bindings.
+
+        :param bindings: the launch bindings mapping (may be None); each value
+            may carry an ``_hfpull`` dict with an optional ``hf_token``.
+        :returns: the first non-empty ``hf_token``, or None if none present.
+        """
+        for bval in (bindings or {}).values():
+            if isinstance(bval, dict) and "_hfpull" in bval:
+                token = bval["_hfpull"].get("hf_token")
+                if token:
+                    return token
+        return None
+
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        launcher_config: Optional[Dict] = None,
+        config: Optional[Dict] = None,
+        launch_id: str = "",
+        cluster_name: str = "",
+        build_workdir: Optional[str] = None,
+        bindings: Optional[Dict] = None,
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Build the full env dict for a skypilot step launch.
+
+        Precedence (lowest->highest): secrets < launcher ``envs`` <
+        ``config.launcher_config.envs`` < the built-in
+        ``GB_SKYPILOT_*``/workdir/HF_TOKEN vars < the standard cross-environment
+        set from ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID),
+        which is authoritative.
+
+        :param run_metadata: launch run_metadata; forwarded to ``super()`` and
+            the source of GB_TARGETRUN_ID.
+        :param launcher_config: step.yaml launcher config (its ``envs``).
+        :param config: full step config (``config.launcher_config.envs`` is
+            picked up for auto-queued steps).
+        :param launch_id: unique id for this launch (GB_SKYPILOT_LAUNCH_ID).
+        :param cluster_name: the sky cluster name (GB_SKYPILOT_CLUSTER_NAME).
+        :param build_workdir: per-run workdir (GB_BUILD_WORKDIR) if provisioned.
+        :param bindings: launch bindings; scanned for an inline HF_TOKEN.
+        :returns: the complete ``{name: value}`` env dict for the sky.Task.
+        """
+        launcher_config = launcher_config or {}
+        config = config or {}
+        run_metadata = run_metadata or {}
+        env: Dict[str, str] = {}
+        if self.secrets:
+            env.update(self.secrets)
+        env.update(launcher_config.get("envs", {}))
+        env.update(config.get("launcher_config", {}).get("envs", {}))
+        env["GB_SKYPILOT_LAUNCH_ID"] = launch_id
+        env["GB_SKYPILOT_CLUSTER_NAME"] = cluster_name
+        if run_metadata.get("targetrun_id"):
+            env["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
+        shared_workdir = (
+            self.config.config.get("shared_workdir") if self.config else None
+        )
+        if shared_workdir:
+            env["GB_SHARED_WORKDIR"] = shared_workdir
+        if build_workdir:
+            env["GB_BUILD_WORKDIR"] = build_workdir
+        hf_token = self._first_hf_token(bindings)
+        if hf_token and "HF_TOKEN" not in env:
+            env["HF_TOKEN"] = hf_token
+        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
+        # Uniform with the other environments; a no-op here since skypilot's
+        # launcher vars are already GB_-prefixed (GB_SKYPILOT_*), so there are no
+        # LLMB_ names to mirror.
+        return self._add_gb_aliases(env)
+
     async def launch_skypilot(
         self: Self,
         launch_id: str,
@@ -1001,55 +1073,35 @@ class Skypilot(Environment):
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 
-            # Build environment variables
-            env_vars: Dict[str, str] = {}
-            if self.secrets:
-                env_vars.update(self.secrets)
-            env_vars.update(launcher_config.get("envs", {}))
-            # Also pick up envs from config.launcher_config (for auto-queued steps)
-            env_vars.update(config.get("launcher_config", {}).get("envs", {}))
-            # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCKED_HF_OPS) to the
-            # remote run so hfpull/hfpush steps honor mocking on the cluster.
-            env_vars.update(get_exported_gbtest_env_vars())
-            env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id
-            env_vars["GB_SKYPILOT_CLUSTER_NAME"] = cluster_name
-            # Expose run metadata so steps in the same target can share state
+            # Per-run workdir provisioned by setup_skypilot. Exported as
+            # GB_BUILD_WORKDIR (inside get_launch_env_vars) and also used below
+            # as the initial CWD of the run script and the remap target for
+            # relative file_mounts, so it is computed here as a local.
             run_metadata = kwargs.get("run_metadata", {})
-            if run_metadata.get("targetrun_id"):
-                env_vars["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
-            if run_metadata.get("build_id"):
-                env_vars["GB_BUILD_ID"] = run_metadata["build_id"]
-            # Expose the env-level shared workdir so steps can stage cross-step
-            # state under a path that is mounted on every worker.
-            shared_workdir = (
-                self.config.config.get("shared_workdir") if self.config else None
-            )
-            if shared_workdir:
-                env_vars["GB_SHARED_WORKDIR"] = shared_workdir
-
-            # Per-run workdir provisioned by setup_skypilot. When present,
-            # export it as GB_BUILD_WORKDIR and make it the initial CWD of
-            # the run script so step authors can write outputs with
-            # relative paths and get implicit per-run isolation.
             build_workdir = (
                 kwargs.get("setup_config", {}).get("skypilot", {}).get("build_workdir")
             )
-            if build_workdir:
-                env_vars["GB_BUILD_WORKDIR"] = build_workdir
+            # Build the full env for the sky.Task. GB_BUILD_ID (and any future
+            # standard var) comes from Environment.get_launch_env_vars() and is
+            # authoritative over launcher/config env.
+            env_vars = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                launcher_config=launcher_config,
+                config=config,
+                launch_id=launch_id,
+                cluster_name=cluster_name,
+                build_workdir=build_workdir,
+                bindings=kwargs.get("bindings"),
+            )
 
-            # Inject inline hfpull downloads into setup from per-step bindings
+            # Inject inline hfpull downloads into setup from per-step bindings.
+            # (HF_TOKEN from these bindings is already applied in the env above.)
             setup_script = launcher_config.get("setup") or ""
             pending_hfpulls = {}
             for bid, bval in (kwargs.get("bindings") or {}).items():
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
-                # Inject HF_TOKEN into env vars if any pull provides one
-                # (hf download picks it up automatically from the environment)
-                for pull_info in pending_hfpulls.values():
-                    if pull_info.get("hf_token") and "HF_TOKEN" not in env_vars:
-                        env_vars["HF_TOKEN"] = pull_info["hf_token"]
-                        break
                 hfpull_lines = [
                     "# -- gbserver: inline hfpull for inputs --",
                     "pip install --no-cache-dir 'huggingface_hub[cli]' 2>/dev/null || true",

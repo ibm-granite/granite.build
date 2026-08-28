@@ -16,7 +16,7 @@ class StoredStepRun(BaseStoredItem):
     status_msg: str = ""
     config: dict = {}
     # Runtime key/values produced by the step itself (e.g. a resolved git commit
-    # SHA), pushed via the LLMB_STEP_METADATA_KEY/VALUE stdout hook and merged by
+    # SHA), pushed via the GB_STEP_METADATA_KEY/VALUE stdout hook and merged by
     # the buildrunner. Kept separate from `config` (the rendered build.yaml input)
     # so step-generated data never mutates the declared configuration. Serialized
     # into the row's JSON blob like `config`, so it needs no column/migration and

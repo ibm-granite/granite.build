@@ -31,7 +31,7 @@ These steps ship in the standalone bash space and are referenced as `space://ste
 - **Sample:** the second target in `references/samples/lora-finetune.build.yaml`.
 
 ## `command` — run an arbitrary shell command
-- Runs `config.command_config.command`; exit status = step status. Carries the artifact monitor (emit `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<dir>` at the start of a line to register an output).
+- Runs `config.command_config.command`; exit status = step status. Carries the artifact monitor (emit `GB_ARTIFACT_ID:<id> GB_ARTIFACT_PATH:<dir>` at the start of a line to register an output).
 - This is the vehicle the `create-build` heredoc uses. **Reach for it only when no purpose-built step above fits.**
 
 ## `hello` — minimal echo (smoke / reference)
@@ -45,5 +45,5 @@ Bind a downstream input to an upstream output. From the lora-finetune sample: a 
 ## Runtime facts (shared by all bash steps)
 - Declared target `inputs` auto-export as `$LLMB_BASH_INPUT_<NAME>` (uppercased).
 - `hf:///…` model inputs are pulled by gbserver's HF assetstore (no separate pull step) and cached.
-- Outputs are registered via the `LLMB_ARTIFACT_ID:` line and pushed to the target's `outputs.<name>` URI.
+- Outputs are registered via the `GB_ARTIFACT_ID:` line and pushed to the target's `outputs.<name>` URI.
 - See the `gb-docs` skill for the authoritative build.yaml schema and step docs.

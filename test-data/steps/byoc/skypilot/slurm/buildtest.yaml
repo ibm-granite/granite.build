@@ -16,7 +16,7 @@ target_expectations:
     output_artifact_count: 1
     jobstats_count: 1
     # Verify the byoc step captured its runtime commit SHA as step metadata (via
-    # the LLMB_STEP_METADATA_KEY/VALUE hook) and that the rendered config persisted.
+    # the GB_STEP_METADATA_KEY/VALUE hook) and that the rendered config persisted.
     # Single step, so step_uri is omitted. Read from step_storage directly, so this
     # holds even under standalone's NoopLineageStore.
     expected_steps:

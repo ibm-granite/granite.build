@@ -10,7 +10,7 @@ granite.build:
   # pullasset_hfstore / pushasset_hfstore handlers.
   #   - env_input / hf_input: env pull is a no-op; hf_input is really downloaded
   #     (small model). Both paths flow to the command via {{ bindings.<name>.binding.path }}.
-  #   - env_output / hf_output are registered inline from the LLMB_ARTIFACT markers
+  #   - env_output / hf_output are registered inline from the GB_ARTIFACT markers
   #     the command emits (the bash `command` step's log_monitor parses each into a
   #     NEWARTIFACT_IN_ENVIRONMENT_EVENT). env push is a no-op (no file needed);
   #     hf_output is really pushed, so the command writes a non-empty file for it.
@@ -29,7 +29,7 @@ granite.build:
           uri: hf:///ibm-granite/granite-4.0-350m
       outputs:
         env_output:
-          # Arbitrary fixed path; the command just echoes it in the LLMB_ARTIFACT
+          # Arbitrary fixed path; the command just echoes it in the GB_ARTIFACT
           # marker so the output registers. env:// push is a no-op (no existence
           # check), so no file is actually created — the path value isn't tested.
           uri: "env:///tmp/gb-env-output.txt"
@@ -48,21 +48,21 @@ granite.build:
             command_config:
               # Create the HF output artifact in the step's current working
               # directory (a per-build workspace), not /tmp, and emit its absolute
-              # path in the LLMB_ARTIFACT marker so the HF push can read it. The
+              # path in the GB_ARTIFACT marker so the HF push can read it. The
               # env_output path is arbitrary (env push is a no-op, no file needed).
               # The leading `sleep 10` keeps the build in RUNNING long enough for
               # the runner_cancellation test to observe RUNNING and land its cancel
               # before the command completes (mirrors bash/retry-cancel).
               # NOTE: this is a folded (>-) scalar, so an inline `#` here would fold
               # into the single command line and shell-comment out everything after
-              # it (dropping the LLMB_ARTIFACT markers) — keep comments out of it.
+              # it (dropping the GB_ARTIFACT markers) — keep comments out of it.
               command: >-
                 sleep 10;
                 hf_out="$(pwd)/gb-hf-output.txt";
                 echo '{"artifact": "hf_output"}' > "$hf_out";
                 echo "env input path: {{ bindings.env_input.binding.path }}";
                 echo "hf input path: {{ bindings.hf_input.binding.path }}";
-                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-env-output.txt";
-                echo "LLMB_ARTIFACT_ID:hf_output LLMB_ARTIFACT_PATH:$hf_out"
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-env-output.txt";
+                echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$hf_out"
             compute_config:
               num_nodes: 1

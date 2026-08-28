@@ -41,6 +41,6 @@ environment_configs:
             {{ config.command_config.command }}
     monitors:
       # Shipped monitor library (builtins/monitors/skypilot); inherits the
-      # LLMB_ARTIFACT convention and honors build.yaml's poll_interval_seconds.
+      # GB_ARTIFACT convention and honors build.yaml's poll_interval_seconds.
       skypilot_monitor:
         ref: space://monitors/skypilot

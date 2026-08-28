@@ -2,14 +2,14 @@ granite.build:
   name: mem_2target_docker
   # Two docker targets exercising the mem:// asset store for cross-target
   # output -> input binding on the Docker environment. The docker `command` step
-  # runs `bash -c <command>`, so it can echo the LLMB_ARTIFACT_STATE marker the
+  # runs `bash -c <command>`, so it can echo the GB_ARTIFACT_STATE marker the
   # docker monitor now recognizes. A mem:// URI is an opaque key into the
   # build's shared in-memory dict: the producer's binding `state` value is
   # passed to the consumer verbatim (no path normalisation). mem:// is
   # registered implicitly for every environment, so no `assetstores` entry is
   # needed. Mirrors the bash mem_2target fixture.
   #
-  #   - `first` emits `LLMB_ARTIFACT_ID:mem_output1 LLMB_ARTIFACT_STATE:...`; the
+  #   - `first` emits `GB_ARTIFACT_ID:mem_output1 GB_ARTIFACT_STATE:...`; the
   #     docker monitor registers the value as the `state` of output mem_output1.
   #   - `second` binds `first.mem_output1` and ASSERTS the bound value equals
   #     what `first` produced, exiting non-zero (failing the test) on mismatch —
@@ -28,7 +28,7 @@ granite.build:
               image: quay.io/fedora/fedora-minimal:42
               command: >-
                 echo "first target emitting mem:// output mem_output1";
-                echo "LLMB_ARTIFACT_ID:mem_output1 LLMB_ARTIFACT_STATE:mem_output1_value"
+                echo "GB_ARTIFACT_ID:mem_output1 GB_ARTIFACT_STATE:mem_output1_value"
             compute_config:
               num_gpus_per_node: 0
               total_memory_per_node: 1Gi
@@ -54,7 +54,7 @@ granite.build:
                   echo "ERROR: expected mem_output1_value, got '{{ bindings.from_first.binding.state }}'";
                   exit 1;
                 fi;
-                echo "LLMB_ARTIFACT_ID:mem_output2 LLMB_ARTIFACT_STATE:{{ bindings.from_first.binding.state }}"
+                echo "GB_ARTIFACT_ID:mem_output2 GB_ARTIFACT_STATE:{{ bindings.from_first.binding.state }}"
             compute_config:
               num_gpus_per_node: 0
               total_memory_per_node: 1Gi

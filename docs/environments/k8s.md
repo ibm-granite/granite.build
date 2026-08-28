@@ -202,12 +202,13 @@ environment_configs:
                 - field_name: binding
                   field_value_template: '{ "path": "{{ fields.data.path }}" }'
                   is_json: true
+            # Markers standardized on GB_; the legacy LLMB_ prefix is dual-accepted.
             - event_type: WORKLOAD_STATUS_EVENT
-              line_regex: "^LLMB_EVENT_WORKLOAD_STATUS:.+"
+              line_regex: "^(?:GB_|LLMB_)EVENT_WORKLOAD_STATUS:.+"
               is_json: false
               event_fields:
                 - field_name: status
-                  field_regex: "(?<=LLMB_EVENT_WORKLOAD_STATUS:).+"
+                  field_regex: "(?:(?<=GB_EVENT_WORKLOAD_STATUS:)|(?<=LLMB_EVENT_WORKLOAD_STATUS:)).+"
 ```
 
 ## See also

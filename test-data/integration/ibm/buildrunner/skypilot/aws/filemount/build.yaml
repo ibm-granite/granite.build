@@ -16,7 +16,7 @@ granite.build:
   # the bare VM, mirroring the aws/2target fixture.)
   #
   # env:// (env_local) I/O is a no-op: push/pull do nothing, so artifact
-  # registration/binding works purely on the LLMB_ARTIFACT_PATH string and no real
+  # registration/binding works purely on the GB_ARTIFACT_PATH string and no real
   # files need to exist. Keeps the test HF/S3-credential-free and fast.
   targets:
     filemount:
@@ -27,7 +27,7 @@ granite.build:
         env_input:
           uri: "env:///tmp/gb-env-input.txt"
       outputs:
-        # env:// output: registered inline from the LLMB_ARTIFACT marker the
+        # env:// output: registered inline from the GB_ARTIFACT marker the
         # command emits below. `type` is required for env:// outputs; the path is
         # arbitrary (env:// push/pull are no-ops) and just has to match the marker.
         env_output:
@@ -49,7 +49,7 @@ granite.build:
               image: ""
               command: >-
                 echo "env input path: {{ bindings.env_input.binding.path }}";
-                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-aws-filemount/out.txt"
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-aws-filemount/out.txt"
             # AWS must size an EC2 instance (unlike bluevela's single LSF cluster).
             # Region is parameterized via the AWS_REGION space variable (default
             # us-east-2), encoded in `infra` as cloud/region.

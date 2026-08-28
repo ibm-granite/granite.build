@@ -190,24 +190,25 @@ environment_configs:
         type: bsub_monitor
         config:
           event_configs:
+            # Markers standardized on GB_; the legacy LLMB_ prefix is dual-accepted.
             - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
               is_json: false
               event_fields:
                 - field_name: binding_id
-                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                  field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
                 - field_name: path
-                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
                   is_data: true
                 - field_name: binding
                   field_value_template: '{ "path": "{{ fields.data.path }}" }'
                   is_json: true
             - event_type: WORKLOAD_STATUS_EVENT
-              line_regex: "^LLMB_EVENT_WORKLOAD_STATUS:.+"
+              line_regex: "^(?:GB_|LLMB_)EVENT_WORKLOAD_STATUS:.+"
               is_json: false
               event_fields:
                 - field_name: status
-                  field_regex: "(?<=LLMB_EVENT_WORKLOAD_STATUS:).+"
+                  field_regex: "(?:(?<=GB_EVENT_WORKLOAD_STATUS:)|(?<=LLMB_EVENT_WORKLOAD_STATUS:)).+"
 ```
 
 ## See also

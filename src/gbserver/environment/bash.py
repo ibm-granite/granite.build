@@ -78,6 +78,58 @@ class Bash(Environment):
             )  # Decode escaped sequences safely
             self._env[key_str] = value_str
 
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        launcher_config: Optional[Dict] = None,
+        bash_config_env: Optional[Dict] = None,
+        launch_id: str = "",
+        targetsteprun_asset_dir: Optional[Path] = None,
+        final_asset_output_dir: Optional[Path] = None,
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Build the full env dict for a bash step launch.
+
+        Precedence (lowest->highest): ``self._env`` (space secrets +
+        environment.yaml ``env``) < launcher ``env`` < ``config.bash.env`` <
+        the built-in ``LLMB_BASH_*`` vars < the standard cross-environment set
+        from ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID). The
+        child does NOT inherit ``os.environ`` — so these GBTEST_ vars are how
+        HF-op mocking reaches the step — and it needs ``LLMB_BASH_PYTHON_DIR``
+        to find a python.
+
+        The built-in launcher vars are standardized on the ``GB_`` prefix
+        (``GB_BASH_*``): ``_add_gb_aliases`` mirrors each ``LLMB_BASH_*`` onto a
+        ``GB_BASH_*`` twin as the final step, keeping the ``LLMB_BASH_*`` names
+        for backwards compatibility.
+
+        :param run_metadata: launch run_metadata, forwarded to ``super()`` for
+            the standard vars.
+        :param launcher_config: the step.yaml launcher config (its ``env``).
+        :param bash_config_env: ``config.bash.env`` per-build overrides.
+        :param launch_id: unique id for this launch (LLMB_BASH_LAUNCH_ID).
+        :param targetsteprun_asset_dir: asset dir (LLMB_BASH_ASSET_DIR).
+        :param final_asset_output_dir: output dir from ``_copy_assets``; when
+            provided, exported as LLMB_BASH_OUTPUT_DIR (a late/async value, so
+            it is passed in rather than recomputed here).
+        :returns: the complete ``{name: value}`` env dict for the subprocess.
+        """
+        launcher_config = launcher_config or {}
+        env: Dict[str, str] = {
+            **self._env,
+            **launcher_config.get("env", {}),
+            **{str(k): str(v) for k, v in (bash_config_env or {}).items()},
+        }
+        env["LLMB_BASH_LAUNCH_ID"] = launch_id
+        env["LLMB_BASH_ASSET_DIR"] = str(targetsteprun_asset_dir)
+        env["LLMB_BASH_PYTHON_DIR"] = os.path.dirname(sys.executable)
+        if final_asset_output_dir is not None:
+            env["LLMB_BASH_OUTPUT_DIR"] = str(final_asset_output_dir)
+        # Standard cross-environment vars (e.g. GB_BUILD_ID) win over config.
+        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
+        # Mirror LLMB_BASH_* onto GB_BASH_* twins (GB_ is the standard prefix).
+        return self._add_gb_aliases(env)
+
     async def launch_nohup(
         self: Self,
         launch_id: str,
@@ -134,28 +186,15 @@ class Bash(Environment):
                 cwd = Path(".").resolve()
                 logger.info("Falling back to current working directory: %s", cwd)
 
-            # Env precedence (lowest to highest):
-            #   1. self._env       — space secrets + environment.yaml `env`
-            #   2. launcher `env`  — defaults declared in the step.yaml launcher
-            #   3. config.bash.env — per-build overrides from build.yaml's step
-            #                        config, so a build can set step parameters
-            #                        (e.g. PROMPT, MAX_STEPS) without editing the
-            #                        step. Mirrors the docker launcher's
-            #                        `config.docker.env` handling.
             # NOTE: we deliberately do NOT inherit os.environ — the child gets a
             # clean env (matching the k8s job runner), so the server's
             # VIRTUAL_ENV/PYTHONPATH/secrets can't leak into the step and silently
-            # override its pinned deps. The one thing the child needs to find is a
-            # viable interpreter, so we pass the launcher's own Python dir below as
-            # LLMB_BASH_PYTHON_DIR; command.sh prepends it onto a known-good PATH.
+            # override its pinned deps. The full env (with its documented
+            # precedence) is assembled by get_launch_env_vars() below, once the
+            # asset copy has produced the output dir it needs.
             step_config = kwargs.get("config", {}) or {}
             bash_config = step_config.get("bash", {}) or {}
             bash_config_env = bash_config.get("env", {}) or {}
-            env = {
-                **self._env,
-                **launcher_config.get("env", {}),
-                **{str(k): str(v) for k, v in bash_config_env.items()},
-            }
             logger.debug(f"launch_nohup() called with launch_id={launch_id}")
             logger.debug(f"launcher_config = {launcher_config}")
             step_name = kwargs.get("step", {}).get("name", "")
@@ -165,15 +204,6 @@ class Bash(Environment):
             command_list = [f"./{BASH_SCRIPTS}/{step_name}/{JOB_SUB_SH}"]
             logger.info(f"Launching {launch_id}: {command_list} in {cwd}")
             logger.debug(f"computed cwd = '{cwd}' (exists={os.path.exists(cwd)})")
-            logger.debug(f"env vars = {env}")
-            env["LLMB_BASH_LAUNCH_ID"] = launch_id
-            env["LLMB_BASH_ASSET_DIR"] = str(targetsteprun_asset_dir)
-            # The child env carries no PATH (we don't inherit os.environ), so a
-            # bash step can't discover a python interpreter on its own. gbserver
-            # itself runs on a pinned interpreter (pyproject.toml requires-python
-            # >=3.11,<3.14), so hand its directory down; command.sh prepends it to
-            # a known-good PATH and execs run.py with it — no re-discovery needed.
-            env["LLMB_BASH_PYTHON_DIR"] = os.path.dirname(sys.executable)
             self.output_dir = (environment_config.get("workspace") or {}).get(  # type: ignore[attr-defined]
                 "output_dir", ""
             )
@@ -191,14 +221,12 @@ class Bash(Environment):
             assert isinstance(
                 run_metadata, dict
             ), f"invalid run_metadata: {run_metadata}"
+            # Retained for the non-zero-exit failure message below; the env's
+            # GB_BUILD_ID is now set authoritatively by get_launch_env_vars().
             build_id = run_metadata.get("build_id", "")
-            # Expose the build id to the workload as GB_BUILD_ID, matching the name
-            # the skypilot environment already injects (the eventual cross-
-            # environment standard). It is stable across a build's in-place retry
-            # attempts (same build id) yet unique per build, so a step can use it to
-            # key per-build state (e.g. a marker file) without parsing it out of a
-            # path.
-            env["GB_BUILD_ID"] = build_id
+            # Copy assets first: LLMB_BASH_OUTPUT_DIR (set in get_launch_env_vars)
+            # derives from the copied asset dir, so the copy must happen before we
+            # build the env.
             final_asset_dir = await self._copy_assets(
                 launch_id=launch_id,
                 asset_dir=targetsteprun_asset_dir,  # type: ignore[arg-type]
@@ -206,10 +234,21 @@ class Bash(Environment):
             )
             final_asset_output_dir = Path(final_asset_dir) / "outputs"
             logger.info("final_asset_output_dir: %s", final_asset_output_dir)
-            # The wrapper tees all workload output (incl. LLMB_ARTIFACT_ID lines)
+            # The wrapper tees all workload output (incl. GB_ARTIFACT_ID lines)
             # to this combined log file; monitor_log_monitor tails it for events.
             self.log_paths[launch_id] = str(Path(final_asset_output_dir) / "job.log")
-            env["LLMB_BASH_OUTPUT_DIR"] = str(final_asset_output_dir)
+            # Build the complete env for the child. GB_BUILD_ID (and any future
+            # standard var) comes from Environment.get_launch_env_vars() and is
+            # authoritative over launcher/config env.
+            env = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                launcher_config=launcher_config,
+                bash_config_env=bash_config_env,
+                launch_id=launch_id,
+                targetsteprun_asset_dir=targetsteprun_asset_dir,
+                final_asset_output_dir=final_asset_output_dir,
+            )
+            logger.debug(f"env vars = {env}")
             # Launch non-blocking: do NOT drain the pipes here (that would consume
             # and close them before the monitor can read, and the real output goes
             # to job.log anyway). stdout/stderr -> DEVNULL avoids a full-pipe

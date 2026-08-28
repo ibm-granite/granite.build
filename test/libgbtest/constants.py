@@ -104,6 +104,31 @@ BUILD_ID_PATTERN = r"\[Build: ([^\]]+)\]"
 extended_testing_only = pytest.mark.extended
 
 
+# kubernetes_asyncio ships only in the optional ``ibm`` extra and is absent from
+# the lightweight quick-test venv. Probe it once here so any test that imports
+# the K8s environment (or the kubernetes_asyncio client directly) can be gated
+# to skip cleanly there instead of erroring at import.
+#
+# Usage:
+#   from libgbtest.constants import HAS_K8S, requires_k8s
+#
+#   @requires_k8s
+#   class TestNeedingK8s: ...
+#
+#   if HAS_K8S:  # for module-level symbols that only exist with the extra
+#       from kubernetes_asyncio.client.api_client import ApiClient
+try:
+    import kubernetes_asyncio  # noqa: F401
+
+    HAS_K8S = True
+except ImportError:
+    HAS_K8S = False
+
+requires_k8s = pytest.mark.skipif(
+    not HAS_K8S, reason="kubernetes_asyncio not installed (optional 'ibm' extra)"
+)
+
+
 def failed_build_assert_message(build_id: str, message: str) -> str:
     """Format an assertion message with the build ID for easier debugging."""
     return f"[Build: {build_id}] {message}"

@@ -18,6 +18,7 @@
 resolution (space://monitors/<name>) with monitor→monitor parent chains,
 overlay/append, same-type enforcement, cycle detection, and isolation."""
 
+import re
 from pathlib import Path
 from typing import Self
 
@@ -45,7 +46,9 @@ _BASE = {
         "event_configs": [
             {
                 "event_type": "newartifact_in_environment_event",
-                "line_regex": "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+",
+                # Dual-accept form: markers are standardized on GB_, with the
+                # legacy LLMB_ prefix still recognized for compatibility.
+                "line_regex": "(?:GB_|LLMB_)ARTIFACT_ID:.+(?:GB_|LLMB_)ARTIFACT_PATH:.+",
             }
         ],
     },
@@ -448,6 +451,37 @@ class TestBuiltinLsfMonitor:
         for e in cfg["event_configs"]:
             if e["event_type"] == "NEWARTIFACT_IN_ENVIRONMENT_EVENT":
                 assert not e["line_regex"].startswith("^")
+
+    @pytest.mark.parametrize("prefix", ["GB_", "LLMB_"])
+    def test_lsf_artifact_rules_match_wrapper_emission(
+        self: Self, builtin_monitor_space, prefix: str
+    ) -> None:
+        """The LSF monitor's artifact rules must match the marker lines the LSF
+        wrapper actually emits.
+
+        Regression guard for a producer/consumer prefix drift: llmb_lsf_wrapper.sh
+        emits ``GB_ARTIFACT_ID:… GB_ARTIFACT_PATH:…`` while the monitor once matched
+        only ``LLMB_``. That drift silently registered zero artifacts (no error, no
+        log). Both the standardized ``GB_`` and legacy ``LLMB_`` prefixes must match,
+        and field extraction must recover the id and path.
+        """
+        _, cfg = resolve_monitor_config(StepMonitorConfig(ref="space://monitors/lsf"))
+        rules = cfg["event_configs"]
+        path_rule = rules[0]  # env:// PATH artifact
+        state_rule = rules[1]  # mem:// STATE artifact
+
+        # Mirror the wrapper's emitted lines (see llmb_lsf_wrapper.sh:183,188).
+        path_line = f"{prefix}ARTIFACT_ID:outputs {prefix}ARTIFACT_PATH:/work/outputs"
+        state_line = f"{prefix}ARTIFACT_ID:model {prefix}ARTIFACT_STATE:ready"
+
+        assert re.search(path_rule["line_regex"], path_line)
+        assert re.search(state_rule["line_regex"], state_line)
+
+        fields = {f["field_name"]: f for f in path_rule["event_fields"]}
+        binding_id = re.search(fields["binding_id"]["field_regex"], path_line)
+        path = re.search(fields["path"]["field_regex"], path_line)
+        assert binding_id and binding_id.group(0) == "outputs"
+        assert path and path.group(0) == "/work/outputs"
 
     def test_lsf_step_overlay_appends_push_event(
         self: Self, builtin_monitor_space

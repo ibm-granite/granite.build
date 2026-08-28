@@ -94,13 +94,15 @@ The launcher reads `compute_config`:
 
 `pod_status_monitor` tracks **pod status only** — it does not stream the container's logs and does not
 apply `event_configs`. Artifacts from a RunPod step are therefore not registered by tailing
-`LLMB_ARTIFACT_ID:` lines; have the step push its outputs to an asset store (e.g. an `s3push` step to a
+`GB_ARTIFACT_ID:` lines; have the step push its outputs to an asset store (e.g. an `s3push` step to a
 bucket the orchestrator can read) rather than relying on log-line artifact detection.
 
 ## Built-in environment variables
 
-Every pod gets `LLMB_RUNPOD_LAUNCH_ID` and `LLMB_RUNPOD_POD_NAME` (`gb-<step>-<launch_id[:8]>`) on top
-of the environment- and launcher-level `env`.
+Every pod gets `GB_RUNPOD_LAUNCH_ID` and `GB_RUNPOD_POD_NAME` (`gb-<step>-<launch_id[:8]>`) on top
+of the environment- and launcher-level `env`. These launcher vars are standardized on the `GB_`
+prefix; for backwards compatibility the legacy `LLMB_RUNPOD_*` twins are injected alongside them
+with the same values.
 
 ## See also
 

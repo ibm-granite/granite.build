@@ -14,12 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the LLMB_STEP_METADATA_KEY/VALUE step-metadata stdout hook.
+"""Unit tests for the STEP_METADATA_KEY/VALUE step-metadata stdout hook.
 
 Covers the event/payload plumbing, the StoredStepRun.metadata field, and that all
-three builtin monitor configs (bash/docker/skypilot) parse the marker. All three
-anchor the metadata marker to keep it uninjectable by arbitrary mid-stream output
-(bash/docker with `^`; skypilot permits only its own `(name, pid=N) ` log prefix).
+three builtin monitor configs (bash/docker/skypilot) parse the marker. The marker
+is standardized on the ``GB_`` prefix; the legacy ``LLMB_`` prefix is still
+accepted (dual-accept) for backwards compatibility, and both are exercised. All
+three anchor the metadata marker to keep it uninjectable by arbitrary mid-stream
+output (bash/docker with `^`; skypilot permits only its own `(name, pid=N) ` log
+prefix).
 
 ANSI escape sequences (SkyPilot colourises its line prefix) are stripped centrally
 in get_events_from_log_line before any rule runs, so the anchored regexes only ever
@@ -41,7 +44,20 @@ from gbserver.types.buildevent import (
 
 _MONITORS = Path(__file__).resolve().parents[3] / "src/gbserver/builtins/monitors"
 _SHA = "deadbeefcafe0123456789abcdef012345678901"
-_MARKER = f"LLMB_STEP_METADATA_KEY:commit_hash LLMB_STEP_METADATA_VALUE:{_SHA}"
+
+
+def _marker(prefix: str = "LLMB_") -> str:
+    """Build a step-metadata marker line for the given prefix.
+
+    :param prefix: marker prefix — ``GB_`` (standardized) or ``LLMB_`` (legacy,
+        still accepted for backwards compatibility).
+    :returns: a ``<prefix>STEP_METADATA_KEY:... <prefix>STEP_METADATA_VALUE:...`` line.
+    """
+    return f"{prefix}STEP_METADATA_KEY:commit_hash {prefix}STEP_METADATA_VALUE:{_SHA}"
+
+
+# Legacy-prefixed marker; retained to prove the monitors still accept LLMB_.
+_MARKER = _marker("LLMB_")
 
 
 def _configs_for(monitor: str) -> list[EventLogLineParserConfig]:
@@ -96,10 +112,16 @@ def test_stored_step_run_metadata_defaults_and_old_row_compat():
 @pytest.mark.standalone
 @pytest.mark.asyncio
 @pytest.mark.parametrize("monitor", ["bash", "docker", "skypilot"])
-async def test_all_monitors_parse_marker(monitor):
-    """Every builtin monitor parses the marker into the correct payload."""
-    events = await _parse(monitor, _MARKER)
-    assert len(events) == 1, f"{monitor}: expected 1 event, got {len(events)}"
+@pytest.mark.parametrize("prefix", ["GB_", "LLMB_"])
+async def test_all_monitors_parse_marker(monitor, prefix):
+    """Every builtin monitor parses the marker into the correct payload.
+
+    Parametrized over the standardized ``GB_`` prefix and the legacy ``LLMB_``
+    prefix to prove the dual-accept configs recognize both against the real
+    on-disk monitor.yaml files.
+    """
+    events = await _parse(monitor, _marker(prefix))
+    assert len(events) == 1, f"{monitor}/{prefix}: expected 1 event, got {len(events)}"
     payload = events[0].payload
     assert isinstance(payload, StepMetadataUpdateEventPayload)
     assert payload.metadata_key == "commit_hash"
