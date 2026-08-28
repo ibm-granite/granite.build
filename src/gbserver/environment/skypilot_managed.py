@@ -61,6 +61,7 @@ from gbserver.environment._skypilot_ssh import (
 from gbserver.environment.skypilot import (
     _abort_shielded_request,
     _build_skypilot_mounts,
+    _run_sky_verb_off_loop,
 )
 
 
@@ -321,8 +322,7 @@ class Skypilot_managed(Environment):
             # Cancel the managed job by name in case the controller already
             # accepted it before the launch request was aborted.
             try:
-                cancel_id = await asyncio.to_thread(sky.jobs.cancel, name=job_name)
-                await asyncio.to_thread(sky.get, cancel_id)
+                await _run_sky_verb_off_loop(sky.jobs.cancel, name=job_name)
             except Exception as e:
                 logger.warning("jobs.cancel for %s failed: %s", job_name, e)
 
@@ -531,8 +531,7 @@ class Skypilot_managed(Environment):
                 job_name,
                 launch_id,
             )
-            request_id = sky.jobs.cancel(name=job_name)
-            sky.get(request_id)
+            await _run_sky_verb_off_loop(sky.jobs.cancel, name=job_name)
             logger.info("Cancelled SkyPilot managed job %s", job_name)
         except Exception as e:
             logger.error("Failed to cancel SkyPilot managed job %s: %s", job_name, e)

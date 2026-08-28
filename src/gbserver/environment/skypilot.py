@@ -138,6 +138,27 @@ async def _abort_shielded_request(
             current.cancel()
 
 
+async def _run_sky_verb_off_loop(
+    verb: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    """Run a blocking sky SDK verb and its ``sky.get`` off the event loop.
+
+    Mutating sky verbs (``sky.down``, ``sky.jobs.cancel``, ``sky.api_cancel``)
+    return a request id that must be passed to ``sky.get`` to make the call
+    synchronous. Both block, so running them inline freezes the event loop for
+    the whole server round-trip and defeats any enclosing ``wait_for``; this
+    offloads both to threads. Exceptions propagate — the caller owns error
+    handling.
+
+    :param verb: the blocking sky verb to invoke (e.g. ``sky.jobs.cancel``).
+    :param args: positional arguments forwarded to ``verb``.
+    :param kwargs: keyword arguments forwarded to ``verb``.
+    :returns: the result of ``sky.get`` on the verb's request id.
+    """
+    request_id = await asyncio.to_thread(verb, *args, **kwargs)
+    return await asyncio.to_thread(sky.get, request_id)
+
+
 def _ensure_skypilot_api_running():
     """Start the SkyPilot API server if not already healthy.
 
