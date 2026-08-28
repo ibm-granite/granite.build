@@ -350,7 +350,14 @@ def _make_provider(name: str) -> Optional[AuthProvider]:
             jwks_uri=GBSERVER_IBMID_JWKS_URI,
             client_id=GBSERVER_IBMID_CLIENT_ID,
         )
-    return cls()
+    # Other providers construct with no args. A provider needing constructor
+    # args has no arg source here yet (only the built-in modes are selectable),
+    # so degrade gracefully rather than raise on the request path.
+    try:
+        return cls()
+    except Exception as e:
+        logger.warning("Could not construct auth provider '%s': %s", name, e)
+        return None
 
 
 def build_provider_list(auth_mode: str) -> List[AuthProvider]:

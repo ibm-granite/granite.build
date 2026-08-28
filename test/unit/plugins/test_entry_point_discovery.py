@@ -764,6 +764,9 @@ def retry_strategy_registry_snapshot():
     from gbserver.resilience.retry_handler import RetryStrategy
 
     saved = dict(RetryStrategy.strategy_types)
+    # Start empty so the (load-once-guarded) loader rebuilds under the test's
+    # patched entry points, then restore on teardown.
+    RetryStrategy.strategy_types.clear()
     yield RetryStrategy
     RetryStrategy.strategy_types.clear()
     RetryStrategy.strategy_types.update(saved)
@@ -944,6 +947,31 @@ def test_cli_mixed_case_plugin_listed_once(monkeypatch, cli_command_registry_sna
     assert "MyCmd" not in listed  # not shown twice under the verbatim key
     assert cli.get_command(None, "MyCmd") is mycmd
     assert cli.get_command(None, "mycmd") is mycmd
+
+
+def test_cli_hidden_name_blocked_case_insensitively(
+    monkeypatch, cli_command_registry_snapshot
+):
+    """A plugin claiming a hidden built-in's name is blocked in either case.
+
+    `command_dataset.py` is skipped by the in-tree scan, so a plugin can file
+    `Dataset` under both `dataset` and `Dataset`. get_command must refuse both,
+    not just the lowercase form, so the hidden guard can't be bypassed by case.
+    """
+    import click
+
+    @click.command("Dataset")
+    def shadow_dataset():
+        pass
+
+    eps = _make_entry_points(
+        monkeypatch, {"Dataset": ("shadow_dataset", shadow_dataset)}
+    )
+    _patch_entry_points(monkeypatch, {plugins.GROUP_CLI_PLUGINS: eps})
+
+    cli = cli_command_registry_snapshot()
+    assert cli.get_command(None, "Dataset") is None
+    assert cli.get_command(None, "dataset") is None
 
 
 def test_auth_build_list_skips_unregistered_name(

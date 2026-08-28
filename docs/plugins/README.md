@@ -75,7 +75,7 @@ listed base class and provide the listed key.
 | `gbserver.asset_stores` | a `gbserver.asset.assetstore.Assetstore` subclass | the URI class(es) returned by `get_supported_uri_classes()` |
 | `gbserver.environments` | a `gbserver.environment.environment.Environment` subclass | the **entry-point name** (the environment `type`) |
 | `gbserver.secret_managers` | a `SpaceSecretManager` **or** `UserSecretManager` subclass | the **entry-point name** (the secret-manager `type`). One group feeds both families; each class is routed to the family whose base class it subclasses |
-| `gbserver.auth_providers` | a `gbserver.api.auth_providers.AuthProvider` subclass | the **entry-point name** (the provider name, matching `provider_name`) |
+| `gbserver.auth_providers` | a `gbserver.api.auth_providers.AuthProvider` subclass | the **entry-point name** (the provider name; independent of the class's `provider_name`) |
 | `gbserver.resilience_strategies` | a `gbserver.resilience.retry_handler.RetryStrategy` subclass | the **entry-point name** (the strategy config `type`) |
 | `gbcli.plugins` | a `click.Command` / `click.Group` object | the **entry-point name** (the `gb` subcommand name) |
 

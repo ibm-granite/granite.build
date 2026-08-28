@@ -192,13 +192,16 @@ class RetryStrategy(ABC):
     strategy_types: ClassVar[Dict[str, Type["RetryStrategy"]]] = {}
 
     @classmethod
-    def _load_retry_strategies(cls) -> None:
+    def _load_retry_strategies(cls, force: bool = False) -> None:
         """(Re)build ``strategy_types`` from the built-ins and any plugins.
 
-        Uses the shared reset-and-rebuild contract, so the registry is
-        reload-safe and a plugin can only *add* a strategy type, never shadow a
-        built-in (core-wins).
+        No-op once populated (``build_retry_strategies_from_config`` runs
+        per-launch), matching the sibling loaders; ``force=True`` rebuilds. The
+        rebuild goes through the shared contract, so the registry is reload-safe
+        and a plugin can only *add* a type, never shadow a built-in (core-wins).
         """
+        if cls.strategy_types and not force:
+            return
         from gbcommon.plugins import (
             GROUP_RESILIENCE_STRATEGIES,
             PluginRegistrar,

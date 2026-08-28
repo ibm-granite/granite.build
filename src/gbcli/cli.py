@@ -167,7 +167,10 @@ class GraniteBuildCLI(click.Group):
 
     def get_command(self, ctx, name):
         self._load_commands()
-        if name in hidden_names:
+        # Match hidden names case-insensitively: keys_by_name files a plugin
+        # under both its verbatim and lowercase forms, so a case-sensitive check
+        # would let `gb Dataset` slip past the `dataset` guard.
+        if name.lower() in hidden_names:
             return None
         loader = self.command_types.get(name)
         if loader is None:
