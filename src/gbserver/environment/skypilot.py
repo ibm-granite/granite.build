@@ -88,14 +88,17 @@ async def _abort_shielded_request(
     reclaim step (``on_abort``): teardown-by-name vs cancel-job-by-name.
 
     The current task is already flagged for cancellation, so every ``await``
-    here would re-raise ``CancelledError`` immediately. We temporarily clear the
-    cancellation with ``Task.uncancel()`` (mirroring ``build/run.py``) so the
-    cleanup awaits can block normally, then re-arm it in the ``finally`` so the
-    ``CancelledError`` keeps propagating. The steps: recover the request_id from
-    the submit future if we were cancelled before it returned; tell the API
-    server to abort the request (unblocking the shielded thread); drain the
-    still-running thread (bounded, so a rejected/ineffective abort does not gate
-    the reclaim on the full provisioning time); then run ``on_abort``.
+    here would re-raise ``CancelledError`` immediately. We run the reclaim as a
+    shielded task and, mirroring ``build/run.py``, clear the pending
+    cancellation with ``Task.uncancel()`` so the awaits block normally,
+    re-uncancel on each *further* ``CancelledError`` (e.g. a double
+    ``gb build cancel``) so a mid-abort cancel can't skip the by-name reclaim,
+    and re-arm the cancel in the ``finally`` so it keeps propagating once the
+    reclaim is done. The reclaim steps: recover the request_id from the submit
+    future if we were cancelled before it returned; tell the API server to abort
+    the request (unblocking the shielded thread); drain the still-running thread
+    (bounded, so a rejected/ineffective abort does not gate the reclaim on the
+    full provisioning time); then run ``on_abort``.
 
     Args:
         request_id: The id from ``sky.(jobs.)launch``; ``None`` when cancelled
@@ -109,30 +112,44 @@ async def _abort_shielded_request(
             deterministic name — the safety net that runs even when there is no
             request_id to abort.
     """
+    async def _do_abort() -> None:
+        # The reclaim body, run as a shielded task so repeated cancels can't
+        # interrupt it before on_abort() (the by-name reclaim) has run.
+        local_id, local_fut = request_id, pending_fut
+        if local_id is None and local_fut is not None:
+            local_id = await Environment._drain_thread_future(
+                local_fut, f"{description} submit"
+            )
+            local_fut = None  # already drained above
+        logger.info(
+            "Cancellation requested; aborting %s (request %s)", description, local_id
+        )
+        if local_id is not None:
+            try:
+                abort_id = await asyncio.to_thread(sky.api_cancel, local_id)
+                await asyncio.to_thread(sky.get, abort_id)
+            except Exception as e:
+                logger.warning("api_cancel for %s failed: %s", local_id, e)
+        if local_fut is not None:
+            await Environment._drain_thread_future(local_fut, description)
+        await on_abort()
+
+    abort_task = asyncio.ensure_future(_do_abort())
     current = asyncio.current_task()
     cancels = current.cancelling() if current else 0
     for _ in range(cancels):
         current.uncancel()  # type: ignore[union-attr]
     try:
-        if request_id is None and pending_fut is not None:
-            request_id = await Environment._drain_thread_future(
-                pending_fut, f"{description} submit"
-            )
-            pending_fut = None  # already drained above
-        logger.info(
-            "Cancellation requested; aborting %s (request %s)",
-            description,
-            request_id,
-        )
-        if request_id is not None:
+        while not abort_task.done():
             try:
-                abort_id = await asyncio.to_thread(sky.api_cancel, request_id)
-                await asyncio.to_thread(sky.get, abort_id)
-            except Exception as e:
-                logger.warning("api_cancel for %s failed: %s", request_id, e)
-        if pending_fut is not None:
-            await Environment._drain_thread_future(pending_fut, description)
-        await on_abort()
+                await asyncio.shield(abort_task)
+            except asyncio.CancelledError:
+                # A further cancel arrived mid-abort; suppress it and re-uncancel
+                # so the reclaim still runs to completion (matches build/run.py).
+                if current and current.cancelling() > 0:
+                    cancels += current.cancelling()
+                    for _ in range(current.cancelling()):
+                        current.uncancel()
     finally:
         if cancels > 0 and current:
             current.cancel()
