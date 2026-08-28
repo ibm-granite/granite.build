@@ -975,6 +975,8 @@ class Environment(ABC):
         :param env: the assembled launch-env dict; mutated in place.
         :returns: the same dict, with ``GB_`` twins added.
         """
+        # NOTE: Lsf._get_secret_env_keys mirrors this LLMB_->GB_ transform to keep
+        # the GB_ twin of a user-named secret masked in redaction; keep them in sync.
         for name, value in list(env.items()):
             if name.startswith("LLMB_"):
                 env.setdefault("GB_" + name[len("LLMB_") :], value)

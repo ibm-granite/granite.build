@@ -266,6 +266,55 @@ class TestLsfOverride:
         env = self._lsf().get_launch_env_vars(run_metadata=RUN_META)
         assert env["GB_BUILD_ID"] == "real-build"
 
+    def test_get_secret_env_keys_mirrors_llmb_twin(self):
+        # An LLMB_-prefixed secret name also contributes its GB_ twin name, so
+        # the twin _add_gb_aliases mints is masked by name in redaction.
+        from gbserver.environment.lsf import Lsf
+
+        def _cfg(env_name):
+            return {
+                "lsf": {
+                    "secrets": {
+                        "secret_names_to_use_as_env_variable": [
+                            {"env_name": env_name, "secret_name": "tok"}
+                        ]
+                    }
+                }
+            }
+
+        assert Lsf._get_secret_env_keys(_cfg("LLMB_MYVAL")) == {
+            "LLMB_MYVAL",
+            "GB_MYVAL",
+        }
+        # A non-LLMB_ name gets no twin.
+        assert Lsf._get_secret_env_keys(_cfg("MY_TOKEN")) == {"MY_TOKEN"}
+        # Empty / absent config yields an empty set.
+        assert Lsf._get_secret_env_keys({}) == set()
+        assert Lsf._get_secret_env_keys(None) == set()
+
+    def test_llmb_secret_twin_is_covered_by_redaction_keys(self):
+        # Ties twin creation to twin masking: the GB_ twin that aliasing mints
+        # for an LLMB_-named secret must be in the redaction key set.
+        from gbserver.environment.lsf import Lsf
+
+        config = {
+            "lsf": {
+                "secrets": {
+                    "secret_names_to_use_as_env_variable": [
+                        {"env_name": "LLMB_MYVAL", "secret_name": "tok"}
+                    ]
+                }
+            }
+        }
+        setup_config = {"space_secrets": {"tok": "secret-val"}}
+        env = self._lsf().get_launch_env_vars(
+            run_metadata=RUN_META, config=config, setup_config=setup_config
+        )
+        # The twin exists (aliasing still runs last) ...
+        assert env["GB_MYVAL"] == "secret-val"
+        # ... and is covered by the redaction key set, so it is masked.
+        assert "GB_MYVAL" in Lsf._get_secret_env_keys(config)
+
 
 class TestK8sOverride:
     def _k8s(self):

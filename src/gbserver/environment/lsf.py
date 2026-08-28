@@ -664,6 +664,39 @@ class Lsf(Environment):
             ), f"failed to find the secret {secret_name} in {all_keys}"
             env[env_var_name] = space_secrets[secret_name]
 
+    @staticmethod
+    def _get_secret_env_keys(config: Optional[Dict]) -> set[str]:
+        """Names of env vars whose values must be masked in the redacted command.
+
+        Includes every user-declared secret env-var name from
+        ``config.lsf.secrets.secret_names_to_use_as_env_variable[].env_name`` and,
+        for any declared with the legacy ``LLMB_`` prefix, the ``GB_``-prefixed
+        twin that ``Environment._add_gb_aliases`` mints for it — otherwise the
+        twin would escape name-based redaction in ``_build_cmd_to_run_with_ssh``
+        and leak the secret value.
+
+        :param config: the step config dict (source of the secret mappings).
+        :returns: the set of env-var names (declared + GB_ twins) to redact.
+        """
+        declared = {
+            s["env_name"]
+            for s in (
+                (config or {})
+                .get("lsf", {})
+                .get("secrets", {})
+                .get("secret_names_to_use_as_env_variable", [])
+            )
+        }
+        # Mirror the GB_ twin _add_gb_aliases creates for LLMB_-prefixed names,
+        # so the twin's value is masked by name. Keep this transform in sync with
+        # Environment._add_gb_aliases.
+        twins = {
+            "GB_" + name[len("LLMB_") :]
+            for name in declared
+            if name.startswith("LLMB_")
+        }
+        return declared | twins
+
     def get_launch_env_vars(
         self: Self,
         run_metadata: Optional[Dict[str, Any]] = None,
@@ -739,18 +772,10 @@ class Lsf(Environment):
             config=kwargs.get("config", {}),
             setup_config=kwargs.get("setup_config", {}),
         )
-        # Names of env vars holding injected space secrets — their values must be
+        # Names of env vars holding injected space secrets (plus the GB_ twins
+        # that aliasing mints for LLMB_-prefixed names) — their values must be
         # masked in the redacted command regardless of what the user named them.
-        # Derived from the same config source get_launch_env_vars reads.
-        secret_env_keys: set[str] = {
-            s["env_name"]
-            for s in (
-                kwargs.get("config", {})
-                .get("lsf", {})
-                .get("secrets", {})
-                .get("secret_names_to_use_as_env_variable", [])
-            )
-        }
+        secret_env_keys = self._get_secret_env_keys(kwargs.get("config", {}))
         try:
             if self.use_ssh:
                 ssh_tunnel = self._ssh_tunnel
