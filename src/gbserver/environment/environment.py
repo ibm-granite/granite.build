@@ -987,7 +987,7 @@ class Environment(ABC):
         IDEMPOTENCY CONTRACT: every concrete ``cleanup_*`` implementation MUST
         be idempotent and must tolerate a resource that was never created or is
         already gone. Build cancellation now propagates promptly (see
-        ``BuildRun._cancel_inflight_run_tasks``), so a cleanup can fire *before*
+        ``BuildRun._cancel_inflight_tasks``), so a cleanup can fire *before*
         the matching launch has recorded its backing resource, *during*
         provisioning, or *after* the resource is already torn down. Treat
         "resource does not exist" as success — do NOT raise or retry-storm on
