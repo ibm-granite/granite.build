@@ -27,14 +27,14 @@ import asyncio
 
 import pytest
 
-from gbserver.environment import environment as environment_module
-from gbserver.environment.environment import Environment
-
 # The K8s environment imports kubernetes_asyncio (via its retry strategies),
 # which lives in the optional ``ibm`` extra and is absent in the lightweight
 # quick-test CI venv, so TestK8sOverride must be skipped there rather than
 # erroring at import. Reuse the shared marker.
 from libgbtest.constants import requires_k8s
+
+from gbserver.environment import environment as environment_module
+from gbserver.environment.environment import Environment
 
 # ---------------------------------------------------------------------------
 # Base Environment.get_launch_env_vars (the standard cross-environment set)

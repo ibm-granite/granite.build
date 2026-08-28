@@ -36,6 +36,12 @@ except ImportError:  # aiohttp < 3.10
     HAS_DNS_ERROR = False
 from aiohttp.connector import TCPConnector
 
+# kubernetes_asyncio lives in the optional ``ibm`` extra and is absent in
+# lightweight environments (e.g. the quick-test CI matrix). HAS_K8S / requires_k8s
+# are shared via libgbtest.constants; import the client symbols this module uses
+# directly, guarded by HAS_K8S so it still collects when the extra is absent.
+from libgbtest.constants import HAS_K8S, requires_k8s
+
 import gbserver.resilience.transport_retry as tr
 from gbserver.resilience.transport_retry import (
     _WRAPPED_MARKER,
@@ -44,12 +50,6 @@ from gbserver.resilience.transport_retry import (
     _make_retrying,
     install_transport_retries,
 )
-
-# kubernetes_asyncio lives in the optional ``ibm`` extra and is absent in
-# lightweight environments (e.g. the quick-test CI matrix). HAS_K8S / requires_k8s
-# are shared via libgbtest.constants; import the client symbols this module uses
-# directly, guarded by HAS_K8S so it still collects when the extra is absent.
-from libgbtest.constants import HAS_K8S, requires_k8s
 
 if HAS_K8S:
     from kubernetes_asyncio.client.api_client import ApiClient
