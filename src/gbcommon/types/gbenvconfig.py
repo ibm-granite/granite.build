@@ -145,100 +145,120 @@ class GBEnvConfig(BaseModel):
 
 DEFAULT_GB_ENVIRONMENT = "PROD"
 
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """Return ``base`` with ``override`` applied, recursively.
+
+    Nested dicts are merged key-by-key so an environment can override a single
+    ``feature_flags`` entry without restating the rest; any other value replaces
+    the base value outright. Neither input is mutated.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = deep_merge(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+# Environment configs are defined values.yaml-style: a base dict holding the full
+# set of values, plus one dict per deployed environment listing only what it
+# overrides. See _GB_ENVIRONMENT_CONFIGS below for how they combine.
+#
+# The base carries the PROD values, so _GB_ENVIRONMENT_CONFIG_PROD is empty — it
+# is kept so every deployed environment reads the same way at the call site.
+# Because the base *is* PROD, editing a base value also changes PROD; to change
+# it for STAGING/DEV only, put it in each of their dicts instead.
+#
+# STANDALONE does not use the base: it is fully local and would override nearly
+# everything, so it is written out in full below.
+_GB_ENVIRONMENT_CONFIG_BASE = {
+    "env": "PROD",
+    "lakehouse_environment": "PROD",
+    "space_config_branch_name": "gbspace-config",
+    # gbcli
+    "gbserver_host": "https://api.llm-build-prod.vpc-int.res.ibm.com",
+    "default_space": "public",
+    "web_ui_url": "https://dashboard.llm-build-prod.vpc-int.res.ibm.com",
+    "config_spaces": "gb.spaces",
+    "config_profile": "gb.spaces.profiles",
+    "server_log_application_name": "llm-build-prod",
+    "branch_assets": "gbspace-config",
+    "hf_organization": "ibm-research",
+    "hf_enterprise_organizations": ["ibm-research", "ibm-granite"],
+    "feature_flags": {
+        "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
+        "gbserver_artifact_filter": getenv_boolean("GBSERVER_ARTIFACT_FILTER", True),
+        "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),
+    },
+    # gbserver
+    # NOTE: the DEV api host, for every deployed environment. Intentional.
+    "dashboard_instance": "https://api.llm-build-dev.vpc-int.res.ibm.com",
+    "public_space_git_uri": f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbspace-public",
+    "public_space_lh_subnamespace": "public",
+    "buildwatcher_deployment_yaml": "k8s/dep-build-runner.yaml",
+    "default_pod_namespace": os.getenv(
+        "GBSERVER_BACKEND_SERVER_NAMESPACE_PROD", "llm-build-prod"
+    ),
+    "default_sql_schema": "granite_dot_build_prod",
+}
+
+# The base already holds the PROD values, so PROD overrides nothing.
+_GB_ENVIRONMENT_CONFIG_PROD: dict = {}
+
+_GB_ENVIRONMENT_CONFIG_STAGING = {
+    "env": "STAGING",
+    "lakehouse_environment": "STAGING",
+    "branch_assets": "gbspace-config-dev",
+    # gbcli
+    "gbserver_host": "https://api.llm-build-staging.vpc-int.res.ibm.com",
+    "web_ui_url": "https://dashboard.llm-build-staging.vpc-int.res.ibm.com",
+    "config_spaces": "staging.gb.spaces",
+    "config_profile": "staging.gb.spaces.profiles",
+    "server_log_application_name": "llm-build-staging",
+    # gbserver
+    "public_space_git_uri": f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gb-test",
+    "default_pod_namespace": os.getenv(
+        "GBSERVER_BACKEND_SERVER_NAMESPACE_STAGING", "llm-build-staging"
+    ),
+    "default_sql_schema": "granite_dot_build_staging",
+}
+
+_GB_ENVIRONMENT_CONFIG_DEV = {
+    "env": "DEV",
+    # DEV shares the STAGING lakehouse.
+    "lakehouse_environment": "STAGING",
+    "branch_assets": "gbspace-config-dev",
+    # gbcli
+    "gbserver_host": "https://api.llm-build-dev.vpc-int.res.ibm.com",
+    "web_ui_url": "https://dashboard.llm-build-dev.vpc-int.res.ibm.com",
+    "config_spaces": "dev.gb.spaces",
+    "config_profile": "dev.gb.spaces.profiles",
+    "server_log_application_name": "llm-build-dev",
+    # gbserver
+    "public_space_git_uri": f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbspace-public-dev",
+    "public_space_lh_subnamespace": "public_dev",
+    "default_pod_namespace": os.getenv(
+        "GBSERVER_BACKEND_SERVER_NAMESPACE_DEV", "llm-build-dev"
+    ),
+    "default_sql_schema": "granite_dot_build_dev",
+}
+
 _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
     "PROD": GBEnvConfig(
-        env="PROD",
-        lakehouse_environment="PROD",
-        space_config_branch_name="gbspace-config",
-        # gbcli
-        gbserver_host="https://api.llm-build-prod.vpc-int.res.ibm.com",
-        default_space="public",
-        web_ui_url="https://dashboard.llm-build-prod.vpc-int.res.ibm.com",
-        config_spaces="gb.spaces",
-        config_profile="gb.spaces.profiles",
-        server_log_application_name="llm-build-prod",
-        branch_assets="gbspace-config",
-        hf_organization="ibm-research",
-        hf_enterprise_organizations=["ibm-research", "ibm-granite"],
-        feature_flags={
-            "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),
-        },
-        # gbserver
-        dashboard_instance="https://api.llm-build-dev.vpc-int.res.ibm.com",
-        public_space_git_uri=f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbspace-public",
-        public_space_lh_subnamespace="public",
-        buildwatcher_deployment_yaml="k8s/dep-build-runner.yaml",
-        default_pod_namespace=os.getenv(
-            "GBSERVER_BACKEND_SERVER_NAMESPACE_PROD", "llm-build-prod"
-        ),
-        default_sql_schema="granite_dot_build_prod",
+        **deep_merge(_GB_ENVIRONMENT_CONFIG_BASE, _GB_ENVIRONMENT_CONFIG_PROD)
     ),
     "STAGING": GBEnvConfig(
-        env="STAGING",
-        lakehouse_environment="STAGING",
-        space_config_branch_name="gbspace-config",
-        # gbcli
-        gbserver_host="https://api.llm-build-staging.vpc-int.res.ibm.com",
-        default_space="public",
-        web_ui_url="https://dashboard.llm-build-staging.vpc-int.res.ibm.com",
-        config_spaces="staging.gb.spaces",
-        config_profile="staging.gb.spaces.profiles",
-        server_log_application_name="llm-build-staging",
-        branch_assets="gbspace-config-dev",
-        hf_organization="ibm-research",
-        hf_enterprise_organizations=["ibm-research", "ibm-granite"],
-        feature_flags={
-            "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),
-        },
-        # gbserver
-        dashboard_instance="https://api.llm-build-dev.vpc-int.res.ibm.com",
-        public_space_git_uri=f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gb-test",
-        public_space_lh_subnamespace="public",
-        buildwatcher_deployment_yaml="k8s/dep-build-runner.yaml",
-        default_pod_namespace=os.getenv(
-            "GBSERVER_BACKEND_SERVER_NAMESPACE_STAGING", "llm-build-staging"
-        ),
-        default_sql_schema="granite_dot_build_staging",
+        **deep_merge(_GB_ENVIRONMENT_CONFIG_BASE, _GB_ENVIRONMENT_CONFIG_STAGING)
     ),
     "DEV": GBEnvConfig(
-        env="DEV",
-        lakehouse_environment="STAGING",
-        space_config_branch_name="gbspace-config",
-        # gbcli
-        gbserver_host="https://api.llm-build-dev.vpc-int.res.ibm.com",
-        default_space="public",
-        web_ui_url="https://dashboard.llm-build-dev.vpc-int.res.ibm.com",
-        config_spaces="dev.gb.spaces",
-        config_profile="dev.gb.spaces.profiles",
-        server_log_application_name="llm-build-dev",
-        branch_assets="gbspace-config-dev",
-        hf_organization="ibm-research",
-        hf_enterprise_organizations=["ibm-research", "ibm-granite"],
-        feature_flags={
-            "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
-            "gbserver_artifact_filter": getenv_boolean(
-                "GBSERVER_ARTIFACT_FILTER", True
-            ),
-            "gbserver_build_update": getenv_boolean("GBSERVER_BUILD_UPDATE", True),
-        },
-        # gbserver
-        dashboard_instance="https://api.llm-build-dev.vpc-int.res.ibm.com",
-        public_space_git_uri=f"https://{DEFAULT_GH_DOMAIN}/granite-dot-build/gbspace-public-dev",
-        public_space_lh_subnamespace="public_dev",
-        buildwatcher_deployment_yaml="k8s/dep-build-runner.yaml",
-        default_pod_namespace=os.getenv(
-            "GBSERVER_BACKEND_SERVER_NAMESPACE_DEV", "llm-build-dev"
-        ),
-        default_sql_schema="granite_dot_build_dev",
+        **deep_merge(_GB_ENVIRONMENT_CONFIG_BASE, _GB_ENVIRONMENT_CONFIG_DEV)
     ),
+    # Spelled out rather than merged onto the base: STANDALONE is fully local
+    # (no lakehouse, no GitHub-backed space, fixed feature flags) and would
+    # override nearly every base value, so a diff would obscure more than it saves.
     "STANDALONE": GBEnvConfig(
         env="STANDALONE",
         lakehouse_environment="",
@@ -255,8 +275,9 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         hf_enterprise_organizations=["ibm-research", "ibm-granite"],
         feature_flags={
             "build_start_via_github": False,
-            "gbserver_build_events": True,
+            # Deliberately off in standalone, unlike the deployed environments.
             "gbserver_artifact_filter": False,
+            "gbserver_build_events": True,
             "gbserver_build_update": True,
         },
         # gbserver
