@@ -22,7 +22,6 @@ import re
 import shutil
 import sys
 import threading
-import time
 import urllib.parse
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -48,6 +47,7 @@ from gbcommon.types.testing import (
     is_hf_mocked,
 )
 from gbcommon.uri.uri import URI
+from gbcommon.utils.fs_lock import SharedFileSystemLock
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import GB_ENVIRONMENT
 from gbserver.utils.logger import get_logger
@@ -88,16 +88,17 @@ DEFAULT_REVISION = "main"
 #      download dir and retry -- turning a manual ``rm -rf`` into automatic
 #      recovery. This is the primary #320 fix and is filesystem-agnostic.
 #
-# The lock uses atomic directory creation (``os.mkdir``) rather than
-# ``flock``/``filelock``. Two-node probes showed BSD ``flock(2)`` is node-local
-# on the Blue Vela GPFS mount (two nodes held the same exclusive lock at once),
-# so a flock-based lock provides no cross-node mutual exclusion there; ``mkdir``
-# atomicity, by contrast, is coherent across nodes on every shared filesystem
-# tested (GPFS and the AFM/COS-backed CSI PVC the K8s hfpull steps mount). The
-# lock directory is removed on release, so it does not accumulate. mkdir has no
-# kernel auto-release on holder death, but the fall-through above bounds that: a
-# lock left by a crashed puller only makes peers wait out the timeout before
-# proceeding.
+# The lock is a ``SharedFileSystemLock`` (gbcommon.utils.fs_lock), which uses
+# atomic directory creation (``os.mkdir``) rather than ``flock``/``filelock``.
+# Two-node probes showed BSD ``flock(2)`` is node-local on the Blue Vela GPFS
+# mount (two nodes held the same exclusive lock at once), so a flock-based lock
+# provides no cross-node mutual exclusion there; ``mkdir`` atomicity, by
+# contrast, is coherent across nodes on every shared filesystem tested (GPFS and
+# the AFM/COS-backed CSI PVC the K8s hfpull steps mount). The lock directory is
+# removed on release, so it does not accumulate. mkdir has no kernel
+# auto-release on holder death; hfpull runs the lock with no ttl and relies on
+# the fall-through above to bound that -- a lock left by a crashed puller only
+# makes peers wait out the timeout before proceeding.
 HFPULL_LOCK_TIMEOUT_ENV = "GB_HFPULL_LOCK_TIMEOUT"
 HFPULL_FORCE_ENV = "GB_HFPULL_FORCE"
 DEFAULT_HFPULL_LOCK_TIMEOUT_S = 300.0
@@ -168,55 +169,34 @@ def _hfpull_lock_path(dest: Path) -> Path:
 def _hfpull_download_lock(dest: Path) -> Iterator[None]:
     """Best-effort cross-process lock serializing pulls into *dest*.
 
-    Acquires the lock by atomically creating a directory (``os.mkdir``), which
-    is coherent across nodes on the shared cache filesystems (unlike BSD
-    ``flock``; see the module comment). Polls until ``GB_HFPULL_LOCK_TIMEOUT``
-    seconds have passed; if the lock is held by a peer that whole time, or it
-    cannot be set up, logs and yields anyway so the caller proceeds and relies
-    on huggingface_hub's own per-file locks. The lock directory is removed on
-    release.
+    Uses :class:`SharedFileSystemLock` (atomic ``mkdir``, coherent across nodes
+    on the shared cache filesystems -- unlike BSD ``flock``; see the module
+    comment). Waits up to ``GB_HFPULL_LOCK_TIMEOUT`` seconds; if the lock is
+    held by a peer that whole time, or it cannot be set up, logs and yields
+    anyway so the caller proceeds and relies on huggingface_hub's own per-file
+    locks. No ``ttl`` -- a lock left by a crashed holder simply makes peers wait
+    out the timeout before proceeding (bounded, and the self-healing backstops
+    any resulting corruption).
     """
     lock_dir = _hfpull_lock_path(dest)
     timeout = _hfpull_lock_timeout()
-    held = False
-    try:
-        lock_dir.parent.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                lock_dir.mkdir()
-                held = True
-                break
-            except FileExistsError:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    logger.warning(
-                        "hfpull: did not acquire download lock %s within %ss; "
-                        "proceeding and relying on huggingface_hub's per-file "
-                        "locks",
-                        lock_dir,
-                        timeout,
-                    )
-                    break
-                time.sleep(min(HFPULL_LOCK_POLL_S, remaining))
-    except OSError as e:
-        # e.g. EROFS/EIO/EACCES/stale handle on a flaky shared mount. The lock
-        # is best-effort, so never fail the build on lock infrastructure
-        # trouble -- proceed without it.
-        logger.warning(
-            "hfpull: could not set up download lock %s (%s); proceeding " "without it",
-            lock_dir,
-            e,
-        )
+    lock = SharedFileSystemLock(
+        lock_dir, timeout=timeout, poll_interval=HFPULL_LOCK_POLL_S
+    )
+    if lock.acquire():
+        try:
+            yield
+        finally:
+            lock.release()
+        return
 
-    try:
-        yield
-    finally:
-        if held:
-            try:
-                lock_dir.rmdir()
-            except OSError:
-                pass
+    logger.warning(
+        "hfpull: did not acquire download lock %s within %ss; proceeding and "
+        "relying on huggingface_hub's per-file locks",
+        lock_dir,
+        timeout,
+    )
+    yield
 
 
 def _is_recoverable_hf_cache_error(e: BaseException) -> bool:
