@@ -833,7 +833,7 @@ def push(
 )
 @click.option(
     "--uri",
-    help="Lakehouse (lh://) or HuggingFace (hf://) URI of the artifact. The store is inferred from the scheme, so --store must not be combined with --uri.",
+    help="Lakehouse (lh://) or HuggingFace (hf://) URI of the artifact. The store is inferred from the scheme, so --store must not be combined with --uri. The URI also encodes the artifact's identity, so --type, --hf-organization, --label/--repo and --revision cannot be combined with it either -- put them in the URI (for hf://: hf:///[type/]owner/repo[/revision]).",
 )
 @click.option(
     "-t",
@@ -859,7 +859,7 @@ def push(
 )
 @click.option(
     "--revision",
-    help="Model revision.",
+    help="Model revision. For a HuggingFace artifact, specify the revision in the --uri instead (hf:///owner/repo/<revision>); --revision cannot be combined with an hf:// URI.",
 )
 @click.option(
     "--version",
