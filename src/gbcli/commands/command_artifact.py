@@ -859,7 +859,7 @@ def push(
 )
 @click.option(
     "--revision",
-    help="Model revision. Only for a model registered without --uri; when --uri is given the revision comes from the URI (lh:// or hf:///owner/repo/<revision>) and --revision cannot be combined with it.",
+    help="Artifact revision (a Lakehouse model, or a HuggingFace model/dataset). Only when registering without --uri; when --uri is given the revision comes from the URI (lh:// or hf:///owner/repo/<revision>) and --revision cannot be combined with it.",
 )
 @click.option(
     "--version",
@@ -1050,7 +1050,9 @@ def register(
             type = str(metadata["hf_type"])
             hf_organization = metadata["owner"]
             label = metadata["repo"]
-            revision = metadata["revision"]
+            # Buckets decode to revision "" (no revision concept); None lets
+            # the service default it to "main" as the non-URI path does.
+            revision = metadata["revision"] or None
         else:
             store = "lh"
             decoded_artifact = decode_uri(uri)
@@ -1119,14 +1121,13 @@ def register(
     if type == "model":
         dataset = None
         version = None
-        showLabelPrompt = not label or label.strip() == ""
 
         # The model label is the Lakehouse model name; we prompt for it and
         # require it. For HF, --label/--repo is the repo id and is optional
         # (it falls back to the artifact name in the service layer), so no
         # prompt and no requirement here.
         if store == "lh":
-            if showLabelPrompt:
+            if not label or label.strip() == "":
                 label = click.prompt("Model label", show_default=True).strip()
 
             showRevisionPrompt = not revision or revision.strip() == ""

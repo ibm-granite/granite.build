@@ -132,6 +132,10 @@ def test_hf_uri_bucket(register_env):
     assert kwargs["store"] == "hf"
     assert kwargs["type"] == "bucket"
     assert kwargs["label"] == "my-bucket"
+    # A bucket URI decodes revision to "", which the CLI normalizes to None so
+    # the service defaults it to "main" (matching the --store hf -t bucket path)
+    # rather than forwarding an empty string.
+    assert kwargs["revision"] is None
 
 
 def test_hf_uri_explicit_revision(register_env):
