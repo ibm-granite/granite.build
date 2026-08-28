@@ -89,9 +89,9 @@ def test_hf_uri_infers_store_type_org_and_label(register_env):
     assert kwargs["hf_organization"] == "ibm-granite"
     assert kwargs["label"] == "granite-4.2-3b"
     assert kwargs["artifact_name"] == "granite-4.2-3b"
-    # The URI carries no explicit revision, so the CLI leaves it unset and the
-    # service/server applies the "main" default.
-    assert kwargs["revision"] is None
+    # The revision comes solely from the URI; when omitted it decodes to the
+    # "main" default, which the CLI forwards as-is.
+    assert kwargs["revision"] == "main"
     # No interactive prompt should have been shown.
     assert "Model table" not in result.output
     assert "Revision" not in result.output
@@ -165,24 +165,43 @@ def test_hf_dataset_uri_preserves_revision(register_env):
     assert kwargs["revision"] == "v2"
 
 
-def test_revision_flag_honored_when_uri_has_no_revision(register_env):
-    """`--revision` is kept when the URI omits one (URI decodes to default 'main')."""
+# The type, org, repo and revision live in the hf:// URI; the flags that would
+# otherwise supply them (--type, --hf-organization, --label/--repo, --revision)
+# are rejected outright when a URI is given, whether or not they agree with it.
+_URI_FLAG_REJECTED = "cannot be used with an hf:// URI"
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        pytest.param(["-t", "model"], id="type-mismatch"),
+        pytest.param(["-t", "dataset"], id="type-matching"),
+        pytest.param(["--hf-organization", "other-org"], id="org-mismatch"),
+        pytest.param(["--hf-organization", "org"], id="org-matching"),
+        pytest.param(["--repo", "other-repo"], id="repo-mismatch"),
+        pytest.param(["--repo", "ds"], id="repo-matching"),
+        pytest.param(["--revision", "v9"], id="revision-uri-has-none"),
+    ],
+)
+def test_uri_flags_rejected(register_env, extra_args):
+    """--type/--hf-organization/--repo/--revision are all rejected alongside a URI."""
     result = _invoke(
         [
             "--uri",
-            "hf:///org/repo",
-            "--revision",
-            "v9",
+            "hf:///datasets/org/ds",
             "--artifact-name",
-            "repo",
+            "ds",
             "--certify-no-restrictions",
+            *extra_args,
         ]
     )
-    assert result.exit_code == 0, result.output
-    assert register_env.call_args.kwargs["revision"] == "v9"
+    assert result.exit_code != 0
+    assert _URI_FLAG_REJECTED in result.output
+    register_env.assert_not_called()
 
 
-def test_revision_flag_conflicts_with_uri_revision(register_env):
+def test_revision_flag_rejected_when_uri_has_revision(register_env):
+    """--revision alongside a URI that also carries one is still a flag rejection."""
     result = _invoke(
         [
             "--uri",
@@ -195,47 +214,12 @@ def test_revision_flag_conflicts_with_uri_revision(register_env):
         ]
     )
     assert result.exit_code != 0
-    assert "conflicts with the revision in the URI" in result.output
+    assert _URI_FLAG_REJECTED in result.output
     register_env.assert_not_called()
 
 
-def test_type_flag_conflicts_with_uri_type(register_env):
-    """`-t model` alongside a dataset URI is rejected, not silently overwritten."""
-    result = _invoke(
-        [
-            "--uri",
-            "hf:///datasets/org/ds",
-            "-t",
-            "model",
-            "--artifact-name",
-            "ds",
-            "--certify-no-restrictions",
-        ]
-    )
-    assert result.exit_code != 0
-    assert "conflicts with the type in the URI" in result.output
-    register_env.assert_not_called()
-
-
-def test_type_flag_matching_uri_type_is_ok(register_env):
-    """A `-t` that agrees with the URI type is accepted."""
-    result = _invoke(
-        [
-            "--uri",
-            "hf:///datasets/org/ds",
-            "-t",
-            "dataset",
-            "--artifact-name",
-            "ds",
-            "--certify-no-restrictions",
-        ]
-    )
-    assert result.exit_code == 0, result.output
-    assert register_env.call_args.kwargs["type"] == "dataset"
-
-
-def test_revision_rejected_on_bucket_uri(register_env):
-    """A bucket has no revision, so `--revision` on a bucket URI is rejected."""
+def test_revision_flag_rejected_on_bucket_uri(register_env):
+    """A bucket URI plus --revision is rejected by the same flag guard."""
     result = _invoke(
         [
             "--uri",
@@ -248,7 +232,7 @@ def test_revision_rejected_on_bucket_uri(register_env):
         ]
     )
     assert result.exit_code != 0
-    assert "buckets have no revision" in result.output
+    assert _URI_FLAG_REJECTED in result.output
     register_env.assert_not_called()
 
 
@@ -282,56 +266,6 @@ def test_explicit_store_conflicts_with_uri(register_env):
     )
     assert result.exit_code != 0
     assert "--store cannot be combined with --uri" in result.output
-    register_env.assert_not_called()
-
-
-def test_hf_org_conflict(register_env):
-    result = _invoke(
-        [
-            "--uri",
-            "hf:///org/repo",
-            "--hf-organization",
-            "other-org",
-            "--artifact-name",
-            "repo",
-            "--certify-no-restrictions",
-        ]
-    )
-    assert result.exit_code != 0
-    assert "conflicts with the organization in the URI" in result.output
-    register_env.assert_not_called()
-
-
-def test_hf_org_matching_is_ok(register_env):
-    result = _invoke(
-        [
-            "--uri",
-            "hf:///org/repo",
-            "--hf-organization",
-            "org",
-            "--artifact-name",
-            "repo",
-            "--certify-no-restrictions",
-        ]
-    )
-    assert result.exit_code == 0, result.output
-    assert register_env.call_args.kwargs["hf_organization"] == "org"
-
-
-def test_hf_repo_conflict_with_uri_repo(register_env):
-    result = _invoke(
-        [
-            "--uri",
-            "hf:///org/repo",
-            "--repo",
-            "other-repo",
-            "--artifact-name",
-            "x",
-            "--certify-no-restrictions",
-        ]
-    )
-    assert result.exit_code != 0
-    assert "conflicts with the repo in the URI" in result.output
     register_env.assert_not_called()
 
 

@@ -25,7 +25,6 @@ from gbcli.utils.gbconstants import (
     CLIPBOARD_CHAR,
     DEFAULT_CHECKSUM_CONCURRENCY,
     HF_ORGANIZATION_DEFAULT,
-    HF_REVISION_DEFAULT,
     LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
     LAKEHOUSE_FILESET_TABLE_NAME,
     LAKEHOUSE_MODEL_SHARED_TABLE,
@@ -1033,52 +1032,25 @@ def register(
             except ValueError as e:
                 click.echo(f"❌ Error: invalid HuggingFace URI '{uri}': {e}", err=True)
                 ctx.exit(1)
-            hf_type = str(metadata["hf_type"])
-            hf_owner = metadata["owner"]
-            hf_repo = metadata["repo"]
-            # An HF URI without an explicit revision decodes to the default
-            # ("main"); treat that as "unspecified" so an explicit --revision
-            # is honored rather than reported as a conflict.
-            hf_revision = metadata["revision"]
-            uri_has_revision = bool(hf_revision) and hf_revision != HF_REVISION_DEFAULT
-
-            # Type, owner, repo and (when present) revision are all encoded in
-            # the URI; any matching flag the user also passed must agree. This
-            # keeps the HF path as strict as the Lakehouse path, which rejects
-            # every such flag alongside a URI. Each entry is
-            # (flag_name, flag_value, uri_field, uri_value); the revision entry
-            # is included only when the URI actually carried one.
-            conflicts = [
-                ("--type", type, "type", hf_type),
-                ("--hf-organization", hf_organization, "organization", hf_owner),
-                ("--label/--repo", label, "repo", hf_repo),
-            ]
-            if uri_has_revision:
-                conflicts.append(("--revision", revision, "revision", hf_revision))
-            for flag_name, flag_value, uri_field, uri_value in conflicts:
-                if flag_value and flag_value != uri_value:
-                    click.echo(
-                        f"❌ Error: {flag_name} ('{flag_value}') conflicts with the {uri_field} in the URI ('{uri_value}').",
-                        err=True,
-                    )
-                    ctx.exit(1)
-
-            # Buckets carry no revision (the URI layer forces it empty), so a
-            # --revision here can't be reconciled against the URI above — reject
-            # it outright rather than silently forwarding it.
-            if revision and hf_type == "bucket":
+            # The type, owner, repo and (when applicable) revision are all
+            # encoded in the URI (hf:///[type/]owner/repo[/revision]), so the
+            # flags that would otherwise supply them are redundant and rejected
+            # outright. This mirrors the Lakehouse path, which likewise refuses
+            # any of these flags alongside a URI (see below), and sidesteps the
+            # ambiguity of an explicit "main" reading as "no revision given".
+            if type or hf_organization or label or revision:
                 click.echo(
-                    f"❌ Error: --revision ('{revision}') cannot be used with a bucket URI; buckets have no revision.",
+                    "❌ Error: --type, --hf-organization, --label/--repo and --revision "
+                    "cannot be used with an hf:// URI; encode them in the URI itself "
+                    "(hf:///[type/]owner/repo[/revision]).",
                     err=True,
                 )
                 ctx.exit(1)
 
-            type = hf_type
-            hf_organization = hf_owner
-            label = hf_repo
-            # Keep an explicit --revision when the URI did not specify one.
-            if uri_has_revision:
-                revision = hf_revision
+            type = str(metadata["hf_type"])
+            hf_organization = metadata["owner"]
+            label = metadata["repo"]
+            revision = metadata["revision"]
         else:
             store = "lh"
             decoded_artifact = decode_uri(uri)
