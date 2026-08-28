@@ -58,7 +58,10 @@ from gbserver.environment._skypilot_ssh import (
 
 # Shared file_mounts builder — keeps the unmanaged and managed launchers in sync
 # (relative-source resolution against the step.yaml dir, bucket sub-path handling).
-from gbserver.environment.skypilot import _build_skypilot_mounts
+from gbserver.environment.skypilot import (
+    _abort_shielded_request,
+    _build_skypilot_mounts,
+)
 
 
 class Skypilot_managed(Environment):
@@ -298,69 +301,23 @@ class Skypilot_managed(Environment):
     ) -> None:
         """Abort an in-flight managed-job launch after cancellation.
 
-        Called when the task is cancelled while blocked in either the
-        ``sky.jobs.launch`` submit or the ``sky.stream_and_get`` wait. Aborts the
-        launch request server-side (which unblocks the shielded thread), drains
-        the pending future, then cancels the managed job by name so a job the
-        controller already accepted does not keep running. ``self._job_names``
-        is not populated until the launch returns, so
-        ``cleanup_skypilot_managed`` cannot find the job on the cancel path — we
-        cancel by the deterministic ``job_name`` here instead, which is also the
-        safety net when the submit was cancelled before it returned a
-        request_id.
-
-        The current task is already flagged for cancellation, so every ``await``
-        here would re-raise ``CancelledError`` immediately. We temporarily clear
-        the cancellation with ``Task.uncancel()`` (mirroring the idiom in
-        ``skypilot.py`` / ``build/run.py``) so the cleanup awaits can block
-        normally, then re-arm it in the ``finally`` so the ``CancelledError``
-        keeps propagating.
+        Thin wrapper over the shared ``_abort_shielded_request`` whose only
+        launcher-specific part is the reclaim: cancel the managed job by its
+        deterministic name so a job the controller already accepted does not
+        keep running. ``self._job_names`` is not populated until the launch
+        returns, so ``cleanup_skypilot_managed`` cannot find the job on the
+        cancel path — cancelling by name here is the safety net, and also covers
+        the case where the submit was cancelled before it returned a request_id.
 
         Args:
-            request_id: The id returned by ``sky.jobs.launch``, passed to
-                ``sky.api_cancel`` to abort the request server-side. ``None``
-                when cancelled during the submit (before it returned); we then
-                recover it by draining ``pending_fut``.
+            request_id: The id from ``sky.jobs.launch``, or ``None`` if cancelled
+                during the submit (recovered by draining ``pending_fut``).
             job_name: Deterministic managed-job name to cancel.
-            pending_fut: The shielded future still running on its OS thread — the
-                ``sky.jobs.launch`` submit or the ``sky.stream_and_get`` wait —
-                drained so the thread is retired.
+            pending_fut: The shielded ``to_thread`` future to drain (the submit
+                or the ``sky.stream_and_get`` wait).
         """
-        current = asyncio.current_task()
-        cancels = current.cancelling() if current else 0
-        for _ in range(cancels):
-            current.uncancel()  # type: ignore[union-attr]
-        try:
-            # Cancelled during the submit: recover the request_id from the
-            # (shielded) submit future so the request can be aborted
-            # server-side. Bounded so a slow/stuck submit does not gate the
-            # cancel-by-name below, which is the safety net when there is no
-            # request_id.
-            if request_id is None:
-                assert pending_fut is not None  # submit-cancel path always passes it
-                request_id = await self._drain_thread_future(
-                    pending_fut, f"SkyPilot managed submit for {job_name}"
-                )
-                pending_fut = None  # already drained above
-            logger.info(
-                "Cancellation requested; aborting managed job launch %s (%s)",
-                request_id,
-                job_name,
-            )
-            if request_id is not None:
-                try:
-                    abort_id = await asyncio.to_thread(sky.api_cancel, request_id)
-                    await asyncio.to_thread(sky.get, abort_id)
-                except Exception as e:
-                    logger.warning("api_cancel for %s failed: %s", request_id, e)
-            # Drain the still-running future (the stream wait, or the submit if
-            # its recovery raised) so its OS thread is retired. Bounded: if the
-            # abort above was rejected or did not unblock the thread, we must not
-            # wait out the full provisioning time before cancelling by name.
-            if pending_fut is not None:
-                await self._drain_thread_future(
-                    pending_fut, f"SkyPilot managed stream_and_get for {job_name}"
-                )
+
+        async def _cancel_job() -> None:
             # Cancel the managed job by name in case the controller already
             # accepted it before the launch request was aborted.
             try:
@@ -368,9 +325,13 @@ class Skypilot_managed(Environment):
                 await asyncio.to_thread(sky.get, cancel_id)
             except Exception as e:
                 logger.warning("jobs.cancel for %s failed: %s", job_name, e)
-        finally:
-            if cancels > 0 and current:
-                current.cancel()
+
+        await _abort_shielded_request(
+            request_id,
+            pending_fut,
+            description=f"SkyPilot managed job {job_name}",
+            on_abort=_cancel_job,
+        )
 
     async def monitor_skypilot_managed_monitor(
         self: Self,

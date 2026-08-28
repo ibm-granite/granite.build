@@ -14,7 +14,18 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Self,
+    Tuple,
+    Union,
+)
 
 from tenacity import (
     AsyncRetrying,
@@ -62,6 +73,69 @@ def _require_skypilot():
             "The 'skypilot' package is required for the Skypilot environment. "
             "Install it with: pip install 'gbserver[skypilot]'"
         )
+
+
+async def _abort_shielded_request(
+    request_id: Any,
+    pending_fut: Optional["asyncio.Future"],
+    description: str,
+    on_abort: Callable[[], Awaitable[None]],
+) -> None:
+    """Abort an in-flight, shielded SkyPilot request after cancellation.
+
+    Shared by the unmanaged (``_abort_provision``) and managed
+    (``_abort_managed_launch``) launchers, which differ only in the final
+    reclaim step (``on_abort``): teardown-by-name vs cancel-job-by-name.
+
+    The current task is already flagged for cancellation, so every ``await``
+    here would re-raise ``CancelledError`` immediately. We temporarily clear the
+    cancellation with ``Task.uncancel()`` (mirroring ``build/run.py``) so the
+    cleanup awaits can block normally, then re-arm it in the ``finally`` so the
+    ``CancelledError`` keeps propagating. The steps: recover the request_id from
+    the submit future if we were cancelled before it returned; tell the API
+    server to abort the request (unblocking the shielded thread); drain the
+    still-running thread (bounded, so a rejected/ineffective abort does not gate
+    the reclaim on the full provisioning time); then run ``on_abort``.
+
+    Args:
+        request_id: The id from ``sky.(jobs.)launch``; ``None`` when cancelled
+            during the submit (before it returned), then recovered by draining
+            ``pending_fut`` so the request can still be aborted server-side.
+        pending_fut: The shielded ``to_thread`` future still running on its OS
+            thread (the submit or the ``stream_and_get`` wait), drained here.
+        description: Resource label used in the log/timeout messages, e.g.
+            ``"SkyPilot cluster gb-xyz"``.
+        on_abort: Coroutine performing the resource-specific reclaim by the
+            deterministic name — the safety net that runs even when there is no
+            request_id to abort.
+    """
+    current = asyncio.current_task()
+    cancels = current.cancelling() if current else 0
+    for _ in range(cancels):
+        current.uncancel()  # type: ignore[union-attr]
+    try:
+        if request_id is None and pending_fut is not None:
+            request_id = await Environment._drain_thread_future(
+                pending_fut, f"{description} submit"
+            )
+            pending_fut = None  # already drained above
+        logger.info(
+            "Cancellation requested; aborting %s (request %s)",
+            description,
+            request_id,
+        )
+        if request_id is not None:
+            try:
+                abort_id = await asyncio.to_thread(sky.api_cancel, request_id)
+                await asyncio.to_thread(sky.get, abort_id)
+            except Exception as e:
+                logger.warning("api_cancel for %s failed: %s", request_id, e)
+        if pending_fut is not None:
+            await Environment._drain_thread_future(pending_fut, description)
+        await on_abort()
+    finally:
+        if cancels > 0 and current:
+            current.cancel()
 
 
 def _ensure_skypilot_api_running():
@@ -1333,70 +1407,29 @@ class Skypilot(Environment):
     ) -> None:
         """Abort an in-flight SkyPilot provisioning request after cancellation.
 
-        Called when the task is cancelled while blocked in either the
-        ``sky.launch`` submit or the ``sky.stream_and_get`` wait. Tells the
-        SkyPilot API server to abort the request (unblocking the shielded
-        thread), drains the pending future, then tears down any partial cluster
-        so the cancel does not leak resources.
-
-        The current task is already flagged for cancellation, so every ``await``
-        here would re-raise ``CancelledError`` immediately. We temporarily clear
-        the cancellation with ``Task.uncancel()`` (mirroring the idiom in
-        ``build/run.py``) so the cleanup awaits can block normally, then re-arm
-        it in the ``finally`` so the ``CancelledError`` keeps propagating.
+        Thin wrapper over the shared ``_abort_shielded_request`` whose only
+        launcher-specific part is the reclaim: tear down the (possibly partial)
+        cluster by its deterministic name. ``self._cluster_names`` is not
+        populated until provisioning returns, so teardown-by-name is the safety
+        net that reclaims the cluster even when there is no request_id to abort.
 
         Args:
-            request_id: The id returned by ``sky.launch``, passed to
-                ``sky.api_cancel`` to abort the request server-side. ``None``
-                when cancelled during the submit (before it returned); we then
-                recover it by draining ``pending_fut``.
-            cluster_name: Deterministic cluster name to tear down. The
-                ``self._cluster_names`` bookkeeping is not populated until
-                provisioning returns, so we tear down by name here — this is the
-                safety net that reclaims the cluster even when there is no
-                request_id to abort.
-            pending_fut: The shielded future still running on its OS thread — the
-                ``sky.launch`` submit or the ``sky.stream_and_get`` wait — drained
-                so the thread is retired.
+            request_id: The id from ``sky.launch``, or ``None`` if cancelled
+                during the submit (recovered by draining ``pending_fut``).
+            cluster_name: Deterministic cluster name to tear down.
+            pending_fut: The shielded ``to_thread`` future to drain (the submit
+                or the ``sky.stream_and_get`` wait).
         """
-        current = asyncio.current_task()
-        cancels = current.cancelling() if current else 0
-        for _ in range(cancels):
-            current.uncancel()  # type: ignore[union-attr]
-        try:
-            # Cancelled during the submit: recover the request_id from the
-            # (shielded) submit future so the request can still be aborted
-            # server-side. Bounded so a slow/stuck submit does not gate teardown;
-            # if we cannot recover it, teardown-by-name below is the safety net.
-            if request_id is None:
-                assert pending_fut is not None  # submit-cancel path always passes it
-                request_id = await self._drain_thread_future(
-                    pending_fut, f"SkyPilot submit for {cluster_name}"
-                )
-                pending_fut = None  # already drained above
-            logger.info(
-                "Cancellation requested; aborting SkyPilot request %s for %s",
-                request_id,
-                cluster_name,
-            )
-            if request_id is not None:
-                try:
-                    abort_id = await asyncio.to_thread(sky.api_cancel, request_id)
-                    await asyncio.to_thread(sky.get, abort_id)
-                except Exception as e:
-                    logger.warning("api_cancel for %s failed: %s", request_id, e)
-            # Drain the still-running future (the stream wait, or the submit if
-            # its recovery raised) so its OS thread is retired. Bounded: if the
-            # abort above was rejected or did not unblock the thread, we must not
-            # wait out the full provisioning time before tearing down by name.
-            if pending_fut is not None:
-                await self._drain_thread_future(
-                    pending_fut, f"SkyPilot stream_and_get for {cluster_name}"
-                )
+
+        async def _teardown_cluster() -> None:
             await self._teardown(cluster_name)
-        finally:
-            if cancels > 0 and current:
-                current.cancel()
+
+        await _abort_shielded_request(
+            request_id,
+            pending_fut,
+            description=f"SkyPilot cluster {cluster_name}",
+            on_abort=_teardown_cluster,
+        )
 
     async def monitor_skypilot_monitor(
         self: Self,
