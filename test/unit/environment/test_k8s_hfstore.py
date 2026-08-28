@@ -5,9 +5,10 @@ Two things are covered here:
 1. ``K8s.pullasset_hfstore`` — the binding path layout and the hfpull step config.
    The bash/docker/lsf/skypilot environments all had hfstore tests; k8s did not.
 2. The chart-level permission settings that make the shared PVC usable from a pod
-   running as an arbitrary OpenShift UID: the ``umask`` applied in every step
-   container, and ``runAsGroup: 0``. These are asserted against the template
-   sources because ``helm`` is not available in every test environment.
+   running as an arbitrary OpenShift UID: the ``umask`` applied in the step
+   containers, and ``runAsGroup: 0``. Asserted against the template sources (and,
+   for the umask guard, by running the rendered bash) so the checks need no helm
+   binary; a full ``helm template`` render is a separate manual/CI step.
 """
 
 import re
@@ -16,6 +17,12 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+# gbserver.environment.k8s imports kubernetes_asyncio (via its retry strategies),
+# which lives in the optional 'ibm' extra and is absent from the lightweight
+# quick-test CI venv. Only the pullasset tests import it; the template checks
+# below read files and need no skip.
+from libgbtest.constants import requires_k8s
 
 from gbcommon.uri.hf import HfURI
 from gbserver.environment.environment import BINDING_KEY
@@ -63,6 +70,7 @@ def mock_hfuri():
     return uri
 
 
+@requires_k8s
 class TestPullassetHfstore:
     @pytest.mark.asyncio
     async def test_returns_binding_config_with_path(self, k8s_env, mock_hfuri):
