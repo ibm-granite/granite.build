@@ -751,9 +751,7 @@ class BuildRun(Run):
         inflight = [t for t in self.tasks if not t.done()]
         if not inflight:
             return
-        logger.info(
-            "BuildRun._cleanup cancelling %d in-flight task(s)", len(inflight)
-        )
+        logger.info("BuildRun._cleanup cancelling %d in-flight task(s)", len(inflight))
         for t in inflight:
             t.cancel()
         _, pending = await asyncio.wait(
@@ -769,6 +767,4 @@ class BuildRun(Run):
             # Consume each straggler's eventual result so it is not later logged
             # as an unretrieved task exception when it finally completes.
             for t in pending:
-                t.add_done_callback(
-                    lambda f: None if f.cancelled() else f.exception()
-                )
+                t.add_done_callback(lambda f: None if f.cancelled() else f.exception())
