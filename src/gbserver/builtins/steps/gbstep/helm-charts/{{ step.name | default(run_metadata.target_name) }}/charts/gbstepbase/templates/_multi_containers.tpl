@@ -79,7 +79,7 @@
       - |
         set -o pipefail
         echo
-        echo 'LLMB_EVENT_WORKLOAD_STATUS:running'
+        echo 'GB_EVENT_WORKLOAD_STATUS:running'
         {{- include "gbstepbase.tplAdditionalFiles" $orig | trimAll " " | indent 8 }}
         {{- range $filename, $value := $orig.filesfromconfig }}
         {{- include "gbstepbase.addfilefromconfig" (dict "config" $value "filename" $filename ) | trimAll " " | indent 8 }}
@@ -132,7 +132,7 @@
         rm -f "$CMD_DIR/command.sh"
         cat <<'EOF' > "$CMD_DIR/command.sh"
 
-          echo 'LLMB_EVENT_WORKLOAD_STATUS:running_command_sh'
+          echo 'GB_EVENT_WORKLOAD_STATUS:running_command_sh'
 
         {{/* 1. If mock mode is enabled -> use gb.mock_command */}}
         {{- if $orig.Values.gb.mock }}
@@ -198,11 +198,11 @@
         tail -f /dev/null
         {{- end }}
         if [[ "${COMMAND_SH_EXIT_CODE}" != "0" ]] ; then
-        echo 'LLMB_EVENT_WORKLOAD_STATUS:failed'
+        echo 'GB_EVENT_WORKLOAD_STATUS:failed'
         echo "The command.sh script failed with exit code: ${COMMAND_SH_EXIT_CODE}"
         exit 1
         fi
-        echo 'LLMB_EVENT_WORKLOAD_STATUS:success'
+        echo 'GB_EVENT_WORKLOAD_STATUS:success'
       imagePullPolicy: {{ $orig.Values.k8s.image_pull_policy | default "IfNotPresent" }}
       volumeMounts:
       - name: devshm

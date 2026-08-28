@@ -48,7 +48,7 @@ def generate_skeleton(build_yaml_path: Path) -> str:
         "# step_count: set the observed count, or -1 to skip the step assertion.",
         "# jobstats_count: defaults to -1 (skip); jobstats are not asserted at run time yet.",
         "# output_artifact_count counts DECLARED outputs; a declared output whose command",
-        "#   emits no LLMB_ARTIFACT marker will over-count (a real run catches it).",
+        "#   emits no GB_ARTIFACT marker will over-count (a real run catches it).",
         "build_yaml: ./build.yaml",
         "simulate_step_failure: false        # step-retry testing off",
         "tests: [runner]                     # cancellation test disabled",

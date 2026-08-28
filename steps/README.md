@@ -373,7 +373,7 @@ step's `run:` block:
   named build output:
 
   ```sh
-  echo "LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>"
+  echo "GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>"
   ```
 
 * **Record step metadata** — push a runtime-generated key/value that is merged into
@@ -384,7 +384,7 @@ step's `run:` block:
 
   ```sh
   COMMIT_SHA="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
-  [ -n "$COMMIT_SHA" ] && echo "LLMB_STEP_METADATA_KEY:commit_hash LLMB_STEP_METADATA_VALUE:$COMMIT_SHA"
+  [ -n "$COMMIT_SHA" ] && echo "GB_STEP_METADATA_KEY:commit_hash GB_STEP_METADATA_VALUE:$COMMIT_SHA"
   ```
 
   Metadata is kept separate from the step's declared `config` (the rendered

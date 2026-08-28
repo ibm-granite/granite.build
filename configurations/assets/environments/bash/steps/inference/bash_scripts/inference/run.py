@@ -158,7 +158,7 @@ def main():
 
     # Signal artifact creation to gbserver (parsed by the NEWARTIFACT monitor;
     # the id must match build.yaml's output name).
-    print(f"LLMB_ARTIFACT_ID:{ARTIFACT_ID} LLMB_ARTIFACT_PATH:{output_dir}")
+    print(f"GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{output_dir}")
     print("INFERENCE_SUCCESS")
 
 

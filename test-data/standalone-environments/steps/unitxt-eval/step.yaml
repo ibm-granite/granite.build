@@ -18,13 +18,13 @@ environment_configs:
         config:
           event_configs:
             - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
               is_json: false
               event_fields:
                 - field_name: binding_id
-                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                  field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
                 - field_name: path
-                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
                   is_data: true
                 - field_name: binding
                   field_value_template: '{ "path": "{{ fields.data.path }}" }'
@@ -111,7 +111,7 @@ environment_configs:
                 json.dump(eval_output, f, indent=2)
             print(f'Results: {json.dumps(eval_output, indent=2)}')
 
-            print(f'LLMB_ARTIFACT_ID:{artifact_id} LLMB_ARTIFACT_PATH:{output_dir}')
+            print(f'GB_ARTIFACT_ID:{artifact_id} GB_ARTIFACT_PATH:{output_dir}')
             print('UNITXT_EVAL_SUCCESS')
             "
     monitors:
@@ -120,13 +120,13 @@ environment_configs:
         config:
           event_configs:
             - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
               is_json: false
               event_fields:
                 - field_name: binding_id
-                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                  field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
                 - field_name: path
-                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
                   is_data: true
                 - field_name: binding
                   field_value_template: '{ "path": "{{ fields.data.path }}" }'
@@ -162,13 +162,13 @@ environment_configs:
         config:
           event_configs:
             - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
               is_json: false
               event_fields:
                 - field_name: binding_id
-                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                  field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
                 - field_name: path
-                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
                   is_data: true
                 - field_name: binding
                   field_value_template: '{ "path": "{{ fields.data.path }}" }'

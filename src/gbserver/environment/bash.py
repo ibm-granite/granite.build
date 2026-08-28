@@ -234,7 +234,7 @@ class Bash(Environment):
             )
             final_asset_output_dir = Path(final_asset_dir) / "outputs"
             logger.info("final_asset_output_dir: %s", final_asset_output_dir)
-            # The wrapper tees all workload output (incl. LLMB_ARTIFACT_ID lines)
+            # The wrapper tees all workload output (incl. GB_ARTIFACT_ID lines)
             # to this combined log file; monitor_log_monitor tails it for events.
             self.log_paths[launch_id] = str(Path(final_asset_output_dir) / "job.log")
             # Build the complete env for the child. GB_BUILD_ID (and any future

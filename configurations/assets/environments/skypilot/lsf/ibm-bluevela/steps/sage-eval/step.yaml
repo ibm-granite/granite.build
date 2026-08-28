@@ -120,7 +120,7 @@ environment_configs:
               RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -newer /tmp/sage-eval.log -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
-              echo "LLMB_ARTIFACT_ID:sage_eval_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+              echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"
             else
               echo "ERROR: No results file found in $OUTPUT_BASE_PATH — eval likely incomplete"
               exit 1

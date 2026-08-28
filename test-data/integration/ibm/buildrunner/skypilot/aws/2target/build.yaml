@@ -12,14 +12,14 @@ granite.build:
   # sequentially.
   #
   # env:// (env_local) I/O is a no-op: push/pull do nothing, so artifact
-  # registration/binding works purely on the LLMB_ARTIFACT_PATH string — no real
+  # registration/binding works purely on the GB_ARTIFACT_PATH string — no real
   # files need to exist and no HF/S3 credentials are required.
   targets:
     first:
       environment_uri: space://environments/skypilot/aws
       outputs:
         out1:
-          # env_local: the URI resolves to the path emitted via LLMB_ARTIFACT_PATH.
+          # env_local: the URI resolves to the path emitted via GB_ARTIFACT_PATH.
           uri: "env://{{ binding.path }}"
           # env_local pushes inline (no push step emits a type), so set it here.
           type: fileset
@@ -31,7 +31,7 @@ granite.build:
             command_config:
               command: >-
                 echo "first target emitting out1 on AWS EC2 via SkyPilot";
-                echo "LLMB_ARTIFACT_ID:out1 LLMB_ARTIFACT_PATH:/tmp/gb-aws-2target/{{ run_metadata.targetsteprun_id | short_hash }}/out1"
+                echo "GB_ARTIFACT_ID:out1 GB_ARTIFACT_PATH:/tmp/gb-aws-2target/{{ run_metadata.targetsteprun_id | short_hash }}/out1"
             # Unlike the sibling 1step-image fixture (which runs INSIDE an
             # ubuntu:22.04 container and therefore needs t3.medium for the
             # in-container ray install), this target runs the command BARE: no
@@ -65,7 +65,7 @@ granite.build:
               # through gbserver without depending on a file existing on disk.
               command: >-
                 echo "second target received first output path: {{ bindings.from_first.binding.path }}";
-                echo "LLMB_ARTIFACT_ID:out2 LLMB_ARTIFACT_PATH:/tmp/gb-aws-2target/{{ run_metadata.targetsteprun_id | short_hash }}/out2"
+                echo "GB_ARTIFACT_ID:out2 GB_ARTIFACT_PATH:/tmp/gb-aws-2target/{{ run_metadata.targetsteprun_id | short_hash }}/out2"
             # Keep resources identical to target `first`.
             launcher_config:
               resources:

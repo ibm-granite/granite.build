@@ -111,7 +111,7 @@ def main():
 
     # Signal artifact creation to gbserver (parsed by NEWARTIFACT_IN_ENVIRONMENT_EVENT monitor)
     artifact_id = os.environ.get("LLMB_ARTIFACT_OUTPUT_ID", "eval_results")
-    print(f"LLMB_ARTIFACT_ID:{artifact_id} LLMB_ARTIFACT_PATH:{output_dir}")
+    print(f"GB_ARTIFACT_ID:{artifact_id} GB_ARTIFACT_PATH:{output_dir}")
     print("UNITXT_EVAL_SUCCESS")
 
 

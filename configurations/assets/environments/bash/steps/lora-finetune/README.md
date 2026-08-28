@@ -53,7 +53,7 @@ for the underlying mechanics.
 
 | Name      | Type    | Notes |
 |-----------|---------|-------|
-| `adapter` | `model` | The trained LoRA adapter directory (plus a `training_summary.json`). Registered via `LLMB_ARTIFACT_ID:adapter`. |
+| `adapter` | `model` | The trained LoRA adapter directory (plus a `training_summary.json`). Registered via `GB_ARTIFACT_ID:adapter`. |
 
 Success marker (stdout): `LORA_FINETUNE_SUCCESS`.
 

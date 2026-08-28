@@ -18,7 +18,7 @@
 
 Regression coverage for the bug where the Bash log_monitor read the launched
 process's (already drained) stdout pipe instead of the job.log file the wrapper
-tees workload output to. The artifact marker (LLMB_ARTIFACT_ID) is written to
+tees workload output to. The artifact marker (GB_ARTIFACT_ID) is written to
 job.log, so the monitor must tail that file and emit a
 NEWARTIFACT_IN_ENVIRONMENT_EVENT.
 """

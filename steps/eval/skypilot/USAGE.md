@@ -24,7 +24,7 @@ fixed output: **the step registers the output, not the workload.**
 
   ```sh
   RESULT_FILE="$(cd "$OUTPUT_DIR" && pwd)/results.json"
-  echo "LLMB_ARTIFACT_ID:results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+  echo "GB_ARTIFACT_ID:results GB_ARTIFACT_PATH:${RESULT_FILE}"
   ```
 
 Contrast this with a **training** workload, whose output path (a checkpoint dir)
@@ -110,6 +110,6 @@ granite.build:
   evaluation loop plus a base image that carries its runtime and dependencies.
 - **Single, fixed output.** `results.json` is the one artifact, registered by the
   step. A workload whose output path varies at run time should instead print the
-  `LLMB_ARTIFACT_ID` line itself.
+  `GB_ARTIFACT_ID` line itself.
 - **Image is required at run time.** On a real remote cluster the evaluation image must
   be published and reachable before submitting a build.

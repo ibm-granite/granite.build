@@ -30,7 +30,7 @@ granite.build:
         # via `sh -c`. GB_BUILD_ID (injected by the bash environment) is the build
         # id — unique per build yet stable across its in-place retry attempts — so
         # the marker path is unique to this build. The command first emits the
-        # env_output LLMB_ARTIFACT marker (parsed by the log monitor into an
+        # env_output GB_ARTIFACT marker (parsed by the log monitor into an
         # artifact registration), then: first attempt: marker absent -> `touch` and
         # `exit 1` (FAIL); retry attempt: marker present -> `rm -f` and `exit 0`
         # (SUCCESS). POSIX sh only. NOTE: single-quoted scalar, so keep `#` out of
@@ -38,6 +38,6 @@ granite.build:
         - step_uri: space://steps/command
           config:
             command_config:
-              command: 'echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-retry-env-output.txt"; m=/tmp/gb_retry_marker_$GB_BUILD_ID; if [ -f "$m" ]; then echo retry-attempt-succeeding; rm -f "$m"; exit 0; else echo first-attempt-failing; touch "$m"; exit 1; fi'
+              command: 'echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-retry-env-output.txt"; m=/tmp/gb_retry_marker_$GB_BUILD_ID; if [ -f "$m" ]; then echo retry-attempt-succeeding; rm -f "$m"; exit 0; else echo first-attempt-failing; touch "$m"; exit 1; fi'
             compute_config:
               num_nodes: 1

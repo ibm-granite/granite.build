@@ -75,13 +75,13 @@ Declare each output on the target, then have your `command` register an artifact
 printing one marker line per artifact (captured by `skypilot_monitor`):
 
 ```
-LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>
+GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>
 ```
 
 - `<output-id>` must match an `outputs.<id>` declared on the target.
 - Emit one line per artifact; **repeat** the same `<output-id>` on additional lines to
   register multiple artifacts under a single output.
-- For `mem://` outputs, use `LLMB_ARTIFACT_STATE:<value>` instead of `LLMB_ARTIFACT_PATH`.
+- For `mem://` outputs, use `GB_ARTIFACT_STATE:<value>` instead of `GB_ARTIFACT_PATH`.
 
 For the full target I/O schema and the `bindings.*` Jinja variables, see
 `docs/builds/build-yaml-reference.md`; for the marker convention (PATH vs STATE,
@@ -94,7 +94,7 @@ Both `setup` and `run` start in the same **working directory** (the step's per-r
 workdir), so the step never needs to know its absolute location. `repo` is cloned
 into `<workdir>` (default `code/`) beneath it, and `src/` is mounted at `./src`.
 Use relative paths from there; when you need an absolute path — e.g. for an
-`LLMB_ARTIFACT_PATH` marker — derive it at run time with `$(pwd)`.
+`GB_ARTIFACT_PATH` marker — derive it at run time with `$(pwd)`.
 
 ## Example build.yaml
 
@@ -124,7 +124,7 @@ granite.build:
               command: >-
                 cd code;
                 python pretrain.py --out-dir "$(pwd)/out";
-                echo "LLMB_ARTIFACT_ID:model LLMB_ARTIFACT_PATH:$(pwd)/out/model.ckpt"
+                echo "GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:$(pwd)/out/model.ckpt"
     run:
       environment_uri: space://environments/skypilot/aws
       inputs:
@@ -153,9 +153,9 @@ granite.build:
                 --dataset "{{ bindings.dataset.binding.path }}"
                 --init-model "{{ bindings.init_model.binding.path }}"
                 --out-dir "$(pwd)/out";
-                echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$(pwd)/out/epoch-1.ckpt";
-                echo "LLMB_ARTIFACT_ID:checkpoints LLMB_ARTIFACT_PATH:$(pwd)/out/epoch-2.ckpt";
-                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$(pwd)/out/report.json"
+                echo "GB_ARTIFACT_ID:checkpoints GB_ARTIFACT_PATH:$(pwd)/out/epoch-1.ckpt";
+                echo "GB_ARTIFACT_ID:checkpoints GB_ARTIFACT_PATH:$(pwd)/out/epoch-2.ckpt";
+                echo "GB_ARTIFACT_ID:report GB_ARTIFACT_PATH:$(pwd)/out/report.json"
 ```
 
 A single direct input and output are just the one-entry case of the above.

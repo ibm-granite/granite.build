@@ -75,7 +75,7 @@ granite.build:
                 APP_COMMAND:
                   value: "python /app/run.py --input {{ bindings.input_data.binding.path }} --output /workspace/output"
                 ECHO_COMMAND:
-                  value: "echo LLMB_ARTIFACT_ID:results LLMB_ARTIFACT_PATH:/workspace/output"
+                  value: "echo GB_ARTIFACT_ID:results GB_ARTIFACT_PATH:/workspace/output"
             compute_config:
               num_gpus_per_node: 1
               num_nodes: 1
@@ -88,7 +88,7 @@ granite.build:
 | `config.k8s.image` | Full image reference (registry/org/image:tag). |
 | `config.k8s.secrets.secret_names_to_use_as_pull_secret` | List of secret names for pulling the image. |
 | `config.k8s.env.APP_COMMAND` | Command to execute inside the container. Can reference bindings. |
-| `config.k8s.env.ECHO_COMMAND` | Log line signalling completion. Triggers artifact upload. Must include `LLMB_ARTIFACT_ID:<output_name>` and `LLMB_ARTIFACT_PATH:<path>`. |
+| `config.k8s.env.ECHO_COMMAND` | Log line signalling completion. Triggers artifact upload. Must include `GB_ARTIFACT_ID:<output_name>` and `GB_ARTIFACT_PATH:<path>`. |
 
 ### Custom image (editable code)
 
@@ -136,7 +136,7 @@ gb build log <build-id> --all
 
 ## See also
 
-- [Monitoring and artifact events](monitoring-and-artifact-events.md) — how the `LLMB_ARTIFACT_*` markers register outputs, and the `path` vs `state` binding distinction
+- [Monitoring and artifact events](monitoring-and-artifact-events.md) — how the `GB_ARTIFACT_*` markers register outputs, and the `path` vs `state` binding distinction
 - [Bring Your Own Step](bring-your-own-step.md) — custom code from a Git repo
 - [Custom code steps](custom-code-steps.md) — inline commands without images
 - [Steps overview](README.md) — all step types

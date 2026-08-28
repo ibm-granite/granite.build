@@ -5,7 +5,7 @@ The exemplar eval payload is a placeholder shell script baked into the custom
 image; these cluster-agnostic unit tests invoke it directly and pin the two
 contracts the step depends on: the fixed results.json output at
 <output-dir>/results.json, and that the script does NOT print the Granite.build
-``LLMB_ARTIFACT_ID`` line (the step.yaml run block registers the output instead).
+``GB_ARTIFACT_ID`` line (the step.yaml run block registers the output instead).
 """
 
 import json
@@ -69,9 +69,10 @@ def test_defaults_to_placeholder_task(tmp_path):
 
 
 def test_does_not_emit_artifact_line(tmp_path):
-    """eval.sh must not print the LLMB_ARTIFACT_ID marker: the step.yaml run block
-    owns output registration for this fixed, single-file output."""
+    """eval.sh must not print the artifact marker (either prefix): the step.yaml
+    run block owns output registration for this fixed, single-file output."""
     proc = _run_eval(tmp_path, model_path="m")
 
+    assert "GB_ARTIFACT_ID" not in proc.stdout
     assert "LLMB_ARTIFACT_ID" not in proc.stdout
     assert (tmp_path / "results.json").exists()
