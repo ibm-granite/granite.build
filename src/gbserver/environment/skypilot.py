@@ -1268,18 +1268,35 @@ class Skypilot(Environment):
         ):
             with attempt:
                 try:
-                    request_id = await asyncio.to_thread(
-                        sky.launch,
-                        task,
-                        cluster_name=cluster_name,
-                        idle_minutes_to_autostop=autostop,
+                    # Both sky.launch (submit) and sky.stream_and_get (wait)
+                    # block in an OS thread, so a CancelledError delivered to
+                    # this task is deferred until the thread returns — the
+                    # submit can block while the cluster is in INIT (see
+                    # build/run.py), the stream wait for 2-5 min. Shield each
+                    # future so the outer await observes the cancel
+                    # *immediately* while the thread keeps running, letting us
+                    # abort the SkyPilot request server-side and tear down any
+                    # partial cluster rather than leaking it.
+                    launch_fut = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            sky.launch,
+                            task,
+                            cluster_name=cluster_name,
+                            idle_minutes_to_autostop=autostop,
+                        )
                     )
-                    # sky.stream_and_get blocks in an OS thread during
-                    # provisioning, so a CancelledError delivered to this task
-                    # is deferred until it returns (2-5 min). Shield the future
-                    # so the outer await observes the cancel *immediately* while
-                    # the thread keeps running, letting us abort the SkyPilot
-                    # request server-side rather than waiting out provisioning.
+                    try:
+                        request_id = await asyncio.shield(launch_fut)
+                    except asyncio.CancelledError:
+                        # Cancelled during the submit: no request_id yet, but
+                        # the thread may still be creating the cluster under the
+                        # deterministic name. _abort_provision drains the submit
+                        # to recover the request_id (if any) and tears down by
+                        # name so the cluster is not leaked.
+                        await self._abort_provision(
+                            None, cluster_name, launch_fut
+                        )
+                        raise
                     stream_fut = asyncio.ensure_future(
                         asyncio.to_thread(sky.stream_and_get, request_id)
                     )
@@ -1313,14 +1330,15 @@ class Skypilot(Environment):
         self: Self,
         request_id: Any,
         cluster_name: str,
-        stream_fut: "asyncio.Future",
+        pending_fut: Optional["asyncio.Future"],
     ) -> None:
         """Abort an in-flight SkyPilot provisioning request after cancellation.
 
-        Called when the task is cancelled while blocked in
-        ``sky.stream_and_get``. Tells the SkyPilot API server to abort the
-        request (unblocking the shielded thread), drains that future, then tears
-        down any partial cluster so the cancel does not leak resources.
+        Called when the task is cancelled while blocked in either the
+        ``sky.launch`` submit or the ``sky.stream_and_get`` wait. Tells the
+        SkyPilot API server to abort the request (unblocking the shielded
+        thread), drains the pending future, then tears down any partial cluster
+        so the cancel does not leak resources.
 
         The current task is already flagged for cancellation, so every ``await``
         here would re-raise ``CancelledError`` immediately. We temporarily clear
@@ -1330,32 +1348,49 @@ class Skypilot(Environment):
 
         Args:
             request_id: The id returned by ``sky.launch``, passed to
-                ``sky.api_cancel`` to abort the request server-side.
+                ``sky.api_cancel`` to abort the request server-side. ``None``
+                when cancelled during the submit (before it returned); we then
+                recover it by draining ``pending_fut``.
             cluster_name: Deterministic cluster name to tear down. The
                 ``self._cluster_names`` bookkeeping is not populated until
-                provisioning returns, so we tear down by name here.
-            stream_fut: The shielded ``sky.stream_and_get`` future to drain once
-                the request has been aborted.
+                provisioning returns, so we tear down by name here — this is the
+                safety net that reclaims the cluster even when there is no
+                request_id to abort.
+            pending_fut: The shielded future still running on its OS thread — the
+                ``sky.launch`` submit or the ``sky.stream_and_get`` wait — drained
+                so the thread is retired.
         """
         current = asyncio.current_task()
         cancels = current.cancelling() if current else 0
         for _ in range(cancels):
             current.uncancel()  # type: ignore[union-attr]
         try:
+            # Cancelled during the submit: recover the request_id from the
+            # (shielded) submit future so the request can still be aborted
+            # server-side. If the drain raises, the submit never produced a
+            # request — the teardown-by-name below is the safety net either way.
+            if request_id is None:
+                assert pending_fut is not None  # submit-cancel path always passes it
+                with contextlib.suppress(BaseException):
+                    request_id = await pending_fut
+                pending_fut = None  # already drained above
             logger.info(
                 "Cancellation requested; aborting SkyPilot request %s for %s",
                 request_id,
                 cluster_name,
             )
-            try:
-                abort_id = await asyncio.to_thread(sky.api_cancel, request_id)
-                await asyncio.to_thread(sky.get, abort_id)
-            except Exception as e:
-                logger.warning("api_cancel for %s failed: %s", request_id, e)
-            # Drain the now-unblocked stream_and_get thread; it may finish or
+            if request_id is not None:
+                try:
+                    abort_id = await asyncio.to_thread(sky.api_cancel, request_id)
+                    await asyncio.to_thread(sky.get, abort_id)
+                except Exception as e:
+                    logger.warning("api_cancel for %s failed: %s", request_id, e)
+            # Drain the still-running future (the stream wait, or the submit if
+            # its recovery raised) so its OS thread is retired; it may finish or
             # raise (aborted/failed) — either is fine, we only want it retired.
-            with contextlib.suppress(BaseException):
-                await stream_fut
+            if pending_fut is not None:
+                with contextlib.suppress(BaseException):
+                    await pending_fut
             await self._teardown(cluster_name)
         finally:
             if cancels > 0 and current:
