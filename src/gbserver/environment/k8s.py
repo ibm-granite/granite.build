@@ -1002,22 +1002,36 @@ class K8s(Environment):
         """Return True if a helm uninstall failure means the release is absent.
 
         ``helm uninstall`` of a release that was never installed (or already
-        removed) exits non-zero with a message like
-        ``Error: uninstall: Release not loaded: <name>: release: not found``.
+        removed) exits non-zero with one of these messages::
+
+            Error: uninstall: Release not loaded: <name>: release: not found
+            Error: release: not found
+
         This is a *permanent* condition, not a transient one, so cleanup should
         treat it as success (nothing to uninstall) rather than retrying. This
         situation arises, e.g., when a build is cancelled during the
         ``helm install --dry-run`` phase, before the real release exists.
 
+        The match is anchored to helm's structured error phrasing (the
+        ``uninstall:`` command context and the ``error:`` prefix) rather than
+        loose ``"not loaded"`` / ``"not found"`` fragments. The exception
+        message embeds both the command line and the full stderr, so a bare
+        substring could match a *transient* failure whose stderr incidentally
+        contains one of those words — misclassifying it as success, skipping a
+        needed uninstall, and leaking the RayCluster/pods.
+
         Args:
             error: The exception raised by the uninstall command (its message
-                embeds the command stderr).
+                embeds the command line and stderr).
 
         Returns:
             True if the error indicates the release does not exist.
         """
         msg = str(error).lower()
-        return "not loaded" in msg or "release: not found" in msg
+        return (
+            "uninstall: release not loaded" in msg
+            or "error: release: not found" in msg
+        )
 
     async def _helm_uninstall_with_retry(
         self: Self, release_name: str, launch_id: str
