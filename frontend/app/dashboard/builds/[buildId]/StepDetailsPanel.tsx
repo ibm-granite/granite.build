@@ -258,23 +258,15 @@ function buildConfigGroups(config: Record<string, unknown>): ConfigGroup[] {
  * The step's runtime metadata as scalar rows. This is StoredStepRun.metadata —
  * key/values the step pushed at execution time via the LLMB_STEP_METADATA hook
  * (a resolved git `commit_hash` is the documented example), distinct from the
- * declared `config`. `commit_hash` is pulled out separately for the Source
- * block, so it is excluded here to avoid showing it twice.
+ * declared `config`.
  */
 function metadataRows(
   metadata: Record<string, unknown> | undefined
 ): { key: string; value: string }[] {
   if (!metadata) return []
   return Object.entries(metadata)
-    .filter(([key]) => key !== 'commit_hash')
     .filter(([, value]) => isScalar(value))
     .map(([key, value]) => ({ key: humanizeKey(key), value: String(value) }))
-}
-
-/** The runtime-resolved commit SHA, if the step recorded one. */
-function commitHash(step: BuildStepRun): string | undefined {
-  const value = step.metadata?.commit_hash
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
 /** Row of a definition list; renders `—` for absent values rather than collapsing. */
@@ -365,7 +357,6 @@ function StepCard({
   const configGroups = React.useMemo(() => buildConfigGroups(rest), [rest])
   const restKeys = Object.keys(rest)
   const metaRows = metadataRows(step.metadata)
-  const commit = commitHash(step)
   const message = step.status_msg ? cleanStatusMessage(step.status_msg) : ''
   const [showRaw, setShowRaw] = React.useState(false)
   const [showCommand, setShowCommand] = React.useState(false)
@@ -413,10 +404,13 @@ function StepCard({
       </Section>
 
       {/* Recognised config blocks become labelled subgroups of scalar rows;
-          everything else stays in the raw disclosure at the foot of the card. */}
-      {configGroups.length > 0 && (
-        <Section title="Configuration">
-          {configGroups.map((group) => (
+          everything else stays in the raw disclosure at the foot of the card.
+          Always rendered — with a placeholder when no scalar groups were
+          recognised — so the section's absence never reads as "config missing".
+          Unrecognised/nested config still lives in the raw disclosure below. */}
+      <Section title="Configuration">
+        {configGroups.length > 0 ? (
+          configGroups.map((group) => (
             <div key={group.label} className={styles.stepConfigGroup}>
               <div className={styles.stepConfigGroupLabel}>{group.label}</div>
               {group.rows.map((row) => (
@@ -425,11 +419,13 @@ function StepCard({
                 </Field>
               ))}
             </div>
-          ))}
-        </Section>
-      )}
+          ))
+        ) : (
+          <span className={styles.stepMuted}>{NOT_RECORDED}</span>
+        )}
+      </Section>
 
-      <Section title="Metadata">
+      <Section title="Details">
         <Field label="Definition URI">
           {step.uri ? <code className={styles.stepCode}>{step.uri}</code> : '—'}
         </Field>
@@ -439,27 +435,23 @@ function StepCard({
         <Field label="Build ID">
           {buildId ? <code className={styles.stepCode}>{buildId}</code> : '—'}
         </Field>
-        <Field label="Code commit">
-          {commit ? (
-            <code className={styles.stepCode}>{commit}</code>
-          ) : (
-            <span className={styles.stepMuted}>{NOT_RECORDED}</span>
-          )}
-        </Field>
       </Section>
 
-      {/* Runtime key/values the step reported at execution time (commit_hash is
-          pulled up into Metadata above). Persisted in StoredStepRun.metadata and
-          shown nowhere else, so it gets its own block when non-empty. */}
-      {metaRows.length > 0 && (
-        <Section title="Runtime metadata">
-          {metaRows.map((row) => (
+      {/* Runtime key/values the step reported at execution time. Persisted in
+          StoredStepRun.metadata. Always rendered — with a placeholder when the
+          step emitted none — so the section is a stable part of the drawer
+          rather than appearing only for the steps that happen to push metadata. */}
+      <Section title="Metadata">
+        {metaRows.length > 0 ? (
+          metaRows.map((row) => (
             <Field key={row.key} label={row.key}>
               <code className={styles.stepCode}>{row.value}</code>
             </Field>
-          ))}
-        </Section>
-      )}
+          ))
+        ) : (
+          <span className={styles.stepMuted}>{NOT_RECORDED}</span>
+        )}
+      </Section>
 
       {/* Only rendered when the message carries something beyond the ids and
           status already shown above — otherwise it was pure duplication. */}
