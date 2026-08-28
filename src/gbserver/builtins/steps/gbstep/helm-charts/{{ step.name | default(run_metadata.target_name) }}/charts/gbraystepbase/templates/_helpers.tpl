@@ -338,10 +338,8 @@ spec:
             - -c
             - |
               set -o pipefail
-              {{- /* Group-writable shared-PVC state; see the k8s chart values-default.yaml.
-                     NOTE: this rayapp path is currently unreachable — templates/appwrapper.yaml
-                     hardcodes $jobType to "job" — so this is kept only for parity with the
-                     gbstepbase prologues if Ray is ever enabled. */}}
+              {{- /* Parity with the gbstepbase prologues. Unreachable today:
+                     appwrapper.yaml hardcodes $jobType to "job". */}}
               GB_UMASK="{{ .Values.k8s.umask | default "0002" }}"
               if [[ "$GB_UMASK" =~ ^0?[0-7]{3}$ ]]; then
                 umask "$GB_UMASK"

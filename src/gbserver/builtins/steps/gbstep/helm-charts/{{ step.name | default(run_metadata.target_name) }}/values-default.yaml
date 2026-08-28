@@ -62,14 +62,9 @@ k8s:
   # must be owned by the root group and be read/writable by that group.
   # Files to be executed must also have group execute permissions.
   run_as_root_group: true
-  # Complement to run_as_root_group: the group identity alone is not enough, the
-  # permission bits have to allow group writes too. Without a umask, dirs are created
-  # 0755 (group-readable but NOT group-writable), so a later pod running as a different
-  # arbitrary UID in the same root group cannot write inside a tree an earlier pod made.
-  # This bites the shared HuggingFace cache in particular: huggingface_hub puts its
-  # download lock files inside the snapshot dir (<cache>/.cache/huggingface/download/),
-  # so a second pull fails with a PermissionError on the lock.
-  # Quoted deliberately: unquoted 0002 is parsed by YAML as the integer 2.
+  # The root group above only helps if the bits allow group writes; without a umask
+  # dirs land 0755. Must be quoted -- YAML reads an unquoted 0002 as int 2.
+  # See docs/environments/k8s.md.
   umask: "{{ environment_config.umask | default('0002') }}"
   automount_service_account_token: false
   {%- if setup_config.space is defined and setup_config.space.secret is defined %}

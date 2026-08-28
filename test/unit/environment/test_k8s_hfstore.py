@@ -51,8 +51,15 @@ def k8s_env():
         self.config = env_config
         self.secrets = {}
 
+    # Pass node_health_tracker explicitly: otherwise __init__ falls back to the
+    # process-wide singleton, which lazily builds itself from admin storage and
+    # errors when that is unreachable (as under xdist in CI).
     with patch("gbserver.environment.environment.Environment.__init__", new=fake_init):
-        k8s = K8s(event_q=event_q, environment_config=env_config)
+        k8s = K8s(
+            event_q=event_q,
+            environment_config=env_config,
+            node_health_tracker=MagicMock(),
+        )
     return k8s
 
 
