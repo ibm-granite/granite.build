@@ -23,7 +23,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gbserver.spaces.resource_group import resolve_space_resource_group_id
+from gbcommon.uri.hf import HfURI
+from gbserver.spaces.resource_group import (
+    resolve_hfpush_resource_group_id,
+    resolve_space_resource_group_id,
+    sanitize_hf_step_overlay,
+)
 from gbserver.storage.stored_space import StoredSpace
 
 
@@ -217,8 +222,6 @@ def _make_assetstore(enterprise_orgs, token="tok"):
 
 
 def _make_hfuri(owner="ibm-research", repo="my-model"):
-    from gbcommon.uri.hf import HfURI
-
     return HfURI.from_parts(owner=owner, repo=repo)
 
 
@@ -240,8 +243,6 @@ class TestResolveHfpushResourceGroupIdNonEnterprise:
     """A non-Enterprise org must skip resource group resolution entirely."""
 
     def test_non_enterprise_skips_resolution(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with patch(
             "gbserver.spaces.resource_group.resolve_space_resource_group_id"
         ) as mock_resolve:
@@ -256,8 +257,6 @@ class TestResolveHfpushResourceGroupIdNonEnterprise:
         mock_resolve.assert_not_called()
 
     def test_non_enterprise_with_pinned_id_raises(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with pytest.raises(ValueError, match="not an HF Enterprise organization"):
             resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="my-user"),
@@ -267,8 +266,6 @@ class TestResolveHfpushResourceGroupIdNonEnterprise:
             )
 
     def test_non_enterprise_with_pinned_name_raises(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with pytest.raises(ValueError, match="not an HF Enterprise organization"):
             resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="my-user"),
@@ -279,8 +276,6 @@ class TestResolveHfpushResourceGroupIdNonEnterprise:
 
     def test_absent_enterprise_list_keeps_legacy_behavior(self):
         """None (key absent) => every org is Enterprise, so resolution still runs."""
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with patch(
             "gbserver.spaces.resource_group.resolve_space_resource_group_id",
             return_value="resolved-id",
@@ -297,8 +292,6 @@ class TestResolveHfpushResourceGroupIdNonEnterprise:
 
 class TestResolveHfpushResourceGroupIdEnterprise:
     def test_enterprise_resolves_via_space(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with patch(
             "gbserver.spaces.resource_group.resolve_space_resource_group_id",
             return_value="space-id",
@@ -314,8 +307,6 @@ class TestResolveHfpushResourceGroupIdEnterprise:
         assert mock_resolve.call_args.kwargs["space_name"] == "public"
 
     def test_pinned_id_used_verbatim_without_resolver(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with patch(
             "gbserver.spaces.resource_group.resolve_space_resource_group_id"
         ) as mock_resolve:
@@ -331,8 +322,6 @@ class TestResolveHfpushResourceGroupIdEnterprise:
 
     def test_use_resource_group_false_opts_out(self):
         """An Enterprise org can opt out with use_resource_group: false."""
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with patch(
             "gbserver.spaces.resource_group.resolve_space_resource_group_id"
         ) as mock_resolve:
@@ -347,8 +336,6 @@ class TestResolveHfpushResourceGroupIdEnterprise:
         mock_resolve.assert_not_called()
 
     def test_use_resource_group_false_with_pinned_group_raises(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with pytest.raises(ValueError, match="cannot be combined"):
             resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="ibm-research"),
@@ -364,13 +351,11 @@ class TestResolveHfpushConfigPrecedence:
     """Environment-level config is honored, with build.yaml overriding it."""
 
     def test_env_level_store_push_is_honored(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with patch(
             "gbserver.spaces.resource_group.resolve_space_resource_group_id",
             return_value="ignored",
         ) as mock_resolve:
-            rg_id, private, _ = resolve_hfpush_resource_group_id(
+            _, private, _ = resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="ibm-research"),
                 assetstore=_make_assetstore(["ibm-research"]),
                 space_name="public",
@@ -383,8 +368,6 @@ class TestResolveHfpushConfigPrecedence:
         assert mock_resolve.call_args.kwargs["resource_group_name"] == "env-group"
 
     def test_build_yaml_overrides_environment(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
-
         with patch(
             "gbserver.spaces.resource_group.resolve_space_resource_group_id"
         ) as mock_resolve:
@@ -405,14 +388,10 @@ class TestResolveHfpushConfigPrecedence:
 
 class TestSanitizeHfStepOverlay:
     def test_strips_use_resource_group(self):
-        from gbserver.spaces.resource_group import sanitize_hf_step_overlay
-
         assert sanitize_hf_step_overlay(
             {"private": True, "use_resource_group": False}
         ) == {"private": True}
 
     def test_handles_empty_and_none(self):
-        from gbserver.spaces.resource_group import sanitize_hf_step_overlay
-
         assert sanitize_hf_step_overlay({}) == {}
         assert sanitize_hf_step_overlay(None) == {}

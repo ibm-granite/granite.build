@@ -20,7 +20,7 @@ A non-Enterprise org must upload without a resource group; an Enterprise org
 must still require one. HFRegistry is mocked — no HF calls are made.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

@@ -24,8 +24,12 @@ base cannot silently change an environment — and, for the inlined STANDALONE,
 that a forgotten field cannot silently fall back to a model default.
 """
 
+import ast
+import inspect
+
 import pytest
 
+from gbcommon.types import gbenvconfig
 from gbcommon.types.gbenvconfig import (
     _GB_ENVIRONMENT_CONFIG_BASE,
     _GB_ENVIRONMENT_CONFIG_DEV,
@@ -58,12 +62,7 @@ def _standalone_explicit_fields() -> set:
     a forgotten field is indistinguishable from one set to its default value once
     the model is constructed — which is exactly the mistake this guards against.
     """
-    import ast
-    import inspect
-
-    import gbcommon.types.gbenvconfig as mod
-
-    tree = ast.parse(inspect.getsource(mod))
+    tree = ast.parse(inspect.getsource(gbenvconfig))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Dict):
             continue
@@ -115,7 +114,7 @@ class TestEnvironmentStructure:
     def test_base_holds_the_prod_values(self):
         """The base carries PROD, so PROD's own override dict is empty."""
         assert _GB_ENVIRONMENT_CONFIG_BASE["env"] == "PROD"
-        assert _GB_ENVIRONMENT_CONFIG_PROD == {}
+        assert not _GB_ENVIRONMENT_CONFIG_PROD
 
     def test_base_sets_every_field(self):
         """The base must be complete, since PROD merges an empty dict onto it."""
@@ -128,9 +127,7 @@ class TestEnvironmentStructure:
         Guards the deliberate choice: if it ever gains an override dict, that is
         a decision to review, not something to happen silently.
         """
-        import gbcommon.types.gbenvconfig as mod
-
-        assert not hasattr(mod, "_GB_ENVIRONMENT_CONFIG_STANDALONE")
+        assert not hasattr(gbenvconfig, "_GB_ENVIRONMENT_CONFIG_STANDALONE")
 
     @pytest.mark.parametrize("env", ["STAGING", "DEV"])
     def test_override_names_itself(self, env):

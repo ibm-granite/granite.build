@@ -1,12 +1,16 @@
 """Tests for Hfstore, covering bucket-specific behaviour."""
 
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from gbcommon.uri.hf import HfType, HfURI
 from gbserver.asset.hfstore import Hfstore
 from gbserver.types.artifact import ArtifactType
+from gbserver.types.assetstoreconfig import AssetStoreConfig
+from gbserver.utils.template import fill_template
 
 
 class TestHfstoreAssetType:
@@ -191,8 +195,6 @@ class TestHfstoreEnterpriseOrganizations:
 
     @staticmethod
     def _store(store_config):
-        from gbserver.types.assetstoreconfig import AssetStoreConfig
-
         return Hfstore(AssetStoreConfig(**store_config))
 
     def test_absent_key_returns_none(self):
@@ -231,8 +233,6 @@ class TestHfstoreEnterpriseOrganizations:
         assert store.get_enterprise_organizations() is None
 
     def test_non_list_raises(self):
-        import pytest
-
         store = self._store(
             {"base_uri": "hf:/", "config": {"enterprise_organizations": "ibm-research"}}
         )
@@ -287,10 +287,6 @@ class TestLsfHfpushNoResourceGroup:
 
     def test_create_body_omits_resource_group_when_none(self):
         """Render with resource_group_id=None and run the resulting bash logic."""
-        import subprocess
-
-        from gbserver.utils.template import fill_template
-
         rendered = fill_template(
             self._command_sh(),
             {
