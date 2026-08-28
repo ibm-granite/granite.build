@@ -1366,9 +1366,7 @@ class Skypilot(Environment):
                         # deterministic name. _abort_provision drains the submit
                         # to recover the request_id (if any) and tears down by
                         # name so the cluster is not leaked.
-                        await self._abort_provision(
-                            None, cluster_name, launch_fut
-                        )
+                        await self._abort_provision(None, cluster_name, launch_fut)
                         raise
                     stream_fut = asyncio.ensure_future(
                         asyncio.to_thread(sky.stream_and_get, request_id)

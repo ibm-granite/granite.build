@@ -1029,8 +1029,7 @@ class K8s(Environment):
         """
         msg = str(error).lower()
         return (
-            "uninstall: release not loaded" in msg
-            or "error: release: not found" in msg
+            "uninstall: release not loaded" in msg or "error: release: not found" in msg
         )
 
     async def _helm_uninstall_with_retry(
