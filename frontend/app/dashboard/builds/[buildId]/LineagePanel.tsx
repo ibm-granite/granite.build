@@ -295,6 +295,11 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // getBuildStatus, so this costs no extra request.
   const [stepDetailTarget, setStepDetailTarget] = React.useState<string | null>(null)
 
+  // Where focus was before the drawer opened, so we can hand it back on close —
+  // otherwise a keyboard user is dropped at the top of the document.
+  const drawerReturnFocusRef = React.useRef<HTMLElement | null>(null)
+  const drawerCloseButtonRef = React.useRef<HTMLButtonElement | null>(null)
+
   React.useEffect(() => {
     if (!stepDetailTarget) return
     const onKeyDown = (e: KeyboardEvent) => {
@@ -303,6 +308,31 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [stepDetailTarget])
+
+  // Focus management for the drawer (role="dialog"): on open, remember the
+  // trigger and move focus to the close button; on close, restore focus. This is
+  // a non-modal drawer by design (the graph stays interactive), so no focus trap
+  // — just entry and restore, which is what keyboard/SR users expect.
+  React.useEffect(() => {
+    if (!stepDetailTarget) return
+    drawerReturnFocusRef.current = document.activeElement as HTMLElement | null
+    drawerCloseButtonRef.current?.focus()
+    return () => {
+      drawerReturnFocusRef.current?.focus?.()
+      drawerReturnFocusRef.current = null
+    }
+  }, [stepDetailTarget])
+
+  // If the open target disappears from a later status poll (renamed, or dropped
+  // from the build), close the drawer rather than leave it pointing at a target
+  // that no longer exists. Guarded on buildStatus being loaded so the drawer
+  // isn't closed during a transient empty poll.
+  React.useEffect(() => {
+    if (!stepDetailTarget || !buildStatus?.targets) return
+    if (!(stepDetailTarget in buildStatus.targets)) {
+      setStepDetailTarget(null)
+    }
+  }, [stepDetailTarget, buildStatus])
 
   const { nodes: allNodes, links: allLinks, artifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
@@ -591,6 +621,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
                     )}
                   </div>
                   <IconButton
+                    ref={drawerCloseButtonRef}
                     kind="ghost"
                     label="Close"
                     align="bottom"

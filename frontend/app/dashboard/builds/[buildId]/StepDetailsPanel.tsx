@@ -58,8 +58,8 @@ function finishedAt(step: BuildStepRun): string | undefined {
 /**
  * Keys in the status message that the drawer already shows elsewhere — in the
  * header (Status) or the Metadata block (the ids and the step URI). gbserver
- * emits them as a padded `Key      : Value` table (see the templates in
- * gbserver/build/run.py), so the message is almost entirely a restatement.
+ * emits them as a padded `Key      : Value` table, so the message is almost
+ * entirely a restatement of fields shown above.
  */
 const REDUNDANT_MESSAGE_KEYS = new Set([
   'status',
@@ -78,6 +78,18 @@ const REDUNDANT_MESSAGE_KEYS = new Set([
  * free-text remainder (`extra_msg`) survives — that is the one part of the
  * message not shown anywhere else.
  *
+ * This is a heuristic over free text, so it is deliberately conservative: a line
+ * is dropped only when it *looks like a padded table row* for a known key, not
+ * merely because it starts with `<known word>:`. Otherwise prose such as
+ * "Status: everything nominal" or "Type: the model was rebuilt" — a sentence
+ * that happens to begin with a redundant key — would be silently deleted.
+ *
+ * The two signals that a line is a table row rather than a sentence:
+ *   - a multi-word key ("Step URI", "Build ID") — prose almost never opens with
+ *     one of these followed by a colon; or
+ *   - a single-word key aligned with the padded-table gap gbserver emits (two or
+ *     more spaces before the colon: `Status   : ...`), which prose does not have.
+ *
  * Returns '' when nothing new is left, so the caller can omit the section.
  */
 function cleanStatusMessage(msg: string): string {
@@ -85,10 +97,17 @@ function cleanStatusMessage(msg: string): string {
     .split('\n')
     .filter((line) => !/^\s*```/.test(line))
     .filter((line) => {
-      // Keep prose and blank lines; only drop recognised key/value restatements.
-      const match = /^\s*([A-Za-z][A-Za-z ]*?)\s*:\s*(.*)$/.exec(line)
-      if (!match) return true
-      return !REDUNDANT_MESSAGE_KEYS.has(match[1].trim().toLowerCase())
+      // Capture the key, the run of spaces before the colon, and the value.
+      const match = /^\s*([A-Za-z][A-Za-z ]*?)( *):\s*(.*)$/.exec(line)
+      if (!match) return true // prose / blank line — keep
+
+      const key = match[1].trim().toLowerCase()
+      if (!REDUNDANT_MESSAGE_KEYS.has(key)) return true // unknown key — keep
+
+      const paddedBeforeColon = match[2].length >= 2
+      const multiWordKey = key.includes(' ')
+      // Drop only when it reads as a table row, not a sentence.
+      return !(multiWordKey || paddedBeforeColon)
     })
     .join('\n')
     .replace(/```/g, '')

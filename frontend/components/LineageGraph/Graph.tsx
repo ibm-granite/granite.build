@@ -227,11 +227,14 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   const hasUserAdjustedRef = React.useRef(false)
 
   // A different graph (new artifact/build) earns a fresh fit even if the user had
-  // panned the previous one.
-  const graphIdentity = React.useMemo(
-    () => props.nodes.map((n) => n.id).sort().join('|'),
-    [props.nodes]
-  )
+  // panned the previous one. The graph builder emits nodes in a deterministic
+  // order, so identity is the count plus the endpoints — no per-render sort, and
+  // stable across the status poll's fresh-array-same-nodes churn.
+  const graphIdentity = React.useMemo(() => {
+    const { nodes } = props
+    if (nodes.length === 0) return ''
+    return `${nodes.length}|${nodes[0].id}|${nodes[nodes.length - 1].id}`
+  }, [props.nodes])
   React.useEffect(() => {
     hasUserAdjustedRef.current = false
   }, [graphIdentity])
