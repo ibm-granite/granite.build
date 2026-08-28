@@ -338,6 +338,7 @@ spec:
             - -c
             - |
               set -o pipefail
+              umask {{ .Values.k8s.umask | default "0002" }}
               echo
               {{- include "gbraystepbase.tplAdditionalFiles" . | trimAll " " | indent 8 }}
               {{- range $filename, $value := .filesfromconfig }}

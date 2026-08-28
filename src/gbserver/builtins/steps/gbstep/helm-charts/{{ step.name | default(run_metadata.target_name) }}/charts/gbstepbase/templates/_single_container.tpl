@@ -85,6 +85,7 @@
       - -c
       - |
         set -o pipefail
+        umask {{ .Values.k8s.umask | default "0002" }}
         echo
         echo 'GB_EVENT_WORKLOAD_STATUS:running'
         {{- include "gbstepbase.tplAdditionalFiles" . | trimAll " " | indent 8 }}
