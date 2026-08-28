@@ -16,7 +16,11 @@ function formatClock(value: string | undefined): string {
   return parsed.toLocaleTimeString([], { hour12: false })
 }
 
-/** `Aug 22, 2026 at 10:51:28` — the one place a full timestamp is spelled out. */
+/**
+ * `Aug 22, 2026 at 10:51:28 PDT` — the one place a full timestamp is spelled
+ * out. The timezone abbreviation is included because the viewer and the build
+ * launcher are often in different zones, so a bare wall-clock time is ambiguous.
+ */
 function formatDateTime(value: string | undefined): string | undefined {
   if (!value) return undefined
   const parsed = new Date(value)
@@ -26,7 +30,8 @@ function formatDateTime(value: string | undefined): string | undefined {
     day: 'numeric',
     year: 'numeric',
   })
-  return `${date} at ${parsed.toLocaleTimeString([], { hour12: false })}`
+  const time = parsed.toLocaleTimeString([], { hour12: false, timeZoneName: 'short' })
+  return `${date} at ${time}`
 }
 
 /**
@@ -143,8 +148,9 @@ function extractCommand(
   if (!config) return undefined
 
   for (const key of COMMAND_CONTAINER_KEYS) {
-    const container = config[key] as Record<string, unknown> | undefined
-    const candidate = container?.command
+    const container = config[key]
+    if (!isPlainObject(container)) continue
+    const candidate = container.command
     if (typeof candidate === 'string' && candidate.trim()) {
       return { command: candidate.trim(), sourceKey: key }
     }
@@ -179,8 +185,12 @@ function remainingConfig(
     return rest
   }
 
-  const container = config[sourceKey] as Record<string, unknown> | undefined
-  const { command: _omitted, ...containerRest } = container ?? {}
+  const container = config[sourceKey]
+  // extractCommand only reports a container sourceKey after confirming it was a
+  // plain object, so this normally holds — but guard anyway rather than spread a
+  // scalar into index-keyed junk if the two ever fall out of step.
+  if (!isPlainObject(container)) return config
+  const { command: _omitted, ...containerRest } = container
   if (Object.keys(containerRest).length === 0) {
     const { [sourceKey]: _dropped, ...rest } = config
     return rest
@@ -214,6 +224,16 @@ function isScalar(value: unknown): boolean {
     typeof value === 'number' ||
     typeof value === 'boolean'
   )
+}
+
+/**
+ * A plain object, not an array or scalar. config is free-form from gbserver, so
+ * a container key (`command_config`, `docker`, …) may hold a string or array;
+ * treating that as an object and spreading it yields index-keyed junk, so every
+ * `config[key]` access below is gated on this first.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 interface ConfigGroup {
@@ -306,15 +326,24 @@ function Section({
  * be the third copy of the same number.
  */
 function ExecutionSummary({ step }: { step: BuildStepRun }) {
+  const started = step.started_at
+  const finished = finishedAt(step)
   return (
     <dl className={styles.stepExecution}>
       <div className={styles.stepExecutionCell}>
         <dt className={styles.stepExecutionLabel}>Started</dt>
-        <dd className={styles.stepExecutionValue}>{formatClock(step.started_at)}</dd>
+        {/* The cell shows a bare clock; the full date + timezone lives in the
+            tooltip so it resolves the "which zone / which day" ambiguity without
+            widening the compact row. */}
+        <dd className={styles.stepExecutionValue} title={formatDateTime(started)}>
+          {formatClock(started)}
+        </dd>
       </div>
       <div className={styles.stepExecutionCell}>
         <dt className={styles.stepExecutionLabel}>Finished</dt>
-        <dd className={styles.stepExecutionValue}>{formatClock(finishedAt(step))}</dd>
+        <dd className={styles.stepExecutionValue} title={formatDateTime(finished)}>
+          {formatClock(finished)}
+        </dd>
       </div>
     </dl>
   )

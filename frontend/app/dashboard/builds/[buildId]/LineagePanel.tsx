@@ -299,11 +299,20 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // otherwise a keyboard user is dropped at the top of the document.
   const drawerReturnFocusRef = React.useRef<HTMLElement | null>(null)
   const drawerCloseButtonRef = React.useRef<HTMLButtonElement | null>(null)
+  const drawerRef = React.useRef<HTMLDivElement | null>(null)
+  // Focus fallback when the drawer's trigger node has been detached by a re-render.
+  const graphContainerRef = React.useRef<HTMLDivElement | null>(null)
 
   React.useEffect(() => {
     if (!stepDetailTarget) return
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setStepDetailTarget(null)
+      if (e.key !== 'Escape') return
+      // This is a non-modal drawer — the graph behind it stays interactive — so
+      // only swallow Escape when focus is actually inside the drawer. Otherwise
+      // a user mid-interaction with the graph would have the drawer yanked shut.
+      if (drawerRef.current?.contains(document.activeElement)) {
+        setStepDetailTarget(null)
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -318,7 +327,17 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     drawerReturnFocusRef.current = document.activeElement as HTMLElement | null
     drawerCloseButtonRef.current?.focus()
     return () => {
-      drawerReturnFocusRef.current?.focus?.()
+      // The trigger is often a graph node inside an SVG that re-renders on the
+      // status poll; by close it may be detached, and focus() on a detached node
+      // is a silent no-op that drops focus to <body>. Restore only when the node
+      // is still connected, else fall back to the graph container so keyboard
+      // focus lands somewhere sensible rather than the top of the document.
+      const returnTo = drawerReturnFocusRef.current
+      if (returnTo?.isConnected) {
+        returnTo.focus?.()
+      } else {
+        graphContainerRef.current?.focus?.()
+      }
       drawerReturnFocusRef.current = null
     }
   }, [stepDetailTarget])
@@ -552,8 +571,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         </div>
       )}
 
-      {/* Graph area */}
-      <div className={styles.graphArea}>
+      {/* Graph area. tabIndex=-1 so it can receive programmatic focus as the
+          fallback when a closed drawer's trigger node is no longer in the DOM. */}
+      <div className={styles.graphArea} ref={graphContainerRef} tabIndex={-1}>
         {loading && (
           <div className={styles.centeredContent}>
             <InlineLoading description="Loading lineage…" />
@@ -598,6 +618,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           and clickable and picking another target just re-points the drawer. */}
       {stepDetailTarget && (
         <div
+          ref={drawerRef}
           className={styles.stepSidePanel}
           role="dialog"
           aria-label={`Step details — ${stepDetailTarget}`}

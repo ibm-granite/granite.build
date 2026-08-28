@@ -228,13 +228,14 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
 
   // A different graph (new artifact/build) earns a fresh fit even if the user had
   // panned the previous one. The graph builder emits nodes in a deterministic
-  // order, so identity is the count plus the endpoints — no per-render sort, and
-  // stable across the status poll's fresh-array-same-nodes churn.
-  const graphIdentity = React.useMemo(() => {
-    const { nodes } = props
-    if (nodes.length === 0) return ''
-    return `${nodes.length}|${nodes[0].id}|${nodes[nodes.length - 1].id}`
-  }, [props.nodes])
+  // order, so joining every id captures identity without a per-render sort, and
+  // is stable across the status poll's fresh-array-same-nodes churn. (Count plus
+  // endpoints alone would collide when two graphs share their first/last node —
+  // e.g. a middle target renamed between fetches — and skip a warranted re-fit.)
+  const graphIdentity = React.useMemo(
+    () => props.nodes.map((n) => n.id).join('|'),
+    [props.nodes]
+  )
   React.useEffect(() => {
     hasUserAdjustedRef.current = false
   }, [graphIdentity])
@@ -384,8 +385,9 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       if (!pos?.children) return
       const node = pos.children.find((n) => n.id === nodeId)
       if (!node || node.x === undefined || node.y === undefined) return
-      // An explicit centre request owns the viewport; don't let a re-fit undo it.
-      hasUserAdjustedRef.current = true
+      // A one-off centre is not "I've taken over pan/zoom forever" — leave
+      // hasUserAdjustedRef alone so a later container resize can still re-fit.
+      // (Genuine user pans/zooms set it via the start.userintent handler.)
       const { width: W, height: H } = svgRef.current.getBoundingClientRect()
       const cx = (node.x ?? 0) + (node.width ?? 0) / 2
       const cy = (node.y ?? 0) + (node.height ?? 0) / 2
