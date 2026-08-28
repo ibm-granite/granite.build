@@ -104,6 +104,15 @@ backend is reachable:
   `make test-setup` (delegates to the repo-root `slurm-setup` / `minio-setup`). Runs the
   transform → `env:///shared/…` → validate handoff, so it exercises both modes and the
   cross-node path with no credentials.
+- **slurm-pii** — the same step with `transform: pii_redactor`, proving generality: only
+  `transform`/`args`/artifact names differ from the tokenization fixture. Slow (the
+  `[pii-redactor]` extra is ~125 packages), hence `timeout_minutes: 60`.
+- **slurm-default-output** — tokenization with `dpk_config.output_path` **omitted**, the only
+  fixture that exercises the `./output` default (both siblings must set it: `slurm` needs a
+  shared path for its handoff, `slurm-pii` declares an `env:///tmp` uri whose path must
+  match). Verifies on real infra what a render test cannot: that the relative default
+  resolves inside SkyPilot's working directory on a compute node and that the resulting
+  absolute path is one the monitor accepts and registers.
 - **aws** — needs AWS credentials in the environment; provisions a real EC2 instance.
 
 > Container images require the Pyxis SPANK plugin on SLURM/LSF, which the local Docker
@@ -112,14 +121,32 @@ backend is reachable:
 
 ## Known gaps
 
-- **`output_path` is unchecked against the output's `uri`.** In transform mode the build
-  supplies both, and nothing validates that they agree; a mismatch fails at run time. The
-  step cannot derive the path because declared output URIs are not in the runtime render
-  context — `step_outputs` exists (`src/gbserver/build/targetstep.py`) but is built for
-  static validation only, and the runtime render passes `bindings` / `run_metadata`.
-  Plumbing declared outputs into the runtime context would let the step derive
-  `output_path` and auto-emit the artifact marker for every declared output; that is a
-  gbserver change, tracked separately.
+- **`output_path` is unchecked against the output's `uri`.** `output_path` is optional and
+  defaults to `./output` in the step's working directory, but when the declared output `uri`
+  names a path the build still supplies both and nothing validates that they agree; a
+  mismatch fails at run time. The step cannot derive the path because declared output URIs
+  are not in the runtime render context — `step_outputs` exists
+  (`src/gbserver/build/targetstep.py`, `_get_validation_context`) but is built for static
+  validation only, while the runtime render passes `bindings` / `run_metadata` /
+  `setup_config` (`build/targetsteprun.py`). Plumbing declared outputs into the runtime
+  context would let the step derive `output_path` and auto-emit the artifact marker for every
+  declared output, removing the field entirely; that is a gbserver change, tracked
+  separately.
+- **The default `output_path` cannot serve a cross-target handoff.** `./output` resolves
+  inside the per-run workdir (`${shared_workdir}/builds/<build_id>/runs/<targetrun_id>`),
+  which is minted per **target** by `setup_skypilot` and `rm -rf`'d by `teardown_skypilot`
+  when that target completes. A downstream target binding such an output would read a deleted
+  directory, so an output another target consumes needs an explicit shared path — the
+  tokenization fixture's `env:///shared/…` is the worked example. Nothing detects the
+  mistake at submit time; it surfaces as a missing input on the consumer.
+- **A step default cannot be asserted via `expected_steps`.** `expected_steps` compares
+  against the **persisted** step config, which records only the keys the `build.yaml`
+  supplied — `step-template.yaml`'s own defaults are not merged into it. So an omitted
+  `dpk_config.output_path` is *absent* from the stored config rather than present as `""`,
+  and `_assert_contains_subset` requires every expected key to exist (it fails with
+  `missing key 'output_path'`). The `slurm-default-output` fixture therefore asserts the
+  default's *effect* (`output_artifact_count: 1` — the artifact could not register without
+  it) rather than the field's value.
 - **Heavy transforms pay a per-cluster install.** `pii_redactor` pulls presidio + flair
   (hundreds of MB of models). `image` is the escape hatch, but note DPK publishes only
   `.devN` snapshot images — there is no `1.1.8` image on quay.io; the newest

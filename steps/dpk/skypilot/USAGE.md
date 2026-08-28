@@ -23,14 +23,27 @@ steps:
   - step_uri: space://steps/dpk
 ```
 
+## Two modes: pick one
+
+The step has **two mutually exclusive modes** — set `transform` *or* `command`, never both.
+Read this before the field tables; nearly everything else here applies to one mode only.
+
+| | **Transform mode** (`transform:`) | **Command mode** (`command:`) |
+|---|---|---|
+| **Use it when** | the work *is* a DPK transform | the work is not a DPK transform — a script, a one-off, a validator |
+| **Who builds the command line** | the step (from `transform` + `args`) | you, verbatim |
+| **Dependencies** | derived from `transform` (+ `packages`) | `packages` only |
+| **Artifact marker** | emitted for you, from `output`/`output_path` | your command prints it |
+
+Command mode exists because a build often needs a non-transform step *beside* its
+transforms — the shipped `src/validate_tokens.py` is exactly that, and it has no
+`dpk_<name>.runtime` to invoke. Without it you would need a second step (or `byoc`) just to
+run a script next to the transform, so the escape hatch is deliberate rather than
+redundant. It behaves like [`byoc`](../../byoc/skypilot/USAGE.md)'s `command`.
+
 ## Config contract (`dpk_config`)
 
-All fields live under the step's `config.dpk_config`. There are two modes, selected by
-which field you set — **`transform` XOR `command`**:
-
-- **`transform`** — run a DPK transform. The step builds the invocation for you.
-- **`command`** — run an arbitrary bash command, e.g. a bundled script. The step gets out
-  of the way (this is the [`byoc`](../../byoc/skypilot/USAGE.md)-style escape hatch).
+All fields live under the step's `config.dpk_config`.
 
 ### Transform mode
 
@@ -39,8 +52,9 @@ which field you set — **`transform` XOR `command`**:
 | `transform` | string | **yes** | DPK transform short name, e.g. `tokenization2arrow`, `pii_redactor`, `ededup`. See [What `transform` derives](#what-transform-derives). |
 | `input` | string | **yes** | Name of a declared target `inputs:` entry. Becomes the transform's `input_folder`. |
 | `output` | string | **yes** | Name of a declared target `outputs:` entry. Used as the registered artifact's ID. |
-| `output_path` | string | **yes** | Absolute path the transform writes to. **Must match the path in that output's `uri`** — see [Outputs](#outputs). |
+| `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match. See [Outputs](#outputs). |
 | `args` | map | no | Transform flags, rendered in order as `--<key> '<value>'`. Keys are the **full flag name** as DPK spells it, without leading dashes. See [Transform flags](#transform-flags). |
+| `extra_args` | string | no | Flags appended **verbatim** to the transform's argv, after `args`. The escape hatch for anything `args` cannot express. See [Transform flags](#transform-flags). |
 | `dpk_version` | string | no | DPK release to install. Default `1.1.8`. |
 
 ### Command mode
@@ -97,11 +111,103 @@ the transform name. Roughly 40% of transforms use an arbitrary abbreviation:
 | `pii_redactor` | `pii_redactor_` |
 
 So the step passes your keys through verbatim rather than guessing. Get the flag names from
-the transform's DPK documentation or `python -m dpk_<name>.runtime --help`.
+[the transform's DPK documentation](#per-transform-dpk-documentation) or from
+`python -m dpk_<name>.runtime --help`, which is authoritative when the two disagree.
 
 Value handling: `true` renders a bare `--flag`; `false` and null are omitted; everything
 else renders as `--flag 'value'` (including `0`, which is meaningful for e.g.
 `tkn_chunk_size`).
+
+### `args` vs. `extra_args`
+
+`args` quotes each value so it reaches the transform **byte-for-byte**. That is what you
+want almost always, and it is what makes python-literal values work: `pii_redactor`'s
+`--pii_redactor_entities` is `ast.literal_eval`'d, so `"['PERSON','EMAIL_ADDRESS']"` has to
+arrive with its inner quotes intact.
+
+`extra_args` is a single string appended verbatim after everything `args` rendered, and it
+is **not** quoted — the remote shell word-splits and expands it. Use it when you *need* that:
+
+```yaml
+dpk_config:
+  args:
+    tkn_doc_id_column: document_id       # quoted for you
+  extra_args: "--tkn_tokenizer $MY_TOKENIZER"   # expanded on the node
+```
+
+Because it is unquoted, correct quoting of any value containing spaces or quotes is yours to
+get right — which is why `args` remains the default rather than a raw string being the only
+option. Ignored in command mode, where you write the whole command anyway.
+
+## Per-transform DPK documentation
+
+The step derives the module and dependencies, but a transform's **flag names come from DPK**.
+Each transform's docs live in the DPK repo, pinned below to the `v1.1.8` tag — the release
+`dpk_version` installs by default, so the flags match the code you are running. Change the
+tag in the URL if you set a different `dpk_version`.
+
+The paths are not derivable from the transform name (the category is not encoded in it, and
+`tokenization2arrow` shares a directory with `tokenization`), hence the table.
+
+| Transform | Docs |
+|---|---|
+| `blocklist` | [universal/blocklist](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/blocklist/README.md) |
+| `bloom` | [universal/bloom](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/bloom/README.md) |
+| `c4_annotator` | [universal/c4_annotator](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/c4_annotator/README.md) |
+| `code2parquet` | [code/code2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/code2parquet/README.md) |
+| `code_profiler` | [code/code_profiler](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/code_profiler/README.md) |
+| `code_quality` | [code/code_quality](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/code_quality/README.md) |
+| `collapse` | [universal/collapse](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/collapse/README.md) |
+| `doc_chunk` | [language/doc_chunk](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/doc_chunk/README.md) |
+| `doc_id` | [universal/doc_id](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/doc_id/README.md) |
+| `doc_quality` | [language/doc_quality](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/doc_quality/README.md) |
+| `docling2parquet` | [language/docling2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/docling2parquet/README.md) |
+| `ededup` | [universal/ededup](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/ededup/README.md) |
+| `enrichment` | [language/enrichment](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/enrichment/README.md) |
+| `extreme_tokenized` | [language/extreme_tokenized](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/extreme_tokenized/README.md) |
+| `faces` | [images](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/images/README.md) (shared) |
+| `fdedup` | [universal/fdedup](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/fdedup/README.md) |
+| `filter` | [universal/filter](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/filter/README.md) |
+| `fineweb_quality_annotator` | [universal/fineweb_quality_annotator](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/fineweb_quality_annotator/README.md) |
+| `folder2parquet` | [universal/folder2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/folder2parquet/README.md) |
+| `gneissweb_classification` | [language/gneissweb_classification](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/gneissweb_classification/README.md) |
+| `gopher_repetition_annotator` | [universal/gopher_repetition_annotator](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/gopher_repetition_annotator/README.md) |
+| `hap` | [universal/hap](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/hap/README.md) |
+| `header_cleanser` | [code/header_cleanser](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/header_cleanser/README.md) |
+| `html2parquet` | [language/html2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/html2parquet/README.md) |
+| `lang_id` | [language/lang_id](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/lang_id/README.md) |
+| `license_select` | [code/license_select](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/license_select/README.md) |
+| `malware` | [code/malware](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/malware/README.md) |
+| `ml_filter` | [language/ml_filter](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/ml_filter/README.md) |
+| `nsfw` | [images](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/images/README.md) (shared) |
+| `opensearch` | [universal/opensearch](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/opensearch/README.md) |
+| `people` | [images](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/images/README.md) (shared) |
+| `pii_redactor` | [language/pii_redactor](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/pii_redactor/README.md) |
+| `profiler` | [universal/profiler](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/profiler/README.md) |
+| `proglang_select` | [code/proglang_select](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/proglang_select/README.md) |
+| `readability` | [language/readability](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/readability/README.md) |
+| `rep_removal` | [universal/rep_removal](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/rep_removal/README.md) |
+| `repo_level_order` | [code/repo_level_order](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/repo_level_order/README.md) |
+| `resize` | [universal/resize](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/resize/README.md) |
+| `similarity` | [language/similarity](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/similarity/README.md) |
+| `text_encoder` | [language/text_encoder](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/text_encoder/README.md) |
+| `tokenization` | [universal/tokenization](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/tokenization/README.md) |
+| `tokenization2arrow` | [universal/tokenization (README-tkn2arrow.md)](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/tokenization/README-tkn2arrow.md) |
+| `web2parquet` | [universal/web2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/web2parquet/README.md) |
+| `yara` | [code/yara](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/yara/README.md) |
+
+Notes on the irregular entries, all verified against the tag:
+
+- **`tokenization2arrow`** is documented in `README-tkn2arrow.md`, not the directory's
+  `README.md` (which covers the older `tokenization`). The two transforms share a directory
+  and a pip extra, but are different modules.
+- **`faces` / `nsfw` / `people`** have no per-transform README; the shared
+  `transforms/images/README.md` documents all three.
+- **`c4_annotator`** declares no pip extra, so it needs `no_extras: true`.
+
+The table lists the transforms a build would plausibly run. DPK also ships `noop` (a
+no-op test fixture) and `dpk_transform_chain` (a chaining utility, not a data transform);
+both work if you name them, but neither is documented here.
 
 ## Inputs and outputs
 
@@ -124,8 +230,11 @@ reference any of them directly from your `command`. Filesystem-backed schemes (`
 
 Declare each output on the target, then make sure the bytes land at the path in its `uri`:
 
-- **Transform mode** — set `output_path` to that path. The step creates it, points the
-  transform's `output_folder` at it, and emits the artifact marker for you.
+- **Transform mode** — the step creates the directory, points the transform's
+  `output_folder` at it, and emits the artifact marker for you. `output_path` defaults to
+  `./output` in the step's working directory; set it explicitly when the output's `uri` names
+  a path, or when a **downstream target** reads the output — see
+  [When the default is not enough](#when-the-default-is-not-enough).
 - **Command mode** — your command writes wherever it likes and prints the marker itself:
 
   ```
@@ -136,9 +245,33 @@ Declare each output on the target, then make sure the bytes land at the path in 
   artifacts under one output. For `mem://` outputs use `LLMB_ARTIFACT_PATH` →
   `LLMB_ARTIFACT_STATE:<value>`.
 
-> **`output_path` must agree with the output's `uri`.** The step cannot derive it — declared
-> output URIs are not available in the runtime render context — so keeping the two in sync
-> is the build author's job. A mismatch fails at run time, not at submit time.
+#### When the default is not enough
+
+`output_path: ""` (the default) writes to `./output` in the step's working directory, and the
+step absolutizes it before emitting the marker. That is right for two common cases:
+
+- a **terminal** output nothing downstream consumes;
+- an output an **assetstore pushes** (e.g. `s3://…`), where the local dir is only a staging
+  area.
+
+Set it explicitly in either of these cases:
+
+1. **The output's `uri` names a path.** The step cannot derive it — declared output URIs are
+   not in the runtime render context — so keeping `uri` and `output_path` in agreement is
+   the build author's job. A mismatch fails at run time, not at submit time.
+2. **A downstream target reads the output.** The working directory is the *per-run* workdir
+   (`${shared_workdir}/builds/<build_id>/runs/<targetrun_id>`), which is keyed **per target**
+   and removed when that target finishes. A consumer in another target would read a deleted
+   directory, so give the output an explicit shared path instead — see
+   [Choosing the output URI per endpoint](#choosing-the-output-uri-per-endpoint).
+
+> **Why is there no `input_path`?** Because inputs and outputs reach the step differently, and
+> this is the asymmetry the default only partly hides. An input is **staged before `run`** and
+> its resolved path is handed to the step as `$LLMB_INPUT_<name>`, so there is nothing to
+> specify. A declared **output does not exist yet** at render time: the runtime context is
+> `bindings` + `run_metadata` + `setup_config` only, and declared output URIs reach *static
+> validation* alone. Plumbing them into the runtime context would let the step derive
+> `output_path` and drop the field — a gbserver change, tracked separately.
 
 ### Choosing the output URI per endpoint
 
@@ -147,8 +280,8 @@ on **different nodes**. What works depends on the endpoint:
 
 | Endpoint | Output URI | Why |
 |---|---|---|
-| `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` (+ matching `output_path`) | `/shared` is the environment's `shared_workdir`, mounted on every node — cross-node safe. |
-| `skypilot/aws`, `skypilot/kubernetes` | `s3://bucket/…` with a **local** `output_path` | Each target gets its own instance with no shared filesystem. The S3 assetstore pushes the staged dir and the consumer pulls it. |
+| `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` + an **explicit** matching `output_path` | `/shared` is the environment's `shared_workdir`, mounted on every node — cross-node safe. The `./output` default will not do here: it lives in the per-target workdir, which is deleted at target teardown. |
+| `skypilot/aws`, `skypilot/kubernetes` | `s3://bucket/…`, `output_path` may be **left default** | Each target gets its own instance with no shared filesystem. The S3 assetstore pushes the staged dir and the consumer pulls it, so a node-local `./output` is fine. |
 
 A node-local `env:///tmp/…` is **not** safe for a cross-target handoff: if the two targets
 land on different nodes the consumer reads an absent directory.
@@ -156,9 +289,16 @@ land on different nodes the consumer reads an absent directory.
 ## Working directory and paths
 
 Both `setup` and `run` start in the same **working directory** (the step's per-run workdir),
-so the step never needs its absolute location. The bundled `src/` is mounted at `./src`, and
-in bare-node mode the virtualenv is created at `./venv` and activated for you. Use relative
-paths from there; derive an absolute one at run time with `$(pwd)` when a marker needs it.
+so the step never needs its absolute location. The bundled `src/` is mounted at `./src`, the
+default `output_path` writes to `./output`, and in bare-node mode the virtualenv is created at
+`./venv` and activated for you. Use relative paths from there; derive an absolute one at run
+time with `$(pwd)` when a marker needs it.
+
+That workdir is `${shared_workdir}/builds/<build_id>/runs/<targetrun_id>` where the
+environment configures a `shared_workdir` (slurm, lsf), and SkyPilot's own `~/sky_workdir`
+where it does not (aws, kubernetes). Either way it is **per target** and removed when the
+target finishes — which is why anything a *downstream* target reads needs an explicit path
+outside it.
 
 ## Example build.yaml
 
@@ -224,19 +364,32 @@ granite.build:
                 echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$REPORT"
 ```
 
-Switching to a different transform touches only `dpk_config`:
+Switching to a different transform touches only `dpk_config`. This one is a **single terminal
+target**, so `output_path` is left out and the step writes to `./output`:
 
 ```yaml
+      outputs:
+        clean:
+          uri: "env:///tmp/dpk-clean"              # no path to match => default is fine
+          type: dataset
+      steps:
+        - step_uri: space://steps/dpk
+          config:
             dpk_config:
               transform: pii_redactor              # -> dpk_pii_redactor.runtime + [pii-redactor]
               input: docs
               output: clean
-              output_path: /shared/dpk/clean
+              # output_path omitted -> ./output, absolutized in the marker
               args:
-                pii_redactor_entities: "PERSON,EMAIL_ADDRESS,CREDIT_CARD"
+                # literal_eval'd by the transform, so a python list literal
+                pii_redactor_entities: "['PERSON','EMAIL_ADDRESS']"
                 pii_redactor_operator: replace
                 pii_redactor_score_threshold: 0.6
 ```
+
+Contrast the `tokenize` target above, which **must** set `output_path`: its `tokens` output is
+read by the `validate` target, so it has to live on the shared filesystem rather than in the
+per-target workdir.
 
 ## Bundled scripts (`src/`)
 

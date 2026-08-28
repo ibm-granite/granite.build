@@ -26,6 +26,13 @@ config:
     # transform's DPK docs or `--help` for its flag names.
     # A `true` value renders as a bare `--<key>`; `false`/null is omitted.
     args: {}
+    # Escape hatch for flags `args` cannot express: appended VERBATIM to the
+    # transform's argv, after everything `args` rendered. Unquoted, so the remote
+    # shell word-splits it — which is the point (it is how you pass a flag whose
+    # value needs shell interpretation), and also why `args` stays the default:
+    # a value containing spaces or quotes is yours to quote correctly here,
+    # whereas `args` quotes it for you. Ignored in command mode.
+    extra_args: ""
     # Names of a declared target input / output. The step turns these into the
     # transform's --data_local_config input_folder / output_folder. Both are
     # required in transform mode.
@@ -33,14 +40,25 @@ config:
     #   output -> used as the LLMB_ARTIFACT_ID the step emits
     input: ""
     output: ""
-    # Where the transform WRITES. Required in transform mode, and it must match
-    # the path in that output's declared `uri`:
+    # Where the transform WRITES. OPTIONAL: empty (the default) means ./output in
+    # the step's working directory, resolved to an absolute path at run time so
+    # the emitted artifact marker is absolute.
+    #
+    # WHEN YOU MUST SET IT EXPLICITLY: when the declared output `uri` names a
+    # path, it must match, because the step cannot derive it — declared output
+    # URIs are not in the runtime render context (they reach static validation
+    # only; see targetstep.py's _get_validation_context vs the runtime context of
+    # bindings + run_metadata + setup_config). So:
     #   env:///shared/x  -> output_path: /shared/x   (shared FS; slurm/lsf, cross-node safe)
     #   s3://bucket/x    -> output_path: <local dir> (staged, then pushed by the assetstore)
-    # The step cannot derive this: the declared output URIs are not available in
-    # the runtime render context (they reach static validation only), so the build
-    # supplies the path. Keeping `uri` and `output_path` in agreement is the
-    # build author's responsibility — a mismatch fails at run time.
+    #
+    # The default is safe ONLY for output the same target consumes or that an
+    # assetstore pushes (e.g. s3://). It is NOT safe for a cross-target env://
+    # handoff: the working directory is the per-run workdir
+    # (${shared_workdir}/builds/<build_id>/runs/<targetrun_id>), which is keyed
+    # per TARGET and `rm -rf`'d by teardown_skypilot when that target finishes —
+    # so a downstream target would read a deleted directory. Give such an output
+    # an explicit shared path (see USAGE.md, "Choosing the output URI").
     output_path: ""
 
     # ---- escape hatch: run an arbitrary command instead of a transform --------
@@ -150,8 +168,15 @@ environment_configs:
             {%- set module = config.dpk_config.module if config.dpk_config.module
                              else ("dpk_" ~ config.dpk_config.transform ~ ".runtime") %}
             IN="$LLMB_INPUT_{{ config.dpk_config.input }}"
-            OUT='{{ config.dpk_config.output_path }}'
+            # An omitted output_path defaults to ./output in the step's working
+            # directory. Both branches resolve to an ABSOLUTE path before the
+            # marker is emitted: the artifact path is consumed off-node, so a
+            # relative one would be meaningless to the server. `cd`-and-pwd runs
+            # after mkdir (the dir must exist to cd into it) and in a subshell, so
+            # the step's own working directory is left alone.
+            OUT='{{ config.dpk_config.output_path if config.dpk_config.output_path else "./output" }}'
             mkdir -p "$OUT"
+            OUT="$(cd "$OUT" && pwd)"
             # Flags are collected into an array rather than emitted as
             # backslash-continued lines: a trailing "\" on the final flag would
             # splice whatever follows into the command, so building argv
@@ -170,9 +195,13 @@ environment_configs:
             DPK_ARGS+=(--{{ k }} '{{ v | string | replace("'", "'\"'\"'") }}')
             {%- endif %}
             {%- endfor %}
+            # extra_args is injected OUTSIDE the quoted array expansion so the
+            # remote shell splits and expands it — the deliberate difference from
+            # `args`, whose values are quoted to survive verbatim. Empty renders
+            # to nothing, leaving the invocation byte-identical to args-only.
             python -m {{ module }} \
               --data_local_config "{'input_folder': '$IN', 'output_folder': '$OUT'}" \
-              "${DPK_ARGS[@]}"
+              "${DPK_ARGS[@]}"{% if config.dpk_config.extra_args %} {{ config.dpk_config.extra_args }}{% endif %}
             # Register the transform's output for the declared `output`. The path
             # must match that output's declared uri (see USAGE.md).
             echo "LLMB_ARTIFACT_ID:{{ config.dpk_config.output }} LLMB_ARTIFACT_PATH:$OUT"

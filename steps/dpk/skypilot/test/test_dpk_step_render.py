@@ -245,6 +245,122 @@ class TestTransformArgs:
         assert "--unset" not in run
 
 
+class TestOutputPathDefault:
+    """`output_path` is optional and defaults to ./output in the step's workdir.
+
+    The invariant that matters in both branches: the path reaching the artifact
+    marker is ABSOLUTE, because the server consumes it off-node.
+    """
+
+    def _out_assignment(self, run: str) -> list[str]:
+        return [l.strip() for l in run.splitlines() if l.strip().startswith("OUT=")]
+
+    def test_omitted_output_path_defaults_to_output(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, output_path="")
+        run = _render(launcher["run"], cfg, _BINDINGS)
+        assert "OUT='./output'" in run
+
+    def test_explicit_output_path_is_used_verbatim(self, launcher, defaults):
+        run = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
+        # Assert on the assignment, not the whole script: an explanatory comment
+        # in the template legitimately mentions the ./output default.
+        assert self._out_assignment(run)[0] == "OUT='/shared/tokens'"
+
+    @pytest.mark.parametrize("output_path", ["", "/shared/tokens"])
+    def test_marker_path_is_absolute_in_both_branches(
+        self, launcher, defaults, output_path
+    ):
+        """Whichever branch is taken, OUT is absolutized before it is emitted."""
+        cfg = _transform_cfg(defaults, output_path=output_path)
+        run = _render(launcher["run"], cfg, _BINDINGS)
+        assert 'OUT="$(cd "$OUT" && pwd)"' in run
+        # The absolutize must happen after mkdir (cd needs the dir) and before
+        # the marker is printed, or the emitted path can be relative/nonexistent.
+        assert (
+            run.index('mkdir -p "$OUT"')
+            < run.index('OUT="$(cd "$OUT" && pwd)"')
+            < run.index("LLMB_ARTIFACT_PATH:$OUT")
+        )
+
+    def test_default_resolves_to_an_absolute_path_under_bash(
+        self, launcher, defaults, tmp_path
+    ):
+        """Run the rendered fragment for real: ./output must land in the CWD."""
+        cfg = _transform_cfg(defaults, output_path="")
+        run = _render(launcher["run"], cfg, _BINDINGS)
+        lines = run.splitlines()
+        start = next(i for i, l in enumerate(lines) if l.strip().startswith("OUT="))
+        end = next(i for i, l in enumerate(lines) if 'cd "$OUT" && pwd' in l)
+        probe = "\n".join(l.strip() for l in lines[start : end + 1]) + '\nprintf "%s" "$OUT"'
+        out = subprocess.run(
+            ["bash", "-c", probe], capture_output=True, text=True, cwd=tmp_path
+        )
+        assert out.returncode == 0, out.stderr
+        # macOS resolves /var -> /private/var, so compare resolved paths.
+        assert pathlib.Path(out.stdout) == (tmp_path / "output").resolve()
+        assert (tmp_path / "output").is_dir()
+
+    def test_default_output_still_parses(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, output_path="")
+        assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
+
+
+class TestExtraArgs:
+    """The verbatim escape hatch, for flags the `args` map cannot express."""
+
+    def test_default_adds_nothing(self, launcher, defaults):
+        """Empty extra_args leaves the args-only invocation unchanged."""
+        run = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
+        assert '"${DPK_ARGS[@]}"' in run
+        # No trailing whitespace artifact that would suggest a stray expansion.
+        invocation = next(
+            line for line in run.splitlines() if '"${DPK_ARGS[@]}"' in line
+        )
+        assert invocation.rstrip() == invocation
+
+    def test_extra_args_are_appended_verbatim(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, extra_args="--tkn_tokenizer $MY_TOKENIZER")
+        run = _render(launcher["run"], cfg, _BINDINGS)
+        assert '"${DPK_ARGS[@]}" --tkn_tokenizer $MY_TOKENIZER' in run
+
+    def test_extra_args_are_unquoted_so_the_shell_splits_them(
+        self, launcher, defaults
+    ):
+        """The contract that distinguishes extra_args from args.
+
+        `args` values are quoted to reach the transform byte-for-byte; extra_args
+        is expanded by the remote shell instead. Ask bash what it would actually
+        pass rather than eyeballing the quoting.
+        """
+        cfg = _transform_cfg(defaults, extra_args="--flag one --other two")
+        run = _render(launcher["run"], cfg, _BINDINGS)
+        invocation = next(
+            line for line in run.splitlines() if '"${DPK_ARGS[@]}"' in line
+        )
+        tail = invocation.split('"${DPK_ARGS[@]}"', 1)[1]
+        probe = f'set -- {tail}\nprintf "%s\\n" "$#"'
+        out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True)
+        assert out.stdout.strip() == "4", f"bash saw {out.stdout!r}"
+
+    def test_extra_args_coexist_with_args(self, launcher, defaults):
+        """Rendered args come first, so extra_args can override them downstream."""
+        cfg = _transform_cfg(
+            defaults, args={"tkn_chunk_size": 0}, extra_args="--tkn_text_lang en"
+        )
+        run = _render(launcher["run"], cfg, _BINDINGS)
+        assert run.index("--tkn_chunk_size") < run.index("--tkn_text_lang")
+
+    def test_extra_args_render_valid_shell(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, extra_args="--flag 'a value' --bare")
+        assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
+
+    def test_command_mode_ignores_extra_args(self, launcher, defaults):
+        """extra_args belongs to the derived invocation, which command mode skips."""
+        cfg = dict(defaults, command="echo hi", extra_args="--should-not-appear")
+        run = _render(launcher["run"], cfg, _BINDINGS)
+        assert "--should-not-appear" not in run
+
+
 class TestIoWiring:
     def test_each_binding_is_exported(self, launcher, defaults):
         cfg = _transform_cfg(defaults)

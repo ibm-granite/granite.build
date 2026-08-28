@@ -1,0 +1,57 @@
+# YAML-driven spec for test_skypilot_slurm_dpk_default_output.py (located by the
+# test/ <-> test-data/ helper, so this pairing holds in both test modes).
+#
+# Tokenization with `output_path` omitted, so the step falls back to ./output in
+# its working directory. Reaching SUCCESS proves the default resolves to a real
+# absolute path on a remote node and that the marker built from it registers the
+# output — see the sibling build.yaml for why the render tests cannot show that.
+targets:
+  - tokenize
+target_expectations:
+  # step_count 2: the queued hfpull for the hf:// input plus the dpk step.
+  # skypilot/slurm does not set `inline: true` on its hf assetstore pull (unlike
+  # skypilot/aws), so the download is its own step. The env:// output moves no
+  # bytes and queues no push step.
+  #
+  # jobstats_count is not asserted under standalone's NoopLineageStore but is kept
+  # accurate. CALIBRATE against the first green run.
+  - target_name: tokenize
+    step_count: 2              # hfpull(docs) + dpk
+    input_artifact_count: 1    # docs
+    # The assertion that matters here: the output registered even though the build
+    # named no path for it. The artifact exists only because the step defaulted to
+    # ./output, absolutized it, and emitted it in the marker.
+    output_artifact_count: 1   # tokens (env://, registered inline from the marker)
+    jobstats_count: 1
+    # Pin the transform this fixture ran. Read from step_storage, so it holds
+    # under NoopLineageStore.
+    #
+    # NOTE: the omission of `output_path` deliberately is NOT asserted here.
+    # expected_steps is checked against the PERSISTED step config, which records
+    # only the keys the build.yaml supplied — step-template.yaml's own defaults are
+    # not merged into it. So an omitted `output_path` is absent from the stored
+    # config rather than present as "", and `_assert_contains_subset` requires
+    # every expected key to exist ("missing key 'output_path'"). Asserting the
+    # absence is therefore not expressible here; `output_artifact_count: 1` below
+    # is what proves the default did its job, since the output could not have
+    # registered at all without it.
+    expected_steps:
+      - step_uri: space://steps/dpk
+        config:
+          dpk_config:
+            transform: tokenization2arrow
+# Same Space as the sibling fixtures: Mode 1 resolves space://steps/dpk from the
+# locally rendered steps/dpk/skypilot/space/; `make publish-step` rewrites this to
+# configurations/spaces/local for Mode 2.
+space_uri: ../../space
+# Happy-path run only — the job is short, so there is no stable RUNNING window to
+# cancel in.
+tests:
+  - runner
+# No injected synthetic failure: a wrong default would show up as a missing or
+# bogus artifact, which output_artifact_count already catches.
+simulate_step_failure: false
+# One SLURM job doing a runtime uv install plus a tokenizer download. The
+# [tokenization2arrow] extra is light next to [pii-redactor], but a cold node still
+# pays the install, so allow headroom.
+timeout_minutes: 30
