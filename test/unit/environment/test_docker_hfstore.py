@@ -560,3 +560,39 @@ def test_pull_asset_hfstore_bucket_cache_path_omits_revision(tmp_path):
         result = pull_asset_hfstore(uri, store, sc)
 
     assert result == tmp_path / "cache" / "org" / "my-bucket"
+
+
+@pytest.mark.asyncio
+async def test_push_asset_hfstore_tolerates_non_hfstore_assetstore(tmp_path):
+    """A non-Hfstore assetstore must not abort the push.
+
+    ``get_enterprise_organizations()`` is declared only on ``Hfstore``, and this
+    inline path (shared by the Bash and Docker environments) has no isinstance
+    assert — so reading it directly would turn any other assetstore into a fatal
+    AttributeError on a best-effort code path. Absent the list we fall back to
+    None, which ``is_enterprise_hf_org`` treats as "every org is Enterprise",
+    i.e. the pre-split behavior.
+    """
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+    # A double WITHOUT get_enterprise_organizations (spec= omits it).
+    store = MagicMock(spec=["get_secrets", "resolve_token"])
+    store.get_secrets.return_value = {"HF_TOKEN": "tok"}
+    store.resolve_token.return_value = "tok"
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+    with (
+        patch(
+            "gbserver.environment.local_assets.resolve_space_resource_group_id",
+            return_value="rg-id",
+        ) as mock_resolve,
+        patch.object(HfURI, "push", return_value=True) as mock_push,
+    ):
+        result = push_asset_hfstore(
+            src=str(src), binding_id="out", uri=uri, assetstore=store
+        )
+
+    assert result is uri
+    # None => treated as Enterprise, so resolution still runs (pre-split behavior).
+    mock_resolve.assert_called_once()
+    assert mock_push.call_args.kwargs["resource_group_id"] == "rg-id"

@@ -164,8 +164,8 @@ def push_asset_hfstore(
     space_name = space_config.get("space", {}).get("name") or None
 
     # TODO: use the resolved space name above instead of hardcoding "public".
-    # Only reachable on the Enterprise path below — a non-Enterprise push never
-    # consults the space at all.
+    # Only *consulted* on the Enterprise path below (a non-Enterprise push never
+    # resolves a resource group), though it is still logged for either.
     space_name = "public"
 
     # Resource groups exist only in HF Enterprise organizations, and which orgs
@@ -173,17 +173,21 @@ def push_asset_hfstore(
     # ``config.enterprise_organizations``). For a non-Enterprise org — an
     # individual user namespace or a plain community org — skip resolution
     # entirely: no space lookup, no HF API call.
-    #
-    # Fall back to the server HF token when no assetstore is supplied.
-    from gbserver.types.constants import get_hf_token
+    from gbserver.asset.hfstore import Hfstore
 
-    token = (
-        assetstore.resolve_token(hfuri) if assetstore is not None else get_hf_token()
-    )
     organization = hfuri.get_owner()
+    # Only Hfstore declares the Enterprise org list; any other assetstore (or
+    # none) falls back to None, which is_enterprise_hf_org() treats as "every org
+    # is Enterprise" — the pre-split behavior. Guarded by isinstance rather than
+    # read directly, because a non-Hfstore would otherwise raise AttributeError:
+    # nothing in resource-group resolution on this best-effort path should be
+    # able to abort the push.
     enterprise_orgs = (
-        assetstore.get_enterprise_organizations() if assetstore is not None else None
+        assetstore.get_enterprise_organizations()
+        if isinstance(assetstore, Hfstore)
+        else None
     )
+
     resource_group_id = None
     if not is_enterprise_hf_org(organization, enterprise_orgs):
         logger.info(
@@ -197,6 +201,16 @@ def push_asset_hfstore(
         # scope), so a miss here is expected. Don't abort — log and push with
         # resource_group_id = None: HfURI.push -> create_repo(exist_ok=True)
         # succeeds for an existing repo, and surfaces its own error otherwise.
+        # Resolved here, not above: the non-Enterprise branch never needs a
+        # token, and get_hf_token() should not run for a push that skips
+        # resource groups entirely.
+        from gbserver.types.constants import get_hf_token
+
+        token = (
+            assetstore.resolve_token(hfuri)
+            if assetstore is not None
+            else get_hf_token()
+        )
         try:
             resource_group_id = resolve_space_resource_group_id(
                 space_name=space_name,
