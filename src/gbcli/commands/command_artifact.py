@@ -1042,23 +1042,33 @@ def register(
             hf_revision = metadata["revision"]
             uri_has_revision = bool(hf_revision) and hf_revision != HF_REVISION_DEFAULT
 
-            # Owner, repo and (when present) revision are encoded in the URI;
-            # if the matching flag was also supplied it must agree.
-            if hf_organization and hf_organization != hf_owner:
+            # Type, owner, repo and (when present) revision are all encoded in
+            # the URI; any matching flag the user also passed must agree. This
+            # keeps the HF path as strict as the Lakehouse path, which rejects
+            # every such flag alongside a URI. Each entry is
+            # (flag_name, flag_value, uri_field, uri_value); the revision entry
+            # is included only when the URI actually carried one.
+            conflicts = [
+                ("--type", type, "type", hf_type),
+                ("--hf-organization", hf_organization, "organization", hf_owner),
+                ("--label/--repo", label, "repo", hf_repo),
+            ]
+            if uri_has_revision:
+                conflicts.append(("--revision", revision, "revision", hf_revision))
+            for flag_name, flag_value, uri_field, uri_value in conflicts:
+                if flag_value and flag_value != uri_value:
+                    click.echo(
+                        f"❌ Error: {flag_name} ('{flag_value}') conflicts with the {uri_field} in the URI ('{uri_value}').",
+                        err=True,
+                    )
+                    ctx.exit(1)
+
+            # Buckets carry no revision (the URI layer forces it empty), so a
+            # --revision here can't be reconciled against the URI above — reject
+            # it outright rather than silently forwarding it.
+            if revision and hf_type == "bucket":
                 click.echo(
-                    f"❌ Error: --hf-organization ('{hf_organization}') conflicts with the organization in the URI ('{hf_owner}').",
-                    err=True,
-                )
-                ctx.exit(1)
-            if label and label != hf_repo:
-                click.echo(
-                    f"❌ Error: --label/--repo ('{label}') conflicts with the repo in the URI ('{hf_repo}').",
-                    err=True,
-                )
-                ctx.exit(1)
-            if uri_has_revision and revision and revision != hf_revision:
-                click.echo(
-                    f"❌ Error: --revision ('{revision}') conflicts with the revision in the URI ('{hf_revision}').",
+                    f"❌ Error: --revision ('{revision}') cannot be used with a bucket URI; buckets have no revision.",
                     err=True,
                 )
                 ctx.exit(1)

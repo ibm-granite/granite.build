@@ -199,6 +199,59 @@ def test_revision_flag_conflicts_with_uri_revision(register_env):
     register_env.assert_not_called()
 
 
+def test_type_flag_conflicts_with_uri_type(register_env):
+    """`-t model` alongside a dataset URI is rejected, not silently overwritten."""
+    result = _invoke(
+        [
+            "--uri",
+            "hf:///datasets/org/ds",
+            "-t",
+            "model",
+            "--artifact-name",
+            "ds",
+            "--certify-no-restrictions",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "conflicts with the type in the URI" in result.output
+    register_env.assert_not_called()
+
+
+def test_type_flag_matching_uri_type_is_ok(register_env):
+    """A `-t` that agrees with the URI type is accepted."""
+    result = _invoke(
+        [
+            "--uri",
+            "hf:///datasets/org/ds",
+            "-t",
+            "dataset",
+            "--artifact-name",
+            "ds",
+            "--certify-no-restrictions",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert register_env.call_args.kwargs["type"] == "dataset"
+
+
+def test_revision_rejected_on_bucket_uri(register_env):
+    """A bucket has no revision, so `--revision` on a bucket URI is rejected."""
+    result = _invoke(
+        [
+            "--uri",
+            "hf:///buckets/org/b",
+            "--revision",
+            "v1",
+            "--artifact-name",
+            "b",
+            "--certify-no-restrictions",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "buckets have no revision" in result.output
+    register_env.assert_not_called()
+
+
 def test_malformed_hf_uri_clean_error(register_env):
     """A malformed hf:// URI produces a clean CLI error, not a traceback."""
     result = _invoke(
