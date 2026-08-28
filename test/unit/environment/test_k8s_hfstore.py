@@ -12,6 +12,7 @@ Two things are covered here:
 
 import asyncio
 import re
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -167,26 +168,83 @@ class TestSharedPvcPermissions:
     supplies the group; the umask supplies the bits.
     """
 
-    @pytest.mark.parametrize("template", CONTAINER_TEMPLATES, ids=lambda p: p.name)
-    def test_umask_applied_before_workload(self, template):
-        """Every step container sets the umask, immediately after `set -o pipefail`.
+    @staticmethod
+    def _umask_guard(template: Path) -> list[str]:
+        """Return the umask guard block from a container template, de-indented."""
+        lines = template.read_text(encoding="utf-8").splitlines()
+        starts = [i for i, ln in enumerate(lines) if ln.strip().startswith("GB_UMASK=")]
+        assert len(starts) == 1, f"expected one GB_UMASK block in {template.name}"
+        i = starts[0]
+        end = next(n for n in range(i, len(lines)) if lines[n].strip() == "fi")
+        indent = len(lines[i]) - len(lines[i].lstrip())
+        return [ln[indent:] for ln in lines[i : end + 1]]
 
-        Ordering matters: the umask has to be in effect before anything creates
+    @pytest.mark.parametrize("template", CONTAINER_TEMPLATES, ids=lambda p: p.name)
+    def test_umask_set_before_anything_creates_files(self, template):
+        """The umask guard runs before the workload, and after `set -o pipefail`.
+
+        Ordering matters: the umask must be in effect before anything creates
         files, including the heredoc that writes command.sh.
         """
         lines = template.read_text(encoding="utf-8").splitlines()
-        idx = [i for i, ln in enumerate(lines) if ln.strip() == "set -o pipefail"]
-        assert len(idx) == 1, f"expected one `set -o pipefail` in {template.name}"
-        nxt = lines[idx[0] + 1].strip()
-        assert nxt.startswith("umask "), f"{template.name}: umask must follow pipefail"
-        # Must fall back to a group-writable default for charts whose values predate this.
-        assert '| default "0002"' in nxt, f"{template.name}: missing 0002 default"
+        pipefail = [i for i, ln in enumerate(lines) if ln.strip() == "set -o pipefail"]
+        gb_umask = [
+            i for i, ln in enumerate(lines) if ln.strip().startswith("GB_UMASK=")
+        ]
+        assert gb_umask, f"{template.name}: no umask guard"
+        assert pipefail, f"{template.name}: no `set -o pipefail`"
+        # The guard must come after pipefail and before the command.sh heredoc.
+        heredoc = [i for i, ln in enumerate(lines) if "command.sh" in ln]
+        assert min(pipefail) < gb_umask[0], f"{template.name}: umask precedes pipefail"
+        if heredoc:
+            assert gb_umask[0] < min(
+                heredoc
+            ), f"{template.name}: umask after command.sh"
+
+    @pytest.mark.parametrize("template", CONTAINER_TEMPLATES, ids=lambda p: p.name)
+    def test_umask_falls_back_to_group_writable_default(self, template):
+        """Charts whose values predate `k8s.umask` still get 0002."""
+        guard = "\n".join(self._umask_guard(template))
+        assert '| default "0002"' in guard, f"{template.name}: missing 0002 default"
+        assert "umask 0002" in guard, f"{template.name}: no safe fallback"
+
+    @pytest.mark.parametrize(
+        "value,expected,warns",
+        [
+            ("0002", "0002", False),
+            ("0027", "0027", False),
+            ("002", "0002", False),
+            # YAML coerces an unquoted 0027 to the int 23, which bash would read
+            # as octal 0023 — looser, not tighter. Must be rejected, not applied.
+            ("23", "0002", True),
+            # 0022 unquoted becomes 18, which is not valid octal at all.
+            ("18", "0002", True),
+            ("2", "0002", True),
+            ("abc", "0002", True),
+            ("", "0002", True),
+        ],
+    )
+    def test_umask_guard_rejects_malformed_values(self, value, expected, warns):
+        """A misconfigured umask must be visible, never silently wrong.
+
+        `set -e` is not in effect in the prologue, so a bare `umask 18` would fail
+        and be swallowed, leaving the pod at the image default 0022.
+        """
+        guard = self._umask_guard(CONTAINER_TEMPLATES[0])
+        # Emulate helm substituting the value into the first line.
+        script = "\n".join([f'GB_UMASK="{value}"'] + guard[1:])
+        proc = subprocess.run(
+            ["bash", "-c", f"set -o pipefail\n{script}\necho EFFECTIVE=$(umask)"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert f"EFFECTIVE={expected}" in proc.stdout, proc.stdout
+        assert ("WARNING" in proc.stderr) is warns, proc.stderr
 
     def test_umask_default_is_a_quoted_string(self):
-        """An unquoted 0002 would be parsed by YAML as the integer 2.
-
-        Guards the octal trap: `umask 0022` written unquoted becomes `umask 18`.
-        """
+        """An unquoted 0002 would be parsed by YAML as the integer 2."""
         text = (CHART_DIR / "values-default.yaml").read_text(encoding="utf-8")
         match = re.search(r"^\s*umask:\s*(.+)$", text, re.MULTILINE)
         assert match, "no umask key in values-default.yaml"

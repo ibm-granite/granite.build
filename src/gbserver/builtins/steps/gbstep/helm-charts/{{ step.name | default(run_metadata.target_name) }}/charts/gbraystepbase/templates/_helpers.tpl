@@ -338,7 +338,18 @@ spec:
             - -c
             - |
               set -o pipefail
-              umask {{ .Values.k8s.umask | default "0002" }}
+              {{- /* Group-writable shared-PVC state; see the k8s chart values-default.yaml.
+                     NOTE: this rayapp path is currently unreachable — templates/appwrapper.yaml
+                     hardcodes $jobType to "job" — so this is kept only for parity with the
+                     gbstepbase prologues if Ray is ever enabled. */}}
+              GB_UMASK="{{ .Values.k8s.umask | default "0002" }}"
+              if [[ "$GB_UMASK" =~ ^0?[0-7]{3}$ ]]; then
+                umask "$GB_UMASK"
+              else
+                echo "WARNING: ignoring invalid k8s.umask '$GB_UMASK'"\
+                     "(quote it in environment.yaml, e.g. umask: \"0002\"); using 0002" >&2
+                umask 0002
+              fi
               echo
               {{- include "gbraystepbase.tplAdditionalFiles" . | trimAll " " | indent 8 }}
               {{- range $filename, $value := .filesfromconfig }}
