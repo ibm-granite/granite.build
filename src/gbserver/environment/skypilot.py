@@ -112,6 +112,7 @@ async def _abort_shielded_request(
             deterministic name — the safety net that runs even when there is no
             request_id to abort.
     """
+
     async def _do_abort() -> None:
         # The reclaim body, run as a shielded task so repeated cancels can't
         # interrupt it before on_abort() (the by-name reclaim) has run.
