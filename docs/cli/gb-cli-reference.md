@@ -58,7 +58,7 @@ Upload, download, register, and tag artifacts produced or consumed by builds.
 
 | Subcommand | Purpose |
 |------------|---------|
-| `gb artifact push --from-local <path> --artifact-name <name> --type <type>` | Upload and register a local artifact. `--type` is one of `model`, `table`, `fileset`, `dataset`, `bucket`. |
+| `gb artifact push --from-local <path> --artifact-name <name> --type <type>` | Upload and register a local artifact. `--type` is one of `model`, `table`, `fileset`, `dataset`, `bucket`. Add `--store hf` to push to HuggingFace (`--hf-organization` selects the org; `--resource-group-id` applies to HF Enterprise orgs only — see [HuggingFace push](../builds/hf-push.md#enterprise-vs-non-enterprise-organizations)). |
 | `gb artifact register --artifact-name <name>` | Register an existing artifact at Lakehouse or HuggingFace without uploading. |
 | `gb artifact list` | List artifacts; filter by build, space, user, tag, or checksum. |
 | `gb artifact download <artifact-id>` | Download by UUID or URI. |

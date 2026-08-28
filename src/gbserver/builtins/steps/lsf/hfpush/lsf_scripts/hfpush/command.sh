@@ -20,6 +20,13 @@ HF_REVISION='{{ hfp.revision }}'
 HF_PRIVATE='{{ hfp.private }}'
 HF_TYPE='{{ hfp.hf.type }}'
 HF_RESOURCE_GROUP_ID='{{ hfp.hf.resource_group_id }}'
+# Jinja renders a Python None as the literal string "None", which is non-empty
+# to bash. Normalize it to empty so the create body below omits resourceGroupId
+# (the non-Enterprise / no-resource-group case). Mirrors the skypilot step's
+# `rg != "None"` guard.
+if [[ "${HF_RESOURCE_GROUP_ID}" == "None" ]]; then
+    HF_RESOURCE_GROUP_ID=""
+fi
 BINDING_ID='{{ hfp.binding_id }}'
 
 # Mocked when GBTEST_MOCK_HF is "true" (case-insensitive), matching

@@ -41,13 +41,24 @@ the cache, or it would silently receive/poison the default id. So this module:
 id. The table read/write lives here.
 """
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional, Tuple
 
 from gbcommon.uri.hf import HF_HOST, HfURI
+from gbcommon.utils.hf_utils import is_enterprise_hf_org
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.utils.logger import get_logger
 
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from gbserver.asset.hfstore import Hfstore
+    from gbserver.types.buildconfig import BuildTargetOutputConfig
+    from gbserver.types.environmentconfig import StorePush
+
 logger = get_logger(__name__)
+
+# Key in a store_push ``config.hf`` block that opts an Enterprise org out of
+# resource groups. Consumed here and stripped before the config reaches a
+# worker step template.
+USE_RESOURCE_GROUP_KEY = "use_resource_group"
 
 
 def resolve_space_resource_group_id(
@@ -132,3 +143,147 @@ def resolve_space_resource_group_id(
         )
 
     return resolved_id
+
+
+def _non_enterprise_rg_error(organization: str, pinned: str) -> str:
+    """Build the error message for a resource group pinned on a non-Enterprise org."""
+    return (
+        f"Resource group '{pinned}' was configured for HuggingFace organization "
+        f"'{organization}', but '{organization}' is not an HF Enterprise "
+        "organization. Resource groups apply only to Enterprise organizations. "
+        "Remove store_push.config.hf.resource_group_id / resource_group_name, "
+        f"or add '{organization}' to enterprise_organizations in the hf asset "
+        "store's store.yaml."
+    )
+
+
+def merge_hf_push_config(
+    storepush_config: Optional["StorePush"] = None,
+    output_config: Optional["BuildTargetOutputConfig"] = None,
+) -> dict:
+    """Merge the ``hf`` push settings from the environment and build.yaml.
+
+    The environment-level ``storepush_config`` is applied first and the
+    per-output ``store_push`` from build.yaml overrides it, matching the
+    documented precedence in ``docs/builds/hf-push.md``.
+
+    Args:
+        storepush_config: Environment-level push configuration.
+        output_config: Per-output configuration from build.yaml.
+
+    Returns:
+        The merged ``hf`` config dict (empty when neither source supplies one).
+    """
+    merged: dict = {}
+    if storepush_config is not None and storepush_config.config:
+        hf_cfg = storepush_config.config.get("hf") or {}
+        if isinstance(hf_cfg, dict):
+            merged.update(hf_cfg)
+    if output_config is not None and output_config.store_push is not None:
+        hf_cfg = (output_config.store_push.config or {}).get("hf") or {}
+        if isinstance(hf_cfg, dict):
+            merged.update(hf_cfg)
+    return merged
+
+
+def sanitize_hf_step_overlay(hf_cfg: dict) -> dict:
+    """Drop keys that must never reach a worker step's ``hfpush_config``.
+
+    ``use_resource_group`` is consumed during resolution (it opts an Enterprise
+    org out of resource groups); leaking it verbatim into the emitted step
+    config would hand the LSF/Helm/SkyPilot templates a key they do not
+    understand.
+
+    Args:
+        hf_cfg: An ``hf`` config dict from a push configuration.
+
+    Returns:
+        A copy without the resolution-only keys.
+    """
+    return {k: v for k, v in (hf_cfg or {}).items() if k != USE_RESOURCE_GROUP_KEY}
+
+
+def resolve_hfpush_resource_group_id(
+    hfuri: HfURI,
+    assetstore: "Hfstore",
+    space_name: Optional[str],
+    storepush_config: Optional["StorePush"] = None,
+    output_config: Optional["BuildTargetOutputConfig"] = None,
+) -> Tuple[Optional[str], bool, dict]:
+    """Resolve the HF resource group id for a push, honoring the Enterprise split.
+
+    Resource groups exist only in HF Enterprise organizations. Which orgs are
+    Enterprise is configuration-driven (``enterprise_organizations`` in the hf
+    asset store's ``store.yaml``) because no non-admin HF API distinguishes an
+    Enterprise org from an individual user namespace.
+
+    For a non-Enterprise org this skips resource group resolution entirely: no
+    HF API call, no space lookup, and nothing cached.
+
+    Args:
+        hfuri: Target HuggingFace URI; its owner is the organization.
+        assetstore: The ``Hfstore`` supplying the token and the Enterprise list.
+        space_name: GB space name used to derive the default resource group.
+        storepush_config: Environment-level push configuration (lower priority).
+        output_config: Per-output build.yaml configuration (higher priority).
+
+    Returns:
+        A ``(resource_group_id, private, hf_config)`` tuple, where
+        ``resource_group_id`` is ``None`` when no resource group applies and
+        ``hf_config`` is the merged ``hf`` settings for logging/overlay use.
+
+    Raises:
+        ValueError: If a resource group is pinned for a non-Enterprise org, or
+            if ``use_resource_group: false`` is combined with a pinned group.
+    """
+    hf_cfg = merge_hf_push_config(storepush_config, output_config)
+    resource_group_id = hf_cfg.get("resource_group_id") or None
+    resource_group_name = hf_cfg.get("resource_group_name") or None
+    private = hf_cfg.get("private", True)
+    use_resource_group = hf_cfg.get(USE_RESOURCE_GROUP_KEY, True)
+
+    organization = hfuri.get_owner()
+    enterprise = is_enterprise_hf_org(
+        organization, assetstore.get_enterprise_organizations()
+    )
+    pinned = resource_group_id or resource_group_name
+
+    if not enterprise:
+        if pinned:
+            raise ValueError(_non_enterprise_rg_error(organization, pinned))
+        logger.info(
+            "HuggingFace organization '%s' is not an Enterprise org; "
+            "skipping resource group resolution",
+            organization,
+        )
+        return None, private, hf_cfg
+
+    if not use_resource_group:
+        if pinned:
+            raise ValueError(
+                f"'{USE_RESOURCE_GROUP_KEY}: false' cannot be combined with an "
+                f"explicit resource group ('{pinned}') for organization "
+                f"'{organization}'. Remove one of them."
+            )
+        logger.info(
+            "'%s: false' configured for organization '%s'; pushing without a "
+            "resource group",
+            USE_RESOURCE_GROUP_KEY,
+            organization,
+        )
+        return None, private, hf_cfg
+
+    if resource_group_id:
+        # A caller-pinned id is used verbatim and never routed through
+        # resolve_space_resource_group_id, whose cache represents only the
+        # space's default group.
+        return resource_group_id, private, hf_cfg
+
+    resolved_id = resolve_space_resource_group_id(
+        space_name=space_name,
+        organization=organization,
+        token=assetstore.resolve_token(hfuri),
+        resource_group_name=resource_group_name,
+        host=hfuri.get_host(),
+    )
+    return resolved_id, private, hf_cfg

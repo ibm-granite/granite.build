@@ -50,6 +50,11 @@ def hf_token() -> str:
 
 # HuggingFace defaults
 HF_ORGANIZATION_DEFAULT = gb_environment_config().hf_organization or "ibm-research"
+# HF orgs that use Enterprise resource groups. None means every org is treated as
+# Enterprise (the behavior from before the Enterprise/non-Enterprise split). Keep
+# in sync with config.enterprise_organizations in the hf asset store's store.yaml,
+# which the server-side push path reads (the CLI cannot read that file).
+HF_ENTERPRISE_ORGANIZATIONS = gb_environment_config().hf_enterprise_organizations
 
 # gbcli
 _GBCLI_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"

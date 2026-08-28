@@ -24,6 +24,7 @@ from gbcli.utils.gbconstants import (
     ARTIFACT_LIST_HEADERS,
     CLIPBOARD_CHAR,
     DEFAULT_CHECKSUM_CONCURRENCY,
+    HF_ENTERPRISE_ORGANIZATIONS,
     HF_ORGANIZATION_DEFAULT,
     LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
     LAKEHOUSE_FILESET_TABLE_NAME,
@@ -59,6 +60,7 @@ from gbcli.utils.versionutil import check_current_and_latest_versions
 from gbcommon.uri.uri import URI
 from gbcommon.utils.hf_utils import (
     convert_hf_uri_to_url,
+    is_enterprise_hf_org,
     parse_hf_uri,
 )
 
@@ -499,12 +501,28 @@ def push(
             if not quiet:
                 click.echo(f"HuggingFace token obtained successfully!")
 
+            # Resource groups exist only in HF Enterprise organizations, so a
+            # non-Enterprise org (an individual user namespace or a plain
+            # community org) skips resolution entirely — and rejects a pinned id,
+            # which cannot mean anything there.
+            org = hf_organization or HF_ORGANIZATION_DEFAULT
+            hf_is_enterprise = is_enterprise_hf_org(org, HF_ENTERPRISE_ORGANIZATIONS)
+            if resource_group_id and not hf_is_enterprise:
+                click.echo(
+                    f"❌ --resource-group-id was given for HuggingFace "
+                    f"organization '{org}', but '{org}' is not an HF Enterprise "
+                    f"organization. Resource groups apply only to Enterprise "
+                    f"organizations. Drop --resource-group-id, or configure "
+                    f"'{org}' as an enterprise organization.",
+                    err=True,
+                )
+                sys.exit(1)
+
             # Resolve resource group id from the GB space only when the user did
             # NOT pass --resource-group-id. An explicit id is used verbatim and is
             # never reflected back into the cached space table (the user may be
             # targeting a group other than the space's default).
-            if not resource_group_id:
-                org = hf_organization or HF_ORGANIZATION_DEFAULT
+            if hf_is_enterprise and not resource_group_id:
 
                 # Resolve the space from the local cache (populated by
                 # `space list --all --refresh`) to read its cached default
@@ -525,7 +543,12 @@ def push(
                     resolved_space_name = (
                         global_space.get("name") or resolved_space_name
                     )
-                    resource_group_id = global_space.get("hf_default_resource_group_id")
+                    cached_rg_id = global_space.get("hf_default_resource_group_id")
+                    # resolve_space() fills unresolvable profile spaces with the
+                    # literal "<unknown>" (a truthy string), which would be sent
+                    # to create_repo as if it were a real id. Treat it as absent.
+                    if cached_rg_id and cached_rg_id != "<unknown>":
+                        resource_group_id = cached_rg_id
                 if not resource_group_id:
                     if not resolved_space_name:
                         click.echo(
@@ -1122,6 +1145,21 @@ def register(
             err=True,
         )
         ctx.exit(1)
+
+    # Resource groups exist only in HF Enterprise organizations; pinning one for
+    # a non-Enterprise org cannot mean anything, so reject it up front.
+    if store == "hf" and resource_group_id:
+        register_org = hf_organization or HF_ORGANIZATION_DEFAULT
+        if not is_enterprise_hf_org(register_org, HF_ENTERPRISE_ORGANIZATIONS):
+            click.echo(
+                f"❌ --resource-group-id was given for HuggingFace organization "
+                f"'{register_org}', but '{register_org}' is not an HF Enterprise "
+                f"organization. Resource groups apply only to Enterprise "
+                f"organizations. Drop --resource-group-id, or configure "
+                f"'{register_org}' as an enterprise organization.",
+                err=True,
+            )
+            ctx.exit(1)
 
     # === Type-specific handling ===
     # Prompts, tables, revisions and filesets/tables are all Lakehouse

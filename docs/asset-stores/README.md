@@ -89,8 +89,13 @@ A store is defined by a `store.yaml` ([`AssetStoreConfig`](../../src/gbserver/ty
 that declares which URIs it handles and any store-specific settings:
 
 - `base_uri` or `uri_regex` — the URIs this store handles (used to route a URI to the right store).
-- `config` — store-specific settings: the secret names above, plus e.g. COS `cos_endpoint` / `cos_region`
-  and Lakehouse `env`.
+- `config` — store-specific settings: the secret names above, plus e.g. COS `cos_endpoint` / `cos_region`,
+  Lakehouse `env`, and HuggingFace `enterprise_organizations`.
+
+For the `hf` store, `config.enterprise_organizations` lists the HF organizations that use
+Enterprise resource groups; pushes to any other org skip resource groups entirely. Omitting
+the key treats every org as Enterprise. See
+[HuggingFace push — Enterprise vs non-Enterprise organizations](../builds/hf-push.md#enterprise-vs-non-enterprise-organizations).
 
 Stores are referenced from a build/environment as `space://assetstores/<name>`, resolved against the
 space's `base_uris` (the same mechanism as steps and environments — see

@@ -184,3 +184,147 @@ class TestSkypilotHfpushStepParity:
         assert "hf upload" not in cfg["run"]
         # CLI extra dropped since the upload is done via HfApi now.
         assert "[cli]" not in cfg["setup"]
+
+
+class TestHfstoreEnterpriseOrganizations:
+    """``enterprise_organizations`` from store.yaml drives the Enterprise split."""
+
+    @staticmethod
+    def _store(store_config):
+        from gbserver.types.assetstoreconfig import AssetStoreConfig
+
+        return Hfstore(AssetStoreConfig(**store_config))
+
+    def test_absent_key_returns_none(self):
+        """None (not []) so callers keep the pre-split "all Enterprise" behavior."""
+        store = self._store({"base_uri": "hf:/", "config": {"token_secretname": "T"}})
+        assert store.get_enterprise_organizations() is None
+
+    def test_absent_config_block_returns_none(self):
+        store = self._store({"base_uri": "hf:/"})
+        assert store.get_enterprise_organizations() is None
+
+    def test_no_store_config_returns_none(self):
+        """A store built without a config (e.g. ad-hoc) must not blow up."""
+        assert Hfstore(None).get_enterprise_organizations() is None
+
+    def test_returns_configured_list(self):
+        store = self._store(
+            {
+                "base_uri": "hf:/",
+                "config": {"enterprise_organizations": ["ibm-research", "ibm-granite"]},
+            }
+        )
+        assert store.get_enterprise_organizations() == ["ibm-research", "ibm-granite"]
+
+    def test_explicit_empty_list_is_preserved(self):
+        """[] is a real opt-out and must not collapse to None."""
+        store = self._store(
+            {"base_uri": "hf:/", "config": {"enterprise_organizations": []}}
+        )
+        assert store.get_enterprise_organizations() == []
+
+    def test_explicit_null_returns_none(self):
+        store = self._store(
+            {"base_uri": "hf:/", "config": {"enterprise_organizations": None}}
+        )
+        assert store.get_enterprise_organizations() is None
+
+    def test_non_list_raises(self):
+        import pytest
+
+        store = self._store(
+            {"base_uri": "hf:/", "config": {"enterprise_organizations": "ibm-research"}}
+        )
+        with pytest.raises(ValueError, match="must be a list"):
+            store.get_enterprise_organizations()
+
+    def test_shipped_store_yaml_declares_enterprise_orgs(self):
+        """Guard the shipped standalone config against accidental removal."""
+        path = (
+            Path(__file__).resolve().parents[3]
+            / "configurations"
+            / "assets"
+            / "assetstores"
+            / "hf"
+            / "store.yaml"
+        )
+        cfg = yaml.safe_load(path.read_text())
+        orgs = cfg["config"]["enterprise_organizations"]
+        assert "ibm-research" in orgs
+        assert "ibm-granite" in orgs
+
+
+class TestLsfHfpushNoResourceGroup:
+    """The LSF hfpush script must omit resourceGroupId when there is no group.
+
+    Jinja renders a Python ``None`` as the literal string ``"None"``, which is
+    non-empty to bash — without normalization the worker would POST
+    ``"resourceGroupId":"None"`` and the HF create call would fail. This is the
+    common case now that non-Enterprise orgs resolve to no resource group.
+    """
+
+    @staticmethod
+    def _command_sh() -> str:
+        return (
+            Path(__file__).resolve().parents[3]
+            / "src"
+            / "gbserver"
+            / "builtins"
+            / "steps"
+            / "lsf"
+            / "hfpush"
+            / "lsf_scripts"
+            / "hfpush"
+            / "command.sh"
+        ).read_text()
+
+    def test_script_normalizes_literal_none(self):
+        """The guard that maps the rendered "None" back to empty is present."""
+        sh = self._command_sh()
+        assert '"${HF_RESOURCE_GROUP_ID}" == "None"' in sh
+        assert 'HF_RESOURCE_GROUP_ID=""' in sh
+
+    def test_create_body_omits_resource_group_when_none(self):
+        """Render with resource_group_id=None and run the resulting bash logic."""
+        import subprocess
+
+        from gbserver.utils.template import fill_template
+
+        rendered = fill_template(
+            self._command_sh(),
+            {
+                "config": {
+                    "hfpush_config": {
+                        "hf": {"resource_group_id": None, "type": "model"},
+                        "endpoint": "https://huggingface.co",
+                        "owner": "my-user",
+                        "repo": "my-model",
+                        "revision": "main",
+                        "private": True,
+                        "binding_id": "b",
+                        "path": "/tmp/x",
+                        "uri": "hf:///my-user/my-model",
+                    }
+                }
+            },
+        )
+        # Sanity: the raw render really does produce the literal "None".
+        assert "HF_RESOURCE_GROUP_ID='None'" in rendered
+
+        assigns = [
+            line
+            for line in rendered.splitlines()
+            if line.startswith(("HF_RESOURCE_GROUP_ID=", "HF_OWNER=", "HF_TYPE="))
+            or line.startswith("HF_REPO_NAME=")
+        ]
+        snippet = "\n".join(assigns) + (
+            '\nif [[ "${HF_RESOURCE_GROUP_ID}" == "None" ]]; then'
+            ' HF_RESOURCE_GROUP_ID=""; fi\n'
+            'if [[ -n "${HF_RESOURCE_GROUP_ID}" ]]; then echo WITH_RG;'
+            " else echo WITHOUT_RG; fi"
+        )
+        result = subprocess.run(
+            ["bash", "-c", snippet], capture_output=True, text=True, check=True
+        )
+        assert result.stdout.strip() == "WITHOUT_RG"

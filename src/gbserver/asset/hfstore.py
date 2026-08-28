@@ -18,7 +18,7 @@
 
 import os
 from pathlib import Path
-from typing import Dict, Optional, Self, Union
+from typing import Dict, List, Optional, Self, Union
 
 from huggingface_hub import create_repo, upload_file, upload_folder
 
@@ -74,6 +74,37 @@ class Hfstore(Assetstore):
             else self.DEFAULT_TOKEN_KEY
         )
         return {"token_secretname": token_key}
+
+    def get_enterprise_organizations(self) -> Optional[List[str]]:
+        """Return the Enterprise HF org names declared in store.yaml.
+
+        Read from ``config.enterprise_organizations``. ``None`` (the key is
+        absent) means *every* org is treated as Enterprise, preserving the
+        behavior from before the enterprise/non-enterprise split; callers pass
+        the result straight to :func:`is_enterprise_hf_org`, which encodes that
+        rule.
+
+        Returns:
+            The configured org names, or ``None`` when the key is absent.
+
+        Raises:
+            ValueError: If the key is present but is not a list.
+        """
+        if (
+            self.config
+            and isinstance(self.config.config, dict)
+            and "enterprise_organizations" in self.config.config
+        ):
+            orgs = self.config.config["enterprise_organizations"]
+            if orgs is None:
+                return None
+            if not isinstance(orgs, list):
+                raise ValueError(
+                    "assetstore config 'enterprise_organizations' must be a "
+                    f"list of org names, got {type(orgs).__name__}"
+                )
+            return [str(o) for o in orgs]
+        return None
 
     def get_asset_type(self, uri: URI) -> ArtifactType:
         assert isinstance(uri, HfURI)

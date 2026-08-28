@@ -195,9 +195,15 @@ def test_resolve_host_path_prefers_longest_prefix(docker_env, tmp_path):
 
 @pytest.fixture
 def push_assetstore():
-    """Mock assetstore with an HF_TOKEN in its secrets."""
+    """Mock assetstore with an HF_TOKEN in its secrets.
+
+    Declares the "org" namespace used by these tests as an HF Enterprise org so
+    the push path resolves a resource group; a non-Enterprise org skips
+    resolution by design (see is_enterprise_hf_org).
+    """
     store = MagicMock()
     store.get_secrets.return_value = {"HF_TOKEN": "test-hf-token"}
+    store.get_enterprise_organizations.return_value = ["org"]
     return store
 
 
@@ -383,6 +389,9 @@ async def test_push_asset_hfstore_uses_cached_resource_group_id(tmp_path):
     store = MagicMock()
     store.get_secrets.return_value = {"HF_TOKEN": "tok"}
     store.resolve_token.return_value = "tok"
+    # "org" must be declared Enterprise, or the resource group is skipped by
+    # design (see is_enterprise_hf_org).
+    store.get_enterprise_organizations.return_value = ["org"]
     uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
 
     with (

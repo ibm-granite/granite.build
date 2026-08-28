@@ -18,7 +18,7 @@
 
 import logging
 import os
-from typing import Any, Dict, Optional, Self
+from typing import Any, Dict, List, Optional, Self
 
 from pydantic import BaseModel
 
@@ -105,6 +105,19 @@ class GBEnvConfig(BaseModel):
     hf_organization: str = ""
     """HuggingFace organization."""
 
+    hf_enterprise_organizations: Optional[List[str]] = None
+    """HF organizations that use Enterprise resource groups.
+
+    Used by the CLI (`gb artifact push/register --store hf`) to decide whether a
+    resource group applies. ``None`` means every org is treated as Enterprise,
+    preserving the behavior from before the Enterprise/non-Enterprise split.
+
+    Keep in sync with ``config.enterprise_organizations`` in the hf asset store's
+    ``store.yaml``, which the server-side push path reads. The duplication is
+    deliberate: store.yaml lives in the space's git repo and is loaded
+    server-side only, so the CLI cannot read it.
+    """
+
     # --- gbserver-origin fields ---
 
     dashboard_instance: str = ""
@@ -146,6 +159,7 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         server_log_application_name="llm-build-prod",
         branch_assets="gbspace-config",
         hf_organization="ibm-research",
+        hf_enterprise_organizations=["ibm-research", "ibm-granite"],
         feature_flags={
             "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
             "gbserver_artifact_filter": getenv_boolean(
@@ -176,6 +190,7 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         server_log_application_name="llm-build-staging",
         branch_assets="gbspace-config-dev",
         hf_organization="ibm-research",
+        hf_enterprise_organizations=["ibm-research", "ibm-granite"],
         feature_flags={
             "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
             "gbserver_artifact_filter": getenv_boolean(
@@ -206,6 +221,7 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         server_log_application_name="llm-build-dev",
         branch_assets="gbspace-config-dev",
         hf_organization="ibm-research",
+        hf_enterprise_organizations=["ibm-research", "ibm-granite"],
         feature_flags={
             "gbserver_build_events": getenv_boolean("GBSERVER_BUILD_EVENTS", True),
             "gbserver_artifact_filter": getenv_boolean(
@@ -236,6 +252,7 @@ _GB_ENVIRONMENT_CONFIGS: Dict[str, GBEnvConfig] = {
         server_log_application_name="gbserver-standalone",
         branch_assets="",
         hf_organization="ibm-research",
+        hf_enterprise_organizations=["ibm-research", "ibm-granite"],
         feature_flags={
             "build_start_via_github": False,
             "gbserver_build_events": True,

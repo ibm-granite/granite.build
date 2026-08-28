@@ -11,6 +11,7 @@ from gbcli.utils.gbconstants import (
     GB_DMF_LOADER_SIZE_LIMIT,
     GB_DMF_USE_CLASSIC_LOADER,
     GBSERVER_ARTIFACT_API,
+    HF_ENTERPRISE_ORGANIZATIONS,
     HF_ORGANIZATION_DEFAULT,
     HF_REVISION_DEFAULT,
     LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
@@ -55,6 +56,7 @@ from gbcli.utils.utils import (
     remove_suffix,
 )
 from gbcommon.types.gbenvconfig import gb_environment_config
+from gbcommon.utils.hf_utils import is_enterprise_hf_org
 
 if TYPE_CHECKING:
     from lakehouse.core import CopyAssetStatus
@@ -310,7 +312,11 @@ def upload_to_hf(
         raise Exception(
             "Error: No HuggingFace organization configured. Use --hf-organization or set hf_organization in the environment config."
         )
-    if not resource_group_id:
+    # Resource groups exist only in HF Enterprise organizations. For a
+    # non-Enterprise org (an individual user namespace or a plain community org)
+    # there is no group to attach, and HFRegistry passes resource_group_id=None
+    # straight through to create_repo/create_bucket, which is valid.
+    if not resource_group_id and is_enterprise_hf_org(org, HF_ENTERPRISE_ORGANIZATIONS):
         raise Exception(
             "Error: No HuggingFace resource group id provided. Pass resource_group_id explicitly or resolve it via lookup_hf_resource_group_id."
         )
