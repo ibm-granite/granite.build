@@ -285,8 +285,8 @@ yarn dev       # UI at https://localhost:3000
 **With a running gbserver** — copy the dev template and set the API URL:
 
 ```bash
-cp frontend/.env.local.example frontend/.env.local
-# then edit frontend/.env.local and uncomment:
+cp frontend/apps/standalone/.env.local.example frontend/apps/standalone/.env.local
+# then edit frontend/apps/standalone/.env.local and uncomment:
 # GBSERVER_API_URL=http://localhost:8080
 ```
 
