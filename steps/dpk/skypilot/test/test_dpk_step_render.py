@@ -269,7 +269,12 @@ class TestTransformArgs:
         cfg = _transform_cfg(defaults, args={"a_one": 1, "b_two": 2, "c_three": 3})
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _passthrough(argv) == [
-            "--a_one", "1", "--b_two", "2", "--c_three", "3",
+            "--a_one",
+            "1",
+            "--b_two",
+            "2",
+            "--c_three",
+            "3",
         ]
 
     def test_zero_is_passed_not_dropped(self, launcher, defaults):
@@ -332,7 +337,9 @@ class TestExtraArgs:
 
     def test_default_adds_nothing(self, launcher, defaults):
         """Empty extra_args contributes no argv beyond what `args` rendered."""
-        argv = _script_argv(_render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run")
+        argv = _script_argv(
+            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
+        )
         assert _passthrough(argv) == []
 
     def test_extra_args_are_appended_after_args(self, launcher, defaults):
@@ -341,7 +348,10 @@ class TestExtraArgs:
         )
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _passthrough(argv) == [
-            "--tkn_chunk_size", "0", "--tkn_text_lang", "en",
+            "--tkn_chunk_size",
+            "0",
+            "--tkn_text_lang",
+            "en",
         ]
 
     def test_extra_args_are_word_split_by_the_shell(self, launcher, defaults):
@@ -435,7 +445,9 @@ class TestVenvHandling:
         it arrives intact. The uv/UV_CACHE_DIR mechanics are the script's own
         contract, covered by test_dpk_setup_sh.py.
         """
-        argv = _script_argv(_render(launcher["setup"], _transform_cfg(defaults)), "setup")
+        argv = _script_argv(
+            _render(launcher["setup"], _transform_cfg(defaults)), "setup"
+        )
         assert _passthrough(argv) == [
             "data-prep-toolkit-transforms[tokenization2arrow]==1.1.8"
         ]
@@ -475,9 +487,7 @@ class TestRenderedShellIsValid:
         assert _bash_ok(_render(launcher["setup"], cfg))
         assert _bash_ok(_render(launcher["run"], cfg, {}))
 
-    def test_no_trailing_continuation_swallows_what_follows(
-        self, launcher, defaults
-    ):
+    def test_no_trailing_continuation_swallows_what_follows(self, launcher, defaults):
         """Regression guard, retargeted to the new seam.
 
         An earlier draft emitted args as backslash-continued lines, so the final
@@ -497,9 +507,7 @@ class TestRenderedShellIsValid:
         )
         # The invocation spans continuations by design; the LAST line of it (the
         # argv line) must not continue into anything.
-        argv_line = next(
-            line for line in run.splitlines() if "--artifact-id" in line
-        )
+        argv_line = next(line for line in run.splitlines() if "--artifact-id" in line)
         tail_idx = run.splitlines().index(argv_line)
         last = [l for l in run.splitlines()[tail_idx:] if l.strip()][-1]
         assert not last.rstrip().endswith("\\")

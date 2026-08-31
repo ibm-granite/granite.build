@@ -4,10 +4,33 @@ MY_LINE_BREAK="---------------------------"
 
 echo 'format start'
 
-# check changed files and
-# collect the relative file paths in an array
- mapfile -td '' files < <(git diff main...HEAD --name-only -z --format=)
-#mapfile -td '' files < <(git diff dev...HEAD --name-only -z --format=)
+# Fail loudly instead of formatting nothing. Without `pipefail` a failure in the
+# `git diff` below is swallowed by the pipe and the loop simply iterates zero
+# times, so the script prints "format start"/"format end" and exits 0 having
+# formatted NOTHING — which is what a missing `mapfile` used to do silently on
+# macOS's bash 3.2 (see below), letting unformatted code reach CI.
+set -o pipefail
+
+# Collect the changed files, NUL-delimited so a path containing whitespace stays
+# one entry. Read with a `while` loop rather than `mapfile -d`: mapfile's `-d`
+# flag needs bash 4, and macOS ships bash 3.2 (Apple froze it at the last
+# GPLv2 release), where `mapfile: command not found` made this a silent no-op.
+# `read -d ''` is the bash 3.2-compatible equivalent and works on bash 4+ too.
+#
+# The loop body runs in the CURRENT shell (the redirect is on `done`, not a pipe),
+# so `files` survives afterwards.
+files=()
+while IFS= read -r -d '' x; do
+    files+=("${x}")
+done < <(git diff main...HEAD --name-only -z --format=)
+# To format against `dev` instead, change `main...HEAD` above.
+
+if [[ "${#files[@]}" -eq 0 ]]; then
+    echo "no changed files vs main; nothing to format"
+    echo "${MY_LINE_BREAK}"
+    echo 'format end'
+    exit 0
+fi
 
 # run formatter separately for each file
 for x in "${files[@]}" ;

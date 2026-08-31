@@ -176,8 +176,12 @@ class TestUvIsTheInstaller:
 
     def test_index_url_is_forwarded(self, run_setup):
         _, calls = run_setup(
-            "--venv", "./venv", "--index-url", "https://mirror.example/simple",
-            "--", "somepkg",
+            "--venv",
+            "./venv",
+            "--index-url",
+            "https://mirror.example/simple",
+            "--",
+            "somepkg",
         )
         install = _call(calls, "uv", "pip")
         idx = install["args"].index("--index-url")
@@ -256,9 +260,9 @@ class TestFailurePropagation:
         """set -e: a failed install must fail setup, not leave a broken venv."""
         failing = tmp_path / "bin" / "uv"
         failing.write_text(
-            '#!/usr/bin/env bash\n'
+            "#!/usr/bin/env bash\n"
             'if [ "$1" = "venv" ]; then mkdir -p "$2/bin" && : > "$2/bin/activate";'
-            ' exit 0; fi\nexit 7\n'
+            " exit 0; fi\nexit 7\n"
         )
         failing.chmod(0o755)
         proc, _ = run_setup(*_BASE, "--", "somepkg")

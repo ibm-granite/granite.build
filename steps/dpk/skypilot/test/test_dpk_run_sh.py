@@ -51,9 +51,7 @@ def run_script(tmp_path):
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     stub = stub_dir / "python"
-    stub.write_text(
-        '#!/usr/bin/env bash\nfor a in "$@"; do echo "PYARG:$a"; done\n'
-    )
+    stub.write_text('#!/usr/bin/env bash\nfor a in "$@"; do echo "PYARG:$a"; done\n')
     stub.chmod(0o755)
 
     def _run(*args: str, cwd: pathlib.Path | None = None):
@@ -102,10 +100,22 @@ class TestRequiredOptions:
     @pytest.mark.parametrize(
         "missing,args",
         [
-            ("--module", ("--input-path", "/i", "--output-path", "o", "--artifact-id", "a")),
-            ("--input-path", ("--module", "m", "--output-path", "o", "--artifact-id", "a")),
-            ("--output-path", ("--module", "m", "--input-path", "/i", "--artifact-id", "a")),
-            ("--artifact-id", ("--module", "m", "--input-path", "/i", "--output-path", "o")),
+            (
+                "--module",
+                ("--input-path", "/i", "--output-path", "o", "--artifact-id", "a"),
+            ),
+            (
+                "--input-path",
+                ("--module", "m", "--output-path", "o", "--artifact-id", "a"),
+            ),
+            (
+                "--output-path",
+                ("--module", "m", "--input-path", "/i", "--artifact-id", "a"),
+            ),
+            (
+                "--artifact-id",
+                ("--module", "m", "--input-path", "/i", "--output-path", "o"),
+            ),
         ],
     )
     def test_missing_required_option_fails(self, run_script, missing, args):
@@ -130,8 +140,14 @@ class TestDataLocalConfig:
 
     def test_module_override_is_honoured(self, run_script):
         proc = run_script(
-            "--module", "dpk_x.ray.runtime", "--input-path", "/i",
-            "--output-path", "o", "--artifact-id", "a",
+            "--module",
+            "dpk_x.ray.runtime",
+            "--input-path",
+            "/i",
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "a",
         )
         assert _pyargs(proc.stdout)[:2] == ["-m", "dpk_x.ray.runtime"]
 
@@ -143,7 +159,10 @@ class TestOutputPathHandling:
         assert proc.returncode == 0, proc.stderr
         created = run_script.tmp_path / "output"
         assert created.is_dir()
-        assert _marker(proc.stdout) == f"LLMB_ARTIFACT_ID:a LLMB_ARTIFACT_PATH:{created.resolve()}"
+        assert (
+            _marker(proc.stdout)
+            == f"LLMB_ARTIFACT_ID:a LLMB_ARTIFACT_PATH:{created.resolve()}"
+        )
 
     def test_nested_relative_output_is_created(self, run_script):
         proc = run_script(*_BASE, "--output-path", "a/b/c", "--artifact-id", "a")
@@ -179,8 +198,14 @@ class TestOutputPathHandling:
 class TestFlagPassthrough:
     def test_flags_after_separator_reach_python_untouched(self, run_script):
         proc = run_script(
-            *_BASE, "--output-path", "o", "--artifact-id", "a",
-            "--", "--tkn_tokenizer", "hf-internal-testing/llama-tokenizer",
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "a",
+            "--",
+            "--tkn_tokenizer",
+            "hf-internal-testing/llama-tokenizer",
         )
         args = _pyargs(proc.stdout)
         assert args[-2:] == ["--tkn_tokenizer", "hf-internal-testing/llama-tokenizer"]
@@ -189,22 +214,40 @@ class TestFlagPassthrough:
         """The pii_redactor case: ast.literal_eval needs the inner quotes intact."""
         value = "['PERSON','EMAIL_ADDRESS']"
         proc = run_script(
-            *_BASE, "--output-path", "o", "--artifact-id", "a",
-            "--", "--pii_redactor_entities", value,
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "a",
+            "--",
+            "--pii_redactor_entities",
+            value,
         )
         assert _pyargs(proc.stdout)[-1] == value
 
     def test_value_with_spaces_stays_one_argument(self, run_script):
         proc = run_script(
-            *_BASE, "--output-path", "o", "--artifact-id", "a",
-            "--", "--flag", "two words",
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "a",
+            "--",
+            "--flag",
+            "two words",
         )
         assert _pyargs(proc.stdout)[-1] == "two words"
 
     def test_zero_is_forwarded(self, run_script):
         proc = run_script(
-            *_BASE, "--output-path", "o", "--artifact-id", "a",
-            "--", "--tkn_chunk_size", "0",
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "a",
+            "--",
+            "--tkn_chunk_size",
+            "0",
         )
         assert _pyargs(proc.stdout)[-2:] == ["--tkn_chunk_size", "0"]
 
@@ -215,18 +258,27 @@ class TestFlagPassthrough:
 
     def test_separator_is_optional_when_flags_come_last(self, run_script):
         proc = run_script(
-            *_BASE, "--output-path", "o", "--artifact-id", "a",
-            "--tkn_text_lang", "en",
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "a",
+            "--tkn_text_lang",
+            "en",
         )
         assert _pyargs(proc.stdout)[-2:] == ["--tkn_text_lang", "en"]
 
-    def test_a_flag_named_like_an_option_is_shielded_by_the_separator(
-        self, run_script
-    ):
+    def test_a_flag_named_like_an_option_is_shielded_by_the_separator(self, run_script):
         """Why the template always emits `--`: a transform flag could collide."""
         proc = run_script(
-            *_BASE, "--output-path", "real", "--artifact-id", "a",
-            "--", "--output-path", "decoy",
+            *_BASE,
+            "--output-path",
+            "real",
+            "--artifact-id",
+            "a",
+            "--",
+            "--output-path",
+            "decoy",
         )
         assert proc.returncode == 0, proc.stderr
         # The decoy went to python, not to the script's own parsing.
