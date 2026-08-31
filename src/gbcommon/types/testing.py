@@ -7,13 +7,15 @@
 import os
 from typing import Optional
 
+from gbcommon.types.gbenvconfig import getenv_boolean
+
 _GBTEST_PREFIX = "GBTEST_"
 
 # Controls whether HuggingFace Hub I/O is mocked. Set by tests that lack real
 # (or write) HuggingFace access — e.g. forked-PR CI, which has no HF_TOKEN. It is
-# all-or-nothing: when "true", every HF op (push/pull/exists/delete and
+# all-or-nothing: when truthy, every HF op (push/pull/exists/delete and
 # resource-group resolution) short-circuits before touching the Hub; when
-# unset/false, all ops run for real. Propagated to remote jobs/pods via env var
+# unset/empty/falsy, all ops run for real. Propagated to remote jobs/pods via env var
 # so they mock identically. Read at call time (not import time) so tests can
 # toggle it by setting/unsetting the env var without any patching.
 ENV_VAR_GBTEST_MOCK_HF = f"{_GBTEST_PREFIX}MOCK_HF"
@@ -27,10 +29,18 @@ _HF_MOCK_SAVED: list[Optional[str]] = []
 def is_hf_mocked() -> bool:
     """Return True if HuggingFace Hub I/O should be mocked (all ops).
 
+    A plain boolean read of GBTEST_MOCK_HF using the repo-standard parsing, so
+    "true"/"1"/"yes"/"on" all enable mocking and unset/empty are both False.
+    Defaulting it on under GBTEST_MODE=mock is a separate, deliberate test-init
+    step that writes the resolved value back to the environment (see
+    pytest_sessionstart in test/conftest.py) — this function stays a dumb read so
+    it behaves identically in a dispatched worker or pod, which only ever receives
+    the forwarded env var.
+
     Returns:
-        bool: True when GBTEST_MOCK_HF is set to "true" (case-insensitive).
+        bool: True when GBTEST_MOCK_HF parses as truthy.
     """
-    return os.getenv(ENV_VAR_GBTEST_MOCK_HF, "").lower() == "true"
+    return getenv_boolean(ENV_VAR_GBTEST_MOCK_HF)
 
 
 def enable_hf_mocks() -> None:

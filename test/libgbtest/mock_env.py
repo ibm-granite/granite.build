@@ -6,9 +6,6 @@ MOCK_ENV_FORCED: Always set in mock mode (override any existing env vars).
     These are the variables that control whether external calls happen — they
     must be forced to prevent a developer's shell env from defeating mock mode.
 
-MOCK_ENV_MOCK_DEFAULTS: Mocking switches that default on in mock mode but stay
-    overridable — an explicit value in the environment wins.
-
 MOCK_ENV_DEFAULTS: Only set if not already present (setdefault semantics).
     These provide safe placeholders for variables read at import time.
 """
@@ -22,19 +19,13 @@ MOCK_ENV_FORCED = {
     "WANDB_MODE": "disabled",
 }
 
-# Default-on in mock mode, but overridable — GBTEST_MOCK_HF is an independent
-# axis from GBTEST_MODE, not a consequence of it, so an explicit value in the
-# environment wins (setdefault semantics).
-#
-# GBTEST_MOCK_HF makes mock mode never touch real HuggingFace (push/pull/
-# exists/delete), so CI can't flake on HF rate limits or spend token quota.
-# It is forwarded to dispatched worker jobs/pods (see get_exported_gbtest_env_vars)
-# so they mock too. A single test can still exercise real HF via
-# @pytest.mark.live("hf"), which the _hf_mock fixture honors by lifting the var;
-# a whole run can opt out with GBTEST_MOCK_HF=false or GBTEST_LIVE_HF=true.
-MOCK_ENV_MOCK_DEFAULTS = {
-    "GBTEST_MOCK_HF": "true",
-}
+# NOTE: GBTEST_MOCK_HF is deliberately NOT listed here. It needs three-way
+# precedence (mock-mode default, then an explicit non-blank override, then the
+# GBTEST_LIVE_HF opt-out) and the resolved value written back to the environment
+# for dispatched workers, which neither the forced nor the setdefault pass can
+# express — a blank value from `make .test` would read as an opt-out under
+# setdefault and silently un-mock HF for all of CI. It is resolved explicitly in
+# pytest_sessionstart (test/conftest.py); see PR #314.
 
 # Set only if not already present — safe placeholder values.
 MOCK_ENV_DEFAULTS = {
