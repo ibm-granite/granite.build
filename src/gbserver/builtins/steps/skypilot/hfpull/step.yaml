@@ -63,19 +63,132 @@ environment_configs:
             # No HF_TOKEN required: public repos download anonymously. When set,
             # `hf download` picks up HF_TOKEN from the env for private/gated repos.
 
-            REVISION_FLAG=""
-            if [ -n "${HF_REVISION}" ]; then
-                REVISION_FLAG="--revision ${HF_REVISION}"
-            fi
+            # Cross-process download serialization + corrupt-cache self-healing,
+            # mirroring gbcommon.uri.hf (HfURI.pull) for the CLI path. gbcommon is
+            # not installed on the skypilot worker, so the logic is reproduced here
+            # in shell (needs bash: arrays, ${var,,}, PIPESTATUS -- the run block
+            # already relies on bash via `set -o pipefail` and `${var,,}` above).
 
-            REPO_TYPE_FLAG=""
-            if [ -n "${HF_TYPE}" ]; then
-                REPO_TYPE_FLAG="--repo-type ${HF_TYPE}"
-            fi
+            # Truthy-env test (matches gbcommon.uri.hf._env_flag).
+            hf_env_flag() {
+                local v="${1:-}"; v="${v,,}"; v="${v// }"
+                case "$v" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
+            }
+
+            # Seconds to wait for the download lock (GB_HFPULL_LOCK_TIMEOUT,
+            # default 300). Rejects non-finite/negative like _hfpull_lock_timeout;
+            # floors to whole seconds.
+            HFPULL_LOCK_TIMEOUT_DEFAULT=300
+            hfpull_lock_timeout() {
+                local raw="${GB_HFPULL_LOCK_TIMEOUT:-}"
+                if [[ -z "${raw// }" ]]; then echo "${HFPULL_LOCK_TIMEOUT_DEFAULT}"; return; fi
+                if [[ "${raw}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                    echo "${raw%%.*}"
+                else
+                    echo "Invalid GB_HFPULL_LOCK_TIMEOUT='${raw}'; using default ${HFPULL_LOCK_TIMEOUT_DEFAULT}s" >&2
+                    echo "${HFPULL_LOCK_TIMEOUT_DEFAULT}"
+                fi
+            }
+
+            # Best-effort mkdir lock beside the destination (matches
+            # _hfpull_lock_path: <dirname dest>/.gb-hfpull-locks/<basename
+            # dest>.lock). Always proceeds: on timeout or setup failure it just
+            # returns, relying on huggingface_hub's own per-file locks (and the
+            # self-heal below) -- it never fails the pull.
+            HFPULL_LOCK_DIR=""
+            HFPULL_IDENTITY="host:$(hostname)|pid:$$"
+            HFPULL_LAST_OUT="$(mktemp)"
+
+            hfpull_release_lock() {
+                [[ -n "${HFPULL_LOCK_DIR}" ]] || return 0
+                # Only remove a lock we still own (matches
+                # SharedFileSystemLock._owned_by_us: a missing/mismatched identity
+                # means a peer holds it now -> leave it).
+                local owner
+                owner="$(head -n1 "${HFPULL_LOCK_DIR}/lock.info" 2>/dev/null || true)"
+                if [[ "${owner}" == "${HFPULL_IDENTITY}" ]]; then
+                    rm -f "${HFPULL_LOCK_DIR}/lock.info" 2>/dev/null || true
+                    rmdir "${HFPULL_LOCK_DIR}" 2>/dev/null || true
+                fi
+                HFPULL_LOCK_DIR=""
+            }
+
+            hfpull_cleanup() {
+                hfpull_release_lock
+                rm -f "${HFPULL_LAST_OUT}" 2>/dev/null || true
+            }
+            trap 'hfpull_cleanup' EXIT
+
+            hfpull_acquire_lock() {
+                local dest="$1" container lockdir timeout deadline now
+                container="$(dirname "${dest}")/.gb-hfpull-locks"
+                lockdir="${container}/$(basename "${dest}").lock"
+                timeout="$(hfpull_lock_timeout)"
+                if ! mkdir -p "${container}" 2>/dev/null; then
+                    echo "hfpull: cannot create lock container ${container}; proceeding without lock" >&2
+                    return 0
+                fi
+                deadline=$(( $(date +%s) + timeout ))
+                while :; do
+                    if mkdir "${lockdir}" 2>/dev/null; then
+                        if printf '%s\n%s\n' "${HFPULL_IDENTITY}" "$(date +%s)" > "${lockdir}/lock.info" 2>/dev/null; then
+                            HFPULL_LOCK_DIR="${lockdir}"
+                        else
+                            # Cannot record identity -> release() could not tell our
+                            # lock from a peer's, so roll back and proceed lock-less
+                            # (matches acquire()).
+                            rmdir "${lockdir}" 2>/dev/null || true
+                            echo "hfpull: created ${lockdir} but could not write identity; proceeding without lock" >&2
+                        fi
+                        return 0
+                    fi
+                    now="$(date +%s)"
+                    if (( now >= deadline )); then
+                        echo "hfpull: did not acquire download lock ${lockdir} within ${timeout}s; proceeding and relying on huggingface_hub's per-file locks" >&2
+                        return 0
+                    fi
+                    sleep 1
+                done
+            }
+
+            # One `hf download`, streaming output live while capturing it for
+            # classification.
+            hf_download_attempt() {
+                local extra="$1"; shift
+                hf download "$@" ${extra} 2>&1 | tee "${HFPULL_LAST_OUT}"
+                return "${PIPESTATUS[0]}"
+            }
+
+            # Retry only on the recoverable corrupt-cache states (matches
+            # _is_recoverable_hf_cache_error); fail fast on anything else.
+            HFPULL_RECOVERABLE_RE='\.incomplete|Consistency check failed'
+            hfpull_download() {
+                local force=""
+                if hf_env_flag "${GB_HFPULL_FORCE:-}"; then
+                    force="--force-download"
+                    echo "hfpull: GB_HFPULL_FORCE set; forcing re-download" >&2
+                fi
+                if hf_download_attempt "${force}" "$@"; then return 0; fi
+                if ! grep -Eq "${HFPULL_RECOVERABLE_RE}" "${HFPULL_LAST_OUT}"; then return 1; fi
+                echo "hfpull: HF download cache looks corrupt; retrying with --force-download" >&2
+                if hf_download_attempt "--force-download" "$@"; then return 0; fi
+                if ! grep -Eq "${HFPULL_RECOVERABLE_RE}" "${HFPULL_LAST_OUT}"; then return 1; fi
+                echo "hfpull: force re-download still failed; clearing scratch download cache ${HF_DEST}/.cache/huggingface/download and retrying once more" >&2
+                rm -rf "${HF_DEST}/.cache/huggingface/download"
+                if hf_download_attempt "--force-download" "$@"; then return 0; fi
+                return 1
+            }
 
             mkdir -p "${HF_DEST}"
             echo "Pulling HF URI: ${HF_URI} to path ${HF_DEST}"
-            hf download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG} ${REPO_TYPE_FLAG}
+
+            HF_ARGS=("${HF_REPO}" --local-dir "${HF_DEST}")
+            if [[ -n "${HF_REVISION}" ]]; then HF_ARGS+=(--revision "${HF_REVISION}"); fi
+            if [[ -n "${HF_TYPE}" ]]; then HF_ARGS+=(--repo-type "${HF_TYPE}"); fi
+
+            hfpull_acquire_lock "${HF_DEST}"
+            echo hf download "${HF_ARGS[@]}"
+            hfpull_download "${HF_ARGS[@]}"
 
             echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
             echo 'hfpull end'
