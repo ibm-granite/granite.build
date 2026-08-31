@@ -394,10 +394,22 @@ class RetryHandler:
                 # retry -- but can't, because retry_count >= max_retries -- would
                 # be neither relaunched nor raised, leaving a monitor's deferred
                 # wait (e.g. LSF's _retry_pending_after_monitor) hanging forever.
+                #
+                # But this escalation must not fire while the workload is still
+                # live: a retriable event that reports a present, non-terminal
+                # state (e.g. a K8s AppWrapper still Running/Unhealthy whose pod
+                # is stuck in FailedScheduling on cluster-wide GPU exhaustion) is
+                # transient backpressure, not a failure. Failing it -- especially
+                # when retries are disabled (max_retries == 0, so retry_count 0 >=
+                # 0 is immediately true) -- would turn a workload that is merely
+                # waiting for capacity, and may still succeed, into a false-positive
+                # build failure (#335). Stateless failure events (e.g. LSF's) carry
+                # no state and so still escalate.
                 retries_exhausted_on_retriable = (
                     not retry_triggered
                     and self.retry_count >= self.max_retries
                     and self._is_retriable_event(event)
+                    and not self._is_live_nonterminal_state(event)
                 )
 
                 # Always forward the event downstream, but enrich with retry metadata
@@ -684,6 +696,41 @@ class RetryHandler:
     def stop(self: Self) -> None:
         """Stop processing events."""
         self.stop_processing = True
+
+    def _is_live_nonterminal_state(self: Self, event: BuildEvent) -> bool:
+        """
+        Report whether the event shows the workload is still live / non-terminal.
+
+        A retriable event that reports a present, non-terminal ``state`` (e.g. a
+        K8s AppWrapper still ``Running``/``Unhealthy`` while a pod waits on GPU
+        capacity) describes transient backpressure, not a failure -- so it must
+        not be escalated to a terminal verdict when retries are exhausted/disabled
+        (see ``process_events``).
+
+        Returns False when no ``state`` can be parsed (e.g. LSF-style plain failure
+        events), so those still escalate, and False for terminal states
+        (``Failed`` / ``Exception:``), which are handled by
+        ``_is_terminal_failure_event``.
+
+        Args:
+            event: BuildEvent from the monitor
+
+        Returns:
+            bool: True if the event reports a present, non-terminal state
+        """
+        msg = getattr(event.payload, "msg", None)
+        if not msg:
+            return False
+        try:
+            json_match = re.search(r"```json\s*\n(.*?)\n```", msg, re.DOTALL)
+            if not json_match:
+                return False
+            state = json.loads(json_match.group(1)).get("state", "")
+        except (json.JSONDecodeError, AttributeError):
+            return False
+        if not state or state == "Failed" or state.startswith("Exception:"):
+            return False
+        return True
 
     def _is_terminal_failure_event(self: Self, event: BuildEvent) -> bool:
         """
