@@ -17,6 +17,7 @@
 """Tests for HfURI, covering the pull(), push(), exists(), and delete() methods."""
 
 import json
+import os
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -354,6 +355,108 @@ class TestHfURIPushUnit:
             with pytest.raises(ValueError, match="no non-empty files"):
                 uri.push(src_dir)
         MockApi.return_value.upload_folder.assert_not_called()
+
+    def test_push_rejects_unreadable_file_in_directory(self, tmp_path):
+        """An unreadable file is named up front, before any Hub API call.
+
+        This is the failure mode from a producing step that wrote its output
+        ``0600`` while running as a different UID: ``upload_folder`` would only
+        hit it mid-commit and surface a ``PermissionError`` with no HTTP status,
+        which reads like a Hub outage.
+
+        ``os.access`` is patched rather than using ``chmod``: the test process
+        owns the files it creates, and the owner (like root) is granted access
+        regardless of the mode bits, so a real ``chmod(0o600)`` here would not
+        reproduce the failure at all.
+        """
+        src_dir = tmp_path / "ckpt"
+        src_dir.mkdir()
+        good = src_dir / "config.json"
+        good.write_text("{}")
+        bad = src_dir / "adapter_model.safetensors"
+        bad.write_bytes(b"x" * 32)
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        real_access = os.access
+
+        def fake_access(path, mode, **kwargs):
+            if str(path) == str(bad):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            with patch("gbcommon.uri.hf.os.access", side_effect=fake_access):
+                with pytest.raises(PermissionError, match="adapter_model.safetensors"):
+                    uri.push(src_dir)
+        MockApi.return_value.upload_folder.assert_not_called()
+
+    def test_push_rejects_untraversable_subdirectory(self, tmp_path):
+        """A subdirectory that cannot be traversed is reported, not silently skipped.
+
+        ``rglob`` cannot see through a directory missing ``r-x``, so without an
+        explicit check an unreadable subtree looks merely empty.
+        """
+        src_dir = tmp_path / "ckpt"
+        src_dir.mkdir()
+        (src_dir / "top.bin").write_bytes(b"y" * 8)
+        sub = src_dir / "sub"
+        sub.mkdir()
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        real_access = os.access
+
+        def fake_access(path, mode, **kwargs):
+            if str(path) == str(sub):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            with patch("gbcommon.uri.hf.os.access", side_effect=fake_access):
+                with pytest.raises(PermissionError, match="sub"):
+                    uri.push(src_dir)
+        MockApi.return_value.upload_folder.assert_not_called()
+
+    def test_push_unreadable_report_is_capped_but_counts_all(self, tmp_path):
+        """Every unreadable path is counted; the listing itself is truncated."""
+        src_dir = tmp_path / "ckpt"
+        src_dir.mkdir()
+        for i in range(25):
+            (src_dir / f"f{i:02d}.bin").write_bytes(b"z" * 4)
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            with patch("gbcommon.uri.hf.os.access", return_value=False):
+                with pytest.raises(PermissionError) as excinfo:
+                    uri.push(src_dir)
+
+        msg = str(excinfo.value)
+        assert "25 path(s)" in msg
+        assert "and 15 more" in msg
+        assert msg.count(".bin") == HfURI._MAX_UNREADABLE_REPORTED
+
+    def test_push_rejects_unreadable_single_file(self, tmp_path):
+        """The single-file push path checks readability too."""
+        src = tmp_path / "solo.bin"
+        src.write_bytes(b"w" * 8)
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            with patch("gbcommon.uri.hf.os.access", return_value=False):
+                with pytest.raises(PermissionError, match="solo.bin"):
+                    uri.push(src)
+        MockApi.return_value.upload_file.assert_not_called()
+
+    def test_push_accepts_group_readable_directory(self, tmp_path):
+        """The readability gate does not reject a normal, readable tree."""
+        src_dir = tmp_path / "ckpt"
+        src_dir.mkdir()
+        (src_dir / "model.safetensors").write_bytes(b"v" * 16)
+        (src_dir / "config.json").write_text("{}")
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            uri.push(src_dir)
+        MockApi.return_value.upload_folder.assert_called_once()
 
     def test_push_normalizes_adapter_local_base_model(self, tmp_path):
         """A LoRA adapter's pod-local base_model path is rewritten to owner/repo."""

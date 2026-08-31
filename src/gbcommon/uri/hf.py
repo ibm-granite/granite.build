@@ -997,13 +997,31 @@ class HfURI(URI):
             _log_hf_api_error("list_resource_groups", organization, e)
         return None
 
+    # Cap on how many unreadable paths a failure message lists, so a wholly
+    # unreadable tree of thousands of files yields a diagnosable error rather
+    # than an unreadably long one. The count reported is always the true total.
+    _MAX_UNREADABLE_REPORTED = 10
+
     @staticmethod
     def _validate_non_empty_src(src: Path) -> None:
-        """Ensure ``src`` has uploadable, non-zero-length content.
+        """Ensure ``src`` has uploadable, non-zero-length, *readable* content.
 
         HuggingFace silently skips an upload that would produce an empty commit
         (e.g. a single 0-byte file), so a push of empty content appears to
         succeed while creating nothing on the Hub.  Fail fast instead.
+
+        Readability is checked here too, in the same walk, because
+        ``upload_folder`` opens each file only once it is already mid-commit:
+        the resulting ``PermissionError`` carries no HTTP status, so
+        :meth:`_log_hf_api_error` can only classify it as ``HF_ERR_OTHER`` and
+        logs "no HTTP status", which reads like a Hub outage rather than a local
+        ``EACCES``. It also aborts on the first bad file, so an operator fixes
+        one path at a time. Checking up front names every unreadable file and
+        attributes the failure to the filesystem, where the fix is.
+
+        This is a diagnostic, not a guarantee: ``os.access`` is a point-in-time
+        check and a push can still race a permission change, so the ``push``
+        call sites keep their exception handling.
 
         Args:
             src: Local file or directory path being pushed.
@@ -1011,13 +1029,46 @@ class HfURI(URI):
         Raises:
             ValueError: If ``src`` is a zero-length file, or a directory whose
                 regular files are all zero-length (or which contains none).
+            PermissionError: If ``src`` itself, or any regular file under it, is
+                not readable by the current user.
         """
         if src.is_file():
             if src.stat().st_size == 0:
                 raise ValueError(f"refusing to push zero-length file: {src}")
+            if not os.access(src, os.R_OK):
+                raise PermissionError(f"cannot read file to push: {src}")
             return
-        # Directory: require at least one non-empty regular file.
-        if not any(f.is_file() and f.stat().st_size > 0 for f in src.rglob("*")):
+        # Directory: require at least one non-empty regular file, and collect
+        # every unreadable one in the same walk so the error names them all.
+        has_content = False
+        unreadable: List[Path] = []
+        for f in src.rglob("*"):
+            # A directory that cannot be traversed hides its children from
+            # rglob entirely, so check those too -- otherwise an unreadable
+            # subtree looks simply empty.
+            if f.is_dir():
+                if not os.access(f, os.R_OK | os.X_OK):
+                    unreadable.append(f)
+                continue
+            if not f.is_file():
+                continue
+            if not os.access(f, os.R_OK):
+                unreadable.append(f)
+                continue
+            if f.stat().st_size > 0:
+                has_content = True
+        if unreadable:
+            shown = sorted(str(p) for p in unreadable)
+            elided = len(shown) - HfURI._MAX_UNREADABLE_REPORTED
+            if elided > 0:
+                shown = shown[: HfURI._MAX_UNREADABLE_REPORTED]
+                shown.append(f"... and {elided} more")
+            raise PermissionError(
+                f"cannot read {len(unreadable)} path(s) under {src}; "
+                "the step that produced this artifact left them unreadable to "
+                "this user: " + ", ".join(shown)
+            )
+        if not has_content:
             raise ValueError(
                 f"refusing to push directory with no non-empty files: {src}"
             )
