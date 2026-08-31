@@ -90,6 +90,7 @@ function artifactTypeToNodeType(artifactType: string): NodeType {
     case 'MODEL': return 'Model'
     case 'DATASET': return 'Dataset'
     case 'FILESET': return 'Fileset'
+    case 'BUCKET': return 'Bucket'
     default: return 'Fileset'
   }
 }
@@ -270,6 +271,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     zoomIn: () => graphRef.current?.zoomIn(),
     zoomOut: () => graphRef.current?.zoomOut(),
     resetZoom: () => graphRef.current?.resetZoom(),
+    resetView: () => graphRef.current?.resetView(),
     currentZoom: () => graphRef.current?.currentZoom() ?? 90,
     centerOnNode: (nodeId: string) => graphRef.current?.centerOnNode(nodeId),
   }))
@@ -322,36 +324,56 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // trigger and move focus to the close button; on close, restore focus. This is
   // a non-modal drawer by design (the graph stays interactive), so no focus trap
   // — just entry and restore, which is what keyboard/SR users expect.
+  //
+  // Capture the trigger only when opening from a *closed* drawer, and restore
+  // only when closing to a closed drawer. Switching directly A→B must neither
+  // recapture (B's trigger, not A's return element) nor restore (nothing closed
+  // yet) — doing either would leave the eventual restore pointing at the wrong
+  // element, a real regression for keyboard/SR users.
+  const drawerWasOpenRef = React.useRef(false)
   React.useEffect(() => {
-    if (!stepDetailTarget) return
-    drawerReturnFocusRef.current = document.activeElement as HTMLElement | null
-    drawerCloseButtonRef.current?.focus()
-    return () => {
-      // The trigger is often a graph node inside an SVG that re-renders on the
-      // status poll; by close it may be detached, and focus() on a detached node
-      // is a silent no-op that drops focus to <body>. Restore only when the node
-      // is still connected, else fall back to the graph container so keyboard
-      // focus lands somewhere sensible rather than the top of the document.
-      const returnTo = drawerReturnFocusRef.current
-      if (returnTo?.isConnected) {
-        returnTo.focus?.()
-      } else {
-        graphContainerRef.current?.focus?.()
+    const wasOpen = drawerWasOpenRef.current
+    drawerWasOpenRef.current = Boolean(stepDetailTarget)
+
+    if (stepDetailTarget) {
+      // Opening from closed — record where focus was so we can hand it back.
+      // A→B switches (wasOpen already true) keep the original return element.
+      if (!wasOpen) {
+        drawerReturnFocusRef.current = document.activeElement as HTMLElement | null
       }
-      drawerReturnFocusRef.current = null
+      drawerCloseButtonRef.current?.focus()
+      return
     }
+
+    // stepDetailTarget is null. Only restore if a drawer was actually open.
+    if (!wasOpen) return
+    // The trigger is often a graph node inside an SVG that re-renders on the
+    // status poll; by close it may be detached, and focus() on a detached node
+    // is a silent no-op that drops focus to <body>. Restore only when the node
+    // is still connected, else fall back to the graph container so keyboard
+    // focus lands somewhere sensible rather than the top of the document.
+    const returnTo = drawerReturnFocusRef.current
+    if (returnTo?.isConnected) {
+      returnTo.focus?.()
+    } else {
+      graphContainerRef.current?.focus?.()
+    }
+    drawerReturnFocusRef.current = null
   }, [stepDetailTarget])
 
   // If the open target disappears from a later status poll (renamed, or dropped
   // from the build), close the drawer rather than leave it pointing at a target
   // that no longer exists. Guarded on buildStatus being loaded so the drawer
-  // isn't closed during a transient empty poll.
+  // isn't closed during a transient empty poll. Planned targets (from the build
+  // definition, not yet in runtime status) are legitimately absent from
+  // buildStatus.targets, so keep the drawer open for those too — otherwise it
+  // opens and immediately self-closes on the next render.
   React.useEffect(() => {
     if (!stepDetailTarget || !buildStatus?.targets) return
-    if (!(stepDetailTarget in buildStatus.targets)) {
-      setStepDetailTarget(null)
-    }
-  }, [stepDetailTarget, buildStatus])
+    if (stepDetailTarget in buildStatus.targets) return
+    if (plannedTargets.some((t) => t.target_name === stepDetailTarget)) return
+    setStepDetailTarget(null)
+  }, [stepDetailTarget, buildStatus, plannedTargets])
 
   const { nodes: allNodes, links: allLinks, artifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
@@ -402,9 +424,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
 
   const artifactNavModalHeader = (artifactNavNode: { node: ElkNodeEx; hfUrl: string | null } | null) => {
     if (artifactNavNode) {
-      return <h4>Would you like to view <code>{artifactNavNode.node?.title || artifactNavNode.node?.id}</code> on HuggingFace or proceed to the artifact page?`</h4>
+      return <h4>Would you like to view <code>{artifactNavNode.node?.title || artifactNavNode.node?.id}</code> on HuggingFace or proceed to the artifact page?</h4>
     } else {
-      return <h4>Would you like to view this artifact on HuggingFace or proceed to the artifact page?`</h4>
+      return <h4>Would you like to view this artifact on HuggingFace or proceed to the artifact page?</h4>
     }
   }
 
@@ -440,6 +462,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     }
     if (node.type !== 'Build' && isUUID(node.id)) {
       const uri = artifactUriMap.get(node.id)
+      // Close the step drawer first — otherwise the artifact modal stacks on top
+      // of it and the drawer is left open underneath once the modal is dismissed.
+      setStepDetailTarget(null)
       setArtifactNavNode({ node, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
       return
     }
@@ -550,11 +575,23 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               className="overflow-item"
               itemText="Reset view"
               onClick={() => {
+                // Was the graph filtered? If so, clearing the filter expands the
+                // node set and kicks off an async relayout — clear the
+                // user-adjusted flag and let that relayout auto-fit once, rather
+                // than fitting now against stale positions and re-snapping. If
+                // nothing was filtered, no relayout fires, so fit immediately.
+                const wasFiltered =
+                  focusNodeId !== null &&
+                  (upstreamLevels !== Infinity || downstreamLevels !== Infinity);
                 setFocusNodeId(null);
                 setUpstreamLevels(Infinity);
                 setDownstreamLevels(Infinity);
                 setPartial(false);
-                graphRef.current?.resetZoom();
+                if (wasFiltered) {
+                  graphRef.current?.resetView();
+                } else {
+                  graphRef.current?.resetZoom();
+                }
               }}
             />
           </OverflowMenu>
@@ -571,6 +608,13 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         </div>
       )}
 
+      {/* Graph and drawer are flex siblings in a row so opening the drawer
+          physically shrinks the graph's width. ELK lays out RIGHT (downstream
+          nodes toward the right edge — the same edge the drawer opens on), so if
+          the drawer merely overlaid the graph, a node near that edge could hide
+          behind the drawer it just triggered; shrinking the SVG instead fires
+          the graph's ResizeObserver, which refits the view. */}
+      <div className={styles.graphRow}>
       {/* Graph area. tabIndex=-1 so it can receive programmatic focus as the
           fallback when a closed drawer's trigger node is no longer in the DOM. */}
       <div className={styles.graphArea} ref={graphContainerRef} tabIndex={-1}>
@@ -664,6 +708,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           })()}
         </div>
       )}
+      </div>
 
       {artifactNavNode?.hfUrl ? (
         <ComposedModal

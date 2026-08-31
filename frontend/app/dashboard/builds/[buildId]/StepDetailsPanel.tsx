@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Link } from '@carbon/react'
+import { CopyButton, Link } from '@carbon/react'
 import styles from './LineagePanel.module.scss'
 import type { BuildStepRun, BuildTargetRun } from '@/types'
 import { BuildStatusBadge } from '@/components/BuildStatusBadge'
@@ -98,10 +98,19 @@ const REDUNDANT_MESSAGE_KEYS = new Set([
  * Returns '' when nothing new is left, so the caller can omit the section.
  */
 function cleanStatusMessage(msg: string): string {
+  // Track fence open/close so the redundant-key heuristic runs only on the
+  // padded metadata table (which gbserver emits *outside* fences). A genuine log
+  // line like `Status  : ok` inside a fenced code block must survive verbatim.
+  let inFence = false
   return msg
     .split('\n')
-    .filter((line) => !/^\s*```/.test(line))
     .filter((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence
+        return false // drop the fence marker itself either way
+      }
+      if (inFence) return true // inside a code block — keep verbatim
+
       // Capture the key, the run of spaces before the colon, and the value.
       const match = /^\s*([A-Za-z][A-Za-z ]*?)( *):\s*(.*)$/.exec(line)
       if (!match) return true // prose / blank line — keep
@@ -115,7 +124,6 @@ function cleanStatusMessage(msg: string): string {
       return !(multiWordKey || paddedBeforeColon)
     })
     .join('\n')
-    .replace(/```/g, '')
     // Collapse the blank lines the removed rows leave behind.
     .replace(/\n{3,}/g, '\n\n')
     .replace(/^#+\s.*$/gm, '')
@@ -399,27 +407,6 @@ function ExecutionSummary({ step }: { step: BuildStepRun }) {
   )
 }
 
-function CopyButton({ value }: { value: string }) {
-  const [copied, setCopied] = React.useState(false)
-
-  const onCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(value)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // Clipboard is unavailable outside a secure context; the command is
-      // selectable in the block either way, so this needs no error surface.
-    }
-  }
-
-  return (
-    <button type="button" className={styles.stepCopyButton} onClick={onCopy}>
-      {copied ? 'Copied' : 'Copy'}
-    </button>
-  )
-}
-
 function StepCard({
   step,
   index,
@@ -431,8 +418,14 @@ function StepCard({
   total: number
   buildId?: string
 }) {
-  const extracted = extractCommand(step.config)
-  const rest = remainingConfig(step.config, extracted?.sourceKey)
+  const extracted = React.useMemo(() => extractCommand(step.config), [step.config])
+  // remainingConfig spreads a fresh object whenever a command was extracted (the
+  // common case), so memoize on its actual inputs — otherwise the configGroups
+  // memo below never hits cache and buildConfigGroups reruns on every poll tick.
+  const rest = React.useMemo(
+    () => remainingConfig(step.config, extracted?.sourceKey),
+    [step.config, extracted?.sourceKey]
+  )
   const configGroups = React.useMemo(() => buildConfigGroups(rest), [rest])
   const restKeys = Object.keys(rest)
   const metaRows = metadataRows(step.metadata)
@@ -476,7 +469,13 @@ function StepCard({
             {/* Inside the disclosure, so it is only offered when the command it
                 copies is actually on screen. */}
             <div className={styles.stepCommandActions}>
-              <CopyButton value={extracted.command} />
+              <CopyButton
+                autoAlign
+                feedback="Copied!"
+                iconDescription="Copy command"
+                onClick={() => navigator.clipboard.writeText(extracted.command)}
+                size="sm"
+              />
             </div>
           </details>
         )}
@@ -491,8 +490,10 @@ function StepCard({
           "config missing". */}
       <Section title="Configuration">
         {configGroups.length > 0 ? (
-          configGroups.map((group) => (
-            <div key={group.label} className={styles.stepConfigGroup}>
+          configGroups.map((group, groupIndex) => (
+            // Key on index, not label: a top-level `env` and a launcher block's
+            // nested `env` both label as "Environment", so labels aren't unique.
+            <div key={`${group.label}-${groupIndex}`} className={styles.stepConfigGroup}>
               <div className={styles.stepConfigGroupLabel}>{group.label}</div>
               {group.rows.map((row) => (
                 <Field key={row.key} label={row.key}>

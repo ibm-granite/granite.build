@@ -35,8 +35,19 @@
   flex-shrink: 0;
 }
 
+/* Graph + drawer live side by side; opening the drawer shrinks .graphArea,
+   which fires the graph's ResizeObserver so the view refits rather than letting
+   a right-edge node hide behind the drawer. */
+.graphRow {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .graphArea {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   position: relative;
 }
@@ -77,26 +88,30 @@
   z-index: 10;
 }
 
+/* Three buttons share the footer; let each take an equal share of the full
+   width so labels ("View artifact page", "Open on HuggingFace") sit on one line
+   instead of wrapping in a cramped column. */
 .navModalActions {
-  margin-top: 1rem;
-  gap: 1px;
-  padding-left:25%;
+  button {
+    flex: 1 1 0;
+    max-width: none;
+    align-items: flex-start;
+    white-space: nowrap;
+  }
 }
 
 /* ── Step details side panel ─────────────────────────────────────────────── */
 
 .stepSidePanel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  /* 33rem ≈ 528px, inside the 480–560px target. */
-  width: 33rem;
+  /* A flex sibling of .graphArea (not an overlay) so it shrinks the graph when
+     it opens. 33rem ≈ 528px, inside the 480–560px target. */
+  flex: 0 0 33rem;
   max-width: 90%;
+  min-height: 0;
+  overflow: hidden;
   background: var(--cds-layer-01);
   border-left: 1px solid var(--cds-border-subtle-01);
   box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
-  z-index: 101;
   display: flex;
   flex-direction: column;
   animation: stepSidePanelSlideIn 150ms ease-out;
@@ -239,19 +254,6 @@
 
   &:hover {
     color: var(--cds-text-primary);
-  }
-}
-
-.stepCopyButton {
-  border: 0;
-  background: none;
-  padding: 0;
-  cursor: pointer;
-  font-size: 0.75rem;
-  color: var(--cds-link-primary);
-
-  &:hover {
-    text-decoration: underline;
   }
 }
 

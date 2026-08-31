@@ -94,7 +94,7 @@ export interface BuildStatusDetail {
 
 // ── Artifacts ────────────────────────────────────────────────────────────────
 
-export type ArtifactType = 'MODEL' | 'DATASET' | 'FILESET' | 'TABLE'
+export type ArtifactType = 'MODEL' | 'DATASET' | 'FILESET' | 'TABLE' | 'BUCKET'
 
 // Mirrors gbserver's ArtifactRegistrationStatus enum
 // (src/gbserver/storage/artifact_registration.py).

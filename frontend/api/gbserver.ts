@@ -135,7 +135,7 @@ function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
     image: stepImageFromConfig(config),
     launcher: typeof launcher === 'string' ? launcher : undefined,
     status_msg: (raw.status_msg as string) || undefined,
-    finished_at: (raw.finished_at as string) || undefined,
+    finished_at: (raw.finished_at as string) || (json.finished_at as string) || undefined,
     // Runtime metadata the step pushed at execution time (LLMB_STEP_METADATA
     // hook). Serialized in the status row's JSON blob alongside config; safe to
     // surface here because /builds/{id}/status is already read-gated.
@@ -162,15 +162,47 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
   }
 }
 
+// Infer an artifact type from its URI when the stored type is empty.
+//
+// Some artifacts are registered (e.g. a raw HF dataset reference) without a
+// `type` ever being set — the backend should classify these at registration
+// (see parse_hf_uri in src/gbcommon/utils/hf_utils.py), but until it does, a
+// blind 'FILESET' fallback mislabels datasets/models/buckets in the UI (e.g.
+// the lineage graph). The URI segment is unambiguous, so we mirror the
+// backend's own rules here: `datasets/` → DATASET, `buckets/` → BUCKET,
+// `spaces/` → FILESET (no dedicated Space type), everything else on HF
+// (including a bare org/name) → MODEL.
+function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType | null {
+  if (!uri) return null
+  // Match the type segment in hf://[domain]/<type>/org/name or
+  // hf:///<type>/org/name and in https://huggingface.co/<type>/org/name.
+  const m = uri.match(/(?:^|\/)(datasets|models|spaces|buckets)\//)
+  if (m) {
+    switch (m[1]) {
+      case 'datasets': return 'DATASET'
+      case 'models':   return 'MODEL'
+      case 'buckets':  return 'BUCKET'
+      case 'spaces':   return 'FILESET'
+    }
+  }
+  // A bare hf:// reference with no type segment (hf://org/name) is a model.
+  if (/^hf:\/\//.test(uri)) return 'MODEL'
+  return null
+}
+
 function adaptArtifact(raw: Record<string, unknown>): Artifact {
+  const uri = raw.uri as string
   return {
     uuid: raw.uuid as string,
-    name: (raw.name as string) || (raw.uri as string),
-    artifact_type: ((raw.type as string) || (raw.artifact_type as string) || 'FILESET') as import('../types').ArtifactType,
+    name: (raw.name as string) || uri,
+    artifact_type: ((raw.type as string) ||
+      (raw.artifact_type as string) ||
+      inferArtifactTypeFromUri(uri) ||
+      'FILESET') as import('../types').ArtifactType,
     status: (((raw.status as string) || 'success').toLowerCase()) as import('../types').ArtifactStatus,
     space_name: raw.space_name as string,
     username: raw.username as string,
-    uri: raw.uri as string,
+    uri,
     build_id: raw.created_by_build_id as string | undefined,
     created_time: ((raw.created_at ?? raw.created_time) as string),
     updated_time: ((raw.updated_at ?? raw.updated_time ?? raw.created_at) as string),
