@@ -4,11 +4,16 @@
 {{- range $index, $container := $containers }}
     - name: {{ printf "pytorch-%d" $index }}
       image: {{ ternary (quote $container.image) (quote $orig.Values.k8s.image) (hasKey $container "image") }}
-      {{- if $orig.Values.k8s.service_account_name }}
+      {{- if or $orig.Values.k8s.service_account_name $orig.Values.k8s.run_as_root_group }}
       securityContext:
+        {{- if $orig.Values.k8s.run_as_root_group }}
+        runAsGroup: 0
+        {{- end }}
+        {{- if $orig.Values.k8s.service_account_name }}
         capabilities:
           add:
           - IPC_LOCK
+        {{- end }}
       {{- end }}
       env:
         - name: EXPERIMENT
@@ -78,8 +83,16 @@
       - -c
       - |
         set -o pipefail
+        GB_UMASK="{{ $orig.Values.k8s.umask | default "0002" }}"
+        if [[ "$GB_UMASK" =~ ^0?[0-7]{3}$ ]]; then
+          umask "$GB_UMASK"
+        else
+          echo "WARNING: ignoring invalid k8s.umask '$GB_UMASK'"\
+               "(quote it in environment.yaml, e.g. umask: \"0002\"); using 0002" >&2
+          umask 0002
+        fi
         echo
-        echo 'LLMB_EVENT_WORKLOAD_STATUS:running'
+        echo 'GB_EVENT_WORKLOAD_STATUS:running'
         {{- include "gbstepbase.tplAdditionalFiles" $orig | trimAll " " | indent 8 }}
         {{- range $filename, $value := $orig.filesfromconfig }}
         {{- include "gbstepbase.addfilefromconfig" (dict "config" $value "filename" $filename ) | trimAll " " | indent 8 }}
@@ -132,7 +145,7 @@
         rm -f "$CMD_DIR/command.sh"
         cat <<'EOF' > "$CMD_DIR/command.sh"
 
-          echo 'LLMB_EVENT_WORKLOAD_STATUS:running_command_sh'
+          echo 'GB_EVENT_WORKLOAD_STATUS:running_command_sh'
 
         {{/* 1. If mock mode is enabled -> use gb.mock_command */}}
         {{- if $orig.Values.gb.mock }}
@@ -198,11 +211,11 @@
         tail -f /dev/null
         {{- end }}
         if [[ "${COMMAND_SH_EXIT_CODE}" != "0" ]] ; then
-        echo 'LLMB_EVENT_WORKLOAD_STATUS:failed'
+        echo 'GB_EVENT_WORKLOAD_STATUS:failed'
         echo "The command.sh script failed with exit code: ${COMMAND_SH_EXIT_CODE}"
         exit 1
         fi
-        echo 'LLMB_EVENT_WORKLOAD_STATUS:success'
+        echo 'GB_EVENT_WORKLOAD_STATUS:success'
       imagePullPolicy: {{ $orig.Values.k8s.image_pull_policy | default "IfNotPresent" }}
       volumeMounts:
       - name: devshm

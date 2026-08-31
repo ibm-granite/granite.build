@@ -1,23 +1,28 @@
 # Shared monitor for the `docker_log` type (Docker environment). Referenced by
 # docker steps via `ref: space://monitors/docker`. Detects the standard
-# LLMB env:// artifact marker (with a binding payload) and the
-# LLMB_STEP_METADATA_KEY/VALUE step-metadata marker, and streams every other
-# line as a MESSAGE_EVENT.
+# artifact markers (PATH and STATE forms, with a binding payload) and the
+# STEP_METADATA_KEY/VALUE step-metadata marker, and streams every other
+# line as a MESSAGE_EVENT. Marker names are standardized on the GB_ prefix; the
+# legacy LLMB_ prefix is still accepted for backwards compatibility (every
+# marker regex matches both).
 type: docker_log
 config:
   event_configs:
-    # env:// artifact: registers <path> for the named output. Unanchored, to
-    # match the skypilot monitor (whose retrieved logs are prefixed). Docker
-    # streams raw stdout so an anchor would also work, but keeping it unanchored
-    # keeps the two consistent; bash anchors because it echoes its own command.
+    # filesystem-path artifact: registers <path> for the named output. Consumed by
+    # any filesystem-backed store (file://, hf://, cos://, lh://, env://); the
+    # output's uri scheme in build.yaml picks the handler, not this marker.
+    # Unanchored, to match the skypilot monitor (whose retrieved logs are
+    # prefixed). Docker streams raw stdout so an anchor would also work, but
+    # keeping it unanchored keeps the two consistent; bash anchors because it
+    # echoes its own command.
     - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+      line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
       is_json: false
       event_fields:
         - field_name: binding_id
-          field_regex: (?<=LLMB_ARTIFACT_ID:)[^ ]+
+          field_regex: (?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+
         - field_name: path
-          field_regex: (?<=LLMB_ARTIFACT_PATH:).*
+          field_regex: (?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*
           is_data: true
         - field_name: binding
           field_value_template: '{ "path": "{{ fields.data.path }}" }'
@@ -26,13 +31,13 @@ config:
     # to a consumer via {{ bindings.<x>.binding.state }} (no path normalisation).
     # PATH and STATE markers are mutually exclusive per line.
     - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+      line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_STATE:.*"
       is_json: false
       event_fields:
         - field_name: binding_id
-          field_regex: (?<=LLMB_ARTIFACT_ID:)[^ ]+
+          field_regex: (?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+
         - field_name: state
-          field_regex: (?<=LLMB_ARTIFACT_STATE:).*
+          field_regex: (?:(?<=GB_ARTIFACT_STATE:)|(?<=LLMB_ARTIFACT_STATE:)).*
           is_data: true
         - field_name: binding
           field_value_template: '{ "state": "{{ fields.data.state }}" }'
@@ -48,15 +53,15 @@ config:
     # Docker streams raw stdout (no platform prefix), so a plain `^` anchor is
     # enough here — same posture as the bash monitor.
     - event_type: STEP_METADATA_UPDATE_EVENT
-      line_regex: "^LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*"
+      line_regex: "^(?:GB_|LLMB_)STEP_METADATA_KEY:.* (?:GB_|LLMB_)STEP_METADATA_VALUE:.*"
       is_json: false
       event_fields:
         - field_name: metadata_key
-          field_regex: (?<=LLMB_STEP_METADATA_KEY:)[^ ]+
+          field_regex: (?:(?<=GB_STEP_METADATA_KEY:)|(?<=LLMB_STEP_METADATA_KEY:))[^ ]+
         - field_name: metadata_value
           # Trim trailing whitespace/carriage-return (CRLF logs) so it is not folded
           # into the value; internal spaces are preserved.
-          field_regex: '(?<=LLMB_STEP_METADATA_VALUE:).*?(?=\s*$)'
+          field_regex: '(?:(?<=GB_STEP_METADATA_VALUE:)|(?<=LLMB_STEP_METADATA_VALUE:)).*?(?=\s*$)'
     - event_type: MESSAGE_EVENT
       line_regex: .*
       is_json: false

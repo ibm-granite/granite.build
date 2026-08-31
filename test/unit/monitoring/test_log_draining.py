@@ -32,7 +32,9 @@ Test Coverage:
 
 3. test_logfile_monitor_processes_all_drained_lines
    - Verifies LogFileMonitor processes ALL lines including those from Phase 2
-   - Tests critical event lines like `LLMB_EVENT_WORKLOAD_STATUS:success`
+   - Tests critical event lines like `GB_EVENT_WORKLOAD_STATUS:success` (the
+     standardized prefix; the legacy `LLMB_` prefix is still accepted by the
+     monitor regexes, exercised in test_step_metadata_marker.py)
 
 4. test_lsf_bsub_and_logfile_monitor_coordination (INTEGRATION TEST - Most Important)
    - Simulates realistic LSF job execution with bsub monitor and logfile monitor
@@ -252,17 +254,20 @@ async def test_logfile_monitor_processes_all_drained_lines(tmp_path):
 
     Verifies:
     - LogFileMonitor processes ALL lines including those from Phase 2
-    - Tests critical event lines like `LLMB_EVENT_WORKLOAD_STATUS:success`
+    - Tests critical event lines like `GB_EVENT_WORKLOAD_STATUS:success`
     - Monitor doesn't exit early when stop_event is set
     - All lines yielded by the stream are consumed
 
     This test demonstrates that critical events (like ARTIFACT_PUSHED) are
-    captured even when written shortly before job completion.
+    captured even when written shortly before job completion. Draining is
+    prefix-agnostic: the standardized ``GB_`` marker and a legacy ``LLMB_`` one
+    both flow through unchanged (marker *parsing* dual-accept is covered in
+    test_step_metadata_marker.py).
     """
     log_file = tmp_path / "test.log"
 
-    # Write initial content
-    log_file.write_text("LLMB_EVENT_WORKLOAD_STATUS:running\n")
+    # Write initial content (standardized GB_ prefix)
+    log_file.write_text("GB_EVENT_WORKLOAD_STATUS:running\n")
 
     stop_event = asyncio.Event()
     stream = LocalFileStream(path=log_file)
@@ -297,6 +302,7 @@ async def test_logfile_monitor_processes_all_drained_lines(tmp_path):
         with log_file.open("a") as f:
             f.write("Processing checkpoint 10086\n")
             f.write("Pushed URI: lh://prod/models/checkpoint-10086\n")
+            # Legacy LLMB_ prefix drains identically to the GB_ one above.
             f.write("LLMB_EVENT_WORKLOAD_STATUS:success\n")
             f.flush()
 
@@ -314,7 +320,7 @@ async def test_logfile_monitor_processes_all_drained_lines(tmp_path):
     assert (
         len(lines_processed) == 4
     ), f"Expected 4 lines processed, got {len(lines_processed)}: {lines_processed}"
-    assert "LLMB_EVENT_WORKLOAD_STATUS:running" in lines_processed[0]
+    assert "GB_EVENT_WORKLOAD_STATUS:running" in lines_processed[0]
     assert "Processing checkpoint 10086" in lines_processed[1]
     assert "Pushed URI: lh://prod/models/checkpoint-10086" in lines_processed[2]
     assert "LLMB_EVENT_WORKLOAD_STATUS:success" in lines_processed[3]

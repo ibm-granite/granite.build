@@ -81,6 +81,25 @@ assetstores:
 The `bsub` launcher takes no launcher-level config — job-submission options come from the step
 `config` section below.
 
+### Referencing the shared LSF monitor
+
+Rather than spell out the artifact rules in every step, reference the shipped LSF monitor
+library — [`builtins/monitors/lsf/monitor.yaml`](../../src/gbserver/builtins/monitors/lsf/monitor.yaml).
+It is a `bsub_monitor` carrying the standard `LLMB_ARTIFACT_*` (both `PATH` and `STATE`) and
+`LLMB_STEP_METADATA_KEY/VALUE` rules, so a step that references it gets artifact capture and
+step-metadata (lineage) events for free:
+
+```yaml
+    monitors:
+      bsub_monitor:
+        ref: space://monitors/lsf
+```
+
+To add step-specific rules (e.g. an `ARTIFACT_PUSHED_EVENT`, or a `WORKLOAD_STATUS_EVENT`)
+without discarding the inherited ones, append them via `extra_event_configs` — see
+[Overriding a referenced monitor](../steps/monitoring-and-artifact-events.md#overriding-a-referenced-monitor).
+The inline form below remains valid when a step needs a bespoke rule set.
+
 ## Step `config` blocks read by Lsf
 
 ```yaml
@@ -145,6 +164,10 @@ assetstores:
 
 ### `step.yaml`
 
+This example uses the **inline** monitor form to show the `event_configs` schema in context;
+most steps instead `ref: space://monitors/lsf` (see [above](#referencing-the-shared-lsf-monitor))
+and append only what they add.
+
 ```yaml
 name: my-lsf-step
 version: 1.0.0
@@ -167,24 +190,25 @@ environment_configs:
         type: bsub_monitor
         config:
           event_configs:
+            # Markers standardized on GB_; the legacy LLMB_ prefix is dual-accepted.
             - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
               is_json: false
               event_fields:
                 - field_name: binding_id
-                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                  field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
                 - field_name: path
-                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
                   is_data: true
                 - field_name: binding
                   field_value_template: '{ "path": "{{ fields.data.path }}" }'
                   is_json: true
             - event_type: WORKLOAD_STATUS_EVENT
-              line_regex: "^LLMB_EVENT_WORKLOAD_STATUS:.+"
+              line_regex: "^(?:GB_|LLMB_)EVENT_WORKLOAD_STATUS:.+"
               is_json: false
               event_fields:
                 - field_name: status
-                  field_regex: "(?<=LLMB_EVENT_WORKLOAD_STATUS:).+"
+                  field_regex: "(?:(?<=GB_EVENT_WORKLOAD_STATUS:)|(?<=LLMB_EVENT_WORKLOAD_STATUS:)).+"
 ```
 
 ## See also

@@ -71,7 +71,7 @@ steps:
 lines that the environment's monitor captures:
 
 ```
-LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>
+GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>
 ```
 
 See [Monitoring and artifact events](monitoring-and-artifact-events.md) for the full

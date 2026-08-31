@@ -1,0 +1,46 @@
+# Front reverse proxy for the all-in-one image (Dockerfile.aio).
+#
+# gbserver runs in STANDALONE + apikey auth mode with NO API key, which grants
+# access only when the request's TCP peer is loopback — see gbserver's
+# api/auth.py:_is_localhost (127.0.0.1 / ::1). Under any port-forward or NAT
+# (the Podman bridge locally, an OpenShift Route in a cluster) a browser's
+# request would otherwise arrive with a non-loopback source IP, so every gbserver
+# /api/* call 401s ("No API key configured and request is not from localhost").
+#
+# This proxy is co-located with gbserver in the same network namespace and dials
+# it over loopback, so the TCP peer gbserver sees is 127.0.0.1 — for the browser
+# and for the in-container callers (AutoTuneX reconcile, llmb, gbcli) alike,
+# regardless of how the request reached the pod. That makes the fix identical in
+# Podman and on OpenShift. The exposed port stays 8080; gbserver moves to the
+# loopback-only internal port 8090.
+#
+# CRITICAL — strip X-Forwarded-For. gbserver runs under uvicorn, whose DEFAULT is
+# proxy_headers=True with forwarded_allow_ips="127.0.0.1". Because this proxy
+# connects from 127.0.0.1, uvicorn TRUSTS it and rewrites request.client.host
+# from the incoming X-Forwarded-For — so if we forwarded XFF, gbserver would see
+# the *real* client IP (e.g. the Podman gateway 10.88.0.1 / an OpenShift router
+# IP) and _is_localhost would fail with a 401 again. Removing the X-Forwarded-*
+# headers makes uvicorn fall back to the real loopback peer. (Verified: with the
+# strip, host requests to every /api/* endpoint return 200; without it, 401.)
+#
+# NOTE: this grants gbserver access to anyone who can reach :8080 — which is what
+# "standalone, no auth" means. Put access control at the edge (an OpenShift Route
+# oauth-proxy, a NetworkPolicy, or VPN-only exposure) if the audience is not
+# already trusted.
+{
+	admin off
+	auto_https off
+}
+
+# Caddy streams text/event-stream (SSE live logs) and upgrades WebSockets
+# automatically. The header_up removals stop uvicorn from adopting the real
+# client IP (see the CRITICAL note above), so the loopback dial is what gbserver
+# sees.
+:8080 {
+	reverse_proxy 127.0.0.1:8090 {
+		header_up -X-Forwarded-For
+		header_up -X-Forwarded-Proto
+		header_up -X-Forwarded-Host
+		header_up -Forwarded
+	}
+}

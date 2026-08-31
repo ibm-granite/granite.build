@@ -17,7 +17,7 @@
 """Integration test for cross-target mem:// binding on SkyPilot SLURM.
 
 Two `bash`-step targets on the SkyPilot SLURM backend: the first emits an
-`LLMB_ARTIFACT_ID:… LLMB_ARTIFACT_STATE:…` marker (a mem:// output), the second
+`GB_ARTIFACT_ID:… GB_ARTIFACT_STATE:…` marker (a mem:// output), the second
 binds it and asserts the value arrived verbatim via the mem:// store — proving
 the skypilot monitor now recognizes the STATE marker and mem:// bindings work on
 the slurm backend. Mirrors the bash mem 2-target test. Requires a running Docker

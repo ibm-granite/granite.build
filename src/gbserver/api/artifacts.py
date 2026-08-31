@@ -23,11 +23,14 @@ from gbcommon.uri.hf import HfType, HfURI
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.uri import URI
 from gbserver.api.utils import (
+    NO_ACCESSIBLE_SPACE,
     ListAppendOrSet,
     apply_tag_update,
+    confirm_space_member_access,
     confirm_space_write_access,
     get_row_filter,
     is_super_admin,
+    scope_space_name_filter,
     split_tags,
 )
 from gbserver.lineage.jobstats import get_lineage_store
@@ -511,6 +514,13 @@ def decode_uri(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Artifact with id {id} not found",
             )
+        # Deliberately stricter than read_artifact()/list_artifacts() below,
+        # which only require confirm_space_member_access: decoding resolves
+        # the URI into metadata NOT already present on the stored artifact
+        # object those two expose to any space member -- notably
+        # resource_group_id for hf:// URIs (see __get_hf_decoded_uri_response)
+        # -- so member-level access here would leak more than the read paths
+        # already do, not just duplicate what they show.
         confirm_space_write_access(
             request=request,
             username_on_target=artifact.username,
@@ -541,6 +551,7 @@ class ListArtifactsResponse(BaseModel):
 # Good to be after other GETs, since it might match others otherwise.
 @artifacts_api.get("/")
 def list_artifacts(
+    request: Request,
     uri: str = "",
     username: str = "",
     build_id: str = "",
@@ -551,12 +562,15 @@ def list_artifacts(
         list[str] | None, Query()
     ] = [],  # Specified as multiple tag=v1&tag=v2 in URI
 ) -> ListArtifactsResponse:
+    scoped_space_name = scope_space_name_filter(request, space_name)
+    if scoped_space_name is NO_ACCESSIBLE_SPACE:
+        return ListArtifactsResponse(artifacts=[])
 
     row_filter = get_row_filter(
         uri=uri,
         username=username,
         created_by_build_id=build_id,
-        space_name=space_name,
+        space_name=scoped_space_name,
         is_archived=is_archived,
         checksum=checksum,
         tags=tag,
@@ -571,6 +585,7 @@ def list_artifacts(
 
 @artifacts_api.get("/tags")
 def list_artifact_tags(
+    request: Request,
     uri: str = "",
     username: str = "",
     build_id: str = "",
@@ -579,7 +594,7 @@ def list_artifact_tags(
     """Return the sort list of unique tag strings for the aartifacts that match the condition."""
     # In this version, it simply pulls all the artifacts and programatically takes a unique
     artifacts_response = list_artifacts(
-        uri=uri, username=username, build_id=build_id, space_name=space_name
+        request, uri=uri, username=username, build_id=build_id, space_name=space_name
     )
     tags: set[str] = set()
     for artifact in artifacts_response.artifacts:
@@ -600,7 +615,13 @@ def read_artifact(request: Request, artifact_id: str) -> GetArtifactResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
-    confirm_space_write_access(
+    # Member access (not write access): list_artifacts() already returns this
+    # exact object -- including its uri -- to any space member, so requiring
+    # write access here protected nothing the list endpoint didn't already
+    # expose; it was just an inconsistent extra 401. decode_uri(id=) below
+    # stays at write access deliberately -- it resolves additional metadata
+    # (e.g. resource_group_id) not present on this object.
+    confirm_space_member_access(
         request=request,
         username_on_target=item.username,
         space_name=item.space_name,

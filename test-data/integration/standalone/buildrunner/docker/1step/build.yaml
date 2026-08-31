@@ -24,9 +24,9 @@ granite.build:
               command: >-
                 sleep 5;
                 mkdir /gb-workspace/outputs;
-                file=/gb-workspace/outputs/foo1a.json; echo '{"artifact": "output_model1", "file": "foo1a"}' > $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
-                file=/gb-workspace/outputs/foo1b.json; echo '{"artifact": "output_model1", "file": "foo1b"}' > $file; echo "LLMB_ARTIFACT_ID:output_model1 LLMB_ARTIFACT_PATH:$file";
-                file=/gb-workspace/outputs/foo2.json; echo '{"artifact": "output_model2", "file": "foo2"}' > $file; echo "LLMB_ARTIFACT_ID:output_model2 LLMB_ARTIFACT_PATH:$file"
+                file=/gb-workspace/outputs/foo1a.json; echo '{"artifact": "output_model1", "file": "foo1a"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
+                file=/gb-workspace/outputs/foo1b.json; echo '{"artifact": "output_model1", "file": "foo1b"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
+                file=/gb-workspace/outputs/foo2.json; echo '{"artifact": "output_model2", "file": "foo2"}' > $file; echo "GB_ARTIFACT_ID:output_model2 GB_ARTIFACT_PATH:$file"
             compute_config:
               num_gpus_per_node: 0
               total_memory_per_node: 1Gi

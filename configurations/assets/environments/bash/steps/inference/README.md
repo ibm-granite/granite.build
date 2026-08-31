@@ -30,7 +30,7 @@ for the underlying mechanics.
 
 | Name         | Type      | Notes |
 |--------------|-----------|-------|
-| `generation` | `fileset` | Directory containing `inference_result.json` (status, model type, prompt, response, timing) and `response.txt`. Registered via `LLMB_ARTIFACT_ID:generation`. |
+| `generation` | `fileset` | Directory containing `inference_result.json` (status, model type, prompt, response, timing) and `response.txt`. Registered via `GB_ARTIFACT_ID:generation`. |
 
 Success marker (stdout): `INFERENCE_SUCCESS`.
 

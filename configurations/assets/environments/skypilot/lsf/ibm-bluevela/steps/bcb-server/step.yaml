@@ -40,7 +40,7 @@ environment_configs:
             echo "  URL:  http://${HOST}:${BCB_PORT}/evaluate/"
 
             # Emit the server URL as artifact so dependents can discover it
-            echo "LLMB_ARTIFACT_ID:bcb_server_url LLMB_ARTIFACT_PATH:http://${HOST}:${BCB_PORT}/evaluate/"
+            echo "GB_ARTIFACT_ID:bcb_server_url GB_ARTIFACT_PATH:http://${HOST}:${BCB_PORT}/evaluate/"
 
             # Start the server (blocks until killed)
             echo "=== Starting BCB server ==="

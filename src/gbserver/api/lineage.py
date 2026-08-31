@@ -100,11 +100,40 @@ class BuildJobStatsResponse(BaseModel):
 
     build_id: str
     targets: list[dict[str, list[Any]]]
+    # Parallel to ``targets``: ``target_ids[i]`` owns ``targets[i]``.
+    #
+    # Additive, so the existing positional ``targets`` shape is unchanged for
+    # current clients. It exists because that shape alone is no longer safe to
+    # consume positionally: a target with neither input nor output artifacts now
+    # contributes an EMPTY dict (it has no lineage events -- see
+    # get_build_jobstats), and a client that drops falsy entries before zipping
+    # against its own target list -- `[t for t in resp["targets"] if t]`, or a UI
+    # that skips empty objects -- silently shifts every later target onto the
+    # wrong lineage. Before the artifact-less skip every target contributed at
+    # least one key, so that filter was harmless; it is not any more.
+    #
+    # Read this instead of inferring identity from position. It is populated in
+    # the same loop as ``targets``, so the two cannot drift.
+    target_ids: list[str]
 
 
 @lineage_api.get("/build/{build_id}")
 def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse:
-    """Get JobStats for all targets in a build."""
+    """Get JobStats for all targets in a build.
+
+    Every target of the build gets an entry, but a target with neither input nor
+    output artifacts contributes an empty dict: it has no lineage events to
+    report. This endpoint reaches ``create_jobstats_for_target`` directly, without
+    going through ``select_recordable_targets``, so the builder's own artifact-less
+    check is what produces that -- not a filter here.
+
+    Because of those empty dicts, ``targets`` must not be consumed positionally
+    against a separately-fetched target list: dropping the falsy entries (a
+    natural "skip the targets with no lineage" filter) shifts every later entry
+    onto the wrong target. ``target_ids`` is the parallel identity list --
+    ``target_ids[i]`` owns ``targets[i]`` -- and is the supported way to attribute
+    an entry. Both lists are built in one loop and are always the same length.
+    """
     storage = get_admin_storage()
 
     from gbserver.lineage.jobstats import get_lineage_store
@@ -126,20 +155,30 @@ def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse
     # Collect JobStats for each target
     jobstats_storage = get_lineage_store()
     target_responses: list[dict[str, list[Any]]] = []
+    target_ids: list[str] = []
 
     for target in targets:
         assert isinstance(target, StoredTargetRun)
         _, jobstats_dict = jobstats_storage.create_jobstats_for_target(
             storage, target, build
         )
+        # Appended together so the two lists stay index-aligned by construction;
+        # an entry is only ambiguous if these ever separate.
         target_responses.append(jobstats_dict)
+        target_ids.append(target.uuid)
 
-    return BuildJobStatsResponse(build_id=build_id, targets=target_responses)
+    return BuildJobStatsResponse(
+        build_id=build_id, targets=target_responses, target_ids=target_ids
+    )
 
 
 @lineage_api.get("/target/{target_id}")
 def get_target_jobstats(request: Request, target_id: str) -> TargetJobStatsResponse:
-    """Get JobStats for a target run, grouped by output artifact name."""
+    """Get JobStats for a target run, grouped by output artifact name.
+
+    ``jobstats`` is empty for a target with neither input nor output artifacts --
+    it has no lineage events. See ``get_build_jobstats``.
+    """
     storage = get_admin_storage()
 
     # Get the target run

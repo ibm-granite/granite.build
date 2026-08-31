@@ -301,7 +301,7 @@ def main():
 
     # Register the adapter dir as the build artifact (id must match build.yaml's
     # output name; parsed by the NEWARTIFACT monitor in step.yaml).
-    print(f"LLMB_ARTIFACT_ID:{ARTIFACT_ID} LLMB_ARTIFACT_PATH:{adapter_dir}")
+    print(f"GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{adapter_dir}")
     print("LORA_FINETUNE_SUCCESS")
 
 

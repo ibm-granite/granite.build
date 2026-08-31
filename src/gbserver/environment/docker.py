@@ -366,6 +366,64 @@ class Docker(Environment):
     # launch_docker
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _merge_env_section(env: Dict[str, str], section: Any) -> None:
+        """Merge a config env section into ``env``, unwrapping value dicts.
+
+        A section maps env name -> value, where a value may itself be a
+        ``{"value": ...}`` dict (the environment.yaml/step-config form).
+
+        :param env: the env dict to update in place.
+        :param section: the env mapping; ignored if not a dict.
+        """
+        if not isinstance(section, dict):
+            return
+        for k, v in section.items():
+            if isinstance(v, dict) and "value" in v:
+                env[k] = v["value"]
+            else:
+                env[k] = str(v)
+
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        launcher_config: Optional[Dict] = None,
+        docker_config: Optional[Dict] = None,
+        launch_id: str = "",
+        container_name: str = "",
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Build the full env dict for a docker step launch.
+
+        Precedence (lowest->highest): environment.yaml defaults ``env`` <
+        ``config.docker.env`` < launcher ``env`` < built-in ``LLMB_DOCKER_*``
+        vars < the standard cross-environment set from ``super()`` (GBTEST_
+        test-control vars + e.g. GB_BUILD_ID), which is authoritative.
+
+        The built-in launcher vars are standardized on the ``GB_`` prefix
+        (``GB_DOCKER_*``): ``_add_gb_aliases`` mirrors each ``LLMB_DOCKER_*``
+        onto a ``GB_DOCKER_*`` twin as the final step, keeping the
+        ``LLMB_DOCKER_*`` names for backwards compatibility.
+
+        :param run_metadata: launch run_metadata, forwarded to ``super()``.
+        :param launcher_config: the step.yaml launcher config (its ``env``).
+        :param docker_config: ``config.docker`` (its ``env``).
+        :param launch_id: unique id for this launch (LLMB_DOCKER_LAUNCH_ID).
+        :param container_name: container name (LLMB_DOCKER_CONTAINER_NAME).
+        :returns: the complete ``{name: value}`` env dict for the container.
+        """
+        env: Dict[str, str] = {}
+        self._merge_env_section(env, (self._get_defaults() or {}).get("env"))
+        self._merge_env_section(env, (docker_config or {}).get("env"))
+        launcher_env = (launcher_config or {}).get("env")
+        if isinstance(launcher_env, dict):
+            env.update(launcher_env)
+        env["LLMB_DOCKER_LAUNCH_ID"] = launch_id
+        env["LLMB_DOCKER_CONTAINER_NAME"] = container_name
+        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
+        # Mirror LLMB_DOCKER_* onto GB_DOCKER_* twins (GB_ is the standard prefix).
+        return self._add_gb_aliases(env)
+
     async def launch_docker(
         self: Self,
         launch_id: str,
@@ -414,32 +472,15 @@ class Docker(Environment):
             step_name = step.get("name", run_metadata.get("target_name", "gb"))
             container_name = f"gb-{step_name}-{launch_id[:8]}"
 
-            # Build environment variables
-            env_vars: Dict[str, str] = {}
-            # 1. Defaults from environment.yaml
-            defaults = self._get_defaults()
-            defaults_env = defaults.get("env", {})
-            if isinstance(defaults_env, dict):
-                for k, v in defaults_env.items():
-                    if isinstance(v, dict) and "value" in v:
-                        env_vars[k] = v["value"]
-                    else:
-                        env_vars[k] = str(v)
-            # 2. docker_config env (from step config)
-            docker_env = docker_config.get("env", {})
-            if isinstance(docker_env, dict):
-                for k, v in docker_env.items():
-                    if isinstance(v, dict) and "value" in v:
-                        env_vars[k] = v["value"]
-                    else:
-                        env_vars[k] = str(v)
-            # 3. launcher_config env
-            launcher_env = launcher_config.get("env", {})
-            if isinstance(launcher_env, dict):
-                env_vars.update(launcher_env)
-            # 4. Built-in env vars
-            env_vars["LLMB_DOCKER_LAUNCH_ID"] = launch_id
-            env_vars["LLMB_DOCKER_CONTAINER_NAME"] = container_name
+            # Build environment variables (full env incl. authoritative
+            # standard vars like GB_BUILD_ID; see Docker.get_launch_env_vars).
+            env_vars = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                launcher_config=launcher_config,
+                docker_config=docker_config,
+                launch_id=launch_id,
+                container_name=container_name,
+            )
 
             # Build bind mount volumes
             volumes = {}

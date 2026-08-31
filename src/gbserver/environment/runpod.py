@@ -125,6 +125,45 @@ class Runpod(Environment):
             )
         return resolve_runpod_gpu_type(gpu_type)
 
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        environment_config: Optional[EnvironmentConfig] = None,
+        launcher_config: Optional[Dict] = None,
+        launch_id: str = "",
+        pod_name: str = "",
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Build the full env dict for a runpod step launch.
+
+        Precedence (lowest->highest): environment.yaml ``env`` < launcher
+        ``env`` < built-in ``LLMB_RUNPOD_*`` vars < the standard
+        cross-environment set from ``super()`` (GBTEST_ test-control vars +
+        e.g. GB_BUILD_ID), which is
+        authoritative.
+
+        The built-in launcher vars are standardized on the ``GB_`` prefix
+        (``GB_RUNPOD_*``): ``_add_gb_aliases`` mirrors each ``LLMB_RUNPOD_*``
+        onto a ``GB_RUNPOD_*`` twin as the final step, keeping the
+        ``LLMB_RUNPOD_*`` names for backwards compatibility.
+
+        :param run_metadata: launch run_metadata, forwarded to ``super()``.
+        :param environment_config: the environment config (its ``env``).
+        :param launcher_config: the step.yaml launcher config (its ``env``).
+        :param launch_id: unique id for this launch (LLMB_RUNPOD_LAUNCH_ID).
+        :param pod_name: the pod name (LLMB_RUNPOD_POD_NAME).
+        :returns: the complete ``{name: value}`` env dict for the pod.
+        """
+        env: Dict[str, str] = {}
+        if environment_config:
+            env.update(environment_config.config.get("env", {}) or {})
+        env.update((launcher_config or {}).get("env", {}))
+        env["LLMB_RUNPOD_LAUNCH_ID"] = launch_id
+        env["LLMB_RUNPOD_POD_NAME"] = pod_name
+        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
+        # Mirror LLMB_RUNPOD_* onto GB_RUNPOD_* twins (GB_ is the standard prefix).
+        return self._add_gb_aliases(env)
+
     async def launch_runpod(
         self: Self,
         launch_id: str,
@@ -169,13 +208,15 @@ class Runpod(Environment):
             volume_gb = defaults.get("volume_gb", 100)
             volume_mount_path = defaults.get("volume_mount_path", "/workspace")
 
-            # Build environment variables
-            env_vars: Dict[str, str] = {}
-            if environment_config:
-                env_vars.update(environment_config.config.get("env", {}) or {})
-            env_vars.update(launcher_config.get("env", {}))
-            env_vars["LLMB_RUNPOD_LAUNCH_ID"] = launch_id
-            env_vars["LLMB_RUNPOD_POD_NAME"] = pod_name
+            # Build environment variables (full env incl. authoritative
+            # standard vars like GB_BUILD_ID; see Runpod.get_launch_env_vars).
+            env_vars = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                environment_config=environment_config,
+                launcher_config=launcher_config,
+                launch_id=launch_id,
+                pod_name=pod_name,
+            )
 
             # Container command
             command = launcher_config.get("command", "")

@@ -38,7 +38,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[5]
 _LOCAL_SPACE = _REPO_ROOT / "configurations" / "spaces" / "local"
 
 # A PARAMETERIZED build: one Bash target, one command step that echoes the
-# MESSAGE param and registers a single env:// output from its LLMB_ARTIFACT marker.
+# MESSAGE param and registers a single env:// output from its GB_ARTIFACT marker.
 _PARAM_BUILD = """\
 granite.build:
   name: render-smoke-$${SUFFIX}
@@ -56,7 +56,7 @@ granite.build:
             command_config:
               command: >-
                 echo "message: $${MESSAGE}";
-                echo "LLMB_ARTIFACT_ID:out LLMB_ARTIFACT_PATH:/tmp/gb-render-smoke-out.txt"
+                echo "GB_ARTIFACT_ID:out GB_ARTIFACT_PATH:/tmp/gb-render-smoke-out.txt"
             compute_config:
               num_nodes: 1
 """

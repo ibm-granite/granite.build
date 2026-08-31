@@ -18,7 +18,7 @@ granite.build:
       outputs:
         # env:// output: the step writes results.json under $OUTPUT_DIR and
         # registers it by path. The uri path MUST equal the marker path the step
-        # emits (LLMB_ARTIFACT_PATH below), which is $OUTPUT_DIR/results.json.
+        # emits (GB_ARTIFACT_PATH below), which is $OUTPUT_DIR/results.json.
         results:
           uri: "env:///gb-workspace/output/results.json"
           type: dataset
@@ -33,7 +33,7 @@ granite.build:
               # Directory the eval run block creates (mkdir -p) inside the image
               # on the EC2 node and writes results.json into. The env:// output is
               # a no-op push that just registers this path, so it need only exist
-              # in the container and match the LLMB_ARTIFACT_PATH marker / the
+              # in the container and match the GB_ARTIFACT_PATH marker / the
               # results uri above — no host persistence is required.
               output_dir: "/gb-workspace/output"
               per_device_eval_batch_size: 8

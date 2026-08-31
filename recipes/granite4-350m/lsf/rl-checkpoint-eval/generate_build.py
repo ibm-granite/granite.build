@@ -43,7 +43,7 @@ import yaml
 # The environment all targets run on (matches sft-eval-full-dataset / ifrl-*).
 ENVIRONMENT_URI = "space://environments/skypilot/lsf/ibm-bluevela"
 # The trainer emits per-checkpoint outputs named checkpoint_<step>; the id must
-# match the LLMB_ARTIFACT_ID the openinstruct-rl step prints for each save.
+# match the GB_ARTIFACT_ID the openinstruct-rl step prints for each save.
 CHECKPOINT_OUTPUT_PREFIX = "checkpoint_"
 
 

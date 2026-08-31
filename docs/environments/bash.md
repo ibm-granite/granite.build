@@ -62,6 +62,14 @@ When a target whose `environment_uri` is `space://environments/bash` runs a step
 4. The script runs as a `nohup` process; its output is tailed by the monitor, which emits build events
    (including artifact registration).
 
+> **Prefix standardization (`GB_` primary, `LLMB_` retained).** These launcher vars are being
+> standardized on the `GB_` prefix. The launch-identity vars injected by the environment —
+> `LLMB_BASH_LAUNCH_ID`, `LLMB_BASH_ASSET_DIR`, `LLMB_BASH_PYTHON_DIR`, `LLMB_BASH_OUTPUT_DIR` —
+> already get a same-value `GB_BASH_*` twin (the `LLMB_BASH_*` name is kept for backwards
+> compatibility). The additional `LLMB_BASH_*` vars derived inside `llmb_bash_jobsub.sh` (the
+> per-input `LLMB_BASH_INPUT_<NAME>`, `LLMB_BASH_TARGET_RUN_ID`, …) keep the `LLMB_` name **for now** —
+> their `GB_` twins are a deferred follow-up. Read whichever prefix your step already uses.
+
 The launcher is [`Bash.launch_nohup`](../../src/gbserver/environment/bash.py); the job template is
 [`llmb_bash_jobsub.sh`](../../src/gbserver/builtins/steps/gbstep/bash_scripts/).
 
@@ -150,19 +158,20 @@ build.yaml always wins.
 
 ## How your script reports outputs
 
-The script writes files under `$LLMB_BASH_OUTPUT_DIR` and registers an artifact by printing a line the
-monitor recognizes:
+The script writes files under `$GB_BASH_OUTPUT_DIR` (the legacy `$LLMB_BASH_OUTPUT_DIR` alias holds
+the same value) and registers an artifact by printing a line the monitor recognizes:
 
 ```python
-print(f"LLMB_ARTIFACT_ID:{artifact_id} LLMB_ARTIFACT_PATH:{output_dir}")
+print(f"GB_ARTIFACT_ID:{artifact_id} GB_ARTIFACT_PATH:{output_dir}")
 ```
 
 Bash steps reference the shared `space://monitors/bash` monitor, whose
 `NEWARTIFACT_IN_ENVIRONMENT_EVENT` rule (see the
-[event_configs schema](README.md#event_configs--log-line-parsing-rules)) parses `LLMB_ARTIFACT_ID:` and
-`LLMB_ARTIFACT_PATH:` and binds the artifact. **The id must match an output name declared on the
-target**, so the artifact is routed to that output's URI. (For a `mem://` output the script prints
-`LLMB_ARTIFACT_STATE:<value>` instead.) The bash monitor's rules are **`^`-anchored** because the bash
+[event_configs schema](README.md#event_configs--log-line-parsing-rules)) parses `GB_ARTIFACT_ID:` and
+`GB_ARTIFACT_PATH:` (and dual-accepts the legacy `LLMB_` prefix) and binds the artifact. **The id must
+match an output name declared on the target**, so the artifact is routed to that output's URI. (For a
+`mem://` output the script prints `GB_ARTIFACT_STATE:<value>` instead.) The bash monitor's rules are
+**`^`-anchored** because the bash
 launcher echoes the command back — the anchor stops the rule matching that echo line; other environments
 that don't echo (skypilot, docker) leave the rule unanchored. See
 [Anchoring is per-environment](../steps/monitoring-and-artifact-events.md#anchoring-is-per-environment).

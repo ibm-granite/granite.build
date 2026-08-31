@@ -143,7 +143,7 @@ environment_configs:
             cat "$COMBINED_OUTPUT_CSV"
             echo "=== END CSV OUTPUT ==="
 
-            echo "LLMB_ARTIFACT_ID:combined_csv LLMB_ARTIFACT_PATH:${COMBINED_OUTPUT_CSV}"
+            echo "GB_ARTIFACT_ID:combined_csv GB_ARTIFACT_PATH:${COMBINED_OUTPUT_CSV}"
     monitors:
       skypilot_monitor:
         # Artifact convention (incl. binding) + profile come from the monitor

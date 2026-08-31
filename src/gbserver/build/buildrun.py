@@ -54,6 +54,14 @@ from gbserver.utils.utils import get_uuid, short_alphanumeric_lower_hash
 # Matches {{ target_hash }} with any surrounding whitespace.
 _TARGET_HASH_RE = re.compile(r"\{\{\s*target_hash\s*\}\}")
 
+# Upper bound (seconds) for draining cancelled in-flight run tasks in _cleanup.
+# Generous: a child's cleanup chain can include sky.down, helm uninstall backoff
+# (~70s) and RayCluster deletion, all of which we want to let finish normally.
+# The bound only exists so a wedged cleanup (e.g. a hung sky.down) cannot block
+# the CANCELLED transition indefinitely — stragglers are left to finish in the
+# background, mirroring Environment._drain_thread_future.
+_INFLIGHT_CANCEL_DRAIN_TIMEOUT = 300.0
+
 logger = get_logger(__name__)
 
 
@@ -696,9 +704,77 @@ class BuildRun(Run):
         logger.info("BuildRun._cleanup start")
         self_entity = self.entity
         assert isinstance(self_entity, Build)
+        # On cancellation, abort any still-running detached run tasks before
+        # tearing down. They are created detached (asyncio.create_task) so
+        # build_run.cancel() — which cancels only the BuildRun task — never
+        # reaches them; without this they run their environment launch (e.g.
+        # SkyPilot provisioning) to completion, and target.teardown() blocks on
+        # the launch-done barrier for the full provisioning time. On the success
+        # path these tasks are already done, so this is a no-op.
+        await self._cancel_inflight_tasks()
         teardown_tasks: set[Task] = set()
         for target in self_entity.targets.values():
             teardown_tasks.add(asyncio.create_task(target.teardown()))
         if len(teardown_tasks) > 0:
             await asyncio.wait(teardown_tasks)
         logger.info("BuildRun._cleanup end")
+
+    async def _cancel_inflight_tasks(self: Self) -> None:
+        """Cancel and drain any still-running tasks tracked in ``self.tasks``.
+
+        ``self.tasks`` holds two kinds of task and this cancels *both*:
+
+        * The detached ``TargetRun`` coroutine tasks (untagged), created via
+          ``asyncio.create_task`` in ``__dispatch_target``/
+          ``_run_targets_of_build``. Cancelling the BuildRun task does not
+          propagate to them, so during a build cancellation they stay blocked in
+          the environment launch (e.g. an uninterruptible ``sky.stream_and_get``
+          provisioning call). Cancelling them here propagates ``CancelledError``
+          down to that launch so it aborts promptly (SkyPilot request api_cancel
+          + partial-cluster teardown) instead of provisioning a cluster only to
+          tear it down.
+        * The tagged ``_process_event`` tasks, which do artifact registration and
+          DB writes. Cancelling one mid-flight is acceptable on the cancel path:
+          asyncio delivers ``CancelledError`` only at an ``await`` boundary, not
+          mid-statement, and the build is being torn down regardless. They are
+          cancelled+drained here (rather than filtered out) so they are not left
+          as orphaned pending tasks.
+
+        Draining the cancelled tasks lets each run's own cleanup (e.g. ``sky.down``)
+        complete before the build finishes, so clusters are not leaked. The drain
+        is *bounded* (``_INFLIGHT_CANCEL_DRAIN_TIMEOUT``): this runs ahead of
+        teardown in ``_cleanup``, so a wedged child cleanup (a hung ``sky.down``,
+        an endless helm backoff) would otherwise block the CANCELLED transition
+        indefinitely. ``asyncio.wait`` does not kill the tasks on timeout, so any
+        straggler keeps running in the background while the build proceeds.
+        """
+        inflight = [t for t in self.tasks if not t.done()]
+        if not inflight:
+            return
+        logger.info("BuildRun._cleanup cancelling %d in-flight task(s)", len(inflight))
+        for t in inflight:
+            t.cancel()
+        done, pending = await asyncio.wait(
+            inflight, timeout=_INFLIGHT_CANCEL_DRAIN_TIMEOUT
+        )
+        # Consume each drained task's result. A child may finish carrying a real
+        # exception (Run.run raises RunFailed; TargetRun._run re-raises ValueError)
+        # rather than CancelledError; the previous gather(return_exceptions=True)
+        # retrieved those implicitly, but asyncio.wait does not — without this the
+        # exception is logged as an unretrieved task exception when the task is
+        # GC'd. Skip cancelled tasks: .exception() would re-raise their
+        # CancelledError, and a cancelled task never triggers that warning anyway.
+        for t in done:
+            if not t.cancelled():
+                t.exception()
+        if pending:
+            logger.warning(
+                "BuildRun._cleanup: %d in-flight task(s) did not drain within "
+                "%ss after cancel; proceeding with teardown",
+                len(pending),
+                _INFLIGHT_CANCEL_DRAIN_TIMEOUT,
+            )
+            # Consume each straggler's eventual result so it is not later logged
+            # as an unretrieved task exception when it finally completes.
+            for t in pending:
+                t.add_done_callback(lambda f: None if f.cancelled() else f.exception())

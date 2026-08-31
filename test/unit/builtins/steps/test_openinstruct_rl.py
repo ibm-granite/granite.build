@@ -139,7 +139,7 @@ class TestOpeninstructRlRun:
     def test_emits_artifact_line(self):
         run = _render_run()
         emitted = (
-            "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:/proj/runs/ifrl/checkpoints"
+            "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:/proj/runs/ifrl/checkpoints"
         )
         assert emitted in run
 
@@ -233,8 +233,7 @@ class TestOpeninstructRlMonitor:
             e for e in events if e["event_type"] == "NEWARTIFACT_IN_ENVIRONMENT_EVENT"
         )
         emitted = (
-            "LLMB_ARTIFACT_ID:checkpoint "
-            "LLMB_ARTIFACT_PATH:/proj/runs/ifrl/checkpoints"
+            "GB_ARTIFACT_ID:checkpoint " "GB_ARTIFACT_PATH:/proj/runs/ifrl/checkpoints"
         )
         assert re.search(newart["line_regex"], emitted)
         path_field = next(

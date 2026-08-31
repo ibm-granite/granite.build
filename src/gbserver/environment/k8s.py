@@ -60,7 +60,6 @@ import kubernetes_asyncio
 import yaml
 from kubernetes_asyncio import client, config, watch
 
-from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.cos import CosURI
 from gbcommon.uri.hf import HfURI
 from gbcommon.uri.lh import LhURI
@@ -756,11 +755,17 @@ class K8s(Environment):
                 (f"k8s.env.{env_var.env_name}.valueFrom.secretKeyRef.key", secret_key)
             )
 
-        # Propagate GBTEST_ env vars as strings — must use --set-string to prevent
-        # Helm from parsing "true"/"false" as booleans, which would render as
-        # `value: true` (boolean) in the pod spec and fail Kubernetes validation.
+        # Propagate the standard cross-environment vars (GBTEST_ test-control
+        # vars + GB_BUILD_ID; from Environment.get_launch_env_vars) as strings —
+        # must use --set-string to prevent Helm from parsing "true"/"false" as
+        # booleans, which would render as `value: true` (boolean) in the pod
+        # spec and fail Kubernetes validation. Secret-backed env vars are handled
+        # separately above via valueFrom.secretKeyRef.
         extra_runmetadata_string_values = [
-            (f"k8s.env.{k}.value", v) for k, v in get_exported_gbtest_env_vars().items()
+            (f"k8s.env.{k}.value", v)
+            for k, v in self.get_launch_env_vars(
+                run_metadata=kwargs.get("run_metadata", {})
+            ).items()
         ]
 
         # --- Build --set overrides ---
@@ -997,6 +1002,41 @@ class K8s(Environment):
                 e,
             )
 
+    @staticmethod
+    def _is_helm_release_not_found(error: Exception) -> bool:
+        """Return True if a helm uninstall failure means the release is absent.
+
+        ``helm uninstall`` of a release that was never installed (or already
+        removed) exits non-zero with one of these messages::
+
+            Error: uninstall: Release not loaded: <name>: release: not found
+            Error: release: not found
+
+        This is a *permanent* condition, not a transient one, so cleanup should
+        treat it as success (nothing to uninstall) rather than retrying. This
+        situation arises, e.g., when a build is cancelled during the
+        ``helm install --dry-run`` phase, before the real release exists.
+
+        The match is anchored to helm's structured error phrasing (the
+        ``uninstall:`` command context and the ``error:`` prefix) rather than
+        loose ``"not loaded"`` / ``"not found"`` fragments. The exception
+        message embeds both the command line and the full stderr, so a bare
+        substring could match a *transient* failure whose stderr incidentally
+        contains one of those words — misclassifying it as success, skipping a
+        needed uninstall, and leaking the RayCluster/pods.
+
+        Args:
+            error: The exception raised by the uninstall command (its message
+                embeds the command line and stderr).
+
+        Returns:
+            True if the error indicates the release does not exist.
+        """
+        msg = str(error).lower()
+        return (
+            "uninstall: release not loaded" in msg or "error: release: not found" in msg
+        )
+
     async def _helm_uninstall_with_retry(
         self: Self, release_name: str, launch_id: str
     ) -> None:
@@ -1005,7 +1045,8 @@ class K8s(Environment):
 
         Retries up to GBSERVER_CLEANUP_MAX_RETRIES times with exponential backoff
         (base_delay * 2^attempt) to handle cases where the K8s API is temporarily
-        unreachable at cleanup time.
+        unreachable at cleanup time. A "release not found" failure is treated as
+        success (nothing to uninstall) and is not retried.
 
         Args:
             release_name: The helm release name to uninstall.
@@ -1041,6 +1082,17 @@ class K8s(Environment):
                 logger.debug("process: %s", process)
                 break  # success
             except Exception as e:
+                if self._is_helm_release_not_found(e):
+                    # Release was never installed (e.g. cancelled during the
+                    # dry-run) or is already gone. Nothing to uninstall, so this
+                    # is a successful teardown, not a retryable failure.
+                    logger.info(
+                        "[K8s launch_id %s] helm release %s not found at cleanup; "
+                        "treating uninstall as complete",
+                        launch_id,
+                        release_name,
+                    )
+                    break
                 if attempt < max_attempts - 1:
                     delay = GBSERVER_CLEANUP_RETRY_BASE_DELAY * (2**attempt)
                     logger.warning(

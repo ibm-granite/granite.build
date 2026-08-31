@@ -1,0 +1,144 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---------------------------------------------------------------------------
+# Virtual environments
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---------------------------------------------------------------------------
+# Testing, coverage, and type/lint caches
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.cache
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# Secrets and local configuration — never commit these
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.aio.example
+*.pem
+*.key
+credentials.json
+
+# ---------------------------------------------------------------------------
+# Local databases
+# ---------------------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+autotunex.db
+
+# Database backups (timestamped snapshots must never be committed)
+*.bak
+autotunex.db.bak-*
+
+# Node dependencies (root-level guard; frontend deps also covered by src/ux/.gitignore)
+node_modules/
+
+# ---------------------------------------------------------------------------
+# AutoTuneX runtime artifacts — model weights, adapters, checkpoints, datasets.
+# These are large and must never enter git history.
+# ---------------------------------------------------------------------------
+artifacts/
+checkpoints/
+runs/
+outputs/
+data/
+datasets/
+*.ckpt
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+wandb/
+mlruns/
+.optuna/
+
+# ---------------------------------------------------------------------------
+# Job launch specs — generated build.yaml per job (AUTOTUNEX_JOB_SPEC_DIR).
+# Kept on disk for debugging, never committed. Anchored to the repo root so a
+# nested tmp/ elsewhere is unaffected.
+# ---------------------------------------------------------------------------
+/tmp/
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+*.log
+logs/
+
+# ---------------------------------------------------------------------------
+# Editors and tooling
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+.ipynb_checkpoints/
+
+
+# ---------------------------------------------------------------------------
+# OS
+# ---------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+
+
+# ---------------------------------------------------------------------------
+# Frontend (src/ux) exceptions — the Python-oriented `lib/` rule above matches
+# the SvelteKit app's own source library directory and would drop the entire
+# frontend (API client, stores, components). Keep it tracked. Build output
+# (build/, .svelte-kit/, node_modules) stays ignored via src/ux/.gitignore.
+# ---------------------------------------------------------------------------
+!src/ux/src/lib/
+

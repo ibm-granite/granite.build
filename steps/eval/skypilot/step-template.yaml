@@ -48,7 +48,7 @@ environment_configs:
             # any Granite.build artifact convention. The line must start with the
             # marker for skypilot_monitor to capture it.
             RESULT_FILE="$(cd "$OUTPUT_DIR" && pwd)/results.json"
-            echo "LLMB_ARTIFACT_ID:results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+            echo "GB_ARTIFACT_ID:results GB_ARTIFACT_PATH:${RESULT_FILE}"
     monitors:
       # Standard artifact/status convention from the shipped monitor library.
       skypilot_monitor:

@@ -22,7 +22,7 @@ inputs:
       type: dataset
       accept: [uri, binding]
 outputs:
-  # Script emits the `adapter` artifact dynamically via LLMB_ARTIFACT_ID:adapter.
+  # Script emits the `adapter` artifact dynamically via GB_ARTIFACT_ID:adapter.
   allow_unknown: true
   optional:
     adapter:
@@ -54,7 +54,7 @@ environment_configs:
           - log_monitor
     monitors:
       # Uses the shared monitor library (space://monitors/bash). The script prints its
-      # `LLMB_ARTIFACT_ID:… LLMB_ARTIFACT_PATH:…` marker at the start of a line,
+      # `GB_ARTIFACT_ID:… GB_ARTIFACT_PATH:…` marker at the start of a line,
       # so the shared monitor's anchored PATH artifact event matches it; the
       # mem:// STATE event never fires (no STATE markers emitted).
       log_monitor:

@@ -1,0 +1,48 @@
+# AutoTuneX CI — path-filtered gate for the vendored autotunex/ subtree.
+#
+# Runs the subtree's own `cd autotunex && make check` (ruff + mypy strict + pytest —
+# the gate its 1300+ tests were written against). The monorepo's repo-wide
+# black/isort lint does NOT govern autotunex/: the root pyproject excludes the
+# prefix ([tool.black] extend-exclude / [tool.isort] extend_skip_glob), so this
+# workflow is the subtree's gate instead.
+#
+# Trigger note: pull_request workflow definitions come from the BASE branch, so this
+# job starts running on PRs only once it is on the default branch; it always runs on
+# pushes to main under the autotunex/** path filter. merge_group is intentionally
+# omitted so a path-skipped run cannot block the merge queue as a required check —
+# add it to branch protection if you want it required.
+name: AutoTuneX CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['autotunex/**']
+  pull_request:
+    branches: [main]
+    paths: ['autotunex/**']
+
+jobs:
+  check:
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: autotunex
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (service + torch-free fm-tune catalog)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install -e "./src/fm-tune"
+
+      - name: make check (ruff + mypy strict + pytest)
+        run: make check

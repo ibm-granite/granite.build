@@ -53,7 +53,10 @@ if TYPE_CHECKING:
 
 from pydantic import Field
 
-from gbcommon.types.testing import is_failure_simulated
+from gbcommon.types.testing import (
+    get_exported_gbtest_env_vars,
+    is_failure_simulated,
+)
 from gbcommon.uri.file import absolutize_file_uri
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
@@ -93,6 +96,15 @@ from gbserver.utils.utils import get_uuid
 logger = get_logger(__name__)
 
 BINDING_KEY = "binding"
+
+# Standard env vars injected into EVERY launched step, keyed by the run_metadata
+# field they read. Add a line here (e.g. "GB_TARGETRUN_ID": "targetrun_id") to
+# roll a var out to all environments at once. Each is emitted only when its
+# run_metadata value is non-empty, and str-coerced. Subclass launch methods
+# obtain these (and their own env) via Environment.get_launch_env_vars().
+STANDARD_STEP_ENV_FROM_RUN_METADATA: Dict[str, str] = {
+    "GB_BUILD_ID": "build_id",
+}
 
 # ANSI escape sequences (colour codes, cursor moves, etc.). Some environments'
 # retrieved logs colourise their line prefixes — SkyPilot, for example, wraps its
@@ -903,6 +915,73 @@ class Environment(ABC):
         """Tells monitors that launch has stopped and they should not proceed."""
         self._get_launch_stopped_event(launch_id).set()
 
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Return the env vars to inject into a launched step.
+
+        The base implementation returns the standard cross-environment set that
+        every environment gets, regardless of launcher:
+
+        1. The ``GBTEST_`` test-control vars currently set in the server's own
+           environment (e.g. GBTEST_MOCKED_HF_OPS), forwarded so a step running
+           in a detached env — remote pod/job, container, or the clean-env bash
+           subprocess — mocks the same HF ops the server would.
+        2. The run_metadata-derived standard vars (currently GB_BUILD_ID; see
+           STANDARD_STEP_ENV_FROM_RUN_METADATA).
+
+        Subclasses OVERRIDE this to build their full env dict (config env,
+        secrets, launcher envs, LLMB_*/GB_* vars) and then merge the result of
+        ``super().get_launch_env_vars(...)`` LAST, so this standard set wins over
+        any config/secret/launcher value of the same name. Overrides that inject
+        legacy ``LLMB_``-prefixed launcher vars additionally call
+        ``_add_gb_aliases`` as their final step to mirror each onto a ``GB_``
+        twin (the standardized prefix) while keeping the ``LLMB_`` name.
+
+        :param run_metadata: the launch's run_metadata dict; the source of the
+            run_metadata-derived standard values. May be None/empty, in which
+            case no run_metadata-derived vars are emitted.
+        :param kwargs: ignored by the base; accepted so subclass overrides can
+            forward their own launch-time context to ``super()`` without the
+            base signature drifting.
+        :returns: a ``{name: str_value}`` dict; each run_metadata-derived var is
+            included only when its value is truthy, coerced with ``str()``.
+        """
+        rm = run_metadata or {}
+        # (1) Forward GBTEST_ test-control vars from the server's environment.
+        env: Dict[str, str] = dict(get_exported_gbtest_env_vars())
+        # (2) run_metadata-derived standard vars (e.g. GB_BUILD_ID).
+        for env_name, meta_key in STANDARD_STEP_ENV_FROM_RUN_METADATA.items():
+            if rm.get(meta_key):
+                env[env_name] = str(rm[meta_key])
+        return env
+
+    @staticmethod
+    def _add_gb_aliases(env: Dict[str, str]) -> Dict[str, str]:
+        """Add a ``GB_``-prefixed twin for every ``LLMB_``-prefixed var.
+
+        Launcher-injected env vars are standardized on the ``GB_`` prefix, but
+        the legacy ``LLMB_`` names are kept for backwards compatibility with
+        existing/external step implementations that read them. Subclass
+        ``get_launch_env_vars`` overrides call this as their final step so every
+        ``LLMB_<X>`` they set gains a ``GB_<X>`` twin with the same value.
+
+        Uses ``setdefault`` so an already-present ``GB_`` key is never
+        overwritten — the authoritative standard set (e.g. ``GB_BUILD_ID`` from
+        ``STANDARD_STEP_ENV_FROM_RUN_METADATA``) always wins over a twin.
+
+        :param env: the assembled launch-env dict; mutated in place.
+        :returns: the same dict, with ``GB_`` twins added.
+        """
+        # NOTE: Lsf._get_secret_env_keys mirrors this LLMB_->GB_ transform to keep
+        # the GB_ twin of a user-named secret masked in redaction; keep them in sync.
+        for name, value in list(env.items()):
+            if name.startswith("LLMB_"):
+                env.setdefault("GB_" + name[len("LLMB_") :], value)
+        return env
+
     def launch(
         self: Self,
         launcher_type: str,
@@ -983,6 +1062,19 @@ class Environment(ABC):
         TaskGroup) so that it survives cancellation of the caller's scope.
         This ensures destructive cleanup (e.g. sky.down) actually runs during
         build cancellation.
+
+        IDEMPOTENCY CONTRACT: every concrete ``cleanup_*`` implementation MUST
+        be idempotent and must tolerate a resource that was never created or is
+        already gone. Build cancellation now propagates promptly (see
+        ``BuildRun._cancel_inflight_tasks``), so a cleanup can fire *before*
+        the matching launch has recorded its backing resource, *during*
+        provisioning, or *after* the resource is already torn down. Treat
+        "resource does not exist" as success — do NOT raise or retry-storm on
+        it. Examples: k8s treats helm's "release: not found" as done rather than
+        retrying at backoff; SkyPilot cancels by a deterministic name because
+        its launch_id->resource map is only populated after provisioning
+        returns. When the launch_id->resource bookkeeping may be empty on the
+        cancel path, tear down by the deterministic resource name instead.
         """
         assert launch_type
         assert launch_id
@@ -1137,7 +1229,16 @@ class Environment(ABC):
         self.__teardown_started_events.pop(setup_id, None)
 
     def teardown(self: Self, type: str, setup_id: str, **kwargs) -> Task:
-        """Teardown the setup from the environment."""
+        """Teardown the setup from the environment.
+
+        IDEMPOTENCY CONTRACT: every concrete ``teardown_*`` implementation MUST
+        be idempotent and must tolerate a setup that was never fully created or
+        is already gone. Because build cancellation now propagates promptly, a
+        teardown can run after a setup was only partially provisioned (or after
+        a cleanup already removed the resource). Treat "resource does not exist"
+        as success — do NOT raise or retry-storm on it. See the ``cleanup``
+        docstring above for the same contract on the per-launch path.
+        """
 
         async def teardown_helper():
             logger.debug("Sync waiting on setup done")
@@ -1157,6 +1258,52 @@ class Environment(ABC):
             # self.__teardown_gc(setup_id)
 
         return asyncio.create_task(teardown_helper())
+
+    @staticmethod
+    async def _drain_thread_future(
+        pending_fut: "asyncio.Future",
+        description: str,
+        timeout: float = 60.0,
+    ) -> Any:
+        """Wait up to ``timeout`` for a shielded ``to_thread`` future to finish
+        so its OS thread is retired, without blocking indefinitely.
+
+        A ``to_thread`` future only completes when its blocking call returns;
+        the thread cannot be interrupted. After a caller aborts an in-flight
+        request the thread should unblock quickly, but if the abort was rejected
+        or did not take effect the call would otherwise run to natural
+        completion (e.g. the full provisioning time, or never). Bounding the
+        wait ensures whatever runs next — teardown, cleanup — is never gated on
+        that. If the future is still pending at the deadline we stop waiting and
+        attach a callback that retrieves its eventual result, so asyncio does
+        not log "Future exception was never retrieved" when the orphaned thread
+        finally finishes (its result is discarded).
+
+        Args:
+            pending_fut: The shielded ``to_thread`` future to drain.
+            description: Human-readable label for the timeout log message.
+            timeout: Maximum seconds to wait for the thread to retire.
+
+        Returns:
+            The future's result if it completed within ``timeout``, else None.
+        """
+        _, pending = await asyncio.wait({pending_fut}, timeout=timeout)
+        if pending:
+            logger.warning(
+                "%s did not retire within %ss after abort; proceeding without it",
+                description,
+                timeout,
+            )
+            # Swallow the eventual result/exception (guard cancelled: .exception()
+            # would raise CancelledError on a cancelled future).
+            pending_fut.add_done_callback(
+                lambda f: None if f.cancelled() else f.exception()
+            )
+            return None
+        try:
+            return pending_fut.result()
+        except BaseException:
+            return None
 
     def _get_storeconfig(
         self: Self, uri: URI, raise_exceptions: bool = False
