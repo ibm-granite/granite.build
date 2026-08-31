@@ -89,9 +89,12 @@ class SharedFileSystemLock:
     def acquire(self) -> bool:
         """Try to acquire the lock, waiting up to ``timeout`` seconds.
 
-        Returns True if acquired, False on timeout or if the lock directory
-        cannot be created (e.g. a read-only or otherwise failing mount) -- so
-        best-effort callers can proceed without failing.
+        Returns True if acquired. Returns False -- so best-effort callers can
+        proceed without failing -- on timeout, if the lock directory cannot be
+        created (e.g. a read-only or otherwise failing mount), or if the
+        identity file cannot be written after creating it. The recorded identity
+        is what release() uses to avoid removing a lock a peer now owns, so a
+        lock we cannot attribute to ourselves is rolled back rather than held.
         """
         deadline = time.monotonic() + self.timeout
         # Create the container dir once up front rather than on every poll (a
@@ -121,7 +124,21 @@ class SharedFileSystemLock:
                 )
                 return False
             else:
-                self._write_info()
+                if not self._write_info():
+                    # We created the dir but cannot record our identity in it.
+                    # Without that, release() could not tell our own lock apart
+                    # from one a stale-breaker later hands to a peer, so roll
+                    # back and give up rather than hold an unattributable lock.
+                    logger.warning(
+                        "SharedFileSystemLock: created %s but could not write "
+                        "identity; rolling back",
+                        self.lock_path,
+                    )
+                    try:
+                        self.lock_path.rmdir()
+                    except OSError:
+                        pass
+                    return False
                 self._held = True
                 return True
 
@@ -145,20 +162,25 @@ class SharedFileSystemLock:
         finally:
             self._held = False
 
-    def _write_info(self) -> None:
-        # Best-effort metadata; the directory's existence is the lock, not this.
+    def _write_info(self) -> bool:
+        # The recorded identity is load-bearing (release/ownership rely on it),
+        # so acquire() treats a failed write as a failed acquire. Returns
+        # whether the write succeeded.
         try:
             self.info_file.write_text(f"{self.identity}\n{time.time()}\n")
+            return True
         except OSError:
-            pass
+            return False
 
     def _owned_by_us(self) -> bool:
+        # acquire() only reports success after writing our identity, so a
+        # missing/unreadable info file here means a peer broke our lock (a ttl
+        # stale-break unlinks the info file before re-taking the dir). Never
+        # remove a lock we cannot positively confirm is still ours.
         try:
             first_line = self.info_file.read_text().splitlines()[0].strip()
         except (OSError, IndexError):
-            # No/unreadable info file: we set ``_held`` on our own mkdir, so
-            # treat the lock as ours to remove.
-            return True
+            return False
         return first_line == self.identity
 
     def _clear_if_stale(self) -> bool:

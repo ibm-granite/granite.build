@@ -124,3 +124,34 @@ def test_acquire_returns_false_when_mkdir_fails(tmp_path):
     ):
         assert lock.acquire() is False
     assert lock.is_held is False
+
+
+def test_acquire_rolls_back_when_identity_unwritable(tmp_path):
+    """If the identity file can't be written, acquire rolls back and fails.
+
+    Without a recorded identity, release() could not tell our lock apart from a
+    peer's, so a lock we cannot attribute to ourselves must not be held.
+    """
+    lock_path = tmp_path / "k.lock"
+    lock = SharedFileSystemLock(lock_path, timeout=1)
+    with patch("pathlib.Path.write_text", side_effect=OSError("[Errno 28] No space")):
+        assert lock.acquire() is False
+    assert lock.is_held is False
+    assert not lock_path.exists(), "the unattributable lock dir must be rolled back"
+
+
+def test_release_keeps_lock_when_info_missing(tmp_path):
+    """A missing info file means a peer broke our lock; release must not remove it.
+
+    Guards the ttl stale-break race: the breaker unlinks the info file before
+    re-taking the dir, so a legitimate holder finding no info file can no longer
+    prove ownership and must leave the (now someone else's) lock in place.
+    """
+    lock_path = tmp_path / "l.lock"
+    lock = SharedFileSystemLock(lock_path, timeout=1)
+    assert lock.acquire() is True
+    lock.info_file.unlink()  # simulate a stale-breaker mid re-acquire
+
+    lock.release()
+    assert lock.is_held is False
+    assert lock_path.exists(), "must not remove a lock we can no longer prove is ours"
