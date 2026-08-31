@@ -46,6 +46,10 @@ config:
                                      # Mount path inside the pod where step assets are copied.
                                      # Default: /gb-read-write.
 
+  umask: "0002"                      # umask applied in every step container before the workload
+                                     # runs, so files on the shared PVC are group-writable.
+                                     # Default: "0002". Quote the value.
+
 assetstores:
   - store_uri: cos://my-bucket
     pull:
@@ -75,6 +79,58 @@ The K8s environment ships Kubernetes-aware retry strategies, applied when `retry
 See [builds/build-retry.md](../builds/build-retry.md) and
 [builds/step-retry-configuration.md](../builds/step-retry-configuration.md) for how retry is
 configured and how environment, build, and step retry interact.
+
+### File permissions on the shared PVC (`umask`)
+
+Step pods run as an **arbitrary UID** on OpenShift: the UID comes from the namespace's SCC
+range and also depends on each step image's own `USER`, so it varies between pods and between
+steps (`1002`, `1001060000`, `root`, …). What the pods *do* share is a group — the chart sets
+`runAsGroup: 0` (see `run_as_root_group` in the step chart's `values-default.yaml`), following
+[Red Hat's arbitrary-UID guidance](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/images/creating-images#use-uid_create-images).
+
+A shared group only helps if the permission bits allow group writes. With the default `umask`
+of `0022`, directories are created `0755` — group-readable but **not** group-writable — so a
+later pod running as a different UID cannot write into a tree an earlier pod created. The K8s
+step container therefore sets `umask` (default `0002`) before the workload runs, which makes new
+directories `0775` and new files `0664`.
+
+This applies to the containers that run step workloads (single- and multi-container steps). The
+monitoring sidecar is not covered — it only writes its own config inside the container
+filesystem, never the shared PVC.
+
+This matters most for the shared HuggingFace cache (the `cache_path` of an `hf` assetstore, e.g.
+`/gb-read-write/hfcache`). `huggingface_hub` writes its download lock files *inside* the snapshot
+directory, at `<cache_path>/<owner>/<repo>/<hash>/.cache/huggingface/download/*.lock`, so the
+locks are unavoidably on the shared PVC — pointing `HF_HOME` elsewhere does not move them. When
+the cache directory is not group-writable, a second pull fails with a `PermissionError` on the
+lock file.
+
+Override per environment if a site needs different bits:
+
+```yaml
+config:
+  umask: "0002"    # must be quoted, and a valid 3-4 digit octal
+```
+
+> [!IMPORTANT]
+> **Quote the value.** Unquoted `0002` is parsed by YAML as the integer `2`, and `0027` becomes
+> `23` — which bash would read as octal `0023`, *loosening* permissions instead of tightening
+> them. The step prologue validates the value and falls back to `0002` with a warning in the pod
+> log rather than applying a wrong mask, so a misconfiguration is visible instead of silent.
+
+Keep the group-write bit clear (the `2` in `0002` masks only "other" writes). A umask that masks
+group writes — `0022`, the default when unset — is what causes the failure described above.
+
+**One-time cleanup for existing caches.** A `umask` only affects newly created files, so trees
+created before this setting existed stay `0755`. Fix them once per cluster from a pod that mounts
+the PVC:
+
+```bash
+chmod -R g+rwX /gb-read-write/hfcache
+```
+
+A directory's mode can only be changed by its owner or root, so run this with sufficient
+privilege; anything it cannot fix is recreated group-writable the next time a pull recreates it.
 
 ## `step.yaml` — launcher and monitor types
 

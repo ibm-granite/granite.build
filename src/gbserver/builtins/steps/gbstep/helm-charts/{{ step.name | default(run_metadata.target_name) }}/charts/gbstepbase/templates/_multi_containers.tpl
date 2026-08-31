@@ -4,11 +4,16 @@
 {{- range $index, $container := $containers }}
     - name: {{ printf "pytorch-%d" $index }}
       image: {{ ternary (quote $container.image) (quote $orig.Values.k8s.image) (hasKey $container "image") }}
-      {{- if $orig.Values.k8s.service_account_name }}
+      {{- if or $orig.Values.k8s.service_account_name $orig.Values.k8s.run_as_root_group }}
       securityContext:
+        {{- if $orig.Values.k8s.run_as_root_group }}
+        runAsGroup: 0
+        {{- end }}
+        {{- if $orig.Values.k8s.service_account_name }}
         capabilities:
           add:
           - IPC_LOCK
+        {{- end }}
       {{- end }}
       env:
         - name: EXPERIMENT
@@ -78,6 +83,14 @@
       - -c
       - |
         set -o pipefail
+        GB_UMASK="{{ $orig.Values.k8s.umask | default "0002" }}"
+        if [[ "$GB_UMASK" =~ ^0?[0-7]{3}$ ]]; then
+          umask "$GB_UMASK"
+        else
+          echo "WARNING: ignoring invalid k8s.umask '$GB_UMASK'"\
+               "(quote it in environment.yaml, e.g. umask: \"0002\"); using 0002" >&2
+          umask 0002
+        fi
         echo
         echo 'GB_EVENT_WORKLOAD_STATUS:running'
         {{- include "gbstepbase.tplAdditionalFiles" $orig | trimAll " " | indent 8 }}

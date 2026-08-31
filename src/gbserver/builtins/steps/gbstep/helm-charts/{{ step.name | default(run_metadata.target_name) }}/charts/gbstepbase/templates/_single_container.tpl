@@ -85,6 +85,14 @@
       - -c
       - |
         set -o pipefail
+        GB_UMASK="{{ .Values.k8s.umask | default "0002" }}"
+        if [[ "$GB_UMASK" =~ ^0?[0-7]{3}$ ]]; then
+          umask "$GB_UMASK"
+        else
+          echo "WARNING: ignoring invalid k8s.umask '$GB_UMASK'"\
+               "(quote it in environment.yaml, e.g. umask: \"0002\"); using 0002" >&2
+          umask 0002
+        fi
         echo
         echo 'GB_EVENT_WORKLOAD_STATUS:running'
         {{- include "gbstepbase.tplAdditionalFiles" . | trimAll " " | indent 8 }}
