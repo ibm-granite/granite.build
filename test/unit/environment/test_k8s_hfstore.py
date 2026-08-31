@@ -279,29 +279,49 @@ class TestArtifactPermissionNormalization:
     """
 
     WORKLOAD_TEMPLATES = CONTAINER_TEMPLATES[:2]
+    # The block itself lives in one place; both container templates `include` it.
+    UTILS_TEMPLATE = CHART_DIR / "charts/gbstepbase/templates/_utils.tpl"
+    INCLUDE_NAME = "gbstepbase.normalizeOutputPermissions"
 
-    @staticmethod
-    def _epilogue(template: Path) -> list[str]:
-        """Return the chmod epilogue block from a container template, de-indented."""
-        lines = template.read_text(encoding="utf-8").splitlines()
+    @classmethod
+    def _epilogue(cls) -> list[str]:
+        """Return the shared chmod epilogue's bash body, de-indented.
+
+        Read from the single ``define`` rather than from each container template:
+        the block is emitted at column 0 there and the call sites re-indent it,
+        which is what makes one copy serve both contexts.
+        """
+        lines = cls.UTILS_TEMPLATE.read_text(encoding="utf-8").splitlines()
         starts = [
             i
             for i, ln in enumerate(lines)
-            if ln.strip().startswith('if [[ -n "${OUTPUT_PATH:-}"')
+            if ln.strip() == f'{{{{- define "{cls.INCLUDE_NAME}" }}}}'
         ]
-        assert len(starts) == 1, f"expected one epilogue in {template.name}"
+        assert len(starts) == 1, f"expected exactly one {cls.INCLUDE_NAME} define"
         i = starts[0]
-        indent = len(lines[i]) - len(lines[i].lstrip())
-        # Match the `fi` at the opening `if`'s own indentation: the block nests
-        # further `if`s, so the *first* `fi` would truncate it mid-statement and
-        # yield unrunnable bash.
         end = next(
-            n
-            for n in range(i + 1, len(lines))
-            if lines[n].strip() == "fi"
-            and len(lines[n]) - len(lines[n].lstrip()) == indent
+            n for n in range(i + 1, len(lines)) if lines[n].strip() == "{{- end }}"
         )
-        return [ln[indent:] for ln in lines[i : end + 1]]
+        return lines[i + 1 : end]
+
+    @pytest.mark.parametrize("template", WORKLOAD_TEMPLATES, ids=lambda p: p.name)
+    def test_epilogue_is_included_not_duplicated(self, template):
+        """Each container template calls the shared define -- it does not inline it.
+
+        The block is ~30 lines of bash; two hand-maintained copies would drift.
+        """
+        text = template.read_text(encoding="utf-8")
+        assert self.INCLUDE_NAME in text, f"{template.name}: does not include the block"
+        assert "g+rwX" not in text, f"{template.name}: still inlines the chmod"
+
+    def test_epilogue_defined_exactly_once(self):
+        """Exactly one copy of the bash exists across the whole chart."""
+        copies = [
+            p
+            for p in CHART_DIR.rglob("*.tpl")
+            if "g+rwX" in p.read_text(encoding="utf-8")
+        ]
+        assert copies == [self.UTILS_TEMPLATE], f"chmod bash duplicated in {copies}"
 
     @pytest.mark.parametrize("template", WORKLOAD_TEMPLATES, ids=lambda p: p.name)
     def test_epilogue_runs_after_workload_but_before_exit_check(self, template):
@@ -317,17 +337,21 @@ class TestArtifactPermissionNormalization:
             for i, ln in enumerate(lines)
             if ln.strip().startswith("COMMAND_SH_EXIT_CODE=")
         ]
-        chmod = [i for i, ln in enumerate(lines) if "g+rwX" in ln]
+        include = [i for i, ln in enumerate(lines) if self.INCLUDE_NAME in ln]
         check = [
             i
             for i, ln in enumerate(lines)
             if ln.strip().startswith('if [[ "${COMMAND_SH_EXIT_CODE}" != "0" ]]')
         ]
-        assert chmod, f"{template.name}: no chmod epilogue"
+        assert include, f"{template.name}: no epilogue include"
         assert capture, f"{template.name}: no exit-code capture"
         assert check, f"{template.name}: no exit-code check"
-        assert min(capture) < chmod[0], f"{template.name}: chmod precedes the workload"
-        assert chmod[0] < min(check), f"{template.name}: chmod after the exit check"
+        assert (
+            min(capture) < include[0]
+        ), f"{template.name}: epilogue precedes the workload"
+        assert include[0] < min(
+            check
+        ), f"{template.name}: epilogue after the exit check"
 
     @staticmethod
     def _stub_chmod(directory: Path, lines: int, exit_code: int) -> Path:
@@ -350,16 +374,15 @@ class TestArtifactPermissionNormalization:
         stub.chmod(0o755)
         return stub
 
-    @pytest.mark.parametrize("template", WORKLOAD_TEMPLATES, ids=lambda p: p.name)
     @pytest.mark.parametrize("exit_code", (0, 1), ids=("chmod-exit-0", "chmod-exit-1"))
-    def test_epilogue_never_fails_the_step(self, template, exit_code, tmp_path):
+    def test_epilogue_never_fails_the_step(self, exit_code, tmp_path):
         """A refused ``chmod`` must not fail the step -- the guard is not a gate.
 
         Some environments forbid ``chmod`` outright while the artifact is already
         perfectly readable, so a non-zero ``chmod`` here says nothing about
         whether the step succeeded.
         """
-        block = "\n".join(self._epilogue(template))
+        block = "\n".join(self._epilogue())
         out = tmp_path / "out"
         out.mkdir()
         (out / "f.bin").write_bytes(b"x")
@@ -385,7 +408,7 @@ class TestArtifactPermissionNormalization:
         reads. The listing is capped because a wholly root-squashed tree emits
         one line per file.
         """
-        block = "\n".join(self._epilogue(self.WORKLOAD_TEMPLATES[0]))
+        block = "\n".join(self._epilogue())
         out = tmp_path / "out"
         out.mkdir()
         (out / "f.bin").write_bytes(b"x")
@@ -407,12 +430,11 @@ class TestArtifactPermissionNormalization:
         assert "and 15 more" in result.stdout, "listing not capped"
         assert result.stdout.count("Operation not permitted") == 10, "cap not applied"
 
-    @pytest.mark.parametrize("template", WORKLOAD_TEMPLATES, ids=lambda p: p.name)
-    def test_epilogue_uses_capital_x(self, template):
+    def test_epilogue_uses_capital_x(self):
         """``g+rwX`` must not become ``g+rwx`` -- that would mark data executable."""
-        block = "\n".join(self._epilogue(template))
-        assert "g+rwX" in block, f"{template.name}: expected g+rwX"
-        assert "g+rwx" not in block, f"{template.name}: g+rwx would chmod data +x"
+        block = "\n".join(self._epilogue())
+        assert "g+rwX" in block, "expected g+rwX"
+        assert "g+rwx" not in block, "g+rwx would chmod data +x"
 
     def test_rendered_epilogue_makes_a_0600_artifact_group_readable(self, tmp_path):
         """Run the real block: the reported failure mode must be fixed.
@@ -421,7 +443,7 @@ class TestArtifactPermissionNormalization:
         beside 0644 siblings -- and asserts the epilogue makes it group-readable
         while leaving the group-execute bit off the data files.
         """
-        block = "\n".join(self._epilogue(self.WORKLOAD_TEMPLATES[0]))
+        block = "\n".join(self._epilogue())
         out = tmp_path / "custom_output"
         sub = out / "granite-4.1-3b_finance"
         sub.mkdir(parents=True)
@@ -457,7 +479,7 @@ class TestArtifactPermissionNormalization:
         ``OUTPUT_PATH`` comes from the gbstep chart's values.yaml, so hfpush and
         the other built-in k8s steps run this block with the variable unset.
         """
-        block = "\n".join(self._epilogue(self.WORKLOAD_TEMPLATES[0]))
+        block = "\n".join(self._epilogue())
         for script in (
             f"set -o pipefail\nunset OUTPUT_PATH\n{block}",
             f"set -o pipefail\nOUTPUT_PATH={tmp_path}/missing\n{block}",

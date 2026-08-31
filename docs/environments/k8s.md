@@ -152,8 +152,12 @@ is *after* the workload exits. The step container normalizes the output tree onc
 done:
 
 ```bash
-chmod -R g+rwX "${OUTPUT_PATH}" || true
+chmod -R g+rwX "${OUTPUT_PATH}"
 ```
+
+The block lives in one place — the `gbstepbase.normalizeOutputPermissions` define in
+`charts/gbstepbase/templates/_utils.tpl` — and both the single- and multi-container templates
+`include` it. It references no chart values, so the same copy serves both contexts.
 
 - It runs **before** the exit-code check, so a failed run's partial output is normalized too —
   later pods still read and retry against it.

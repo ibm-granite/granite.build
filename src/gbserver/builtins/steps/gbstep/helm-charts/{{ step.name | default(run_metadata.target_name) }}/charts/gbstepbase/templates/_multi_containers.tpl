@@ -205,45 +205,7 @@
 
         COMMAND_SH_EXIT_CODE="$?"
         echo "COMMAND_SH_EXIT_CODE: ${COMMAND_SH_EXIT_CODE}"
-        # Best-effort: make the produced artifact readable by the root group, whatever
-        # mode the workload chose. `umask` only masks bits off a caller's requested mode,
-        # so a writer that explicitly requests 0600 (safetensors' mkstemp does) still
-        # lands unreadable to a later pod on a different UID -- the pod UID is drawn from
-        # the namespace SCC range and is not stable across steps. A push step then fails
-        # with EACCES on a file that plainly exists. Normalizing here, at the boundary
-        # where the artifact becomes shared state, is what a umask cannot do.
-        #
-        # This is a GUARD, never a gate. The artifact may already be perfectly readable,
-        # and some environments forbid chmod outright (read-only or root-squashed mounts,
-        # files owned by another UID), so a failure here must never fail the step -- but
-        # it must not be silent either, since it predicts a later push failure.
-        # `chmod -R` continues past individual errors, so a partial pass still does its
-        # work; we surface what it could not do and carry on.
-        #
-        # Ordering: this runs before the exit-code check so a failed run's partial output
-        # is normalized too (later pods still read and retry against it). `g+rwX` adds
-        # group-execute only to directories and already-executable files, never to data.
-        if [[ -n "${OUTPUT_PATH:-}" && -d "${OUTPUT_PATH}" ]]; then
-          echo "Normalizing group permissions on ${OUTPUT_PATH}"
-          # Capture rather than let chmod write to stderr: only command.sh is tee'd to
-          # /logs/output.log, which is what the sidecar monitor tails, so a bare stderr
-          # write would not reach the log an operator actually reads. `|| true` keeps the
-          # guard from ever failing the step. The report is capped -- a wholly
-          # root-squashed tree emits one line per file, which would otherwise flood both
-          # the log and the event stream.
-          GB_CHMOD_ERR="$(chmod -R g+rwX "${OUTPUT_PATH}" 2>&1)" || true
-          if [[ -n "${GB_CHMOD_ERR}" ]]; then
-            GB_CHMOD_N="$(printf '%s\n' "${GB_CHMOD_ERR}" | wc -l | tr -d ' ')"
-            echo "WARNING: could not fully normalize permissions on ${OUTPUT_PATH}" \
-                 "(${GB_CHMOD_N} path(s)). Not fatal: the artifact may already be" \
-                 "readable, and some mounts forbid chmod. But if a later push fails" \
-                 "with EACCES on this artifact, this is why."
-            printf '%s\n' "${GB_CHMOD_ERR}" | head -n 10 | sed 's/^/WARNING:   /'
-            if (( GB_CHMOD_N > 10 )); then
-              echo "WARNING:   ... and $(( GB_CHMOD_N - 10 )) more"
-            fi
-          fi
-        fi
+        {{- include "gbstepbase.normalizeOutputPermissions" . | trimAll " " | indent 8 }}
         {{- if $orig.Values.k8s.sleep_on_end }}
         echo
         echo 'sleeping at the end so that the user can exec inside the container'
