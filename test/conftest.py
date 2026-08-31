@@ -326,18 +326,24 @@ def pytest_sessionstart(session):
 
     if test_mode != "live":
         # Mock mode: apply placeholder env vars so modules can import safely
-        from libgbtest.mock_env import MOCK_ENV_DEFAULTS, MOCK_ENV_FORCED
+        from libgbtest.mock_env import (
+            MOCK_ENV_DEFAULTS,
+            MOCK_ENV_FORCED,
+            MOCK_ENV_MOCK_DEFAULTS,
+        )
 
         for key, value in MOCK_ENV_FORCED.items():
             os.environ[key] = value
+        # Mocking switches default on in mock mode but stay overridable, so an
+        # explicit GBTEST_MOCK_HF=false in the environment survives.
+        for key, value in MOCK_ENV_MOCK_DEFAULTS.items():
+            os.environ.setdefault(key, value)
         for key, value in MOCK_ENV_DEFAULTS.items():
             os.environ.setdefault(key, value)
-        # A whole-run live-HF opt-in (GBTEST_LIVE_HF=true) lifts the forced HF
-        # mock so the entire mock-mode run can exercise real HuggingFace. Per-test
-        # opt-in is handled by the _hf_mock fixture via @pytest.mark.live("hf").
-        from libgbtest.mode import is_live
-
-        if is_live("hf"):
+        # A whole-run live-HF opt-in (GBTEST_LIVE_HF=true) lifts the HF mock so
+        # the entire mock-mode run can exercise real HuggingFace. Per-test opt-in
+        # is handled by the _hf_mock fixture via @pytest.mark.live("hf").
+        if os.environ.get("GBTEST_LIVE_HF", "").lower() == "true":
             os.environ.pop("GBTEST_MOCK_HF", None)
         logger.info(
             "Mock mode: applied placeholder env vars. "
@@ -803,17 +809,35 @@ def _mock_kubernetes(request):
 # ---------------------------------------------------------------------------
 
 
+def _wants_live_hf(request) -> bool:
+    """True if this test opted in to real HF via marker or GBTEST_LIVE_HF.
+
+    Deliberately narrower than ``should_use_live(request, "hf")``, which also
+    returns True for the whole run when GBTEST_MODE=live. GBTEST_MOCK_HF is an
+    independent axis from GBTEST_MODE, so live mode alone must not strip an
+    explicit GBTEST_MOCK_HF=true — only an HF-specific opt-in does.
+    """
+    for mark in request.node.iter_markers("live"):
+        if "hf" in mark.args:
+            return True
+    return os.environ.get("GBTEST_LIVE_HF", "").lower() == "true"
+
+
 @pytest.fixture(autouse=True)
 def _hf_mock(request):
     """Bridge the ``live("hf")`` marker to the GBTEST_MOCK_HF guard.
 
-    In mock mode GBTEST_MOCK_HF=true is forced at session start, so every HF op
-    (push/pull/exists/delete) short-circuits in HfURI without touching the Hub —
-    no per-test setup needed. A test marked ``@pytest.mark.live("hf")`` (or a run
-    with GBTEST_LIVE_HF=true) exercises real HF instead, so lift the guard for its
-    duration and restore it afterwards.
+    In mock mode GBTEST_MOCK_HF=true is set at session start (overridable), so
+    every HF op (push/pull/exists/delete) short-circuits in HfURI without touching
+    the Hub — no per-test setup needed. A test marked ``@pytest.mark.live("hf")``
+    (or a run with GBTEST_LIVE_HF=true) exercises real HF instead, so lift the
+    guard for its duration and restore it afterwards.
+
+    This is the single gate for HF mocking: it is marker-aware at function, class
+    and module scope, so no test base class should re-gate it (a second gate in
+    setup_method would re-set the var after this fixture lifted it — see #314).
     """
-    if should_use_live(request, "hf"):
+    if _wants_live_hf(request):
         prior = os.environ.pop("GBTEST_MOCK_HF", None)
         try:
             yield

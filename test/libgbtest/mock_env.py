@@ -6,24 +6,34 @@ MOCK_ENV_FORCED: Always set in mock mode (override any existing env vars).
     These are the variables that control whether external calls happen — they
     must be forced to prevent a developer's shell env from defeating mock mode.
 
+MOCK_ENV_MOCK_DEFAULTS: Mocking switches that default on in mock mode but stay
+    overridable — an explicit value in the environment wins.
+
 MOCK_ENV_DEFAULTS: Only set if not already present (setdefault semantics).
     These provide safe placeholders for variables read at import time.
 """
 
 # Force-set in mock mode — these prevent external connections regardless
 # of what's in the developer's shell environment.
+MOCK_ENV_FORCED = {
+    "GBSERVER_AUTH_MODE": "apikey",
+    "GBTEST_HAS_COMPUTE_CLUSTER_ACCESS": "False",
+    "GBTEST_HAS_GB_CLUSTER_ACCESS": "False",
+    "WANDB_MODE": "disabled",
+}
+
+# Default-on in mock mode, but overridable — GBTEST_MOCK_HF is an independent
+# axis from GBTEST_MODE, not a consequence of it, so an explicit value in the
+# environment wins (setdefault semantics).
 #
 # GBTEST_MOCK_HF makes mock mode never touch real HuggingFace (push/pull/
 # exists/delete), so CI can't flake on HF rate limits or spend token quota.
 # It is forwarded to dispatched worker jobs/pods (see get_exported_gbtest_env_vars)
 # so they mock too. A single test can still exercise real HF via
-# @pytest.mark.live("hf"), which the _hf_mock fixture honors by lifting the var.
-MOCK_ENV_FORCED = {
-    "GBSERVER_AUTH_MODE": "apikey",
-    "GBTEST_HAS_COMPUTE_CLUSTER_ACCESS": "False",
-    "GBTEST_HAS_GB_CLUSTER_ACCESS": "False",
+# @pytest.mark.live("hf"), which the _hf_mock fixture honors by lifting the var;
+# a whole run can opt out with GBTEST_MOCK_HF=false or GBTEST_LIVE_HF=true.
+MOCK_ENV_MOCK_DEFAULTS = {
     "GBTEST_MOCK_HF": "true",
-    "WANDB_MODE": "disabled",
 }
 
 # Set only if not already present — safe placeholder values.
