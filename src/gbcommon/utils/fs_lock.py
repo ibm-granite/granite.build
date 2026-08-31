@@ -21,7 +21,10 @@ Vela GPFS mount), ``os.mkdir`` is atomic *and* coherent across nodes on the
 shared filesystems the cluster uses (verified on GPFS and the AFM/COS-backed
 CSI PVC). ``SharedFileSystemLock`` therefore serializes processes across
 containers/nodes that share the mount, using ``mkdir`` to acquire and ``rmdir``
-to release, so the lock also cleans itself up rather than accumulating files.
+to release, so each lock cleans itself up on release rather than accumulating.
+(``acquire`` creates the lock's parent directory if needed but does not remove
+it on release, since a peer may be creating a sibling lock there; that shared
+container dir persists.)
 
 ``mkdir`` has no kernel auto-release on holder death. Two options bound that:
 callers that must never block indefinitely can use a finite ``timeout`` and
@@ -91,9 +94,21 @@ class SharedFileSystemLock:
         best-effort callers can proceed without failing.
         """
         deadline = time.monotonic() + self.timeout
+        # Create the container dir once up front rather than on every poll (a
+        # contended wait can otherwise re-issue this mkdir hundreds of times).
+        # The container is not removed on release, so nothing recreates it mid-
+        # wait; only ``lock_path`` itself is contended below.
+        try:
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(
+                "SharedFileSystemLock: cannot create lock container %s (%s)",
+                self.lock_path.parent,
+                e,
+            )
+            return False
         while True:
             try:
-                self.lock_path.parent.mkdir(parents=True, exist_ok=True)
                 self.lock_path.mkdir()
             except FileExistsError:
                 if self.ttl is not None and self._clear_if_stale():

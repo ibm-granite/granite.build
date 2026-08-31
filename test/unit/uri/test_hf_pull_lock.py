@@ -252,9 +252,16 @@ def test_lock_timeout_reads_env_with_default(monkeypatch):
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "not-a-number")
     assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
 
-    # A negative value would make the acquire loop wait forever; reject it.
+    # A negative value is meaningless -- the acquire loop's deadline is already
+    # past so it falls through immediately (it does not hang) -- so reject it.
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "-1")
     assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
+
+    # Non-finite values slip past a ``< 0`` check but make the acquire loop wait
+    # indefinitely (the actual hang risk), so reject inf/-inf/nan too.
+    for raw in ("inf", "+inf", "-inf", "nan"):
+        monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, raw)
+        assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
 
     # Zero is allowed (try-once, immediate fall-through).
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "0")

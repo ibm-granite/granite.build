@@ -17,6 +17,7 @@
 """URI referring to models/datasets/spaces/etc. in HuggingFace Hub"""
 
 import json
+import math
 import os
 import re
 import shutil
@@ -94,11 +95,14 @@ DEFAULT_REVISION = "main"
 # mount (two nodes held the same exclusive lock at once), so a flock-based lock
 # provides no cross-node mutual exclusion there; ``mkdir`` atomicity, by
 # contrast, is coherent across nodes on every shared filesystem tested (GPFS and
-# the AFM/COS-backed CSI PVC the K8s hfpull steps mount). The lock directory is
-# removed on release, so it does not accumulate. mkdir has no kernel
-# auto-release on holder death; hfpull runs the lock with no ttl and relies on
-# the fall-through above to bound that -- a lock left by a crashed puller only
-# makes peers wait out the timeout before proceeding.
+# the AFM/COS-backed CSI PVC the K8s hfpull steps mount). Each per-revision
+# lock directory is removed on release; the shared ``.gb-hfpull-locks``
+# container it lives in is intentionally left in place (removing it would race
+# with a peer creating a sibling lock), so at most one empty container dir
+# remains rather than a lock per pull. mkdir has no kernel auto-release on
+# holder death; hfpull runs the lock with no ttl and relies on the fall-through
+# above to bound that -- a lock left by a crashed puller only makes peers wait
+# out the timeout before proceeding.
 HFPULL_LOCK_TIMEOUT_ENV = "GB_HFPULL_LOCK_TIMEOUT"
 HFPULL_FORCE_ENV = "GB_HFPULL_FORCE"
 DEFAULT_HFPULL_LOCK_TIMEOUT_S = 300.0
@@ -140,11 +144,17 @@ def _hfpull_lock_timeout() -> float:
             DEFAULT_HFPULL_LOCK_TIMEOUT_S,
         )
         return DEFAULT_HFPULL_LOCK_TIMEOUT_S
-    if value < 0:
-        # A negative timeout would let the acquire loop wait forever, which
-        # would reinstate the hang this best-effort lock is meant to avoid.
+    if not math.isfinite(value) or value < 0:
+        # Reject inf/nan and negatives. ``inf``/``nan`` slip past a ``value < 0``
+        # check yet make the acquire loop wait indefinitely (``nan`` because
+        # ``remaining <= 0`` is always False and it re-polls forever) --
+        # reinstating exactly the hang this best-effort lock avoids. A negative
+        # value is merely meaningless: the acquire loop finds its deadline
+        # already past and falls through immediately (it does not block). Fall
+        # back to the default for all of them.
         logger.warning(
-            "%s=%r is negative (would block forever); using default %ss",
+            "%s=%r is not a usable timeout (must be finite and >= 0); "
+            "using default %ss",
             HFPULL_LOCK_TIMEOUT_ENV,
             raw,
             DEFAULT_HFPULL_LOCK_TIMEOUT_S,
