@@ -117,7 +117,7 @@ The run-relevant environment variables:
 | `GBTEST_MODE` | `mock` (quick suite) or `live` (extended/CI). |
 | `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` | `job` (k8s), `process`, or `thread`. Use `thread` for local test runs. |
 | `GBTEST_SPS_IBMCLOUD_API_KEY` | Loads test secrets from IBM Cloud Secrets Manager (SPS). |
-| `GBTEST_STANDALONE_ENVIRONMENT` | Under `GB_ENVIRONMENT=STANDALONE`, which environment's HF resource group pushes target (`STAGING` default, so test artifacts land in a group the CI token can write). Set empty for the production `gbspace-public`. |
+| `GBTEST_STANDALONE_ENVIRONMENT` | Under `GB_ENVIRONMENT=STANDALONE`, which environment's HF resource group pushes target. Defaults to **empty**, i.e. the production `gbspace-public` that a real standalone user must get. Set to `STAGING`/`DEV` to redirect a test run into a group the CI token can write — the `extended-tests` targets do this explicitly. |
 | **IBM infrastructure** | For `ibm`-marked / live-cluster tests: |
 | `GBSERVER_IMAGE_TAG` | The gbserver build-runner image tag to run against. |
 | `GBSERVER_SIDECAR_MONITORING_IMAGE_TAG` | The monitoring sidecar image tag. |

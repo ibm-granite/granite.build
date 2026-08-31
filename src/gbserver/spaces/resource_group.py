@@ -157,26 +157,6 @@ def _non_enterprise_rg_error(organization: str, pinned: str) -> str:
     )
 
 
-def merge_hf_push_config(
-    storepush_config: Optional["StorePush"] = None,
-    output_config: Optional["BuildTargetOutputConfig"] = None,
-) -> dict:
-    """Merge the ``hf`` push settings from the environment and build.yaml.
-
-    The environment-level ``storepush_config`` is applied first and the
-    per-output ``store_push`` from build.yaml overrides it, matching the
-    documented precedence in ``docs/builds/hf-push.md``.
-
-    Args:
-        storepush_config: Environment-level push configuration.
-        output_config: Per-output configuration from build.yaml.
-
-    Returns:
-        The merged ``hf`` config dict (empty when neither source supplies one).
-    """
-    return _merge_hf_levels(_hf_push_config_levels(storepush_config, output_config))
-
-
 def _merge_hf_levels(levels: Tuple[dict, dict]) -> dict:
     """Merge already-parsed ``hf`` config levels, lowest priority first."""
     merged: dict = {}

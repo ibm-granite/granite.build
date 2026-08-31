@@ -95,10 +95,13 @@ def disable_failure_simulation() -> None:
 
 
 # Which environment's HF resource group a STANDALONE run pushes to (e.g.
-# gbspace-public-staging). Defaults to STAGING so test artifacts land in a group
-# the CI token can write; set empty for the production gbspace-public.
+# gbspace-public-staging). Defaults to EMPTY, meaning the production
+# gbspace-public: a real standalone user must land in the production group. Only
+# a test run opts into a redirect, by setting this to STAGING/DEV explicitly (the
+# extended-tests Makefile targets do). Do not give this a non-empty default —
+# that silently sends real users to a staging group they cannot write.
 ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT = f"{_GBTEST_PREFIX}STANDALONE_ENVIRONMENT"
-DEFAULT_GBTEST_STANDALONE_ENVIRONMENT = "STAGING"
+DEFAULT_GBTEST_STANDALONE_ENVIRONMENT = ""
 
 
 def standalone_rg_environment() -> str:
@@ -108,8 +111,9 @@ def standalone_rg_environment() -> str:
     without patching.
 
     Returns:
-        str: ``"STAGING"``/``"DEV"`` when redirection applies, or ``""`` when the
-        var is set empty, meaning the production resource group.
+        str: ``"STAGING"``/``"DEV"`` when a test run has explicitly opted into a
+        redirect, or ``""`` (the default, and when the var is set empty) meaning
+        the production resource group.
     """
     return os.getenv(
         ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, DEFAULT_GBTEST_STANDALONE_ENVIRONMENT

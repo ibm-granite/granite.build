@@ -29,6 +29,7 @@ from gbcommon.types.testing import (
     ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT,
     disable_hf_mocks,
     enable_hf_mocks,
+    standalone_rg_environment,
 )
 from gbcommon.uri.hf import (
     DEFAULT_REVISION,
@@ -1090,13 +1091,28 @@ class TestSpaceNameToResourceGroupName:
         access to `gbspace-public-staging` / `-dev`, so resolution must not land
         on those.
 
-        GBTEST_STANDALONE_ENVIRONMENT is set empty here deliberately. It
-        defaults to STAGING so a test run pushes into a group it owns; clearing
-        it asserts the core derivation independently of that redirection.
+        GBTEST_STANDALONE_ENVIRONMENT is set empty here explicitly. That is
+        also its default, so this is what an unset var produces too (see
+        test_standalone_default_is_production_group); setting it makes the test
+        independent of the default.
         """
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
         monkeypatch.setenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, "")
         assert HfURI.space_name_to_resource_group_name(alias) == "gbspace-public"
+
+    def test_standalone_default_is_production_group(self, monkeypatch):
+        """An UNSET GBTEST_STANDALONE_ENVIRONMENT must give the production group.
+
+        This is the real-user path: nobody outside CI sets a GBTEST_ variable, so
+        the default alone decides which group a standalone push targets. A
+        non-empty default (this was "STAGING") silently sends real users to
+        gbspace-public-staging, which they cannot write. Deleting the var rather
+        than setting it empty is the point of this test.
+        """
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
+        monkeypatch.delenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, raising=False)
+        assert standalone_rg_environment() == ""
+        assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public"
 
     @pytest.mark.parametrize(
         "redirect,expected",

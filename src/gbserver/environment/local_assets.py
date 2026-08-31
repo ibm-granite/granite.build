@@ -183,6 +183,11 @@ def push_asset_hfstore(
     # Enterprise org list; any other assetstore means we cannot classify, so fall
     # back to the pre-split behavior of attempting resolution.
     resource_group_id = None
+    # Default to a private repo. This must be initialized here, not only in the
+    # Hfstore branch below: the non-Hfstore path and both `except` paths fall
+    # through to hfuri.push(), and HuggingFace's own create_repo default is
+    # PUBLIC, so leaving it unbound/None would publish the artifact.
+    private = True
     if isinstance(assetstore, Hfstore):
         # Best-effort: in standalone the local user's token typically CANNOT
         # resolve the resource group id via the HF API (that needs org-admin
@@ -193,7 +198,7 @@ def push_asset_hfstore(
         # group pinned for a non-Enterprise org), so it is re-raised rather than
         # swallowed — the push would otherwise silently ignore what was asked.
         try:
-            resource_group_id, _private, _hf_cfg = resolve_hfpush_resource_group_id(
+            resource_group_id, private, _hf_cfg = resolve_hfpush_resource_group_id(
                 hfuri=hfuri,
                 assetstore=assetstore,
                 space_name=space_name,
@@ -239,6 +244,7 @@ def push_asset_hfstore(
     hfuri.push(
         src,
         commit_message=commit_message,
+        private=private,
         resource_group_id=resource_group_id,
     )
     return hfuri

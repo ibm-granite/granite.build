@@ -308,6 +308,8 @@ extended-tests-setup:
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 # Set GBTEST_STANDALONE_ENVIRONMENT explicitly: it picks the HF resource group.
+# Required, not cosmetic — the default is empty (the production gbspace-public),
+# so without this a live extended run would push to the production group.
 .PHONY: extended-tests
 extended-tests: check-image-tag-not-dirty
 	export GB_ENVIRONMENT=STANDALONE &&			\

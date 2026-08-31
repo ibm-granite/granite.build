@@ -268,6 +268,7 @@ async def test_pushasset_hfstore_calls_hfuri_push(
     mock_push.assert_called_once_with(
         src,
         commit_message="Upload via gbserver [build= target= output=]",
+        private=True,
         resource_group_id="rg-id",
     )
 
@@ -414,6 +415,7 @@ async def test_push_asset_hfstore_uses_cached_resource_group_id(tmp_path):
     mock_push.assert_called_once_with(
         src,
         commit_message="Upload via gbserver [build= target= output=my-output]",
+        private=True,
         resource_group_id="cached-rg-id",
     )
 
@@ -423,7 +425,8 @@ async def test_push_asset_hfstore_best_effort_on_resolve_failure(tmp_path):
     """A failed resource-group resolution does not abort the push.
 
     In standalone the local user's token typically can't resolve the id via the
-    HF API. The push must proceed with resource_group_id=None (matching
+    HF API. The push must still be private (the default survives the failure
+    path) and proceed with resource_group_id=None (matching
     pre-cache behavior) rather than raising.
     """
     src = tmp_path / "model.bin"
@@ -451,6 +454,7 @@ async def test_push_asset_hfstore_best_effort_on_resolve_failure(tmp_path):
     mock_push.assert_called_once_with(
         src,
         commit_message="Upload via gbserver [build= target= output=my-output]",
+        private=True,
         resource_group_id=None,
     )
 
