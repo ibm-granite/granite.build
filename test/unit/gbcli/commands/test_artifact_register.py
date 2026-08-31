@@ -24,6 +24,7 @@ would touch infrastructure so the command's argument handling can be exercised i
 isolation.
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -251,6 +252,33 @@ def test_malformed_hf_uri_clean_error(register_env):
             "--certify-no-restrictions",
         ]
     )
+    assert result.exit_code != 0
+    assert "invalid HuggingFace URI" in result.output
+    register_env.assert_not_called()
+
+
+def test_hf_uri_undefined_template_var_clean_error(register_env):
+    """An unresolved template var in the URI raises RuntimeError in the URI
+    layer's strict templating; it must still surface as a clean CLI error, not
+    a traceback (a malformed template string raises ValueError; both are
+    caught).
+
+    The strict-template failure logs at ERROR; silence logging so those
+    handlers don't write to CliRunner's captured stream after it is torn down.
+    """
+    logging.disable(logging.CRITICAL)
+    try:
+        result = _invoke(
+            [
+                "--uri",
+                "hf:///org/{{missing}}",
+                "--artifact-name",
+                "x",
+                "--certify-no-restrictions",
+            ]
+        )
+    finally:
+        logging.disable(logging.NOTSET)
     assert result.exit_code != 0
     assert "invalid HuggingFace URI" in result.output
     register_env.assert_not_called()

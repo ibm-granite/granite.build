@@ -1029,7 +1029,10 @@ def register(
             store = "hf"
             try:
                 metadata = URI.get_uri(uri).get_metadata()
-            except ValueError as e:
+            except (ValueError, RuntimeError) as e:
+                # get_uri runs the URI through strict templating first: a bad
+                # template string raises ValueError, an undefined variable
+                # RuntimeError. Catch both so neither escapes as a traceback.
                 click.echo(f"❌ Error: invalid HuggingFace URI '{uri}': {e}", err=True)
                 ctx.exit(1)
             # The type, owner, repo and (when applicable) revision are all
@@ -1117,16 +1120,17 @@ def register(
         )
         ctx.exit(1)
 
-    # === Type-specific handling (revision/table are Lakehouse-only) ===
-    if type == "model":
-        dataset = None
-        version = None
-
-        # The model label is the Lakehouse model name; we prompt for it and
-        # require it. For HF, --label/--repo is the repo id and is optional
-        # (it falls back to the artifact name in the service layer), so no
-        # prompt and no requirement here.
-        if store == "lh":
+    # === Type-specific handling ===
+    # Prompts, tables, revisions and filesets/tables are all Lakehouse
+    # concepts, so the entire block below is Lakehouse-only. For the HF store
+    # the type, org, repo and revision are already resolved (from the URI or
+    # the flags) and there is nothing to prompt for; keeping this under a
+    # single `store == "lh"` guard makes that explicit and removes any risk of
+    # a Lakehouse prompt leaking onto the HF path.
+    if store == "lh":
+        if type == "model":
+            dataset = None
+            version = None
             if not label or label.strip() == "":
                 label = click.prompt("Model label", show_default=True).strip()
 
@@ -1159,13 +1163,8 @@ def register(
                 click.echo(f"\n❌ Error: Please provide model label", err=True)
                 ctx.exit(1)  # Exit with a non-zero status
 
-    if type == "dataset":
-        version = None
-
-        # Dataset name, table and revision are Lakehouse concepts; the HF store
-        # does not use dataset/table (the HF dataset is identified by
-        # organization/repo, carried in `label`) but does honor a revision.
-        if store == "lh":
+        if type == "dataset":
+            version = None
             revision = None
             label = None
             if not dataset or dataset.strip() == "":
@@ -1180,56 +1179,68 @@ def register(
                 )
                 ctx.exit(1)  # Exit with a non-zero status
 
-    if type == "fileset":
-        revision = None
-        dataset = None
-        showVersionPrompt = not version or version.strip() == ""
-        showLabelPrompt = not label or label.strip() == ""
+        if type == "fileset":
+            revision = None
+            dataset = None
+            showVersionPrompt = not version or version.strip() == ""
+            showLabelPrompt = not label or label.strip() == ""
 
-        label = (
-            click.prompt("Fileset label", default=label, show_default=True).strip()
-            if showLabelPrompt
-            else label
-        )
-        version = (
-            click.prompt(
-                "Fileset version", default=version, show_default=False, type=str
-            ).strip()
-            if showVersionPrompt
-            else version
-        )
-
-        if not table or table.strip() == "":
-            table = click.prompt(
-                "Fileset table",
-                default=LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
-                show_default=True,
-                type=click.Choice(
-                    [LAKEHOUSE_FILESET_SHARED_TABLE_NAME, LAKEHOUSE_FILESET_TABLE_NAME],
-                    case_sensitive=True,
-                ),
-            ).strip()
-        elif table not in [
-            LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
-            LAKEHOUSE_FILESET_TABLE_NAME,
-        ]:
-            click.echo(
-                f"❌ '{table}' is not a valid table for filesets. Please try again with a fileset from the '{LAKEHOUSE_FILESET_SHARED_TABLE_NAME}'  or '{LAKEHOUSE_FILESET_TABLE_NAME}' tables.",
-                err=True,
+            label = (
+                click.prompt("Fileset label", default=label, show_default=True).strip()
+                if showLabelPrompt
+                else label
             )
-            ctx.exit(1)
+            version = (
+                click.prompt(
+                    "Fileset version", default=version, show_default=False, type=str
+                ).strip()
+                if showVersionPrompt
+                else version
+            )
 
-        if label == "":
-            click.echo(f"\n❌ Error: Please provide fileset label", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+            if not table or table.strip() == "":
+                table = click.prompt(
+                    "Fileset table",
+                    default=LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
+                    show_default=True,
+                    type=click.Choice(
+                        [
+                            LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
+                            LAKEHOUSE_FILESET_TABLE_NAME,
+                        ],
+                        case_sensitive=True,
+                    ),
+                ).strip()
+            elif table not in [
+                LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
+                LAKEHOUSE_FILESET_TABLE_NAME,
+            ]:
+                click.echo(
+                    f"❌ '{table}' is not a valid table for filesets. Please try again with a fileset from the '{LAKEHOUSE_FILESET_SHARED_TABLE_NAME}'  or '{LAKEHOUSE_FILESET_TABLE_NAME}' tables.",
+                    err=True,
+                )
+                ctx.exit(1)
 
-    if type == "table":
-        if not table or table.strip() == "":
-            table = click.prompt("Table").strip()
+            if label == "":
+                click.echo(f"\n❌ Error: Please provide fileset label", err=True)
+                ctx.exit(1)  # Exit with a non-zero status
 
-        label = None
-        revision = None
+        if type == "table":
+            if not table or table.strip() == "":
+                table = click.prompt("Table").strip()
+
+            label = None
+            revision = None
+            dataset = None
+            version = None
+
+    elif type == "model":
+        # HF models: dataset/version are Lakehouse-only, so normalize them out.
         dataset = None
+        version = None
+
+    elif type == "dataset":
+        # HF datasets: version is Lakehouse-only; revision/label are kept.
         version = None
 
     if table:
