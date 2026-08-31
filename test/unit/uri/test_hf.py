@@ -1100,6 +1100,21 @@ class TestSpaceNameToResourceGroupName:
         monkeypatch.setenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, "")
         assert HfURI.space_name_to_resource_group_name(alias) == "gbspace-public"
 
+    def test_conftest_defaults_the_session_to_staging(self):
+        """The pytest session itself must be redirected away from production.
+
+        test/conftest.py setdefault()s GBTEST_STANDALONE_ENVIRONMENT=STAGING at
+        session start, so every pytest entry point — not just the extended-tests
+        Makefile target — aims a live standalone push at a group the CI token
+        owns. This asserts that wiring is in place; the source default is empty
+        (see test_standalone_default_is_production_group), so losing the conftest
+        line would silently point live test pushes at gbspace-public.
+
+        Read from os.environ, not via monkeypatch: the point is the ambient
+        session value.
+        """
+        assert os.environ.get(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT) == "STAGING"
+
     def test_standalone_default_is_production_group(self, monkeypatch):
         """An UNSET GBTEST_STANDALONE_ENVIRONMENT must give the production group.
 

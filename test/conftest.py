@@ -61,6 +61,7 @@ import libgbtest.constants
 from libgbtest.constants import BUILD_ID_PATTERN
 
 import gbserver.types.constants
+from gbcommon.types.testing import ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_step_run import StoredStepRun
@@ -323,6 +324,19 @@ def pytest_sessionstart(session):
 
     test_mode = get_test_mode()
     logger.info(f"GBTEST_MODE={test_mode}")
+
+    # Redirect STANDALONE HF resource-group pushes to the staging group for the
+    # whole pytest session. This belongs to the test runner, not to a Makefile
+    # target: the source default is empty (the production gbspace-public, which
+    # is what a real standalone user must get), and a bare `pytest test/unit`
+    # would otherwise aim a live push at the production group. setdefault, so an
+    # explicit value from the caller's environment still wins.
+    os.environ.setdefault(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, "STAGING")
+    logger.info(
+        "%s=%s",
+        ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT,
+        os.environ[ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT],
+    )
 
     if test_mode != "live":
         # Mock mode: apply placeholder env vars so modules can import safely
