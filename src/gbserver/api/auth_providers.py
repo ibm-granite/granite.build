@@ -338,22 +338,24 @@ def _make_provider(name: str) -> Optional[AuthProvider]:
     if cls is None:
         logger.warning("Auth provider '%s' is not registered; skipping", name)
         return None
-    if name == "ibmid":
-        from gbserver.types.constants import (
-            GBSERVER_IBMID_CLIENT_ID,
-            GBSERVER_IBMID_ISSUER,
-            GBSERVER_IBMID_JWKS_URI,
-        )
-
-        return cls(
-            issuer=GBSERVER_IBMID_ISSUER,
-            jwks_uri=GBSERVER_IBMID_JWKS_URI,
-            client_id=GBSERVER_IBMID_CLIENT_ID,
-        )
-    # Other providers construct with no args. A provider needing constructor
-    # args has no arg source here yet (only the built-in modes are selectable),
-    # so degrade gracefully rather than raise on the request path.
+    # Construction can fail (e.g. IBMid's PyJWKClient with a misconfigured JWKS
+    # URI); degrade gracefully rather than raise on the request path, matching
+    # the None-on-missing contract above.
     try:
+        if name == "ibmid":
+            from gbserver.types.constants import (
+                GBSERVER_IBMID_CLIENT_ID,
+                GBSERVER_IBMID_ISSUER,
+                GBSERVER_IBMID_JWKS_URI,
+            )
+
+            return cls(
+                issuer=GBSERVER_IBMID_ISSUER,
+                jwks_uri=GBSERVER_IBMID_JWKS_URI,
+                client_id=GBSERVER_IBMID_CLIENT_ID,
+            )
+        # Other providers construct with no args. A provider needing constructor
+        # args has no arg source here yet (only the built-in modes are selectable).
         return cls()
     except Exception as e:
         logger.warning("Could not construct auth provider '%s': %s", name, e)

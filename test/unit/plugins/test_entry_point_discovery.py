@@ -188,6 +188,21 @@ def test_registrar_core_wins_on_collision(caplog):
     assert "already registered" in caplog.text
 
 
+def test_registrar_core_wins_is_all_or_nothing_across_keys(caplog):
+    """A collision on any one key refuses the whole registration.
+
+    With keys_by_name a class is filed under both a lowercase alias and its
+    verbatim name. A newcomer colliding on the lowercase key must not still slip
+    in under its case-variant key (built-in `build` vs plugin `Build`), which
+    would shadow the built-in under a different case and defeat core-wins.
+    """
+    reg = {"build": _Good}  # built-in, filed under its lowercase key
+    registrar = plugins.PluginRegistrar(reg, "thing", plugins.keys_by_name)
+    registrar.add(_NotSubclass, "Build")  # keys: {"build", "Build"}
+    assert reg == {"build": _Good}  # newcomer filed under neither key
+    assert "already registered" in caplog.text
+
+
 def test_registrar_reregister_same_class_is_quiet(caplog):
     reg: dict = {}
     registrar = plugins.PluginRegistrar(reg, "thing", keys_of=lambda cls, name: [name])
@@ -912,6 +927,32 @@ def test_cli_plugin_collision_core_wins(
     # The in-tree build loader was registered first, so the plugin is refused.
     assert cli_command_registry_snapshot.command_types["build"] is not shadow_build
     assert "already registered" in caplog.text
+
+
+def test_cli_plugin_case_variant_cannot_shadow_builtin(
+    monkeypatch, cli_command_registry_snapshot
+):
+    """A case-variant plugin name cannot shadow an in-tree command either.
+
+    The in-tree `build` is keyed under `build`; a plugin `Build` collides on that
+    key and, with all-or-nothing core-wins, is filed under neither `build` nor
+    `Build`. So `gb Build` must not resolve to the plugin — the exact bypass
+    a per-key collision check would have allowed.
+    """
+    import click
+
+    @click.command("Build")
+    def shadow_build():
+        pass
+
+    eps = _make_entry_points(monkeypatch, {"Build": ("shadow_build", shadow_build)})
+    _patch_entry_points(monkeypatch, {plugins.GROUP_CLI_PLUGINS: eps})
+
+    # (The collision WARNING is asserted by the registrar-level test;
+    # constructing GraniteBuildCLI reconfigures logging and detaches caplog.)
+    cli = cli_command_registry_snapshot()
+    assert "Build" not in cli.command_types
+    assert cli.get_command(None, "Build") is not shadow_build
 
 
 def test_cli_noop_when_no_plugins(monkeypatch, cli_command_registry_snapshot):

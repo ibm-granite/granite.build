@@ -227,14 +227,33 @@ class PluginRegistrar:
     def add(self, cls: Type, name: Optional[str] = None) -> None:
         """Register ``cls`` under each of its keys, honoring core-wins.
 
+        Collision is decided **once for the whole class**, not per key: if *any*
+        of its keys is already bound to a different value, the entire
+        registration is refused. ``keys_by_name`` files one class under several
+        key strings (a lowercase alias plus the verbatim name), so a per-key
+        check would let a plugin whose lowercase key collides with a built-in
+        still slip in under its case-variant key (e.g. built-in ``build`` +
+        plugin ``Build``) — shadowing the built-in under a different case and
+        defeating core-wins. All-or-nothing closes that hole.
+
         A class that yields *no* keys (e.g. a discovered handler that forgot to
         override its key method and inherits the base ``[]``) is filed nowhere
         and would silently never resolve; warn so its author gets a diagnostic
         rather than a handler that is quietly ignored at runtime.
         """
-        produced_key = False
-        for key in self.keys_of(cls, name):
-            produced_key = True
+        keys = list(self.keys_of(cls, name))
+        if not keys:
+            logger.warning(
+                "%s: %s produced no keys and was not registered; "
+                "check that its key derivation is implemented",
+                self.label,
+                _value_label(cls),
+            )
+            return
+
+        # Core wins: if any key is already owned by a different value, refuse the
+        # whole registration so the newcomer can't shadow it under a sibling key.
+        for key in keys:
             existing = self.registry.get(key)
             if existing is not None and existing is not cls:
                 logger.warning(
@@ -244,15 +263,10 @@ class PluginRegistrar:
                     _value_label(existing),
                     _value_label(cls),
                 )
-                continue
+                return
+
+        for key in keys:
             self.registry[key] = cls
-        if not produced_key:
-            logger.warning(
-                "%s: %s produced no keys and was not registered; "
-                "check that its key derivation is implemented",
-                self.label,
-                _value_label(cls),
-            )
 
     def discover(self, group: str, base_class: Type) -> None:
         """Run the entry-point plugin pass for ``group`` into this registry.
