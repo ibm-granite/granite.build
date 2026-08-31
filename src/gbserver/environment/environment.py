@@ -1062,6 +1062,19 @@ class Environment(ABC):
         TaskGroup) so that it survives cancellation of the caller's scope.
         This ensures destructive cleanup (e.g. sky.down) actually runs during
         build cancellation.
+
+        IDEMPOTENCY CONTRACT: every concrete ``cleanup_*`` implementation MUST
+        be idempotent and must tolerate a resource that was never created or is
+        already gone. Build cancellation now propagates promptly (see
+        ``BuildRun._cancel_inflight_tasks``), so a cleanup can fire *before*
+        the matching launch has recorded its backing resource, *during*
+        provisioning, or *after* the resource is already torn down. Treat
+        "resource does not exist" as success — do NOT raise or retry-storm on
+        it. Examples: k8s treats helm's "release: not found" as done rather than
+        retrying at backoff; SkyPilot cancels by a deterministic name because
+        its launch_id->resource map is only populated after provisioning
+        returns. When the launch_id->resource bookkeeping may be empty on the
+        cancel path, tear down by the deterministic resource name instead.
         """
         assert launch_type
         assert launch_id
@@ -1216,7 +1229,16 @@ class Environment(ABC):
         self.__teardown_started_events.pop(setup_id, None)
 
     def teardown(self: Self, type: str, setup_id: str, **kwargs) -> Task:
-        """Teardown the setup from the environment."""
+        """Teardown the setup from the environment.
+
+        IDEMPOTENCY CONTRACT: every concrete ``teardown_*`` implementation MUST
+        be idempotent and must tolerate a setup that was never fully created or
+        is already gone. Because build cancellation now propagates promptly, a
+        teardown can run after a setup was only partially provisioned (or after
+        a cleanup already removed the resource). Treat "resource does not exist"
+        as success — do NOT raise or retry-storm on it. See the ``cleanup``
+        docstring above for the same contract on the per-launch path.
+        """
 
         async def teardown_helper():
             logger.debug("Sync waiting on setup done")
@@ -1236,6 +1258,52 @@ class Environment(ABC):
             # self.__teardown_gc(setup_id)
 
         return asyncio.create_task(teardown_helper())
+
+    @staticmethod
+    async def _drain_thread_future(
+        pending_fut: "asyncio.Future",
+        description: str,
+        timeout: float = 60.0,
+    ) -> Any:
+        """Wait up to ``timeout`` for a shielded ``to_thread`` future to finish
+        so its OS thread is retired, without blocking indefinitely.
+
+        A ``to_thread`` future only completes when its blocking call returns;
+        the thread cannot be interrupted. After a caller aborts an in-flight
+        request the thread should unblock quickly, but if the abort was rejected
+        or did not take effect the call would otherwise run to natural
+        completion (e.g. the full provisioning time, or never). Bounding the
+        wait ensures whatever runs next — teardown, cleanup — is never gated on
+        that. If the future is still pending at the deadline we stop waiting and
+        attach a callback that retrieves its eventual result, so asyncio does
+        not log "Future exception was never retrieved" when the orphaned thread
+        finally finishes (its result is discarded).
+
+        Args:
+            pending_fut: The shielded ``to_thread`` future to drain.
+            description: Human-readable label for the timeout log message.
+            timeout: Maximum seconds to wait for the thread to retire.
+
+        Returns:
+            The future's result if it completed within ``timeout``, else None.
+        """
+        _, pending = await asyncio.wait({pending_fut}, timeout=timeout)
+        if pending:
+            logger.warning(
+                "%s did not retire within %ss after abort; proceeding without it",
+                description,
+                timeout,
+            )
+            # Swallow the eventual result/exception (guard cancelled: .exception()
+            # would raise CancelledError on a cancelled future).
+            pending_fut.add_done_callback(
+                lambda f: None if f.cancelled() else f.exception()
+            )
+            return None
+        try:
+            return pending_fut.result()
+        except BaseException:
+            return None
 
     def _get_storeconfig(
         self: Self, uri: URI, raise_exceptions: bool = False
