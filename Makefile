@@ -579,13 +579,13 @@ YARN ?= yarn
 
 .PHONY: clean-frontend
 clean-frontend:
-	rm -rf frontend/out frontend/.next src/gbserver/static/ui
+	rm -rf frontend/apps/standalone/out frontend/apps/standalone/.next src/gbserver/static/ui
 
 .PHONY: build-frontend
 build-frontend:
 	cd frontend && $(YARN) install --frozen-lockfile && $(YARN) build
 	mkdir -p src/gbserver/static/ui
-	rsync -a --delete frontend/out/ src/gbserver/static/ui/
+	rsync -a --delete frontend/apps/standalone/out/ src/gbserver/static/ui/
 
 .PHONY: build
 build: $(VENVDIR)

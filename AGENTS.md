@@ -96,7 +96,15 @@ The central registry is `src/gbserver/types/constants.py`. All gbserver env vars
 
 ## Frontend (gb-ui)
 
-The `frontend/` directory contains the gb-ui Next.js dashboard and `src/gb_ui_backend/` is its analytics service. Both are part of this repo after the gb-ui migration.
+The `frontend/` directory is a yarn workspace: `frontend/packages/ui-core` holds the generic, standalone-capable dashboard code (components, API clients, hooks, config, styles, types) and `frontend/apps/standalone` is the thin Next.js app shell that builds it into a static export. `src/gb_ui_backend/` is the analytics service backing it. Both are part of this repo after the gb-ui migration.
+
+The IBM-internal deployment (a separate repo, `gb-ui`) depends on both as external packages and layers its own auth/env-switcher/internal-only pages on top — see that repo's `CLAUDE.md`. Two independent distribution mechanisms exist:
+
+- **Frontend**: `scripts/publish-ui-core.sh` runs `git subtree split --prefix=frontend/packages/ui-core` and tags the result `ui-core-<tag>` per release (the subtree split's own temp branch is deleted once the tag exists), that `gb-ui`'s `package.json` depends on via yarn's git shorthand (e.g. `ibm-granite/granite.build#ui-core-v0.3.4`).
+- **Backend**: `src/gb_ui_backend/` carries its own nested `pyproject.toml` (distribution name `granite-build-analytics`), independent of the root `pyproject.toml`'s `analytics`/`standalone`/`chat` extras below. This lets `gb-ui` depend on `pip install "granite-build-analytics @ git+https://github.com/ibm-granite/granite.build.git@<tag>#subdirectory=src/gb_ui_backend"` without pulling in the whole granite.build distribution (gbserver, gbcli, etc.). `src/gbcommon/` (needed for one `parse_boolean` helper) is bundled into the same nested distribution rather than declared as its own dependency — pip does not reliably resolve a *nested* package's own relative `file:` dependency against that package's own directory, only against the top-level install's CWD, so bundling avoids the problem entirely. Since `gb_ui_backend` only touches `gbcommon.types.{gbenvconfig,constants}` (no `gbserver` dependency), the rest of `gbcommon` rides along inertly.
+  - The nested distribution deliberately has no `chat`/`chat-anthropic` extras (unlike the root `pyproject.toml`'s, see "Agent Chat" below): Agent Chat's tool-calling loop spawns `gbmcp`, whose tools call `gbcli`'s `GBClient` — pulling in essentially all of `gbcli`'s `services/` layer and most of this repo's base dependency list (click, requests, PyYAML, GitPython, huggingface-hub, jsonschema, pandas, pyarrow, ...). Bundling that would defeat the point of the nested package. A `gb-ui`-style nested-only install therefore does not get Agent Chat; it would need a full `granite.build[chat]` install alongside `granite-build-analytics` for that feature to work.
+  - Similarly, `gbserver` imports elsewhere in `gb_ui_backend` (e.g. build.yaml extraction from archives) are lazy and guarded, so a nested-only install doesn't fail loudly — it just silently loses that functionality. "No `gbserver` dependency" above is about `gbcommon` specifically, not a blanket guarantee for all of `gb_ui_backend`.
+  - `gbcommon` ships in both the root distribution and this nested one. Functionally inert as described above, but a consumer who installs both `granite.build[...]` and `granite-build-analytics` into the same environment ends up with two copies contributing to one `gbcommon` import path — last-writer-wins by `sys.path` order.
 
 ### Frontend commands
 
@@ -104,7 +112,7 @@ The `frontend/` directory contains the gb-ui Next.js dashboard and `src/gb_ui_ba
 # Compile and sync to src/gbserver/static/ui/ (incremental — reuses .next/ cache)
 make build-frontend
 
-# Full clean rebuild (wipes frontend/out/, frontend/.next/, src/gbserver/static/ui/)
+# Full clean rebuild (wipes frontend/apps/standalone/out/, frontend/apps/standalone/.next/, src/gbserver/static/ui/)
 make clean-frontend && make build-frontend
 
 # Wipe all build artifacts without rebuilding
@@ -140,7 +148,7 @@ cd frontend && yarn dev       # UI at http://localhost:3000, no backend required
 Without a backend, the UI loads but all data pages show empty states. To connect to a running gbserver:
 
 ```shell
-# frontend/.env.local
+# frontend/apps/standalone/.env.local
 GBSERVER_API_URL=http://localhost:8080
 ```
 
@@ -154,17 +162,30 @@ cd frontend && yarn dev       # proxies /api/* to gbserver at :8080 (no CORS)
 
 `gb_ui_backend` ships in the `standalone` extra (`pip install -e ".[standalone]"`). When installed, gbserver mounts its routers at `/api/analytics/*` in its own process — no separate port. The analytics DB (`GB_UI_DATABASE_URL`, see table below) is auto-derived from `GBSERVER_METADATA_STORAGE` when unset.
 
+### Agent Chat
+
+A floating chat widget (rendered globally by `ClientShell`) backed by a hand-rolled agentic tool-calling loop that calls gbmcp's tools on the user's behalf, against either Claude directly or any OpenAI-compatible model API (RITS, Ollama, etc.).
+
+- **Backend**: `src/gb_ui_backend/api/chat.py` (`/api/analytics/chat/{status,stream,stop,confirm}`) + `src/gb_ui_backend/services/chat_agents/` — `tool_loop_backend.py` (the loop itself), `providers/{anthropic_provider,openai_compat_provider}.py`, `dashboard_tools.py`, `gbmcp_policy.py`, `tool_registry.py`, `ui_actions.py`.
+- **Frontend**: `frontend/packages/ui-core/components/ChatWidget.tsx` + `.module.scss`, `frontend/packages/ui-core/api/chat.ts`, `frontend/packages/ui-core/lib/sse.ts` (SSE stream parsing for `chat.ts`'s streaming responses).
+- **Config** (`Config` in `src/gb_ui_backend/config.py`): `chat_backend` (default `tool_loop`), `chat_model`, `chat_llm_base_url`/`chat_llm_api_key` (fall back to `llm_base_url`/`llm_api_key` if unset, via `resolved_chat_llm_base_url`/`resolved_chat_llm_api_key`), `chat_provider` (`openai_compatible` or `anthropic`, auto-detected if unset — OpenAI-compatible wins auto-detection since it requires no external API key). `Config.chat_enabled` reports whether either provider is actually configured. Anthropic auth reads the standard `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` env vars directly (not `GB_UI_`-prefixed — read by the `anthropic` SDK itself).
+- **Install**: the `chat` extra (`mcp`, `regex`) is bundled into `standalone` by default; `chat-anthropic` additionally adds the `anthropic` package and is opt-in (Anthropic is not the default provider).
+
 ### Frontend source layout
 
 | Path | Description |
 |------|-------------|
-| `frontend/app/` | Next.js App Router pages |
-| `frontend/components/` | Shared React components (Carbon Design System) |
-| `frontend/api/` | API clients — `gbserver.ts`, `analytics.ts`, `dataProcessing.ts` |
-| `frontend/api/client.ts` | `apiBase()` helper — handles `GBSERVER_API_URL` override |
-| `frontend/next.config.ts` | Build config — static export in standalone mode, rewrite proxy in dev |
-| `frontend/.env.local.example` | Dev environment template — copy to `.env.local` |
-| `src/gb_ui_backend/` | Analytics service — FastAPI routers for charts, AI analysis; included directly into gbserver |
+| `frontend/packages/ui-core/` | Shared, generic dashboard library — no app router, no build step. Consumed both by `apps/standalone` here and, as an external git dependency, by the internal deployment repo |
+| `frontend/packages/ui-core/components/` | Shared React components (Carbon Design System) |
+| `frontend/packages/ui-core/api/` | API clients — `gbserver.ts`, `analytics.ts`, `dataProcessing.ts` |
+| `frontend/packages/ui-core/api/client.ts` | `apiBase()` helper — handles `GBSERVER_API_URL` override |
+| `frontend/apps/standalone/app/` | Next.js App Router pages |
+| `frontend/apps/standalone/next.config.ts` | Build config — static export in standalone mode, rewrite proxy in dev, `transpilePackages: ['@granite-build/ui-core']` |
+| `frontend/apps/standalone/.env.local.example` | Dev environment template — copy to `.env.local` |
+| `frontend/packages/ui-core/components/ChatWidget.tsx` | Agent Chat floating widget, rendered globally by `ClientShell` |
+| `frontend/packages/ui-core/lib/sse.ts` | SSE stream parsing shared by `api/chat.ts` |
+| `src/gb_ui_backend/` | Analytics service — FastAPI routers for charts, AI analysis, Agent Chat; included directly into gbserver, and independently pip-installable (see nested `pyproject.toml` above) |
+| `src/gb_ui_backend/api/chat.py`, `services/chat_agents/` | Agent Chat backend — tool-calling loop against gbmcp, Anthropic/OpenAI-compatible provider abstraction |
 | `src/gb_ui_backend/config.py` | Pydantic settings — all `GB_UI_*` env vars |
 | `src/gbserver/api/root_api.py` | Includes gb_ui_backend's routers under `/api/analytics/*` and calls its startup init |
 | `src/gbserver/static/ui/` | Compiled frontend served by gbserver at runtime |
@@ -173,13 +194,17 @@ cd frontend && yarn dev       # proxies /api/* to gbserver at :8080 (no CORS)
 
 | Variable | Where set | Description |
 |---|---|---|
-| `GBSERVER_API_URL` | `frontend/.env.local` or build env | API base URL. Dev: rewrite-proxy target. Standalone: baked into the bundle at `make build-frontend` time. Unset = same-origin default. |
+| `GBSERVER_API_URL` | `frontend/apps/standalone/.env.local` or build env | API base URL. Dev: rewrite-proxy target. Standalone: baked into the bundle at `make build-frontend` time. Unset = same-origin default. |
 | `GBSERVER_UI_DIR` | gbserver env | Override path to compiled frontend (default: `src/gbserver/static/ui/`) |
 | `GB_UI_DATABASE_URL` | gbserver env | Analytics DB. Auto-derived from `GBSERVER_METADATA_STORAGE` when unset (`derive_analytics_database_url()` in `constants.py`): `sql` inherits `GBSERVER_SQL_*` as a `postgresql+asyncpg://` URL (with TLS cert if any), connecting to the same Postgres; `sqlite` uses its own `dashboard-analytics.db` under `GB_HOME_DIR`. |
 | `GB_UI_DATABASE_CONNECT_ARGS` | gbserver env (internal) | JSON `create_async_engine()` connect args, set by gbserver when the SQL store needs TLS (carries the cert path — `ssl.SSLContext` isn't JSON-serializable). Not hand-set. |
 | `GB_UI_GBSERVER_DB_URL` | gbserver env | gbserver's own DB for richer analytics. Auto-set to gbserver's SQLite file when unset and storage is sqlite. |
 | `GB_UI_GBSERVER_URL` | analytics env | gbserver URL for the dev-mode startup banner (default: `http://localhost:8080`) |
 | `GB_UI_LLM_BASE_URL` / `GB_UI_LLM_API_KEY` | analytics env | OpenAI-compatible endpoint + key for AI analysis |
+| `GB_UI_CHAT_LLM_BASE_URL` / `GB_UI_CHAT_LLM_API_KEY` | analytics env | Agent Chat's OpenAI-compatible endpoint + key. Falls back to `GB_UI_LLM_BASE_URL`/`GB_UI_LLM_API_KEY` if unset |
+| `GB_UI_CHAT_PROVIDER` | analytics env | `openai_compatible` or `anthropic` — overrides Agent Chat's provider auto-detection |
+| `GB_UI_CHAT_MODEL` | analytics env | Model identifier passed to Agent Chat's active provider (meaning is provider-specific) |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | analytics env | Enables Agent Chat's Anthropic provider — standard Anthropic SDK vars, deliberately not `GB_UI_`-prefixed |
 
 ## Deployment
 

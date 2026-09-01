@@ -50,15 +50,18 @@ pytest -s test/unit/space/test_space_config.py::TestSpaceConfig::test_load
 
 ## Project Structure
 
-The repository is a monorepo with three source packages:
+The repository is a monorepo with several source packages:
 
 | Package | Location | Description |
 |---------|----------|-------------|
 | gbserver | `src/gbserver/` | Build orchestration server |
 | gbcli | `src/gbcli/` | CLI client (`gb`, `gbcli`, `llmbuild`, `llmb`, `lamb`) |
 | gbcommon | `src/gbcommon/` | Shared types and utilities |
+| gb_ui_backend | `src/gb_ui_backend/` | Analytics service (charts, AI analysis, Agent Chat) backing the frontend, included directly into gbserver (`analytics`/`standalone`/`chat` extras). Also independently pip-installable via its own nested `pyproject.toml` — see `AGENTS.md`'s "Frontend (gb-ui)" section — so the IBM-internal `gb-ui` deployment can depend on it without pulling in the rest of this repo. `gbcommon` is bundled into that nested distribution rather than declared as its own dependency (see the same section for why) |
 
 All packages follow the same code style rules and are linted together.
+
+The frontend lives at `frontend/`, a yarn workspace: `frontend/packages/ui-core` is the generic, standalone-capable dashboard library (including the Agent Chat widget) and `frontend/apps/standalone` is the thin Next.js app shell that builds it into a static export served by gbserver. See `AGENTS.md`'s "Frontend (gb-ui)" section for build/dev commands.
 
 ## Code Style
 

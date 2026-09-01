@@ -285,8 +285,8 @@ yarn dev       # UI at https://localhost:3000
 **With a running gbserver** — copy the dev template and set the API URL:
 
 ```bash
-cp frontend/.env.local.example frontend/.env.local
-# then edit frontend/.env.local and uncomment:
+cp frontend/apps/standalone/.env.local.example frontend/apps/standalone/.env.local
+# then edit frontend/apps/standalone/.env.local and uncomment:
 # GBSERVER_API_URL=http://localhost:8080
 ```
 
@@ -368,9 +368,10 @@ still has to click through — never a direct mutation.
 
 | Path | Description |
 |------|-------------|
-| `frontend/` | Next.js source (TypeScript, React, Carbon Design System) |
-| `frontend/out/` | Static export — produced by `make build-frontend`, not committed |
-| `frontend/.env.local.example` | Dev template — copy to `frontend/.env.local` |
+| `frontend/packages/ui-core/` | Shared, generic dashboard library (TypeScript, React, Carbon Design System) |
+| `frontend/apps/standalone/` | Thin Next.js app shell that builds `ui-core` into a static export |
+| `frontend/apps/standalone/out/` | Static export — produced by `make build-frontend`, not committed |
+| `frontend/apps/standalone/.env.local.example` | Dev template — copy to `frontend/apps/standalone/.env.local` |
 | `src/gbserver/static/ui/` | Runtime path gbserver serves the compiled frontend from |
 | `src/gb_ui_backend/` | Analytics service — FastAPI routers for charts and AI analysis, included directly into gbserver |
 

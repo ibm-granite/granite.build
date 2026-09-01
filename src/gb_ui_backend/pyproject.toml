@@ -1,0 +1,47 @@
+[project]
+name = "granite-build-analytics"
+version = "0.0.0"
+description = "gb-ui analytics service (gb_ui_backend) — normally embedded in gbserver, independently installable so external consumers (e.g. the internal gb-ui deployment) can depend on it via pip's git+subdirectory syntax without pulling in the whole granite.build distribution"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11,<3.14"
+
+dependencies = [
+    "fastapi[standard]>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+    "aiosqlite>=0.19",
+]
+
+[project.scripts]
+gb-ui-backend = "gb_ui_backend.__main__:main"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# gbcommon is bundled alongside gb_ui_backend rather than declared as a separate
+# dependency — pip does not reliably resolve a nested package's own relative
+# `file:` dependency (verified empirically: it resolved against the top-level
+# install's CWD, not this pyproject.toml's directory, when this was tried as
+# `granite-build-common @ file:../gbcommon`). gb_ui_backend only ever touches
+# gbcommon.types.{gbenvconfig,constants} (stdlib + pydantic only, no gbserver
+# dependency), so bundling the whole namespace package is safe and inert for
+# the parts it doesn't use.
+#
+# `where = [".."]` only resolves because pip clones the whole repo before
+# building a git+subdirectory install — the actual, only install path used
+# today. Building this directory alone as a standalone sdist/wheel (e.g. from
+# a subdirectory-only archive) would find no gbcommon* to include and ship a
+# wheel that fails at import time.
+where = [".."]
+include = ["gb_ui_backend*", "gbcommon*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["*.md"]

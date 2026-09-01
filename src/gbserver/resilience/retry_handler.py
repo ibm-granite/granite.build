@@ -37,7 +37,7 @@ import asyncio
 import json
 import re
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List, Optional, Self, Set
+from typing import TYPE_CHECKING, ClassVar, Dict, List, Optional, Self, Set, Type
 
 from gbserver.types.buildevent import (
     BuildEvent,
@@ -89,10 +89,7 @@ def build_retry_strategies_from_config(
         ]
     """
     from gbserver.resilience.strategies import (
-        AnyFailureRetryStrategy,
-        AsperaRetryStrategy,
         FileNotFoundRetryStrategy,
-        LsfTransientErrorRetryStrategy,
         NCCLErrorRetryStrategy,
         PodEvictionRetryStrategy,
         UnhealthyInsufficientPodsRetryStrategy,
@@ -114,17 +111,11 @@ def build_retry_strategies_from_config(
             FileNotFoundRetryStrategy(),
         ]
 
-    # Build strategies from config
+    # Build strategies from config. The registry maps a config ``type`` string to
+    # its class (built-ins plus any entry-point plugins); it is rebuilt cheaply
+    # via the shared plugin-discovery contract.
+    RetryStrategy._load_retry_strategies()
     strategies = []
-    strategy_map = {
-        "UnhealthyInsufficientPods": UnhealthyInsufficientPodsRetryStrategy,
-        "PodEviction": PodEvictionRetryStrategy,
-        "NCCLError": NCCLErrorRetryStrategy,
-        "FileNotFound": FileNotFoundRetryStrategy,
-        "LsfTransientError": LsfTransientErrorRetryStrategy,
-        "AsperaFailure": AsperaRetryStrategy,
-        "AnyFailure": AnyFailureRetryStrategy,
-    }
 
     for strategy_config in config:
         strategy_type = strategy_config.get("type")
@@ -134,7 +125,7 @@ def build_retry_strategies_from_config(
             )
             continue
 
-        strategy_class = strategy_map.get(strategy_type)
+        strategy_class = RetryStrategy.strategy_types.get(strategy_type)
         if not strategy_class:
             logger.warning("Unknown strategy type '%s', skipping", strategy_type)
             continue
@@ -192,6 +183,43 @@ class RetryStrategy(ABC):
 
     # Whether this strategy accepts object_types parameter in __init__
     accepts_object_types: bool = True
+
+    # config ``type`` string -> strategy class. Populated by
+    # ``_load_retry_strategies`` (in-tree built-ins + entry-point plugins), keyed
+    # under both the verbatim config type and its lowercase alias. The registry
+    # drives the *class lookup*; construction (``cls(**params)``) stays in
+    # ``build_retry_strategies_from_config``.
+    strategy_types: ClassVar[Dict[str, Type["RetryStrategy"]]] = {}
+
+    @classmethod
+    def _load_retry_strategies(cls, force: bool = False) -> None:
+        """(Re)build ``strategy_types`` from the built-ins and any plugins.
+
+        No-op once populated (``build_retry_strategies_from_config`` runs
+        per-launch), matching the sibling loaders; ``force=True`` rebuilds. The
+        rebuild goes through the shared contract, so the registry is reload-safe
+        and a plugin can only *add* a type, never shadow a built-in (core-wins).
+        """
+        if cls.strategy_types and not force:
+            return
+        from gbcommon.plugins import (
+            GROUP_RESILIENCE_STRATEGIES,
+            PluginRegistrar,
+            keys_by_name,
+            rebuild_registry,
+        )
+        from gbserver.resilience.strategies import BUILTIN_STRATEGIES
+
+        registrar = PluginRegistrar(
+            RetryStrategy.strategy_types, "Retry strategy type", keys_by_name
+        )
+
+        def populate() -> None:
+            for type_name, strategy_class in BUILTIN_STRATEGIES.items():
+                registrar.add(strategy_class, type_name)
+            registrar.discover(GROUP_RESILIENCE_STRATEGIES, RetryStrategy)
+
+        rebuild_registry(RetryStrategy.strategy_types, populate)
 
     @abstractmethod
     def should_retry(

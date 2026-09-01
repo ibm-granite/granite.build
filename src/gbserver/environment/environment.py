@@ -1520,68 +1520,79 @@ class Environment(ABC):
 
     @classmethod
     def _load_environment_types(cls: Type[Self]) -> None:
+        """Discover and register every environment type, rebuilding the registry.
+
+        Rebuilds ``cls.environment_types`` from scratch on each call via the
+        shared :func:`~gbcommon.plugins.rebuild_registry` contract, so the method
+        is idempotent and reload-safe (see that helper for why clearing first
+        matters).
+        """
         from gbcommon.plugins import (
             GROUP_ENVIRONMENTS,
             PluginRegistrar,
-            keys_by_name_cased,
+            keys_by_name,
+            rebuild_registry,
         )
 
         # Files each environment under both cased forms of its name (module name
         # in-tree, entry-point name for plugins), mirroring the historical
         # behavior. Both passes register through this one registrar.
         registrar = PluginRegistrar(
-            cls.environment_types, "Environment type", keys_by_name_cased
+            cls.environment_types, "Environment type", keys_by_name
         )
         package_dir = os.path.dirname(__file__)
 
-        for filename in os.listdir(package_dir):
-            if (
-                filename.endswith(".py")
-                and filename != "__init__.py"
-                and filename != "environment_sync.py"
-                and filename != os.path.basename(__file__)
-            ):
-                environment_type_modulename = filename[:-3]
-                environment_type_name = environment_type_modulename.capitalize()
-                try:
-                    module = importlib.import_module(
-                        f".{environment_type_modulename}",
-                        package="gbserver.environment",
-                    )
-                    if hasattr(module, environment_type_name):
-                        handler_class = getattr(module, environment_type_name)
-                        if isinstance(handler_class, type) and issubclass(
-                            handler_class, cls
-                        ):
-                            registrar.add(handler_class, environment_type_name)
+        def populate() -> None:
+            for filename in os.listdir(package_dir):
+                if (
+                    filename.endswith(".py")
+                    and filename != "__init__.py"
+                    and filename != "environment_sync.py"
+                    and filename != os.path.basename(__file__)
+                ):
+                    environment_type_modulename = filename[:-3]
+                    environment_type_name = environment_type_modulename.capitalize()
+                    try:
+                        module = importlib.import_module(
+                            f".{environment_type_modulename}",
+                            package="gbserver.environment",
+                        )
+                        if hasattr(module, environment_type_name):
+                            handler_class = getattr(module, environment_type_name)
+                            if isinstance(handler_class, type) and issubclass(
+                                handler_class, cls
+                            ):
+                                registrar.add(handler_class, environment_type_name)
+                            else:
+                                logger.warning(
+                                    "Ignoring %s since it is not a subclass of Environment class",
+                                    environment_type_name,
+                                )
                         else:
                             logger.warning(
-                                "Ignoring %s since it is not a subclass of Environment class",
+                                "Module %s does not contain expected environment type class %s",
+                                environment_type_modulename,
                                 environment_type_name,
                             )
-                    else:
-                        logger.warning(
-                            "Module %s does not contain expected environment type class %s",
-                            environment_type_modulename,
+                    except ImportError as e:
+                        logger.debug(
+                            "Optional environment module %s not available: %s",
                             environment_type_name,
+                            e,
                         )
-                except ImportError as e:
-                    logger.debug(
-                        "Optional environment module %s not available: %s",
-                        environment_type_name,
-                        e,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Error loading Environment type from %s: %s",
-                        environment_type_name,
-                        e,
-                    )
+                    except Exception as e:
+                        logger.error(
+                            "Error loading Environment type from %s: %s",
+                            environment_type_name,
+                            e,
+                        )
 
-        # Discover environments shipped by separately-installed plugin packages.
-        # Runs after the in-tree scan so the core-wins rule protects built-ins.
-        # The entry-point *name* is the type key (e.g. ``k8s``).
-        registrar.discover(GROUP_ENVIRONMENTS, cls)
+            # Discover environments shipped by separately-installed plugin packages.
+            # Runs after the in-tree scan so the core-wins rule protects built-ins.
+            # The entry-point *name* is the type key (e.g. ``k8s``).
+            registrar.discover(GROUP_ENVIRONMENTS, cls)
+
+        rebuild_registry(cls.environment_types, populate)
 
     async def _read_stream_and_create_event_all(
         self: Self,
