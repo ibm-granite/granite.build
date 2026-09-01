@@ -25,6 +25,7 @@ import pytest
 
 from gbcommon.uri.hf import HfURI
 from gbserver.spaces.resource_group import (
+    apply_hf_step_overlay,
     resolve_hfpush_resource_group_id,
     resolve_space_resource_group_id,
     sanitize_hf_step_overlay,
@@ -395,6 +396,34 @@ class TestSanitizeHfStepOverlay:
     def test_handles_empty_and_none(self):
         assert sanitize_hf_step_overlay({}) == {}
         assert sanitize_hf_step_overlay(None) == {}
+
+
+class TestApplyHfStepOverlay:
+    """The shared k8s/skypilot overlay: strip use_resource_group, then re-assert
+    the resolved resource_group_id so a stray pinned id in the raw config cannot
+    win over resolution."""
+
+    def test_strips_use_resource_group_and_reasserts_resolved_id(self):
+        hfpush_config = {"private": True, "hf": {"type": "model", "resource_group_id": None}}
+        apply_hf_step_overlay(
+            hfpush_config,
+            {"type": "model", "use_resource_group": False, "resource_group_id": "stray"},
+            resource_group_id="resolved-id",
+        )
+        assert "use_resource_group" not in hfpush_config["hf"]
+        # The resolved id wins over the stray id in the raw overlay config.
+        assert hfpush_config["hf"]["resource_group_id"] == "resolved-id"
+
+    def test_reasserts_none_over_a_stray_pinned_id(self):
+        # A pinned-but-skipped id (non-Enterprise org) resolves to None and must
+        # not be resurrected by the overlay.
+        hfpush_config = {"hf": {"type": "model", "resource_group_id": None}}
+        apply_hf_step_overlay(
+            hfpush_config,
+            {"resource_group_id": "pinned-but-skipped"},
+            resource_group_id=None,
+        )
+        assert hfpush_config["hf"]["resource_group_id"] is None
 
 
 class TestUseResourceGroupAcrossLevels:

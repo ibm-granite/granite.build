@@ -75,8 +75,8 @@ from gbserver.environment.environment import (
     EventLogLineParserConfig,
 )
 from gbserver.spaces.resource_group import (
+    apply_hf_step_overlay,
     resolve_hfpush_resource_group_id,
-    sanitize_hf_step_overlay,
 )
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
@@ -2307,12 +2307,10 @@ class K8s(Environment):
             hf_resource_group_id=resource_group_id,
         )
         # Apply remaining hf fields from the merged push config (environment
-        # level, overridden by build.yaml store_push). use_resource_group is
-        # stripped (it is consumed here, not by the template), and the resolved
-        # resource_group_id is re-asserted afterwards so a pinned-but-skipped
-        # value cannot be resurrected by the overlay.
-        hfpush_config["hf"].update(sanitize_hf_step_overlay(_hf_cfg))
-        hfpush_config["hf"]["resource_group_id"] = resource_group_id
+        # level, overridden by build.yaml store_push; strips use_resource_group,
+        # re-asserts the resolved resource_group_id). Shared with skypilot so the
+        # overlay invariants cannot drift between the two.
+        apply_hf_step_overlay(hfpush_config, _hf_cfg, resource_group_id)
         hfpush_stepuri = "space://steps/hfpush"
         if (
             storepush_config is not None

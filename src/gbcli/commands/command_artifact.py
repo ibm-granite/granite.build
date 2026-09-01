@@ -81,6 +81,31 @@ except ModuleNotFoundError:
     UnauthorizedException = _MissingLakehouseUnauthorizedException
 
 
+def _reject_resource_group_for_non_enterprise(exit_fn, org: str) -> None:
+    """Reject ``--resource-group-id`` when ``org`` is not an HF Enterprise org.
+
+    Resource groups exist only in HF Enterprise organizations, so pinning one
+    for an individual user namespace or a plain community org cannot mean
+    anything. Shared by ``artifact push`` and ``artifact register`` so the
+    two user-facing messages cannot drift. Worded for the CLI flag; the
+    server-side build.yaml equivalent is
+    :func:`gbserver.spaces.resource_group._non_enterprise_rg_error`.
+
+    Args:
+        exit_fn: The command's exit callable (``sys.exit`` or ``ctx.exit``).
+        org: The HuggingFace organization the id was pinned for.
+    """
+    click.echo(
+        f"❌ --resource-group-id was given for HuggingFace organization "
+        f"'{org}', but '{org}' is not an HF Enterprise organization. "
+        f"Resource groups apply only to Enterprise organizations. Drop "
+        f"--resource-group-id, or configure '{org}' as an enterprise "
+        f"organization.",
+        err=True,
+    )
+    exit_fn(1)
+
+
 @click.group("artifact")
 @click.pass_context
 def cli(ctx):
@@ -508,15 +533,7 @@ def push(
             org = hf_organization or HF_ORGANIZATION_DEFAULT
             hf_is_enterprise = is_enterprise_hf_org(org, HF_ENTERPRISE_ORGANIZATIONS)
             if resource_group_id and not hf_is_enterprise:
-                click.echo(
-                    f"❌ --resource-group-id was given for HuggingFace "
-                    f"organization '{org}', but '{org}' is not an HF Enterprise "
-                    f"organization. Resource groups apply only to Enterprise "
-                    f"organizations. Drop --resource-group-id, or configure "
-                    f"'{org}' as an enterprise organization.",
-                    err=True,
-                )
-                sys.exit(1)
+                _reject_resource_group_for_non_enterprise(sys.exit, org)
 
             # Resolve resource group id from the GB space only when the user did
             # NOT pass --resource-group-id. An explicit id is used verbatim and is
@@ -1151,15 +1168,7 @@ def register(
     if store == "hf" and resource_group_id:
         register_org = hf_organization or HF_ORGANIZATION_DEFAULT
         if not is_enterprise_hf_org(register_org, HF_ENTERPRISE_ORGANIZATIONS):
-            click.echo(
-                f"❌ --resource-group-id was given for HuggingFace organization "
-                f"'{register_org}', but '{register_org}' is not an HF Enterprise "
-                f"organization. Resource groups apply only to Enterprise "
-                f"organizations. Drop --resource-group-id, or configure "
-                f"'{register_org}' as an enterprise organization.",
-                err=True,
-            )
-            ctx.exit(1)
+            _reject_resource_group_for_non_enterprise(ctx.exit, register_org)
 
     # === Type-specific handling ===
     # Prompts, tables, revisions and filesets/tables are all Lakehouse

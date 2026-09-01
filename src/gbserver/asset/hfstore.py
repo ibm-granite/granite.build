@@ -173,9 +173,15 @@ class Hfstore(Assetstore):
             "path_in_repo": hfuri.get_path_in_repo(),
             "private": hf_private,
             "binding_id": binding_id,
+            # ``private`` lives only at the top level: every step template reads
+            # ``hfpush_config.private`` (LSF command.sh, Helm _helpers.tpl,
+            # skypilot step.yaml), never ``hf.private``. It is deliberately not
+            # duplicated into this nested block — the k8s/skypilot overlay
+            # (sanitize_hf_step_overlay + .update) rewrites ``hf.*`` from the raw
+            # push config and does not re-resolve ``private``, so a nested copy
+            # would be silently overwritten with the unresolved value.
             "hf": {
                 "type": hf_type,
-                "private": hf_private,
                 "resource_group_id": hf_resource_group_id,
             },
         }

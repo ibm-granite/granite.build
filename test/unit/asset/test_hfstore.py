@@ -134,6 +134,28 @@ class TestHfstoreStepConfigPathInRepo:
         assert cfg["hf"]["type"] == "bucket"
         assert cfg["path_in_repo"] == ""
 
+    def test_private_only_at_top_level_not_nested(self):
+        """``private`` must live only at the top level, never inside ``hf``.
+
+        Every step template reads ``hfpush_config.private``; none reads
+        ``hf.private``. Duplicating it into the nested block is a trap: the
+        k8s/skypilot overlay rewrites ``hf.*`` from the raw push config without
+        re-resolving ``private``, so a nested copy would silently carry the
+        unresolved value. Guard that it stays absent.
+        """
+        for private in (True, False):
+            uri = HfURI.from_parts(
+                owner="org", repo="my-model", hf_type=HfType.MODEL
+            )
+            cfg = Hfstore.build_hfpush_step_config(
+                hfuri=uri,
+                binding_path="/tmp/x",
+                binding_id="b-1",
+                hf_private=private,
+            )
+            assert cfg["private"] is private
+            assert "private" not in cfg["hf"]
+
 
 class TestSkypilotHfpushStepParity:
     """Guard against drift between the skypilot hfpush step's inline python and

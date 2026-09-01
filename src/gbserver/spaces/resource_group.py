@@ -266,6 +266,31 @@ def sanitize_hf_step_overlay(hf_cfg: dict) -> dict:
     return {k: v for k, v in (hf_cfg or {}).items() if k != USE_RESOURCE_GROUP_KEY}
 
 
+def apply_hf_step_overlay(
+    hfpush_config: dict, hf_cfg: dict, resource_group_id: Optional[str]
+) -> None:
+    """Overlay the raw ``hf`` push config onto a built step config, in place.
+
+    Shared by the k8s and skypilot launchers, which build an ``hfpush_config``
+    with :meth:`Hfstore.build_hfpush_step_config` and then fold the remaining
+    ``hf`` keys from the merged push config over it. Two invariants the callers
+    must not get subtly wrong, kept here so they cannot drift between the two
+    environments:
+
+    - ``use_resource_group`` is stripped (:func:`sanitize_hf_step_overlay`); it
+      is consumed during resolution, not by the worker template.
+    - the resolved ``resource_group_id`` is re-asserted *after* the overlay, so
+      a stray pinned-but-skipped id in the raw config cannot be resurrected.
+
+    Args:
+        hfpush_config: The step config dict; its ``hf`` sub-dict is mutated.
+        hf_cfg: The raw merged ``hf`` push config to overlay.
+        resource_group_id: The resolved id (or ``None``) to re-assert last.
+    """
+    hfpush_config["hf"].update(sanitize_hf_step_overlay(hf_cfg))
+    hfpush_config["hf"]["resource_group_id"] = resource_group_id
+
+
 def resolve_hfpush_resource_group_id(
     hfuri: HfURI,
     assetstore: "Hfstore",

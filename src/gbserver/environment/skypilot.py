@@ -40,8 +40,8 @@ from tenacity import (
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.spaces.resource_group import (
+    apply_hf_step_overlay,
     resolve_hfpush_resource_group_id,
-    sanitize_hf_step_overlay,
 )
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
@@ -2704,12 +2704,10 @@ class Skypilot(Environment):
             hf_private=hf_private,
             hf_resource_group_id=resource_group_id,
         )
-        # Apply remaining hf fields from the merged push config. use_resource_group
-        # is stripped (consumed here, not by the worker), and the resolved
-        # resource_group_id is re-asserted so a pinned-but-skipped value cannot be
-        # resurrected by the overlay.
-        hfpush_config["hf"].update(sanitize_hf_step_overlay(_hf_cfg))
-        hfpush_config["hf"]["resource_group_id"] = resource_group_id
+        # Apply remaining hf fields from the merged push config (strips
+        # use_resource_group, re-asserts the resolved resource_group_id). Shared
+        # with k8s so the overlay invariants cannot drift between the two.
+        apply_hf_step_overlay(hfpush_config, _hf_cfg, resource_group_id)
 
         hf_token = assetstore.resolve_token(hfuri) or ""
 
