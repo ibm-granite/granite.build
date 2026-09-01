@@ -1,10 +1,10 @@
 name: autotune
 version: v1
 type: custom
-config:
-  bash:
-    # The step emits its own LLMB_ARTIFACT_ID marker; don't auto-scan the output dir.
-    skip_finding_output_artifacts: true
+# No `config.bash.skip_finding_output_artifacts` here: that key is read only by the
+# gbstep bash/lsf wrapper templates, and the Docker environment never scans the
+# output dir for artifacts, so run.py's GB_ARTIFACT_ID marker is the only source.
+config: {}
 
 inputs:
   allow_unknown: true
@@ -33,20 +33,32 @@ environment_configs:
         monitors:
           - docker_log
         config:
-          # fm-tune runtime image (CUDA + deps + fm-tune baked in).
-          image: <YOUR_REGISTRY>/autotunex/build-runtime:21
+          # No `image:` here on purpose. Docker._resolve_image checks launcher_config
+          # FIRST and only then config.docker.image, so pinning an image here would
+          # make it impossible to override per build. Supply the fm-tune runtime
+          # image (CUDA + deps + fm-tune baked in) via `config.docker.image`.
+          #
           # The step asset dir is bind-mounted at /gb-workspace (docs/environments/docker.md).
           command: "bash /gb-workspace/bash_scripts/autotune/command.sh"
+          # NOTE: launcher env WINS over config.docker.env (Docker.get_launch_env_vars
+          # merges config.docker.env first, then updates with launcher env) — the
+          # inverse of the Bash environment. So only values that are intrinsic to
+          # running this step in a container belong here; anything a build should be
+          # able to tune (BACKEND, FM_TUNE_ROOT, …) must stay out.
           env:
             # Docker does NOT auto-export inputs — wire resolved bindings explicitly.
             LLMB_BASH_INPUT_MODEL: "{{ bindings.model.binding.path }}"
             LLMB_BASH_INPUT_DATASET_FILES: "{{ bindings.dataset_files.binding.path }}"
+            # Optional input: guarded so an unbound hpo_config does not raise under
+            # the step dir's strict=True render. command.sh treats empty as unset.
+            LLMB_BASH_INPUT_HPO_CONFIG: "{{ bindings.hpo_config.binding.path if bindings is defined and bindings.hpo_config is defined and bindings.hpo_config.binding is defined else '' }}"
             LLMB_BASH_OUTPUT_DIR: "/gb-workspace/output"
             # Deps are prebaked in the image — do not build a venv.
             BASH_BUILD_VENV: "false"
-            BACKEND: "torch"
-            # FM_TUNE_ROOT must point at the image's fm-tune checkout; supply it
-            # per-build via config.docker.env (see the deferred docker build.yaml).
+            # BACKEND is deliberately absent: run.py already defaults to torch, and
+            # setting it here would make `config.docker.env: BACKEND: mlx` a no-op.
+            # FM_TUNE_ROOT (the image's fm-tune checkout) likewise comes from the
+            # build via config.docker.env.
     monitors:
       docker_log:
         ref: space://monitors/docker

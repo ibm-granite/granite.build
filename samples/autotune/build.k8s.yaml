@@ -1,4 +1,4 @@
-# Production (k8s) AutoTune run. Uses the shipped custom_code step; the inline
+# Production (k8s) AutoTune run. Uses the shipped gbstep step; the inline
 # autotune-config block is materialized to /tmp/autotunex.yaml by gbstep's
 # config.gb.files_to_create (docs/steps/custom-code-steps.md), which is the file
 # main.py --config_file reads. No new step needed on k8s.
@@ -15,10 +15,14 @@ granite.build:
         custom:
           uri: hf://huggingface.co/<YOUR_ORG>/autotune_{{ run_metadata.build_id }}/
       steps:
-        - step_uri: space://steps/custom_code
+        - step_uri: space://steps/gbstep
           config:
             gb:
               files_to_create:
+                # The value must match a config key below EXACTLY: on a mismatch the
+                # helm helper writes an EMPTY file instead of failing
+                # (gbstepbase.create_files_from_config), which surfaces much later as
+                # a confusing fm-tune error.
                 - /tmp/autotunex.yaml: autotune-config
             autotune-config:
               tune_config:

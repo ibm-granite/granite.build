@@ -1,41 +1,63 @@
-# Local (bash) AutoTune run using space://steps/autotune.
+# Containerized (docker) AutoTune run using space://steps/autotune.
 # Structural reference — replace the <YOUR_*> placeholders before running.
-# FM_TUNE_ROOT points at the fm-tune copy vendored in this repo at
-# autotunex/src/fm-tune, so no external clone is needed. It must be an ABSOLUTE
-# path: the step runs with its CWD in the build workdir, not the repo root.
-# fm-tune's base deps are only pyyaml — torch, ray and the trainers arrive via
-# the `core` extra selected by FM_TUNE_EXTRA below. An `mlx` extra also exists.
+#
+# Two things differ from the bash sample, both because of Docker's config
+# precedence (docs/environments/docker.md, "Image resolution" / "Environment-variable
+# precedence"):
+#
+#   * `config.docker.image` is REQUIRED. The step.yaml deliberately pins no image,
+#     because launcher_config.image outranks config.docker.image and would make the
+#     image impossible to override per build. There is no environment-level default
+#     either, so omitting this fails the launch with a clear error.
+#   * FM_TUNE_ROOT and BACKEND go in `config.docker.env`, NOT the launcher env.
+#     launcher_config.env WINS over config.docker.env (the inverse of the bash
+#     environment), so anything a build needs to tune is kept out of step.yaml.
+#     BASH_BUILD_VENV=false and the input wiring stay in the launcher env because
+#     they are intrinsic to running this step in a container.
+#
+# The image must already contain fm-tune and its deps (BASH_BUILD_VENV=false means
+# command.sh builds no venv and uses the image interpreter). FM_TUNE_ROOT is the
+# fm-tune checkout INSIDE the image.
 granite.build:
-  name: autotune-bash-local
+  name: autotune-docker
   version: 0.0.1
   targets:
     custom:
-      environment_uri: space://environments/bash
+      environment_uri: space://environments/docker
       inputs:
+        # HF inputs are bind-mounted read-only under /gb-hf-models/... and the
+        # in-container path is what reaches the step as the binding.
         model:
           uri: hf:///ibm-granite/granite-4.1-3b
         dataset_files:
-          uri: file:<YOUR_DATASET_DIR>/
+          uri: hf://huggingface.co/datasets/<YOUR_ORG>/<YOUR_DATASET>
       outputs:
         custom:
+          # The step writes to /gb-workspace/output in the container; container paths
+          # under /gb-workspace are translated back to the host path on push.
           # ABSOLUTE on purpose: gbserver resolves a relative file: URI against its
           # own CWD, not the build dir.
           uri: "file:<YOUR_OUTPUT_DIR>/autotune_{{ run_metadata.build_id }}/"
       steps:
         - step_uri: space://steps/autotune
           config:
-            bash:
+            docker:
+              # REQUIRED — see the header note.
+              image: <YOUR_REGISTRY>/autotunex/build-runtime:21
+              pull_policy: if-not-present
               env:
-                FM_TUNE_ROOT: <YOUR_GRANITE_BUILD_CHECKOUT>/autotunex/src/fm-tune
-                # pip extra installed into the venv; `core` provides ray+datasets
-                # (main.py needs ray). Use `full` for verl/vllm; empty for base only.
-                FM_TUNE_EXTRA: core
+                # fm-tune checkout inside the image.
+                FM_TUNE_ROOT: /opt/fm-tune
+                # Optional. run.py defaults to torch; set mlx only on an arm64 image
+                # built with fm-tune's [mlx] extra.
                 BACKEND: torch
                 NO_AUTOTUNE: "true"
-                RUN_NAME: autotune-bash-local
+                RUN_NAME: autotune-docker
                 JOB_ID: "{{ run_metadata.build_id }}"
             compute_config:
               num_nodes: 1
+              num_gpus_per_node: 1
+              total_memory_per_node: 32Gi
             # Inline tuning config — materialized by command.sh to a scratch dir
             # beside (not inside) the output dir, then passed as --config_file.
             autotune-config:

@@ -13,12 +13,14 @@ granite.build:
       environment_uri: space://environments/bash
       inputs:
         model:
-          uri: hf://huggingface.co/models/HuggingFaceTB/SmolLM2-135M
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
         dataset_files:
           uri: hf://huggingface.co/datasets/<YOUR_ORG>/<YOUR_DATASET>
       outputs:
         custom:
-          uri: "file:outputs/autotune_{{ run_metadata.build_id }}/"
+          # ABSOLUTE on purpose: gbserver resolves a relative file: URI against its
+          # own CWD, not the build dir.
+          uri: "file:<YOUR_OUTPUT_DIR>/autotune_{{ run_metadata.build_id }}/"
       steps:
         - step_uri: space://steps/autotune
           config:
@@ -35,8 +37,8 @@ granite.build:
                 AUTOTUNEX_SERVER_URL: "http://localhost:8001"
             compute_config:
               num_nodes: 1
-            # Inline tuning config — materialized to $LLMB_BASH_OUTPUT_DIR/autotune_config.yaml
-            # by command.sh and passed to main.py --config_file.
+            # Inline tuning config — materialized by command.sh to a scratch dir
+            # beside (not inside) the output dir, then passed as --config_file.
             autotune-config:
               tune_config:
                 search_alg:

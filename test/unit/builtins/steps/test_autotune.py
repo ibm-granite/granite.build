@@ -1,6 +1,11 @@
 """Structural unit tests for the `autotune` step asset (bash + docker copies)."""
 
+import base64
 import importlib.util
+import os
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -83,8 +88,97 @@ class TestRunPyDriver:
     def test_artifact_marker_format_and_column0(self):
         mod = _load_run_module()
         marker = mod.artifact_marker("/abs/out")
-        assert marker == "LLMB_ARTIFACT_ID:custom LLMB_ARTIFACT_PATH:/abs/out"
-        assert marker.startswith("LLMB_ARTIFACT_ID:")  # column 0, no leading space
+        assert marker == "GB_ARTIFACT_ID:custom GB_ARTIFACT_PATH:/abs/out"
+
+    def test_marker_starts_at_column_zero_after_a_partial_line(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Regression: the bash monitor's artifact regex is ^-anchored, and main.py
+        (ray/tqdm) can leave a line unterminated. Without a leading newline the
+        marker is appended to that line, never matches, and the output is silently
+        lost -- skip_finding_output_artifacts removes the fallback scan.
+        """
+        mod = _load_run_module()
+        env = _base_env(tmp_path)
+        fm_tune = tmp_path / "fm-tune"
+        fm_tune.mkdir()
+        env["FM_TUNE_ROOT"] = str(fm_tune)
+
+        def fake_run(argv, cwd=None):
+            sys.stdout.write("Trial 3/8 [====>    ] 50%")  # no trailing newline
+
+            class _P:
+                returncode = 0
+
+            return _P()
+
+        monkeypatch.setattr(mod.os, "environ", env)
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        mod.main()
+
+        lines = capsys.readouterr().out.splitlines()
+        assert any(
+            line.startswith("GB_ARTIFACT_ID:") for line in lines
+        ), f"marker not at column 0; got {lines!r}"
+
+    def test_no_marker_and_exit_code_propagated_on_failure(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        mod = _load_run_module()
+        env = _base_env(tmp_path)
+        fm_tune = tmp_path / "fm-tune"
+        fm_tune.mkdir()
+        env["FM_TUNE_ROOT"] = str(fm_tune)
+
+        def fake_run(argv, cwd=None):
+            class _P:
+                returncode = 7
+
+            return _P()
+
+        monkeypatch.setattr(mod.os, "environ", env)
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
+        assert exc.value.code == 7
+        assert "GB_ARTIFACT_ID:" not in capsys.readouterr().out
+
+    def test_ambiguous_split_glob_exits(self, tmp_path):
+        """Two matching splits must fail loudly, not silently pick the first."""
+        mod = _load_run_module()
+        env = _base_env(tmp_path)
+        Path(env["LLMB_BASH_INPUT_DATASET_FILES"], "legal_train.jsonl").write_text(
+            "{}\n"
+        )
+        with pytest.raises(SystemExit) as exc:
+            mod.build_argv(env)
+        assert "ambiguous" in str(exc.value)
+
+    def test_nonexistent_split_override_exits(self, tmp_path):
+        mod = _load_run_module()
+        env = _base_env(tmp_path)
+        env["TRAIN_FILE"] = "does_not_exist.jsonl"
+        with pytest.raises(SystemExit) as exc:
+            mod.build_argv(env)
+        assert "does not exist" in str(exc.value)
+
+    def test_malformed_config_warns_instead_of_silently_defaulting(
+        self, tmp_path, capsys
+    ):
+        mod = _load_run_module()
+        env = _base_env(tmp_path)
+        Path(env["AUTOTUNE_CONFIG_FILE"]).write_text("training_config: [unclosed\n")
+        argv = mod.build_argv(env)
+        assert argv[argv.index("--tuning_algo") + 1] == "lora"  # still defaults
+        assert "autotune:" in capsys.readouterr().err  # but says so
+
+    def test_backend_empty_falls_back_to_torch(self, tmp_path):
+        """`--backend ""` is rejected by main.py's argparse choices."""
+        mod = _load_run_module()
+        env = _base_env(tmp_path)
+        env["BACKEND"] = ""
+        argv = mod.build_argv(env)
+        assert argv[argv.index("--backend") + 1] == "torch"
 
     def test_run_py_has_no_jinja_tokens(self):
         text = RUN_PY.read_text()
@@ -103,11 +197,6 @@ class TestCommandShRender:
         assert "run.py" in out  # execs the driver
 
     def test_base64_roundtrip_is_valid_yaml(self):
-        import base64
-        import re
-
-        import yaml
-
         out = self._render({"autotune-config": SAMPLE_AUTOTUNE_CONFIG})
         m = re.search(r"echo '([A-Za-z0-9+/=]+)' \| base64 -d", out)
         assert m, "expected an `echo '<b64>' | base64 -d` line"
@@ -127,21 +216,70 @@ class TestCommandShRender:
         assert "LLMB_BASH_PYTHON_DIR" in out
 
     def test_command_sh_is_executable(self):
-        import os
-
         assert os.access(COMMAND_SH, os.X_OK), "command.sh must be committed with +x"
 
     def test_installs_real_fm_tune_extra_for_ray(self):
         # fm-tune's `ray` dep (imported unconditionally by main.py) lives in the
-        # [core]/[full] extras, NOT the base package. fm-tune has no [mlx] extra,
-        # so the venv install must use a real, param-driven extra defaulting to core.
+        # [core]/[full] extras, NOT the base package, so the venv install must use a
+        # real, param-driven extra defaulting to core.
         out = self._render({"autotune-config": SAMPLE_AUTOTUNE_CONFIG})
-        assert "[mlx]" not in out  # fm-tune has no mlx extra
         assert "FM_TUNE_EXTRA" in out  # extra is param-driven
-        assert "${FM_TUNE_EXTRA:-core}" in out  # defaults to core (provides ray)
         assert (
             "${FM_TUNE_ROOT}[${FM_TUNE_EXTRA}]" in out
         )  # extra applied to the editable install
+
+    def test_empty_fm_tune_extra_is_not_overridden_by_the_default(self):
+        # `${VAR:-default}` substitutes on empty as well as unset, which would make
+        # the documented base-only install (FM_TUNE_EXTRA=) unreachable and the
+        # `pip install -e "$FM_TUNE_ROOT"` fallback dead code. `-` is required.
+        out = self._render({"autotune-config": SAMPLE_AUTOTUNE_CONFIG})
+        assert "${FM_TUNE_EXTRA-core}" in out
+        assert "${FM_TUNE_EXTRA:-core}" not in out
+
+    def test_rendered_command_sh_is_valid_bash(self, tmp_path):
+        """`bash -n` the rendered script: the string-presence assertions here cannot
+        catch a shell syntax error, and this file is executed verbatim at run time.
+        """
+        for config in ({"autotune-config": SAMPLE_AUTOTUNE_CONFIG}, {}):
+            script = tmp_path / "command.sh"
+            script.write_text(self._render(config))
+            proc = subprocess.run(
+                ["bash", "-n", str(script)], capture_output=True, text=True
+            )
+            assert proc.returncode == 0, proc.stderr
+
+    def test_config_is_materialized_outside_the_artifact_dir(self):
+        # $LLMB_BASH_OUTPUT_DIR is published as the `custom` model artifact, so the
+        # tuning config must not be written into it.
+        out = self._render({"autotune-config": SAMPLE_AUTOTUNE_CONFIG})
+        assert 'CONFIG_FILE="$OUT/' not in out
+        assert 'CONFIG_DIR="$(dirname "$OUT")' in out
+
+    def test_hpo_config_fileset_may_be_a_directory(self):
+        # `hpo_config` is declared type: fileset, so the binding is often a dir;
+        # `cp <dir> <file>` would fail under `set -e`.
+        out = self._render({})
+        assert '-d "$LLMB_BASH_INPUT_HPO_CONFIG"' in out
+
+    def test_setup_command_runs_with_the_step_interpreter_first_on_path(self):
+        # The documented `pip install -e .` hook must not resolve to the launcher's
+        # or the distro's python.
+        out = self._render({"autotune-config": SAMPLE_AUTOTUNE_CONFIG})
+        assert 'PATH="$(dirname "$PYTHON"):$PATH"' in out
+        assert out.index('dirname "$PYTHON"') < out.index("$SETUP_COMMAND")
+
+    def test_path_is_prepended_not_clobbered(self):
+        # On docker LLMB_BASH_PYTHON_DIR is unset and the image's own PATH carries
+        # its interpreter; replacing PATH outright would strip conda/venv dirs.
+        out = self._render({"autotune-config": SAMPLE_AUTOTUNE_CONFIG})
+        assert "${PATH:-" in out
+
+    def test_clone_dir_is_keyed_on_the_ref(self):
+        # A single shared clone dir would serve a stale ref to any later build that
+        # asked for a different FM_TUNE_REF.
+        out = self._render({"autotune-config": SAMPLE_AUTOTUNE_CONFIG})
+        assert "fm-tune-src-$FM_TUNE_REF_SLUG" in out
+        assert "git fetch" in out  # existing clone is refreshed, not blindly reused
 
     def test_clones_fm_tune_when_root_is_a_git_url(self):
         # FM_TUNE_ROOT may be a git remote (ssh/https/*.git), not just a local
@@ -202,10 +340,12 @@ class TestDockerStep:
         launcher = d["launchers"]["autotune"]
         assert launcher["type"] == "docker"
         assert "command.sh" in launcher["config"]["command"]
-        assert launcher["config"]["image"]
+        # No pinned image: Docker._resolve_image prefers launcher_config over
+        # config.docker.image, so pinning here would block per-build override.
+        assert "image" not in launcher["config"]
         assert d["monitors"]["docker_log"]["ref"] == "space://monitors/docker"
 
-    def test_docker_env_wires_inputs_and_backend(self):
+    def test_docker_env_wires_inputs_but_not_tunables(self):
         cfg = self._load()
         env = cfg["environment_configs"]["Docker"]["launchers"]["autotune"]["config"][
             "env"
@@ -215,12 +355,33 @@ class TestDockerStep:
             "bindings.dataset_files.binding.path"
             in env["LLMB_BASH_INPUT_DATASET_FILES"]
         )
+        # Optional input must be wired too -- Docker does not auto-export bindings,
+        # so without this the declared hpo_config could never be honored.
+        assert "bindings.hpo_config" in env["LLMB_BASH_INPUT_HPO_CONFIG"]
         assert env["BASH_BUILD_VENV"] == "false"
-        assert env["BACKEND"] == "torch"
+        # Launcher env WINS over config.docker.env, so anything a build should be
+        # able to tune must stay out of it.
+        assert "BACKEND" not in env
+        assert "FM_TUNE_ROOT" not in env
+
+    def test_optional_hpo_config_env_renders_for_every_binding_shape(self):
+        """The guard must be total: an optional input that is absent, present-but-
+        unbound, or in a context with no `bindings` at all must render to '' rather
+        than raising under the step dir's strict=True fill.
+        """
+        expr = self._load()["environment_configs"]["Docker"]["launchers"]["autotune"][
+            "config"
+        ]["env"]["LLMB_BASH_INPUT_HPO_CONFIG"]
+        cases = [
+            ({"bindings": {"model": {"binding": {"path": "/m"}}}}, ""),
+            ({"bindings": {"hpo_config": {}}}, ""),
+            ({}, ""),
+            ({"bindings": {"hpo_config": {"binding": {"path": "/cfg"}}}}, "/cfg"),
+        ]
+        for data, expected in cases:
+            assert fill_template(expr, data, strict=True) == expected, data
 
     def test_command_sh_copy_is_executable(self):
-        import os
-
         assert os.access(DOCKER_STEP / "bash_scripts/autotune/command.sh", os.X_OK)
 
 
@@ -239,10 +400,42 @@ class TestReferenceBuilds:
         assert env["FM_TUNE_EXTRA"] == "core"  # extra that provides ray
         assert "FM_TUNE_ROOT" in env
 
-    def test_k8s_build_uses_custom_code_and_files_to_create(self):
+    def test_docker_build_shape(self):
+        b = yaml.safe_load((SAMPLES / "build.docker.yaml").read_text())["granite.build"]
+        target = b["targets"]["custom"]
+        assert "docker" in target["environment_uri"]
+        step = target["steps"][0]
+        assert step["step_uri"] == "space://steps/autotune"
+        cfg = step["config"]["docker"]
+        # The image MUST come from the build: step.yaml pins none (launcher_config
+        # would outrank config.docker.image) and there is no env-level default.
+        assert cfg["image"]
+        # Tunables belong here, not in the launcher env, which would win over them.
+        assert cfg["env"]["FM_TUNE_ROOT"]
+        assert "BACKEND" in cfg["env"]
+        assert "autotune-config" in step["config"]
+
+    def test_docker_sample_keeps_tunables_out_of_the_launcher_env(self):
+        """The sample is only meaningful if step.yaml leaves these overridable."""
+        launcher_env = yaml.safe_load((DOCKER_STEP / "step.yaml").read_text())[
+            "environment_configs"
+        ]["Docker"]["launchers"]["autotune"]["config"]["env"]
+        sample_env = yaml.safe_load((SAMPLES / "build.docker.yaml").read_text())[
+            "granite.build"
+        ]["targets"]["custom"]["steps"][0]["config"]["docker"]["env"]
+        overridden = sorted(set(sample_env) & set(launcher_env))
+        assert not overridden, (
+            "launcher env wins over config.docker.env, so these sample values would "
+            f"be silently ignored: {overridden}"
+        )
+
+    def test_k8s_build_uses_gbstep_and_files_to_create(self):
         b = yaml.safe_load((SAMPLES / "build.k8s.yaml").read_text())["granite.build"]
         step = b["targets"]["custom"]["steps"][0]
-        assert step["step_uri"] == "space://steps/custom_code"
+        # gbstep is shipped in this repo (src/gbserver/builtins/steps/gbstep) and is
+        # what the docs pair with custom_code_config + files_to_create; there is no
+        # `custom_code` step asset here.
+        assert step["step_uri"] == "space://steps/gbstep"
         ftc = step["config"]["gb"]["files_to_create"]
         # a [{filename: configKey}] entry mapping the tmp path to the autotune-config section
         assert any(v == "autotune-config" for entry in ftc for v in entry.values())
