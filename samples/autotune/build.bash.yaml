@@ -1,8 +1,10 @@
 # Local (bash) AutoTune run using space://steps/autotune.
-# Structural reference — set FM_TUNE_ROOT to your fm-tune checkout before running.
-# BACKEND is `torch` here: fm-tune 0.7.1 ships torch in its base deps and declares
-# no `mlx` package, so torch is the runnable local path (uses MPS/CPU on Apple
-# Silicon). To try the mlx backend, set BACKEND: mlx and install mlx into fm-tune.
+# Structural reference — replace the <YOUR_*> placeholders before running.
+# FM_TUNE_ROOT points at the fm-tune copy vendored in this repo at
+# autotunex/src/fm-tune, so no external clone is needed. It must be an ABSOLUTE
+# path: the step runs with its CWD in the build workdir, not the repo root.
+# fm-tune's base deps are only pyyaml — torch, ray and the trainers arrive via
+# the `core` extra selected by FM_TUNE_EXTRA below. An `mlx` extra also exists.
 granite.build:
   name: autotune-bash-local
   version: 0.0.1
@@ -13,7 +15,7 @@ granite.build:
         model:
           uri: hf:///ibm-granite/granite-4.1-3b
         dataset_files:
-          uri: file:/Users/priyanshu.rai/Documents/Research-Lab/Projects_2025/finance/
+          uri: file:<YOUR_DATASET_DIR>/
       outputs:
         custom:
           uri: "file:outputs/autotune_{{ run_metadata.build_id }}/"
@@ -22,7 +24,7 @@ granite.build:
           config:
             bash:
               env:
-                FM_TUNE_ROOT: /Users/priyanshu.rai/Documents/Research-Lab/Projects_2025/fm-tune_forked
+                FM_TUNE_ROOT: <YOUR_GRANITE_BUILD_CHECKOUT>/autotunex/src/fm-tune
                 # pip extra installed into the venv; `core` provides ray+datasets
                 # (main.py needs ray). Use `full` for verl/vllm; empty for base only.
                 FM_TUNE_EXTRA: core
