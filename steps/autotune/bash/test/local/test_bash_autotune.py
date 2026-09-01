@@ -35,12 +35,15 @@ The step sets ``skip_finding_output_artifacts``, so the marker is the *only*
 source of that binding -- if it lands mid-line, the build "succeeds" with no
 output, which ``output_artifact_count: 1`` catches.
 
-SCOPE, and it matters: a pass proves the step RUNS and that its marker is scraped
-and bound. It does NOT prove the artifact was physically delivered --
-``output_artifact_count`` is satisfied by registration alone, and a successful build
-has been observed registering an EMPTY output dir. That is an open, cross-environment
-issue (the marker's path is not used as the push source); see FINDINGS.md on the
-feat/autotune-step-docker branch. Add a non-empty assertion here once it is resolved.
+SCOPE: a pass proves the step runs and that its marker is scraped and bound.
+``output_artifact_count`` is satisfied by registration, so it does not additionally
+assert that files landed at the output URI -- and do NOT add such an assertion here.
+Under this in-process harness the push reads an ephemeral workspace path that is torn
+down with the run, so the pushed files are not observable from the test even though
+delivery works. Verified against a real gbserver build (marker pointing at
+``~/.granite.build/workdir/.../launch-<id>/outputs``, ~85MB of adapter weights
+delivered to the declared absolute file: URI). Use gbserver, not this test, to check
+delivery.
 
 Cost: heavyweight. The first run builds a venv and pip-installs torch + ray
 (fm-tune's ``core`` extra; ``main.py`` imports ray unconditionally), then runs a
