@@ -448,9 +448,54 @@ class TestIoWiring:
         assert _opt(_script_argv(rendered, "run"), "--artifact-id") == "tokens"
 
 
+class TestValidateFlag:
+    """`validate: true` passes --validate <transform> to dpk_run.sh.
+
+    The step.yaml's whole job here is to forward the transform NAME; finding and
+    running src/validate_<name>.py is dpk_run.sh's (see test_dpk_run_sh.py).
+    """
+
+    def test_default_is_off(self, defaults):
+        assert defaults["validate"] is False
+
+    def test_off_passes_no_validate_flag(self, launcher, defaults):
+        argv = _script_argv(
+            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
+        )
+        assert "--validate" not in argv
+
+    def test_on_passes_the_transform_name(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, validate=True)
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _opt(argv, "--validate") == "tokenization2arrow"
+
+    def test_the_name_follows_the_transform(self, launcher, defaults):
+        """Forwarded verbatim, so a validator added later needs no step change."""
+        cfg = _transform_cfg(defaults, transform="pii_redactor", validate=True)
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _opt(argv, "--validate") == "pii_redactor"
+
+    def test_validate_coexists_with_args(self, launcher, defaults):
+        """--validate is an option, so it must land BEFORE the `--` separator."""
+        cfg = _transform_cfg(defaults, validate=True, args={"tkn_chunk_size": 0})
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert argv.index("--validate") < argv.index("--")
+        assert _passthrough(argv) == ["--tkn_chunk_size", "0"]
+
+    def test_validate_renders_valid_shell(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, validate=True, args={"a": 1})
+        assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
+
+    def test_command_mode_ignores_validate(self, launcher, defaults):
+        """validate belongs to the derived invocation, which command mode skips."""
+        cfg = dict(defaults, command="echo hi", validate=True)
+        run = _render(launcher["run"], cfg, _BINDINGS)
+        assert "--validate" not in run
+
+
 class TestCommandMode:
     def test_command_is_injected_verbatim(self, launcher, defaults):
-        cmd = 'python src/validate_tokens.py "$GB_INPUT_tokens" out --input in'
+        cmd = 'python src/validate_tokenization2arrow.py "$GB_INPUT_tokens" out --input in'
         cfg = dict(defaults, command=cmd, packages=["pyarrow"])
         run = _render(launcher["run"], cfg, {"tokens": {"binding": {"path": "/tok"}}})
         assert cmd in run

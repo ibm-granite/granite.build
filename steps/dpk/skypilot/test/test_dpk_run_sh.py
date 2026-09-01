@@ -53,7 +53,15 @@ def run_script(tmp_path):
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     stub = stub_dir / "python"
-    stub.write_text('#!/usr/bin/env bash\nfor a in "$@"; do echo "PYARG:$a"; done\n')
+    # Echo argv (so tests can assert the invocation) and, when handed a real .py
+    # file, honour its exit code — the failing-validator test depends on that
+    # propagating through `set -e`.
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'for a in "$@"; do echo "PYARG:$a"; done\n'
+        'if [ -f "$1" ] && [ "${1##*.}" = "py" ]; then exit "$(cat "${1}.rc" 2>/dev/null || echo 0)"; fi\n'
+        "exit 0\n"
+    )
     stub.chmod(0o755)
 
     def _run(*args: str, cwd: pathlib.Path | None = None):
@@ -287,6 +295,130 @@ class TestFlagPassthrough:
         assert _pyargs(proc.stdout)[-2:] == ["--output-path", "decoy"]
         assert (run_script.tmp_path / "real").is_dir()
         assert not (run_script.tmp_path / "decoy").exists()
+
+
+class TestValidationHook:
+    """`--validate <t>` runs ./src/validate_<t>.py after the transform, if present.
+
+    The lookup is a rule rather than a table, so a validator for another transform
+    is a new file and no change here. A MISSING validator is not an error — the
+    request is general, the coverage is not — but it is announced, because a silent
+    skip is indistinguishable from "validation passed" on a green build.
+    """
+
+    def _validator(self, tmp_path, name, rc=0):
+        """Create ./src/validate_<name>.py, plus the exit code the stub should use."""
+        src = tmp_path / "src"
+        src.mkdir(exist_ok=True)
+        f = src / f"validate_{name}.py"
+        f.write_text("# stub validator\n")
+        (src / f"validate_{name}.py.rc").write_text(str(rc))
+
+    def test_validator_runs_when_it_exists(self, run_script):
+        self._validator(run_script.tmp_path, "tokenization2arrow")
+        proc = run_script(
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "tok",
+            "--validate",
+            "tokenization2arrow",
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "validate_tokenization2arrow.py" in proc.stdout
+        assert _marker(proc.stdout) is not None
+
+    def test_validator_gets_output_dir_twice_and_the_input(self, run_script):
+        """report dir == output dir, so validation.json ships with the data."""
+        self._validator(run_script.tmp_path, "tokenization2arrow")
+        proc = run_script(
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "tok",
+            "--validate",
+            "tokenization2arrow",
+        )
+        out_abs = str((run_script.tmp_path / "o").resolve())
+        args = _pyargs(proc.stdout)
+        # The stub python echoes argv; the validator invocation is the last call.
+        assert args[-4:] == [out_abs, out_abs, "--input", "/staged/docs"]
+
+    def test_missing_validator_is_a_loud_no_op(self, run_script):
+        """No validator for this transform: say so, succeed, still register."""
+        proc = run_script(
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "clean",
+            "--validate",
+            "pii_redactor",
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "no validator for transform 'pii_redactor'" in proc.stdout
+        assert "skipping" in proc.stdout
+        assert _marker(proc.stdout) is not None
+
+    def test_missing_validator_names_the_path_it_looked_for(self, run_script):
+        """So the reader can tell whether the name or the file is wrong."""
+        proc = run_script(
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "a",
+            "--validate",
+            "ededup",
+        )
+        assert "./src/validate_ededup.py" in proc.stdout
+
+    def test_omitting_validate_runs_no_validator(self, run_script):
+        """A bundled validator is not run unless the build asks for it."""
+        self._validator(run_script.tmp_path, "tokenization2arrow")
+        proc = run_script(*_BASE, "--output-path", "o", "--artifact-id", "a")
+        assert "dpk: validating" not in proc.stdout
+        # Assert on the SCRIPT python was handed, not on any argv substring: the
+        # --data_local_config value embeds tmp_path, whose pytest-derived name can
+        # itself contain "validate_".
+        assert not any(a.endswith(".py") for a in _pyargs(proc.stdout))
+        assert _marker(proc.stdout) is not None
+
+    def test_failing_validator_fails_the_step_and_emits_no_marker(self, run_script):
+        """THE point of validating before registering: bad output is not published."""
+        self._validator(run_script.tmp_path, "tokenization2arrow", rc=1)
+        proc = run_script(
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "tok",
+            "--validate",
+            "tokenization2arrow",
+        )
+        assert proc.returncode != 0
+        assert (
+            _marker(proc.stdout) is None
+        ), "output registered despite failed validation"
+
+    def test_validation_runs_after_the_transform(self, run_script):
+        """Validating before the transform wrote anything would be meaningless."""
+        self._validator(run_script.tmp_path, "tokenization2arrow")
+        proc = run_script(
+            *_BASE,
+            "--output-path",
+            "o",
+            "--artifact-id",
+            "tok",
+            "--validate",
+            "tokenization2arrow",
+        )
+        lines = proc.stdout.splitlines()
+        transform = next(i for i, l in enumerate(lines) if l.startswith("PYARG:-m"))
+        validating = next(i for i, l in enumerate(lines) if "dpk: validating" in l)
+        assert transform < validating
 
 
 class TestFailurePropagation:

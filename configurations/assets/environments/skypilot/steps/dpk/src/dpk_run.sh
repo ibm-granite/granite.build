@@ -24,7 +24,7 @@
 #
 # CONTRACT
 #   dpk_run.sh --module <mod> --input-path <dir> --output-path <dir> \
-#              --artifact-id <id> [--] [transform flags...]
+#              --artifact-id <id> [--validate <transform>] [--] [transform flags...]
 #
 #   --module       python module to run with `python -m` (a DPK
 #                  PythonTransformLauncher accepting --data_local_config).
@@ -33,9 +33,28 @@
 #   --output-path  directory the transform writes. May be RELATIVE (the step's
 #                  default is ./output); it is created and absolutized here.
 #   --artifact-id  the declared output's name, used in the artifact marker.
+#   --validate     transform name to look for a validator for; omitted or empty
+#                  means no validation. See VALIDATION below.
 #   --             everything after it is passed through to the transform
 #                  verbatim as argv. Optional, but required if any transform flag
 #                  could otherwise look like one of the options above.
+#
+# VALIDATION
+# With --validate <t>, the script runs ./src/validate_<t>.py after the transform
+# succeeds, if that file exists. The lookup is a RULE, not a table: the step
+# derives the path the same way it derives the python module, so adding a
+# validator for another transform is dropping in a file — no change here or in
+# step.yaml.
+#
+# A missing validator is NOT an error: `validate: true` is a general request, and
+# most transforms have no validator yet. It is announced on stdout rather than
+# skipped silently, because a silent skip reads as "validation passed" to anyone
+# looking at a green build.
+#
+# The validator is run BEFORE the artifact marker is emitted, so a failure fails
+# the target and the output is never registered. It writes validation.json into
+# the output directory, so the validation record travels with the data it
+# validated (safe: the validators glob for data suffixes, never *.json).
 #
 # The caller is responsible for activating the venv (bare-node mode) and for
 # exporting $GB_INPUT_<name> for each declared input.
@@ -45,6 +64,7 @@ module=""
 input_path=""
 output_path=""
 artifact_id=""
+validate=""
 
 # Parse only this script's own options, then hand the rest to the transform.
 # An explicit `--` ends option parsing; so does the first unrecognized token, so
@@ -55,6 +75,7 @@ while [ "$#" -gt 0 ]; do
     --input-path)   input_path="$2";   shift 2 ;;
     --output-path)  output_path="$2";  shift 2 ;;
     --artifact-id)  artifact_id="$2";  shift 2 ;;
+    --validate)     validate="$2";     shift 2 ;;
     --)             shift; break ;;
     *)              break ;;
   esac
@@ -80,6 +101,26 @@ output_path="$(cd "$output_path" && pwd)"
 python -m "$module" \
   --data_local_config "{'input_folder': '$input_path', 'output_folder': '$output_path'}" \
   "$@"
+
+# Validate before registering, so a failure fails the target rather than
+# publishing output that was just shown to be inconsistent. `set -e` carries the
+# validator's non-zero exit; no marker is printed in that case.
+if [ -n "$validate" ]; then
+  validator="./src/validate_${validate}.py"
+  if [ -f "$validator" ]; then
+    echo "dpk: validating ${validate} output with ${validator}"
+    # report dir == output dir, so validation.json ships with the data it
+    # describes. --input enables the completeness pass (did every non-empty
+    # source file produce output?), which the consistency pass cannot see.
+    python "$validator" "$output_path" "$output_path" --input "$input_path"
+  else
+    # Deliberately not an error. `validate: true` is a general request and most
+    # transforms have no validator yet — but say so, because a silent skip is
+    # indistinguishable from "validation passed" on a green build.
+    echo "dpk: validate requested, but no validator for transform '${validate}'" \
+         "(expected ${validator}) — skipping"
+  fi
+fi
 
 # Register the output for the declared artifact id. Must start at the beginning
 # of a line for the skypilot monitor's regex to capture it.

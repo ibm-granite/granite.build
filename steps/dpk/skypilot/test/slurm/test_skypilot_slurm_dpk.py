@@ -12,25 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DPK tokenize -> validate on skypilot/slurm, via the `dpk` step.
+"""DPK tokenization with in-step validation on skypilot/slurm.
 
-Exercises **both** of the step's modes in one build, which is the point of the
-fixture:
+One target. ``transform: tokenization2arrow`` is the only DPK detail the build
+gives — the step derives the python module and the pip extra — and
+``validate: true`` is the only thing it says about checking the result. The step
+finds ``src/validate_tokenization2arrow.py`` by the ``validate_<transform>.py``
+rule and runs it on the node after the transform and *before* emitting the
+artifact marker, so reaching SUCCESS proves:
 
-* ``tokenize`` — **transform mode**. The build names one DPK detail
-  (``transform: tokenization2arrow``) and the step derives the python module and
-  the pip extra. Reaching SUCCESS proves those derivations work against real DPK,
-  not just in the render tests.
-* ``validate`` — **command mode**, running the step's own bundled
-  ``src/validate_tokens.py``. Proves ``file_mounts: {src: src}`` actually lands
-  the script on the node — the mechanism that replaces the unsupported relative
-  ``file_mounts`` the DPK template used to rely on (#294).
+* the derivations work against real DPK, not just in the render tests;
+* the validator ran and accepted the output — a failure would fail the target and
+  register nothing;
+* ``validation.json`` was written into the registered output directory.
 
-It also covers the cross-node handoff: ``validate`` binds ``tokenize.tokens``, and
-the two targets may be scheduled on different compute nodes. ``env://`` moves no
-bytes, so the tokens survive the hop only because the fixture writes them under
-``/shared`` (the slurm environment's ``shared_workdir``), mounted on every node. A
-node-local ``/tmp`` path would fail here.
+This replaced a two-target ``tokenize`` -> ``validate`` build, where the second
+target bound the first's output and drove the validator through command mode. The
+flag removed roughly 25 lines of build.yaml. It also retired this fixture's
+cluster-level coverage of the cross-node ``env:///shared`` handoff and of command
+mode; both are covered by unit tests now, and the sibling build.yaml records where
+to look if a handoff regression is ever suspected.
 
 Input is a public ``hf://`` dataset, so no HF_TOKEN is needed — the launcher's
 ``hf download`` runs anonymously.

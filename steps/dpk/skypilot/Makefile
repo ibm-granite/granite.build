@@ -19,7 +19,7 @@ HAS_TEST_SETUP := true
 
 include ../../common.mk
 
-# `make test` imports src/validate_tokens.py, which leaves a src/__pycache__/
+# `make test` imports src/validate_tokenization2arrow.py, which leaves a src/__pycache__/
 # behind, and common.mk's `space`/`publish-step` both `cp -R src/` verbatim — so
 # stale bytecode would be rsynced to the cluster alongside the script. (It would
 # NOT be committed: __pycache__/ is in the repo root .gitignore, which covers the

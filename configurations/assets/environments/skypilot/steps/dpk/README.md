@@ -36,7 +36,7 @@ Read this before the field tables; nearly everything else here applies to one mo
 | **Artifact marker** | emitted for you, from `output`/`output_path` | your command prints it |
 
 Command mode exists because a build often needs a non-transform step *beside* its
-transforms — the shipped `src/validate_tokens.py` is exactly that, and it has no
+transforms — the shipped `src/validate_tokenization2arrow.py` is exactly that, and it has no
 `dpk_<name>.runtime` to invoke. Without it you would need a second step (or `byoc`) just to
 run a script next to the transform, so the escape hatch is deliberate rather than
 redundant. It behaves like [`byoc`](../../byoc/skypilot/USAGE.md)'s `command`.
@@ -52,15 +52,16 @@ All fields live under the step's `config.dpk_config`.
 | `transform` | string | **yes** | DPK transform short name, e.g. `tokenization2arrow`, `pii_redactor`, `ededup`. See [What `transform` derives](#what-transform-derives). |
 | `input` | string | **yes** | Name of a declared target `inputs:` entry. Becomes the transform's `input_folder`. |
 | `output` | string | **yes** | Name of a declared target `outputs:` entry. Used as the registered artifact's ID. |
-| `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match. See [Outputs](#outputs). |
+| `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match. See [Inputs, outputs, and bundled scripts](#inputs-outputs-and-bundled-scripts). |
 | `args` | map | no | Transform flags, rendered in order as `--<key> '<value>'`. Keys are the **full flag name** as DPK spells it, without leading dashes. See [Transform flags](#transform-flags). |
+| `validate` | bool | no | Check the transform's output before registering it, when a validator for that transform is bundled. Default `false`. See [Validating output](#validating-output). |
 | `dpk_version` | string | no | DPK release to install. Default `1.1.8`. |
 
 ### Command mode
 
 | Field | Type | Required | Purpose |
 |---|---|---|---|
-| `command` | string | **yes** | Bash command, injected verbatim. Responsible for its own artifact marker — see [Outputs](#outputs). |
+| `command` | string | **yes** | Bash command, injected verbatim. Responsible for its own artifact marker — see [Inputs, outputs, and bundled scripts](#inputs-outputs-and-bundled-scripts). |
 
 ### Optional (both modes)
 
@@ -115,6 +116,50 @@ harmless; it is dropped rather than repeated.
 There is no way to suppress the derived extra, and no need for one: every published DPK
 transform's extra follows the `_`→`-` rule, so the derivation is not something you have to
 correct. If you ever need total control over the environment, use `dpk_image` instead.
+
+## Validating output
+
+`validate: true` runs a bundled validator against the transform's output, on the node,
+**after** the transform and **before** the output is registered — so a failed check fails
+the target and nothing downstream ever sees bad data.
+
+```yaml
+dpk_config:
+  transform: tokenization2arrow
+  input: docs
+  output: tokens
+  validate: true
+```
+
+That one line replaces what used to be a whole second target: a `binding:` to the first
+target's output, a re-declared source input, a `packages` list, and several lines of shell
+invoking the validator and printing an artifact marker.
+
+**Which transforms have a validator.** The step looks for `src/validate_<transform>.py` — a
+rule, not a lookup table, so a validator added for another transform works with no config
+change. Today only **`tokenization2arrow`** ships one; it checks that the Arrow token stream
+agrees with its `meta/` sidecars and, given the source, that every non-empty input file
+produced output.
+
+**For any other transform `validate: true` is a no-op** — the step prints
+
+```
+dpk: validate requested, but no validator for transform 'pii_redactor'
+(expected ./src/validate_pii_redactor.py) — skipping
+```
+
+and carries on. It is deliberately not an error: the request is general even though the
+coverage is not. It is equally deliberately not *silent* — a skipped check that said nothing
+would look exactly like a passed one on a green build, so check the step log if you are
+relying on validation.
+
+**Where the report goes.** The validator writes `validation.json` into the output directory,
+so the record travels with the data it describes rather than in a separate artifact that can
+drift from it.
+
+Need a different check, or a report as its own declared output? Use
+[command mode](#two-modes-pick-one) — `validate` is the one-line shortcut for the common
+case, not a replacement for it.
 
 ## Transform flags
 
@@ -266,82 +311,23 @@ extras:
   nothing to install.
 - **`dpk_transform_chain`** — a chaining utility, not a data transform.
 
-## Inputs and outputs
+## Inputs, outputs, and bundled scripts
 
-### Inputs
+How to declare a target's `inputs:`/`outputs:`, which URI schemes stage where, how
+`output_path` must line up with an output's `uri`, and what the step ships in `src/` are all
+documented in `steps/dpk/skypilot/README.md` in the granite.build repository, alongside the
+step's other implementation detail.
 
-Declare each input on the **target** (a direct `uri:`, or a `binding:` to an upstream
-target's output). The step exports every declared input as an environment variable holding
-its staged local path:
+The short version for writing a build:
 
-```
-inputs.<name>  →  $GB_INPUT_<name>
-```
-
-In transform mode, `input: <name>` selects which one feeds the transform. In command mode,
-reference any of them directly from your `command`. Filesystem-backed schemes (`hf://`,
-`env://`, `file://`, `s3://`, `lh://`) are staged by the assetstore before `run`; an
-`hf://` input is downloaded during `setup` automatically.
-
-### Outputs
-
-Declare each output on the target, then make sure the bytes land at the path in its `uri`:
-
-- **Transform mode** — the step creates the directory, points the transform's
-  `output_folder` at it, and emits the artifact marker for you. `output_path` defaults to
-  `./output` in the step's working directory; set it explicitly when the output's `uri` names
-  a path, or when a **downstream target** reads the output — see
-  [When the default is not enough](#when-the-default-is-not-enough).
-- **Command mode** — your command writes wherever it likes and prints the marker itself:
-
-  ```
-  GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>
-  ```
-
-  `<output-id>` must match a declared `outputs.<id>`. Repeat the line to register several
-  artifacts under one output. For `mem://` outputs use `GB_ARTIFACT_PATH` →
-  `GB_ARTIFACT_STATE:<value>`.
-
-#### When the default is not enough
-
-`output_path: ""` (the default) writes to `./output` in the step's working directory, and the
-step absolutizes it before emitting the marker. That is right for two common cases:
-
-- a **terminal** output nothing downstream consumes;
-- an output an **assetstore pushes** (e.g. `s3://…`), where the local dir is only a staging
-  area.
-
-Set it explicitly in either of these cases:
-
-1. **The output's `uri` names a path.** The step cannot derive it — declared output URIs are
-   not in the runtime render context — so keeping `uri` and `output_path` in agreement is
-   the build author's job. A mismatch fails at run time, not at submit time.
-2. **A downstream target reads the output.** The working directory is the *per-run* workdir
-   (`${shared_workdir}/builds/<build_id>/runs/<targetrun_id>`), which is keyed **per target**
-   and removed when that target finishes. A consumer in another target would read a deleted
-   directory, so give the output an explicit shared path instead — see
-   [Choosing the output URI per endpoint](#choosing-the-output-uri-per-endpoint).
-
-> **Why is there no `input_path`?** Because inputs and outputs reach the step differently, and
-> this is the asymmetry the default only partly hides. An input is **staged before `run`** and
-> its resolved path is handed to the step as `$GB_INPUT_<name>`, so there is nothing to
-> specify. A declared **output does not exist yet** at render time: the runtime context is
-> `bindings` + `run_metadata` + `setup_config` only, and declared output URIs reach *static
-> validation* alone. Plumbing them into the runtime context would let the step derive
-> `output_path` and drop the field — a gbserver change, tracked separately.
-
-### Choosing the output URI per endpoint
-
-`validate`-style downstream targets read what an upstream target wrote, and the two may run
-on **different nodes**. What works depends on the endpoint:
-
-| Endpoint | Output URI | Why |
-|---|---|---|
-| `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` + an **explicit** matching `output_path` | `/shared` is the environment's `shared_workdir`, mounted on every node — cross-node safe. The `./output` default will not do here: it lives in the per-target workdir, which is deleted at target teardown. |
-| `skypilot/aws`, `skypilot/kubernetes` | `s3://bucket/…`, `output_path` may be **left default** | Each target gets its own instance with no shared filesystem. The S3 assetstore pushes the staged dir and the consumer pulls it, so a node-local `./output` is fine. |
-
-A node-local `env:///tmp/…` is **not** safe for a cross-target handoff: if the two targets
-land on different nodes the consumer reads an absent directory.
+* Every declared input is exported to the step as `$GB_INPUT_<name>`. In transform mode,
+  `input:` names which one feeds the transform.
+* In transform mode the step registers the output for you. In command mode your `command`
+  prints `GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>` itself.
+* If an output's `uri` names a path, set `output_path` to match it. On `skypilot/slurm` and
+  `skypilot/lsf` a path another target reads must be on the shared filesystem
+  (`env:///shared/…`); the `./output` default lives in the per-target workdir and is removed
+  when that target finishes.
 
 ## Working directory and paths
 
@@ -359,8 +345,8 @@ outside it.
 
 ## Example build.yaml
 
-Tokenize a HuggingFace dataset, then validate the result with the step's bundled script.
-Both targets use the same step — the first in transform mode, the second in command mode.
+Tokenize a HuggingFace dataset and validate the result — one target, because `validate: true`
+folds the check into the same step.
 
 ```yaml
 granite.build:
@@ -374,7 +360,7 @@ granite.build:
           uri: hf:///datasets/my-org/dpk-tokenization-sample
       outputs:
         tokens:
-          uri: "env:///shared/dpk/tokens"
+          uri: "env:///tokens"          # no path to match => default output_path
           type: dataset
       steps:
         - step_uri: space://steps/dpk
@@ -382,10 +368,9 @@ granite.build:
             poll_interval_seconds: 30
             dpk_config:
               transform: tokenization2arrow
-              dpk_version: "1.1.8"
               input: docs
               output: tokens
-              output_path: /shared/dpk/tokens      # matches the uri above
+              validate: true            # runs the bundled tokenization validator
               args:
                 tkn_tokenizer: hf-internal-testing/llama-tokenizer
                 tkn_doc_id_column: document_id
@@ -395,48 +380,23 @@ granite.build:
             compute_config:
               num_gpus_per_node: 0
               total_memory_per_node: "4Gi"
-
-    validate:
-      environment_uri: space://environments/skypilot/slurm
-      inputs:
-        tokens:
-          binding: tokenize.tokens                 # dispatched once tokens registers
-        docs:
-          uri: hf:///datasets/my-org/dpk-tokenization-sample
-      outputs:
-        report:
-          uri: "env:///tmp/dpk-validate-report"
-          type: fileset
-      steps:
-        - step_uri: space://steps/dpk
-          config:
-            poll_interval_seconds: 30
-            dpk_config:
-              packages: ["pyarrow"]                # no transform => only this installs
-              command: |
-                REPORT=/tmp/dpk-validate-report
-                mkdir -p "$REPORT"
-                python src/validate_tokens.py "$GB_INPUT_tokens" "$REPORT" \
-                  --input "$GB_INPUT_docs"
-                echo "GB_ARTIFACT_ID:report GB_ARTIFACT_PATH:$REPORT"
 ```
 
-Switching to a different transform touches only `dpk_config`. This one is a **single terminal
-target**, so `output_path` is left out and the step writes to `./output`:
+Switching transform touches only `dpk_config`. This one is also a single terminal target, so
+`output_path` is left out and the step writes to `./output`:
 
 ```yaml
       outputs:
         clean:
-          uri: "env:///tmp/dpk-clean"              # no path to match => default is fine
+          uri: "env:///tmp/dpk-clean"
           type: dataset
       steps:
         - step_uri: space://steps/dpk
           config:
             dpk_config:
-              transform: pii_redactor              # -> dpk_pii_redactor.runtime + [pii-redactor]
+              transform: pii_redactor   # -> dpk_pii_redactor.runtime + [pii-redactor]
               input: docs
               output: clean
-              # output_path omitted -> ./output, absolutized in the marker
               args:
                 # literal_eval'd by the transform, so a python list literal
                 pii_redactor_entities: "['PERSON','EMAIL_ADDRESS']"
@@ -444,39 +404,26 @@ target**, so `output_path` is left out and the step writes to `./output`:
                 pii_redactor_score_threshold: 0.6
 ```
 
-Contrast the `tokenize` target above, which **must** set `output_path`: its `tokens` output is
-read by the `validate` target, so it has to live on the shared filesystem rather than in the
-per-target workdir.
+### When a downstream target reads the output
 
-## Bundled scripts (`src/`)
+The examples above are terminal — nothing else consumes them — so the default `output_path`
+is fine. If another target binds this output, it must live on the shared filesystem, because
+the default lands in the per-target workdir that is removed when the target finishes:
 
-The step ships `src/` to `./src` on the node. Two of the three scripts are the step's own
-machinery — you do not invoke them, but they are where the step's shell actually lives:
-
-- `src/dpk_setup.sh` — the bare-node dependency install (`uv venv` + `uv pip install`),
-  invoked from the step's `setup` phase. Skipped entirely when `dpk_image` is set.
-- `src/dpk_run.sh` — the transform-mode invocation: creates and absolutizes the output
-  directory, builds DPK's `--data_local_config`, runs `python -m <module>`, and emits the
-  artifact marker. Not used in command mode, where your `command` runs instead.
-
-The step.yaml computes the *values* (module, requirements, flags) and passes them to these
-as arguments; the scripts do the shell. That keeps the shell in real files — checkable with
-`shellcheck` and testable directly — rather than embedded in YAML behind Jinja.
-
-The remaining script is a helper you *do* call, from a command-mode `command`:
-
-- [`src/validate_tokens.py`](src/validate_tokens.py) — validates `tokenization2arrow`
-  output. Checks that the Arrow token stream agrees with its `meta/*.docs` /
-  `meta/*.docs.ids` sidecars (a truncated or duplicated write is caught, where an
-  exists-and-non-empty check would pass), and with `--input <parquet_dir>` also checks
-  **completeness**: that every non-empty source Parquet actually produced output. Exits
-  non-zero with a per-file report, failing the build.
-
-  ```
-  python src/validate_tokens.py <tokenize_output_dir> <report_dir> [--input <source_parquet_dir>]
-  ```
-
-  It is read-only — it never deletes or rewrites anything.
+```yaml
+      outputs:
+        tokens:
+          uri: "env:///shared/dpk/tokens"
+          type: dataset
+      steps:
+        - step_uri: space://steps/dpk
+          config:
+            dpk_config:
+              transform: tokenization2arrow
+              input: docs
+              output: tokens
+              output_path: /shared/dpk/tokens    # must match the uri above
+```
 
 ## Notes and limitations
 
@@ -491,6 +438,6 @@ The remaining script is a helper you *do* call, from a command-mode `command`:
   image and set `dpk_image`.
 - **Container images need Pyxis on SLURM/LSF.** Leave `dpk_image` empty on clusters without the
   Pyxis SPANK plugin — including the local Docker SLURM cluster used for testing.
-- **`output_path` is unchecked.** See the note under [Outputs](#outputs).
+- **`output_path` is unchecked.** Nothing validates that it agrees with the output's declared `uri`; a mismatch fails at run time, not at submit time.
 - **Flag names are transform-specific.** The step derives the module and the dependencies,
   but not `args` keys — see [Transform flags](#transform-flags).

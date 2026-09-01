@@ -92,7 +92,7 @@ removes.
 ### A note on `src/` and `__pycache__`
 
 `src/` holds python as well as shell. `make test` imports
-`src/validate_tokens.py`, which leaves a `src/__pycache__/` behind, and both `space` and
+`src/validate_tokenization2arrow.py`, which leaves a `src/__pycache__/` behind, and both `space` and
 `publish-step` copy `src/` verbatim — so the Makefile drops that cache first, keeping the
 tree shipped to a cluster to just the source. (It would never be *committed*:
 `__pycache__/` is in the repo-root `.gitignore`, which also covers the published copy.)
@@ -131,7 +131,7 @@ run everywhere. They are Mode-1 only (not copied by `publish-step`), the same pl
   `UV_CACHE_DIR` is exported before `uv venv` and anchors at `$GB_SHARED_WORKDIR` when
   present, that the install keeps its cache, that a `[extra]` specifier arrives as one
   argument, and that zero requirements still yields a venv.
-- `test_dpk_validate_tokens.py` — unit tests for the bundled `src/validate_tokens.py`,
+- `test_dpk_validate_tokenization2arrow.py` — unit tests for the bundled `src/validate_tokenization2arrow.py`,
   covering both of its axes: consistency (the Arrow token stream vs its `meta/` sidecars)
   and completeness (`--input`: every non-empty source Parquet produced output). Each
   corruption case asserts a *failure*, since a validator that only ever passes is worthless.
@@ -158,6 +158,137 @@ backend is reachable:
 > Container images require the Pyxis SPANK plugin on SLURM/LSF, which the local Docker
 > SLURM cluster does not have — so the slurm fixtures leave `dpk_image` empty and run on the
 > bare node.
+
+## Inputs, outputs, and bundled scripts
+
+Moved here from USAGE.md: a build author needs the short rules (which USAGE.md keeps), but
+the full mechanics below — which URI schemes stage where, why `output_path` cannot be
+derived, and what the bundled scripts do — are implementation detail.
+
+### Inputs and outputs
+
+#### Inputs
+
+Declare each input on the **target** (a direct `uri:`, or a `binding:` to an upstream
+target's output). The step exports every declared input as an environment variable holding
+its staged local path:
+
+```
+inputs.<name>  →  $GB_INPUT_<name>
+```
+
+In transform mode, `input: <name>` selects which one feeds the transform. In command mode,
+reference any of them directly from your `command`. Filesystem-backed schemes (`hf://`,
+`env://`, `file://`, `s3://`, `lh://`) are staged by the assetstore before `run`; an
+`hf://` input is downloaded during `setup` automatically.
+
+#### Outputs
+
+Declare each output on the target, then make sure the bytes land at the path in its `uri`:
+
+- **Transform mode** — the step creates the directory, points the transform's
+  `output_folder` at it, and emits the artifact marker for you. `output_path` defaults to
+  `./output` in the step's working directory; set it explicitly when the output's `uri` names
+  a path, or when a **downstream target** reads the output — see
+  [When the default is not enough](#when-the-default-is-not-enough).
+- **Command mode** — your command writes wherever it likes and prints the marker itself:
+
+  ```
+  GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>
+  ```
+
+  `<output-id>` must match a declared `outputs.<id>`. Repeat the line to register several
+  artifacts under one output. For `mem://` outputs use `GB_ARTIFACT_PATH` →
+  `GB_ARTIFACT_STATE:<value>`.
+
+##### When the default is not enough
+
+`output_path: ""` (the default) writes to `./output` in the step's working directory, and the
+step absolutizes it before emitting the marker. That is right for two common cases:
+
+- a **terminal** output nothing downstream consumes;
+- an output an **assetstore pushes** (e.g. `s3://…`), where the local dir is only a staging
+  area.
+
+Set it explicitly in either of these cases:
+
+1. **The output's `uri` names a path.** The step cannot derive it — declared output URIs are
+   not in the runtime render context — so keeping `uri` and `output_path` in agreement is
+   the build author's job. A mismatch fails at run time, not at submit time.
+2. **A downstream target reads the output.** The working directory is the *per-run* workdir
+   (`${shared_workdir}/builds/<build_id>/runs/<targetrun_id>`), which is keyed **per target**
+   and removed when that target finishes. A consumer in another target would read a deleted
+   directory, so give the output an explicit shared path instead — see
+   [Choosing the output URI per endpoint](#choosing-the-output-uri-per-endpoint).
+
+> **Why is there no `input_path`?** Because inputs and outputs reach the step differently, and
+> this is the asymmetry the default only partly hides. An input is **staged before `run`** and
+> its resolved path is handed to the step as `$GB_INPUT_<name>`, so there is nothing to
+> specify. A declared **output does not exist yet** at render time: the runtime context is
+> `bindings` + `run_metadata` + `setup_config` only, and declared output URIs reach *static
+> validation* alone. Plumbing them into the runtime context would let the step derive
+> `output_path` and drop the field — a gbserver change, tracked separately.
+
+#### Choosing the output URI per endpoint
+
+`validate`-style downstream targets read what an upstream target wrote, and the two may run
+on **different nodes**. What works depends on the endpoint:
+
+| Endpoint | Output URI | Why |
+|---|---|---|
+| `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` + an **explicit** matching `output_path` | `/shared` is the environment's `shared_workdir`, mounted on every node — cross-node safe. The `./output` default will not do here: it lives in the per-target workdir, which is deleted at target teardown. |
+| `skypilot/aws`, `skypilot/kubernetes` | `s3://bucket/…`, `output_path` may be **left default** | Each target gets its own instance with no shared filesystem. The S3 assetstore pushes the staged dir and the consumer pulls it, so a node-local `./output` is fine. |
+
+A node-local `env:///tmp/…` is **not** safe for a cross-target handoff: if the two targets
+land on different nodes the consumer reads an absent directory.
+
+### Bundled scripts (`src/`)
+
+The step ships `src/` to `./src` on the node. Two of the three scripts are the step's own
+machinery — you do not invoke them, but they are where the step's shell actually lives:
+
+- `src/dpk_setup.sh` — the bare-node dependency install (`uv venv` + `uv pip install`),
+  invoked from the step's `setup` phase. Skipped entirely when `dpk_image` is set.
+- `src/dpk_run.sh` — the transform-mode invocation: creates and absolutizes the output
+  directory, builds DPK's `--data_local_config`, runs `python -m <module>`, and emits the
+  artifact marker. Not used in command mode, where your `command` runs instead.
+
+The step.yaml computes the *values* (module, requirements, flags) and passes them to these
+as arguments; the scripts do the shell. That keeps the shell in real files — checkable with
+`shellcheck` and testable directly — rather than embedded in YAML behind Jinja.
+
+The remaining script is a helper you *do* call, from a command-mode `command`:
+
+- [`src/validate_tokenization2arrow.py`](src/validate_tokenization2arrow.py) — validates `tokenization2arrow`
+  output. Checks that the Arrow token stream agrees with its `meta/*.docs` /
+  `meta/*.docs.ids` sidecars (a truncated or duplicated write is caught, where an
+  exists-and-non-empty check would pass), and with `--input <parquet_dir>` also checks
+  **completeness**: that every non-empty source Parquet actually produced output. Exits
+  non-zero with a per-file report, failing the build.
+
+  ```
+  python src/validate_tokenization2arrow.py <tokenize_output_dir> <report_dir> [--input <source_parquet_dir>]
+  ```
+
+  It is read-only — it never deletes or rewrites anything.
+#### Adding a validator for another transform
+
+`validate: true` resolves the validator by **rule**: `src/validate_<transform>.py`, the same
+derive-don't-tabulate shape as the module and pip-extra derivations. So adding coverage for a
+second transform is:
+
+1. Write `src/validate_<transform>.py` taking `<output_dir> <report_dir> [--input <src_dir>]`
+   and exiting non-zero on a problem (mirror `validate_tokenization2arrow.py`).
+2. Add `test_dpk_validate_<transform>.py` beside it. Make each corruption case assert a
+   *failure* — a validator that only ever passes is worthless.
+
+No change to `step-template.yaml`, `dpk_run.sh`, or this README's tables: builds that already
+say `validate: true` for that transform start validating on the next publish. Until such a
+file exists, `validate: true` for that transform is a loud no-op (see USAGE.md).
+
+Keep the report interface identical — `<report_dir>` receives `validation.json` — because
+`dpk_run.sh` passes the output dir for both arguments so the record ships inside the
+registered artifact.
 
 ## Known gaps
 

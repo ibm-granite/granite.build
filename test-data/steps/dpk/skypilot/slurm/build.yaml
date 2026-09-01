@@ -1,27 +1,42 @@
 granite.build:
   name: skypilot-slurm-dpk-tokenize
-  # DPK tokenize -> validate on the local Docker SLURM cluster (via SkyPilot),
-  # exercising BOTH of the dpk step's modes with one step definition:
+  # DPK tokenize WITH VALIDATION, on the local Docker SLURM cluster (via SkyPilot).
   #
-  #   tokenize  transform mode — `transform: tokenization2arrow` is the only DPK
-  #                              detail given; the step derives the python module
-  #                              (dpk_tokenization2arrow.runtime) and the pip extra
-  #                              (data-prep-toolkit-transforms[tokenization2arrow]).
-  #   validate  command mode   — runs the step's own bundled src/validate_tokens.py.
-  #                              Not a DPK transform, so it takes the verbatim
-  #                              `command` escape hatch.
+  # ONE target, because `validate: true` folds the check into the transform's own
+  # step. Before that flag existed this fixture was two targets — tokenize, then a
+  # command-mode `validate` target that bound tokenize's output, re-declared the
+  # source input, and ran the bundled validator through ~5 lines of shell. That is
+  # the boilerplate the flag replaces, and diffing this file against its own git
+  # history is the clearest statement of what the feature buys.
   #
-  # CROSS-NODE HANDOFF (why the output URI is /shared and not /tmp):
-  #   The two targets are separate workloads and may be scheduled on different
-  #   SLURM compute nodes (c1..c4). env:// moves no bytes — EnvURI.pull() is a
-  #   no-op — and the consumer's `{{ bindings.tokens.binding.path }}` resolves to
-  #   the declared URI's path, so the bytes only survive the hop if `tokenize`
-  #   physically writes them onto a filesystem `validate` can read. On this
-  #   cluster /tmp is per-node but /shared (the slurm environment's
-  #   shared_workdir) is mounted on every node. `output_path` therefore points at
-  #   /shared and must match the `uri` below.
+  # WHAT REACHING SUCCESS PROVES:
+  #   1. `transform: tokenization2arrow` derives the module
+  #      (dpk_tokenization2arrow.runtime) and the pip extra
+  #      ([tokenization2arrow]) — the build names one DPK detail.
+  #   2. `validate: true` finds src/validate_tokenization2arrow.py by the
+  #      validate_<transform>.py rule and runs it on the node, AFTER the transform
+  #      and BEFORE the artifact marker. A validation failure fails this target and
+  #      registers nothing, so SUCCESS means the transform ran AND its output is
+  #      self-consistent AND complete (every non-empty source parquet produced
+  #      output).
+  #   3. validation.json lands inside the registered output directory, so the
+  #      record ships with the data it describes.
   #
-  # Input is an hf:// dataset binding: the SkyPilot launcher injects
+  # COVERAGE MOVED, NOT DELETED — read this before "simplifying" further. The
+  # two-target form this replaced was the only CLUSTER-level coverage of:
+  #   * the cross-node env:///shared handoff — two targets on possibly different
+  #     compute nodes, where env:// moves no bytes (EnvURI.pull() is a no-op), so
+  #     the bytes survive only if the producer writes them somewhere the consumer
+  #     can read; on this cluster /tmp is per-node but /shared is mounted on all of
+  #     them; and
+  #   * command mode running a bundled script on real infra.
+  # Both remain covered by unit tests (test_dpk_step_render.py renders command mode;
+  # test_dpk_run_sh.py executes the validator hook and the marker contract), but no
+  # cluster test exercises them end to end any more. If a handoff regression is ever
+  # suspected, restore the two-target form from this file's history rather than
+  # debugging blind.
+  #
+  # Input is an hf:// dataset: the SkyPilot launcher injects
   # `hf download <repo> --local-dir <path>` into the step's setup, and the step
   # exports the staged path as $GB_INPUT_docs. The dataset is public, so no
   # HF_TOKEN is needed here or in CI.
@@ -39,11 +54,10 @@ granite.build:
           uri: hf:///datasets/shalisha-witherspoon/dpk-tokenization-sample
       outputs:
         tokens:
-          # On the shared FS so `validate` can read it from any node. The
-          # short_hash keys the path per run so concurrent runs don't collide;
-          # it is rendered from THIS target's run metadata and the step writes to
-          # the identical rendered path via output_path below.
-          uri: "env:///shared/dpk-tokenize/{{ run_metadata.targetsteprun_id | short_hash }}"
+          # Terminal output: nothing downstream reads it now that validation runs
+          # in-target, so the step's default output_path (./output, in the
+          # per-target workdir) is appropriate and this uri names no path to match.
+          uri: "env:///tokens"
           type: dataset
       steps:
         - step_uri: space://steps/dpk
@@ -56,8 +70,10 @@ granite.build:
               dpk_version: "1.1.8"
               input: docs
               output: tokens
-              # Must equal the `tokens` uri path above (same Jinja expression).
-              output_path: "/shared/dpk-tokenize/{{ run_metadata.targetsteprun_id | short_hash }}"
+              # The point of this fixture. One line replaces a whole second target;
+              # the step runs src/validate_tokenization2arrow.py before registering
+              # the output.
+              validate: true
               args:
                 # Full flag names as DPK spells them — tokenization's prefix is
                 # `tkn_`, which is NOT derivable from the module name, so the step
@@ -73,44 +89,4 @@ granite.build:
               # clouds (they don't reliably track memory as a consumable), so this
               # is advisory here and will not leave the job PENDING even though the
               # local cluster's nodes advertise RealMemory=1024.
-              total_memory_per_node: 4Gi
-
-    validate:
-      environment_uri: space://environments/skypilot/slurm
-      inputs:
-        tokens:
-          # Binds tokenize.tokens, so this target is dispatched only once that
-          # artifact registers. binding.path resolves to the declared /shared
-          # path, readable on whichever node this lands on.
-          binding: tokenize.tokens
-        docs:
-          # The source parquet again, so the validator's --input pass can confirm
-          # every non-empty source file actually produced output — a check the
-          # consistency pass cannot make, since it only sees the output side.
-          uri: hf:///datasets/shalisha-witherspoon/dpk-tokenization-sample
-      outputs:
-        report:
-          # Terminal: nothing downstream consumes it, so a node-local /tmp path is
-          # fine (unlike the tokens handoff above).
-          uri: "env:///tmp/dpk-validate-report"
-          type: fileset
-      steps:
-        - step_uri: space://steps/dpk
-          config:
-            poll_interval_seconds: 5
-            dpk_config:
-              # No `transform` => command mode. Only pyarrow is installed; the
-              # validator needs nothing else.
-              packages: ["pyarrow"]
-              # src/ is file-mounted to ./src by the step, and run starts in the
-              # same working directory, so a relative path resolves. In command
-              # mode the command emits its own artifact marker.
-              command: |
-                REPORT=/tmp/dpk-validate-report
-                rm -rf "$REPORT"; mkdir -p "$REPORT"
-                python src/validate_tokens.py "$GB_INPUT_tokens" "$REPORT" \
-                  --input "$GB_INPUT_docs"
-                echo "GB_ARTIFACT_ID:report GB_ARTIFACT_PATH:$REPORT"
-            compute_config:
-              num_gpus_per_node: 0
               total_memory_per_node: 4Gi

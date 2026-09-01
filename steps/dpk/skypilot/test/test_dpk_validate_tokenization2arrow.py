@@ -16,7 +16,7 @@
 
 """Unit tests for the `dpk` step's bundled output validator.
 
-The validator (``steps/dpk/skypilot/src/validate_tokens.py``) is shipped to a
+The validator (``steps/dpk/skypilot/src/validate_tokenization2arrow.py``) is shipped to a
 SkyPilot worker via the step's ``file_mounts: {src: src}`` and is not part of the
 gbserver package, so it is loaded here by path via importlib.
 
@@ -49,12 +49,12 @@ pa = pytest.importorskip(
 )
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
-_SCRIPT_PATH = _STEP_DIR / "src" / "validate_tokens.py"
+_SCRIPT_PATH = _STEP_DIR / "src" / "validate_tokenization2arrow.py"
 
 
 def _load_validator():
     """Import the standalone validator script by path."""
-    spec = importlib.util.spec_from_file_location("validate_tokens", _SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location("validate_tokenization2arrow", _SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -164,7 +164,7 @@ class TestValidatorAcceptsGoodOutput:
 
     def test_main_exits_zero_and_writes_report(self, good_tree, tmp_path, capsys):
         report_dir = tmp_path / "report"
-        rc = validator.main(["validate_tokens.py", str(good_tree), str(report_dir)])
+        rc = validator.main(["validate_tokenization2arrow.py", str(good_tree), str(report_dir)])
         assert rc == 0
         assert "VALIDATION PASSED" in capsys.readouterr().out
 
@@ -294,7 +294,7 @@ class TestValidatorRejectsCorruptOutput:
             (good_tree / "lang=en/pq01.arrow").write_text("garbage")
 
         rc = validator.main(
-            ["validate_tokens.py", str(good_tree), str(tmp_path / "rpt")]
+            ["validate_tokenization2arrow.py", str(good_tree), str(tmp_path / "rpt")]
         )
         assert rc == 1
 
@@ -302,7 +302,7 @@ class TestValidatorRejectsCorruptOutput:
 class TestValidatorCli:
     def test_missing_input_dir_exits_one(self, tmp_path):
         rc = validator.main(
-            ["validate_tokens.py", str(tmp_path / "nope"), str(tmp_path / "rpt")]
+            ["validate_tokenization2arrow.py", str(tmp_path / "nope"), str(tmp_path / "rpt")]
         )
         assert rc == 1
 
@@ -314,7 +314,7 @@ class TestValidatorCli:
         this replaced.
         """
         with pytest.raises(SystemExit) as excinfo:
-            validator.main(["validate_tokens.py"])
+            validator.main(["validate_tokenization2arrow.py"])
         assert excinfo.value.code == 2
 
 
@@ -426,7 +426,7 @@ class TestCompletenessCli:
     def test_input_flag_is_optional(self, good_tree, tmp_path, capsys):
         """Omitting --input keeps the original behaviour (backward compatible)."""
         rc = validator.main(
-            ["validate_tokens.py", str(good_tree), str(tmp_path / "rpt")]
+            ["validate_tokenization2arrow.py", str(good_tree), str(tmp_path / "rpt")]
         )
         assert rc == 0
         out = capsys.readouterr().out
@@ -439,7 +439,7 @@ class TestCompletenessCli:
         report_dir = tmp_path / "rpt"
         rc = validator.main(
             [
-                "validate_tokens.py",
+                "validate_tokenization2arrow.py",
                 str(good_tree),
                 str(report_dir),
                 "--input",
@@ -454,7 +454,7 @@ class TestCompletenessCli:
     def test_missing_input_dir_exits_one(self, good_tree, tmp_path):
         rc = validator.main(
             [
-                "validate_tokens.py",
+                "validate_tokenization2arrow.py",
                 str(good_tree),
                 str(tmp_path / "rpt"),
                 "--input",
@@ -470,7 +470,7 @@ class TestCompletenessCli:
         (good_tree / "metadata.json").write_text(json.dumps(meta))
         rc = validator.main(
             [
-                "validate_tokens.py",
+                "validate_tokenization2arrow.py",
                 str(good_tree),
                 str(tmp_path / "rpt"),
                 "--input",

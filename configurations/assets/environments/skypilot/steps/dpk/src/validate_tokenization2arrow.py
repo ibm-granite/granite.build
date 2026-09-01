@@ -53,7 +53,7 @@ Writes a JSON summary to ``<report_dir>/validation.json`` and exits non-zero if
 any check failed, which fails the build target.
 
 Usage:
-    python validate_tokens.py <tokenize_output_dir> <report_dir>
+    python validate_tokenization2arrow.py <tokenize_output_dir> <report_dir>
                               [--input <source_parquet_dir>]
 """
 
@@ -316,7 +316,7 @@ def validate(src: pathlib.Path) -> tuple[dict, list[str]]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        prog=pathlib.Path(argv[0]).name if argv else "validate_tokens.py",
+        prog=pathlib.Path(argv[0]).name if argv else "validate_tokenization2arrow.py",
         description="Validate DPK tokenization2arrow output (read-only).",
     )
     parser.add_argument("output_dir", help="the transform's output directory")

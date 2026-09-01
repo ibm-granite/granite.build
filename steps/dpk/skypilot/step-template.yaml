@@ -60,9 +60,24 @@ config:
     # an explicit shared path (see USAGE.md, "Choosing the output URI").
     output_path: ""
 
+    # Check the transform's output before registering it, when a validator for
+    # this transform is bundled. The step looks for src/validate_<transform>.py —
+    # a RULE, like the module and pip-extra derivations, so adding a validator for
+    # another transform is dropping in a file and needs no change here.
+    #
+    # Only `tokenization2arrow` ships one today. For any other transform this is a
+    # NO-OP: the step says so on stdout and carries on, rather than failing (the
+    # request is general; the coverage is not) and rather than skipping silently
+    # (which would read as "validation passed" on a green build).
+    #
+    # A failing validator fails the target and the output is never registered. The
+    # validator writes validation.json into the output directory, so the record
+    # travels with the data it describes.
+    validate: false
+
     # ---- escape hatch: run an arbitrary command instead of a transform --------
     # A verbatim bash command, for work that is not a DPK transform — e.g. the
-    # bundled src/validate_tokens.py. Injected as-is (like the byoc step's
+    # bundled src/validate_tokenization2arrow.py. Injected as-is (like the byoc step's
     # `command`), with $GB_INPUT_<name> exported for every declared input.
     # Mutually exclusive with `transform`.
     command: ""
@@ -123,7 +138,7 @@ environment_configs:
           # Cloud-agnostic: the build supplies cpus/memory/accelerators via
           # config.launcher_config.resources.
           resources: {}
-          # Bundled helpers (validate_tokens.py) land at ./src, relative to the
+          # Bundled helpers (validate_tokenization2arrow.py) land at ./src, relative to the
           # step's working directory — the same directory setup and run start in.
           # A relative file_mounts source resolves against the step's own asset
           # dir, which is the supported mechanism (the builtin `command` step has
@@ -198,6 +213,9 @@ environment_configs:
               --input-path "$GB_INPUT_{{ config.dpk_config.input }}" \
               --output-path '{{ config.dpk_config.output_path if config.dpk_config.output_path else "./output" }}' \
               --artifact-id '{{ config.dpk_config.output }}' \
+              {%- if config.dpk_config.validate %}
+              --validate '{{ config.dpk_config.transform }}' \
+              {%- endif %}
               --{% for k, v in config.dpk_config.args.items() %}{% if v is sameas true %} --{{ k }}{% elif v is not none and v is not sameas false %} --{{ k }} '{{ v | string | replace("'", "'\"'\"'") }}'{% endif %}{% endfor %}
             {%- else %}
             # Raw command mode: injected verbatim, like the byoc step. The command
