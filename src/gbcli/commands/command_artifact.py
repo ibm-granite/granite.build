@@ -1018,6 +1018,9 @@ def register(
     uri_env = None
     if uri:
         # The URI already determines the store, so an explicit --store conflicts.
+        # COMMANDLINE is the only non-default source today because --store has no
+        # envvar or default-map entry; if one is ever added, use `!= DEFAULT` here
+        # so an env-set --store is also caught rather than silently overwritten.
         if ctx.get_parameter_source("store") == ParameterSource.COMMANDLINE:
             click.echo(
                 "❌ Error: --store cannot be combined with --uri; the store is inferred from the URI scheme (lh:// or hf://).",
@@ -1242,6 +1245,10 @@ def register(
     elif type == "dataset":
         # HF datasets: version is Lakehouse-only; revision/label are kept.
         version = None
+
+    # HF buckets need no normalization arm: --table/--namespace/--version/--dataset
+    # are already rejected for the HF store by the guard above, and a bucket URI
+    # decodes revision to "" → None, so nothing is left to null out here.
 
     if table:
         table_valid, table_invalid_chars = is_valid_name(table, "table_name")

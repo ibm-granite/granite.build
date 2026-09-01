@@ -31,6 +31,7 @@ import pytest
 from click.testing import CliRunner
 
 from gbcli.commands.command_artifact import cli
+from gbcli.utils.utils import DecodedURIResponse
 
 # These tests exercise a @reject_standalone command; patch is_standalone -> False.
 
@@ -444,3 +445,94 @@ def test_hf_uri_rejects_lakehouse_table_flag(register_env):
     assert result.exit_code != 0
     assert "Lakehouse-only" in result.output
     register_env.assert_not_called()
+
+
+# --- Lakehouse (lh://) regression coverage -------------------------------------
+#
+# This PR restructured the lh:// decode branch (moved it under the new `else`,
+# wrapped the type-handling block in `if store == "lh":`, and changed the model
+# label check from `if label == ""` to `if not label`). The HF path above is
+# well covered, but nothing exercises lh:// at the command level, so these two
+# tests pin that the decoded fields still reach `register_artifact` unchanged.
+# `decode_uri` and `compare_env_uri` are patched so the flow stays hermetic:
+# compare_env_uri returns matching environments so the mismatch branch is skipped.
+
+
+def test_lh_uri_model_decodes_through_to_register(register_env):
+    """`--uri lh://...` for a model forwards the decoded type/namespace/table/label/revision."""
+    decoded = DecodedURIResponse(
+        uri="lh://prod/ns/model_shared/my-model/v3",
+        namespace="ns",
+        table_name="model_shared",
+        type="model",
+        model_label="my-model",
+        model_revision="v3",
+    )
+    with (
+        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
+        patch(
+            "gbcli.commands.command_artifact.compare_env_uri",
+            return_value=("prod", "prod"),
+        ),
+    ):
+        result = _invoke(
+            [
+                "--uri",
+                "lh://prod/ns/model_shared/my-model/v3",
+                "--artifact-name",
+                "my-model",
+                "--certify-no-restrictions",
+            ]
+        )
+    assert result.exit_code == 0, result.output
+    kwargs = register_env.call_args.kwargs
+    assert kwargs["store"] == "lh"
+    assert kwargs["type"] == "model"
+    assert kwargs["namespace"] == "ns"
+    assert kwargs["table"] == "model_shared"
+    assert kwargs["label"] == "my-model"
+    assert kwargs["revision"] == "v3"
+    # No interactive prompt should have been shown: every field came from the URI.
+    assert "Model label" not in result.output
+    assert "Revision" not in result.output
+    assert "Model table" not in result.output
+
+
+def test_lh_uri_dataset_decodes_through_to_register(register_env):
+    """`--uri lh://...` for a dataset forwards the decoded dataset/table and nulls model fields."""
+    decoded = DecodedURIResponse(
+        uri="lh://prod/ns/tbl/my-dataset",
+        namespace="ns",
+        table_name="tbl",
+        type="dataset",
+        dataset_name="my-dataset",
+    )
+    with (
+        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
+        patch(
+            "gbcli.commands.command_artifact.compare_env_uri",
+            return_value=("prod", "prod"),
+        ),
+    ):
+        result = _invoke(
+            [
+                "--uri",
+                "lh://prod/ns/tbl/my-dataset",
+                "--artifact-name",
+                "my-dataset",
+                "--certify-no-restrictions",
+            ]
+        )
+    assert result.exit_code == 0, result.output
+    kwargs = register_env.call_args.kwargs
+    assert kwargs["store"] == "lh"
+    assert kwargs["type"] == "dataset"
+    assert kwargs["namespace"] == "ns"
+    assert kwargs["table"] == "tbl"
+    assert kwargs["dataset_name"] == "my-dataset"
+    # The dataset block nulls revision/label/version for the Lakehouse store.
+    assert kwargs["revision"] is None
+    assert kwargs["label"] is None
+    assert kwargs["version"] is None
+    assert "Dataset name" not in result.output
+    assert "Table" not in result.output
