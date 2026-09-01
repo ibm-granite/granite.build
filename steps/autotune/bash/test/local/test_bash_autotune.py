@@ -43,9 +43,11 @@ Requires the fm-tune copy vendored at ``autotunex/src/fm-tune``; auto-skips when
 it is absent or when not in the extended suite.
 """
 
+import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 from libgbtest.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,
@@ -66,12 +68,45 @@ class TestBashAutotune(AbstractYamlBuildRunnerTest):
     """autotune trains once and registers its output via the artifact marker."""
 
     def _get_yaml_spec_dir(self) -> Path:
-        # Fixtures (build.yaml/buildtest.yaml) live in the test-data/ dir that
-        # mirrors this file, resolved by the repo's test/ <-> test-data/ helper --
-        # which keys off the first `test/` segment, so it works from both homes of
-        # this test (see steps/README.md, "Two test modes"):
-        #   Mode 1 (authoring)  steps/autotune/bash/test/local/
-        #       -> steps/autotune/bash/test-data/local/   (co-located)
-        #   Mode 2 (published)  test/steps/autotune/bash/local/
-        #       -> test-data/steps/autotune/bash/local/   (parallel top-level tree)
-        return get_test_data_dir_for(__file__)
+        """Render the committed fixture into a temp spec dir with absolute paths.
+
+        The harness reads build.yaml/buildtest.yaml verbatim and has no parameter
+        substitution of its own -- but the spec dir is whatever this method returns,
+        so the two absolute paths a static fixture cannot express are filled in here:
+
+          * ``@FM_TUNE_ROOT@`` -- the vendored fm-tune checkout. The step runs with
+            its CWD in the build workdir, so a relative path would not resolve.
+          * ``@DATASET_DIR@`` -- the fixture's dataset. gbserver resolves a relative
+            ``file:`` URI against its OWN CWD, not this directory.
+
+        Both are derived from this file's location, and ``parents[5]`` is the repo
+        root in *either* test mode, so the same fixture works from both homes (see
+        steps/README.md, "Two test modes"):
+          Mode 1 (authoring)  steps/autotune/bash/test/local/
+              -> steps/autotune/bash/test-data/local/   (co-located)
+          Mode 2 (published)  test/steps/autotune/bash/local/
+              -> test-data/steps/autotune/bash/local/   (parallel top-level tree)
+
+        ``space_uri`` is resolved against the REAL fixture dir before being written
+        out absolute, so publish-step's Mode-2 rewrite of that field still governs
+        which Space is used.
+        """
+        fixture = get_test_data_dir_for(__file__)
+        spec = Path(tempfile.mkdtemp(prefix="autotune-buildtest-"))
+
+        build = (fixture / "build.yaml").read_text()
+        build = build.replace("@FM_TUNE_ROOT@", str(FM_TUNE_ROOT))
+        build = build.replace("@DATASET_DIR@", str(fixture / "dataset"))
+        assert "@" not in build.split("granite.build:", 1)[1], "unsubstituted token"
+        (spec / "build.yaml").write_text(build)
+
+        bt = yaml.safe_load((fixture / "buildtest.yaml").read_text())
+        raw = str(bt.get("space_uri", "../../space")).removeprefix("file://")
+        if not Path(raw).is_absolute():
+            raw = str((fixture / raw).resolve())
+        bt["space_uri"] = f"file://{raw}"
+        (spec / "buildtest.yaml").write_text(yaml.safe_dump(bt, sort_keys=False))
+
+        # Deliberately not cleaned up: on failure the rendered build.yaml is the
+        # first thing you want to read, and it is a couple of KB under $TMPDIR.
+        return spec

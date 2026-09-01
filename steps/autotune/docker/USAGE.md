@@ -24,3 +24,23 @@ tune must therefore stay out of `launcher.config.env`.
 
 Materialization of `config.autotune-config` is identical to the bash copy
 (handled inside `command.sh`).
+
+## Required tuning-config keys
+
+fm-tune reads several keys with **no default** and raises deep inside itself when
+they are absent — build validation passes, so there is no early warning. Verified by
+the bash build test:
+
+| Key | Section | Omitting it gives |
+|---|---|---|
+| `num_gpus_per_trial` | `training_config` | `TypeError: '>' not supported between 'NoneType' and 'int'` (`optimizer.py:298`) |
+| `max_concurrent_trials` | `tune_config` | `TypeError: unsupported operand type(s) for *: 'int' and 'NoneType'` (`optimizer.py:477`) |
+
+Prefer a full AutoTuneX-generated config over a hand-minimized one;
+`samples/autotune/build.bash.test.yaml` shows the complete shape.
+
+Also declare `type: model` on the build's `outputs.custom`. `step.yaml` declaring
+`type: model` is not enough — `BuildTargetOutputConfig.type` defaults to `UNDEFINED`
+when the build.yaml omits it, so the tuned model registers untyped and a downstream
+step binding it as a `model` input fails validation while the build still reports
+SUCCESS.

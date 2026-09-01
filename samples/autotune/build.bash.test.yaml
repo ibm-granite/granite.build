@@ -20,6 +20,10 @@ granite.build:
         custom:
           # ABSOLUTE on purpose: gbserver resolves a relative file: URI against its
           # own CWD, not the build dir.
+          # Without an explicit type the registered artifact is UNDEFINED
+          # (BuildTargetOutputConfig.type), which breaks a downstream step
+          # binding this as a `model` input.
+          type: model
           uri: "file:<YOUR_OUTPUT_DIR>/autotune_{{ run_metadata.build_id }}/"
       steps:
         - step_uri: space://steps/autotune

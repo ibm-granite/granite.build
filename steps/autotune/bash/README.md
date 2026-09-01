@@ -49,7 +49,8 @@ before more bash/docker steps arrive.
 make space            # render a local Space into space/ (offline)
 make publish-step     # promote into configurations/assets/...
 make check-published  # verify the committed release matches this source
-make test             # heavyweight: builds a venv, pip-installs torch+ray (extended suite)
+make test             # end-to-end: builds a venv, installs torch+ray, one LoRA pass
+                      # (~2.5 min once the venv is warm; extended suite only)
 ```
 
 Fast feedback lives in the repo's unit suite, which asserts this step's structure
