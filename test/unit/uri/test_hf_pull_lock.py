@@ -223,15 +223,15 @@ def test_repo_pull_clears_scratch_when_force_retry_still_fails(tmp_path):
     assert seen.get("scratch_exists") is False, "scratch dir not cleared"
 
 
-def test_repo_pull_skips_scratch_clear_when_lock_not_held(tmp_path, monkeypatch):
-    """Under the unlocked fall-through, the destructive scratch rm -rf is skipped.
+def test_repo_pull_does_not_self_heal_when_lock_not_held(tmp_path, monkeypatch):
+    """Under the unlocked fall-through, no self-heal runs -- the error propagates.
 
-    When a peer holds the lock past the timeout, pull() proceeds unlocked -- so
-    another puller may be writing into the shared scratch dir concurrently.
-    Clearing it (``rm -rf``) then could pull the download dir out from under that
-    live writer and re-induce the very #320 corruption this fixes. The per-file
-    ``force_download`` retry still runs, but on a second recoverable failure the
-    error propagates instead of an unlocked scratch clear.
+    When a peer holds the lock past the timeout, pull() proceeds unlocked, so a
+    peer may be writing the shared tree concurrently. The self-heal
+    (``force_download`` re-download + scratch ``rm -rf``) mutates that tree and
+    could pull files out from under a live writer, re-inducing #320. So on a
+    recoverable error the unlocked path propagates immediately: no
+    ``force_download`` retry and no scratch clear.
     """
     dest = tmp_path / "org" / "repo" / "h"
     _hfpull_lock_path(dest).mkdir(parents=True)  # a peer holds the lock
@@ -243,19 +243,15 @@ def test_repo_pull_skips_scratch_clear_when_lock_not_held(tmp_path, monkeypatch)
 
     def fake_download(*_args, **kwargs):
         forces.append(kwargs.get("force_download"))
-        if len(forces) == 1:
-            raise _incomplete_error(dest)
-        raise OSError(
-            "Consistency check failed: file should be of size 10 but has size 5."
-        )
+        raise _incomplete_error(dest)
 
     uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
     with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
         result = uri.pull(dest)
 
     assert result is False, "the recoverable error must propagate, not be swallowed"
-    # normal + one force retry, but NO third (post-rm-rf) attempt.
-    assert forces == [False, True]
+    # A single attempt only: no force_download retry, no scratch clear.
+    assert forces == [False]
     assert scratch.exists(), "scratch dir must NOT be cleared on the unlocked path"
     assert (scratch / "leftover.incomplete").exists()
 

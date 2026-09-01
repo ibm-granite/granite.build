@@ -23,6 +23,7 @@ content checks so an accidental removal of that shell logic fails loudly instead
 of silently regressing the shared-cache race back to the #320 behavior.
 """
 
+import re
 from pathlib import Path
 
 import gbserver
@@ -92,4 +93,25 @@ def test_lsf_and_skypilot_hfpull_shell_blocks_are_in_sync():
     assert lsf == sky, (
         "LSF and skypilot hfpull shell blocks have diverged; keep them in sync "
         f"(first diff near: {next((f'{a!r} != {b!r}' for a, b in zip(lsf, sky) if a != b), 'length mismatch')})"
+    )
+
+
+def test_shell_recoverable_regex_matches_python_source_of_truth():
+    """The shell recoverable-error regex must equal the Python classifier's.
+
+    The recoverable-error set lives in three copies (Python + the two shell
+    scripts). The shell-to-shell sync test alone can't catch a change to the
+    Python source of truth silently leaving the shell workers on the old
+    classification -- the exact cross-boundary drift that would reopen the #320
+    shared-cache race. Pin the shell regex to the Python pattern so all three
+    move together.
+    """
+    from gbcommon.uri.hf import HF_RECOVERABLE_CACHE_ERROR_RE
+
+    m = re.search(r"HFPULL_RECOVERABLE_RE='([^']*)'", _LSF_HFPULL.read_text())
+    assert m, "HFPULL_RECOVERABLE_RE not found in LSF command.sh"
+    assert m.group(1) == HF_RECOVERABLE_CACHE_ERROR_RE.pattern, (
+        "shell HFPULL_RECOVERABLE_RE has drifted from Python "
+        "HF_RECOVERABLE_CACHE_ERROR_RE; the shell workers would classify "
+        "recoverable errors differently than HfURI.pull"
     )

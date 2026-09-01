@@ -80,7 +80,10 @@ DEFAULT_REVISION = "main"
 #      .incomplete" states, retry once with ``force_download=True`` (which
 #      unlinks the bad ``.incomplete``) and, failing that, drop HF's scratch
 #      download dir and retry -- turning a manual ``rm -rf`` into automatic
-#      recovery. This is the primary #320 fix and is filesystem-agnostic.
+#      recovery. This is the primary #320 fix and is filesystem-agnostic. The
+#      self-heal mutates the shared destination, so it only runs while the lock
+#      is held; on the unlocked fall-through a recoverable error propagates
+#      instead (recovering under a concurrent peer could re-induce #320).
 #
 # The lock is a ``SharedFileSystemLock`` (gbcommon.utils.fs_lock), which uses
 # atomic directory creation (``os.mkdir``) rather than ``flock``/``filelock``.
@@ -98,7 +101,13 @@ DEFAULT_REVISION = "main"
 # out the timeout before proceeding.
 HFPULL_LOCK_TIMEOUT_ENV = "GB_HFPULL_LOCK_TIMEOUT"
 HFPULL_FORCE_ENV = "GB_HFPULL_FORCE"
-DEFAULT_HFPULL_LOCK_TIMEOUT_S = 300.0
+# Default wait for the download lock. Sized to exceed a typical large-model pull
+# (multi-GB downloads routinely run well past a few minutes), since a waiter that
+# times out proceeds *unlocked* and loses serialization for exactly the big,
+# slow, concurrently-pulled models that need it most. A crashed holder only makes
+# peers wait this long before falling through (bounded; the self-heal backstops
+# any resulting corruption). Overridable via GB_HFPULL_LOCK_TIMEOUT.
+DEFAULT_HFPULL_LOCK_TIMEOUT_S = 1800.0
 # Poll interval while waiting for a peer to release the mkdir lock.
 HFPULL_LOCK_POLL_S = 1.0
 
@@ -207,6 +216,18 @@ def _hfpull_download_lock(dest: Path) -> Iterator[bool]:
     yield False
 
 
+# The corrupt-cache signatures a force re-download can clear (issue #320),
+# matched on message text so the shell hfpull steps can mirror it exactly and so
+# an HF version that changes the error type still recovers. The LSF/skypilot
+# shell copies keep this identical in ``HFPULL_RECOVERABLE_RE``; the
+# ``test_hfpull_shell_serialization`` guard pins the shell regex equal to this
+# pattern so the three copies cannot drift apart.
+HF_RECOVERABLE_CACHE_ERROR_RE = re.compile(
+    r"(FileNotFoundError|No such file or directory).*\.incomplete"
+    r"|Consistency check failed"
+)
+
+
 def _is_recoverable_hf_cache_error(e: BaseException) -> bool:
     """True for the corrupt-cache states a force re-download can clear.
 
@@ -215,12 +236,14 @@ def _is_recoverable_hf_cache_error(e: BaseException) -> bool:
     huggingface_hub's ``Consistency check failed`` size mismatch (a poisoned
     ``.incomplete``). ``force_download=True`` unlinks the bad ``.incomplete``
     before re-downloading, clearing both.
+
+    Classified by the error *message* (see ``HF_RECOVERABLE_CACHE_ERROR_RE``)
+    rather than the exception type, so the shell hfpull steps -- which only see
+    stdout/stderr -- can mirror it verbatim, and so a huggingface_hub version
+    that rewords or retypes the error still triggers recovery instead of
+    silently reverting to the #320 failure.
     """
-    if isinstance(e, FileNotFoundError) and ".incomplete" in str(e):
-        return True
-    if isinstance(e, OSError) and "Consistency check failed" in str(e):
-        return True
-    return False
+    return bool(HF_RECOVERABLE_CACHE_ERROR_RE.search(str(e)))
 
 
 def _clear_hf_download_scratch(dest: Path) -> None:
@@ -243,7 +266,7 @@ def _pull_hf_repo(
     token: Optional[str],
     endpoint: Optional[str],
     force: bool,
-    allow_scratch_clear: bool = True,
+    lock_held: bool = True,
 ) -> None:
     """snapshot_download into *dest*, self-healing a corrupt HF cache.
 
@@ -251,13 +274,14 @@ def _pull_hf_repo(
     once with ``force_download=True``; if that still fails, drop the scratch
     download dir and retry once more. Non-recoverable errors propagate.
 
-    ``allow_scratch_clear`` gates only that last, shared-destructive step. It is
-    False when the caller did not hold the download lock: another puller may be
-    writing into ``<dest>/.cache/huggingface/download`` concurrently, and
-    ``rm -rf``-ing it out from under a live writer would re-induce the #320
-    corruption. In that case the recoverable error propagates instead. The
-    per-file ``force_download`` retries are safe unlocked (huggingface_hub takes
-    its own per-file lock and only rewrites that file), so they always run.
+    The self-heal mutates the shared destination -- ``force_download`` re-downloads
+    and unlinks files, and the final step ``rm -rf``s the scratch dir -- so it
+    only runs when ``lock_held`` (we hold the cross-process download lock). When
+    the lock was not acquired (best-effort fall-through), a peer may be writing
+    the same tree concurrently, and recovering under it could pull files out from
+    a live writer and re-induce the #320 corruption; there a recoverable error
+    propagates instead of self-healing without mutual exclusion. An
+    operator-requested ``force`` on the initial attempt is honored regardless.
     """
 
     def _download(force_download: bool) -> None:
@@ -277,6 +301,18 @@ def _pull_hf_repo(
     except Exception as first:
         if not _is_recoverable_hf_cache_error(first):
             raise
+        if not lock_held:
+            # Best-effort lock not held: a peer may be writing the shared tree,
+            # so self-healing (force_download / scratch rm -rf) could re-induce
+            # #320. Propagate rather than recover without mutual exclusion.
+            logger.warning(
+                "hfpull: HF download cache for %s looks corrupt (%s) but the "
+                "download lock was not held (a peer may be writing it); not "
+                "self-healing -- propagating",
+                repo_id,
+                first,
+            )
+            raise
         logger.warning(
             "hfpull: HF download cache for %s looks corrupt (%s); retrying "
             "with force_download=True",
@@ -289,19 +325,6 @@ def _pull_hf_repo(
         return
     except Exception as second:
         if not _is_recoverable_hf_cache_error(second):
-            raise
-        if not allow_scratch_clear:
-            # We did not hold the download lock, so a peer may be mid-write in
-            # the shared scratch dir; clearing it unlocked could re-induce #320.
-            # Propagate rather than perform a destructive clear without mutual
-            # exclusion.
-            logger.warning(
-                "hfpull: force_download retry for %s still failed (%s); not "
-                "clearing scratch cache because the download lock was not held "
-                "(a peer may be writing it) -- propagating",
-                repo_id,
-                second,
-            )
             raise
         logger.warning(
             "hfpull: force_download retry for %s still failed (%s); clearing "
@@ -857,7 +880,7 @@ class HfURI(URI):
 
         Pulls into the same *dest* are serialized behind a best-effort
         cross-process ``mkdir`` lock (issue #320): if it cannot be acquired
-        within ``GB_HFPULL_LOCK_TIMEOUT`` seconds (default 300), or it cannot be
+        within ``GB_HFPULL_LOCK_TIMEOUT`` seconds (default 1800), or it cannot be
         set up, the download proceeds anyway rather than failing. Repo downloads
         also self-heal a corrupt HF cache by retrying with ``force_download``
         and, if needed, clearing the scratch download dir.
@@ -925,7 +948,7 @@ class HfURI(URI):
                     token=token,
                     endpoint=endpoint,
                     force=force,
-                    allow_scratch_clear=locked,
+                    lock_held=locked,
                 )
                 logger.debug(
                     "Completed HF pull of %s (type=%s, rev=%s) to %s",

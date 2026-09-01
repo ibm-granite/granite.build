@@ -75,12 +75,15 @@ hf_env_flag() {
     case "$v" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
 }
 
-# Seconds to wait for the download lock (GB_HFPULL_LOCK_TIMEOUT, default 300).
+# Seconds to wait for the download lock (GB_HFPULL_LOCK_TIMEOUT, default 1800).
 # Whole-second granularity (the poll loop sleeps 1s): a positive sub-second
 # value rounds up to 1 rather than truncating to 0, which would fall through
 # lock-less while the Python path honors e.g. 0.5s. Invalid/non-numeric ->
 # default; explicit 0 (or 0.0) stays 0 (try-once, immediate fall-through).
-HFPULL_LOCK_TIMEOUT_DEFAULT=300
+# Only plain decimals are accepted (not scientific notation like 1e2, which the
+# Python float() path would take); such a value defaults safely rather than
+# misbehaving.
+HFPULL_LOCK_TIMEOUT_DEFAULT=1800
 hfpull_lock_timeout() {
     local raw="${GB_HFPULL_LOCK_TIMEOUT:-}" secs
     if [[ -z "${raw// }" ]]; then echo "${HFPULL_LOCK_TIMEOUT_DEFAULT}"; return; fi
@@ -173,16 +176,17 @@ hfpull_download() {
     fi
     if hf_download_attempt "${force}" "$@"; then return 0; fi
     if ! grep -Eq "${HFPULL_RECOVERABLE_RE}" "${HFPULL_LAST_OUT}"; then return 1; fi
+    # The self-heal (force re-download, then scratch rm -rf) mutates the shared
+    # dir, so only run it while holding the lock (matches _pull_hf_repo's
+    # lock_held gate). Unlocked, a peer may be writing the tree and recovering
+    # could re-induce #320 -- fail instead.
+    if [[ -z "${HFPULL_LOCK_DIR}" ]]; then
+        echo "hfpull: HF download cache looks corrupt but the download lock was not held (a peer may be writing it); not self-healing" >&2
+        return 1
+    fi
     echo "hfpull: HF download cache looks corrupt; retrying with --force-download" >&2
     if hf_download_attempt "--force-download" "$@"; then return 0; fi
     if ! grep -Eq "${HFPULL_RECOVERABLE_RE}" "${HFPULL_LAST_OUT}"; then return 1; fi
-    # Only clear the shared scratch dir when we hold the lock: unlocked, a peer
-    # may be writing it and rm -rf would re-induce #320 (matches _pull_hf_repo's
-    # allow_scratch_clear gate). Otherwise fail rather than clear unlocked.
-    if [[ -z "${HFPULL_LOCK_DIR}" ]]; then
-        echo "hfpull: force re-download still failed; not clearing scratch cache because the download lock was not held (a peer may be writing it)" >&2
-        return 1
-    fi
     echo "hfpull: force re-download still failed; clearing scratch download cache ${HF_DEST}/.cache/huggingface/download and retrying once more" >&2
     rm -rf "${HF_DEST}/.cache/huggingface/download"
     if hf_download_attempt "--force-download" "$@"; then return 0; fi
