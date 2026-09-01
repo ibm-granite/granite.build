@@ -1,0 +1,74 @@
+# Build fixture for test_bash_autotune.py. Runs the autotune step on the bash
+# environment against the fm-tune copy vendored at autotunex/src/fm-tune, a tiny
+# public model, and the two-line dataset beside this file.
+#
+# NO_AUTOTUNE skips the HPO sweep so this is a single short training run rather
+# than a multi-trial search. FM_TUNE_EXTRA=core installs ray+torch (main.py
+# imports ray unconditionally), which is what makes this a heavyweight test.
+granite.build:
+  name: autotune-bash-buildtest
+  version: 0.0.1
+  targets:
+    autotune-run:
+      environment_uri: space://environments/bash
+      inputs:
+        model:
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+        dataset_files:
+          uri: file:dataset/
+      outputs:
+        custom:
+          uri: "file:{{ run_metadata.build_id }}-out/"
+      steps:
+        - step_uri: space://steps/autotune
+          config:
+            bash:
+              env:
+                FM_TUNE_ROOT: "{{ space.variables.REPO_ROOT }}/autotunex/src/fm-tune"
+                FM_TUNE_EXTRA: core
+                BACKEND: torch
+                NO_AUTOTUNE: "true"
+                RUN_NAME: autotune-bash-buildtest
+                JOB_ID: "{{ run_metadata.build_id }}"
+            compute_config:
+              num_nodes: 1
+            autotune-config:
+              tune_config:
+                num_samples:
+                  type: int
+                  default: 1
+                  min_val: 1
+                  max_val: 10000
+                  required: true
+                  description: Number of HPO samples
+              training_config:
+                tuning_algorithm:
+                  type: str
+                  default: lora
+                  values: [none, sft, lora]
+                  required: true
+                  description: Finetuning algorithm
+                num_train_epochs:
+                  type: int
+                  default: 1
+                  min_val: 1
+                  max_val: 100
+                  required: true
+                  description: Training epochs
+              tuners_config:
+                lora:
+                  title: LoRA
+                  tuner_name: tuner.lora
+                  description: Low rank adapter fine-tuning
+                  dataset_type: dataset_type_a
+                  hyperparams:
+                    r:
+                      type: int
+                      values: [8]
+                      default: 8
+                      min_val: 0
+                      max_val: 64
+                      options: [choice]
+                      strategy: choice
+                      for_tuner: true
+                      description: Rank size
