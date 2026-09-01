@@ -64,20 +64,31 @@ echo "LLMB_LSF_TARGET_NAME ${LLMB_LSF_TARGET_NAME}"
 # the LSF compute node, so the logic is reproduced here in shell (needs bash:
 # arrays, ${var,,}, PIPESTATUS).
 
+# >>> gb-hfpull shared shell: keep lsf/hfpull/command.sh and skypilot/hfpull/step.yaml in sync >>>
+# (the executable lines below are parity-checked by test_hfpull_shell_serialization)
+
 # Truthy-env test (matches gbcommon.uri.hf._env_flag).
 hf_env_flag() {
-    local v="${1:-}"; v="${v,,}"; v="${v// }"
+    local v="${1:-}"; v="${v,,}"
+    # Trim leading/trailing whitespace only (matches Python str.strip); keep
+    # internal spaces so 't rue' stays non-truthy as in _env_flag.
+    v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
     case "$v" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
 }
 
 # Seconds to wait for the download lock (GB_HFPULL_LOCK_TIMEOUT, default 300).
-# Rejects non-finite/negative like _hfpull_lock_timeout; floors to whole seconds.
+# Whole-second granularity (the poll loop sleeps 1s): a positive sub-second
+# value rounds up to 1 rather than truncating to 0, which would fall through
+# lock-less while the Python path honors e.g. 0.5s. Invalid/non-numeric ->
+# default; explicit 0 (or 0.0) stays 0 (try-once, immediate fall-through).
 HFPULL_LOCK_TIMEOUT_DEFAULT=300
 hfpull_lock_timeout() {
-    local raw="${GB_HFPULL_LOCK_TIMEOUT:-}"
+    local raw="${GB_HFPULL_LOCK_TIMEOUT:-}" secs
     if [[ -z "${raw// }" ]]; then echo "${HFPULL_LOCK_TIMEOUT_DEFAULT}"; return; fi
     if [[ "${raw}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        echo "${raw%%.*}"
+        secs=$(( 10#${raw%%.*} ))  # base 10 so a leading zero (e.g. 08) is not octal
+        if (( secs == 0 )) && [[ ! "${raw}" =~ ^0+([.]0+)?$ ]]; then secs=1; fi
+        echo "${secs}"
     else
         echo "Invalid GB_HFPULL_LOCK_TIMEOUT='${raw}'; using default ${HFPULL_LOCK_TIMEOUT_DEFAULT}s" >&2
         echo "${HFPULL_LOCK_TIMEOUT_DEFAULT}"
@@ -151,7 +162,10 @@ hf_download_attempt() {
 
 # Retry only on the recoverable corrupt-cache states (matches
 # _is_recoverable_hf_cache_error); fail fast on anything else (auth, 404, ...).
-HFPULL_RECOVERABLE_RE='\.incomplete|Consistency check failed'
+# Anchor .incomplete to the FileNotFoundError signature (its errno text) so an
+# unrelated failure merely naming an .incomplete path is not misread as
+# recoverable; keep the size "Consistency check failed" phrase verbatim.
+HFPULL_RECOVERABLE_RE='(FileNotFoundError|No such file or directory).*\.incomplete|Consistency check failed'
 hfpull_download() {
     local force=""
     if hf_env_flag "${GB_HFPULL_FORCE:-}"; then
@@ -163,11 +177,19 @@ hfpull_download() {
     echo "hfpull: HF download cache looks corrupt; retrying with --force-download" >&2
     if hf_download_attempt "--force-download" "$@"; then return 0; fi
     if ! grep -Eq "${HFPULL_RECOVERABLE_RE}" "${HFPULL_LAST_OUT}"; then return 1; fi
+    # Only clear the shared scratch dir when we hold the lock: unlocked, a peer
+    # may be writing it and rm -rf would re-induce #320 (matches _pull_hf_repo's
+    # allow_scratch_clear gate). Otherwise fail rather than clear unlocked.
+    if [[ -z "${HFPULL_LOCK_DIR}" ]]; then
+        echo "hfpull: force re-download still failed; not clearing scratch cache because the download lock was not held (a peer may be writing it)" >&2
+        return 1
+    fi
     echo "hfpull: force re-download still failed; clearing scratch download cache ${HF_DEST}/.cache/huggingface/download and retrying once more" >&2
     rm -rf "${HF_DEST}/.cache/huggingface/download"
     if hf_download_attempt "--force-download" "$@"; then return 0; fi
     return 1
 }
+# <<< gb-hfpull shared shell <<<
 
 # --------------------------------------------------------------------------
 

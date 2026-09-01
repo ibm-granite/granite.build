@@ -54,3 +54,42 @@ def test_skypilot_hfpull_has_lock_and_self_heal():
     text = _SKY_HFPULL.read_text()
     missing = [m for m in _REQUIRED if m not in text]
     assert not missing, f"skypilot hfpull step.yaml missing #320 protections: {missing}"
+
+
+# The lock + self-heal logic is maintained as two shell copies (gbcommon is not
+# importable on the LSF/skypilot workers). Sentinels delimit the region that
+# must stay in lockstep so a fix to one copy can't silently skip the other.
+_SENTINEL_START = ">>> gb-hfpull shared shell"
+_SENTINEL_END = "<<< gb-hfpull shared shell"
+
+
+def _shared_shell_code(path: Path) -> list[str]:
+    """Executable (non-comment, non-blank) lines of the shared hfpull block.
+
+    Comments and indentation are dropped so the two copies -- one at column 0
+    (LSF), one indented inside a YAML block scalar (skypilot), each with its own
+    prose/wrapping -- compare only on the shell that actually runs.
+    """
+    lines = path.read_text().splitlines()
+    starts = [i for i, ln in enumerate(lines) if _SENTINEL_START in ln]
+    ends = [i for i, ln in enumerate(lines) if _SENTINEL_END in ln]
+    assert starts and ends, f"{path} is missing the shared-shell sentinels"
+    body = lines[starts[0] + 1 : ends[0]]
+    return [ln.strip() for ln in body if ln.strip() and not ln.strip().startswith("#")]
+
+
+def test_lsf_and_skypilot_hfpull_shell_blocks_are_in_sync():
+    """The two shell copies must carry identical executable logic.
+
+    The per-file marker checks above can't catch drift: a fix to the LSF copy
+    (e.g. the recoverable-error classification) that misses the skypilot copy
+    would leave both markers present yet the paths silently divergent. Compare
+    the executable lines directly so any such drift fails here.
+    """
+    lsf = _shared_shell_code(_LSF_HFPULL)
+    sky = _shared_shell_code(_SKY_HFPULL)
+    assert lsf, "no shared-shell code extracted from the LSF command.sh"
+    assert lsf == sky, (
+        "LSF and skypilot hfpull shell blocks have diverged; keep them in sync "
+        f"(first diff near: {next((f'{a!r} != {b!r}' for a, b in zip(lsf, sky) if a != b), 'length mismatch')})"
+    )

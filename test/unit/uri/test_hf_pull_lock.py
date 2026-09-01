@@ -218,6 +218,43 @@ def test_repo_pull_clears_scratch_when_force_retry_still_fails(tmp_path):
     assert seen.get("scratch_exists") is False, "scratch dir not cleared"
 
 
+def test_repo_pull_skips_scratch_clear_when_lock_not_held(tmp_path, monkeypatch):
+    """Under the unlocked fall-through, the destructive scratch rm -rf is skipped.
+
+    When a peer holds the lock past the timeout, pull() proceeds unlocked -- so
+    another puller may be writing into the shared scratch dir concurrently.
+    Clearing it (``rm -rf``) then could pull the download dir out from under that
+    live writer and re-induce the very #320 corruption this fixes. The per-file
+    ``force_download`` retry still runs, but on a second recoverable failure the
+    error propagates instead of an unlocked scratch clear.
+    """
+    dest = tmp_path / "org" / "repo" / "h"
+    _hfpull_lock_path(dest).mkdir(parents=True)  # a peer holds the lock
+    monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0")
+    scratch = dest / ".cache" / "huggingface" / "download"
+    scratch.mkdir(parents=True)
+    (scratch / "leftover.incomplete").write_text("partial")
+    forces = []
+
+    def fake_download(*_args, **kwargs):
+        forces.append(kwargs.get("force_download"))
+        if len(forces) == 1:
+            raise _incomplete_error(dest)
+        raise OSError(
+            "Consistency check failed: file should be of size 10 but has size 5."
+        )
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        result = uri.pull(dest)
+
+    assert result is False, "the recoverable error must propagate, not be swallowed"
+    # normal + one force retry, but NO third (post-rm-rf) attempt.
+    assert forces == [False, True]
+    assert scratch.exists(), "scratch dir must NOT be cleared on the unlocked path"
+    assert (scratch / "leftover.incomplete").exists()
+
+
 def test_repo_pull_does_not_retry_non_recoverable_error(tmp_path):
     """An unrelated error is not treated as corruption; no retry, pull fails."""
     dest = tmp_path / "org" / "repo" / "h"

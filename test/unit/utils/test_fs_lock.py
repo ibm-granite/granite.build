@@ -72,6 +72,25 @@ def test_context_manager_raises_on_timeout(tmp_path):
     assert lock_path.exists()  # peer's lock untouched
 
 
+def test_context_manager_raises_infra_error_distinctly_from_timeout(tmp_path):
+    """An infra failure (read-only mount) must not masquerade as a timeout.
+
+    ``__enter__`` raising ``TimeoutError`` for an ``EROFS``/``ENOSPC`` acquire
+    failure would report a broken mount as mere contention, with no way to tell
+    them apart. The infra error propagates as itself (``TimeoutError`` is an
+    ``OSError`` subclass, so the test also asserts it is *not* a ``TimeoutError``).
+    """
+    lock = SharedFileSystemLock(tmp_path / "m.lock", timeout=1)
+    with patch("pathlib.Path.mkdir", side_effect=OSError(30, "Read-only file system")):
+        with pytest.raises(OSError) as excinfo:
+            with lock:
+                pass
+    assert not isinstance(
+        excinfo.value, TimeoutError
+    ), "a read-only/broken mount must not be reported as a lock timeout"
+    assert excinfo.value.errno == 30
+
+
 def test_ttl_breaks_a_stale_lock(tmp_path):
     lock_path = tmp_path / "f.lock"
     lock_path.mkdir()

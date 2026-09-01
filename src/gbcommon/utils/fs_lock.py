@@ -80,6 +80,10 @@ class SharedFileSystemLock:
         self.ttl = ttl
         self.identity = f"host:{socket.gethostname()}|pid:{os.getpid()}"
         self._held = False
+        # Set by acquire() when a False return was caused by an infrastructure
+        # failure (unusable mount, unwritable identity file) rather than a
+        # timeout, so __enter__ can distinguish the two. None means "timed out".
+        self._last_acquire_error: Optional[OSError] = None
 
     @property
     def is_held(self) -> bool:
@@ -97,6 +101,7 @@ class SharedFileSystemLock:
         lock we cannot attribute to ourselves is rolled back rather than held.
         """
         deadline = time.monotonic() + self.timeout
+        self._last_acquire_error = None
         # Create the container dir once up front rather than on every poll (a
         # contended wait can otherwise re-issue this mkdir hundreds of times).
         # The container is not removed on release, so nothing recreates it mid-
@@ -109,6 +114,7 @@ class SharedFileSystemLock:
                 self.lock_path.parent,
                 e,
             )
+            self._last_acquire_error = e
             return False
         while True:
             try:
@@ -122,6 +128,7 @@ class SharedFileSystemLock:
                     self.lock_path,
                     e,
                 )
+                self._last_acquire_error = e
                 return False
             else:
                 if not self._write_info():
@@ -169,7 +176,8 @@ class SharedFileSystemLock:
         try:
             self.info_file.write_text(f"{self.identity}\n{time.time()}\n")
             return True
-        except OSError:
+        except OSError as e:
+            self._last_acquire_error = e
             return False
 
     def _owned_by_us(self) -> bool:
@@ -204,11 +212,17 @@ class SharedFileSystemLock:
         return True
 
     def __enter__(self) -> Self:
-        if not self.acquire():
-            raise TimeoutError(
-                f"Could not acquire lock on {self.lock_path} within " f"{self.timeout}s"
-            )
-        return self
+        if self.acquire():
+            return self
+        # Distinguish a real infra failure (unusable mount, unwritable identity)
+        # from contention: re-raise the former as itself so a read-only/broken
+        # mount is not silently reported as a lock timeout. Note TimeoutError is
+        # an OSError subclass, so callers catching OSError still catch both.
+        if self._last_acquire_error is not None:
+            raise self._last_acquire_error
+        raise TimeoutError(
+            f"Could not acquire lock on {self.lock_path} within {self.timeout}s"
+        )
 
     def __exit__(self, *_exc: object) -> None:
         self.release()

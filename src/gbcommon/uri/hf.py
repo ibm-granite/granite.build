@@ -176,7 +176,7 @@ def _hfpull_lock_path(dest: Path) -> Path:
 
 
 @contextmanager
-def _hfpull_download_lock(dest: Path) -> Iterator[None]:
+def _hfpull_download_lock(dest: Path) -> Iterator[bool]:
     """Best-effort cross-process lock serializing pulls into *dest*.
 
     Uses :class:`SharedFileSystemLock` (atomic ``mkdir``, coherent across nodes
@@ -187,6 +187,11 @@ def _hfpull_download_lock(dest: Path) -> Iterator[None]:
     locks. No ``ttl`` -- a lock left by a crashed holder simply makes peers wait
     out the timeout before proceeding (bounded, and the self-healing backstops
     any resulting corruption).
+
+    Yields ``True`` when this process holds the lock, ``False`` when it fell
+    through unlocked. The caller uses that to gate destructive self-healing:
+    clearing the shared scratch dir is only safe when no peer can be writing it
+    concurrently (see ``_pull_hf_repo``).
     """
     lock_dir = _hfpull_lock_path(dest)
     timeout = _hfpull_lock_timeout()
@@ -195,7 +200,7 @@ def _hfpull_download_lock(dest: Path) -> Iterator[None]:
     )
     if lock.acquire():
         try:
-            yield
+            yield True
         finally:
             lock.release()
         return
@@ -206,7 +211,7 @@ def _hfpull_download_lock(dest: Path) -> Iterator[None]:
         lock_dir,
         timeout,
     )
-    yield
+    yield False
 
 
 def _is_recoverable_hf_cache_error(e: BaseException) -> bool:
@@ -245,12 +250,21 @@ def _pull_hf_repo(
     token: Optional[str],
     endpoint: Optional[str],
     force: bool,
+    allow_scratch_clear: bool = True,
 ) -> None:
     """snapshot_download into *dest*, self-healing a corrupt HF cache.
 
     On a recoverable corruption (see ``_is_recoverable_hf_cache_error``) retry
     once with ``force_download=True``; if that still fails, drop the scratch
     download dir and retry once more. Non-recoverable errors propagate.
+
+    ``allow_scratch_clear`` gates only that last, shared-destructive step. It is
+    False when the caller did not hold the download lock: another puller may be
+    writing into ``<dest>/.cache/huggingface/download`` concurrently, and
+    ``rm -rf``-ing it out from under a live writer would re-induce the #320
+    corruption. In that case the recoverable error propagates instead. The
+    per-file ``force_download`` retries are safe unlocked (huggingface_hub takes
+    its own per-file lock and only rewrites that file), so they always run.
     """
 
     def _download(force_download: bool) -> None:
@@ -282,6 +296,19 @@ def _pull_hf_repo(
         return
     except Exception as second:
         if not _is_recoverable_hf_cache_error(second):
+            raise
+        if not allow_scratch_clear:
+            # We did not hold the download lock, so a peer may be mid-write in
+            # the shared scratch dir; clearing it unlocked could re-induce #320.
+            # Propagate rather than perform a destructive clear without mutual
+            # exclusion.
+            logger.warning(
+                "hfpull: force_download retry for %s still failed (%s); not "
+                "clearing scratch cache because the download lock was not held "
+                "(a peer may be writing it) -- propagating",
+                repo_id,
+                second,
+            )
             raise
         logger.warning(
             "hfpull: force_download retry for %s still failed (%s); clearing "
@@ -870,8 +897,9 @@ class HfURI(URI):
 
             # Best-effort serialization of concurrent hfpull processes sharing
             # this destination; falls through to the download if the lock can't
-            # be acquired (issue #320).
-            with _hfpull_download_lock(dest):
+            # be acquired (issue #320). ``locked`` gates the destructive scratch
+            # clear in the self-heal below.
+            with _hfpull_download_lock(dest) as locked:
                 if p.hf_type == HfType.BUCKET:
                     bucket_hf_path = f"hf://buckets/{repo_id}"
                     if p.path_in_repo:
@@ -904,6 +932,7 @@ class HfURI(URI):
                     token=token,
                     endpoint=endpoint,
                     force=force,
+                    allow_scratch_clear=locked,
                 )
                 logger.debug(
                     "Completed HF pull of %s (type=%s, rev=%s) to %s",
