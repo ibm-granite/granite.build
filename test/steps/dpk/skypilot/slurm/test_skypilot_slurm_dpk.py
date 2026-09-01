@@ -64,7 +64,7 @@ pytestmark = pytest.mark.skypilot_integration
     reason="Docker SLURM cluster not reachable (run: make test-setup)",
 )
 class TestSkypilotSlurmDpk(AbstractYamlBuildRunnerTest):
-    """dpk step: transform mode -> env:///shared handoff -> command mode."""
+    """dpk step: transform mode with in-step validation (validate: true)."""
 
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""

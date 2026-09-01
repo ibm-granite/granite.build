@@ -206,6 +206,32 @@ class TestValidatorRejectsCorruptOutput:
         _, errors = validator.validate(good_tree)
         assert any("duplicate document ids" in e for e in errors)
 
+    def test_duplicate_detection_scales_to_a_realistic_document_count(self, tmp_path):
+        """Regression guard: the duplicate scan must not be O(n^2).
+
+        It was `{d for d in doc_ids if doc_ids.count(d) > 1}` — one linear scan per
+        element — which measured 0.9s at 10k document ids and 7s at 30k, PER .arrow
+        file. Real corpora exceed that per file, so a cheap consistency check became
+        the dominant cost of the target. Counter makes it linear.
+
+        20k documents is well within what DPK writes per file and completes in
+        milliseconds now; the generous ceiling keeps this from flaking on slow CI
+        while still failing outright if the quadratic form returns (which took
+        seconds at this size).
+        """
+        import time
+
+        n = 20_000
+        docs = [(f"d{i:06d}", 2) for i in range(n)]
+        out = _build_tree(tmp_path / "big", {"pq01": docs})
+
+        start = time.monotonic()
+        _, errors = validator.validate(out)
+        elapsed = time.monotonic() - start
+
+        assert not any("duplicate document ids" in e for e in errors)
+        assert elapsed < 5.0, f"validate() took {elapsed:.1f}s for {n} documents"
+
     def test_docs_summary_token_disagreement(self, good_tree):
         """The .docs summary total contradicts the arrow row count."""
         _write_sidecars(
@@ -258,6 +284,37 @@ class TestValidatorRejectsCorruptOutput:
         _, errors = validator.validate(good_tree)
         assert any("not valid JSON" in e for e in errors)
 
+    @pytest.mark.parametrize("content", ["[]", "null", '"a string"', "3"])
+    def test_metadata_json_that_is_valid_json_but_not_an_object(
+        self, good_tree, content
+    ):
+        """Regression: these used to raise AttributeError out of validate().
+
+        The above test covers *malformed* JSON. These are WELL-FORMED JSON that
+        simply is not an object, so `.get()` did not exist on it — the exception
+        escaped main(), no validation.json was written, and the operator got a
+        traceback instead of the report this script exists to produce.
+        """
+        (good_tree / "metadata.json").write_text(content)
+        _, errors = validator.validate(good_tree)
+        assert any("expected an object" in e for e in errors)
+
+    def test_metadata_json_with_non_object_stats(self, good_tree):
+        """Same hazard one level down: job_output_stats itself being a list."""
+        (good_tree / "metadata.json").write_text(json.dumps({"job_output_stats": []}))
+        _, errors = validator.validate(good_tree)
+        assert any("'job_output_stats' is list" in e for e in errors)
+
+    def test_non_object_metadata_still_writes_a_report(self, good_tree, tmp_path):
+        """The point of the fix: report the failure, don't crash out of main()."""
+        (good_tree / "metadata.json").write_text("[]")
+        report_dir = tmp_path / "rpt"
+        rc = validator.main(
+            ["validate_tokenization2arrow.py", str(good_tree), str(report_dir)]
+        )
+        assert rc == 1
+        assert (report_dir / "validation.json").is_file()
+
     def test_metadata_token_total_disagreement(self, tmp_path):
         """metadata.json's num_tokens contradicts the actual arrow totals."""
         tree = _build_tree(
@@ -267,6 +324,33 @@ class TestValidatorRejectsCorruptOutput:
         )
         _, errors = validator.validate(tree)
         assert any("reports num_tokens=9999" in e for e in errors)
+
+    def test_output_dir_under_a_meta_parent_still_finds_its_arrow_files(self, tmp_path):
+        """Regression: the meta/ exclusion used to match the ABSOLUTE path.
+
+        `if "/meta/" not in str(p)` also excluded every file when the output
+        directory itself sat under a directory named meta — a plausible
+        `output_path` such as /shared/meta/tokens. The result was "no .arrow files
+        found" for output that was perfectly fine: a wrong diagnosis, which is worse
+        than no check. Now tested relative to the output dir.
+        """
+        out = tmp_path / "meta" / "tokens"
+        out.mkdir(parents=True)
+        (out / "metadata.json").write_text(
+            json.dumps({"job_output_stats": {"result_files": 1, "num_tokens": 6}})
+        )
+        _write_arrow(out / "pq01.arrow", 6)
+        _write_sidecars(out, "pq01", [("d1", 3), ("d2", 3)])
+        summary, errors = validator.validate(out)
+        assert summary["arrow_files"] == 1
+        assert not any("no .arrow files found" in e for e in errors)
+
+    def test_sidecar_arrow_files_are_still_excluded(self, good_tree):
+        """The exclusion must keep working: an .arrow inside meta/ is not data."""
+        _write_arrow(good_tree / "meta" / "decoy.arrow", 99)
+        summary, _ = validator.validate(good_tree)
+        # good_tree has 2 real .arrow files; the decoy under meta/ must not count.
+        assert summary["arrow_files"] == 2, "meta/ sidecar counted as a data file"
 
     def test_no_arrow_files(self, tmp_path):
         empty = tmp_path / "empty"

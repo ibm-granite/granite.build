@@ -64,6 +64,7 @@ import json
 import pathlib
 import re
 import sys
+from collections import Counter
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -206,18 +207,43 @@ def validate(src: pathlib.Path) -> tuple[dict, list[str]]:
     if not meta_path.is_file():
         errors.append(f"missing metadata.json under {src}")
     else:
+        stats: dict = {}
         try:
-            stats = json.loads(meta_path.read_text()).get("job_output_stats", {})
+            loaded = json.loads(meta_path.read_text())
         except json.JSONDecodeError as exc:
-            stats = {}
             errors.append(f"metadata.json is not valid JSON: {exc}")
+        else:
+            # Valid JSON is not necessarily an OBJECT: `[]`, `null`, `"x"` and `3`
+            # all parse. Calling .get() on those raises AttributeError, which would
+            # escape main() — no validation.json written, a traceback instead of the
+            # report this script promises. Report it as a failure like any other.
+            if isinstance(loaded, dict):
+                got = loaded.get("job_output_stats", {})
+                if isinstance(got, dict):
+                    stats = got
+                else:
+                    errors.append(
+                        f"metadata.json 'job_output_stats' is "
+                        f"{type(got).__name__}, expected an object"
+                    )
+            else:
+                errors.append(
+                    f"metadata.json is {type(loaded).__name__}, expected an object"
+                )
         summary["stats"] = stats
         if stats:
             if stats.get("result_files", 0) < 1:
                 errors.append(f"transform produced no result files: {stats}")
             declared_tokens = stats.get("num_tokens")
 
-    arrow_files = sorted(p for p in src.rglob("*.arrow") if "/meta/" not in str(p))
+    # Exclude the meta/ sidecar tree, testing the path RELATIVE to src: matching
+    # "/meta/" against the absolute path also excludes every file when src itself
+    # sits under a directory named meta (a plausible output_path like
+    # /shared/meta/tokens), which reported "no .arrow files found" for output that
+    # was in fact fine.
+    arrow_files = sorted(
+        p for p in src.rglob("*.arrow") if "meta" not in p.relative_to(src).parts
+    )
     summary["arrow_files"] = len(arrow_files)
     if not arrow_files:
         errors.append(f"no .arrow files found under {src}")
@@ -274,7 +300,11 @@ def validate(src: pathlib.Path) -> tuple[dict, list[str]]:
                     f"{name}: token count mismatch — .docs.ids sums to "
                     f"{sum(counts)} but the arrow file holds {arrow_rows} tokens"
                 )
-            duplicates = {d for d in doc_ids if doc_ids.count(d) > 1}
+            # Counter, not `doc_ids.count(d)` per element: that was O(n^2) and this
+            # runs once per .arrow file. Measured on the old form: 0.9s at 10k
+            # document ids, 7s at 30k — and real corpora exceed that per file, which
+            # made a cheap consistency check the dominant cost of the target.
+            duplicates = {d for d, n in Counter(doc_ids).items() if n > 1}
             if duplicates:
                 errors.append(
                     f"{name}: duplicate document ids in .docs.ids: {sorted(duplicates)}"
