@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from gbserver.spaces.resource_group import (
+    HfPushConfigError,
     resolve_hfpush_resource_group_id,
     resolve_space_resource_group_id,
 )
@@ -194,9 +195,12 @@ def push_asset_hfstore(
         # scope), so a miss here is expected. Don't abort — log and push with
         # resource_group_id = None: HfURI.push -> create_repo(exist_ok=True)
         # succeeds for an existing repo, and surfaces its own error otherwise.
-        # A ValueError from the helper is a *configuration* error (a resource
-        # group pinned for a non-Enterprise org), so it is re-raised rather than
-        # swallowed — the push would otherwise silently ignore what was asked.
+        # Only a *configuration* error aborts (HfPushConfigError: a group pinned
+        # for a non-Enterprise org, or a pin contradicting use_resource_group) —
+        # the push would otherwise silently ignore what was asked. A plain
+        # ValueError must NOT abort: resolve_resource_group_id_for_org raises one
+        # for an unresolvable group name, which is the expected non-admin-token
+        # miss described above.
         try:
             resource_group_id, private, _hf_cfg = resolve_hfpush_resource_group_id(
                 hfuri=hfuri,
@@ -205,7 +209,7 @@ def push_asset_hfstore(
                 storepush_config=storepush_config,
                 output_config=output_config,
             )
-        except ValueError:
+        except HfPushConfigError:
             raise
         except Exception as e:
             logger.warning(

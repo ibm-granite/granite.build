@@ -625,3 +625,48 @@ class TestNullConfigValuesTreatedAsUnset:
         )
 
         assert rg_id is None
+
+
+class TestHfPushConfigError:
+    """Config errors are a distinguishable subtype, not a bare ValueError.
+
+    The inline bash/docker push treats a resolution *miss* as best-effort but a
+    *config* error as fatal. Both used to be plain ``ValueError``, so the handler
+    could not tell them apart. Subclassing keeps older ``except ValueError``
+    callers (and the assertions above) working.
+    """
+
+    def test_is_a_valueerror_subclass(self):
+        from gbserver.spaces.resource_group import HfPushConfigError
+
+        assert issubclass(HfPushConfigError, ValueError)
+
+    def test_non_enterprise_pin_raises_the_subtype(self):
+        from gbserver.spaces.resource_group import (
+            HfPushConfigError,
+            resolve_hfpush_resource_group_id,
+        )
+
+        with pytest.raises(HfPushConfigError, match="not an HF Enterprise"):
+            resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="my-user"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                output_config=_output_config({"resource_group_id": "rg-1"}),
+            )
+
+    def test_same_level_contradiction_raises_the_subtype(self):
+        from gbserver.spaces.resource_group import (
+            HfPushConfigError,
+            resolve_hfpush_resource_group_id,
+        )
+
+        with pytest.raises(HfPushConfigError, match="cannot be combined"):
+            resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                output_config=_output_config(
+                    {"use_resource_group": False, "resource_group_id": "rg-1"}
+                ),
+            )

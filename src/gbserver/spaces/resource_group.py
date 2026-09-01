@@ -61,6 +61,20 @@ logger = get_logger(__name__)
 USE_RESOURCE_GROUP_KEY = "use_resource_group"
 
 
+class HfPushConfigError(ValueError):
+    """A push config asks for something the target organization cannot honor.
+
+    Raised for a *configuration* mistake that resolution cannot work around: a
+    resource group pinned for a non-Enterprise org, or a pin combined with
+    ``use_resource_group: false`` at the same level. Distinct from a resolution
+    *miss* (a non-admin token that cannot read the org's resource groups), which
+    is expected on the standalone path and must not abort a best-effort push.
+
+    Subclasses ``ValueError`` so existing ``except ValueError`` callers keep
+    working; callers that need to tell the two apart catch this type instead.
+    """
+
+
 def resolve_space_resource_group_id(
     space_name: Optional[str],
     organization: str,
@@ -269,7 +283,7 @@ def resolve_hfpush_resource_group_id(
 
     if not enterprise:
         if pinned:
-            raise ValueError(_non_enterprise_rg_error(organization, pinned))
+            raise HfPushConfigError(_non_enterprise_rg_error(organization, pinned))
         logger.info(
             "HuggingFace organization '%s' is not an Enterprise org; "
             "skipping resource group resolution",
@@ -284,7 +298,7 @@ def resolve_hfpush_resource_group_id(
             if not _bool_or(level.get(USE_RESOURCE_GROUP_KEY), True) and _level_pin(
                 level
             ):
-                raise ValueError(
+                raise HfPushConfigError(
                     f"'{USE_RESOURCE_GROUP_KEY}: false' cannot be combined with "
                     f"an explicit resource group ('{_level_pin(level)}') in the "
                     f"same push config for organization '{organization}'. Remove "
