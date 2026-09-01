@@ -675,7 +675,12 @@ class TestExhaustedRetriableIsTerminal:
         """max_retries reached + a strategy would retry + no terminal json block
         -> raise WorkloadFailedException instead of silently forwarding."""
         handler = self._handler(0, AlwaysRetryStrategy())
-        await handler.get_wrapper_queue().put(create_test_event("transient error"))
+        event = create_test_event("transient error")
+        # Coupling that preserves #254: a stateless event (no json state block) is
+        # not a live non-terminal state, so the exhausted-retriable escalation is
+        # allowed to fire and unblock a monitor's deferred wait (e.g. LSF).
+        assert handler._is_live_nonterminal_state(event) is False
+        await handler.get_wrapper_queue().put(event)
         with pytest.raises(WorkloadFailedException):
             await asyncio.wait_for(handler.process_events(), timeout=5.0)
         # The event is still forwarded downstream before the exception is raised.
@@ -735,6 +740,8 @@ class TestExhaustedRetriableIsTerminal:
         )
         failed = create_test_event('\n```json\n{"state": "Failed"}\n```\n')
         assert h._is_live_nonterminal_state(failed) is False
+        exception = create_test_event('\n```json\n{"state": "Exception: boom"}\n```\n')
+        assert h._is_live_nonterminal_state(exception) is False
         assert (
             h._is_live_nonterminal_state(create_test_event("transient error")) is False
         )
