@@ -158,3 +158,48 @@ def test_resolver_failure_still_pushes_private(src_dir, hfstore):
         side_effect=RuntimeError("HF API down"),
     ):
         assert _run(hfuri, src_dir, hfstore) is True
+
+
+def test_quoted_private_false_is_honored(src_dir, hfstore):
+    """``private: "false"`` (quoted in yaml) must mean public, not truthy.
+
+    A bare ``bool("false")`` is ``True``, so a quoted value used to silently
+    invert the user's intent. Resolution goes through ``parse_boolean``, which
+    folds the quoted falsy forms onto ``False``.
+    """
+    hfuri = _hfuri()
+    assert _run(hfuri, src_dir, hfstore, _output_config({"private": "false"})) is False
+
+
+@pytest.mark.parametrize("value", ["no", "off", "0", "False", " false "])
+def test_quoted_falsy_forms_are_honored(src_dir, hfstore, value):
+    """The whole falsy token set works, case- and whitespace-insensitively."""
+    hfuri = _hfuri()
+    assert _run(hfuri, src_dir, hfstore, _output_config({"private": value})) is False
+
+
+def test_unparseable_private_falls_back_to_private(src_dir, hfstore):
+    """A typo must fail *safe*: unrecognized means private, not public."""
+    hfuri = _hfuri()
+    assert _run(hfuri, src_dir, hfstore, _output_config({"private": "flase"})) is True
+
+
+def test_output_level_private_overrides_environment_level(src_dir, hfstore):
+    """build.yaml outranks environment.yaml, so a per-output opt-in wins.
+
+    The intended usage: the environment keeps everything private, and a single
+    output selectively publishes.
+    """
+    hfuri = _hfuri()
+    storepush_config = MagicMock()
+    storepush_config.config = {"hf": {"private": True}}
+    assert (
+        _run(
+            hfuri,
+            src_dir,
+            hfstore,
+            output_config=_output_config({"private": False}),
+            storepush_config=storepush_config,
+        )
+        is False
+    )

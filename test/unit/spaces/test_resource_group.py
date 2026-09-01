@@ -627,6 +627,60 @@ class TestNullConfigValuesTreatedAsUnset:
         assert rg_id is None
 
 
+class TestQuotedBooleanForms:
+    """A yaml-quoted boolean must mean what it says, not "non-empty string".
+
+    Both booleans in an ``hf`` push config go through ``parse_boolean``, so
+    ``"false"`` / ``"no"`` / ``"off"`` / ``"0"`` resolve to ``False`` rather than
+    being truthy. Before that, a quoted value silently inverted the user's intent.
+    """
+
+    @pytest.mark.parametrize("value", ["false", "no", "off", "0", "False", " false "])
+    def test_quoted_private_is_public(self, value):
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        _, private, _ = resolve_hfpush_resource_group_id(
+            hfuri=_make_hfuri(owner="my-user"),
+            assetstore=_make_assetstore([]),
+            space_name="public",
+            output_config=_output_config({"private": value}),
+        )
+
+        assert private is False
+
+    @pytest.mark.parametrize("value", ["false", "no", "off", "0"])
+    def test_quoted_use_resource_group_opts_out(self, value):
+        """A quoted opt-out must actually skip resolution."""
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        with patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            return_value="rg",
+        ) as mock_resolve:
+            rg_id, _, _ = resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="ibm-research"),
+                assetstore=_make_assetstore(["ibm-research"]),
+                space_name="public",
+                output_config=_output_config({"use_resource_group": value}),
+            )
+
+        assert rg_id is None
+        mock_resolve.assert_not_called()
+
+    def test_unrecognized_private_stays_private(self):
+        """A typo fails safe: unparseable means private, never public."""
+        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+
+        _, private, _ = resolve_hfpush_resource_group_id(
+            hfuri=_make_hfuri(owner="my-user"),
+            assetstore=_make_assetstore([]),
+            space_name="public",
+            output_config=_output_config({"private": "flase"}),
+        )
+
+        assert private is True
+
+
 class TestHfPushConfigError:
     """Config errors are a distinguishable subtype, not a bare ValueError.
 

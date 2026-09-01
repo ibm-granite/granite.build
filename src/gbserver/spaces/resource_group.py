@@ -43,6 +43,7 @@ id. The table read/write lives here.
 
 from typing import TYPE_CHECKING, Optional, Tuple
 
+from gbcommon.types.gbenvconfig import parse_boolean
 from gbcommon.uri.hf import HF_HOST, HfURI
 from gbcommon.utils.hf_utils import is_enterprise_hf_org
 from gbserver.storage.singleton_storage import get_admin_storage
@@ -210,11 +211,6 @@ def _level_pin(level: dict) -> Optional[str]:
     return level.get("resource_group_id") or level.get("resource_group_name") or None
 
 
-def _bool_or(value: Optional[object], default: bool) -> bool:
-    """Return ``default`` when ``value`` is ``None`` (unset), else ``bool(value)``."""
-    return default if value is None else bool(value)
-
-
 def sanitize_hf_step_overlay(hf_cfg: dict) -> dict:
     """Drop keys that must never reach a worker step's ``hfpush_config``.
 
@@ -270,10 +266,13 @@ def resolve_hfpush_resource_group_id(
     hf_cfg = _merge_hf_levels(levels)
     resource_group_id = hf_cfg.get("resource_group_id") or None
     resource_group_name = hf_cfg.get("resource_group_name") or None
-    # _bool_or, not .get(key, default): a null is present, so the default would
-    # not apply, and a None reaching a worker template stringifies as "None".
-    private = _bool_or(hf_cfg.get("private"), True)
-    use_resource_group = _bool_or(hf_cfg.get(USE_RESOURCE_GROUP_KEY), True)
+    # parse_boolean, not .get(key, default): a yaml null is a *present* key, so
+    # .get's default would not apply and a None reaching a worker template
+    # stringifies as "None". parse_boolean also folds the quoted forms
+    # ("false"/"no"/"off"/"0") onto False, so `private: "false"` means what it
+    # says instead of being truthy as a non-empty string.
+    private = parse_boolean(hf_cfg.get("private"), True)
+    use_resource_group = parse_boolean(hf_cfg.get(USE_RESOURCE_GROUP_KEY), True)
 
     organization = hfuri.get_owner()
     enterprise = is_enterprise_hf_org(
@@ -295,9 +294,9 @@ def resolve_hfpush_resource_group_id(
         # Same-level opt-out plus pin is contradictory; across levels the higher
         # one wins, per the precedence in docs/builds/hf-push.md.
         for level in (output_level, env_level):
-            if not _bool_or(level.get(USE_RESOURCE_GROUP_KEY), True) and _level_pin(
-                level
-            ):
+            if not parse_boolean(
+                level.get(USE_RESOURCE_GROUP_KEY), True
+            ) and _level_pin(level):
                 raise HfPushConfigError(
                     f"'{USE_RESOURCE_GROUP_KEY}: false' cannot be combined with "
                     f"an explicit resource group ('{_level_pin(level)}') in the "
@@ -305,7 +304,7 @@ def resolve_hfpush_resource_group_id(
                     "one of them."
                 )
         output_pin = _level_pin(output_level)
-        if output_pin and _bool_or(output_level.get(USE_RESOURCE_GROUP_KEY), True):
+        if output_pin and parse_boolean(output_level.get(USE_RESOURCE_GROUP_KEY), True):
             # build.yaml outranks environment.yaml, so a pin here re-enables
             # resource groups over an inherited opt-out.
             logger.info(

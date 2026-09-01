@@ -33,16 +33,21 @@ _FALSY_TOKENS = frozenset({"false", "null", "undefined", "no", "off", "0", ""})
 _TRUTHY_TOKENS = frozenset({"true", "yes", "on", "1"})
 
 
-def parse_boolean(value: str | None, default: bool = False) -> bool:
-    """Parse an env-var-style string into a boolean.
+def parse_boolean(value: object | None, default: bool = False) -> bool:
+    """Parse an env-var-style string (or an already-typed value) into a boolean.
 
-    ``None`` (unset) → ``default``. Otherwise the value is lower-cased and
-    compared against the falsy token set (see ``_FALSY_TOKENS``); a match is
-    ``False``, anything else set is ``True``. A non-falsy value that also isn't a
-    recognized truthy token (a likely typo, e.g. ``on-prod``) is still treated as
-    ``True`` but logs a warning. This never raises — the single place the
-    string→bool rule is defined, shared by ``getenv_boolean`` and any other
-    caller that already has the string in hand.
+    ``None`` (unset) → ``default``. Otherwise the value is stringified,
+    lower-cased and compared against the falsy token set (see ``_FALSY_TOKENS``);
+    a match is ``False``, anything else set is ``True``. A non-falsy value that
+    also isn't a recognized truthy token (a likely typo, e.g. ``on-prod``) is
+    still treated as ``True`` but logs a warning. This never raises — the single
+    place the string→bool rule is defined, shared by ``getenv_boolean`` and any
+    other caller that already has the string in hand.
+
+    Accepts non-string input because YAML/JSON configs yield real ``bool`` (and
+    occasionally ``int``) values: ``str()`` maps those onto the same token sets
+    (``False``→``"false"``, ``0``→``"0"``), so a config value and its quoted
+    form resolve identically.
     """
     if value is None:
         return default
