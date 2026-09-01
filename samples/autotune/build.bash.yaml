@@ -1,0 +1,95 @@
+# Local (bash) AutoTune run using space://steps/autotune.
+# Structural reference — replace the <YOUR_*> placeholders before running.
+# FM_TUNE_ROOT points at the fm-tune copy vendored in this repo at
+# autotunex/src/fm-tune, so no external clone is needed. It must be an ABSOLUTE
+# path: the step runs with its CWD in the build workdir, not the repo root.
+# fm-tune's base deps are only pyyaml — torch, ray and the trainers arrive via
+# the `core` extra selected by FM_TUNE_EXTRA below. An `mlx` extra also exists.
+granite.build:
+  name: autotune-bash-local
+  version: 0.0.1
+  targets:
+    custom:
+      environment_uri: space://environments/bash
+      inputs:
+        model:
+          uri: hf:///ibm-granite/granite-4.1-3b
+        dataset_files:
+          uri: file:<YOUR_DATASET_DIR>/
+      outputs:
+        custom:
+          # ABSOLUTE on purpose: gbserver resolves a relative file: URI against its
+          # own CWD, not the build dir.
+          # Without an explicit type the registered artifact is UNDEFINED
+          # (BuildTargetOutputConfig.type), which breaks a downstream step
+          # binding this as a `model` input.
+          type: model
+          uri: "file:<YOUR_OUTPUT_DIR>/autotune_{{ run_metadata.build_id }}/"
+      steps:
+        - step_uri: space://steps/autotune
+          config:
+            bash:
+              env:
+                FM_TUNE_ROOT: <YOUR_GRANITE_BUILD_CHECKOUT>/autotunex/src/fm-tune
+                # pip extra installed into the venv; `core` provides ray+datasets
+                # (main.py needs ray). Use `full` for verl/vllm; empty for base only.
+                FM_TUNE_EXTRA: core
+                BACKEND: torch
+                NO_AUTOTUNE: "true"
+                RUN_NAME: autotune-bash-local
+                JOB_ID: "{{ run_metadata.build_id }}"
+            compute_config:
+              num_nodes: 1
+            # Inline tuning config — materialized by command.sh to a scratch dir
+            # beside (not inside) the output dir, then passed as --config_file.
+            autotune-config:
+              tune_config:
+                num_samples:
+                  type: int
+                  default: 2
+                  min_val: 1
+                  max_val: 10000
+                  required: true
+                  description: Number of HPO samples
+              training_config:
+                tuning_algorithm:
+                  type: str
+                  default: lora
+                  values: [none, sft, lora]
+                  required: true
+                  description: Finetuning algorithm
+                num_train_epochs:
+                  type: int
+                  default: 1
+                  min_val: 1
+                  max_val: 100
+                  required: true
+                  description: Training epochs
+                num_gpus_per_trial:
+                  type: int
+                  default: 1
+                  min_val: 1
+                  max_val: 16
+                  required: true
+                  # REQUIRED: fm-tune's optimizer.setup_default_config() reads this
+                  # with no default (optimizer.py:298) and fit_best_config() always
+                  # calls it, so omitting it raises
+                  #   TypeError: '>' not supported between 'NoneType' and 'int'
+                  description: GPUs per trial (worker)
+              tuners_config:
+                lora:
+                  title: LoRA
+                  tuner_name: tuner.lora
+                  description: Low rank adapter fine-tuning
+                  dataset_type: dataset_type_a
+                  hyperparams:
+                    r:
+                      type: int
+                      values: [8, 16]
+                      default: 16
+                      min_val: 0
+                      max_val: 64
+                      options: [choice]
+                      strategy: choice
+                      for_tuner: true
+                      description: Rank size
