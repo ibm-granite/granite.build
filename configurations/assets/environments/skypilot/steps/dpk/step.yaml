@@ -25,14 +25,13 @@ config:
     # gra_, doc_quality uses docq_), so the step cannot infer them. See a
     # transform's DPK docs or `--help` for its flag names.
     # A `true` value renders as a bare `--<key>`; `false`/null is omitted.
+    # `args` is the ONLY way to pass transform flags — deliberately, so there is
+    # one quoting model rather than two. A value that must vary per run is written
+    # with the build.yaml's own Jinja (e.g.
+    # "{{ run_metadata.targetsteprun_id | short_hash }}"), which resolves at render
+    # time and so is visible in the persisted step config and in lineage; genuine
+    # shell logic belongs in `command` mode.
     args: {}
-    # Escape hatch for flags `args` cannot express: appended VERBATIM to the
-    # transform's argv, after everything `args` rendered. Unquoted, so the remote
-    # shell word-splits it — which is the point (it is how you pass a flag whose
-    # value needs shell interpretation), and also why `args` stays the default:
-    # a value containing spaces or quotes is yours to quote correctly here,
-    # whereas `args` quotes it for you. Ignored in command mode.
-    extra_args: ""
     # Names of a declared target input / output. The step turns these into the
     # transform's --data_local_config input_folder / output_folder. Both are
     # required in transform mode.
@@ -199,7 +198,7 @@ environment_configs:
               --input-path "$GB_INPUT_{{ config.dpk_config.input }}" \
               --output-path '{{ config.dpk_config.output_path if config.dpk_config.output_path else "./output" }}' \
               --artifact-id '{{ config.dpk_config.output }}' \
-              --{% for k, v in config.dpk_config.args.items() %}{% if v is sameas true %} --{{ k }}{% elif v is not none and v is not sameas false %} --{{ k }} '{{ v | string | replace("'", "'\"'\"'") }}'{% endif %}{% endfor %}{% if config.dpk_config.extra_args %} {{ config.dpk_config.extra_args }}{% endif %}
+              --{% for k, v in config.dpk_config.args.items() %}{% if v is sameas true %} --{{ k }}{% elif v is not none and v is not sameas false %} --{{ k }} '{{ v | string | replace("'", "'\"'\"'") }}'{% endif %}{% endfor %}
             {%- else %}
             # Raw command mode: injected verbatim, like the byoc step. The command
             # is responsible for its own GB_ARTIFACT_ID/PATH marker(s):

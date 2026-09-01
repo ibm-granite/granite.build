@@ -54,7 +54,6 @@ All fields live under the step's `config.dpk_config`.
 | `output` | string | **yes** | Name of a declared target `outputs:` entry. Used as the registered artifact's ID. |
 | `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match. See [Outputs](#outputs). |
 | `args` | map | no | Transform flags, rendered in order as `--<key> '<value>'`. Keys are the **full flag name** as DPK spells it, without leading dashes. See [Transform flags](#transform-flags). |
-| `extra_args` | string | no | Flags appended **verbatim** to the transform's argv, after `args`. The escape hatch for anything `args` cannot express. See [Transform flags](#transform-flags). |
 | `dpk_version` | string | no | DPK release to install. Default `1.1.8`. |
 
 ### Command mode
@@ -138,26 +137,59 @@ Value handling: `true` renders a bare `--flag`; `false` and null are omitted; ev
 else renders as `--flag 'value'` (including `0`, which is meaningful for e.g.
 `tkn_chunk_size`).
 
-### `args` vs. `extra_args`
+### Values that vary per run
 
-`args` quotes each value so it reaches the transform **byte-for-byte**. That is what you
-want almost always, and it is what makes python-literal values work: `pii_redactor`'s
-`--pii_redactor_entities` is `ast.literal_eval`'d, so `"['PERSON','EMAIL_ADDRESS']"` has to
-arrive with its inner quotes intact.
+`args` is the only way to pass transform flags, so there is one quoting model to learn:
+every value is quoted for you and reaches the transform byte-for-byte. That is what makes
+python-literal values work — `pii_redactor`'s `--pii_redactor_entities` is
+`ast.literal_eval`'d, so `"['PERSON','EMAIL_ADDRESS']"` has to arrive with its inner quotes
+intact — and it means a value containing spaces or quotes can never be word-split by
+accident.
 
-`extra_args` is a single string appended verbatim after everything `args` rendered, and it
-is **not** quoted — the remote shell word-splits and expands it. Use it when you *need* that:
+The consequence: `args` values are **not** shell-expanded, so `"$MY_VAR"` reaches the
+transform as the literal characters `$MY_VAR`. Parameterise the build instead — two
+mechanisms, both resolved before the step runs:
+
+**`$${PARAM}` — a build parameter** (the usual choice). Values come from a
+`parameters.yaml` beside the build, and any of them can be overridden per run on the command
+line:
 
 ```yaml
-dpk_config:
-  args:
-    tkn_doc_id_column: document_id       # quoted for you
-  extra_args: "--tkn_tokenizer $MY_TOKENIZER"   # expanded on the node
+# parameters.yaml
+TOKENIZER: "hf-internal-testing/llama-tokenizer"
+DOC_COLUMN: "contents"
 ```
 
-Because it is unquoted, correct quoting of any value containing spaces or quotes is yours to
-get right — which is why `args` remains the default rather than a raw string being the only
-option. Ignored in command mode, where you write the whole command anyway.
+```yaml
+# build.yaml
+dpk_config:
+  transform: tokenization2arrow
+  input: docs
+  output: tokens
+  args:
+    tkn_tokenizer: "$${TOKENIZER}"
+    tkn_doc_content_column: "$${DOC_COLUMN}"
+```
+
+```
+gb build start -f build.yaml --parameters-path parameters.yaml
+gb build start -f build.yaml --parameters-path parameters.yaml --param TOKENIZER=bigcode/starcoder
+```
+
+**`{{ run_metadata.* }}` — a per-run value the server knows**, for things no one can supply
+by hand, such as keying an output path to the run so concurrent builds do not collide:
+
+```yaml
+  output_path: "/shared/tokens/{{ run_metadata.targetsteprun_id | short_hash }}"
+```
+
+Both are better than shell expansion, not merely equivalent: the value is resolved before
+the step renders, so it appears in the persisted step config and in build lineage instead of
+being decided invisibly on a node. `gb build start --dry-run` prints the fully resolved
+build.yaml if you want to check what a run will actually use.
+
+If you need genuine shell logic — a computed path, a conditional, a pipeline — that is what
+[command mode](#two-modes-pick-one) is for.
 
 ## Per-transform DPK documentation
 

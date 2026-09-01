@@ -368,50 +368,58 @@ class TestOutputPathDefault:
         assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
 
 
-class TestExtraArgs:
-    """The verbatim escape hatch, for flags the `args` map cannot express."""
+class TestArgsIsTheOnlyFlagChannel:
+    """`args` is the single way to pass transform flags — one quoting model.
 
-    def test_default_adds_nothing(self, launcher, defaults):
-        """Empty extra_args contributes no argv beyond what `args` rendered."""
+    `extra_args` (a raw, unquoted string appended to the argv) was removed: the only
+    thing it could do that `args` cannot was shell expansion on the node, and a
+    per-run value is better written with the build.yaml's own Jinja, which resolves
+    at render time and is therefore visible in the persisted config and in lineage.
+    Genuine shell logic belongs in `command` mode.
+    """
+
+    def test_no_extra_args_field_remains(self, defaults):
+        """Guard the removal: re-adding it would restore two quoting models."""
+        assert "extra_args" not in defaults
+
+    def test_no_args_yields_no_flags(self, launcher, defaults):
         argv = _script_argv(
             _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
         )
         assert _passthrough(argv) == []
 
-    def test_extra_args_are_appended_after_args(self, launcher, defaults):
-        cfg = _transform_cfg(
-            defaults, args={"tkn_chunk_size": 0}, extra_args="--tkn_text_lang en"
-        )
-        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _passthrough(argv) == [
-            "--tkn_chunk_size",
-            "0",
-            "--tkn_text_lang",
-            "en",
-        ]
+    def test_every_arg_value_is_quoted_so_nothing_is_word_split(
+        self, launcher, defaults
+    ):
+        """The property `extra_args` did NOT have: a spaced value stays one argv word.
 
-    def test_extra_args_are_word_split_by_the_shell(self, launcher, defaults):
-        """The contract that distinguishes extra_args from args.
-
-        `args` values are quoted to reach the transform byte-for-byte; extra_args
-        is expanded by the remote shell instead, so it becomes several words.
+        This is why `args` is the safe default — the build author never owns the
+        quoting.
         """
-        cfg = _transform_cfg(defaults, extra_args="--flag one --other two")
+        cfg = _transform_cfg(defaults, args={"tkn_tokenizer": "two words here"})
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _passthrough(argv) == ["--flag", "one", "--other", "two"]
+        assert _passthrough(argv) == ["--tkn_tokenizer", "two words here"]
 
-    def test_extra_args_render_valid_shell(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, extra_args="--flag 'a value' --bare")
+    def test_a_dollar_value_is_not_expanded_by_the_shell(self, launcher, defaults):
+        """`args` values reach the transform literally, `$`-signs included.
+
+        A value that must genuinely vary per run is written with build.yaml Jinja
+        (resolved before this renders), not with shell expansion here.
+        """
+        cfg = _transform_cfg(defaults, args={"tkn_tokenizer": "$NOT_EXPANDED"})
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        # Single-quoting inside extra_args is honoured by the shell, so the
-        # spaced value arrives as ONE word.
-        assert _passthrough(argv) == ["--flag", "a value", "--bare"]
+        assert _passthrough(argv) == ["--tkn_tokenizer", "$NOT_EXPANDED"]
 
-    def test_command_mode_ignores_extra_args(self, launcher, defaults):
-        """extra_args belongs to the derived invocation, which command mode skips."""
-        cfg = dict(defaults, command="echo hi", extra_args="--should-not-appear")
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert "--should-not-appear" not in run
+    def test_a_build_yaml_jinja_value_passes_through_verbatim(self, launcher, defaults):
+        """The supported route for a dynamic value.
+
+        gbserver fills the build.yaml's Jinja before the step template renders, so
+        by this point the value is already a concrete string. Simulate that: an
+        already-resolved value is quoted and forwarded like any other.
+        """
+        cfg = _transform_cfg(defaults, args={"tkn_doc_id_column": "run-a1b2c3"})
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == ["--tkn_doc_id_column", "run-a1b2c3"]
 
 
 class TestIoWiring:
