@@ -960,10 +960,6 @@ def push(
     help="HuggingFace organization name for artifact registration.",
 )
 @click.option(
-    "--resource-group-id",
-    help="Resource group ID for artifact registration.",
-)
-@click.option(
     "--store",
     default="lh",
     type=click.Choice(["lh", "hf"], case_sensitive=True),
@@ -1000,7 +996,6 @@ def register(
     origin_list: str,
     certify_no_restrictions: bool,
     hf_organization: str,
-    resource_group_id: str,
     format: str,
     skip_version_check: bool,
     quiet: bool,
@@ -1162,13 +1157,6 @@ def register(
             err=True,
         )
         ctx.exit(1)
-
-    # Resource groups exist only in HF Enterprise organizations; pinning one for
-    # a non-Enterprise org cannot mean anything, so reject it up front.
-    if store == "hf" and resource_group_id:
-        register_org = hf_organization or HF_ORGANIZATION_DEFAULT
-        if not is_enterprise_hf_org(register_org, HF_ENTERPRISE_ORGANIZATIONS):
-            _reject_resource_group_for_non_enterprise(ctx.exit, register_org)
 
     # === Type-specific handling ===
     # Prompts, tables, revisions and filesets/tables are all Lakehouse
@@ -1453,7 +1441,6 @@ def register(
                 origin_uris=normalized_origins,
                 certified_no_restrictions=certify_no_restrictions,
                 hf_organization=hf_organization,
-                resource_group_id=resource_group_id,
                 store=store,
                 callback=echo_callback,
             )
@@ -1477,7 +1464,6 @@ def register(
                 origin_uris=normalized_origins,
                 certified_no_restrictions=certify_no_restrictions,
                 hf_organization=hf_organization,
-                resource_group_id=resource_group_id,
                 store=store,
                 callback=echo_callback,
             )
