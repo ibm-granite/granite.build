@@ -1,0 +1,87 @@
+# Production (k8s) AutoTune run. Uses the shipped custom_code step; the inline
+# autotune-config block is materialized to /tmp/autotunex.yaml by gbstep's
+# config.gb.files_to_create (docs/steps/custom-code-steps.md), which is the file
+# main.py --config_file reads. No new step needed on k8s.
+granite.build:
+  name: autotune-k8s
+  version: 0.0.1
+  targets:
+    custom:
+      environment_uri: space://environments/{{ space.variables.DEFAULT_ENVIRONMENT }}
+      inputs:
+        dataset_files:
+          uri: hf://huggingface.co/datasets/<YOUR_ORG>/finance-classification
+      outputs:
+        custom:
+          uri: hf://huggingface.co/<YOUR_ORG>/autotune_{{ run_metadata.build_id }}/
+      steps:
+        - step_uri: space://steps/custom_code
+          config:
+            gb:
+              files_to_create:
+                - /tmp/autotunex.yaml: autotune-config
+            autotune-config:
+              tune_config:
+                num_samples:
+                  type: int
+                  default: 8
+                  min_val: 1
+                  max_val: 10000
+                  required: true
+                  description: Number of HPO samples
+              training_config:
+                tuning_algorithm:
+                  type: str
+                  default: lora
+                  values: [none, sft, lora]
+                  required: true
+                  description: Finetuning algorithm
+                num_train_epochs:
+                  type: int
+                  default: 2
+                  min_val: 1
+                  max_val: 100
+                  required: true
+                  description: Training epochs
+              tuners_config:
+                lora:
+                  title: LoRA
+                  tuner_name: tuner.lora
+                  description: Low rank adapter fine-tuning
+                  dataset_type: dataset_type_a
+                  hyperparams:
+                    r:
+                      type: int
+                      values: [8, 16, 32, 64]
+                      default: 64
+                      min_val: 0
+                      max_val: 64
+                      options: [choice, uniform]
+                      strategy: choice
+                      for_tuner: true
+                      description: Rank size
+            custom_code_config:
+              github_url: <YOUR_GIT_HOST>/<YOUR_ORG>/fm-tune.git
+              setup_command: git checkout stage && pip install -e ".[full]" && pip list && nvidia-smi
+              start_command: >-
+                export CUDA_HOME=/usr/local/cuda-12.4
+                && export LOG_PATH=$OUTPUT_PATH
+                && python main.py
+                --config_file /tmp/autotunex.yaml
+                --train_file {{ bindings.dataset_files.binding.path }}/finance-classification_train.jsonl
+                --validation_file {{ bindings.dataset_files.binding.path }}/finance-classification_validation.jsonl
+                --model_name_or_path ibm-granite/granite-4.1-3b
+                --tuning_algo lora
+                --run_name autotune-k8s
+                --output_dir $OUTPUT_PATH
+                --output_model_name autotune-k8s
+                --cleanup --save_history
+                --job_id {{ run_metadata.build_id }}
+              dir_to_save: .
+            k8s:
+              image: <YOUR_REGISTRY>/autotunex/build-runtime:21
+            compute_config:
+              num_gpus_per_node: 4
+              num_cpus_per_node: 32
+              num_nodes: 1
+              total_memory_per_node: 256Gi

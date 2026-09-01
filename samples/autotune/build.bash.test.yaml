@@ -1,0 +1,355 @@
+# Local (bash) AutoTune run using space://steps/autotune.
+# Structural reference — set FM_TUNE_ROOT to your fm-tune checkout before running.
+# BACKEND is `torch` here: fm-tune 0.7.1 ships torch in its base deps and declares
+# no `mlx` package, so torch is the runnable local path (uses MPS/CPU on Apple
+# Silicon). To try the mlx backend, set BACKEND: mlx and install mlx into fm-tune.
+granite.build:
+  name: model-custom-bash-local
+  version: 0.0.1
+  targets:
+    custom:
+      environment_uri: space://environments/bash
+      inputs:
+        model:
+          uri: hf://huggingface.co/models/HuggingFaceTB/SmolLM2-135M
+        dataset_files:
+          uri: hf://huggingface.co/datasets/ibm-research/policy_val_193a11ef
+      outputs:
+        custom:
+          uri: "file:outputs/autotune_{{ run_metadata.build_id }}/"
+      steps:
+        - step_uri: space://steps/autotune
+          config:
+            bash:
+              env:
+                FM_TUNE_ROOT: https://github.ibm.com/ibm-research/fm-tune
+                FM_TUNE_REF: stage
+                # pip extra installed into the venv; `core` provides ray+datasets
+                # (main.py needs ray). Use `full` for verl/vllm; empty for base only.
+                FM_TUNE_EXTRA: core,mlx
+                BACKEND: mlx
+                NO_AUTOTUNE: "true"
+                RUN_NAME: autotune-bash-local
+                JOB_ID: "{{ run_metadata.build_id }}"
+                AUTOTUNEX_SERVER_URL: "http://localhost:8001"
+            compute_config:
+              num_nodes: 1
+            # Inline tuning config — materialized to $LLMB_BASH_OUTPUT_DIR/autotune_config.yaml
+            # by command.sh and passed to main.py --config_file.
+            autotune-config:
+              tune_config:
+                search_alg:
+                  description: "Search algorithm used by ray/tune to explore the hyperparameter search space"
+                  default: "random"
+                  values: ["lds", "hyperopt", "random", "bohb", "blds"]
+                  min_val: null
+                  max_val: null
+                  type: str
+                  required: true
+                scheduler:
+                  description: "The scheduler used by ray/tune to schedult the trials"
+                  default: "fifo"
+                  values: ["fifo", "asha", "hyperbandforbohb"]
+                  min_val: null
+                  max_val: null
+                  type: str
+                  required: true
+                num_samples:
+                  description: "Number of samples from the hyperparameter search space"
+                  default: 4
+                  values: null
+                  min_val: 1
+                  max_val: 10000
+                  type: int
+                  required: true
+                max_concurrent_trials:
+                  description: "Maximum number of trials running concurrently"
+                  default: 1
+                  values: null
+                  min_val: 1
+                  max_val: 8
+                  type: int
+                  required: true
+                max_discrepancy:
+                  description: "Maximum discrepancy value for LDS / BLDS"
+                  default: 6
+                  values: null
+                  min_val: 1
+                  max_val: 100
+                  type: int
+                  search_alg: ["lds", "blds"]
+                  required: true
+                fidelity_schedule:
+                  description: "BLDS fidelity ladder: monotone-increasing list of hpo_dataset_percentage rungs in (0, 1]; max defines the top rung (need not be 1.0)"
+                  default: [0.1, 0.25, 0.5]
+                  values: null
+                  min_val: null
+                  max_val: null
+                  type: list
+                  search_alg: ["blds"]
+                  required: true
+                blds_delta:
+                  description: "BLDS confidence parameter delta in (0,1); smaller delta widens UCB/LCB"
+                  default: 0.1
+                  values: null
+                  min_val: 0.001
+                  max_val: 0.999
+                  type: float
+                  search_alg: ["blds"]
+                  required: true
+                blds_c:
+                  description: "BLDS exploration constant c (must be > 4)"
+                  default: 4.0001
+                  values: null
+                  min_val: 4.0001
+                  max_val: 100.0
+                  type: float
+                  search_alg: ["blds"]
+                  required: false
+                blds_log_exploration:
+                  description: "Use the paper's log-based exploration term in UCB/LCB; if false, use the simpler reference formula"
+                  default: true
+                  values: null
+                  min_val: null
+                  max_val: null
+                  type: bool
+                  search_alg: ["blds"]
+                  required: false
+                asha_time_attr:
+                  description: "ASHA: which reported attribute to track for rung decisions"
+                  default: "training_iteration"
+                  values: null
+                  min_val: null
+                  max_val: null
+                  type: str
+                  scheduler: ["asha"]
+                  required: false
+                asha_grace_period:
+                  description: "ASHA: minimum time_attr count before a trial may be stopped"
+                  default: 1
+                  values: null
+                  min_val: 1
+                  max_val: 100000
+                  type: int
+                  scheduler: ["asha"]
+                  required: true
+                asha_reduction_factor:
+                  description: "ASHA: trials at each rung are culled by 1/reduction_factor"
+                  default: 3
+                  values: null
+                  min_val: 2
+                  max_val: 100
+                  type: int
+                  scheduler: ["asha"]
+                  required: true
+                asha_brackets:
+                  description: "ASHA: number of brackets (parallel SHA runs)"
+                  default: 1
+                  values: null
+                  min_val: 1
+                  max_val: 100
+                  type: int
+                  scheduler: ["asha"]
+                  required: false
+                time_budget_s:
+                  description: "Maximum allowed time for completing the hyperparameter search."
+                  default: null
+                  values: null
+                  min_val: 60
+                  max_val: 1209600 # Setting max value to 2 weeks
+                  type: int
+                  required: false
+
+              # Config used for the finetuning trainer
+              training_config:
+                num_train_epochs:
+                  description: "Number of training epochs"
+                  default: 1
+                  values: null
+                  min_val: 1
+                  max_val: 100
+                  type: int
+                  required: true
+                ds_strategy:
+                  description: "DeepSpeed strategy used for distributed training"
+                  default: "zero2_gpu"
+                  values: ["auto", "zero1_gpu", "zero2_gpu", "zero3_gpu", "zero2_cpu", "zero3_cpu"]
+                  min_val: null
+                  max_val: null
+                  type: str
+                  train_implementation: ["DeepSpeed"]
+                  required: true
+                fsdp_strategy:
+                  description: "FSDP strategy used for distributed training"
+                  default: "no_shard"
+                  values: ["auto", "no_shard", "shard_grad_op", "full_shard", "hybrid_shard"]
+                  min_val: null
+                  max_val: null
+                  type: str
+                  train_implementation: ["FSDP"]
+                  required: true
+                train_implementation:
+                  description: "Distributed training implementation (DeepSpeed or FSDP)"
+                  default: "FSDP"
+                  values: ["DeepSpeed", "FSDP"]
+                  min_val: null
+                  max_val: null
+                  type: str
+                  required: true
+                use_flash_attention:
+                  description: "Use flash attention (eager or flash_attention_2)"
+                  default: "eager"
+                  values: ["eager", "flash_attention_2"]
+                  min_val: null
+                  max_val: null
+                  type: str
+                  required: true
+                precision:
+                  description: "Compute precision: bf16 (GPU/MPS macOS>=14) or fp32 (MPS/CPU fallback)"
+                  default: "bf16"
+                  values: ["bf16", "fp32"]
+                  min_val: null
+                  max_val: null
+                  type: str
+                  required: false
+                num_gpus_per_trial:
+                  description: "GPUs per trial (worker)"
+                  default: 1
+                  values: null
+                  min_val: 1
+                  max_val: 16
+                  type: int
+                  required: true
+                max_length:
+                  description: "Maximum sequence length used by the tokenizer (input + output)"
+                  default: 512
+                  values: null
+                  min_val: 1
+                  max_val: 128000
+                  type: int
+                  required: true
+                hpo_dataset_percentage:
+                  description: "Percentage training data used for HPO"
+                  default: 0.1
+                  values: null
+                  min_val: 0.01
+                  max_val: 1.0
+                  type: float
+                  required: true
+                hpo_num_epochs:
+                  description: "Number of training epochs used for HPO"
+                  default: 3
+                  values: null
+                  min_val: 1
+                  max_val: 10
+                  type: int
+                  required: true
+                data_backend:
+                  description: "Data backend for sharding during distributed training"
+                  default: "arrow"
+                  values: ["arrow", "ray_data"]
+                  min_val: null
+                  max_val: null
+                  type: str
+                  required: true
+
+              # Config used for setting up the PEFT/SFT tuners (SFT, LoRA, aLoRA, LoHA, LoKR, VeRA)
+              # One of these tuners must be selected in the training_config.peft_algorithm field
+              # for the hyperparameter search to be performed on it.
+              tuners_config:
+                lora:
+                  description: "Low rank adapter fine-tuning"
+                  tuner_name: "tuner.lora"
+                  title: "LoRA"
+                  dataset_type: "dataset_type_a"
+                  hyperparams:
+                    alpha_ratio:
+                      description: "scaling ratio"
+                      options: ["choice", "uniform"]
+                      strategy: "choice"
+                      values: [0.5, 1.0, 2.0]
+                      min_val: 0.1
+                      max_val: 10.0
+                      default: 2.0
+                      type: float
+                      for_tuner: false
+                    lora_dropout:
+                      description: "dropout rate"
+                      options: ["choice", "uniform"]
+                      strategy: "choice"
+                      values: [0.0, 0.05, 0.1]
+                      min_val: 0.0
+                      max_val: 0.1
+                      default: 0.05
+                      type: float
+                      for_tuner: true
+                    r:
+                      description: "Rank size"
+                      options: ["choice", "uniform"]
+                      strategy: "choice"
+                      values: [8, 16, 32]
+                      min_val: 0
+                      max_val: 256
+                      default: 32
+                      type: int
+                      for_tuner: true
+                    bias:
+                      description: "Bias value"
+                      options: ["choice"]
+                      strategy: "choice"
+                      values: ["none"]
+                      default: "none"
+                      min_val: null
+                      max_val: null
+                      type: str
+                      for_tuner: true
+                    learning_rate:
+                      description: "Learning rate"
+                      options: ["choice", "uniform", "loguniform"]
+                      strategy: "choice"
+                      values: [0.000001, 0.000003, 0.000005]
+                      min_val: 0.000001
+                      max_val: 0.00005
+                      default: 0.000005
+                      type: float
+                      for_tuner: false
+                    lr_scheduler_type:
+                      description: "Learning rate scheduler type"
+                      options: ["choice"]
+                      strategy: "choice"
+                      values: ["linear", "cosine"]
+                      min_val: null
+                      max_val: null
+                      default: "cosine"
+                      type: str
+                      for_tuner: false
+                    gradient_accumulation_steps:
+                      description: "Gradient accumulation steps"
+                      options: ["choice", "uniform"]
+                      strategy: "choice"
+                      values: [1]
+                      min_val: 1
+                      max_val: 50
+                      default: 8
+                      type: int
+                      for_tuner: false
+                    per_device_train_batch_size:
+                      description: "Batch size used during training"
+                      options: ["choice", "uniform"]
+                      strategy: "choice"
+                      values: [8, 16, 32]
+                      min_val: 1
+                      max_val: 128
+                      default: 1
+                      type: int
+                      for_tuner: false
+                    warmup_ratio:
+                      description: "Warmup ratio"
+                      options: ["choice", "uniform"]
+                      strategy: "choice"
+                      values: [0.1, 0.2]
+                      min_val: 0.0
+                      max_val: 1.0
+                      default: 0.1
+                      type: float
+                      for_tuner: false

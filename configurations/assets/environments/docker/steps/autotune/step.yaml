@@ -1,0 +1,52 @@
+name: autotune
+version: v1
+type: custom
+config:
+  bash:
+    # The step emits its own LLMB_ARTIFACT_ID marker; don't auto-scan the output dir.
+    skip_finding_output_artifacts: true
+
+inputs:
+  allow_unknown: true
+  required:
+    model:
+      type: model
+      accept: [uri, binding]
+    dataset_files:
+      type: dataset
+      accept: [uri, binding]
+  optional:
+    hpo_config:
+      type: fileset
+      accept: [uri, binding]
+outputs:
+  allow_unknown: true
+  optional:
+    custom:
+      type: model
+
+environment_configs:
+  Docker:
+    launchers:
+      autotune:
+        type: docker
+        monitors:
+          - docker_log
+        config:
+          # fm-tune runtime image (CUDA + deps + fm-tune baked in).
+          image: <YOUR_REGISTRY>/autotunex/build-runtime:21
+          # The step asset dir is bind-mounted at /gb-workspace (docs/environments/docker.md).
+          command: "bash /gb-workspace/bash_scripts/autotune/command.sh"
+          env:
+            # Docker does NOT auto-export inputs — wire resolved bindings explicitly.
+            LLMB_BASH_INPUT_MODEL: "{{ bindings.model.binding.path }}"
+            LLMB_BASH_INPUT_DATASET_FILES: "{{ bindings.dataset_files.binding.path }}"
+            LLMB_BASH_OUTPUT_DIR: "/gb-workspace/output"
+            # Deps are prebaked in the image — do not build a venv.
+            BASH_BUILD_VENV: "false"
+            BACKEND: "torch"
+            # FM_TUNE_ROOT must point at the image's fm-tune checkout; supply it
+            # per-build via config.docker.env (see the deferred docker build.yaml).
+    monitors:
+      docker_log:
+        ref: space://monitors/docker
