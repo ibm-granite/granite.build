@@ -203,3 +203,24 @@ def test_output_level_private_overrides_environment_level(src_dir, hfstore):
         )
         is False
     )
+
+
+def test_non_hfstore_honors_explicit_private_false(src_dir):
+    """The non-Hfstore branch must honor an explicit ``private: false`` too.
+
+    It cannot classify the org (no Enterprise list without an ``Hfstore``), but
+    ``private`` is store-independent: hardcoding ``True`` here would silently
+    ignore a config the Hfstore branch obeys.
+    """
+    hfuri = _hfuri()
+    plain_store = MagicMock()  # not an Hfstore
+    plain_store.get_secrets.return_value = {}
+    plain_store.resolve_token.return_value = "tok"
+    with patch(
+        "gbserver.environment.local_assets.resolve_space_resource_group_id",
+        return_value=None,
+    ):
+        assert (
+            _run(hfuri, src_dir, plain_store, _output_config({"private": False}))
+            is False
+        )

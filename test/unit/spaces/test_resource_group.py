@@ -724,3 +724,55 @@ class TestHfPushConfigError:
                     {"use_resource_group": False, "resource_group_id": "rg-1"}
                 ),
             )
+
+
+class TestResolveHfpushPrivate:
+    """The standalone ``private`` resolver used by the non-Hfstore push branch."""
+
+    def test_defaults_to_private(self):
+        from gbserver.spaces.resource_group import resolve_hfpush_private
+
+        assert resolve_hfpush_private() is True
+
+    def test_honors_explicit_false(self):
+        from gbserver.spaces.resource_group import resolve_hfpush_private
+
+        assert (
+            resolve_hfpush_private(output_config=_output_config({"private": False}))
+            is False
+        )
+
+    def test_output_overrides_environment(self):
+        from gbserver.spaces.resource_group import resolve_hfpush_private
+
+        assert (
+            resolve_hfpush_private(
+                storepush_config=_storepush_config({"private": True}),
+                output_config=_output_config({"private": False}),
+            )
+            is False
+        )
+
+    def test_agrees_with_the_full_resolver(self):
+        """Same rule, so the two entry points must never diverge."""
+        from gbserver.spaces.resource_group import (
+            resolve_hfpush_private,
+            resolve_hfpush_resource_group_id,
+        )
+
+        for hf_cfg in (
+            {},
+            {"private": True},
+            {"private": False},
+            {"private": None},
+            {"private": "false"},
+            {"private": "flase"},
+        ):
+            output_config = _output_config(hf_cfg)
+            _, from_full, _ = resolve_hfpush_resource_group_id(
+                hfuri=_make_hfuri(owner="my-user"),
+                assetstore=_make_assetstore([]),
+                space_name="public",
+                output_config=output_config,
+            )
+            assert resolve_hfpush_private(output_config=output_config) is from_full

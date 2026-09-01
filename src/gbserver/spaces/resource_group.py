@@ -206,9 +206,47 @@ def _hf_push_config_levels(
     return env_level, output_level
 
 
+def _private_from_hf_cfg(hf_cfg: dict) -> bool:
+    """Apply the ``private`` default to an already-merged ``hf`` config block.
+
+    The single definition of the rule, shared by
+    :func:`resolve_hfpush_resource_group_id` (which has the merged block in hand)
+    and :func:`resolve_hfpush_private` (which merges it first).
+    """
+    return parse_boolean(hf_cfg.get("private"), True)
+
+
 def _level_pin(level: dict) -> Optional[str]:
     """Return the resource group pinned at one config level, if any."""
     return level.get("resource_group_id") or level.get("resource_group_name") or None
+
+
+def resolve_hfpush_private(
+    storepush_config: Optional["StorePush"] = None,
+    output_config: Optional["BuildTargetOutputConfig"] = None,
+) -> bool:
+    """Resolve the ``private`` flag for an HF push from the merged push config.
+
+    Artifacts are private by default: HuggingFace's own ``create_repo`` default is
+    PUBLIC, so an unset/omitted value must resolve to ``True`` here to keep a user
+    from unintentionally publishing a model. Only an explicit falsy value
+    (``false``/``no``/``off``/``0``, quoted or not) opts into a public repo.
+
+    Split out of :func:`resolve_hfpush_resource_group_id` so a caller that cannot
+    classify the org (no ``Hfstore``, hence no Enterprise org list) can still honor
+    the flag without attempting resource group resolution.
+
+    Args:
+        storepush_config: Environment-level ``store_push`` (environment.yaml).
+        output_config: Per-output config whose ``store_push`` (build.yaml)
+            overrides the environment level.
+
+    Returns:
+        ``True`` for a private repo (the default), ``False`` only when explicitly
+        configured public.
+    """
+    hf_cfg = _merge_hf_levels(_hf_push_config_levels(storepush_config, output_config))
+    return _private_from_hf_cfg(hf_cfg)
 
 
 def sanitize_hf_step_overlay(hf_cfg: dict) -> dict:
@@ -271,7 +309,7 @@ def resolve_hfpush_resource_group_id(
     # stringifies as "None". parse_boolean also folds the quoted forms
     # ("false"/"no"/"off"/"0") onto False, so `private: "false"` means what it
     # says instead of being truthy as a non-empty string.
-    private = parse_boolean(hf_cfg.get("private"), True)
+    private = _private_from_hf_cfg(hf_cfg)
     use_resource_group = parse_boolean(hf_cfg.get(USE_RESOURCE_GROUP_KEY), True)
 
     organization = hfuri.get_owner()

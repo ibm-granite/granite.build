@@ -10,6 +10,7 @@ from typing import Any, Optional, Union
 
 from gbserver.spaces.resource_group import (
     HfPushConfigError,
+    resolve_hfpush_private,
     resolve_hfpush_resource_group_id,
     resolve_space_resource_group_id,
 )
@@ -221,6 +222,15 @@ def push_asset_hfstore(
     else:
         from gbserver.types.constants import get_hf_token
 
+        # Resource groups cannot be classified without Hfstore's Enterprise org
+        # list, but `private` is store-independent: read it from the same merged
+        # config levels so an explicit `private: false` is honored here too
+        # (default stays True). Only the resource-group resolution below differs
+        # between the two branches.
+        private = resolve_hfpush_private(
+            storepush_config=storepush_config,
+            output_config=output_config,
+        )
         token = (
             assetstore.resolve_token(hfuri)
             if assetstore is not None
