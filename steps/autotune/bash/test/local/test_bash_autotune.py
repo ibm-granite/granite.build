@@ -35,6 +35,13 @@ The step sets ``skip_finding_output_artifacts``, so the marker is the *only*
 source of that binding -- if it lands mid-line, the build "succeeds" with no
 output, which ``output_artifact_count: 1`` catches.
 
+SCOPE, and it matters: a pass proves the step RUNS and that its marker is scraped
+and bound. It does NOT prove the artifact was physically delivered --
+``output_artifact_count`` is satisfied by registration alone, and a successful build
+has been observed registering an EMPTY output dir. That is an open, cross-environment
+issue (the marker's path is not used as the push source); see FINDINGS.md on the
+feat/autotune-step-docker branch. Add a non-empty assertion here once it is resolved.
+
 Cost: heavyweight. The first run builds a venv and pip-installs torch + ray
 (fm-tune's ``core`` extra; ``main.py`` imports ray unconditionally), then runs a
 single short LoRA pass with HPO disabled. Extended suite only.
@@ -67,6 +74,16 @@ FM_TUNE_ROOT = REPO_ROOT / "autotunex/src/fm-tune"
 class TestBashAutotune(AbstractYamlBuildRunnerTest):
     """autotune trains once and registers its output via the artifact marker."""
 
+    def _out_dir(self) -> Path:
+        """Absolute, durable output dir for this run.
+
+        `outputs.custom.uri` MUST be absolute: gbserver resolves a relative file: URI
+        against its own CWD, which for the harness is an ephemeral workspace torn down
+        after the run -- so the pushed artifact would vanish and the recorded URI would
+        point at nothing.
+        """
+        return Path(tempfile.mkdtemp(prefix="autotune-out-"))
+
     def _get_yaml_spec_dir(self) -> Path:
         """Render the committed fixture into a temp spec dir with absolute paths.
 
@@ -97,6 +114,7 @@ class TestBashAutotune(AbstractYamlBuildRunnerTest):
         build = (fixture / "build.yaml").read_text()
         build = build.replace("@FM_TUNE_ROOT@", str(FM_TUNE_ROOT))
         build = build.replace("@DATASET_DIR@", str(fixture / "dataset"))
+        build = build.replace("@OUTPUT_DIR@", str(self._out_dir()))
         assert "@" not in build.split("granite.build:", 1)[1], "unsubstituted token"
         (spec / "build.yaml").write_text(build)
 

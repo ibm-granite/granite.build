@@ -37,6 +37,9 @@ build time. autotune needs that — `command.sh` materializes the inline
 `{{ config['autotune-config'] | to_yaml | b64encode }}`. `run.py` deliberately
 contains no Jinja, and a unit test enforces it.
 
+A docker variant of this step is deferred to the `feat/autotune-step-docker`
+branch; the same `SRC_DIR` reasoning applies there.
+
 If the framework would rather keep every step's sources verbatim, the alternative is
 to move materialization out of `command.sh` into `step-template.yaml`'s launcher
 `env` (as a base64 blob — the bash launcher does read `launcher_config.env`, see

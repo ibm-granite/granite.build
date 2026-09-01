@@ -2,7 +2,7 @@
 # environment against the fm-tune copy vendored at autotunex/src/fm-tune, a tiny
 # public model, and the two-line dataset beside this file.
 #
-# @FM_TUNE_ROOT@ and @DATASET_DIR@ are substituted by the test, which renders this
+# @OUTPUT_DIR@, @FM_TUNE_ROOT@ and @DATASET_DIR@ are substituted by the test, which renders this
 # file into a temp spec dir before handing it to the harness. Both must be ABSOLUTE
 # and neither can be written statically: the step runs with its CWD in the build
 # workdir, and gbserver resolves a relative file: URI against its own CWD rather
@@ -32,7 +32,7 @@ granite.build:
           # (BuildTargetOutputConfig.type), which breaks a downstream step
           # binding this as a `model` input.
           type: model
-          uri: file:{{ run_metadata.build_id }}-out/
+          uri: file:@OUTPUT_DIR@/{{ run_metadata.build_id }}-out/
       steps:
       - step_uri: space://steps/autotune
         config:

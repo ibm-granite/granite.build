@@ -1,10 +1,11 @@
 # autotune (AutoTune / fm-tune HPO + training) step for the bash environment.
 #
-# autotune runs in a PUBLIC image (the bash runtime supplies the interpreter; the
-# docker variant expects the fm-tune runtime image to be named per build via
-# config.docker.image). It builds no custom image: there is no Dockerfile here, so
-# common.mk auto-detects a non-image step and the image / publish-image targets are
-# no-ops.
+# Builds no custom image: the bash runtime supplies the interpreter, and there is no
+# Dockerfile here, so common.mk auto-detects a non-image step and the image /
+# publish-image targets are no-ops.
+#
+# A docker variant lives on the feat/autotune-step-docker branch (deferred; see its
+# FINDINGS.md).
 #
 # Usage:
 #   make space         # render a Space (space.yaml + steps/autotune/step.yaml) into space/
