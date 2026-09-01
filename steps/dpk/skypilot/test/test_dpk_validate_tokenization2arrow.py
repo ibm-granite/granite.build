@@ -54,7 +54,9 @@ _SCRIPT_PATH = _STEP_DIR / "src" / "validate_tokenization2arrow.py"
 
 def _load_validator():
     """Import the standalone validator script by path."""
-    spec = importlib.util.spec_from_file_location("validate_tokenization2arrow", _SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "validate_tokenization2arrow", _SCRIPT_PATH
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -164,7 +166,9 @@ class TestValidatorAcceptsGoodOutput:
 
     def test_main_exits_zero_and_writes_report(self, good_tree, tmp_path, capsys):
         report_dir = tmp_path / "report"
-        rc = validator.main(["validate_tokenization2arrow.py", str(good_tree), str(report_dir)])
+        rc = validator.main(
+            ["validate_tokenization2arrow.py", str(good_tree), str(report_dir)]
+        )
         assert rc == 0
         assert "VALIDATION PASSED" in capsys.readouterr().out
 
@@ -302,7 +306,11 @@ class TestValidatorRejectsCorruptOutput:
 class TestValidatorCli:
     def test_missing_input_dir_exits_one(self, tmp_path):
         rc = validator.main(
-            ["validate_tokenization2arrow.py", str(tmp_path / "nope"), str(tmp_path / "rpt")]
+            [
+                "validate_tokenization2arrow.py",
+                str(tmp_path / "nope"),
+                str(tmp_path / "rpt"),
+            ]
         )
         assert rc == 1
 
