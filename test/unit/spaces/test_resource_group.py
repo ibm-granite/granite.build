@@ -404,10 +404,17 @@ class TestApplyHfStepOverlay:
     win over resolution."""
 
     def test_strips_use_resource_group_and_reasserts_resolved_id(self):
-        hfpush_config = {"private": True, "hf": {"type": "model", "resource_group_id": None}}
+        hfpush_config = {
+            "private": True,
+            "hf": {"type": "model", "resource_group_id": None},
+        }
         apply_hf_step_overlay(
             hfpush_config,
-            {"type": "model", "use_resource_group": False, "resource_group_id": "stray"},
+            {
+                "type": "model",
+                "use_resource_group": False,
+                "resource_group_id": "stray",
+            },
             resource_group_id="resolved-id",
         )
         assert "use_resource_group" not in hfpush_config["hf"]

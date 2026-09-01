@@ -144,9 +144,7 @@ class TestHfstoreStepConfigPathInRepo:
         unresolved value. Guard that it stays absent.
         """
         for private in (True, False):
-            uri = HfURI.from_parts(
-                owner="org", repo="my-model", hf_type=HfType.MODEL
-            )
+            uri = HfURI.from_parts(owner="org", repo="my-model", hf_type=HfType.MODEL)
             cfg = Hfstore.build_hfpush_step_config(
                 hfuri=uri,
                 binding_path="/tmp/x",
