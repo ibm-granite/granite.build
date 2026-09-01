@@ -29,7 +29,7 @@
 #   --module       python module to run with `python -m` (a DPK
 #                  PythonTransformLauncher accepting --data_local_config).
 #   --input-path   directory the transform reads. The caller resolves this from
-#                  the declared input's staged path ($LLMB_INPUT_<name>).
+#                  the declared input's staged path ($GB_INPUT_<name>).
 #   --output-path  directory the transform writes. May be RELATIVE (the step's
 #                  default is ./output); it is created and absolutized here.
 #   --artifact-id  the declared output's name, used in the artifact marker.
@@ -38,7 +38,7 @@
 #                  could otherwise look like one of the options above.
 #
 # The caller is responsible for activating the venv (bare-node mode) and for
-# exporting $LLMB_INPUT_<name> for each declared input.
+# exporting $GB_INPUT_<name> for each declared input.
 set -euo pipefail
 
 module=""
@@ -83,4 +83,4 @@ python -m "$module" \
 
 # Register the output for the declared artifact id. Must start at the beginning
 # of a line for the skypilot monitor's regex to capture it.
-echo "LLMB_ARTIFACT_ID:${artifact_id} LLMB_ARTIFACT_PATH:${output_path}"
+echo "GB_ARTIFACT_ID:${artifact_id} GB_ARTIFACT_PATH:${output_path}"

@@ -11,7 +11,7 @@ granite.build:
   # WHAT REACHING SUCCESS PROVES, that a render test cannot:
   #   1. The step's `mkdir -p ./output` + `OUT="$(cd "$OUT" && pwd)"` really
   #      resolves inside SkyPilot's working directory on a remote node.
-  #   2. The ABSOLUTE path that lands in the LLMB_ARTIFACT_PATH marker is one the
+  #   2. The ABSOLUTE path that lands in the GB_ARTIFACT_PATH marker is one the
   #      skypilot monitor accepts and registers as the `tokens` artifact — the
   #      monitor takes the marker path verbatim as the binding, so a relative or
   #      non-existent path would register garbage rather than fail loudly.

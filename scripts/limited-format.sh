@@ -43,6 +43,17 @@ do
         continue
     fi
     if [[ "${x}" = *.py ]]; then
+        # Honour the repo-wide formatter exclusions. isort's `extend_skip_glob`
+        # and black's `extend-exclude` (both set for autotunex/ in the root
+        # pyproject.toml) are applied while WALKING a directory — naming a file
+        # explicitly, as this script does, bypasses them and reformats the file
+        # anyway. autotunex/ is ruff-formatted at line-length 100 with its own CI,
+        # so running repo-root black over it reflows ~260 files that are not the
+        # author's to change. Skip those paths here instead.
+        if [[ "${x}" = autotunex/* ]]; then
+            echo "skip excluded path (own formatter/CI): ${x}"
+            continue
+        fi
         echo "${MY_LINE_BREAK}"
         echo -e "\033[0;36m Formatting file: \033[0m\033[0;32m${x}\033[0m"
         isort --profile black "${x}"

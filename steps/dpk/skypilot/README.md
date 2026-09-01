@@ -113,7 +113,7 @@ run everywhere. They are Mode-1 only (not copied by `publish-step`), the same pl
 
 - `test_dpk_step_render.py` — pins what the *template* computes: that `transform:` derives
   the right module and pip extra for a range of transforms, that `args` become the right
-  argv words in order (with `0`/`true`/`false` handled correctly), that `image` switches
+  argv words in order (with `0`/`true`/`false` handled correctly), that `dpk_image` switches
   between bare-node and `docker:` mode, that command mode injects verbatim and skips the
   transform path, and that the rendered shell parses under `bash -n`. Because the blocks now
   invoke the bundled scripts, most assertions run the rendered block with a stub script on
@@ -156,7 +156,7 @@ backend is reachable:
 - **aws** — needs AWS credentials in the environment; provisions a real EC2 instance.
 
 > Container images require the Pyxis SPANK plugin on SLURM/LSF, which the local Docker
-> SLURM cluster does not have — so the slurm fixtures leave `image` empty and run on the
+> SLURM cluster does not have — so the slurm fixtures leave `dpk_image` empty and run on the
 > bare node.
 
 ## Known gaps
@@ -188,6 +188,6 @@ backend is reachable:
   default's *effect* (`output_artifact_count: 1` — the artifact could not register without
   it) rather than the field's value.
 - **Heavy transforms pay a per-cluster install.** `pii_redactor` pulls presidio + flair
-  (hundreds of MB of models). `image` is the escape hatch, but note DPK publishes only
+  (hundreds of MB of models). `dpk_image` is the escape hatch, but note DPK publishes only
   `.devN` snapshot images — there is no `1.1.8` image on quay.io; the newest
   `tokenization-ray` tag carrying `dpk_tokenization2arrow` is `1.1.7.dev0`.

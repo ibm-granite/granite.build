@@ -14,7 +14,7 @@ config:
     # with no change to this step.
     # Mutually exclusive with `command` below: set exactly one.
     transform: ""
-    # DPK release installed for `transform`. Ignored when `image` is set (the
+    # DPK release installed for `transform`. Ignored when `dpk_image` is set (the
     # image already provides DPK) or when running a raw `command`.
     dpk_version: "1.1.8"
     # Transform flags, rendered in order as `--<key> '<value>'`.
@@ -36,8 +36,8 @@ config:
     # Names of a declared target input / output. The step turns these into the
     # transform's --data_local_config input_folder / output_folder. Both are
     # required in transform mode.
-    #   input  -> read as $LLMB_INPUT_<input>  (the binding's staged path)
-    #   output -> used as the LLMB_ARTIFACT_ID the step emits
+    #   input  -> read as $GB_INPUT_<input>  (the binding's staged path)
+    #   output -> used as the GB_ARTIFACT_ID the step emits
     input: ""
     output: ""
     # Where the transform WRITES. OPTIONAL: empty (the default) means ./output in
@@ -64,30 +64,44 @@ config:
     # ---- escape hatch: run an arbitrary command instead of a transform --------
     # A verbatim bash command, for work that is not a DPK transform — e.g. the
     # bundled src/validate_tokens.py. Injected as-is (like the byoc step's
-    # `command`), with $LLMB_INPUT_<name> exported for every declared input.
+    # `command`), with $GB_INPUT_<name> exported for every declared input.
     # Mutually exclusive with `transform`.
     command: ""
 
-    # ---- overrides / extras --------------------------------------------------
+    # ---- overrides -----------------------------------------------------------
     # Override the derived module (e.g. a transform whose runtime is not
     # dpk_<name>.runtime, or a *.ray.runtime variant).
     module: ""
-    # Override the derived pip extra(s). Set to a non-empty list to replace it,
-    # e.g. ["ray"], or to [] via `no_extras: true` for the few transforms that
-    # declare no extra at all (noop, c4_annotator).
-    extras: []
-    no_extras: false
+    # Pip extras to install IN ADDITION to the one derived from `transform`, as
+    # they appear inside the brackets of data-prep-toolkit-transforms[...].
+    # ADDITIVE, never replacing: the transform's own extra carries its real
+    # dependencies (pii_redactor's presidio/flair, its pinned numpy<1.29), so
+    # dropping it would break the very transform the build asked for. Use this for
+    # a runtime flavour alongside it:
+    #   []               -> just the derived extra (the default)
+    #   ["ray"]          -> [<derived>,ray], e.g. with module: dpk_<t>.ray.runtime
+    #   ["ray","spark"]  -> [<derived>,ray,spark]
+    # An entry equal to the derived extra is dropped rather than repeated, so
+    # restating it is harmless. The derived extra always renders first, keeping the
+    # requirement string stable and diffable.
+    #
+    # There is deliberately NO way to suppress the derived extra. Every published
+    # DPK transform's extra follows the `_`->`-` rule (verified against the 1.1.8
+    # wheel: 44 modules, 50 declared extras), so a wrong derivation is not a case
+    # that occurs; `dpk_image` is the escape hatch if it ever does.
+    pip_extras: []
     # Additional pip requirements installed alongside the transform, e.g.
     # ["pyarrow"] for a command-mode script.
     packages: []
     pip_index_url: "https://pypi.org/simple"
-    # Public container image to run in. Empty (the default) => run on the bare
-    # launcher node, which is required on clusters without the Pyxis SPANK plugin
-    # (the local Docker SLURM cluster from `make slurm-setup` has none). When set,
-    # the venv/pip install is skipped entirely — the image must already provide
-    # DPK. This is a RUNTIME choice rendered by Jinja, not an image this step
-    # builds.
-    image: ""
+    # Public container image to run the transform in. Empty (the default) => run
+    # on the bare launcher node, which is required on clusters without the Pyxis
+    # SPANK plugin (the local Docker SLURM cluster from `make slurm-setup` has
+    # none). When set, the venv/pip install is skipped entirely — the image must
+    # already provide DPK. Named `dpk_image` rather than `image` to make clear it
+    # is a RUNTIME choice rendered by Jinja, not an image this step's Makefile
+    # builds (this is a public-image step; it builds none).
+    dpk_image: ""
   compute_config:
     num_gpus_per_node: 0
     total_memory_per_node: "4Gi"
@@ -106,7 +120,7 @@ environment_configs:
         config:
           # Runtime Jinja: an empty image renders to "" (bare launcher node);
           # otherwise the public image is wrapped as SkyPilot `docker:<ref>`.
-          image_id: '{{ ("docker:" ~ config.dpk_config.image) if config.dpk_config.image else "" }}'
+          image_id: '{{ ("docker:" ~ config.dpk_config.dpk_image) if config.dpk_config.dpk_image else "" }}'
           # Cloud-agnostic: the build supplies cpus/memory/accelerators via
           # config.launcher_config.resources.
           resources: {}
@@ -122,14 +136,16 @@ environment_configs:
           # prepends `hf download ...` here for any hf:// input binding.
           setup: |
             set -eu
-            {%- if not config.dpk_config.image %}
+            {%- if not config.dpk_config.dpk_image %}
             {%- set t = config.dpk_config.transform %}
-            {%- set extras = config.dpk_config.extras if config.dpk_config.extras
-                             else ([] if (config.dpk_config.no_extras or not t)
-                                   else [t | replace("_", "-")]) %}
+            {#- The transform's own extra is ALWAYS derived; pip_extras only adds to
+                it (see the config comment). `reject("in", derived)` drops a restated
+                derived value so it is not repeated in the brackets. #}
+            {%- set derived = [t | replace("_", "-")] if t else [] %}
+            {%- set extras = derived + (config.dpk_config.pip_extras | reject("in", derived) | list) %}
             {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ extras | join(",") ~ "]==" ~ config.dpk_config.dpk_version)
                               if extras
-                              else (("data-prep-toolkit-transforms==" ~ config.dpk_config.dpk_version) if t else "") %}
+                              else "" %}
             # The dependency install is delegated to the bundled src/dpk_setup.sh
             # (file-mounted at ./src). Safe from `setup` because SkyPilot syncs
             # file mounts first: its stage order is PROVISION -> SYNC_WORKDIR ->
@@ -149,13 +165,13 @@ environment_configs:
           # ./src are both relative.
           run: |
             set -euo pipefail
-            {%- if not config.dpk_config.image %}
+            {%- if not config.dpk_config.dpk_image %}
             . ./venv/bin/activate
             {%- endif %}
-            # Every declared input is exported as $LLMB_INPUT_<name> holding its
+            # Every declared input is exported as $GB_INPUT_<name> holding its
             # staged local path, so a command never hardcodes or duplicates one.
             {%- for name, b in bindings.items() %}
-            export LLMB_INPUT_{{ name }}='{{ b.binding.path }}'
+            export GB_INPUT_{{ name }}='{{ b.binding.path }}'
             {%- endfor %}
             {%- if config.dpk_config.transform %}
             {%- set module = config.dpk_config.module if config.dpk_config.module
@@ -180,14 +196,14 @@ environment_configs:
             # A `true` value renders as a bare flag; false/null are omitted.
             bash ./src/dpk_run.sh \
               --module '{{ module }}' \
-              --input-path "$LLMB_INPUT_{{ config.dpk_config.input }}" \
+              --input-path "$GB_INPUT_{{ config.dpk_config.input }}" \
               --output-path '{{ config.dpk_config.output_path if config.dpk_config.output_path else "./output" }}' \
               --artifact-id '{{ config.dpk_config.output }}' \
               --{% for k, v in config.dpk_config.args.items() %}{% if v is sameas true %} --{{ k }}{% elif v is not none and v is not sameas false %} --{{ k }} '{{ v | string | replace("'", "'\"'\"'") }}'{% endif %}{% endfor %}{% if config.dpk_config.extra_args %} {{ config.dpk_config.extra_args }}{% endif %}
             {%- else %}
             # Raw command mode: injected verbatim, like the byoc step. The command
-            # is responsible for its own LLMB_ARTIFACT_ID/PATH marker(s):
-            #   echo "LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>"
+            # is responsible for its own GB_ARTIFACT_ID/PATH marker(s):
+            #   echo "GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>"
             {{ config.dpk_config.command }}
             {%- endif %}
     monitors:

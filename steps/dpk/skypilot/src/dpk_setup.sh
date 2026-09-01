@@ -9,7 +9,7 @@
 # SYNC_FILE_MOUNTS -> SETUP -> PRE_EXEC -> EXEC, and `_execute` calls
 # backend.sync_file_mounts() before backend.setup() unconditionally.
 #
-# Only invoked in bare-node mode. When config.dpk_config.image is set the step
+# Only invoked in bare-node mode. When config.dpk_config.dpk_image is set the step
 # skips this entirely — the image is expected to already provide DPK.
 #
 # CONTRACT

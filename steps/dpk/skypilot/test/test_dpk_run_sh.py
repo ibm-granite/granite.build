@@ -32,10 +32,12 @@ only) and is not copied by ``make publish-step``.
 """
 
 import pathlib
+import re
 import shutil
 import subprocess
 
 import pytest
+import yaml
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
 _SCRIPT = _STEP_DIR / "src" / "dpk_run.sh"
@@ -74,7 +76,7 @@ def _pyargs(stdout: str) -> list[str]:
 
 def _marker(stdout: str) -> str | None:
     return next(
-        (l for l in stdout.splitlines() if l.startswith("LLMB_ARTIFACT_ID:")), None
+        (l for l in stdout.splitlines() if l.startswith("GB_ARTIFACT_ID:")), None
     )
 
 
@@ -161,7 +163,7 @@ class TestOutputPathHandling:
         assert created.is_dir()
         assert (
             _marker(proc.stdout)
-            == f"LLMB_ARTIFACT_ID:a LLMB_ARTIFACT_PATH:{created.resolve()}"
+            == f"GB_ARTIFACT_ID:a GB_ARTIFACT_PATH:{created.resolve()}"
         )
 
     def test_nested_relative_output_is_created(self, run_script):
@@ -183,7 +185,7 @@ class TestOutputPathHandling:
 
     def test_marker_path_is_always_absolute(self, run_script):
         proc = run_script(*_BASE, "--output-path", "rel", "--artifact-id", "a")
-        path = _marker(proc.stdout).split("LLMB_ARTIFACT_PATH:")[1]
+        path = _marker(proc.stdout).split("GB_ARTIFACT_PATH:")[1]
         assert pathlib.Path(path).is_absolute()
 
     def test_script_cwd_is_unchanged_by_the_absolutize(self, run_script):
@@ -303,11 +305,55 @@ class TestArtifactMarker:
         """The skypilot monitor's regex needs it unindented."""
         proc = run_script(*_BASE, "--output-path", "o", "--artifact-id", "tokens")
         line = _marker(proc.stdout)
-        assert line is not None and line.startswith("LLMB_ARTIFACT_ID:tokens ")
+        assert line is not None and line.startswith("GB_ARTIFACT_ID:tokens ")
 
     def test_exactly_one_marker_is_emitted(self, run_script):
         proc = run_script(*_BASE, "--output-path", "o", "--artifact-id", "a")
         markers = [
-            l for l in proc.stdout.splitlines() if l.startswith("LLMB_ARTIFACT_ID:")
+            l for l in proc.stdout.splitlines() if l.startswith("GB_ARTIFACT_ID:")
         ]
         assert len(markers) == 1
+
+    def test_marker_uses_the_gb_prefix_not_the_legacy_llmb_one(self, run_script):
+        """Pin the standardized prefix (#329 moved the repo to GB_).
+
+        The monitor accepts either — its regex is ``(?:GB_|LLMB_)ARTIFACT_ID:`` —
+        so a regression to LLMB_ would still WORK and therefore would not be
+        caught by any build test. Assert the prefix directly.
+        """
+        proc = run_script(*_BASE, "--output-path", "o", "--artifact-id", "a")
+        assert "LLMB_" not in proc.stdout
+        assert "GB_ARTIFACT_ID:" in proc.stdout
+        assert "GB_ARTIFACT_PATH:" in proc.stdout
+
+    def test_the_emitted_marker_matches_the_shipped_monitor_regex(self, run_script):
+        """End-to-end on the contract: the server must actually parse what we emit.
+
+        Reads the regex out of the shipped skypilot monitor rather than restating
+        it, so this fails if either side drifts. Also checks the form the monitor
+        really sees on a cluster, where SkyPilot prefixes each stdout line with
+        ``(cluster, pid=N)``.
+        """
+        # _STEP_DIR is steps/dpk/skypilot, so the repo root is 3 levels up.
+        monitor = (
+            _STEP_DIR.parents[2]
+            / "src/gbserver/builtins/monitors/skypilot/monitor.yaml"
+        )
+        if not monitor.is_file():  # pragma: no cover - repo layout guard
+            pytest.skip("shipped monitor not found from the step dir")
+        spec = yaml.safe_load(monitor.read_text())
+        cfg = next(
+            e
+            for e in spec["config"]["event_configs"]
+            if "ARTIFACT_PATH" in e.get("line_regex", "")
+        )
+        proc = run_script(*_BASE, "--output-path", "o", "--artifact-id", "tokens")
+        line = _marker(proc.stdout)
+        assert re.search(cfg["line_regex"], line), f"monitor would not match {line!r}"
+        assert re.search(cfg["line_regex"], f"(gb-abc123, pid=42) {line}")
+        # And the captured fields are the ones we meant to publish.
+        by_name = {f["field_name"]: f for f in cfg["event_fields"]}
+        got_id = re.search(by_name["binding_id"]["field_regex"], line)
+        got_path = re.search(by_name["path"]["field_regex"], line)
+        assert got_id and got_id.group(0) == "tokens"
+        assert got_path and got_path.group(0).endswith("/o")

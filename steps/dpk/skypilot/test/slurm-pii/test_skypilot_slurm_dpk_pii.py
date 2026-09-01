@@ -33,7 +33,7 @@ so adding transform #3 (and #31) is a build.yaml change, never a step change.
 including torch, flair, and presidio (with numpy pinned below 1.29 by DPK's own
 constraint), and the transform downloads a flair NER model on first use. Locally
 the install alone took several minutes, so the fixture allows 60. It is the
-strongest argument for supporting a prebaked ``dpk_config.image`` later; an image
+strongest argument for supporting a prebaked ``dpk_config.dpk_image`` later; an image
 is deliberately not used here so the fixture stays credential-free and runs on the
 local cluster, which has no Pyxis.
 

@@ -14,7 +14,7 @@ granite.build:
   # torch, flair, and presidio (numpy is pinned <1.29 by DPK's own constraint) —
   # and the transform downloads a flair NER model on first use. Measured locally
   # at several minutes for the install alone, so timeout_minutes is generous.
-  # This is the strongest argument for a prebaked image (dpk_config.image) later;
+  # This is the strongest argument for a prebaked image (dpk_config.dpk_image) later;
   # it is deliberately not used here so the fixture stays credential-free and
   # runs on the local cluster, which has no Pyxis.
   #

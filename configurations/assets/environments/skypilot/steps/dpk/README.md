@@ -69,10 +69,9 @@ All fields live under the step's `config.dpk_config`.
 |---|---|---|
 | `packages` | list | Extra pip requirements installed alongside the transform, e.g. `["pyarrow"]`. In command mode this is the only install. |
 | `pip_index_url` | string | Index for the pip install. Default `https://pypi.org/simple`. |
-| `image` | string | Public container image to run in. Default `""` = the bare launcher node. When set, **no venv or pip install happens** — the image must already provide DPK. Rendered at runtime as SkyPilot `docker:<ref>`. |
+| `dpk_image` | string | Public container image to run the transform in. Default `""` = the bare launcher node. When set, **no venv or pip install happens** — the image must already provide DPK. Rendered at runtime as SkyPilot `docker:<ref>`. |
 | `module` | string | Override the derived module, e.g. `dpk_tokenization2arrow.ray.runtime`. |
-| `extras` | list | Override the derived pip extra, e.g. `["ray"]`. |
-| `no_extras` | bool | Install `data-prep-toolkit-transforms` with **no** extra. For the few transforms that declare none (`noop`, `c4_annotator`). |
+| `pip_extras` | list | Pip extras to install **in addition to** the one derived from `transform`, e.g. `["ray"]`. Default `[]`. Never replaces the derived extra. See [Adding pip extras](#adding-pip-extras). |
 
 ## What `transform` derives
 
@@ -96,6 +95,27 @@ The step also auto-injects the launcher's data config, so you never write it:
 ```
 --data_local_config "{'input_folder': '<input>', 'output_folder': '<output_path>'}"
 ```
+
+### Adding pip extras
+
+`transform` already derives the extra that carries the transform's real dependencies, so
+you rarely touch this. `pip_extras` **adds** to that derived extra — it never replaces it:
+
+| `pip_extras` | Installs |
+|---|---|
+| `[]` (default) | `data-prep-toolkit-transforms[pii-redactor]` |
+| `["ray"]` | `data-prep-toolkit-transforms[pii-redactor,ray]` |
+| `["ray","spark"]` | `data-prep-toolkit-transforms[pii-redactor,ray,spark]` |
+
+Additive is deliberate. `pii_redactor`'s own extra pulls presidio, flair, and a pinned
+`numpy<1.29`; if asking for the `ray` flavour *replaced* it, the transform the build asked
+for could not import. So the derived extra is always present, and always rendered first (the
+requirement string stays stable and diffable). Restating it — `["pii-redactor"]` — is
+harmless; it is dropped rather than repeated.
+
+There is no way to suppress the derived extra, and no need for one: every published DPK
+transform's extra follows the `_`→`-` rule, so the derivation is not something you have to
+correct. If you ever need total control over the environment, use `dpk_image` instead.
 
 ## Transform flags
 
@@ -203,11 +223,16 @@ Notes on the irregular entries, all verified against the tag:
   and a pip extra, but are different modules.
 - **`faces` / `nsfw` / `people`** have no per-transform README; the shared
   `transforms/images/README.md` documents all three.
-- **`c4_annotator`** declares no pip extra, so it needs `no_extras: true`.
+The table lists the transforms a build can actually run. Three DPK entries are deliberately
+absent because they are **not installable from PyPI** — verified against the published
+`data-prep-toolkit-transforms==1.1.8` wheel, which ships 44 `dpk_*` modules and declares 50
+extras:
 
-The table lists the transforms a build would plausibly run. DPK also ships `noop` (a
-no-op test fixture) and `dpk_transform_chain` (a chaining utility, not a data transform);
-both work if you name them, but neither is documented here.
+- **`c4_annotator`** and **`noop`** — neither module is in the wheel and neither is a
+  declared extra, so `transform: noop` / `transform: c4_annotator` cannot resolve at all
+  (`noop` is a test fixture in any case). They are not a `pip_extras` problem; there is
+  nothing to install.
+- **`dpk_transform_chain`** — a chaining utility, not a data transform.
 
 ## Inputs and outputs
 
@@ -218,7 +243,7 @@ target's output). The step exports every declared input as an environment variab
 its staged local path:
 
 ```
-inputs.<name>  →  $LLMB_INPUT_<name>
+inputs.<name>  →  $GB_INPUT_<name>
 ```
 
 In transform mode, `input: <name>` selects which one feeds the transform. In command mode,
@@ -238,12 +263,12 @@ Declare each output on the target, then make sure the bytes land at the path in 
 - **Command mode** — your command writes wherever it likes and prints the marker itself:
 
   ```
-  LLMB_ARTIFACT_ID:<output-id> LLMB_ARTIFACT_PATH:<abs-path>
+  GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>
   ```
 
   `<output-id>` must match a declared `outputs.<id>`. Repeat the line to register several
-  artifacts under one output. For `mem://` outputs use `LLMB_ARTIFACT_PATH` →
-  `LLMB_ARTIFACT_STATE:<value>`.
+  artifacts under one output. For `mem://` outputs use `GB_ARTIFACT_PATH` →
+  `GB_ARTIFACT_STATE:<value>`.
 
 #### When the default is not enough
 
@@ -267,7 +292,7 @@ Set it explicitly in either of these cases:
 
 > **Why is there no `input_path`?** Because inputs and outputs reach the step differently, and
 > this is the asymmetry the default only partly hides. An input is **staged before `run`** and
-> its resolved path is handed to the step as `$LLMB_INPUT_<name>`, so there is nothing to
+> its resolved path is handed to the step as `$GB_INPUT_<name>`, so there is nothing to
 > specify. A declared **output does not exist yet** at render time: the runtime context is
 > `bindings` + `run_metadata` + `setup_config` only, and declared output URIs reach *static
 > validation* alone. Plumbing them into the runtime context would let the step derive
@@ -359,9 +384,9 @@ granite.build:
               command: |
                 REPORT=/tmp/dpk-validate-report
                 mkdir -p "$REPORT"
-                python src/validate_tokens.py "$LLMB_INPUT_tokens" "$REPORT" \
-                  --input "$LLMB_INPUT_docs"
-                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$REPORT"
+                python src/validate_tokens.py "$GB_INPUT_tokens" "$REPORT" \
+                  --input "$GB_INPUT_docs"
+                echo "GB_ARTIFACT_ID:report GB_ARTIFACT_PATH:$REPORT"
 ```
 
 Switching to a different transform touches only `dpk_config`. This one is a **single terminal
@@ -397,7 +422,7 @@ The step ships `src/` to `./src` on the node. Two of the three scripts are the s
 machinery — you do not invoke them, but they are where the step's shell actually lives:
 
 - `src/dpk_setup.sh` — the bare-node dependency install (`uv venv` + `uv pip install`),
-  invoked from the step's `setup` phase. Skipped entirely when `image` is set.
+  invoked from the step's `setup` phase. Skipped entirely when `dpk_image` is set.
 - `src/dpk_run.sh` — the transform-mode invocation: creates and absolutizes the output
   directory, builds DPK's `--data_local_config`, runs `python -m <module>`, and emits the
   artifact marker. Not used in command mode, where your `command` runs instead.
@@ -425,14 +450,14 @@ The remaining script is a helper you *do* call, from a command-mode `command`:
 
 - **Pure-python DPK.** The step runs the CPU-only pure-python runtime. DPK's Ray runtime is
   faster on large corpora; it is reachable via `module: dpk_<name>.ray.runtime` +
-  `extras: ["ray"]`, but provisioning a multi-node Ray cluster is out of scope here.
+  `pip_extras: ["ray"]`, but provisioning a multi-node Ray cluster is out of scope here.
 - **Runtime dependency install.** Dependencies are installed per cluster during `setup` with
   [`uv`](https://github.com/astral-sh/uv) (bootstrapped with `pip` first, as DPK's own
   image does), so
   the worker needs outbound access to `pip_index_url`. For an air-gapped cluster, or to
   avoid the install cost (`pii_redactor` pulls presidio + flair, which is heavy), pre-bake an
-  image and set `image`.
-- **Container images need Pyxis on SLURM/LSF.** Leave `image` empty on clusters without the
+  image and set `dpk_image`.
+- **Container images need Pyxis on SLURM/LSF.** Leave `dpk_image` empty on clusters without the
   Pyxis SPANK plugin — including the local Docker SLURM cluster used for testing.
 - **`output_path` is unchecked.** See the note under [Outputs](#outputs).
 - **Flag names are transform-specific.** The step derives the module and the dependencies,

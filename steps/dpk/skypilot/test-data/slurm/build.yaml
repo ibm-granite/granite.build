@@ -23,7 +23,7 @@ granite.build:
   #
   # Input is an hf:// dataset binding: the SkyPilot launcher injects
   # `hf download <repo> --local-dir <path>` into the step's setup, and the step
-  # exports the staged path as $LLMB_INPUT_docs. The dataset is public, so no
+  # exports the staged path as $GB_INPUT_docs. The dataset is public, so no
   # HF_TOKEN is needed here or in CI.
   targets:
 
@@ -108,9 +108,9 @@ granite.build:
               command: |
                 REPORT=/tmp/dpk-validate-report
                 rm -rf "$REPORT"; mkdir -p "$REPORT"
-                python src/validate_tokens.py "$LLMB_INPUT_tokens" "$REPORT" \
-                  --input "$LLMB_INPUT_docs"
-                echo "LLMB_ARTIFACT_ID:report LLMB_ARTIFACT_PATH:$REPORT"
+                python src/validate_tokens.py "$GB_INPUT_tokens" "$REPORT" \
+                  --input "$GB_INPUT_docs"
+                echo "GB_ARTIFACT_ID:report GB_ARTIFACT_PATH:$REPORT"
             compute_config:
               num_gpus_per_node: 0
               total_memory_per_node: 4Gi

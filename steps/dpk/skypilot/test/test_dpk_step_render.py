@@ -103,7 +103,7 @@ def _script_argv(rendered: str, which: str) -> list[str]:
 
     Replaces the `bash ./src/<script>` invocation with a stub that prints one
     argument per line, then executes the rendered block. Everything else in the
-    block (the venv activation, the LLMB_INPUT_ exports) is stubbed or harmless.
+    block (the venv activation, the GB_INPUT_ exports) is stubbed or harmless.
     """
     if shutil.which("bash") is None:  # pragma: no cover - bash is present in CI
         pytest.skip("bash not available")
@@ -188,7 +188,7 @@ class TestImageSelection:
         assert rendered == ""
 
     def test_image_renders_docker_ref(self, launcher, defaults):
-        cfg = dict(defaults, image="quay.io/org/img:1.2.3")
+        cfg = dict(defaults, dpk_image="quay.io/org/img:1.2.3")
         assert _render(launcher["image_id"], cfg) == "docker:quay.io/org/img:1.2.3"
 
 
@@ -231,18 +231,54 @@ class TestDerivations:
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _opt(argv, "--module") == "dpk_tokenization2arrow.ray.runtime"
 
-    def test_extras_override_replaces_the_derived_extra(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, extras=["ray"])
-        setup = _render(launcher["setup"], cfg)
-        assert "[ray]==" in setup
-        assert "tokenization2arrow]" not in setup
+    def test_pip_extras_defaults_to_empty(self, launcher, defaults):
+        """The default adds nothing: the derived extra alone."""
+        assert defaults["pip_extras"] == []
 
-    def test_no_extras_installs_the_bare_package(self, launcher, defaults):
-        """noop / c4_annotator declare no extra of their own."""
-        cfg = _transform_cfg(defaults, transform="noop", no_extras=True)
-        setup = _render(launcher["setup"], cfg)
-        assert "'data-prep-toolkit-transforms==1.1.8'" in setup
-        assert "[" not in setup.split("data-prep-toolkit-transforms")[1][:2]
+    def test_pip_extras_is_additive_not_a_replacement(self, launcher, defaults):
+        """THE contract. Replacing would drop the transform's real dependencies.
+
+        `pii_redactor`'s extra carries presidio/flair and a pinned numpy<1.29; a
+        build asking for the `ray` flavour must still get them, or the transform it
+        asked for cannot import.
+        """
+        cfg = _transform_cfg(defaults, transform="pii_redactor", pip_extras=["ray"])
+        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _passthrough(argv) == [
+            "data-prep-toolkit-transforms[pii-redactor,ray]==1.1.8"
+        ]
+
+    def test_derived_extra_renders_first(self, launcher, defaults):
+        """Stable, diffable requirement string regardless of what was added."""
+        cfg = _transform_cfg(defaults, pip_extras=["aaa-sorts-first"])
+        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _passthrough(argv) == [
+            "data-prep-toolkit-transforms[tokenization2arrow,aaa-sorts-first]==1.1.8"
+        ]
+
+    def test_several_pip_extras_are_all_added(self, launcher, defaults):
+        cfg = _transform_cfg(
+            defaults, transform="pii_redactor", pip_extras=["ray", "spark"]
+        )
+        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _passthrough(argv) == [
+            "data-prep-toolkit-transforms[pii-redactor,ray,spark]==1.1.8"
+        ]
+
+    @pytest.mark.parametrize(
+        "pip_extras,expected",
+        [
+            (["pii-redactor"], "[pii-redactor]"),
+            (["ray", "pii-redactor"], "[pii-redactor,ray]"),
+        ],
+    )
+    def test_restating_the_derived_extra_is_not_duplicated(
+        self, launcher, defaults, pip_extras, expected
+    ):
+        """Harmless to pip either way, but keeps the rendered command clean."""
+        cfg = _transform_cfg(defaults, transform="pii_redactor", pip_extras=pip_extras)
+        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _passthrough(argv) == [f"data-prep-toolkit-transforms{expected}==1.1.8"]
 
     def test_extra_packages_are_appended(self, launcher, defaults):
         cfg = _transform_cfg(defaults, packages=["pyarrow"])
@@ -386,11 +422,11 @@ class TestIoWiring:
             "extra": {"binding": {"path": "/staged/extra"}},
         }
         run = _render(launcher["run"], cfg, bindings)
-        assert "export LLMB_INPUT_docs='/staged/docs'" in run
-        assert "export LLMB_INPUT_extra='/staged/extra'" in run
+        assert "export GB_INPUT_docs='/staged/docs'" in run
+        assert "export GB_INPUT_extra='/staged/extra'" in run
 
     def test_input_is_passed_as_the_bindings_staged_path(self, launcher, defaults):
-        """--input-path resolves through $LLMB_INPUT_<input>, not a hardcoded path.
+        """--input-path resolves through $GB_INPUT_<input>, not a hardcoded path.
 
         Assembling DPK's --data_local_config from it is dpk_run.sh's job, covered
         by test_dpk_run_sh.py.
@@ -406,7 +442,7 @@ class TestIoWiring:
 
 class TestCommandMode:
     def test_command_is_injected_verbatim(self, launcher, defaults):
-        cmd = 'python src/validate_tokens.py "$LLMB_INPUT_tokens" out --input in'
+        cmd = 'python src/validate_tokens.py "$GB_INPUT_tokens" out --input in'
         cfg = dict(defaults, command=cmd, packages=["pyarrow"])
         run = _render(launcher["run"], cfg, {"tokens": {"binding": {"path": "/tok"}}})
         assert cmd in run
@@ -420,7 +456,7 @@ class TestCommandMode:
     def test_command_mode_still_exports_bindings(self, launcher, defaults):
         cfg = dict(defaults, command="echo hi")
         run = _render(launcher["run"], cfg, {"tokens": {"binding": {"path": "/tok"}}})
-        assert "export LLMB_INPUT_tokens='/tok'" in run
+        assert "export GB_INPUT_tokens='/tok'" in run
 
     def test_command_mode_installs_only_its_packages(self, launcher, defaults):
         """No transform => no DPK requirement is synthesized."""
@@ -455,7 +491,7 @@ class TestVenvHandling:
 
     def test_image_mode_skips_venv_and_pip(self, launcher, defaults):
         """An image already provides DPK, so nothing is installed at run time."""
-        cfg = _transform_cfg(defaults, image="quay.io/org/dpk:1")
+        cfg = _transform_cfg(defaults, dpk_image="quay.io/org/dpk:1")
         setup = _render(launcher["setup"], cfg)
         run = _render(launcher["run"], cfg, _BINDINGS)
         assert "dpk_setup.sh" not in setup
