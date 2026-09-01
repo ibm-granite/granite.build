@@ -125,20 +125,41 @@ def push_asset_hfstore(
     Suitable for any local environment (Bash, Docker, etc.) that writes
     outputs to the host filesystem and wants to push them to HF.
 
+    The space name is read from the thread-local URI space config and used to
+    derive the Enterprise resource group; :meth:`HfURI.push` receives the
+    *resolved* ``resource_group_id`` (never a name — passing a name would make
+    push re-derive it and hit the admin-gated endpoint, defeating the cache) plus
+    the resolved ``private`` flag.
+
+    Resource groups exist only in HF Enterprise orgs. For a non-Enterprise
+    namespace resolution is skipped entirely, and a resolution *miss* on an
+    Enterprise org (the usual case for a non-admin standalone token) is logged and
+    the push proceeds without a group. Artifacts are private unless a push config
+    explicitly asks for public.
+
     Args:
         src: Local file or directory path to push.
         binding_id: Output binding name included in the commit message.
         uri: Target HfURI string or object.
-        assetstore: Hfstore instance whose secrets supply the HF token.
+        assetstore: Hfstore instance whose secrets supply the HF token. Only an
+            ``Hfstore`` declares the Enterprise org list; any other value (or
+            ``None``) cannot classify the org, so resource group resolution is
+            attempted unconditionally while ``private`` is still honored.
         run_metadata: EntityRunMetadata with ``build_id`` and ``target_name``.
-            The current space name is resolved from the thread-local URI space config
-            and passed as ``resource_group_name`` to :meth:`HfURI.push`.
+        storepush_config: Environment-level ``store_push`` (environment.yaml)
+            supplying ``config.hf`` (``resource_group_id`` /
+            ``resource_group_name`` / ``use_resource_group`` / ``private``).
+        output_config: Per-output config whose ``store_push`` (build.yaml)
+            overrides the environment level.
 
     Returns:
         The resolved HfURI after a successful push.
 
     Raises:
         ValueError: If ``uri`` is absent or ``src`` is empty.
+        HfPushConfigError: If the push config is unsatisfiable for the target org
+            (a resource group pinned for a non-Enterprise org, or a pin combined
+            with ``use_resource_group: false``). A subclass of ``ValueError``.
         RuntimeError: If the HuggingFace push operation fails.
     """
     from gbcommon.uri.hf import HfURI

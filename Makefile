@@ -309,7 +309,8 @@ extended-tests-setup:
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 # GBTEST_STANDALONE_ENVIRONMENT (which HF resource group a STANDALONE push targets)
 # is defaulted to STAGING by test/conftest.py, so it covers every pytest entry
-# point rather than just this target. Export it here to override that.
+# point rather than just this target. No export is needed here; set it in the
+# environment to override that default.
 .PHONY: extended-tests
 extended-tests: check-image-tag-not-dirty
 	export GB_ENVIRONMENT=STANDALONE &&			\
