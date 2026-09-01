@@ -9,7 +9,7 @@ granite.build:
   # (Environment._register_default_memstore), so no `assetstores` entry is needed.
   #
   #   - `first` runs the generic `command` step and emits an
-  #     `LLMB_ARTIFACT_ID:mem_output1 LLMB_ARTIFACT_STATE:mem_output1_value`
+  #     `GB_ARTIFACT_ID:mem_output1 GB_ARTIFACT_STATE:mem_output1_value`
   #     marker; the command step's log_monitor registers `mem_output1_value` as
   #     the `state` of output `mem_output1` (uri mem://mem_output1), which
   #     pushasset_memstore stores in the build's shared memory.
@@ -32,7 +32,7 @@ granite.build:
             command_config:
               command: >-
                 echo "first target emitting mem:// output mem_output1";
-                echo "LLMB_ARTIFACT_ID:mem_output1 LLMB_ARTIFACT_STATE:mem_output1_value"
+                echo "GB_ARTIFACT_ID:mem_output1 GB_ARTIFACT_STATE:mem_output1_value"
             compute_config:
               num_nodes: 1
     second:
@@ -57,6 +57,6 @@ granite.build:
                   echo "ERROR: expected mem_output1_value, got '{{ bindings.from_first.binding.state }}'";
                   exit 1;
                 fi;
-                echo "LLMB_ARTIFACT_ID:mem_output2 LLMB_ARTIFACT_STATE:{{ bindings.from_first.binding.state }}"
+                echo "GB_ARTIFACT_ID:mem_output2 GB_ARTIFACT_STATE:{{ bindings.from_first.binding.state }}"
             compute_config:
               num_nodes: 1

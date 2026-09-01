@@ -88,26 +88,19 @@ class URI(ABC):
     def _load_urihandlers() -> None:
         """Discover and register every URI handler, rebuilding the registry.
 
-        Rebuilds ``URI.uri_handler_classes`` from scratch on each call: the
-        registry is cleared first so the method is idempotent and reload-safe.
-        Without the clear, the ``PluginRegistrar`` core-wins guard would keep a
-        stale prior registration and refuse to replace it — so a re-run after
-        ``importlib.reload(gbcommon.uri.<scheme>)`` (as the test conftest does)
-        would leave the registry pointing at the pre-reload class, distinct from
-        the module's current one. The in-tree scan repopulates built-ins with
-        their current classes; the plugin ``discover`` pass then adds external
-        handlers, with core-wins still protecting the freshly-registered
+        Rebuilds ``URI.uri_handler_classes`` from scratch on each call via the
+        shared :func:`~gbcommon.plugins.rebuild_registry` contract, so the method
+        is idempotent and reload-safe: the in-tree scan repopulates built-ins
+        with their current classes and the plugin ``discover`` pass adds external
+        handlers on top, with core-wins protecting the freshly-registered
         built-ins.
         """
         from gbcommon.plugins import (
             GROUP_URI_HANDLERS,
             PluginRegistrar,
             keys_from_method,
+            rebuild_registry,
         )
-
-        # Rebuild from scratch (in place, preserving any held reference to the
-        # dict) so a reload's new classes win over stale registrations.
-        URI.uri_handler_classes.clear()
 
         # Files each URI handler under the scheme(s) it advertises. Both the
         # in-tree scan and the plugin pass register through this one registrar.
@@ -118,43 +111,46 @@ class URI(ABC):
         )
         package_dir = os.path.dirname(__file__)
 
-        for filename in os.listdir(package_dir):
-            if (
-                filename.endswith(".py")
-                and filename != "__init__.py"
-                and filename != "utils.py"
-                and filename != os.path.basename(__file__)
-            ):
-                urihandler_modulename = filename[:-3]
-                urihandler_name = urihandler_modulename.capitalize() + "URI"
-                try:
-                    module = importlib.import_module(
-                        f".{urihandler_modulename}", package="gbcommon.uri"
-                    )
-                    if hasattr(module, urihandler_name):
-                        handler_class = getattr(module, urihandler_name)
-                        if isinstance(handler_class, type) and issubclass(
-                            handler_class, URI
-                        ):
-                            registrar.add(handler_class)
+        def populate() -> None:
+            for filename in os.listdir(package_dir):
+                if (
+                    filename.endswith(".py")
+                    and filename != "__init__.py"
+                    and filename != "utils.py"
+                    and filename != os.path.basename(__file__)
+                ):
+                    urihandler_modulename = filename[:-3]
+                    urihandler_name = urihandler_modulename.capitalize() + "URI"
+                    try:
+                        module = importlib.import_module(
+                            f".{urihandler_modulename}", package="gbcommon.uri"
+                        )
+                        if hasattr(module, urihandler_name):
+                            handler_class = getattr(module, urihandler_name)
+                            if isinstance(handler_class, type) and issubclass(
+                                handler_class, URI
+                            ):
+                                registrar.add(handler_class)
+                            else:
+                                logger.error(
+                                    f"Ignoring {urihandler_name} since it is not a subclass or URI class"
+                                )
                         else:
                             logger.error(
-                                f"Ignoring {urihandler_name} since it is not a subclass or URI class"
+                                f"Module {urihandler_modulename} does not contain expected uri_hander class {urihandler_name}."
                             )
-                    else:
+                    except ImportError as e:
+                        logger.error(f"Error importing module {urihandler_name}: {e}")
+                    except Exception as e:
                         logger.error(
-                            f"Module {urihandler_modulename} does not contain expected uri_hander class {urihandler_name}."
+                            f"Error loading uri handler from {urihandler_name}: {e}"
                         )
-                except ImportError as e:
-                    logger.error(f"Error importing module {urihandler_name}: {e}")
-                except Exception as e:
-                    logger.error(
-                        f"Error loading uri handler from {urihandler_name}: {e}"
-                    )
 
-        # Discover URI handlers shipped by separately-installed plugin packages.
-        # Runs after the in-tree scan so the core-wins rule protects built-ins.
-        registrar.discover(GROUP_URI_HANDLERS, URI)
+            # Discover URI handlers shipped by separately-installed plugin packages.
+            # Runs after the in-tree scan so the core-wins rule protects built-ins.
+            registrar.discover(GROUP_URI_HANDLERS, URI)
+
+        rebuild_registry(URI.uri_handler_classes, populate)
 
     @classmethod
     def get_uri_class(

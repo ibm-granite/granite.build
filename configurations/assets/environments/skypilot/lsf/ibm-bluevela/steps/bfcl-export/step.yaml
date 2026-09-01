@@ -50,7 +50,7 @@ environment_configs:
             cat "$BFCL_OUTPUT_CSV"
             echo "=== END CSV OUTPUT ==="
 
-            echo "LLMB_ARTIFACT_ID:bfcl_export_csv LLMB_ARTIFACT_PATH:${BFCL_OUTPUT_CSV}"
+            echo "GB_ARTIFACT_ID:bfcl_export_csv GB_ARTIFACT_PATH:${BFCL_OUTPUT_CSV}"
     monitors:
       skypilot_monitor:
         # Artifact convention + profile come from the monitor library

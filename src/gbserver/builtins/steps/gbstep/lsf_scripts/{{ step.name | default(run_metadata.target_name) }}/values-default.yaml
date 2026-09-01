@@ -62,6 +62,8 @@ k8s:
   # must be owned by the root group and be read/writable by that group.
   # Files to be executed must also have group execute permissions.
   run_as_root_group: true
+  # No `umask` key here on purpose: the k8s chart's copy has one for its Helm
+  # templates, but LSF has no consumer. Its equivalent is in llmb_lsf_jobsub.sh.
   automount_service_account_token: false
   {%- if setup_config.space is defined and setup_config.space.secret is defined %}
   space_secret: {{ setup_config.space.secret }}

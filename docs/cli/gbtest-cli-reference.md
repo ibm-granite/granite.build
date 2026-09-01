@@ -164,7 +164,7 @@ accidentally run a half-filled skeleton. Replace `step_count` with the observed
 step count (or `-1` to skip that assertion).
 
 > `output_artifact_count` counts *declared* outputs; a declared output whose
-> command emits no `LLMB_ARTIFACT` marker will over-count — the first real run
+> command emits no `GB_ARTIFACT` marker will over-count — the first real run
 > catches it.
 
 ### The `-f` override

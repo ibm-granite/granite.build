@@ -44,7 +44,6 @@ from libgbtest.constants import (
     GBTEST_USER_NAME,
     failed_build_assert_message,
 )
-from libgbtest.mode import is_mock_mode
 from libgbtest.utils import (
     AbstractSingletonStorageUsingPreloadedSpaceTest,
     is_pytest_running_parallel,
@@ -53,9 +52,7 @@ from pydantic import BaseModel, field_validator
 
 from gbcommon.types.testing import (
     disable_failure_simulation,
-    disable_hf_mocks,
     enable_failure_simulation,
-    enable_hf_mocks,
 )
 from gbcommon.uri.uri import URI
 from gbserver.buildrunner.buildrunner import BuildRunner
@@ -348,10 +345,11 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     def setup_method(self: Self, method):
         # breakpoint()
-        # Only use real HF calls in live mode; mock artifact ops otherwise.
-        if is_mock_mode():
-            self._enable_artifact_mocks()
-
+        # HF mocking is handled entirely by the autouse `_hf_mock` fixture in
+        # test/conftest.py, which is marker-aware and so honors
+        # @pytest.mark.live("hf") at function, class and module scope. Gating it
+        # here too would re-set GBTEST_MOCK_HF after the fixture lifted it,
+        # force-mocking a live("hf") build test; see PR #314 review.
         self.class_tested = None
         run_locally = getattr(self, "run_locally", False)
         logger.info(f"Test to be run locally: {run_locally}")
@@ -372,9 +370,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         super().setup_method(method)
 
     def teardown_method(self: Self, method):
-        if is_mock_mode():
-            self._disable_artifact_mocks()
-
         if GBTEST_SKIP_BUILD_TEARDOWN:
             logger.warning("skipping the teardown of the test build!")
             return
@@ -414,15 +409,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
         # And now do the super cleanups
         return super().teardown_method(method)
-
-    def _enable_artifact_mocks(self) -> None:
-        """Enable push/pull/exists/delete mocking for this process and remote jobs/pods
-        and the input/output URIs used in the build.  Currently onl hf://."""
-        enable_hf_mocks()
-
-    def _disable_artifact_mocks(self) -> None:
-        """Disable artifact mocking."""
-        disable_hf_mocks()
 
     def _failed_build_msg(self: Self, build_id: str, message: str) -> str:
         """Format an assertion message with the build ID for easier debugging."""

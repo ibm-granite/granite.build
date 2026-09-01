@@ -9,7 +9,7 @@ The gbserver process does not need to stay running for jobs to complete.
 import asyncio
 import glob
 import os
-from typing import Dict, List, Optional, Self
+from typing import Any, Dict, List, Optional, Self
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -58,7 +58,12 @@ from gbserver.environment._skypilot_ssh import (
 
 # Shared file_mounts builder — keeps the unmanaged and managed launchers in sync
 # (relative-source resolution against the step.yaml dir, bucket sub-path handling).
-from gbserver.environment.skypilot import _build_skypilot_mounts
+from gbserver.environment.skypilot import (
+    _abort_shielded_request,
+    _build_skypilot_mounts,
+    _run_sky_verb_off_loop,
+    _sky_submit_to_thread,
+)
 
 
 class Skypilot_managed(Environment):
@@ -94,6 +99,44 @@ class Skypilot_managed(Environment):
         """Generate a unique managed job name from a launch_id."""
         return f"gb-{launch_id[:12]}"
 
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        launcher_config: Optional[Dict] = None,
+        launch_id: str = "",
+        job_name: str = "",
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Build the full env dict for a skypilot managed-job launch.
+
+        Precedence (lowest->highest): secrets < launcher ``envs`` < the
+        built-in ``GB_SKYPILOT_*`` vars < the standard cross-environment set
+        from ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID), which
+        is authoritative.
+
+        :param run_metadata: launch run_metadata; forwarded to ``super()`` and
+            the source of GB_TARGETRUN_ID.
+        :param launcher_config: step.yaml launcher config (its ``envs``).
+        :param launch_id: unique id for this launch (GB_SKYPILOT_LAUNCH_ID).
+        :param job_name: the managed job name (GB_SKYPILOT_JOB_NAME).
+        :returns: the complete ``{name: value}`` env dict for the sky.Task.
+        """
+        launcher_config = launcher_config or {}
+        run_metadata = run_metadata or {}
+        env: Dict[str, str] = {}
+        if self.secrets:
+            env.update(self.secrets)
+        env.update(launcher_config.get("envs", {}))
+        env["GB_SKYPILOT_LAUNCH_ID"] = launch_id
+        env["GB_SKYPILOT_JOB_NAME"] = job_name
+        if run_metadata.get("targetrun_id"):
+            env["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
+        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
+        # Uniform with the other environments; a no-op here since skypilot's
+        # launcher vars are already GB_-prefixed (GB_SKYPILOT_*), so there are no
+        # LLMB_ names to mirror.
+        return self._add_gb_aliases(env)
+
     async def launch_skypilot_managed(
         self: Self,
         launch_id: str,
@@ -111,6 +154,8 @@ class Skypilot_managed(Environment):
 
             launcher_config = kwargs.get("launcher_config", {}) or {}
             config = kwargs.get("config", {}) or {}
+            # Kept as a local: reused by the post-launch-failure event below.
+            run_metadata = kwargs.get("run_metadata", {})
 
             job_name = self._job_name_for(launch_id)
             cloud = (
@@ -143,19 +188,15 @@ class Skypilot_managed(Environment):
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 
-            # Build environment variables
-            env_vars: Dict[str, str] = {}
-            if self.secrets:
-                env_vars.update(self.secrets)
-            env_vars.update(launcher_config.get("envs", {}))
-            env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id
-            env_vars["GB_SKYPILOT_JOB_NAME"] = job_name
-            # Expose run metadata so steps in the same target can share state
-            run_metadata = kwargs.get("run_metadata", {})
-            if run_metadata.get("targetrun_id"):
-                env_vars["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
-            if run_metadata.get("build_id"):
-                env_vars["GB_BUILD_ID"] = run_metadata["build_id"]
+            # Build the full env for the sky.Task. GB_BUILD_ID (and any future
+            # standard var) comes from Environment.get_launch_env_vars() and is
+            # authoritative over launcher/config env.
+            env_vars = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                launcher_config=launcher_config,
+                launch_id=launch_id,
+                job_name=job_name,
+            )
 
             # Build sky.Task
             task = sky.Task(
@@ -195,8 +236,36 @@ class Skypilot_managed(Environment):
                 res_config,
             )
 
-            request_id = sky.jobs.launch(task, name=job_name)
-            sky.stream_and_get(request_id)
+            # Both sky.jobs.launch and sky.stream_and_get are blocking calls.
+            # Running them directly on the event loop freezes it (defeating any
+            # enclosing wait_for) and makes cancellation impossible, so offload
+            # them to threads. Each blocks in an OS thread (the submit while the
+            # jobs controller provisions, stream_and_get while the job runs), so
+            # a CancelledError delivered to this task would be deferred until the
+            # thread returns. Shield each future so the outer await observes the
+            # cancel *immediately* while the thread keeps running, letting us
+            # abort the request server-side and cancel the job by name (mirrors
+            # the unmanaged launcher's _provision_with_retry).
+            launch_fut = asyncio.ensure_future(
+                _sky_submit_to_thread(sky.jobs.launch, task, name=job_name)
+            )
+            try:
+                request_id = await asyncio.shield(launch_fut)
+            except asyncio.CancelledError:
+                # Cancelled during the submit: no request_id yet, but the
+                # controller may already be accepting the job. _abort_managed_launch
+                # recovers the request_id by draining the submit and cancels the
+                # job by its deterministic name so it is not left running.
+                await self._abort_managed_launch(None, job_name, launch_fut)
+                raise
+            stream_fut = asyncio.ensure_future(
+                _sky_submit_to_thread(sky.stream_and_get, request_id)
+            )
+            try:
+                await asyncio.shield(stream_fut)
+            except asyncio.CancelledError:
+                await self._abort_managed_launch(request_id, job_name, stream_fut)
+                raise
 
             self._job_names[launch_id] = job_name
             logger.info(
@@ -261,6 +330,45 @@ class Skypilot_managed(Environment):
             raise
         finally:
             self._release_monitors(launch_id)
+
+    async def _abort_managed_launch(
+        self: Self,
+        request_id: Any,
+        job_name: str,
+        pending_fut: Optional["asyncio.Future"],
+    ) -> None:
+        """Abort an in-flight managed-job launch after cancellation.
+
+        Thin wrapper over the shared ``_abort_shielded_request`` whose only
+        launcher-specific part is the reclaim: cancel the managed job by its
+        deterministic name so a job the controller already accepted does not
+        keep running. ``self._job_names`` is not populated until the launch
+        returns, so ``cleanup_skypilot_managed`` cannot find the job on the
+        cancel path — cancelling by name here is the safety net, and also covers
+        the case where the submit was cancelled before it returned a request_id.
+
+        Args:
+            request_id: The id from ``sky.jobs.launch``, or ``None`` if cancelled
+                during the submit (recovered by draining ``pending_fut``).
+            job_name: Deterministic managed-job name to cancel.
+            pending_fut: The shielded ``to_thread`` future to drain (the submit
+                or the ``sky.stream_and_get`` wait).
+        """
+
+        async def _cancel_job() -> None:
+            # Cancel the managed job by name in case the controller already
+            # accepted it before the launch request was aborted.
+            try:
+                await _run_sky_verb_off_loop(sky.jobs.cancel, name=job_name)
+            except Exception as e:
+                logger.warning("jobs.cancel for %s failed: %s", job_name, e)
+
+        await _abort_shielded_request(
+            request_id,
+            pending_fut,
+            description=f"SkyPilot managed job {job_name}",
+            on_abort=_cancel_job,
+        )
 
     async def monitor_skypilot_managed_monitor(
         self: Self,
@@ -460,8 +568,7 @@ class Skypilot_managed(Environment):
                 job_name,
                 launch_id,
             )
-            request_id = sky.jobs.cancel(name=job_name)
-            sky.get(request_id)
+            await _run_sky_verb_off_loop(sky.jobs.cancel, name=job_name)
             logger.info("Cancelled SkyPilot managed job %s", job_name)
         except Exception as e:
             logger.error("Failed to cancel SkyPilot managed job %s: %s", job_name, e)

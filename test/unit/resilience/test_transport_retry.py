@@ -36,6 +36,12 @@ except ImportError:  # aiohttp < 3.10
     HAS_DNS_ERROR = False
 from aiohttp.connector import TCPConnector
 
+# kubernetes_asyncio lives in the optional ``ibm`` extra and is absent in
+# lightweight environments (e.g. the quick-test CI matrix). HAS_K8S / requires_k8s
+# are shared via libgbtest.constants; import the client symbols this module uses
+# directly, guarded by HAS_K8S so it still collects when the extra is absent.
+from libgbtest.constants import HAS_K8S, requires_k8s
+
 import gbserver.resilience.transport_retry as tr
 from gbserver.resilience.transport_retry import (
     _WRAPPED_MARKER,
@@ -45,23 +51,12 @@ from gbserver.resilience.transport_retry import (
     install_transport_retries,
 )
 
-# kubernetes_asyncio lives in the optional ``ibm`` extra and is absent in
-# lightweight environments (e.g. the quick-test CI matrix). Import it
-# defensively so this module still collects there; k8s-specific assertions are
-# gated on HAS_K8S below.
-try:
+if HAS_K8S:
     from kubernetes_asyncio.client.api_client import ApiClient
     from kubernetes_asyncio.client.exceptions import ApiException
-
-    HAS_K8S = True
-except ImportError:
+else:
     ApiClient = None  # type: ignore[assignment,misc]
     ApiException = None  # type: ignore[assignment,misc]
-    HAS_K8S = False
-
-requires_k8s = pytest.mark.skipif(
-    not HAS_K8S, reason="kubernetes_asyncio not installed (optional 'ibm' extra)"
-)
 
 
 @pytest.fixture

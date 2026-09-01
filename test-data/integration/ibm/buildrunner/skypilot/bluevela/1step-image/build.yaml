@@ -6,7 +6,7 @@ granite.build:
   # (see cloud_config.lsf.cluster_configs.bluevela.enroot in the environment.yaml).
   #
   # env:// (env_local) I/O is a shared-FS no-op: push/pull do nothing, so the
-  # artifact registration/binding works purely on the LLMB_ARTIFACT_PATH string
+  # artifact registration/binding works purely on the GB_ARTIFACT_PATH string
   # and no real files need to exist on disk. This keeps the test free of HF
   # credentials and real pushes while still driving the command step end-to-end.
   targets:
@@ -19,7 +19,7 @@ granite.build:
         env_input:
           uri: "env:///tmp/gb-env-input.txt"
       outputs:
-        # env:// output: registered inline from the LLMB_ARTIFACT marker the
+        # env:// output: registered inline from the GB_ARTIFACT marker the
         # command emits below. `type` is required for env:// outputs.
         env_output:
           uri: "env://{{ binding.path }}"
@@ -40,7 +40,7 @@ granite.build:
               command: >-
                 echo "image-run target on bluevela via enroot";
                 echo "env input path: {{ bindings.env_input.binding.path }}";
-                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/command-1step-image/{{ run_metadata.targetsteprun_id | short_hash }}/out"
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/command-1step-image/{{ run_metadata.targetsteprun_id | short_hash }}/out"
             # No launcher_config.resources.cluster: the environment defines a
             # single allowed cluster (cloud_config.lsf.allowed_clusters:
             # [bluevela]), which gbserver merges into ~/.sky/config.yaml. With a

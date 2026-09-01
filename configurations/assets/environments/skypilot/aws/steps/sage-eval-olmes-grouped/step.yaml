@@ -133,7 +133,7 @@ environment_configs:
               RESULT_FILE=$(find "$OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
-              echo "LLMB_ARTIFACT_ID:sage_eval_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+              echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"
             else
               echo "WARNING: No results file found in $OUTPUT_PATH"
             fi

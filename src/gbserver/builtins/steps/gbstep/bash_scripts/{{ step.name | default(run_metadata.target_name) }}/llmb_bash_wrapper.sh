@@ -116,12 +116,12 @@ echo "${LLMB_BASH_JOB_NAME}: skip making artifacts out of ${LLMB_BASH_OUTPUT_DIR
 {%- elif cbash.single_output_artifact is defined and cbash.single_output_artifact %}
 
 echo "${LLMB_BASH_JOB_NAME}: making a single artifact out of ${LLMB_BASH_OUTPUT_DIR}"
-echo "LLMB_ARTIFACT_ID:${LLMB_BASH_OUTPUT_DIR##*/} LLMB_ARTIFACT_PATH:${LLMB_BASH_OUTPUT_DIR}" | tee -a "${LLMB_BASH_LOG_FILE_COMBINED}"
+echo "GB_ARTIFACT_ID:${LLMB_BASH_OUTPUT_DIR##*/} GB_ARTIFACT_PATH:${LLMB_BASH_OUTPUT_DIR}" | tee -a "${LLMB_BASH_LOG_FILE_COMBINED}"
 
 {%- else %}
 
 echo "${LLMB_BASH_JOB_NAME}: making artifacts out of sub-directories of ${LLMB_BASH_OUTPUT_DIR}"
-find "${LLMB_BASH_OUTPUT_DIR}" -depth -mindepth 1 -maxdepth 1 -type d -exec bash -c 'echo "LLMB_ARTIFACT_ID:${0##*/} LLMB_ARTIFACT_PATH:{}"' {} \; | tee -a "${LLMB_BASH_LOG_FILE_COMBINED}"
+find "${LLMB_BASH_OUTPUT_DIR}" -depth -mindepth 1 -maxdepth 1 -type d -exec bash -c 'echo "GB_ARTIFACT_ID:${0##*/} GB_ARTIFACT_PATH:{}"' {} \; | tee -a "${LLMB_BASH_LOG_FILE_COMBINED}"
 
 {%- endif %}
 

@@ -207,13 +207,20 @@ report.xml
 # WandB
 wandb/
 
-# Frontend (Next.js)
+# Frontend (Next.js workspace: packages/ui-core, apps/standalone)
 frontend/node_modules/
-frontend/.next/
-frontend/out/
-frontend/.env
-frontend/certificates/
-frontend/*.tsbuildinfo
+frontend/**/node_modules/
+frontend/**/.next/
+frontend/**/out/
+frontend/**/.env
+frontend/**/.env.local
+frontend/apps/standalone/certificates/
+frontend/**/*.tsbuildinfo
+
+# The Python packaging rule `lib/` above (unanchored) also matches source
+# directories named lib/ inside the frontend workspace (e.g. ui-core/lib/) —
+# un-ignore those specifically rather than widening the Python rule.
+!frontend/**/lib/
 
 # Compiled frontend served by gbserver — built by `make build-frontend`, not committed
 src/gbserver/static/ui/

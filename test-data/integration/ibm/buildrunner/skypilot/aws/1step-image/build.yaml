@@ -9,7 +9,7 @@ granite.build:
   # (GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD) is needed.
   #
   # env:// (env_local) I/O is a no-op: push/pull do nothing, so the artifact
-  # registration/binding works purely on the LLMB_ARTIFACT_PATH string and no
+  # registration/binding works purely on the GB_ARTIFACT_PATH string and no
   # real files need to exist on disk. This keeps the test free of HF/S3
   # credentials while still driving the command step end-to-end — the simplest
   # possible "does AWS+SkyPilot work" smoke test.
@@ -22,7 +22,7 @@ granite.build:
         env_input:
           uri: "env:///tmp/gb-env-input.txt"
       outputs:
-        # env:// output: registered inline from the LLMB_ARTIFACT marker the
+        # env:// output: registered inline from the GB_ARTIFACT marker the
         # command emits below. `type` is required for env:// outputs.
         env_output:
           uri: "env://{{ binding.path }}"
@@ -45,7 +45,7 @@ granite.build:
               command: >-
                 echo "image-run target on AWS EC2 via SkyPilot (docker image)";
                 echo "env input path: {{ bindings.env_input.binding.path }}";
-                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/tmp/gb-aws-1step-image/{{ run_metadata.targetsteprun_id | short_hash }}/out"
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-aws-1step-image/{{ run_metadata.targetsteprun_id | short_hash }}/out"
             # Unlike bluevela (whose LSF environment defines a single allowed
             # cluster, so no resources are needed), AWS must size an EC2 instance.
             # Pin an explicit small instance + region to keep the test cheap and

@@ -9,7 +9,7 @@ granite.build:
   # it did not. This is the bluevela/LSF sibling of the slurm filemount test.
   #
   # env:// (env_local) I/O is a shared-FS no-op: push/pull do nothing, so the
-  # artifact registration/binding works purely on the LLMB_ARTIFACT_PATH string
+  # artifact registration/binding works purely on the GB_ARTIFACT_PATH string
   # and no real files need to exist on disk. Keeps the test HF-free/fast.
   targets:
     filemount:
@@ -21,10 +21,10 @@ granite.build:
         env_input:
           uri: "env:///tmp/gb-env-input.txt"
       outputs:
-        # env:// output: registered inline from the LLMB_ARTIFACT marker the
+        # env:// output: registered inline from the GB_ARTIFACT marker the
         # command emits below. `type` is required for env:// outputs. The path is
         # arbitrary (env:// push/pull are no-ops); it just has to match the value
-        # in the command's LLMB_ARTIFACT marker. Uses the BlueVela shared-FS
+        # in the command's GB_ARTIFACT marker. Uses the BlueVela shared-FS
         # convention for realism.
         env_output:
           uri: "env:///proj/granite-build/g4os/gbtest/filemount/out.txt"
@@ -49,7 +49,7 @@ granite.build:
               image: quay.io/fedora/fedora-minimal:42
               command: >-
                 echo "env input path: {{ bindings.env_input.binding.path }}";
-                echo "LLMB_ARTIFACT_ID:env_output LLMB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/filemount/out.txt"
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/filemount/out.txt"
             compute_config:
               # CPU-only command. `total_memory_per_node` is intentionally
               # omitted: the memory floor is silently skipped on LSF/slurm (bare

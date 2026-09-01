@@ -121,14 +121,15 @@ environment_configs:
         config:
           poll_interval_seconds: 5
           event_configs:
+            # Markers standardized on GB_; the legacy LLMB_ prefix is dual-accepted.
             - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
               is_json: false
               event_fields:
                 - field_name: binding_id
-                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                  field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
                 - field_name: path
-                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
                   is_data: true
                 - field_name: binding
                   field_value_template: '{ "path": "{{ fields.data.path }}" }'

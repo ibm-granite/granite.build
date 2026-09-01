@@ -17,18 +17,22 @@
 #     stripped centrally in Environment.get_events_from_log_line, so no ANSI
 #     handling belongs here.)
 #
-# Marker convention (shared with the bash/docker/skypilot monitors):
-#   * filesystem-path artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>
+# Marker convention (shared with the bash/docker/skypilot monitors). Every rule
+# below accepts both the current GB_ prefix (emitted by llmb_lsf_wrapper.sh) and
+# the legacy LLMB_ prefix, via the `(?:GB_|LLMB_)` alternation — so pre-existing
+# workloads still emitting LLMB_ markers keep registering artifacts. Examples use
+# the GB_ form:
+#   * filesystem-path artifact — GB_ARTIFACT_ID:<id> GB_ARTIFACT_PATH:<path>
 #     registers <path> for the named output. The artifact event emits a `binding`
 #     payload ({"path": <path>}) that downstream targets dereference as
 #     {{ bindings.<x>.binding.path }}; it enables retry-transparent NEWARTIFACT
 #     deduplication. This form is NOT env://-specific: it is consumed by every
 #     filesystem-backed store — file://, hf://, cos://, lh://, env:// — with the
 #     output's uri scheme in build.yaml (not this marker) selecting the handler.
-#   * mem:// artifact — LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_STATE:<value>
+#   * mem:// artifact — GB_ARTIFACT_ID:<id> GB_ARTIFACT_STATE:<value>
 #     registers <value> as the output's `state` (no path normalisation). PATH and
 #     STATE markers are mutually exclusive per line.
-#   * step metadata — LLMB_STEP_METADATA_KEY:<key> LLMB_STEP_METADATA_VALUE:<value>
+#   * step metadata — GB_STEP_METADATA_KEY:<key> GB_STEP_METADATA_VALUE:<value>
 #     merges <value> into the step's StoredStepRun.metadata under <key> (e.g. a
 #     git commit_hash resolved at runtime), surfacing as build provenance in lineage.
 #
@@ -50,12 +54,12 @@ config:
     # any filesystem-backed store (file://, hf://, cos://, lh://, env://); the
     # output's uri scheme in build.yaml picks the handler, not this marker.
     - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+      line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
       event_fields:
         - field_name: binding_id
-          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+          field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
         - field_name: path
-          field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+          field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
           is_data: true
         - field_name: binding
           field_value_template: '{ "path": "{{ fields.data.path }}" }'
@@ -63,12 +67,12 @@ config:
     # mem:// artifact: registers <value> as the output's `state`, passed verbatim
     # to a consumer via {{ bindings.<x>.binding.state }} (no path normalisation).
     - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-      line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+      line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_STATE:.*"
       event_fields:
         - field_name: binding_id
-          field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+          field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
         - field_name: state
-          field_regex: "(?<=LLMB_ARTIFACT_STATE:).*"
+          field_regex: "(?:(?<=GB_ARTIFACT_STATE:)|(?<=LLMB_ARTIFACT_STATE:)).*"
           is_data: true
         - field_name: binding
           field_value_template: '{ "state": "{{ fields.data.state }}" }'
@@ -82,11 +86,11 @@ config:
     # the `${LLMB_LSF_JOB_NAME}: ` prefix the wrapper uses for its status/info
     # lines — a leading prefix would make `^` silently drop the event.
     - event_type: STEP_METADATA_UPDATE_EVENT
-      line_regex: '^LLMB_STEP_METADATA_KEY:.* LLMB_STEP_METADATA_VALUE:.*'
+      line_regex: '^(?:GB_|LLMB_)STEP_METADATA_KEY:.* (?:GB_|LLMB_)STEP_METADATA_VALUE:.*'
       event_fields:
         - field_name: metadata_key
-          field_regex: "(?<=LLMB_STEP_METADATA_KEY:)[^ ]+"
+          field_regex: "(?:(?<=GB_STEP_METADATA_KEY:)|(?<=LLMB_STEP_METADATA_KEY:))[^ ]+"
         - field_name: metadata_value
           # Trim trailing whitespace/carriage-return (CRLF logs) so it is not
           # folded into the value; internal spaces are preserved.
-          field_regex: '(?<=LLMB_STEP_METADATA_VALUE:).*?(?=\s*$)'
+          field_regex: '(?:(?<=GB_STEP_METADATA_VALUE:)|(?<=LLMB_STEP_METADATA_VALUE:)).*?(?=\s*$)'

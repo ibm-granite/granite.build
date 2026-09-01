@@ -143,7 +143,7 @@ environment_configs:
                 | sort -V | tail -n 1)
             fi
             ARTIFACT_PATH="${FINAL_HF_CKPT:-${RUN_OUTPUT_DIR}}"
-            echo "LLMB_ARTIFACT_ID:checkpoint LLMB_ARTIFACT_PATH:${ARTIFACT_PATH}"
+            echo "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:${ARTIFACT_PATH}"
     monitors:
       skypilot_monitor:
         # Artifact convention (incl. binding) comes from the monitor library

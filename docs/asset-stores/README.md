@@ -67,7 +67,7 @@ Notes:
   survives intact instead of being mangled into `/http:/host:8000`.
   - **Consuming** a `mem://` input works on every environment (the transport is host-side and
     environment-agnostic). **Producing** a `mem://` output additionally requires the step's **monitor**
-    to recognize the `LLMB_ARTIFACT_STATE` marker the workload prints — the shipped `bash`, `skypilot`,
+    to recognize the `GB_ARTIFACT_STATE` marker the workload prints — the shipped `bash`, `skypilot`,
     and `docker` library monitors carry that rule; other environments' monitors need it added (see
     [Value outputs (`mem://`)](../steps/monitoring-and-artifact-events.md#value-outputs-mem)).
 

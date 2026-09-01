@@ -7,6 +7,8 @@ require it unless a Skypilot environment is actually configured.
 """
 
 import asyncio
+import concurrent.futures
+import functools
 import glob
 import os
 import shlex
@@ -14,7 +16,18 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Self,
+    Tuple,
+    Union,
+)
 
 from tenacity import (
     AsyncRetrying,
@@ -24,7 +37,6 @@ from tenacity import (
     wait_exponential,
 )
 
-from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.spaces.resource_group import resolve_space_resource_group_id
@@ -50,6 +62,57 @@ else:
 
 _DEFAULT_POLL_INTERVAL_SECONDS = 300
 
+# Dedicated thread pool for the blocking SkyPilot provisioning submits that a
+# cancel may *orphan* — the shielded sky.launch / sky.jobs.launch /
+# sky.stream_and_get calls whose futures _abort_shielded_request abandons when
+# its drain times out. asyncio.to_thread runs on the event loop's default
+# ThreadPoolExecutor (~min(32, cpu+4) workers), shared by every to_thread in
+# gbserver; an abandoned provisioning thread blocks until its SDK call returns
+# naturally (potentially the full provisioning time), holding a shared slot, so
+# a few aborted provisions could starve unrelated offloaded work. Running them
+# on their own pool bounds the blast radius to SkyPilot provisioning. Lazily
+# created so merely importing this module (or running without SkyPilot) does not
+# spin up threads.
+_SKY_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_SKY_EXECUTOR_LOCK = threading.Lock()
+
+
+def _get_sky_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Return the dedicated SkyPilot provisioning thread pool, creating it once.
+
+    :returns: the process-wide ThreadPoolExecutor used for orphanable SkyPilot
+        submit/stream calls (double-checked lazy singleton).
+    """
+    global _SKY_EXECUTOR
+    if _SKY_EXECUTOR is None:
+        with _SKY_EXECUTOR_LOCK:
+            if _SKY_EXECUTOR is None:
+                _SKY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                    thread_name_prefix="gb-sky-provision"
+                )
+    return _SKY_EXECUTOR
+
+
+async def _sky_submit_to_thread(
+    func: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    """Run a blocking, possibly-orphaned SkyPilot call on the dedicated pool.
+
+    Mirrors ``asyncio.to_thread`` but targets ``_get_sky_executor()`` instead of
+    the loop's shared default executor, so a thread abandoned after a cancel
+    (drain timeout) cannot starve unrelated ``to_thread`` work elsewhere in
+    gbserver.
+
+    :param func: the blocking SkyPilot SDK call (e.g. ``sky.launch``).
+    :param args: positional arguments forwarded to ``func``.
+    :param kwargs: keyword arguments forwarded to ``func``.
+    :returns: the call's result once the worker thread completes.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _get_sky_executor(), functools.partial(func, *args, **kwargs)
+    )
+
 
 def _require_skypilot():
     """Raise a clear error if the sky SDK is not installed.
@@ -62,6 +125,198 @@ def _require_skypilot():
             "The 'skypilot' package is required for the Skypilot environment. "
             "Install it with: pip install 'gbserver[skypilot]'"
         )
+
+
+async def _abort_shielded_request(
+    request_id: Any,
+    pending_fut: Optional["asyncio.Future"],
+    description: str,
+    on_abort: Callable[[], Awaitable[None]],
+) -> None:
+    """Abort an in-flight, shielded SkyPilot request after cancellation.
+
+    Shared by the unmanaged (``_abort_provision``) and managed
+    (``_abort_managed_launch``) launchers, which differ only in the final
+    reclaim step (``on_abort``): teardown-by-name vs cancel-job-by-name.
+
+    The current task is already flagged for cancellation, so every ``await``
+    here would re-raise ``CancelledError`` immediately. We run the reclaim as a
+    shielded task and, mirroring ``build/run.py``, clear the pending
+    cancellation with ``Task.uncancel()`` so the awaits block normally,
+    re-uncancel on each *further* ``CancelledError`` (e.g. a double
+    ``gb build cancel``) so a mid-abort cancel can't skip the by-name reclaim,
+    and re-arm the cancel in the ``finally`` so it keeps propagating once the
+    reclaim is done. The reclaim steps: recover the request_id from the submit
+    future if we were cancelled before it returned; tell the API server to abort
+    the request (unblocking the shielded thread); drain the still-running thread
+    (bounded, so a rejected/ineffective abort does not gate the reclaim on the
+    full provisioning time); then run ``on_abort``.
+
+    Args:
+        request_id: The id from ``sky.(jobs.)launch``; ``None`` when cancelled
+            during the submit (before it returned), then recovered by draining
+            ``pending_fut`` so the request can still be aborted server-side.
+        pending_fut: The shielded ``to_thread`` future still running on its OS
+            thread (the submit or the ``stream_and_get`` wait), drained here.
+        description: Resource label used in the log/timeout messages, e.g.
+            ``"SkyPilot cluster gb-xyz"``.
+        on_abort: Coroutine performing the resource-specific reclaim by the
+            deterministic name — the safety net that runs even when there is no
+            request_id to abort.
+    """
+
+    async def _do_abort() -> None:
+        # The reclaim body, run as a shielded task so repeated cancels can't
+        # interrupt it before on_abort() (the by-name reclaim) has run.
+        local_id, local_fut = request_id, pending_fut
+        # Set if a drain below times out: the submit or stream_and_get thread is
+        # still running and could create/finish the resource *after* the by-name
+        # reclaim returns. Keeping the future lets us retry the reclaim when it
+        # settles (closes the post-timeout leak window). At most one of the two
+        # drains runs per call, so a single slot suffices.
+        orphaned_fut = None
+        if local_id is None and local_fut is not None:
+            local_id = await Environment._drain_thread_future(
+                local_fut, f"{description} submit"
+            )
+            if local_id is None and not local_fut.done():
+                orphaned_fut = local_fut
+            local_fut = None  # already drained above
+        logger.info(
+            "Cancellation requested; aborting %s (request %s)", description, local_id
+        )
+        if local_id is not None:
+            try:
+                abort_id = await asyncio.to_thread(sky.api_cancel, local_id)
+                await asyncio.to_thread(sky.get, abort_id)
+            except Exception as e:
+                logger.warning("api_cancel for %s failed: %s", local_id, e)
+        if local_fut is not None:
+            await Environment._drain_thread_future(local_fut, description)
+            if not local_fut.done():
+                # Same window on the stream_and_get path: if api_cancel was
+                # rejected or ineffective, provisioning continues server-side and
+                # can finish after on_abort() returns.
+                orphaned_fut = local_fut
+        await on_abort()
+        if orphaned_fut is not None:
+            _reclaim_when_thread_settles(orphaned_fut, description, on_abort)
+
+    abort_task = asyncio.ensure_future(_do_abort())
+    current = asyncio.current_task()
+    cancels = current.cancelling() if current else 0
+    for _ in range(cancels):
+        current.uncancel()  # type: ignore[union-attr]
+    try:
+        while not abort_task.done():
+            try:
+                await asyncio.shield(abort_task)
+            except asyncio.CancelledError:
+                # A further cancel arrived mid-abort; suppress it and re-uncancel
+                # so the reclaim still runs to completion (matches build/run.py).
+                if current and current.cancelling() > 0:
+                    cancels += current.cancelling()
+                    for _ in range(current.cancelling()):
+                        current.uncancel()
+    finally:
+        if cancels > 0 and current:
+            current.cancel()
+
+
+def _reclaim_when_thread_settles(
+    orphaned_fut: "asyncio.Future",
+    description: str,
+    on_abort: Callable[[], Awaitable[None]],
+) -> None:
+    """Re-run the by-name reclaim once an orphaned launch/stream thread settles.
+
+    When a drain in ``_abort_shielded_request`` times out, the underlying
+    ``sky.(jobs.)launch`` (submit) or ``sky.stream_and_get`` (stream) thread
+    keeps running and can create/finish the cluster/job *after* the first by-name
+    reclaim has already returned — the exact leak the reclaim exists to prevent,
+    with no further attempt. This attaches a done-callback that fires a *second*
+    reclaim when the orphaned future settles (i.e. once the resource, if any, has
+    actually been created), so it is reaped best-effort. ``on_abort`` is
+    idempotent (teardown/cancel-by-name tolerate an already-gone resource), so
+    the extra call is safe when nothing leaked.
+
+    Best-effort, with real limits:
+
+    * **Loop already closed.** We only reach here 60s+ after the abort (the drain
+      timeout), by which point the build has usually finished. In a one-shot
+      ``gb`` invocation the event loop is then closed, so the done-callback never
+      fires and *nothing is logged at all* — the resource is leaked silently. The
+      ``except RuntimeError`` branch below only catches "no running loop" at
+      ``ensure_future`` time, which is close to unreachable (if a callback fires,
+      a loop is usually running); it does not cover the loop-already-gone case.
+      In long-lived ``gbserver`` the loop outlives the build, so the reclaim does
+      fire — this gap mainly affects short-lived CLI processes.
+    * **Fire-and-forget.** The second reclaim is scheduled with no strong
+      reference retained and its exceptions are never retrieved. This is safe
+      only because both ``on_abort`` implementations
+      (``_abort_provision._teardown`` and ``_abort_managed_launch._cancel_job``)
+      swallow their own errors and complete quickly; a future ``on_abort`` that
+      raised, or ran long enough to be GC'd mid-flight, would need a held
+      reference and a result-consuming callback here.
+
+    :param orphaned_fut: the still-pending ``to_thread`` submit/stream future.
+    :param description: resource label used in the log messages.
+    :param on_abort: the idempotent by-name reclaim coroutine to re-run.
+    """
+
+    def _on_settled(fut: "asyncio.Future") -> None:
+        if fut.cancelled():
+            return
+        if fut.exception() is not None:
+            # The launch itself failed → no resource was created; nothing to reap.
+            logger.info(
+                "Orphaned %s thread failed after abort timeout (%s); "
+                "no second reclaim needed",
+                description,
+                fut.exception(),
+            )
+            return
+        logger.warning(
+            "Orphaned %s thread completed after abort timeout; running a second "
+            "by-name reclaim to reap the possibly-created resource",
+            description,
+        )
+        try:
+            asyncio.ensure_future(on_abort())
+        except RuntimeError as e:
+            # No running loop at schedule time. Surface it loudly so the possible
+            # leak is actionable rather than silent. (Does not cover the more
+            # likely one-shot case where the loop is already closed before this
+            # callback fires — see the docstring.)
+            logger.error(
+                "Could not schedule second reclaim for orphaned %s thread (%s); "
+                "a cluster/job may be leaked and need manual teardown",
+                description,
+                e,
+            )
+
+    orphaned_fut.add_done_callback(_on_settled)
+
+
+async def _run_sky_verb_off_loop(
+    verb: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    """Run a blocking sky SDK verb and its ``sky.get`` off the event loop.
+
+    Mutating sky verbs (``sky.down``, ``sky.jobs.cancel``, ``sky.api_cancel``)
+    return a request id that must be passed to ``sky.get`` to make the call
+    synchronous. Both block, so running them inline freezes the event loop for
+    the whole server round-trip and defeats any enclosing ``wait_for``; this
+    offloads both to threads. Exceptions propagate — the caller owns error
+    handling.
+
+    :param verb: the blocking sky verb to invoke (e.g. ``sky.jobs.cancel``).
+    :param args: positional arguments forwarded to ``verb``.
+    :param kwargs: keyword arguments forwarded to ``verb``.
+    :returns: the result of ``sky.get`` on the verb's request id.
+    """
+    request_id = await asyncio.to_thread(verb, *args, **kwargs)
+    return await asyncio.to_thread(sky.get, request_id)
 
 
 def _ensure_skypilot_api_running():
@@ -826,6 +1081,79 @@ class Skypilot(Environment):
                 resources["memory"] = f"{mem_str}+"
         return resources
 
+    @staticmethod
+    def _first_hf_token(bindings: Optional[Dict]) -> Optional[str]:
+        """Return the first HF token found among inline hfpull bindings.
+
+        :param bindings: the launch bindings mapping (may be None); each value
+            may carry an ``_hfpull`` dict with an optional ``hf_token``.
+        :returns: the first non-empty ``hf_token``, or None if none present.
+        """
+        for bval in (bindings or {}).values():
+            if isinstance(bval, dict) and "_hfpull" in bval:
+                token = bval["_hfpull"].get("hf_token")
+                if token:
+                    return token
+        return None
+
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        launcher_config: Optional[Dict] = None,
+        config: Optional[Dict] = None,
+        launch_id: str = "",
+        cluster_name: str = "",
+        build_workdir: Optional[str] = None,
+        bindings: Optional[Dict] = None,
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Build the full env dict for a skypilot step launch.
+
+        Precedence (lowest->highest): secrets < launcher ``envs`` <
+        ``config.launcher_config.envs`` < the built-in
+        ``GB_SKYPILOT_*``/workdir/HF_TOKEN vars < the standard cross-environment
+        set from ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID),
+        which is authoritative.
+
+        :param run_metadata: launch run_metadata; forwarded to ``super()`` and
+            the source of GB_TARGETRUN_ID.
+        :param launcher_config: step.yaml launcher config (its ``envs``).
+        :param config: full step config (``config.launcher_config.envs`` is
+            picked up for auto-queued steps).
+        :param launch_id: unique id for this launch (GB_SKYPILOT_LAUNCH_ID).
+        :param cluster_name: the sky cluster name (GB_SKYPILOT_CLUSTER_NAME).
+        :param build_workdir: per-run workdir (GB_BUILD_WORKDIR) if provisioned.
+        :param bindings: launch bindings; scanned for an inline HF_TOKEN.
+        :returns: the complete ``{name: value}`` env dict for the sky.Task.
+        """
+        launcher_config = launcher_config or {}
+        config = config or {}
+        run_metadata = run_metadata or {}
+        env: Dict[str, str] = {}
+        if self.secrets:
+            env.update(self.secrets)
+        env.update(launcher_config.get("envs", {}))
+        env.update(config.get("launcher_config", {}).get("envs", {}))
+        env["GB_SKYPILOT_LAUNCH_ID"] = launch_id
+        env["GB_SKYPILOT_CLUSTER_NAME"] = cluster_name
+        if run_metadata.get("targetrun_id"):
+            env["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
+        shared_workdir = (
+            self.config.config.get("shared_workdir") if self.config else None
+        )
+        if shared_workdir:
+            env["GB_SHARED_WORKDIR"] = shared_workdir
+        if build_workdir:
+            env["GB_BUILD_WORKDIR"] = build_workdir
+        hf_token = self._first_hf_token(bindings)
+        if hf_token and "HF_TOKEN" not in env:
+            env["HF_TOKEN"] = hf_token
+        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
+        # Uniform with the other environments; a no-op here since skypilot's
+        # launcher vars are already GB_-prefixed (GB_SKYPILOT_*), so there are no
+        # LLMB_ names to mirror.
+        return self._add_gb_aliases(env)
+
     async def launch_skypilot(
         self: Self,
         launch_id: str,
@@ -1001,55 +1329,35 @@ class Skypilot(Environment):
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 
-            # Build environment variables
-            env_vars: Dict[str, str] = {}
-            if self.secrets:
-                env_vars.update(self.secrets)
-            env_vars.update(launcher_config.get("envs", {}))
-            # Also pick up envs from config.launcher_config (for auto-queued steps)
-            env_vars.update(config.get("launcher_config", {}).get("envs", {}))
-            # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCKED_HF_OPS) to the
-            # remote run so hfpull/hfpush steps honor mocking on the cluster.
-            env_vars.update(get_exported_gbtest_env_vars())
-            env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id
-            env_vars["GB_SKYPILOT_CLUSTER_NAME"] = cluster_name
-            # Expose run metadata so steps in the same target can share state
+            # Per-run workdir provisioned by setup_skypilot. Exported as
+            # GB_BUILD_WORKDIR (inside get_launch_env_vars) and also used below
+            # as the initial CWD of the run script and the remap target for
+            # relative file_mounts, so it is computed here as a local.
             run_metadata = kwargs.get("run_metadata", {})
-            if run_metadata.get("targetrun_id"):
-                env_vars["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
-            if run_metadata.get("build_id"):
-                env_vars["GB_BUILD_ID"] = run_metadata["build_id"]
-            # Expose the env-level shared workdir so steps can stage cross-step
-            # state under a path that is mounted on every worker.
-            shared_workdir = (
-                self.config.config.get("shared_workdir") if self.config else None
-            )
-            if shared_workdir:
-                env_vars["GB_SHARED_WORKDIR"] = shared_workdir
-
-            # Per-run workdir provisioned by setup_skypilot. When present,
-            # export it as GB_BUILD_WORKDIR and make it the initial CWD of
-            # the run script so step authors can write outputs with
-            # relative paths and get implicit per-run isolation.
             build_workdir = (
                 kwargs.get("setup_config", {}).get("skypilot", {}).get("build_workdir")
             )
-            if build_workdir:
-                env_vars["GB_BUILD_WORKDIR"] = build_workdir
+            # Build the full env for the sky.Task. GB_BUILD_ID (and any future
+            # standard var) comes from Environment.get_launch_env_vars() and is
+            # authoritative over launcher/config env.
+            env_vars = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                launcher_config=launcher_config,
+                config=config,
+                launch_id=launch_id,
+                cluster_name=cluster_name,
+                build_workdir=build_workdir,
+                bindings=kwargs.get("bindings"),
+            )
 
-            # Inject inline hfpull downloads into setup from per-step bindings
+            # Inject inline hfpull downloads into setup from per-step bindings.
+            # (HF_TOKEN from these bindings is already applied in the env above.)
             setup_script = launcher_config.get("setup") or ""
             pending_hfpulls = {}
             for bid, bval in (kwargs.get("bindings") or {}).items():
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
-                # Inject HF_TOKEN into env vars if any pull provides one
-                # (hf download picks it up automatically from the environment)
-                for pull_info in pending_hfpulls.values():
-                    if pull_info.get("hf_token") and "HF_TOKEN" not in env_vars:
-                        env_vars["HF_TOKEN"] = pull_info["hf_token"]
-                        break
                 hfpull_lines = [
                     "# -- gbserver: inline hfpull for inputs --",
                     "pip install --no-cache-dir 'huggingface_hub[cli]' 2>/dev/null || true",
@@ -1267,13 +1575,43 @@ class Skypilot(Environment):
         ):
             with attempt:
                 try:
-                    request_id = await asyncio.to_thread(
-                        sky.launch,
-                        task,
-                        cluster_name=cluster_name,
-                        idle_minutes_to_autostop=autostop,
+                    # Both sky.launch (submit) and sky.stream_and_get (wait)
+                    # block in an OS thread, so a CancelledError delivered to
+                    # this task is deferred until the thread returns — the
+                    # submit can block while the cluster is in INIT (see
+                    # build/run.py), the stream wait for 2-5 min. Shield each
+                    # future so the outer await observes the cancel
+                    # *immediately* while the thread keeps running, letting us
+                    # abort the SkyPilot request server-side and tear down any
+                    # partial cluster rather than leaking it.
+                    launch_fut = asyncio.ensure_future(
+                        _sky_submit_to_thread(
+                            sky.launch,
+                            task,
+                            cluster_name=cluster_name,
+                            idle_minutes_to_autostop=autostop,
+                        )
                     )
-                    return await asyncio.to_thread(sky.stream_and_get, request_id)
+                    try:
+                        request_id = await asyncio.shield(launch_fut)
+                    except asyncio.CancelledError:
+                        # Cancelled during the submit: no request_id yet, but
+                        # the thread may still be creating the cluster under the
+                        # deterministic name. _abort_provision drains the submit
+                        # to recover the request_id (if any) and tears down by
+                        # name so the cluster is not leaked.
+                        await self._abort_provision(None, cluster_name, launch_fut)
+                        raise
+                    stream_fut = asyncio.ensure_future(
+                        _sky_submit_to_thread(sky.stream_and_get, request_id)
+                    )
+                    try:
+                        return await asyncio.shield(stream_fut)
+                    except asyncio.CancelledError:
+                        await self._abort_provision(
+                            request_id, cluster_name, stream_fut
+                        )
+                        raise
                 except Exception as e:
                     # Clear the partial INIT/FAILED cluster record before the
                     # next attempt so the relaunch doesn't reuse the stale
@@ -1292,6 +1630,38 @@ class Skypilot(Environment):
         # Unreachable: AsyncRetrying with reraise=True either returns from the
         # `return` above or raises; this satisfies the type checker.
         raise AssertionError("unreachable: _provision_with_retry exited loop")
+
+    async def _abort_provision(
+        self: Self,
+        request_id: Any,
+        cluster_name: str,
+        pending_fut: Optional["asyncio.Future"],
+    ) -> None:
+        """Abort an in-flight SkyPilot provisioning request after cancellation.
+
+        Thin wrapper over the shared ``_abort_shielded_request`` whose only
+        launcher-specific part is the reclaim: tear down the (possibly partial)
+        cluster by its deterministic name. ``self._cluster_names`` is not
+        populated until provisioning returns, so teardown-by-name is the safety
+        net that reclaims the cluster even when there is no request_id to abort.
+
+        Args:
+            request_id: The id from ``sky.launch``, or ``None`` if cancelled
+                during the submit (recovered by draining ``pending_fut``).
+            cluster_name: Deterministic cluster name to tear down.
+            pending_fut: The shielded ``to_thread`` future to drain (the submit
+                or the ``sky.stream_and_get`` wait).
+        """
+
+        async def _teardown_cluster() -> None:
+            await self._teardown(cluster_name)
+
+        await _abort_shielded_request(
+            request_id,
+            pending_fut,
+            description=f"SkyPilot cluster {cluster_name}",
+            on_abort=_teardown_cluster,
+        )
 
     async def monitor_skypilot_monitor(
         self: Self,

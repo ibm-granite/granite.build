@@ -288,13 +288,14 @@ cicd-pr-test:
 quick-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 
-# Setup does not setup slurm, so the skypilot/slurm tests are skipped 
-# Mock most of HF since the action does not have the HF_TOKEN secret on PRs
+# Setup does not setup slurm, so the skypilot/slurm tests are skipped
+# GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true (see test/libgbtest/mock_env.py), so
+# HF is never touched — the action has no HF_TOKEN secret on PRs and we don't want
+# CI flaking on HF rate limits. A test needing real HF opts in via @pytest.mark.live("hf").
 .PHONY: quick-tests
 quick-tests:
 	export GB_ENVIRONMENT=STANDALONE &&			\
-	$(MAKE) GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
-		GBTEST_MODE=mock				\
+	$(MAKE) GBTEST_MODE=mock				\
 		PYTEST_MARKERS="not ibm and not extended" 	\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
@@ -318,13 +319,13 @@ extended-tests: check-image-tag-not-dirty
 ibm-quick-tests-setup:
 	$(MAKE) venv
 
-# Mock most of HF since the action does not have the HF_TOKEN secret on PRs
+# GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true so HF is never touched (no HF_TOKEN
+# secret on PRs; avoids HF rate-limit flakes).
 # secret_manager tests require IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env var, which SPS is not providing or so it seems
 .PHONY: ibm-quick-tests
 ibm-quick-tests: check_ibm_sps_api_key
 	export GB_ENVIRONMENT=STAGING &&			\
-	$(MAKE) GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
-		GBTEST_MODE=mock				\
+	$(MAKE) GBTEST_MODE=mock				\
 		PYTEST_MARKERS="ibm and not extended" 	\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
@@ -374,16 +375,23 @@ test-merge: check-image-tag-not-dirty
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
 		.test
 
+# HF_TOKEN is required for STANDALONE live runs. In mock mode HF is mocked by
+# default (GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true), so no token is needed
+# unless that default is explicitly overridden with GBTEST_MOCK_HF=false; an
+# explicit GBTEST_MOCK_HF=true also satisfies the check on its own.
 .PHONY: check_hf_token
 check_hf_token:
-	@if [ "$$GB_ENVIRONMENT" = "STANDALONE" -a -z "$$HF_TOKEN" ]; then	\
-	    case ",$(GBTEST_MOCKED_HF_OPS)," in						\
-	        *,push,*|*,all,*) : ;;						\
-	        *)								\
-	            echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE mode (or add 'push' to GBTEST_MOCKED_HF_OPS to mock HF pushes)";	\
-	            exit 1;							\
-	            ;;								\
-	    esac;								\
+	@mock_hf=$$(echo "$(GBTEST_MOCK_HF)" | tr A-Z a-z);			\
+	mode_mocks_hf=false;							\
+	if [ "$(GBTEST_MODE)" = "mock" ] && [ "$$mock_hf" != "false" ];		\
+	then									\
+	    mode_mocks_hf=true;							\
+	fi;									\
+	if [ "$$GB_ENVIRONMENT" = "STANDALONE" ] && [ -z "$$HF_TOKEN" ]		\
+	    && [ "$$mode_mocks_hf" != "true" ] && [ "$$mock_hf" != "true" ];	\
+	then									\
+	    echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE live mode (use GBTEST_MODE=mock, or set GBTEST_MOCK_HF=true, to mock HF)";	\
+	    exit 1;								\
 	fi
 
 # The main test implementation, called after VENVDIR has been established
@@ -394,7 +402,7 @@ check_hf_token:
 .PHONY: .test
 .test:	check_hf_token
 	source $(VENVDIR)/bin/activate && \
-		export GBTEST_MOCKED_HF_OPS=${GBTEST_MOCKED_HF_OPS} &&	\
+		export GBTEST_MOCK_HF=${GBTEST_MOCK_HF} &&	\
 		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
@@ -579,13 +587,13 @@ YARN ?= yarn
 
 .PHONY: clean-frontend
 clean-frontend:
-	rm -rf frontend/out frontend/.next src/gbserver/static/ui
+	rm -rf frontend/apps/standalone/out frontend/apps/standalone/.next src/gbserver/static/ui
 
 .PHONY: build-frontend
 build-frontend:
 	cd frontend && $(YARN) install --frozen-lockfile && $(YARN) build
 	mkdir -p src/gbserver/static/ui
-	rsync -a --delete frontend/out/ src/gbserver/static/ui/
+	rsync -a --delete frontend/apps/standalone/out/ src/gbserver/static/ui/
 
 .PHONY: build
 build: $(VENVDIR)

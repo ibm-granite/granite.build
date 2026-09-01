@@ -91,7 +91,9 @@ config:
 `config.defaults.image`. If none is set, the launch fails with a clear error.
 
 **Environment-variable precedence** (later wins): `config.defaults.env` → `config.docker.env` →
-`launcher_config.env` → built-ins (`LLMB_DOCKER_LAUNCH_ID`, `LLMB_DOCKER_CONTAINER_NAME`).
+`launcher_config.env` → built-ins (`GB_DOCKER_LAUNCH_ID`, `GB_DOCKER_CONTAINER_NAME`). These
+launcher vars are standardized on the `GB_` prefix; for backwards compatibility the legacy
+`LLMB_DOCKER_*` twins are injected alongside them with the same values.
 
 ## Resources
 
@@ -113,10 +115,11 @@ and translates it to Docker container limits:
   cache symlinks resolve), and the in-container path is supplied as the binding.
 - **Workspace.** The step's asset directory is bind-mounted at `/gb-workspace` (read-write); write
   outputs there.
-- **Outputs.** Register artifacts with the standard `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>`
-  log line (or the `LLMB_ARTIFACT_STATE:<value>` form for `mem://` outputs). Docker steps reference the
-  shared `space://monitors/docker` monitor, which carries both rules; they are **unanchored** (docker
-  streams raw stdout). See [Monitoring and artifact events](../steps/monitoring-and-artifact-events.md).
+- **Outputs.** Register artifacts with the standard `GB_ARTIFACT_ID:<id> GB_ARTIFACT_PATH:<path>`
+  log line (or the `GB_ARTIFACT_STATE:<value>` form for `mem://` outputs; the legacy `LLMB_` prefix is
+  still accepted). Docker steps reference the shared `space://monitors/docker` monitor, which carries
+  both rules; they are **unanchored** (docker streams raw stdout).
+  See [Monitoring and artifact events](../steps/monitoring-and-artifact-events.md).
   On push, container paths under `/gb-workspace` are translated back to their host path automatically.
 
 ## See also

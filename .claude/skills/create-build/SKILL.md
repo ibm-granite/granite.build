@@ -81,7 +81,7 @@ The command runs with a **clean environment** — no `PATH`, no `HOME`, no inher
 Print a line **at the start of a line** of the form:
 
 ```
-LLMB_ARTIFACT_ID:<name> LLMB_ARTIFACT_PATH:<abs-dir>
+GB_ARTIFACT_ID:<name> GB_ARTIFACT_PATH:<abs-dir>
 ```
 
 The `command` step's monitor is anchored to the start of the line, so put this `print(...)` on its own line (not indented) and it registers `<abs-dir>` as the `<name>` artifact. Declare a matching `outputs.<name>` in the target (it validates; the command step allows unknown outputs).
@@ -131,14 +131,14 @@ resp = tok.decode(ids[0][enc["input_ids"].shape[-1]:], skip_special_tokens=True)
 os.makedirs(out, exist_ok=True)
 open(os.path.join(out, "response.txt"), "w").write(resp + "\n")
 json.dump({"prompt": prompt, "response": resp}, open(os.path.join(out, "result.json"), "w"), indent=2)
-print(f"LLMB_ARTIFACT_ID:response LLMB_ARTIFACT_PATH:{out}")
+print(f"GB_ARTIFACT_ID:response GB_ARTIFACT_PATH:{out}")
 print("WORKLOAD_SUCCESS")
 PYEOF
 
 exec "$VENV/bin/python" "$OUT/run.py"
 ```
 
-For a **pure shell** workload (no Python), skip the venv/heredoc entirely — put the shell directly in `command` and, if it produces an output, `echo "LLMB_ARTIFACT_ID:… LLMB_ARTIFACT_PATH:…"` at line start.
+For a **pure shell** workload (no Python), skip the venv/heredoc entirely — put the shell directly in `command` and, if it produces an output, `echo "GB_ARTIFACT_ID:… GB_ARTIFACT_PATH:…"` at line start.
 
 ## The build.yaml — targets and the command step
 
@@ -155,7 +155,7 @@ granite.build:
         model:
           uri: hf:///ibm-granite/granite-4.0-h-350m   # triple slash; host defaults to huggingface.co
       outputs:
-        response:                              # registered by the LLMB_ARTIFACT_ID line
+        response:                              # registered by the GB_ARTIFACT_ID line
           uri: file:outputs/run_{{ binding.path | short_hash }}/
       steps:
         - step_uri: space://steps/command      # the built-in generic step — nothing to author
@@ -176,7 +176,7 @@ granite.build:
 Notes:
 - **Inputs** carry exactly one of `uri:` (fixed location: `hf:///…`, `file:…`) or `binding:` (wire to another target's output for multi-target workloads).
   - **A `file:` input MUST use an absolute path** — `file:///abs/path/`. A *relative* `file:foo/` resolves against the build's **runtime working dir, not your project dir**, so the input can **silently resolve to nothing** (e.g. an `adapter`/`dataset` that never loads) while the build still reports **SUCCESS**. When the file is produced by another target in the *same* build, prefer a `binding:` (no path at all); use an absolute `file:///…` URI to point at a fixed location from a *previous* build. (Confirm it actually loaded in `build_job_log` — a missing `file:` input is a `WARNING … ignoring`, not a failure.)
-- **Produced outputs** declare a `uri:`/`base_uri:` push destination; the command registers them via the `LLMB_ARTIFACT_ID` line.
+- **Produced outputs** declare a `uri:`/`base_uri:` push destination; the command registers them via the `GB_ARTIFACT_ID` line.
 - Multiple `command` steps in one target run sequentially and share the filesystem. Use separate bound targets when phases have distinct inputs/outputs.
 
 ## Submit, then monitor
@@ -213,7 +213,7 @@ There is **no `build_validate` tool** in gbmcp, and validation never proved a bu
 
 ## Debugging — where the REAL output is
 
-`build_log(build_id)` and `build_status(build_id)` mostly show **status events**, not your command's stdout. The actual output (prints, tracebacks, the `LLMB_ARTIFACT_ID` line) is on the same host at:
+`build_log(build_id)` and `build_status(build_id)` mostly show **status events**, not your command's stdout. The actual output (prints, tracebacks, the `GB_ARTIFACT_ID` line) is on the same host at:
 
 ```
 ~/.granite.build/workdir/llm-build-<build-id>/target-<t>/target-run-*/step-<step-name>/step-run-*/launch-*/outputs/job.log
@@ -225,7 +225,7 @@ Fetch it via MCP with `build_job_log(build_id)` — it returns that `job.log`'s 
 
 1. `gbserver_status()`; if it isn't `ready`, `gbserver_start()` to bring the backend up (see **`run-gbserver`**).
 2. Use the `command` step (`space://steps/command`) in the `bash` environment — see `references/steps.md`.
-3. Write the build.yaml with the user's project: one target, one `command` step. Put the workload in `config.command_config.command` (shell for simple cases; a heredoc that writes+runs `run.py` for Python). Declare inputs (`hf:///…` model), outputs (registered by the `LLMB_ARTIFACT_ID` line), and per-run params in `config.bash.env`. No step directory to author.
+3. Write the build.yaml with the user's project: one target, one `command` step. Put the workload in `config.command_config.command` (shell for simple cases; a heredoc that writes+runs `run.py` for Python). Declare inputs (`hf:///…` model), outputs (registered by the `GB_ARTIFACT_ID` line), and per-run params in `config.bash.env`. No step directory to author.
 4. Submit with **`build_start(file_content=<yaml text>)`**. Monitor with `build_status(build_id)`; done once it leaves `build_list()`. Read `build_job_log(build_id)` to confirm the workload actually ran (not just that status flipped to SUCCESS).
 5. If anything is unclear about a field/option/error, consult the **`gb-docs`** skill.
 

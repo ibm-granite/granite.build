@@ -132,13 +132,23 @@ class Assetstore(ABC):
         return assetstore
 
     @classmethod
-    def _load_assetstore_types(cls):
-        if len(cls.assetstore_types) != 0:
+    def _load_assetstore_types(cls, force: bool = False):
+        """Discover and register every asset store.
+
+        A **no-op once the registry is populated** (the built-in and installed
+        plugin set is fixed for the process); pass ``force=True`` to rebuild
+        (tests that reload modules). When it does (re)build it goes through the
+        shared :func:`~gbcommon.plugins.rebuild_registry` contract, so it is
+        reload-safe (see that helper for why clearing first matters). This keeps
+        the loader's cheap-path guard consistent with the secret-manager loader.
+        """
+        if cls.assetstore_types and not force:
             return
         from gbcommon.plugins import (
             GROUP_ASSET_STORES,
             PluginRegistrar,
             keys_from_method,
+            rebuild_registry,
         )
 
         # Files each asset store under the URI class(es) it supports. Both the
@@ -150,45 +160,48 @@ class Assetstore(ABC):
         )
         package_dir = os.path.dirname(__file__)
 
-        for filename in os.listdir(package_dir):
-            if (
-                filename.endswith(".py")
-                and filename != "__init__.py"
-                and filename != "asset.py"
-                and filename != os.path.basename(__file__)
-            ):
-                assetstore_module_name = filename[:-3]
-                assetstore_classname = assetstore_module_name.capitalize()
-                try:
-                    module = importlib.import_module(
-                        f".{assetstore_module_name}", package="gbserver.asset"
-                    )
-                    if hasattr(module, assetstore_classname):
-                        handler_class = getattr(module, assetstore_classname)
-                        if isinstance(handler_class, type) and issubclass(
-                            handler_class, cls
-                        ):
-                            registrar.add(handler_class)
+        def populate() -> None:
+            for filename in os.listdir(package_dir):
+                if (
+                    filename.endswith(".py")
+                    and filename != "__init__.py"
+                    and filename != "asset.py"
+                    and filename != os.path.basename(__file__)
+                ):
+                    assetstore_module_name = filename[:-3]
+                    assetstore_classname = assetstore_module_name.capitalize()
+                    try:
+                        module = importlib.import_module(
+                            f".{assetstore_module_name}", package="gbserver.asset"
+                        )
+                        if hasattr(module, assetstore_classname):
+                            handler_class = getattr(module, assetstore_classname)
+                            if isinstance(handler_class, type) and issubclass(
+                                handler_class, cls
+                            ):
+                                registrar.add(handler_class)
+                            else:
+                                logger.error(
+                                    f"Ignoring {assetstore_classname} since it is not a subclass of AssetStore class"
+                                )
                         else:
                             logger.error(
-                                f"Ignoring {assetstore_classname} since it is not a subclass of AssetStore class"
+                                f"Module {assetstore_module_name} does not contain expected AssetStore type class {assetstore_classname}."
                             )
-                    else:
+                    except ImportError as e:
                         logger.error(
-                            f"Module {assetstore_module_name} does not contain expected AssetStore type class {assetstore_classname}."
+                            f"Error importing module {assetstore_module_name}: {e}"
                         )
-                except ImportError as e:
-                    logger.error(
-                        f"Error importing module {assetstore_module_name}: {e}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Error loading AssetStore type from {assetstore_classname}: {e}"
-                    )
+                    except Exception as e:
+                        logger.error(
+                            f"Error loading AssetStore type from {assetstore_classname}: {e}"
+                        )
 
-        # Discover asset stores shipped by separately-installed plugin packages.
-        # Runs after the in-tree scan so the core-wins rule protects built-ins.
-        registrar.discover(GROUP_ASSET_STORES, cls)
+            # Discover asset stores shipped by separately-installed plugin packages.
+            # Runs after the in-tree scan so the core-wins rule protects built-ins.
+            registrar.discover(GROUP_ASSET_STORES, cls)
+
+        rebuild_registry(cls.assetstore_types, populate)
 
     @classmethod
     @abstractmethod

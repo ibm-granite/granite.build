@@ -74,8 +74,10 @@ shipped **monitor library** and referenced by name. A library monitor lives at
 `space://monitors/<name>` resolves to the library directory whose `monitor.yaml` holds the
 monitor; a same-named directory under a configuration's own `monitors/` tree overrides the
 built-in. The shipped monitors — `bash`, `docker`, `skypilot`, `lsf` — all carry the standard
-`LLMB_ARTIFACT_*` artifact rules (both the `PATH` and `STATE` variants below), so a step that
-just references one gets artifact capture for free.
+`GB_ARTIFACT_*` artifact rules (both the `PATH` and `STATE` variants below), so a step that
+just references one gets artifact capture for free. Those rules **dual-accept** both the
+standardized `GB_` prefix and the legacy `LLMB_` prefix (see
+[The marker prefix](#the-marker-prefix-gb_-standard-llmb_-still-accepted) below).
 
 ### Overriding a referenced monitor
 
@@ -113,7 +115,7 @@ If the referenced monitor sets a `type:`, an overriding `type:` on the referring
 itself `ref` a parent (of the same type), forming a chain that is merged base-first; cycles are
 rejected.
 
-## The `LLMB_ARTIFACT_*` marker convention
+## The `GB_ARTIFACT_*` marker convention
 
 Rather than write a bespoke `line_regex` per step, most steps standardise on a marker the
 workload prints, so a single event rule works across environments. There are two forms,
@@ -121,30 +123,44 @@ distinguished by whether the output value is a **path** or an opaque **value**:
 
 | Marker the workload prints | Produces a binding | Use for outputs stored via |
 |----------------------------|--------------------|----------------------------|
-| `LLMB_ARTIFACT_ID:<output> LLMB_ARTIFACT_PATH:<path>` | `{"path": "<path>"}` | `file://`, `env://`, and other filesystem-backed stores |
-| `LLMB_ARTIFACT_ID:<output> LLMB_ARTIFACT_STATE:<value>` | `{"state": "<value>"}` | `mem://` |
+| `GB_ARTIFACT_ID:<output> GB_ARTIFACT_PATH:<path>` | `{"path": "<path>"}` | `file://`, `env://`, and other filesystem-backed stores |
+| `GB_ARTIFACT_ID:<output> GB_ARTIFACT_STATE:<value>` | `{"state": "<value>"}` | `mem://` |
 
 `<output>` must match an output name declared in `build.yaml`.
+
+### The marker prefix (`GB_` standard, `LLMB_` still accepted)
+
+Marker names are standardized on the **`GB_`** prefix. For backwards compatibility with
+existing/external step implementations, the shipped monitors also accept the legacy **`LLMB_`**
+prefix: every artifact / step-metadata / event rule they carry matches **both** prefixes. New
+steps should emit `GB_…`; steps still emitting `LLMB_…` keep working unchanged.
+
+The dual-accept is expressed directly in the regexes. A `line_regex` prefixes the token with the
+alternation `(?:GB_|LLMB_)`; a `field_regex` (which relies on a **fixed-width** lookbehind — a
+single variable-width `(?:GB_|LLMB_)` lookbehind is rejected by Python `re`) uses an alternation
+of two individually fixed-width lookbehinds, e.g.
+`(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))`. The examples below show this shipped form; a
+monitor that only ever consumes `GB_` markers may drop the `LLMB_` branch.
 
 ### Path outputs (`file://`, `env://`)
 
 The workload prints, for an output named `results`:
 
 ```
-LLMB_ARTIFACT_ID:results LLMB_ARTIFACT_PATH:/workspace/output
+GB_ARTIFACT_ID:results GB_ARTIFACT_PATH:/workspace/output
 ```
 
-and the step's monitor carries this rule:
+and the step's monitor carries this rule (dual-accept — `GB_` and legacy `LLMB_`):
 
 ```yaml
 - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-  line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+  line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
   is_json: false
   event_fields:
     - field_name: binding_id
-      field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+      field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
     - field_name: path
-      field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+      field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
       is_data: true
     - field_name: binding
       field_value_template: '{ "path": "{{ fields.data.path }}" }'
@@ -160,20 +176,20 @@ regex should be `^`-anchored depends on the environment — see
 The workload prints, for an output named `server_url`:
 
 ```
-LLMB_ARTIFACT_ID:server_url LLMB_ARTIFACT_STATE:http://host:8000
+GB_ARTIFACT_ID:server_url GB_ARTIFACT_STATE:http://host:8000
 ```
 
 and the rule is identical except it emits `state` instead of `path`:
 
 ```yaml
 - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-  line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_STATE:.*"
+  line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_STATE:.*"
   is_json: false
   event_fields:
     - field_name: binding_id
-      field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+      field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
     - field_name: state
-      field_regex: "(?<=LLMB_ARTIFACT_STATE:).*"
+      field_regex: "(?:(?<=GB_ARTIFACT_STATE:)|(?<=LLMB_ARTIFACT_STATE:)).*"
       is_data: true
     - field_name: binding
       field_value_template: '{ "state": "{{ fields.data.state }}" }'
@@ -219,7 +235,7 @@ outputs:
     uri: "mem://server_url"
 ```
 
-Its step emits the marker and carries the `LLMB_ARTIFACT_STATE` rule shown above. A
+Its step emits the marker and carries the `GB_ARTIFACT_STATE` rule shown above. A
 downstream target then consumes it:
 
 ```yaml
@@ -235,7 +251,7 @@ steps:
 
 Reference definitions that show both variants in real use:
 
-- [`builtins/monitors/bash/monitor.yaml`](../../src/gbserver/builtins/monitors/bash/monitor.yaml) — the shared bash monitor, carrying the `LLMB_ARTIFACT_PATH` and `LLMB_ARTIFACT_STATE` rules side by side. The [`builtins/steps/bash/command/step.yaml`](../../src/gbserver/builtins/steps/bash/command/step.yaml) step references it with `ref: space://monitors/bash`.
+- [`builtins/monitors/bash/monitor.yaml`](../../src/gbserver/builtins/monitors/bash/monitor.yaml) — the shared bash monitor, carrying the `GB_ARTIFACT_PATH` and `GB_ARTIFACT_STATE` rules (dual-accepting the legacy `LLMB_` prefix) side by side. The [`builtins/steps/bash/command/step.yaml`](../../src/gbserver/builtins/steps/bash/command/step.yaml) step references it with `ref: space://monitors/bash`.
 - [`skypilot/.../rm-server/step.yaml`](../../configurations/assets/environments/skypilot/lsf/ibm-bluevela/steps/rm-server/step.yaml) — a long-lived service that keeps its monitor **inline** (its startup-log scraping is bespoke) and publishes its URL as a `mem://` `state` binding.
 
 ## Per-environment monitor behaviour
@@ -249,7 +265,7 @@ is shared; the monitor `type` differs. See each environment page for its monitor
 
 One exception worth calling out: **RunPod's `pod_status_monitor` does not apply
 `event_configs`** — it tracks pod status only and does not stream the container's logs. A
-RunPod step cannot register artifacts by printing `LLMB_ARTIFACT_*` markers; instead push
+RunPod step cannot register artifacts by printing `GB_ARTIFACT_*` markers; instead push
 its outputs to an asset store (e.g. an `s3push` step) that the orchestrator can read. See
 [runpod.md](../environments/runpod.md).
 
@@ -260,7 +276,7 @@ delivers logs**, not a universal best practice — the shipped monitors differ d
 
 | Monitor | Anchored? | Why |
 |---------|-----------|-----|
-| `bash` (`space://monitors/bash`) | **Yes** (`^LLMB_ARTIFACT_ID:...`) | The bash launcher echoes the command back (`command step start: <cmd>`); anchoring stops the rule from matching that echo. Steps print the real marker at column 0, so the anchor still matches them. |
+| `bash` (`space://monitors/bash`) | **Yes** (`^(?:GB_|LLMB_)ARTIFACT_ID:...`) | The bash launcher echoes the command back (`command step start: <cmd>`); anchoring stops the rule from matching that echo. Steps print the real marker at column 0, so the anchor still matches them. |
 | `skypilot` (`space://monitors/skypilot`) | **No** | SkyPilot's *retrieved* job logs prefix stdout lines (e.g. `(worker1, rank=0) …`), so the marker is not at column 0 and a `^` anchor would never match. |
 | `docker` (`space://monitors/docker`) | **No** | Docker streams raw stdout so either works; kept unanchored to match SkyPilot. |
 | `lsf` (`space://monitors/lsf`) | **No** | LSF tails the job's raw stdout log (no worker prefix), so either works; kept unanchored for forward compatibility with future/wrapped LSF log sources. |
@@ -270,12 +286,13 @@ markers stopped matching and the job registered **zero** artifacts. If you autho
 anchor only when the environment injects a line you must avoid matching.
 
 > **Exception — the step-metadata marker is anchored on every monitor.** Unlike the artifact
-> rules above, `LLMB_STEP_METADATA_KEY/VALUE` surfaces in lineage as *authoritative build
-> provenance* (e.g. a byoc step's resolved `commit_hash`), so it must not be injectable by
-> arbitrary mid-stream output from cloned-repo code. Bash, Docker, and LSF anchor it with a
-> plain `^`; SkyPilot anchors it too but permits only its own `(name, pid=N) ` log prefix before the
-> marker (`^(\([^)]*\)\s+)?LLMB_STEP_METADATA_KEY:...`), so a marker embedded after other text
-> on the line is ignored. Do **not** un-anchor these to match the artifact rules — the trade-off
+> rules above, `GB_STEP_METADATA_KEY/VALUE` (legacy `LLMB_` still accepted) surfaces in lineage
+> as *authoritative build provenance* (e.g. a byoc step's resolved `commit_hash`), so it must
+> not be injectable by arbitrary mid-stream output from cloned-repo code. Bash, Docker, and LSF
+> anchor it with a plain `^`; SkyPilot anchors it too but permits only its own `(name, pid=N) `
+> log prefix before the marker (`^(\([^)]*\)\s+)?(?:GB_|LLMB_)STEP_METADATA_KEY:...`), so a marker
+> embedded after other text on the line is ignored. Do **not** un-anchor these to match the
+> artifact rules — the trade-off
 > is deliberate. (Caveat: because SkyPilot prefixes every line, a *deliberate* clean-line echo of
 > just the marker is still indistinguishable from the scaffold's own emission; anchoring closes
 > the incidental/embedded case, which is the realistic one.)

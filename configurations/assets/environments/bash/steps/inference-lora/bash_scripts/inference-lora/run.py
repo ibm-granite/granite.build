@@ -207,7 +207,7 @@ def main():
     print(f"Result written to {output_dir}/inference_result.json")
 
     # Id must match build.yaml's output name (parsed by the NEWARTIFACT monitor).
-    print(f"LLMB_ARTIFACT_ID:{ARTIFACT_ID} LLMB_ARTIFACT_PATH:{output_dir}")
+    print(f"GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{output_dir}")
     print("LORA_INFERENCE_SUCCESS")
 
 

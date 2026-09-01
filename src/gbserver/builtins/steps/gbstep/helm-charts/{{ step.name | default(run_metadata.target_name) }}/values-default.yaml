@@ -62,6 +62,10 @@ k8s:
   # must be owned by the root group and be read/writable by that group.
   # Files to be executed must also have group execute permissions.
   run_as_root_group: true
+  # The root group above only helps if the bits allow group writes; without a umask
+  # dirs land 0755. Must be quoted -- YAML reads an unquoted 0002 as int 2.
+  # See docs/environments/k8s.md.
+  umask: "{{ environment_config.umask | default('0002') }}"
   automount_service_account_token: false
   {%- if setup_config.space is defined and setup_config.space.secret is defined %}
   space_secret: {{ setup_config.space.secret }}

@@ -168,7 +168,7 @@ A monitor entry may instead **reference** a shared monitor from the library rath
 ```
 
 The referenced monitor lives at `src/gbserver/builtins/monitors/<name>/monitor.yaml` and already
-carries the standard `LLMB_ARTIFACT_*` rules. See
+carries the standard `GB_ARTIFACT_*` rules (dual-accepting the legacy `LLMB_` prefix). See
 [Referencing a shared monitor](../steps/monitoring-and-artifact-events.md#referencing-a-shared-monitor-the-monitor-library)
 for the overlay rules (`extra_event_configs`, same-type constraint).
 
@@ -223,28 +223,29 @@ Final checkpoint saved in /gpfs/workspace/output/checkpoint-final
       is_json: true
 ```
 
-Most steps standardize on the `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>` convention so a single
-rule works across environments:
+Most steps standardize on the `GB_ARTIFACT_ID:<id> GB_ARTIFACT_PATH:<path>` convention so a single
+rule works across environments. The shipped monitors **dual-accept** the standardized `GB_` prefix
+and the legacy `LLMB_` one, so the rule matches both:
 
 ```yaml
 - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-  line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+  line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
   is_json: false
   event_fields:
     - field_name: binding_id
-      field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+      field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
     - field_name: path
-      field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+      field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
       is_data: true
     - field_name: binding
       field_value_template: '{ "path": "{{ fields.data.path }}" }'
       is_json: true
 ```
 
-For a `mem://` output the workload emits `LLMB_ARTIFACT_STATE:<value>` instead, and the rule
+For a `mem://` output the workload emits `GB_ARTIFACT_STATE:<value>` instead, and the rule
 builds a `"state"` binding (passed to the consumer verbatim, no path normalisation). See
 [Monitoring and artifact events](../steps/monitoring-and-artifact-events.md) for the step
-author's guide to both variants.
+author's guide to both variants and the `GB_`/`LLMB_` prefix policy.
 
 ## `step.yaml` `config:` — common fields read by environments
 

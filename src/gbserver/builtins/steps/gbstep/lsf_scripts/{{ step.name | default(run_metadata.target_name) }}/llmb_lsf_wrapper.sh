@@ -22,7 +22,7 @@ LLMB_LSF_LOG_FILE_COMBINED_METADATA="${LLMB_LSF_LOG_FILE_COMBINED}.metadata"
 echo -e "labels:\n  kubernetes.labels.granite-dot-build/build-id: ${LLMB_LSF_BUILD_ID}\n  kubernetes.labels.llmbuild/build-id: ${LLMB_LSF_BUILD_ID}" | tee "${LLMB_LSF_LOG_FILE_COMBINED_METADATA}"
 # NOTE: llmbuild owns and monitors the log file LLMB_LSF_LOG_FILE_COMBINED
 echo "${LLMB_LSF_JOB_NAME}: wrapper start" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
-echo "${LLMB_LSF_JOB_NAME}: LLMB_EVENT_WORKLOAD_STATUS:running" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+echo "${LLMB_LSF_JOB_NAME}: GB_EVENT_WORKLOAD_STATUS:running" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
 echo "${LLMB_LSF_JOB_NAME}: cd into ${LLMB_LSF_ASSET_LSF_SCRIPTS_DIR}" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
 cd "$LLMB_LSF_ASSET_LSF_SCRIPTS_DIR" || exit 1
 
@@ -180,21 +180,21 @@ echo "${LLMB_LSF_JOB_NAME}: skip making artifacts out of ${LLMB_LSF_OUTPUT_DIR}"
 {%- elif clsf.single_output_artifact is defined and clsf.single_output_artifact %}
 
 echo "${LLMB_LSF_JOB_NAME}: making a single artifact out of ${LLMB_LSF_OUTPUT_DIR}"
-echo "LLMB_ARTIFACT_ID:${LLMB_LSF_OUTPUT_DIR##*/} LLMB_ARTIFACT_PATH:${LLMB_LSF_OUTPUT_DIR}"
+echo "GB_ARTIFACT_ID:${LLMB_LSF_OUTPUT_DIR##*/} GB_ARTIFACT_PATH:${LLMB_LSF_OUTPUT_DIR}"
 
 {%- else %}
 
 echo "${LLMB_LSF_JOB_NAME}: making artifacts out of sub-directories of ${LLMB_LSF_OUTPUT_DIR}"
-find "${LLMB_LSF_OUTPUT_DIR}" -depth -mindepth 1 -maxdepth 1 -type d -exec bash -c 'echo "LLMB_ARTIFACT_ID:${0##*/} LLMB_ARTIFACT_PATH:{}"' {} \; | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+find "${LLMB_LSF_OUTPUT_DIR}" -depth -mindepth 1 -maxdepth 1 -type d -exec bash -c 'echo "GB_ARTIFACT_ID:${0##*/} GB_ARTIFACT_PATH:{}"' {} \; | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
 
 {%- endif %}
 
 if [[ "${LLMB_LSF_JOB_EXIT_CODE}" != "0" ]]; then
-    echo "${LLMB_LSF_JOB_NAME}: LLMB_EVENT_WORKLOAD_STATUS:failed" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+    echo "${LLMB_LSF_JOB_NAME}: GB_EVENT_WORKLOAD_STATUS:failed" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
     echo "${LLMB_LSF_JOB_NAME}: workload script failed, exit code: ${LLMB_LSF_JOB_EXIT_CODE}" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
     exit 1
 fi
 
-echo "${LLMB_LSF_JOB_NAME}: LLMB_EVENT_WORKLOAD_STATUS:success" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+echo "${LLMB_LSF_JOB_NAME}: GB_EVENT_WORKLOAD_STATUS:success" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
 echo "${LLMB_LSF_JOB_NAME}: workload script finished successfully" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
 # ===============================================

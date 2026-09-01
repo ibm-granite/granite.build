@@ -35,7 +35,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gbcommon.types.testing import ENV_VAR_GBTEST_MOCKED_HF_OPS
+from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF
 from gbcommon.uri.hf import (
     DEFAULT_HFPULL_LOCK_TIMEOUT_S,
     HFPULL_LOCK_TIMEOUT_ENV,
@@ -48,8 +48,13 @@ from gbcommon.uri.hf import (
 
 @pytest.fixture(autouse=True)
 def _disable_hf_op_mocking(monkeypatch):
-    """Run the real pull() path against a mocked HfApi / snapshot_download."""
-    monkeypatch.delenv(ENV_VAR_GBTEST_MOCKED_HF_OPS, raising=False)
+    """Run the real pull() path against a mocked HfApi / snapshot_download.
+
+    The suite defaults GBTEST_MOCK_HF=true (so CI never touches HF); clear it
+    here so ``is_hf_mocked()`` is False and pull() exercises the real
+    lock/self-heal path instead of short-circuiting to True.
+    """
+    monkeypatch.delenv(ENV_VAR_GBTEST_MOCK_HF, raising=False)
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("GB_HFPULL_FORCE", raising=False)
 

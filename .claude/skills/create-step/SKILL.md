@@ -67,15 +67,15 @@ environment_configs:
         config:
           event_configs:
             # Capture outputs: the script prints a line beginning with
-            #   LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<abs-path>
+            #   GB_ARTIFACT_ID:<id> GB_ARTIFACT_PATH:<abs-path>
             - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*"
+              line_regex: "GB_ARTIFACT_ID:.* GB_ARTIFACT_PATH:.*"
               is_json: false
               event_fields:
                 - field_name: binding_id
-                  field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
+                  field_regex: "(?<=GB_ARTIFACT_ID:)[^ ]+"
                 - field_name: path
-                  field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
+                  field_regex: "(?<=GB_ARTIFACT_PATH:).*"
                   is_data: true
                 - field_name: binding
                   field_value_template: '{ "path": "{{ fields.data.path }}" }'
@@ -115,7 +115,7 @@ exec "$VENV/bin/python" "$SCRIPT_DIR/run.py"
 
 ### Runtime env-var contract (what the script receives)
 
-- `LLMB_BASH_OUTPUT_DIR` — write outputs here; register them by printing (at line start) `LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<abs-path>`, where `<id>` matches an `outputs.<id>` in the build.
+- `LLMB_BASH_OUTPUT_DIR` — write outputs here; register them by printing (at line start) `GB_ARTIFACT_ID:<id> GB_ARTIFACT_PATH:<abs-path>`, where `<id>` matches an `outputs.<id>` in the build.
 - `LLMB_BASH_INPUT_<NAME>` — resolved local path of each target input `<name>` (uppercased). E.g. input `model` → `$LLMB_BASH_INPUT_MODEL`.
 - `LLMB_BASH_PYTHON_DIR` — dir of a pinned Python ≥3.11 (lead PATH with it; there is no HOME).
 - `config.bash.env` entries from the build.yaml — exported as env vars (per-run params).
@@ -169,12 +169,12 @@ There is **no `build_validate` tool**; validation never proved a build runs anyw
 
 ## Debugging — the real output
 
-`build_log`/`build_status` show status events, not stdout. Fetch the script's real output with `build_job_log(build_id)` — the tail of the on-disk `job.log` (prints, tracebacks, the `LLMB_ARTIFACT_ID` line). If a step "succeeded" but did nothing, read it first.
+`build_log`/`build_status` show status events, not stdout. Fetch the script's real output with `build_job_log(build_id)` — the tail of the on-disk `job.log` (prints, tracebacks, the `GB_ARTIFACT_ID` line). If a step "succeeded" but did nothing, read it first.
 
 ## Checklist
 
 1. `gbserver_status()`; if it isn't `ready`, `gbserver_start()` to bring the backend up (see **`run-gbserver`**).
-2. Create `<project>/steps/<name>/step.yaml` (Bash/`nohup` launcher + artifact monitor) and `bash_scripts/<name>/` (script that owns its venv, reads inputs/params from env, emits the `LLMB_ARTIFACT_ID` line). Make scripts executable.
+2. Create `<project>/steps/<name>/step.yaml` (Bash/`nohup` launcher + artifact monitor) and `bash_scripts/<name>/` (script that owns its venv, reads inputs/params from env, emits the `GB_ARTIFACT_ID` line). Make scripts executable.
 3. Reference it in the build.yaml by an **absolute `file:///…` `step_uri`**; declare inputs/outputs; per-run params in `config.bash.env`.
 4. Submit with `build_start(file_content=<yaml text>)`. Monitor to SUCCESS; read `build_job_log(build_id)` to confirm it actually ran.
 5. For any field/option/error or `file://`-resolution question, consult **`gb-docs`**.

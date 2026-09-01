@@ -123,8 +123,8 @@ Use a `mem://` output to hand a downstream target an **opaque value** — a runn
 cluster name, any string — rather than a file. Unlike filesystem outputs, a `mem://` value is passed
 through the build's shared memory **verbatim** (no copy, no path normalisation), so something like
 `http://host:8000` survives intact. A `mem://` output takes no `type` and no `store_push` (nothing is
-transferred), and the producing step's workload emits the value with an `LLMB_ARTIFACT_STATE:<value>`
-marker instead of `LLMB_ARTIFACT_PATH:`. A consumer binds it like any other output and reads it via
+transferred), and the producing step's workload emits the value with an `GB_ARTIFACT_STATE:<value>`
+marker instead of `GB_ARTIFACT_PATH:`. A consumer binds it like any other output and reads it via
 `{{ bindings.<name>.binding.state }}`:
 
 ```yaml
@@ -133,7 +133,7 @@ targets:
     outputs:
       server_url:
         uri: "mem://server_url"
-    # ... step whose workload prints: LLMB_ARTIFACT_ID:server_url LLMB_ARTIFACT_STATE:http://host:8000
+    # ... step whose workload prints: GB_ARTIFACT_ID:server_url GB_ARTIFACT_STATE:http://host:8000
   train:
     inputs:
       rm_url:
