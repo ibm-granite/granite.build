@@ -11,15 +11,28 @@
 # pushes to main under the autotunex/** path filter. merge_group is intentionally
 # omitted so a path-skipped run cannot block the merge queue as a required check —
 # add it to branch protection if you want it required.
+#
+# Path filter: `paths` and `paths-ignore` cannot both be set for one event, so the
+# doc-only exclusions ci.yml expresses via paths-ignore are `!` negations here, which
+# must follow the positive pattern to take effect. `**.md` rather than ci.yml's
+# `**/*.md` so the subtree-root autotunex/README.md is covered too; autotunex/ has no
+# samples/ dir to exclude. The list is repeated per event rather than shared via a
+# YAML anchor, matching ci.yml.
 name: AutoTuneX CI
 
 on:
   push:
     branches: [main]
-    paths: ['autotunex/**']
+    paths:
+      - 'autotunex/**'
+      - '!autotunex/docs/**'
+      - '!autotunex/**.md'
   pull_request:
     branches: [main]
-    paths: ['autotunex/**']
+    paths:
+      - 'autotunex/**'
+      - '!autotunex/docs/**'
+      - '!autotunex/**.md'
 
 jobs:
   check:
