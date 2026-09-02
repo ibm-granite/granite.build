@@ -17,12 +17,13 @@
 """Download serialization and self-healing of ``HfURI.pull`` (issue #320).
 
 ``pull`` serializes concurrent pulls into the same destination behind a
-best-effort cross-process lock implemented with atomic ``os.mkdir`` (coherent
-across nodes on the shared GPFS/AFM cache, unlike BSD ``flock``). If the lock is
-held by a peer past ``GB_HFPULL_LOCK_TIMEOUT`` or cannot be set up, the pull
-proceeds anyway and relies on huggingface_hub's per-file locks rather than
-failing the build. The lock directory is removed on release, so it does not
-accumulate.
+cross-process lock implemented with atomic ``os.mkdir`` (coherent across nodes
+on the shared GPFS/AFM cache, unlike BSD ``flock``). A waiter blocks while the
+holder keeps writing under the destination and reclaims the lock only after
+``GB_HFPULL_LOCK_TIMEOUT`` seconds with no such writes (a dead holder); it falls
+through *unlocked* only when the lock filesystem itself is unusable, relying then
+on huggingface_hub's per-file locks rather than failing the build. The lock
+directory is removed on release, so it does not accumulate.
 
 Separately, when the HF download cache is corrupt (a ``.incomplete`` file whose
 parent dir was removed, or a size-mismatch "Consistency check failed"), ``pull``
@@ -30,6 +31,8 @@ self-heals: it retries with ``force_download=True`` and, failing that, drops
 HF's scratch download dir -- replacing the manual ``rm -rf`` recovery.
 """
 
+import shutil
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,12 +40,12 @@ import pytest
 
 from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF
 from gbcommon.uri.hf import (
-    DEFAULT_HFPULL_LOCK_TIMEOUT_S,
+    DEFAULT_HFPULL_LOCK_TTL_S,
     HFPULL_LOCK_TIMEOUT_ENV,
     HfType,
     HfURI,
     _hfpull_lock_path,
-    _hfpull_lock_timeout,
+    _hfpull_lock_ttl,
 )
 
 
@@ -70,13 +73,19 @@ def _incomplete_error(dest: Path) -> FileNotFoundError:
     return FileNotFoundError(2, "No such file or directory", str(incomplete))
 
 
-def test_lock_path_is_outside_the_revision_namespace(tmp_path):
-    """The lock lives in a dedicated subdir, not beside revision dirs."""
+def test_lock_path_is_in_a_dot_prefixed_sibling_container(tmp_path):
+    """The lock dir sits one level inside a dot-prefixed sibling container.
+
+    ``.gb-hfpull-locks`` is itself a sibling of the ``<revision>`` dirs (it lives
+    at ``<owner>/<repo>/``), but the individual ``<revision>.lock`` dir lives one
+    level down inside it, so a ``.lock`` never sits directly beside a revision
+    dir, and the dot prefix distinguishes the container from any real revision.
+    """
     dest = tmp_path / "ibm-granite" / "granite-4.2-8b" / "abc123"
     lock_path = _hfpull_lock_path(dest)
-    # Not a sibling of the revision dir (would pollute the owner/repo glob).
-    assert lock_path.parent != dest.parent
+    assert lock_path.parent != dest.parent  # the .lock is not a revision sibling
     assert lock_path.parent.name == ".gb-hfpull-locks"
+    assert lock_path.parent.parent == dest.parent  # the container is, though
     assert lock_path.name == "abc123.lock"
 
 
@@ -122,25 +131,39 @@ def test_bucket_pull_holds_lock_during_sync(tmp_path):
     assert not lock_path.exists()
 
 
-def test_pull_proceeds_when_peer_holds_lock(tmp_path, monkeypatch):
-    """A peer holding the lock past the timeout does NOT fail the pull.
+def test_pull_reclaims_a_dead_holders_stale_lock(tmp_path, monkeypatch):
+    """A crashed holder's stale lock (past ttl, no writes) is reclaimed.
 
-    Best-effort: on timeout pull() falls through to the download. It must also
-    leave the peer's lock dir intact (it never acquired it).
+    Finding-2 behavior: rather than every future puller stalling behind an
+    orphaned lock, a waiter reclaims it once it is past the ttl with no write
+    progress under the destination, then proceeds under the lock it now holds.
     """
     dest = tmp_path / "org" / "repo" / "hash"
     lock_path = _hfpull_lock_path(dest)
-    lock_path.mkdir(parents=True)  # simulate a peer already holding the lock
-    monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0")
+    lock_path.mkdir(parents=True)  # a peer took it...
+    # ...long ago, and never wrote anything under dest (dest does not exist), so
+    # it looks dead. ttl=1 with an hour-old start makes it reclaimable at once.
+    (lock_path / "lock.info").write_text(f"host:dead|pid:1\n{time.time() - 3600}\n")
+    monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "1")
+
+    held_during = {}
+
+    def fake_download(*_args, **_kwargs):
+        # We reclaimed and now hold the lock (our identity recorded in it).
+        held_during["ours"] = lock_path.is_dir() and lock_path.joinpath(
+            "lock.info"
+        ).read_text().startswith("host:")
 
     uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
-    with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
         result = uri.pull(dest)
 
     assert result is True
-    mock_dl.assert_called_once()
-    # We never acquired the peer's lock, so we must not have removed it.
-    assert lock_path.exists()
+    assert (
+        held_during.get("ours") is True
+    ), "pull should download under the reclaimed lock"
+    # We acquired then released, so the lock dir is gone (not left behind).
+    assert not lock_path.exists()
 
 
 def test_pull_proceeds_when_lock_setup_fails(tmp_path):
@@ -223,21 +246,19 @@ def test_repo_pull_clears_scratch_when_force_retry_still_fails(tmp_path):
     assert seen.get("scratch_exists") is False, "scratch dir not cleared"
 
 
-def test_repo_pull_does_not_self_heal_when_lock_not_held(tmp_path, monkeypatch):
-    """Under the unlocked fall-through, no self-heal runs -- the error propagates.
+def test_repo_pull_does_not_self_heal_on_unlocked_infra_fallthrough(tmp_path):
+    """When the lock can't be set up, pull proceeds unlocked and does NOT self-heal.
 
-    When a peer holds the lock past the timeout, pull() proceeds unlocked, so a
-    peer may be writing the shared tree concurrently. The self-heal
-    (``force_download`` re-download + scratch ``rm -rf``) mutates that tree and
-    could pull files out from under a live writer, re-inducing #320. So on a
-    recoverable error the unlocked path propagates immediately: no
-    ``force_download`` retry and no scratch clear.
+    The only way ``pull`` runs unlocked now is a lock-infra failure (e.g. a
+    read-only mount makes ``mkdir`` fail). On that fall-through a peer may be
+    writing the shared tree concurrently, so the self-heal (``force_download``
+    re-download + scratch ``rm -rf``) -- which mutates that tree and could pull
+    files out from under a live writer, re-inducing #320 -- must not run: a
+    recoverable error propagates immediately, with no retry and no scratch clear.
     """
     dest = tmp_path / "org" / "repo" / "h"
-    _hfpull_lock_path(dest).mkdir(parents=True)  # a peer holds the lock
-    monkeypatch.setenv("GB_HFPULL_LOCK_TIMEOUT", "0")
     scratch = dest / ".cache" / "huggingface" / "download"
-    scratch.mkdir(parents=True)
+    scratch.mkdir(parents=True)  # created before we break mkdir below
     (scratch / "leftover.incomplete").write_text("partial")
     forces = []
 
@@ -246,14 +267,105 @@ def test_repo_pull_does_not_self_heal_when_lock_not_held(tmp_path, monkeypatch):
         raise _incomplete_error(dest)
 
     uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
-    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
-        result = uri.pull(dest)
+    # Break the lock filesystem so acquire() fails -> unlocked fall-through.
+    with patch(
+        "pathlib.Path.mkdir", side_effect=OSError("[Errno 30] Read-only file system")
+    ):
+        with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+            result = uri.pull(dest)
 
     assert result is False, "the recoverable error must propagate, not be swallowed"
     # A single attempt only: no force_download retry, no scratch clear.
     assert forces == [False]
     assert scratch.exists(), "scratch dir must NOT be cleared on the unlocked path"
     assert (scratch / "leftover.incomplete").exists()
+
+
+def test_pull_rewaits_when_evicted_after_download(tmp_path):
+    """If the lock is reclaimed while we download, we discard and re-wait.
+
+    A long stall can make a live holder look dead, so a peer reclaims the lock.
+    The end-of-download ownership fence catches that: the (partly) unlocked
+    result is discarded and the pull re-acquires and retries -- it does not treat
+    a tree the new owner is writing as authoritative. Here the second attempt
+    (after re-acquiring the now-free lock) succeeds.
+    """
+    dest = tmp_path / "org" / "repo" / "h"
+    lock_path = _hfpull_lock_path(dest)
+    calls = []
+
+    def fake_download(*_args, **_kwargs):
+        calls.append(_kwargs.get("force_download"))
+        if len(calls) == 1:
+            # Simulate a peer reclaiming (and releasing) our lock mid-download.
+            shutil.rmtree(lock_path, ignore_errors=True)
+        # both attempts otherwise "succeed"
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        result = uri.pull(dest)
+
+    assert result is True
+    assert len(calls) == 2, "the evicted first attempt must be discarded and retried"
+    assert not lock_path.exists(), "the re-acquired lock is released after success"
+
+
+def test_pull_rewaits_instead_of_self_healing_under_a_peer(tmp_path):
+    """Evicted before a self-heal: don't force/rm under the new owner -- re-wait.
+
+    If we hit a recoverable error but discover we've been reclaimed, running the
+    self-heal (force_download / scratch rm -rf) would mutate a tree the new owner
+    is writing and re-induce #320. Instead we abandon to the waiter loop; the
+    retry after re-acquiring downloads cleanly (no force_download under a peer).
+    """
+    dest = tmp_path / "org" / "repo" / "h"
+    lock_path = _hfpull_lock_path(dest)
+    forces = []
+
+    def fake_download(*_args, **_kwargs):
+        forces.append(_kwargs.get("force_download"))
+        if len(forces) == 1:
+            # Recoverable error AND a peer has reclaimed (and released) our lock.
+            shutil.rmtree(lock_path, ignore_errors=True)
+            raise _incomplete_error(dest)
+        # second attempt (after re-acquiring) succeeds
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        result = uri.pull(dest)
+
+    assert result is True
+    # No force_download anywhere: the evicted attempt refused to self-heal under
+    # the peer, and the post-re-wait retry was a fresh normal download.
+    assert forces == [False, False], "must re-wait, not force-download under a peer"
+
+
+def test_pull_gives_up_after_repeated_eviction(tmp_path, monkeypatch):
+    """Repeated eviction is capped: past HFPULL_MAX_LOCK_REWAITS, fail cleanly.
+
+    A reclaim storm (or a node that keeps stalling past the reclaim window) must
+    not loop forever -- after the cap the pull returns False instead of retrying.
+    """
+    import gbcommon.uri.hf as hf
+
+    monkeypatch.setattr(hf, "HFPULL_MAX_LOCK_REWAITS", 3)
+    dest = tmp_path / "org" / "repo" / "h"
+    lock_path = _hfpull_lock_path(dest)
+    calls = []
+
+    def fake_download(*_args, **_kwargs):
+        calls.append(1)
+        # Always get evicted right after "downloading": drop the lock dir so the
+        # end-of-download fence trips and we re-wait, every time.
+        shutil.rmtree(lock_path, ignore_errors=True)
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        result = uri.pull(dest)
+
+    assert result is False, "must give up (not loop) once the re-wait cap is exceeded"
+    # Initial attempt + 3 permitted re-waits = 4 attempts, then it gives up.
+    assert len(calls) == 4, f"expected 1 + cap(3) attempts, got {len(calls)}"
 
 
 def test_repo_pull_does_not_retry_non_recoverable_error(tmp_path):
@@ -279,28 +391,47 @@ def test_hfpull_step_force_env_forces_pull(tmp_path, monkeypatch):
     assert mock_pull.call_args.kwargs.get("force") is True
 
 
-def test_lock_timeout_reads_env_with_default(monkeypatch):
-    """_hfpull_lock_timeout parses GB_HFPULL_LOCK_TIMEOUT, falling back to default."""
-    monkeypatch.delenv(HFPULL_LOCK_TIMEOUT_ENV, raising=False)
-    assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
+def test_lock_ttl_reads_env_matching_the_shell_parse(monkeypatch):
+    """_hfpull_lock_ttl parses GB_HFPULL_LOCK_TIMEOUT exactly like the shell copies.
 
+    Only plain decimals are accepted (whole-second granularity), so an operator
+    gets the same reclaim window on k8s/CLI and LSF/skypilot (issue #322): the
+    same grammar, the same rounding, the same fallbacks on both paths.
+    """
+    monkeypatch.delenv(HFPULL_LOCK_TIMEOUT_ENV, raising=False)
+    assert _hfpull_lock_ttl() == DEFAULT_HFPULL_LOCK_TTL_S
+
+    # Whole-second granularity: a decimal is floored to its integer part.
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "12.5")
-    assert _hfpull_lock_timeout() == 12.5
+    assert _hfpull_lock_ttl() == 12.0
+
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "300")
+    assert _hfpull_lock_ttl() == 300.0
+
+    # Leading zero is base-10, not octal (matches the shell's 10#).
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "08")
+    assert _hfpull_lock_ttl() == 8.0
 
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "not-a-number")
-    assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
+    assert _hfpull_lock_ttl() == DEFAULT_HFPULL_LOCK_TTL_S
 
-    # A negative value is meaningless -- the acquire loop's deadline is already
-    # past so it falls through immediately (it does not hang) -- so reject it.
-    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "-1")
-    assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
+    # Scientific notation is rejected here just as the shell rejects it, so the
+    # two paths cannot diverge (the finding-3 regression).
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "1e2")
+    assert _hfpull_lock_ttl() == DEFAULT_HFPULL_LOCK_TTL_S
 
-    # Non-finite values slip past a ``< 0`` check but make the acquire loop wait
-    # indefinitely (the actual hang risk), so reject inf/-inf/nan too.
-    for raw in ("inf", "+inf", "-inf", "nan"):
+    # Signs and non-finite values are rejected (not plain decimals).
+    for raw in ("-1", "+5", "inf", "nan"):
         monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, raw)
-        assert _hfpull_lock_timeout() == DEFAULT_HFPULL_LOCK_TIMEOUT_S
+        assert _hfpull_lock_ttl() == DEFAULT_HFPULL_LOCK_TTL_S
 
-    # Zero is allowed (try-once, immediate fall-through).
+    # A positive sub-second value rounds up to the 1s poll granularity, not down
+    # to 0 (matches the shell), so it never collapses to "reclaim immediately".
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "0.5")
+    assert _hfpull_lock_ttl() == 1.0
+
+    # Explicit zero stays zero (reclaim a stalled peer at once).
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "0")
-    assert _hfpull_lock_timeout() == 0.0
+    assert _hfpull_lock_ttl() == 0.0
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "0.0")
+    assert _hfpull_lock_ttl() == 0.0
