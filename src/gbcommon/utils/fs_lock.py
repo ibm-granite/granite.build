@@ -137,6 +137,18 @@ class SharedFileSystemLock:
         # failure (unusable mount, unwritable identity file) rather than a
         # timeout, so __enter__ can distinguish the two. None means "timed out".
         self._last_acquire_error: Optional[OSError] = None
+        # How often the (potentially expensive) staleness check runs while
+        # waiting. The mkdir attempt still runs every poll so a released lock is
+        # grabbed promptly, but the progress walk under ``progress_path`` is
+        # throttled to this cadence rather than every poll -- a few extra seconds
+        # to reclaim a *dead* lock is negligible against a ttl of minutes, and it
+        # avoids each waiter walking the destination tree once a second.
+        self._stale_check_interval = (
+            max(self.poll_interval, min(self.ttl / 4.0, 30.0))
+            if self.ttl is not None
+            else self.poll_interval
+        )
+        self._next_stale_check = 0.0
 
     @property
     def is_held(self) -> bool:
@@ -175,6 +187,7 @@ class SharedFileSystemLock:
         """
         deadline = None if self.timeout is None else time.monotonic() + self.timeout
         self._last_acquire_error = None
+        self._next_stale_check = 0.0  # check on the first contended poll
         # Create the container dir once up front rather than on every poll (a
         # contended wait can otherwise re-issue this mkdir hundreds of times).
         # The container is not removed on release, so nothing recreates it mid-
@@ -189,12 +202,20 @@ class SharedFileSystemLock:
             )
             self._last_acquire_error = e
             return False
+        self._reap_graveyards()
         while True:
             try:
                 self.lock_path.mkdir()
             except FileExistsError:
-                if self.ttl is not None and self._clear_if_stale():
-                    continue
+                # Throttle the staleness check: the mkdir above already runs every
+                # poll (so we grab a released lock at once), but the progress walk
+                # is expensive on a shared FS, so only run it every
+                # ``_stale_check_interval``.
+                now_mono = time.monotonic()
+                if self.ttl is not None and now_mono >= self._next_stale_check:
+                    self._next_stale_check = now_mono + self._stale_check_interval
+                    if self._clear_if_stale():
+                        continue
             except OSError as e:
                 logger.warning(
                     "SharedFileSystemLock: cannot create lock %s (%s)",
@@ -266,12 +287,39 @@ class SharedFileSystemLock:
         shutil.rmtree(graveyard, ignore_errors=True)
         return True
 
+    def _reap_graveyards(self) -> None:
+        """Sweep leftover moved-aside lock dirs from the container (best-effort).
+
+        :meth:`_move_aside_and_remove` renames a lock dir to ``<name>.stale.*`` /
+        ``<name>.released.*`` and then ``rmtree``s it; an interrupted or
+        transiently-failing ``rmtree`` (or the shell mirror's ``rm -rf``) can
+        leave the renamed dir behind, and nothing else reaps the persistent
+        container. Remove those orphans on acquire so they cannot accumulate
+        unbounded over many crash/evict cycles. Only the moved-aside patterns are
+        matched -- never a live ``*.lock`` dir -- and errors are ignored (a peer
+        may be removing the same orphan concurrently).
+        """
+        container = self.lock_path.parent
+        try:
+            orphans = list(container.glob("*.stale.*")) + list(
+                container.glob("*.released.*")
+            )
+        except OSError:
+            return
+        for orphan in orphans:
+            shutil.rmtree(orphan, ignore_errors=True)
+
     def _write_info(self) -> bool:
         # The recorded identity is load-bearing (release/ownership rely on it),
         # so acquire() treats a failed write as a failed acquire. Returns
-        # whether the write succeeded.
+        # whether the write succeeded. The timestamp is written as whole seconds
+        # (``int``) so the shell hfpull staleness parse -- which only accepts
+        # ``^[0-9]+$`` -- can read a Python-created lock.info on a cache shared by
+        # k8s (Python) and LSF/skypilot (shell) pullers, and vice versa (the
+        # shell writes ``date +%s``). Sub-second precision is irrelevant: the ttl
+        # comparisons are in whole seconds.
         try:
-            self.info_file.write_text(f"{self.identity}\n{time.time()}\n")
+            self.info_file.write_text(f"{self.identity}\n{int(time.time())}\n")
             return True
         except OSError as e:
             self._last_acquire_error = e

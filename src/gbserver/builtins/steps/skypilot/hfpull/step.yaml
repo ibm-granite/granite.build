@@ -194,14 +194,24 @@ environment_configs:
             }
 
             hfpull_acquire_lock() {
-                local dest="$1" container lockdir ttl created now
+                local dest="$1" container lockdir ttl created now interval last_check
                 container="$(dirname "${dest}")/.gb-hfpull-locks"
                 lockdir="${container}/$(basename "${dest}").lock"
                 ttl="$(hfpull_lock_ttl)"
+                # Throttle the staleness check to at most every ${interval}s
+                # (clamped 1..30); the mkdir attempt still runs every poll so a
+                # released lock is grabbed at once, but the dest walk is not
+                # repeated every second. Matches
+                # SharedFileSystemLock._stale_check_interval.
+                interval=$(( ttl / 4 )); (( interval < 1 )) && interval=1; (( interval > 30 )) && interval=30
                 if ! mkdir -p "${container}" 2>/dev/null; then
                     echo "hfpull: cannot create lock container ${container}; proceeding without lock" >&2
                     return 0
                 fi
+                # Reap leftover moved-aside lock dirs so they can't accumulate in
+                # the persistent container (matches fs_lock._reap_graveyards).
+                rm -rf "${container}"/*.stale.* "${container}"/*.released.* 2>/dev/null || true
+                last_check=0
                 while :; do
                     if mkdir "${lockdir}" 2>/dev/null; then
                         if printf '%s\n%s\n' "${HFPULL_IDENTITY}" "$(date +%s)" > "${lockdir}/lock.info" 2>/dev/null; then
@@ -222,19 +232,22 @@ environment_configs:
                         echo "hfpull: cannot create download lock ${lockdir}; proceeding without lock" >&2
                         return 0
                     fi
-                    # A peer holds it. Reclaim only if past the ttl AND dest shows
-                    # no recent writes (a dead holder); otherwise keep waiting for
-                    # the live holder. Mirrors SharedFileSystemLock._clear_if_stale
-                    # (info line 2 is the holder's start time; fall back to the lock
-                    # dir's mtime if unreadable).
-                    created="$(sed -n 2p "${lockdir}/lock.info" 2>/dev/null || true)"
-                    if ! [[ "${created}" =~ ^[0-9]+$ ]]; then created="$(stat -c %Y "${lockdir}" 2>/dev/null || echo 0)"; fi
-                    if ! [[ "${created}" =~ ^[0-9]+$ ]]; then created=0; fi
                     now="$(date +%s)"
-                    if (( now - created > ttl )) && ! hfpull_dest_written_since "${dest}" "$(( now - ttl ))"; then
-                        echo "hfpull: reclaiming stale download lock ${lockdir} (no progress under ${dest} for >${ttl}s)" >&2
-                        hfpull_break_lock "${lockdir}"
-                        continue
+                    if (( now - last_check >= interval )); then
+                        last_check="${now}"
+                        # A peer holds it. Reclaim only if past the ttl AND dest
+                        # shows no recent writes (a dead holder); otherwise keep
+                        # waiting for the live holder. Mirrors
+                        # SharedFileSystemLock._clear_if_stale (info line 2 is the
+                        # holder's start time; fall back to the lock dir's mtime).
+                        created="$(sed -n 2p "${lockdir}/lock.info" 2>/dev/null || true)"
+                        if ! [[ "${created}" =~ ^[0-9]+$ ]]; then created="$(stat -c %Y "${lockdir}" 2>/dev/null || echo 0)"; fi
+                        if ! [[ "${created}" =~ ^[0-9]+$ ]]; then created=0; fi
+                        if (( now - created > ttl )) && ! hfpull_dest_written_since "${dest}" "$(( now - ttl ))"; then
+                            echo "hfpull: reclaiming stale download lock ${lockdir} (no progress under ${dest} for >${ttl}s)" >&2
+                            hfpull_break_lock "${lockdir}"
+                            continue
+                        fi
                     fi
                     sleep 1
                 done
@@ -293,7 +306,10 @@ environment_configs:
                 if hf_download_attempt "--force-download" "$@"; then return 0; fi
                 return 1
             }
-            # <<< gb-hfpull shared shell <<<
+
+            # The driver below is inside the shared-shell sentinels too: it is the
+            # orchestration the PR added (eviction re-wait, success-path fence,
+            # exit handling), so keep it byte-identical to the LSF copy.
 
             mkdir -p "${HF_DEST}"
             echo "Pulling HF URI: ${HF_URI} to path ${HF_DEST}"
@@ -326,6 +342,7 @@ environment_configs:
 
             echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
             echo 'hfpull end'
+            # <<< gb-hfpull shared shell <<<
     monitors:
       skypilot_monitor:
         type: skypilot_monitor

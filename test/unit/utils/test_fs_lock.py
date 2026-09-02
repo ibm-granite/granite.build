@@ -297,6 +297,64 @@ def test_still_owned_false_when_not_held(tmp_path):
     assert lock.still_owned() is False  # never acquired
 
 
+def test_write_info_timestamp_is_integer_for_shell_interop(tmp_path):
+    """The recorded start time is whole seconds so the shell parse can read it.
+
+    The shell hfpull staleness check only accepts ``^[0-9]+$`` for the lock's
+    start time; a float would fail its test and silently fall back to the lock
+    dir mtime, so the anchor the Python and shell paths share must be an int.
+    """
+    lock = SharedFileSystemLock(tmp_path / "i.lock", timeout=1)
+    assert lock.acquire() is True
+    line2 = lock.info_file.read_text().splitlines()[1]
+    assert line2.isdigit(), f"timestamp must be integer seconds, got {line2!r}"
+    assert int(line2) > 0
+    lock.release()
+
+
+def test_acquire_reaps_leftover_graveyards(tmp_path):
+    """Orphaned moved-aside lock dirs are swept on acquire, not accumulated."""
+    container = tmp_path / ".gb-hfpull-locks"
+    container.mkdir()
+    (container / "x.lock.stale.1.2").mkdir()  # an interrupted stale-break
+    (container / "x.lock.released.3.4").mkdir()  # an interrupted release
+    (container / "other.lock").mkdir()  # a live sibling lock -- must be left alone
+
+    lock = SharedFileSystemLock(container / "x.lock", timeout=1)
+    assert lock.acquire() is True
+
+    leftovers = sorted(
+        p.name
+        for p in container.iterdir()
+        if ".stale." in p.name or ".released." in p.name
+    )
+    assert leftovers == [], f"graveyards not reaped: {leftovers}"
+    assert (container / "other.lock").is_dir(), "a live sibling lock must not be reaped"
+    lock.release()
+
+
+def test_stale_check_is_throttled_not_run_every_poll(tmp_path):
+    """The (expensive) staleness check runs on a throttle, not every poll.
+
+    The mkdir attempt still runs every poll (to grab a released lock promptly),
+    but the progress walk under a large ttl must not run once a second per
+    waiter. With a large ttl and a short wait, only the initial check fires.
+    """
+    lock_path = tmp_path / "t.lock"
+    lock_path.mkdir()  # a peer holds it (fresh, so never reclaimed here)
+    lock = SharedFileSystemLock(lock_path, timeout=0.05, poll_interval=0.01, ttl=100)
+    calls = []
+    original = lock._clear_if_stale
+
+    def counting():
+        calls.append(1)
+        return original()
+
+    lock._clear_if_stale = counting  # type: ignore[method-assign]
+    assert lock.acquire() is False  # peer holds a fresh lock; we time out
+    assert len(calls) == 1, f"stale check should be throttled to once, got {len(calls)}"
+
+
 def test_has_recent_activity_helper(tmp_path):
     """`_has_recent_activity` sees a freshly written nested file, not an old tree."""
     root = tmp_path / "tree"
