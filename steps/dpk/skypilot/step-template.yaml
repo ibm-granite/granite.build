@@ -195,8 +195,14 @@ environment_configs:
             {%- endif %}
             # Every declared input is exported as $GB_INPUT_<name> holding its
             # staged local path, so nothing hardcodes or duplicates one.
+            #
+            # Paths get the same '"'"' escaping as args, for the same reason: an
+            # hf:// path is hash-derived and safe, but an env:/// path is the build
+            # author's URI text verbatim (EnvURI only checks that it is absolute),
+            # so env:///data/o'brien would close this quote early and break the
+            # whole run block on a syntax error rather than at the one flag.
             {%- for name, b in bindings.items() %}
-            export GB_INPUT_{{ name }}='{{ b.binding.path }}'
+            export GB_INPUT_{{ name }}='{{ b.binding.path | string | replace("'", "'\"'\"'") }}'
             {%- endfor %}
             {#- Module by rule: dpk_<transform>.runtime, or .ray.runtime when
                 ray_enabled. `module` overrides both (see the config comments). #}
@@ -235,7 +241,7 @@ environment_configs:
             bash ./src/dpk_run.sh \
               --module '{{ module }}' \
               --input-path "$GB_INPUT_{{ config.dpk_config.input }}" \
-              --output-path '{{ config.dpk_config.output_path if config.dpk_config.output_path else "./output" }}' \
+              --output-path '{{ (config.dpk_config.output_path if config.dpk_config.output_path else "./output") | string | replace("'", "'\"'\"'") }}' \
               --artifact-id '{{ config.dpk_config.output }}' \
               {%- if config.dpk_config.validate %}
               --validate '{{ config.dpk_config.transform }}' \

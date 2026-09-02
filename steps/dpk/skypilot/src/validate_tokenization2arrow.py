@@ -116,6 +116,29 @@ def _parse_docs_summary(path: pathlib.Path) -> tuple[int | None, int | None, lis
     return int(match.group("documents")), int(match.group("tokens")), []
 
 
+def _as_int(stats: dict, key: str) -> tuple[int | None, str | None]:
+    """Read ``stats[key]`` as an int, returning (value, error-or-None).
+
+    ``metadata.json`` is DPK's output, not this step's, so its leaf types are an
+    assumption rather than a guarantee — and an assumption that, when wrong, took
+    the whole run down with a TypeError before any report was written. A missing
+    key is not an error (returns ``(None, None)``): both callers treat absent as
+    "nothing to check". A present-but-not-a-number one is reported like any other
+    finding.
+
+    ``bool`` is rejected explicitly: it is a subclass of ``int``, so ``True``
+    would otherwise sail through as ``1``.
+    """
+    if key not in stats:
+        return None, None
+    value = stats[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None, (
+            f"metadata.json '{key}' is {type(value).__name__}, expected an integer"
+        )
+    return value, None
+
+
 def _parquet_is_empty(path: pathlib.Path) -> bool:
     """True if a source Parquet holds no rows.
 
@@ -232,9 +255,23 @@ def validate(src: pathlib.Path) -> tuple[dict, list[str]]:
                 )
         summary["stats"] = stats
         if stats:
-            if stats.get("result_files", 0) < 1:
+            # The leaf values need the same type check the containers above got:
+            # `stats["result_files"]` of `null` or `"5"` is valid JSON, and
+            # comparing it to an int raises TypeError — which escaped main() and
+            # killed the run BEFORE validation.json was written, the exact failure
+            # the container guards exist to prevent.
+            result_files, err = _as_int(stats, "result_files")
+            if err:
+                errors.append(err)
+            elif result_files is not None and result_files < 1:
                 errors.append(f"transform produced no result files: {stats}")
-            declared_tokens = stats.get("num_tokens")
+            # num_tokens is compared with `!=`, which never raises — so a string
+            # "85" would not crash, it would silently report a mismatch against
+            # the int 85 and fail a perfectly good run. A wrong diagnosis is worse
+            # than none, so it is coerced through the same helper.
+            declared_tokens, err = _as_int(stats, "num_tokens")
+            if err:
+                errors.append(err)
 
     # Exclude the meta/ sidecar tree, testing the path RELATIVE to src: matching
     # "/meta/" against the absolute path also excludes every file when src itself

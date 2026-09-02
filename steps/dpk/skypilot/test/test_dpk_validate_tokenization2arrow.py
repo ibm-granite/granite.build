@@ -315,6 +315,65 @@ class TestValidatorRejectsCorruptOutput:
         assert rc == 1
         assert (report_dir / "validation.json").is_file()
 
+    @pytest.mark.parametrize("bad", [None, "5", 5.5, [], {}, True])
+    def test_non_integer_result_files_is_reported_not_raised(self, good_tree, bad):
+        """Regression: `stats["result_files"] < 1` raised TypeError on these.
+
+        The container-level isinstance guards above stopped at the dict; the LEAF
+        was still assumed to be an int. Comparing None or "5" to an int raises,
+        and validate() has no handler — so this crashed out of main() before any
+        report was written, which is precisely what those guards were added to
+        prevent. metadata.json is DPK's output, not this step's, so its leaf types
+        are an assumption rather than a guarantee.
+
+        `True` is in the list because bool subclasses int: it would otherwise pass
+        the type check and be silently read as result_files=1.
+        """
+        (good_tree / "metadata.json").write_text(
+            json.dumps({"job_output_stats": {"result_files": bad, "num_tokens": 10}})
+        )
+        _, errors = validator.validate(good_tree)
+        assert any("'result_files' is" in e for e in errors)
+
+    @pytest.mark.parametrize("bad", ["10", None, 10.0, True])
+    def test_non_integer_num_tokens_is_reported_not_mis_diagnosed(self, good_tree, bad):
+        """num_tokens is compared with `!=`, which never raises — it MIS-REPORTS.
+
+        A string "10" is != the int 10, so a perfectly good run was failed with a
+        bogus "num_tokens mismatch". A wrong diagnosis is worse than no check,
+        hence the same coercion as result_files rather than just crash-proofing.
+        """
+        (good_tree / "metadata.json").write_text(
+            json.dumps({"job_output_stats": {"result_files": 1, "num_tokens": bad}})
+        )
+        _, errors = validator.validate(good_tree)
+        assert any("'num_tokens' is" in e for e in errors)
+        assert not any("token count mismatch" in e for e in errors)
+        assert not any("hold" in e and "tokens in total" in e for e in errors)
+
+    def test_non_integer_stats_still_writes_a_report(self, good_tree, tmp_path):
+        """The guarantee: a report is written even when metadata.json is junk."""
+        (good_tree / "metadata.json").write_text(
+            json.dumps({"job_output_stats": {"result_files": None}})
+        )
+        report_dir = tmp_path / "rpt"
+        rc = validator.main(
+            ["validate_tokenization2arrow.py", str(good_tree), str(report_dir)]
+        )
+        assert rc == 1
+        assert (report_dir / "validation.json").is_file()
+
+    def test_absent_stats_keys_are_not_errors(self, good_tree):
+        """Missing != malformed. Absent keys mean "nothing to check", not a fault.
+
+        Guards the coercion against over-correcting into a false failure on
+        metadata.json that simply does not carry these keys.
+        """
+        (good_tree / "metadata.json").write_text(json.dumps({"job_output_stats": {}}))
+        _, errors = validator.validate(good_tree)
+        assert not any("result_files" in e for e in errors)
+        assert not any("num_tokens" in e for e in errors)
+
     def test_metadata_token_total_disagreement(self, tmp_path):
         """metadata.json's num_tokens contradicts the actual arrow totals."""
         tree = _build_tree(

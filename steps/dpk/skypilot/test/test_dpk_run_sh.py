@@ -31,6 +31,7 @@ Cluster-agnostic, so this sits at the root of the step's ``test/`` dir (Mode 1
 only) and is not copied by ``make publish-step``.
 """
 
+import ast
 import pathlib
 import re
 import shutil
@@ -147,6 +148,55 @@ class TestDataLocalConfig:
         assert args[3] == (
             "{'input_folder': '/staged/docs', 'output_folder': '" + out_abs + "'}"
         )
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/staged/o'brien",
+            "/staged/it's/docs",
+            "/staged/a'b'c",
+            "/staged/back\\slash",
+            "/staged/trailing\\",
+        ],
+    )
+    def test_a_quote_in_the_input_path_survives_into_python(self, run_script, path):
+        """Regression: an unescaped quote broke ast.literal_eval, not the shell.
+
+        --data_local_config is declared `type=ast.literal_eval` in DPK's
+        data_access_factory, so this argument is parsed as PYTHON source. A path
+        containing `'` closed the literal early and raised "unterminated string
+        literal" — the transform never started. Reachable rather than theoretical:
+        an hf:// path is hash-derived, but an env:/// path is the build author's
+        verbatim URI text, which EnvURI only checks is absolute.
+
+        Backslashes are covered too, since escaping the quote without doubling the
+        backslash would let a trailing one escape the closing quote instead.
+        """
+        proc = run_script(
+            "--module",
+            "dpk_x.runtime",
+            "--input-path",
+            path,
+            "--output-path",
+            "out",
+            "--artifact-id",
+            "tokens",
+        )
+        assert proc.returncode == 0, proc.stderr
+        literal = _pyargs(proc.stdout)[3]
+        # The real assertion: python can parse it, and gets the path back INTACT.
+        parsed = ast.literal_eval(literal)
+        assert parsed["input_folder"] == path
+
+    def test_a_quote_in_the_output_path_survives_into_python(self, run_script):
+        """Same hazard on the output side, which is set directly by output_path."""
+        target = run_script.tmp_path / "o'ut"
+        proc = run_script(
+            *_BASE, "--output-path", str(target), "--artifact-id", "tokens"
+        )
+        assert proc.returncode == 0, proc.stderr
+        parsed = ast.literal_eval(_pyargs(proc.stdout)[3])
+        assert parsed["output_folder"] == str(target.resolve())
 
     def test_module_override_is_honoured(self, run_script):
         proc = run_script(

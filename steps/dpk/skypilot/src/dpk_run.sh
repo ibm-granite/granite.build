@@ -93,9 +93,21 @@ mkdir -p "$output_path"
 output_path="$(cd "$output_path" && pwd)"
 
 # DPK's launchers take input and output as a single python-literal argument
-# rather than as two flags.
+# rather than as two flags: --data_local_config is declared `type=ast.literal_eval`
+# (data_access_factory.py), so this string is parsed as PYTHON, not read as a path.
+#
+# The paths are therefore escaped for python's single-quoted string syntax, which
+# is NOT the same fix as the shell escaping the step-template applies to args and
+# to the GB_INPUT_ exports. A quote here survives the shell fine and then breaks
+# literal_eval instead ("unterminated string literal"), so it must arrive as a
+# backslash escape. Backslashes are doubled first, or a trailing one would escape
+# the closing quote. An env:/// path is the build author's verbatim URI text, so
+# this is reachable rather than theoretical.
+esc_input=$(printf '%s' "$input_path" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+esc_output=$(printf '%s' "$output_path" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+
 python -m "$module" \
-  --data_local_config "{'input_folder': '$input_path', 'output_folder': '$output_path'}" \
+  --data_local_config "{'input_folder': '$esc_input', 'output_folder': '$esc_output'}" \
   "$@"
 
 # Validate before registering, so a failure fails the target rather than

@@ -22,8 +22,8 @@ changes three things:
 
 | | byoc | dpk |
 |---|---|---|
-| **Dependencies** | `git clone` + `setup_command` | `transform`/`packages` → `uv pip install` into `./venv` |
-| **Invocation** | verbatim `command` only | `transform:` derives the module, flags, and data config; `command:` remains as an escape hatch |
+| **Dependencies** | `git clone` + `setup_command` | `transform` (+ `ray_enabled`) → `uv pip install` into `./venv` |
+| **Invocation** | verbatim `command` only | `transform:` derives the module, flags, and data config; `module:` overrides the derived module |
 | **Dependency set** | whatever the image/repo provides | derived from `transform` via DPK's per-transform pip extras |
 
 The point of the derivation is that **one step serves every DPK transform**: adding
@@ -69,7 +69,7 @@ They compute *values* with Jinja and hand them to two bundled scripts as argumen
 | Script | Invoked from | Does |
 |---|---|---|
 | `src/dpk_setup.sh` | `setup` (bare-node only) | bootstraps `uv`, anchors `UV_CACHE_DIR`, creates the venv, installs the requirements |
-| `src/dpk_run.sh` | `run` (transform mode only) | creates + absolutizes the output dir, builds `--data_local_config`, runs `python -m <module>`, emits the artifact marker |
+| `src/dpk_run.sh` | `run` (always) | creates + absolutizes the output dir, builds `--data_local_config`, runs `python -m <module>`, runs the validator when `validate: true`, emits the artifact marker |
 
 The reason is testability. Shell embedded in a YAML scalar behind Jinja can only be
 *rendered and pattern matched*; in a file it can be executed, `shellcheck`ed, and
@@ -255,7 +255,10 @@ The step.yaml computes the *values* (module, requirements, flags) and passes the
 as arguments; the scripts do the shell. That keeps the shell in real files — checkable with
 `shellcheck` and testable directly — rather than embedded in YAML behind Jinja.
 
-The remaining script is a helper you *do* call, from a command-mode `command`:
+The remaining script is the validator. It is not user-invoked either — `dpk_run.sh` runs it
+automatically when `validate: true`, after the transform and before the artifact marker (see
+"Validating output" in USAGE.md). The command line below is for running it by hand against an
+output directory you already have, which is how to develop or debug one:
 
 - [`src/validate_tokenization2arrow.py`](src/validate_tokenization2arrow.py) — validates `tokenization2arrow`
   output. Checks that the Arrow token stream agrees with its `meta/*.docs` /

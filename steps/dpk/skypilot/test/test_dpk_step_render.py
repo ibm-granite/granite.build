@@ -480,6 +480,39 @@ class TestIoWiring:
         assert "export GB_INPUT_docs='/staged/docs'" in run
         assert "export GB_INPUT_extra='/staged/extra'" in run
 
+    @pytest.mark.parametrize(
+        "path", ["/staged/o'brien", "/staged/it's/docs", "/staged/a'b'c"]
+    )
+    def test_a_quote_in_a_binding_path_does_not_break_the_run_block(
+        self, launcher, defaults, path
+    ):
+        """Regression: the GB_INPUT_ export interpolated a path unescaped.
+
+        `export GB_INPUT_docs='/staged/o'brien'` closes the quote early, which is a
+        SYNTAX error — it takes down the whole run block, not just this one line, so
+        the transform never runs and the failure names no cause. args already got
+        this escaping; paths did not.
+
+        Reachable: an hf:// path is hash-derived, but an env:/// path is the build
+        author's verbatim URI text and EnvURI only checks that it is absolute.
+
+        The value is asserted through the argv the script receives, so this pins
+        that the path arrives INTACT rather than merely that bash accepted it.
+        """
+        cfg = _transform_cfg(defaults)
+        bindings = {"docs": {"binding": {"path": path}}}
+        argv = _script_argv(_render(launcher["run"], cfg, bindings), "run")
+        assert _opt(argv, "--input-path") == path
+
+    @pytest.mark.parametrize("out", ["/shared/o'ut", "/shared/it's/tokens"])
+    def test_a_quote_in_output_path_does_not_break_the_run_block(
+        self, launcher, defaults, out
+    ):
+        """Same hazard on output_path, which is author-supplied config directly."""
+        cfg = _transform_cfg(defaults, output_path=out)
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _opt(argv, "--output-path") == out
+
     def test_input_is_passed_as_the_bindings_staged_path(self, launcher, defaults):
         """--input-path resolves through $GB_INPUT_<input>, not a hardcoded path.
 
