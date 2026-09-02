@@ -85,10 +85,6 @@ first: `sky/execution.py`'s stage order is `PROVISION → SYNC_WORKDIR → SYNC_
 SETUP → PRE_EXEC → EXEC`, and `_execute` calls `sync_file_mounts()` before `setup()`
 unconditionally.
 
-**Command mode stays inline.** `config.dpk_config.command` is user-supplied shell injected
-verbatim; routing it through a script argument would add exactly the quoting layer this
-removes.
-
 ### A note on `src/` and `__pycache__`
 
 `src/` holds python as well as shell. `make test` imports
@@ -114,8 +110,8 @@ run everywhere. They are Mode-1 only (not copied by `publish-step`), the same pl
 - `test_dpk_step_render.py` — pins what the *template* computes: that `transform:` derives
   the right module and pip extra for a range of transforms, that `args` become the right
   argv words in order (with `0`/`true`/`false` handled correctly), that `dpk_image` switches
-  between bare-node and `docker:` mode, that command mode injects verbatim and skips the
-  transform path, and that the rendered shell parses under `bash -n`. Because the blocks now
+  between bare-node and `docker:` mode, that `ray_enabled` moves BOTH the pip extra and the
+  module, and that the rendered shell parses under `bash -n`. Because the blocks now
   invoke the bundled scripts, most assertions run the rendered block with a stub script on
   `PATH` and check **the argv bash actually built** (`_script_argv`) rather than matching
   rendered text — bash is what splits and unquotes these words on the node, so a quoting
@@ -154,12 +150,16 @@ backend is reachable:
   `ast.literal_eval`'d and must survive with its inner quotes intact.
 - **aws** — needs AWS credentials in the environment; provisions a real EC2 instance.
 
-> **No cluster coverage of the cross-node `env:///shared` handoff or of command mode.** Both
-> were covered by the two-target form of the `slurm` fixture, which `validate: true` replaced
-> (see that fixture's build.yaml). They are covered by unit tests now —
-> `test_dpk_step_render.py` renders command mode, `test_dpk_run_sh.py` executes the marker and
-> validator contracts — but nothing exercises them end to end. Restore the two-target form
-> from git history if a handoff regression is ever suspected.
+> **No cluster coverage of the cross-node `env:///shared` handoff.** It was covered by the
+> two-target form of the `slurm` fixture, which `validate: true` replaced (see that fixture's
+> build.yaml). Nothing exercises a two-target `env://` handoff end to end now; restore the
+> two-target form from git history if a handoff regression is ever suspected. (The other thing
+> that form covered, command mode, no longer exists — `command` was removed once `validate`
+> replaced its only use.)
+
+> **Image mode has no cluster coverage either**, because the local Docker SLURM cluster has no
+> Pyxis SPANK plugin and so cannot run container images at all. `dpk_image` is exercised only
+> by render tests until the local cluster gains Pyxis or an aws fixture covers it.
 
 > Container images require the Pyxis SPANK plugin on SLURM/LSF, which the local Docker
 > SLURM cluster does not have — so the slurm fixtures leave `dpk_image` empty and run on the
@@ -183,8 +183,7 @@ its staged local path:
 inputs.<name>  →  $GB_INPUT_<name>
 ```
 
-In transform mode, `input: <name>` selects which one feeds the transform. In command mode,
-reference any of them directly from your `command`. Filesystem-backed schemes (`hf://`,
+`input: <name>` selects which one feeds the transform. Filesystem-backed schemes (`hf://`,
 `env://`, `file://`, `s3://`, `lh://`) are staged by the assetstore before `run`; an
 `hf://` input is downloaded during `setup` automatically.
 
@@ -192,16 +191,11 @@ reference any of them directly from your `command`. Filesystem-backed schemes (`
 
 Declare each output on the target, then make sure the bytes land at the path in its `uri`:
 
-- **Transform mode** — the step creates the directory, points the transform's
-  `output_folder` at it, and emits the artifact marker for you. `output_path` defaults to
-  `./output` in the step's working directory; set it explicitly when the output's `uri` names
-  a path, or when a **downstream target** reads the output — see
-  [When the default is not enough](#when-the-default-is-not-enough).
-- **Command mode** — your command writes wherever it likes and prints the marker itself:
-
-  ```
-  GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>
-  ```
+The step creates the directory, points the transform's `output_folder` at it, and emits the
+artifact marker (`GB_ARTIFACT_ID:<id> GB_ARTIFACT_PATH:<abs-path>`) for you. `output_path`
+defaults to `./output` in the step's working directory; set it explicitly when the output's
+`uri` names a path, or when a **downstream target** reads the output — see
+[When the default is not enough](#when-the-default-is-not-enough).
 
   `<output-id>` must match a declared `outputs.<id>`. Repeat the line to register several
   artifacts under one output. For `mem://` outputs use `GB_ARTIFACT_PATH` →
@@ -255,9 +249,9 @@ machinery — you do not invoke them, but they are where the step's shell actual
 
 - `src/dpk_setup.sh` — the bare-node dependency install (`uv venv` + `uv pip install`),
   invoked from the step's `setup` phase. Skipped entirely when `dpk_image` is set.
-- `src/dpk_run.sh` — the transform-mode invocation: creates and absolutizes the output
-  directory, builds DPK's `--data_local_config`, runs `python -m <module>`, and emits the
-  artifact marker. Not used in command mode, where your `command` runs instead.
+- `src/dpk_run.sh` — the transform invocation: creates and absolutizes the output directory,
+  builds DPK's `--data_local_config`, runs `python -m <module>`, optionally runs the
+  validator, and emits the artifact marker.
 
 The step.yaml computes the *values* (module, requirements, flags) and passes them to these
 as arguments; the scripts do the shell. That keeps the shell in real files — checkable with

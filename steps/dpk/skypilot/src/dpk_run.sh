@@ -18,10 +18,6 @@
 # transform's flags arrive as real argv after a `--` separator, already split by
 # the caller, so no shell re-quoting happens at all.
 #
-# Command mode (config.dpk_config.command) deliberately stays INLINE in the
-# step.yaml: it is user-supplied shell injected verbatim, and routing it through
-# a script argument would add exactly the quoting layer this script removes.
-#
 # CONTRACT
 #   dpk_run.sh --module <mod> --input-path <dir> --output-path <dir> \
 #              --artifact-id <id> [--validate <transform>] [--] [transform flags...]

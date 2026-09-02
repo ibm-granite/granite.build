@@ -29,12 +29,12 @@ granite.build:
   #     the bytes survive only if the producer writes them somewhere the consumer
   #     can read; on this cluster /tmp is per-node but /shared is mounted on all of
   #     them; and
-  #   * command mode running a bundled script on real infra.
-  # Both remain covered by unit tests (test_dpk_step_render.py renders command mode;
-  # test_dpk_run_sh.py executes the validator hook and the marker contract), but no
-  # cluster test exercises them end to end any more. If a handoff regression is ever
-  # suspected, restore the two-target form from this file's history rather than
-  # debugging blind.
+  #   * command mode running a bundled script on real infra — since removed from the
+  #     step entirely, once `validate: true` replaced its only use.
+  # The handoff is no longer covered end to end anywhere: test_dpk_run_sh.py executes
+  # the validator hook and the marker contract, but nothing exercises two targets
+  # sharing a filesystem. If a handoff regression is ever suspected, restore the
+  # two-target form from this file's history rather than debugging blind.
   #
   # Input is an hf:// dataset: the SkyPilot launcher injects
   # `hf download <repo> --local-dir <path>` into the step's setup, and the step

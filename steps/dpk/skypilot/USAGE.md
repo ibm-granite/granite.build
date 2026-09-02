@@ -23,55 +23,25 @@ steps:
   - step_uri: space://steps/dpk
 ```
 
-## Two modes: pick one
-
-The step has **two mutually exclusive modes** — set `transform` *or* `command`, never both.
-Read this before the field tables; nearly everything else here applies to one mode only.
-
-| | **Transform mode** (`transform:`) | **Command mode** (`command:`) |
-|---|---|---|
-| **Use it when** | the work *is* a DPK transform | the work is not a DPK transform — a script, a one-off, a validator |
-| **Who builds the command line** | the step (from `transform` + `args`) | you, verbatim |
-| **Dependencies** | derived from `transform` (+ `packages`) | `packages` only |
-| **Artifact marker** | emitted for you, from `output`/`output_path` | your command prints it |
-
-Command mode exists because a build often needs a non-transform step *beside* its
-transforms — the shipped `src/validate_tokenization2arrow.py` is exactly that, and it has no
-`dpk_<name>.runtime` to invoke. Without it you would need a second step (or `byoc`) just to
-run a script next to the transform, so the escape hatch is deliberate rather than
-redundant. It behaves like [`byoc`](../../byoc/skypilot/USAGE.md)'s `command`.
-
 ## Config contract (`dpk_config`)
 
-All fields live under the step's `config.dpk_config`.
-
-### Transform mode
+All fields live under the step's `config.dpk_config`. The step runs **one DPK transform** —
+you name it, and the step derives the python module and the pip dependencies.
 
 | Field | Type | Required | Purpose |
 |---|---|---|---|
 | `transform` | string | **yes** | DPK transform short name, e.g. `tokenization2arrow`, `pii_redactor`, `ededup`. See [What `transform` derives](#what-transform-derives). |
 | `input` | string | **yes** | Name of a declared target `inputs:` entry. Becomes the transform's `input_folder`. |
 | `output` | string | **yes** | Name of a declared target `outputs:` entry. Used as the registered artifact's ID. |
-| `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match. See [Inputs, outputs, and bundled scripts](#inputs-outputs-and-bundled-scripts). |
 | `args` | map | no | Transform flags, rendered in order as `--<key> '<value>'`. Keys are the **full flag name** as DPK spells it, without leading dashes. See [Transform flags](#transform-flags). |
-| `validate` | bool | no | Check the transform's output before registering it, when a validator for that transform is bundled. Default `false`. See [Validating output](#validating-output). |
-| `dpk_version` | string | no | DPK release to install. Default `1.1.8`. |
-
-### Command mode
-
-| Field | Type | Required | Purpose |
-|---|---|---|---|
-| `command` | string | **yes** | Bash command, injected verbatim. Responsible for its own artifact marker — see [Inputs, outputs, and bundled scripts](#inputs-outputs-and-bundled-scripts). |
-
-### Optional (both modes)
-
-| Field | Type | Purpose |
-|---|---|---|
-| `packages` | list | Extra pip requirements installed alongside the transform, e.g. `["pyarrow"]`. In command mode this is the only install. |
-| `pip_index_url` | string | Index for the pip install. Default `https://pypi.org/simple`. |
-| `dpk_image` | string | Public container image to run the transform in. Default `""` = the bare launcher node. When set, **no venv or pip install happens** — the image must already provide DPK. Rendered at runtime as SkyPilot `docker:<ref>`. |
-| `module` | string | Override the derived module, e.g. `dpk_tokenization2arrow.ray.runtime`. |
-| `pip_extras` | list | Pip extras to install **in addition to** the one derived from `transform`, e.g. `["ray"]`. Default `[]`. Never replaces the derived extra. See [Adding pip extras](#adding-pip-extras). |
+| `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match. See [Inputs, outputs, and bundled scripts](#inputs-outputs-and-bundled-scripts). |
+| `validate` | bool | no | Check the transform's output before registering it. Default `false`. See [Validating output](#validating-output). |
+| `ray_enabled` | bool | no | Run on DPK's Ray runtime instead of pure python. Default `false`. See [Running on Ray](#running-on-ray). |
+| `dpk_version` | string | no | DPK release to install. Default `1.1.8`. Ignored when `dpk_image` is set. |
+| `dpk_image` | string | no | Container image to run in. Default `""` = the bare launcher node. See [Running in a container image](#running-in-a-container-image). |
+| `packages` | list | no | Extra pip requirements installed alongside the transform, e.g. `["pyarrow"]`. |
+| `pip_index_url` | string | no | Index for the pip install. Default `https://pypi.org/simple`. |
+| `module` | string | no | Override the derived python module. An escape hatch — see [Running on Ray](#running-on-ray) for the case that needs it. |
 
 ## What `transform` derives
 
@@ -96,32 +66,78 @@ The step also auto-injects the launcher's data config, so you never write it:
 --data_local_config "{'input_folder': '<input>', 'output_folder': '<output_path>'}"
 ```
 
-### Adding pip extras
+## Running on Ray
 
-`transform` already derives the extra that carries the transform's real dependencies, so
-you rarely touch this. `pip_extras` **adds** to that derived extra — it never replaces it:
+DPK's Ray runtime is faster than the pure-python one on large corpora. `ray_enabled: true`
+switches to it:
 
-| `pip_extras` | Installs |
-|---|---|
-| `[]` (default) | `data-prep-toolkit-transforms[pii-redactor]` |
-| `["ray"]` | `data-prep-toolkit-transforms[pii-redactor,ray]` |
-| `["ray","spark"]` | `data-prep-toolkit-transforms[pii-redactor,ray,spark]` |
+```yaml
+dpk_config:
+  transform: ededup
+  input: docs
+  output: deduped
+  ray_enabled: true
+```
 
-Additive is deliberate. `pii_redactor`'s own extra pulls presidio, flair, and a pinned
-`numpy<1.29`; if asking for the `ray` flavour *replaced* it, the transform the build asked
-for could not import. So the derived extra is always present, and always rendered first (the
-requirement string stays stable and diffable). Restating it — `["pii-redactor"]` — is
-harmless; it is dropped rather than repeated.
+That one flag does the **three** things Ray needs, which is why it is a single flag rather
+than settings you have to keep in step — any subset of them fails on the node rather than at
+submit time:
 
-There is no way to suppress the derived extra, and no need for one: every published DPK
-transform's extra follows the `_`→`-` rule, so the derivation is not something you have to
-correct. If you ever need total control over the environment, use `dpk_image` instead.
+1. installs the `ray` pip extra *alongside* the transform's own;
+2. points the module at `dpk_<transform>.ray.runtime`;
+3. passes `--run_locally true`, so DPK starts a local Ray cluster. Its default is `false`,
+   which means "connect to an existing cluster at `ray://localhost:10001`" — and this step
+   provisions none, so without the flag the transform waits on a cluster nobody started.
+
+This runs Ray's local runtime on the step's own node; provisioning a multi-node Ray cluster
+is out of scope.
+
+> **`ray_enabled` has no cluster test.** It is covered by render tests only — starting a Ray
+> cluster inside the local Docker SLURM container (`RealMemory=1024`) is not something the
+> test cluster can do reliably. Treat the first real Ray run as unproven.
+
+> **Not every transform exposes `ray.runtime` in DPK 1.1.8.** 32 of the 43 data transforms
+> do. The others either name their Ray entrypoint `ray.transform` (`code_profiler`,
+> `doc_chunk`, `doc_quality`, `fdedup`, `hap`, `html2parquet`, `lang_id`) or ship no Ray
+> package at all (`bloom`, `folder2parquet`, `web2parquet`, `similarity`). DPK is
+> normalising these upstream, so the step derives by rule rather than carrying a list that
+> would go stale. For one of those transforms, set `module` explicitly:
+>
+> ```yaml
+>   transform: lang_id
+>   ray_enabled: true
+>   module: dpk_lang_id.ray.transform   # until DPK normalises this
+> ```
+
+## Running in a container image
+
+By default the step runs on the bare launcher node and installs DPK at run time. Set
+`dpk_image` to run inside a container instead:
+
+```yaml
+dpk_config:
+  transform: tokenization2arrow
+  dpk_image: "quay.io/my-org/dpk:1.1.8"
+```
+
+Two things to know:
+
+* **Any registry works.** Give the plain reference (`quay.io/...`, `us.icr.io/...`, a private
+  registry); the step adds SkyPilot's `docker:` scheme marker for you, which is what tells
+  SkyPilot the value is a container rather than a cloud VM image.
+* **The pip install is skipped entirely.** That is the point — a prebaked image starts
+  faster. It also means **the image must already provide DPK**; `dpk_version` is ignored, so
+  a base image without DPK will not work.
+
+Container images need the Pyxis SPANK plugin on SLURM/LSF. Leave `dpk_image` empty on
+clusters without it — including the local Docker SLURM cluster used for testing, which is
+why image mode has no local cluster test.
 
 ## Validating output
 
 `validate: true` runs a bundled validator against the transform's output, on the node,
-**after** the transform and **before** the output is registered — so a failed check fails
-the target and nothing downstream ever sees bad data.
+**after** the transform and **before** the output is registered — so a failed check fails the
+target and nothing downstream ever sees bad data.
 
 ```yaml
 dpk_config:
@@ -130,10 +146,6 @@ dpk_config:
   output: tokens
   validate: true
 ```
-
-That one line replaces what used to be a whole second target: a `binding:` to the first
-target's output, a re-declared source input, a `packages` list, and several lines of shell
-invoking the validator and printing an artifact marker.
 
 **Which transforms have a validator.** The step looks for `src/validate_<transform>.py` — a
 rule, not a lookup table, so a validator added for another transform works with no config
@@ -157,10 +169,6 @@ relying on validation.
 so the record travels with the data it describes rather than in a separate artifact that can
 drift from it.
 
-Need a different check, or a report as its own declared output? Use
-[command mode](#two-modes-pick-one) — `validate` is the one-line shortcut for the common
-case, not a replacement for it.
-
 ## Transform flags
 
 `args` keys are the **full flag name**, because DPK's flag prefix is *not* derivable from
@@ -178,9 +186,11 @@ So the step passes your keys through verbatim rather than guessing. Get the flag
 [the transform's DPK documentation](#per-transform-dpk-documentation) or from
 `python -m dpk_<name>.runtime --help`, which is authoritative when the two disagree.
 
-Value handling: `true` renders a bare `--flag`; `false` and null are omitted; everything
-else renders as `--flag 'value'` (including `0`, which is meaningful for e.g.
-`tkn_chunk_size`).
+Value handling: every value renders as `--flag 'value'`, booleans included —
+`true`/`false` become `--flag 'true'`/`--flag 'false'`. DPK declares its boolean arguments
+as value-taking (`str2bool`) rather than presence flags, so a bare `--flag` would make
+argparse consume the next token. Only **null** omits a flag: `false` is a real setting and
+is sent. `0` is likewise sent, which matters for e.g. `tkn_chunk_size`.
 
 ### Values that vary per run
 
@@ -233,8 +243,9 @@ the step renders, so it appears in the persisted step config and in build lineag
 being decided invisibly on a node. `gb build start --dry-run` prints the fully resolved
 build.yaml if you want to check what a run will actually use.
 
-If you need genuine shell logic — a computed path, a conditional, a pipeline — that is what
-[command mode](#two-modes-pick-one) is for.
+If you need genuine shell logic — a computed path, a conditional, a pipeline — that is not
+this step's job. Use the [`byoc`](../../byoc/skypilot/USAGE.md) step or the built-in
+`command` step, either of which runs an arbitrary command alongside your DPK targets.
 
 ## Per-transform DPK documentation
 
@@ -307,7 +318,7 @@ extras:
 
 - **`c4_annotator`** and **`noop`** — neither module is in the wheel and neither is a
   declared extra, so `transform: noop` / `transform: c4_annotator` cannot resolve at all
-  (`noop` is a test fixture in any case). They are not a `pip_extras` problem; there is
+  (`noop` is a test fixture in any case). They are not a dependency problem; there is
   nothing to install.
 - **`dpk_transform_chain`** — a chaining utility, not a data transform.
 
@@ -320,10 +331,9 @@ step's other implementation detail.
 
 The short version for writing a build:
 
-* Every declared input is exported to the step as `$GB_INPUT_<name>`. In transform mode,
-  `input:` names which one feeds the transform.
-* In transform mode the step registers the output for you. In command mode your `command`
-  prints `GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>` itself.
+* Every declared input is exported to the step as `$GB_INPUT_<name>`; `input:` names which
+  one feeds the transform.
+* The step registers the output for you, from `output` and the path it wrote to.
 * If an output's `uri` names a path, set `output_path` to match it. On `skypilot/slurm` and
   `skypilot/lsf` a path another target reads must be on the shared filesystem
   (`env:///shared/…`); the `./output` default lives in the per-target workdir and is removed
@@ -427,17 +437,15 @@ the default lands in the per-target workdir that is removed when the target fini
 
 ## Notes and limitations
 
-- **Pure-python DPK.** The step runs the CPU-only pure-python runtime. DPK's Ray runtime is
-  faster on large corpora; it is reachable via `module: dpk_<name>.ray.runtime` +
-  `pip_extras: ["ray"]`, but provisioning a multi-node Ray cluster is out of scope here.
-- **Runtime dependency install.** Dependencies are installed per cluster during `setup` with
-  [`uv`](https://github.com/astral-sh/uv) (bootstrapped with `pip` first, as DPK's own
-  image does), so
-  the worker needs outbound access to `pip_index_url`. For an air-gapped cluster, or to
-  avoid the install cost (`pii_redactor` pulls presidio + flair, which is heavy), pre-bake an
-  image and set `dpk_image`.
-- **Container images need Pyxis on SLURM/LSF.** Leave `dpk_image` empty on clusters without the
-  Pyxis SPANK plugin — including the local Docker SLURM cluster used for testing.
-- **`output_path` is unchecked.** Nothing validates that it agrees with the output's declared `uri`; a mismatch fails at run time, not at submit time.
+- **Runtime dependency install.** On the bare launcher node, dependencies are installed per
+  cluster during `setup` with [`uv`](https://github.com/astral-sh/uv), so the worker needs
+  outbound access to `pip_index_url`. For an air-gapped cluster, or to avoid the install cost
+  (`pii_redactor` pulls presidio + flair, which is heavy), pre-bake an image and set
+  `dpk_image` — see [Running in a container image](#running-in-a-container-image).
+- **`output_path` is unchecked.** Nothing validates that it agrees with the output's declared
+  `uri`; a mismatch fails at run time, not at submit time.
 - **Flag names are transform-specific.** The step derives the module and the dependencies,
   but not `args` keys — see [Transform flags](#transform-flags).
+- **One transform per step.** To chain transforms, declare one target per transform and bind
+  each output to the next target's input. For work that is not a DPK transform, use
+  [`byoc`](../../byoc/skypilot/USAGE.md) or the built-in `command` step.

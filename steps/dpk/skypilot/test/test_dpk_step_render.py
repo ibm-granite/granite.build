@@ -176,10 +176,15 @@ class TestStepContract:
         """The supported relative-source mechanism — how src/ reaches the node."""
         assert launcher["file_mounts"] == {"src": "src"}
 
-    def test_transform_and_command_both_default_empty(self, defaults):
-        """`transform` XOR `command`: neither is implied, the build picks one."""
+    def test_transform_defaults_empty_and_is_the_only_mode(self, defaults):
+        """The step runs exactly one DPK transform; there is no second mode.
+
+        `command` was removed once `validate: true` replaced its only use (running
+        the bundled validator). Arbitrary-command execution lives in `byoc` and the
+        built-in `command` step, so a second way to do it here was unused surface.
+        """
         assert defaults["transform"] == ""
-        assert defaults["command"] == ""
+        assert "command" not in defaults
 
 
 class TestImageSelection:
@@ -231,60 +236,91 @@ class TestDerivations:
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _opt(argv, "--module") == "dpk_tokenization2arrow.ray.runtime"
 
-    def test_pip_extras_defaults_to_empty(self, launcher, defaults):
-        """The default adds nothing: the derived extra alone."""
-        assert defaults["pip_extras"] == []
+    def test_ray_is_not_installed_by_default(self, launcher, defaults):
+        assert defaults["ray_enabled"] is False
+        argv = _script_argv(
+            _render(launcher["setup"], _transform_cfg(defaults)), "setup"
+        )
+        assert _passthrough(argv) == [
+            "data-prep-toolkit-transforms[tokenization2arrow]==1.1.8"
+        ]
 
-    def test_pip_extras_is_additive_not_a_replacement(self, launcher, defaults):
-        """THE contract. Replacing would drop the transform's real dependencies.
-
-        `pii_redactor`'s extra carries presidio/flair and a pinned numpy<1.29; a
-        build asking for the `ray` flavour must still get them, or the transform it
-        asked for cannot import.
-        """
-        cfg = _transform_cfg(defaults, transform="pii_redactor", pip_extras=["ray"])
+    def test_ray_enabled_adds_the_ray_extra_alongside_the_derived_one(
+        self, launcher, defaults
+    ):
+        """Additive: the transform's own extra carries its real dependencies."""
+        cfg = _transform_cfg(defaults, transform="pii_redactor", ray_enabled=True)
         argv = _script_argv(_render(launcher["setup"], cfg), "setup")
         assert _passthrough(argv) == [
             "data-prep-toolkit-transforms[pii-redactor,ray]==1.1.8"
         ]
 
-    def test_derived_extra_renders_first(self, launcher, defaults):
-        """Stable, diffable requirement string regardless of what was added."""
-        cfg = _transform_cfg(defaults, pip_extras=["aaa-sorts-first"])
-        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
-        assert _passthrough(argv) == [
-            "data-prep-toolkit-transforms[tokenization2arrow,aaa-sorts-first]==1.1.8"
-        ]
+    def test_ray_enabled_also_switches_the_module(self, launcher, defaults):
+        """THE reason this is one flag rather than two.
 
-    def test_several_pip_extras_are_all_added(self, launcher, defaults):
-        cfg = _transform_cfg(
-            defaults, transform="pii_redactor", pip_extras=["ray", "spark"]
+        Ray needs the extra AND the .ray.runtime module. The previous
+        `pip_extras: ["ray"]` + `module:` pair let a build set one without the
+        other, which failed on the node rather than at render time.
+        """
+        cfg = _transform_cfg(defaults, ray_enabled=True)
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _opt(argv, "--module") == "dpk_tokenization2arrow.ray.runtime"
+
+    def test_ray_disabled_uses_the_pure_python_runtime(self, launcher, defaults):
+        argv = _script_argv(
+            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
         )
-        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
-        assert _passthrough(argv) == [
-            "data-prep-toolkit-transforms[pii-redactor,ray,spark]==1.1.8"
+        assert _opt(argv, "--module") == "dpk_tokenization2arrow.runtime"
+
+    def test_ray_enabled_also_passes_run_locally_true(self, launcher, defaults):
+        """The THIRD thing Ray needs, and the one easiest to miss.
+
+        DPK's Ray launcher defaults --run_locally to FALSE, which means
+        ray.init("ray://localhost:10001") — connect to an EXISTING cluster. This step
+        provisions none, so without the flag the transform waits on a cluster nobody
+        started. Local is the only mode that can work here.
+        """
+        cfg = _transform_cfg(defaults, ray_enabled=True)
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _passthrough(argv) == ["--run_locally", "true"]
+
+    def test_run_locally_is_not_passed_without_ray(self, launcher, defaults):
+        """It is a Ray-launcher flag; the pure-python launcher does not accept it."""
+        argv = _script_argv(
+            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
+        )
+        assert "--run_locally" not in argv
+
+    def test_run_locally_precedes_the_user_args(self, launcher, defaults):
+        """Ordering is the contract: argparse takes the LAST occurrence."""
+        cfg = _transform_cfg(defaults, ray_enabled=True, args={"tkn_chunk_size": 0})
+        flags = _passthrough(
+            _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        )
+        assert flags == ["--run_locally", "true", "--tkn_chunk_size", "0"]
+
+    def test_module_override_wins_over_ray_enabled(self, launcher, defaults):
+        """The escape hatch for the transforms DPK has not normalised yet.
+
+        In DPK 1.1.8, 32 of 43 data transforms expose dpk_<t>.ray.runtime; the rest
+        use ray.transform (doc_quality, fdedup, lang_id, ...) or ship no Ray
+        package. The step derives by rule and does not carry an exception table —
+        that list is being normalised upstream, so it would go stale — so those
+        builds set `module` explicitly.
+        """
+        cfg = _transform_cfg(
+            defaults,
+            transform="doc_quality",
+            ray_enabled=True,
+            module="dpk_doc_quality.ray.transform",
+        )
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _opt(argv, "--module") == "dpk_doc_quality.ray.transform"
+        # The ray EXTRA is still installed — only the module was overridden.
+        setup_argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _passthrough(setup_argv) == [
+            "data-prep-toolkit-transforms[doc-quality,ray]==1.1.8"
         ]
-
-    @pytest.mark.parametrize(
-        "pip_extras,expected",
-        [
-            (["pii-redactor"], "[pii-redactor]"),
-            (["ray", "pii-redactor"], "[pii-redactor,ray]"),
-        ],
-    )
-    def test_restating_the_derived_extra_is_not_duplicated(
-        self, launcher, defaults, pip_extras, expected
-    ):
-        """Harmless to pip either way, but keeps the rendered command clean."""
-        cfg = _transform_cfg(defaults, transform="pii_redactor", pip_extras=pip_extras)
-        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
-        assert _passthrough(argv) == [f"data-prep-toolkit-transforms{expected}==1.1.8"]
-
-    def test_extra_packages_are_appended(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, packages=["pyarrow"])
-        setup = _render(launcher["setup"], cfg)
-        assert "'pyarrow'" in setup
-        assert "data-prep-toolkit-transforms[tokenization2arrow]" in setup
 
 
 class TestTransformArgs:
@@ -319,10 +355,20 @@ class TestTransformArgs:
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _passthrough(argv) == ["--tkn_chunk_size", "0"]
 
-    def test_true_renders_a_bare_flag(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, args={"run_locally": True})
+    @pytest.mark.parametrize("value,rendered", [(True, "true"), (False, "false")])
+    def test_booleans_render_with_a_VALUE_not_as_a_bare_flag(
+        self, launcher, defaults, value, rendered
+    ):
+        """DPK has no store_true flags — every boolean takes a value.
+
+        All 33 of DPK 1.1.8's boolean arguments are declared
+        `type=lambda x: bool(str2bool(x))`, so a bare `--flag` makes argparse consume
+        the NEXT token as its value: it would swallow the following flag name or die
+        with "expected one argument". Lowercased because that is what str2bool reads.
+        """
+        cfg = _transform_cfg(defaults, args={"ededup_use_snapshot": value})
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _passthrough(argv) == ["--run_locally"]
+        assert _passthrough(argv) == ["--ededup_use_snapshot", rendered]
 
     def test_value_with_single_quotes_survives_the_shell(self, launcher, defaults):
         """Regression guard for a real bug found by the pii_redactor fixture.
@@ -341,10 +387,16 @@ class TestTransformArgs:
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _passthrough(argv) == ["--pii_redactor_entities", value]
 
-    def test_false_and_none_are_omitted(self, launcher, defaults):
+    def test_only_none_omits_a_flag(self, launcher, defaults):
+        """`false` is a SETTING and must be sent; only `null` means "do not pass it".
+
+        Regression guard: `false` used to be dropped alongside `null`, so a build that
+        explicitly disabled a DPK boolean silently got DPK's own default instead —
+        with no error and no way to tell from the rendered command.
+        """
         cfg = _transform_cfg(defaults, args={"off": False, "unset": None})
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _passthrough(argv) == []
+        assert _passthrough(argv) == ["--off", "false"]
 
 
 class TestOutputPathDefault:
@@ -375,7 +427,8 @@ class TestArgsIsTheOnlyFlagChannel:
     thing it could do that `args` cannot was shell expansion on the node, and a
     per-run value is better written with the build.yaml's own Jinja, which resolves
     at render time and is therefore visible in the persisted config and in lineage.
-    Genuine shell logic belongs in `command` mode.
+    A value that must vary per run is a $${PARAM} build parameter or
+    {{ run_metadata.* }}, both resolved before the step renders.
     """
 
     def test_no_extra_args_field_remains(self, defaults):
@@ -486,37 +539,6 @@ class TestValidateFlag:
         cfg = _transform_cfg(defaults, validate=True, args={"a": 1})
         assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
 
-    def test_command_mode_ignores_validate(self, launcher, defaults):
-        """validate belongs to the derived invocation, which command mode skips."""
-        cfg = dict(defaults, command="echo hi", validate=True)
-        run = _render(launcher["run"], cfg, _BINDINGS)
-        assert "--validate" not in run
-
-
-class TestCommandMode:
-    def test_command_is_injected_verbatim(self, launcher, defaults):
-        cmd = 'python src/validate_tokenization2arrow.py "$GB_INPUT_tokens" out --input in'
-        cfg = dict(defaults, command=cmd, packages=["pyarrow"])
-        run = _render(launcher["run"], cfg, {"tokens": {"binding": {"path": "/tok"}}})
-        assert cmd in run
-
-    def test_command_mode_skips_the_transform_invocation(self, launcher, defaults):
-        cfg = dict(defaults, command="echo hi", packages=["pyarrow"])
-        run = _render(launcher["run"], cfg, {})
-        assert "dpk_run.sh" not in run
-        assert "--artifact-id" not in run
-
-    def test_command_mode_still_exports_bindings(self, launcher, defaults):
-        cfg = dict(defaults, command="echo hi")
-        run = _render(launcher["run"], cfg, {"tokens": {"binding": {"path": "/tok"}}})
-        assert "export GB_INPUT_tokens='/tok'" in run
-
-    def test_command_mode_installs_only_its_packages(self, launcher, defaults):
-        """No transform => no DPK requirement is synthesized."""
-        cfg = dict(defaults, command="echo hi", packages=["pyarrow"])
-        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
-        assert _passthrough(argv) == ["pyarrow"]
-
 
 class TestVenvHandling:
     def test_bare_node_builds_a_venv(self, launcher, defaults):
@@ -571,10 +593,17 @@ class TestRenderedShellIsValid:
         assert _bash_ok(_render(launcher["setup"], cfg))
         assert _bash_ok(_render(launcher["run"], cfg, bindings))
 
-    def test_command_mode_parses(self, launcher, defaults):
-        cfg = dict(defaults, command="echo hi; echo there", packages=["pyarrow"])
+    def test_ray_enabled_parses(self, launcher, defaults):
+        """The ray branch changes both blocks, so parse both."""
+        cfg = _transform_cfg(defaults, ray_enabled=True, args={"tkn_chunk_size": 0})
         assert _bash_ok(_render(launcher["setup"], cfg))
-        assert _bash_ok(_render(launcher["run"], cfg, {}))
+        assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
+
+    def test_image_mode_parses(self, launcher, defaults):
+        """dpk_image skips setup's install entirely — the empty block must still parse."""
+        cfg = _transform_cfg(defaults, dpk_image="quay.io/org/dpk:1.1.8")
+        assert _bash_ok(_render(launcher["setup"], cfg))
+        assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
 
     def test_no_trailing_continuation_swallows_what_follows(self, launcher, defaults):
         """Regression guard, retargeted to the new seam.

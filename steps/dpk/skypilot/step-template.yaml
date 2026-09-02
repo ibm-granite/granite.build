@@ -12,10 +12,10 @@ config:
     # and data-prep-toolkit-transforms declares one pip extra per transform, so
     # both rules hold for any transform — including ones added upstream later,
     # with no change to this step.
-    # Mutually exclusive with `command` below: set exactly one.
+    # REQUIRED: the step runs exactly one DPK transform.
     transform: ""
     # DPK release installed for `transform`. Ignored when `dpk_image` is set (the
-    # image already provides DPK) or when running a raw `command`.
+    # image already provides DPK).
     dpk_version: "1.1.8"
     # Transform flags, rendered in order as `--<key> '<value>'`.
     # Keys are the FULL flag name as DPK spells it, WITHOUT the leading dashes —
@@ -24,17 +24,23 @@ config:
     # transforms (dpk_tokenization uses tkn_, gopher_repetition_annotator uses
     # gra_, doc_quality uses docq_), so the step cannot infer them. See a
     # transform's DPK docs or `--help` for its flag names.
-    # A `true` value renders as a bare `--<key>`; `false`/null is omitted.
+    #
+    # Values render as `--<key> '<value>'`, booleans included: DPK declares its
+    # boolean flags as `type=lambda x: bool(str2bool(x))` (33 of them; NO store_true
+    # anywhere), so they REQUIRE a value — a bare `--flag` would make argparse eat
+    # the next token. `true`/`false` therefore render lowercased, which is what
+    # str2bool expects. Only `null` means "do not pass this flag at all"; a `false`
+    # is a real setting and is sent.
     # `args` is the ONLY way to pass transform flags — deliberately, so there is
     # one quoting model rather than two. A value that must vary per run is written
     # with the build.yaml's own Jinja (e.g.
-    # "{{ run_metadata.targetsteprun_id | short_hash }}"), which resolves at render
-    # time and so is visible in the persisted step config and in lineage; genuine
-    # shell logic belongs in `command` mode.
+    # "{{ run_metadata.targetsteprun_id | short_hash }}") or a $${PARAM} build
+    # parameter, both of which resolve at render time and so are visible in the
+    # persisted step config and in lineage.
     args: {}
     # Names of a declared target input / output. The step turns these into the
     # transform's --data_local_config input_folder / output_folder. Both are
-    # required in transform mode.
+    # required.
     #   input  -> read as $GB_INPUT_<input>  (the binding's staged path)
     #   output -> used as the GB_ARTIFACT_ID the step emits
     input: ""
@@ -75,46 +81,56 @@ config:
     # travels with the data it describes.
     validate: false
 
-    # ---- escape hatch: run an arbitrary command instead of a transform --------
-    # A verbatim bash command, for work that is not a DPK transform — e.g. the
-    # bundled src/validate_tokenization2arrow.py. Injected as-is (like the byoc step's
-    # `command`), with $GB_INPUT_<name> exported for every declared input.
-    # Mutually exclusive with `transform`.
-    command: ""
+    # Run the transform on DPK's Ray runtime instead of the pure-python one, for
+    # throughput on large corpora. ONE flag does the THREE things Ray needs, which
+    # is the point — any subset of them fails on the node rather than at submit:
+    #   1. installs the `ray` pip extra alongside the transform's own
+    #   2. switches the module to dpk_<transform>.ray.runtime
+    #   3. passes --run_locally true, so DPK starts a local Ray cluster instead of
+    #      trying to connect to one at ray://localhost:10001 (its default) that this
+    #      step never provisions
+    # The previous `pip_extras` + `module` pair covered only 1 and 2, and left 3 to
+    # be discovered on a hung job.
+    #
+    # Derived by RULE, deliberately without a per-transform exception table: the
+    # module is always dpk_<transform>.ray.runtime. That holds for 32 of the 43
+    # data transforms in DPK 1.1.8; the rest either expose their Ray entrypoint as
+    # ray.transform (code_profiler, doc_chunk, doc_quality, fdedup, hap,
+    # html2parquet, lang_id) or ship no Ray package (bloom, folder2parquet,
+    # web2parquet, similarity). DPK is normalising these onto ray.runtime upstream,
+    # so an exception list here would go stale by design — set `module` explicitly
+    # for one of those until the normalisation lands.
+    #
+    # Provisioning a multi-node Ray cluster is out of scope; this runs Ray's local
+    # runtime on the step's own node.
+    ray_enabled: false
 
     # ---- overrides -----------------------------------------------------------
-    # Override the derived module (e.g. a transform whose runtime is not
-    # dpk_<name>.runtime, or a *.ray.runtime variant).
+    # Override the derived module entirely (e.g. a transform whose runtime is not
+    # dpk_<name>.runtime). `ray_enabled` already handles the .ray.runtime case, so
+    # this is for anything neither rule covers.
     module: ""
-    # Pip extras to install IN ADDITION to the one derived from `transform`, as
-    # they appear inside the brackets of data-prep-toolkit-transforms[...].
-    # ADDITIVE, never replacing: the transform's own extra carries its real
-    # dependencies (pii_redactor's presidio/flair, its pinned numpy<1.29), so
-    # dropping it would break the very transform the build asked for. Use this for
-    # a runtime flavour alongside it:
-    #   []               -> just the derived extra (the default)
-    #   ["ray"]          -> [<derived>,ray], e.g. with module: dpk_<t>.ray.runtime
-    #   ["ray","spark"]  -> [<derived>,ray,spark]
-    # An entry equal to the derived extra is dropped rather than repeated, so
-    # restating it is harmless. The derived extra always renders first, keeping the
-    # requirement string stable and diffable.
-    #
-    # There is deliberately NO way to suppress the derived extra. Every published
-    # DPK transform's extra follows the `_`->`-` rule (verified against the 1.1.8
-    # wheel: 44 modules, 50 declared extras), so a wrong derivation is not a case
-    # that occurs; `dpk_image` is the escape hatch if it ever does.
-    pip_extras: []
     # Additional pip requirements installed alongside the transform, e.g.
-    # ["pyarrow"] for a command-mode script.
+    # ["pyarrow"] for a transform whose extra omits something you need.
     packages: []
     pip_index_url: "https://pypi.org/simple"
-    # Public container image to run the transform in. Empty (the default) => run
-    # on the bare launcher node, which is required on clusters without the Pyxis
-    # SPANK plugin (the local Docker SLURM cluster from `make slurm-setup` has
-    # none). When set, the venv/pip install is skipped entirely — the image must
-    # already provide DPK. Named `dpk_image` rather than `image` to make clear it
-    # is a RUNTIME choice rendered by Jinja, not an image this step's Makefile
-    # builds (this is a public-image step; it builds none).
+    # Container image to run the transform in, from ANY registry (quay.io,
+    # us.icr.io, a private one). Give the plain reference — the step adds
+    # SkyPilot's `docker:` scheme marker, which tells SkyPilot this is a container
+    # rather than a cloud VM image.
+    #
+    # Setting this SKIPS the venv and pip install entirely: the image is expected
+    # to already provide DPK, which is the fast path for a prebaked image. A base
+    # image WITHOUT DPK is therefore not supported — there is no install to add it.
+    #
+    # Empty (the default) => run on the bare launcher node and install at run time.
+    # That is required on clusters without the Pyxis SPANK plugin, including the
+    # local Docker SLURM cluster from `make slurm-setup`, which is why image mode
+    # has no local cluster test.
+    #
+    # Named `dpk_image` rather than `image` to make clear it is a RUNTIME choice
+    # rendered by Jinja, not an image this step's Makefile builds (this is a
+    # public-image step; it builds none).
     dpk_image: ""
   compute_config:
     num_gpus_per_node: 0
@@ -152,11 +168,11 @@ environment_configs:
             set -eu
             {%- if not config.dpk_config.dpk_image %}
             {%- set t = config.dpk_config.transform %}
-            {#- The transform's own extra is ALWAYS derived; pip_extras only adds to
-                it (see the config comment). `reject("in", derived)` drops a restated
-                derived value so it is not repeated in the brackets. #}
-            {%- set derived = [t | replace("_", "-")] if t else [] %}
-            {%- set extras = derived + (config.dpk_config.pip_extras | reject("in", derived) | list) %}
+            {#- The transform's own extra is always derived from its name; ray_enabled
+                adds DPK's `ray` extra alongside it (never instead of it — the
+                transform's own extra carries its real dependencies). #}
+            {%- set extras = ([t | replace("_", "-")] if t else [])
+                             + (["ray"] if config.dpk_config.ray_enabled else []) %}
             {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ extras | join(",") ~ "]==" ~ config.dpk_config.dpk_version)
                               if extras
                               else "" %}
@@ -183,14 +199,17 @@ environment_configs:
             . ./venv/bin/activate
             {%- endif %}
             # Every declared input is exported as $GB_INPUT_<name> holding its
-            # staged local path, so a command never hardcodes or duplicates one.
+            # staged local path, so nothing hardcodes or duplicates one.
             {%- for name, b in bindings.items() %}
             export GB_INPUT_{{ name }}='{{ b.binding.path }}'
             {%- endfor %}
-            {%- if config.dpk_config.transform %}
+            {#- Module by rule: dpk_<transform>.runtime, or .ray.runtime when
+                ray_enabled. `module` overrides both (see the config comments). #}
             {%- set module = config.dpk_config.module if config.dpk_config.module
-                             else ("dpk_" ~ config.dpk_config.transform ~ ".runtime") %}
-            # Transform mode delegates the shell to the bundled src/dpk_run.sh
+                             else ("dpk_" ~ config.dpk_config.transform
+                                   ~ (".ray.runtime" if config.dpk_config.ray_enabled
+                                      else ".runtime")) %}
+            # The step delegates the shell to the bundled src/dpk_run.sh
             # (file-mounted at ./src). Jinja's job here is only to compute VALUES;
             # the script creates and absolutizes the output dir, assembles DPK's
             # --data_local_config, and emits the artifact marker. See that file's
@@ -207,7 +226,17 @@ environment_configs:
             # python-literal values containing quotes (pii_redactor's
             # --pii_redactor_entities is ast.literal_eval'd, so it needs
             # "['PERSON','EMAIL_ADDRESS']" to reach python intact).
-            # A `true` value renders as a bare flag; false/null are omitted.
+            # Booleans render as `--flag 'true'`/`'false'`, not as bare flags: every
+            # DPK boolean is a value-taking str2bool argument, so a bare flag would
+            # consume the following token. Only `null` omits a flag.
+            #
+            # ray_enabled also emits --run_locally true, BEFORE the args loop.
+            # DPK's Ray launcher defaults that flag to false, which makes it
+            # ray.init("ray://localhost:10001") — connect to an EXISTING cluster.
+            # This step provisions no Ray cluster, so without the flag the transform
+            # waits on a cluster nobody started. Emitting it first (argparse takes
+            # the LAST occurrence) keeps `args: {run_locally: false}` working for a
+            # build that really does point at an external cluster.
             bash ./src/dpk_run.sh \
               --module '{{ module }}' \
               --input-path "$GB_INPUT_{{ config.dpk_config.input }}" \
@@ -216,13 +245,7 @@ environment_configs:
               {%- if config.dpk_config.validate %}
               --validate '{{ config.dpk_config.transform }}' \
               {%- endif %}
-              --{% for k, v in config.dpk_config.args.items() %}{% if v is sameas true %} --{{ k }}{% elif v is not none and v is not sameas false %} --{{ k }} '{{ v | string | replace("'", "'\"'\"'") }}'{% endif %}{% endfor %}
-            {%- else %}
-            # Raw command mode: injected verbatim, like the byoc step. The command
-            # is responsible for its own GB_ARTIFACT_ID/PATH marker(s):
-            #   echo "GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>"
-            {{ config.dpk_config.command }}
-            {%- endif %}
+              --{% if config.dpk_config.ray_enabled %} --run_locally true{% endif %}{% for k, v in config.dpk_config.args.items() %}{% if v is not none %} --{{ k }} '{{ (v | lower) if (v is sameas true or v is sameas false) else (v | string | replace("'", "'\"'\"'")) }}'{% endif %}{% endfor %}
     monitors:
       # Standard artifact/status convention from the shipped monitor library.
       skypilot_monitor:
