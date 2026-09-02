@@ -344,8 +344,11 @@ def decode_uri(
 
 
 def compare_env_uri(uri: str):
+    # Read the Lakehouse environment (the lh://<env> host) through the shared
+    # URI class instead of indexing a raw "/"-split segment. get_lh_environment()
+    # returns the urlparse-normalized (lowercased) hostname.
     return (
-        uri.split("/")[2],
+        URI.get_uri(uri).get_lh_environment(),
         str(gb_environment_config().lakehouse_environment).lower(),
     )
 
