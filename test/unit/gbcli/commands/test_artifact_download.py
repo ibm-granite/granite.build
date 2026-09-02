@@ -30,7 +30,6 @@ import pytest
 from click.testing import CliRunner
 
 from gbcli.commands.command_artifact import cli
-from gbcli.utils.utils import DecodedURIResponse
 
 
 @pytest.fixture
@@ -103,22 +102,14 @@ def test_download_hf_missing_token(download_env, tmp_path):
 
 
 def test_download_lh_model_routes_with_decoded_fields(download_env, tmp_path):
-    """An lh:// model URI still routes to download_model with decoded fields."""
-    decoded = DecodedURIResponse(
-        uri="lh://prod/ns/model_shared/my-model/v3",
-        namespace="ns",
-        table_name="model_shared",
-        type="model",
-        model_label="my-model",
-        model_revision="v3",
-    )
-    # A valid lh model URI: lh://<env>/<ns>/models/<table>/<label>/<rev>.
-    # The store dispatch parses this for real; decode_uri is patched so the
-    # downstream fields come from the decoded mock above.
+    """An lh:// model URI still routes to download_model with decoded fields.
+
+    A valid lh model URI: lh://<env>/<ns>/models/<table>/<label>/<rev>. The
+    shared LhURI class parses it for real (no decode_uri patch needed).
+    """
     lh_uri = "lh://prod/ns/models/model_shared/my-model/v3"
     download_env.fetch_artifact_uri.return_value = {"uri": lh_uri}
-    with patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded):
-        result = _invoke(tmp_path, lh_uri)
+    result = _invoke(tmp_path, lh_uri)
     assert result.exit_code == 0, result.output
     download_env.download_hf_artifact.assert_not_called()
     args = download_env.download_model.call_args.args

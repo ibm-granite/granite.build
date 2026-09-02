@@ -31,7 +31,6 @@ import pytest
 from click.testing import CliRunner
 
 from gbcli.commands.command_artifact import cli
-from gbcli.utils.utils import DecodedURIResponse
 
 # These tests exercise a @reject_standalone command; patch is_standalone -> False.
 
@@ -225,7 +224,7 @@ def test_uri_flags_rejected(push_env, tmp_path, extra_args):
 def test_malformed_hf_uri_clean_error(push_env, tmp_path):
     result = _invoke(tmp_path, ["--uri", "hf:///onlyowner", "--artifact-name", "x"])
     assert result.exit_code != 0
-    assert "invalid HuggingFace URI" in result.output
+    assert "invalid artifact URI" in result.output
     push_env.push.assert_not_called()
 
 
@@ -239,7 +238,7 @@ def test_hf_uri_undefined_template_var_clean_error(push_env, tmp_path):
     finally:
         logging.disable(logging.NOTSET)
     assert result.exit_code != 0
-    assert "invalid HuggingFace URI" in result.output
+    assert "invalid artifact URI" in result.output
     push_env.push.assert_not_called()
 
 
@@ -253,31 +252,24 @@ def test_hf_space_uri_rejected(push_env, tmp_path):
     push_env.push.assert_not_called()
 
 
-# --- lh:// paths (decode_uri + compare_env_uri patched for hermeticity) ----------
+# --- lh:// paths --------------------------------------------------------------
+#
+# Pass real, valid lh:// URIs so the shared URI class does the parsing; patch
+# `gb_environment_config` to control the CLI-side environment comparison.
+# Valid lh layout: lh://<env>/<ns>/<models|datasets|filesets>/<table>/...
 
 
 def test_lh_uri_model_forwarded_to_push(push_env, tmp_path):
     """`--uri lh://...` for a model forwards decoded type/label/table to push()."""
-    decoded = DecodedURIResponse(
-        uri="lh://prod/ns/model_shared/my-model/v3",
-        namespace="ns",
-        table_name="model_shared",
-        type="model",
-        model_label="my-model",
-        model_revision="v3",
-    )
-    with (
-        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
-        patch(
-            "gbcli.commands.command_artifact.compare_env_uri",
-            return_value=("prod", "prod"),
-        ),
-    ):
+    with patch(
+        "gbcli.commands.command_artifact.gb_environment_config",
+    ) as gb_env:
+        gb_env.return_value.lakehouse_environment = "prod"
         result = _invoke(
             tmp_path,
             [
                 "--uri",
-                "lh://prod/ns/model_shared/my-model/v3",
+                "lh://prod/ns/models/model_shared/my-model/v3",
                 "--artifact-name",
                 "my-model",
             ],
@@ -292,26 +284,15 @@ def test_lh_uri_model_forwarded_to_push(push_env, tmp_path):
 
 
 def test_lh_uri_fileset_forwarded_to_push(push_env, tmp_path):
-    decoded = DecodedURIResponse(
-        uri="lh://prod/ns/fileset_shared/my-fs/v1",
-        namespace="ns",
-        table_name="fileset_shared",
-        type="fileset",
-        fileset_label="my-fs",
-        fileset_version="v1",
-    )
-    with (
-        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
-        patch(
-            "gbcli.commands.command_artifact.compare_env_uri",
-            return_value=("prod", "prod"),
-        ),
-    ):
+    with patch(
+        "gbcli.commands.command_artifact.gb_environment_config",
+    ) as gb_env:
+        gb_env.return_value.lakehouse_environment = "prod"
         result = _invoke(
             tmp_path,
             [
                 "--uri",
-                "lh://prod/ns/fileset_shared/my-fs/v1",
+                "lh://prod/ns/filesets/fileset_shared/my-fs/v1",
                 "--artifact-name",
                 "my-fs",
             ],
@@ -326,23 +307,18 @@ def test_lh_uri_fileset_forwarded_to_push(push_env, tmp_path):
 
 def test_lh_uri_dataset_rejected(push_env, tmp_path):
     """An lh:// dataset URI is rejected by the existing lh+dataset guard."""
-    decoded = DecodedURIResponse(
-        uri="lh://prod/ns/tbl/my-dataset",
-        namespace="ns",
-        table_name="tbl",
-        type="dataset",
-        dataset_name="my-dataset",
-    )
-    with (
-        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
-        patch(
-            "gbcli.commands.command_artifact.compare_env_uri",
-            return_value=("prod", "prod"),
-        ),
-    ):
+    with patch(
+        "gbcli.commands.command_artifact.gb_environment_config",
+    ) as gb_env:
+        gb_env.return_value.lakehouse_environment = "prod"
         result = _invoke(
             tmp_path,
-            ["--uri", "lh://prod/ns/tbl/my-dataset", "--artifact-name", "my-dataset"],
+            [
+                "--uri",
+                "lh://prod/ns/datasets/tbl/my-dataset",
+                "--artifact-name",
+                "my-dataset",
+            ],
         )
     assert result.exit_code != 0
     assert "does not support artifact type 'dataset'" in result.output
@@ -350,25 +326,23 @@ def test_lh_uri_dataset_rejected(push_env, tmp_path):
 
 
 def test_lh_uri_env_mismatch_rejected(push_env, tmp_path):
-    """A non-prod cross-environment lh:// URI is rejected."""
-    decoded = DecodedURIResponse(
-        uri="lh://staging/ns/model_shared/m/v1",
-        namespace="ns",
-        table_name="model_shared",
-        type="model",
-        model_label="m",
-        model_revision="v1",
-    )
-    with (
-        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
-        patch(
-            "gbcli.commands.command_artifact.compare_env_uri",
-            return_value=("staging", "dev"),
-        ),
-    ):
+    """A non-prod cross-environment lh:// URI is rejected.
+
+    The URI host is 'staging'; the CLI env is 'dev', so the environments differ
+    and neither is the prod override case.
+    """
+    with patch(
+        "gbcli.commands.command_artifact.gb_environment_config",
+    ) as gb_env:
+        gb_env.return_value.lakehouse_environment = "dev"
         result = _invoke(
             tmp_path,
-            ["--uri", "lh://staging/ns/model_shared/m/v1", "--artifact-name", "m"],
+            [
+                "--uri",
+                "lh://staging/ns/models/model_shared/m/v1",
+                "--artifact-name",
+                "m",
+            ],
         )
     assert result.exit_code != 0
     assert "doesn't match the CLI environment" in result.output
@@ -377,26 +351,15 @@ def test_lh_uri_env_mismatch_rejected(push_env, tmp_path):
 
 def test_lh_uri_conflict_flag_rejected(push_env, tmp_path):
     """`--uri lh://... --table t` is rejected by the lh conflict guard."""
-    decoded = DecodedURIResponse(
-        uri="lh://prod/ns/model_shared/m/v1",
-        namespace="ns",
-        table_name="model_shared",
-        type="model",
-        model_label="m",
-        model_revision="v1",
-    )
-    with (
-        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
-        patch(
-            "gbcli.commands.command_artifact.compare_env_uri",
-            return_value=("prod", "prod"),
-        ),
-    ):
+    with patch(
+        "gbcli.commands.command_artifact.gb_environment_config",
+    ) as gb_env:
+        gb_env.return_value.lakehouse_environment = "prod"
         result = _invoke(
             tmp_path,
             [
                 "--uri",
-                "lh://prod/ns/model_shared/m/v1",
+                "lh://prod/ns/models/model_shared/m/v1",
                 "--table",
                 "t",
                 "--artifact-name",

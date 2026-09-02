@@ -25,7 +25,6 @@ import unittest
 import pytest
 
 from gbcli.utils.utils import (
-    compare_env_uri,
     generate_unique_id,
     remove_prefix,
     remove_suffix,
@@ -108,17 +107,3 @@ class TestUtils(unittest.TestCase):
                     case["url"], removeSuffix=True
                 )
                 self.assertEqual(result, case["expected"])
-
-    def test_compare_env_uri_reads_environment_via_uri(self):
-        """compare_env_uri returns the lh://<env> host as the first element.
-
-        The environment now comes from LhURI.get_lh_environment() (the shared
-        URI class) instead of a raw uri.split('/')[2]. That accessor returns the
-        urlparse-normalized (lowercased) hostname, so a mixed-case host is
-        normalized to lowercase.
-        """
-        # A valid lh model URI: lh://<env>/<ns>/models/<table>/<label>/<rev>.
-        assert compare_env_uri("lh://prod/ns/models/tbl/label/rev")[0] == "prod"
-        assert compare_env_uri("lh://staging/ns/models/tbl/label/rev")[0] == "staging"
-        # urlparse lowercases the host, so a mixed-case env normalizes.
-        assert compare_env_uri("lh://PROD/ns/models/tbl/label/rev")[0] == "prod"

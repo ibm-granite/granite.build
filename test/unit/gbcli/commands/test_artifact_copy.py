@@ -27,7 +27,6 @@ import pytest
 from click.testing import CliRunner
 
 from gbcli.commands.command_artifact import cli
-from gbcli.utils.utils import DecodedURIResponse
 
 
 def _artifact(uri):
@@ -81,26 +80,28 @@ def test_copy_hf_not_supported(copy_env):
     copy_env.artifact_copy.assert_not_called()
 
 
-def test_copy_lh_model_proceeds_past_guard(copy_env):
-    """An lh:// model source is detected as non-HF and proceeds past the guard."""
-    decoded = DecodedURIResponse(
-        uri="lh://prod/ns/model_shared/my-model/v3",
-        namespace="ns",
-        table_name="model_shared",
-        type="model",
-        model_label="my-model",
-        model_revision="v3",
-    )
-    # A valid lh model URI: lh://<env>/<ns>/models/<table>/<label>/<rev>.
+def test_copy_lh_model_proceeds_to_copy_with_source_table(copy_env):
+    """An lh:// model source proceeds past the HF guard and copies with the
+    source table derived directly from the URI's table_name.
+
+    A valid lh model URI: lh://<env>/<ns>/models/<table>/<label>/<rev>. Here the
+    URI table is the shared model table, so source_table resolves to it.
+    """
     lh_uri = "lh://prod/ns/models/model_shared/my-model/v3"
     copy_env.fetch_artifact_uri.return_value = _artifact(lh_uri)
-    with (
-        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
-        patch(
-            "gbcli.commands.command_artifact.get_artifact_formatted_name",
-            return_value="x.model_shared",
-        ),
-    ):
-        result = _invoke(lh_uri)
-    # Should NOT be blocked by the HF guard (it may proceed to the LH copy path).
+    copy_response = MagicMock()
+    copy_response.status = "SUCCESS"
+    copy_env.artifact_copy.return_value = {
+        "copy_response": copy_response,
+        "target_table": "model",
+    }
+    copy_env.register_artifact.return_value = {"uuid": "uuid-1", "uri": lh_uri}
+    result = _invoke(lh_uri)
+    assert result.exit_code == 0, result.output
     assert "Copy is not supported for HuggingFace artifacts." not in result.output
+    # artifact_copy(lh_token, namespace, source_table, space_to, label, revision, cb)
+    args = copy_env.artifact_copy.call_args.args
+    assert args[1] == "ns"  # namespace
+    assert args[2] == "model_shared"  # source_table (from URI table_name)
+    assert args[4] == "my-model"  # model_label
+    assert args[5] == "v3"  # revision
