@@ -312,7 +312,25 @@ def test_hf_space_uri_rejected(register_env):
         ]
     )
     assert result.exit_code != 0
-    assert "'model', 'dataset', and 'bucket'" in result.output
+    assert "'model', 'dataset', 'bucket'" in result.output
+    register_env.assert_not_called()
+
+
+def test_lh_bucket_rejected(register_env):
+    """buckets are HF-only, so `--store lh -t bucket` is rejected for register too."""
+    result = _invoke(
+        [
+            "--store",
+            "lh",
+            "-t",
+            "bucket",
+            "--artifact-name",
+            "x",
+            "--certify-no-restrictions",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "store 'lh' is only allowed for artifact types" in result.output
     register_env.assert_not_called()
 
 

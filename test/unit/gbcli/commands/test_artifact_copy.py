@@ -14,11 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CLI-level tests for `gb artifact copy`, pinning the URI-class refactor.
+"""CLI-level tests for `gb artifact copy`.
 
-`copy` used to detect an HF source with `uri.startswith("hf://")`; it now uses
-`isinstance(URI.get_uri(uri), HfURI)`. These tests assert the HF source is still
-refused with the same message and the LH source still proceeds past the guard.
+`copy` detects the store from the URI scheme: an HF source is refused, and an LH
+model source proceeds to the Lakehouse copy path.
 """
 
 from unittest.mock import MagicMock, patch

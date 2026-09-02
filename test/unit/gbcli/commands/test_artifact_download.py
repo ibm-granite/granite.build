@@ -14,14 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CLI-level tests for `gb artifact download`, pinning the URI-class refactor.
+"""CLI-level tests for `gb artifact download`.
 
-`download` used to detect the store with `artifact_uri.startswith("hf://")` and
-parse the HF repo with `parse_hf_uri`; it now dispatches on
-`isinstance(URI.get_uri(uri), HfURI)` and reads `get_owner()`/`get_repo()`/
-`str(get_hf_type())`. These tests assert the refactor is behavior-preserving: the
-HF path still passes a plain string `artifact_type` and `org/repo` repo_id to
-`download_hf_artifact`, and the LH path still routes through the decoded fields.
+`download` detects the store from the URI scheme. The HF path passes a
+plain-string `artifact_type` and an `org/repo` repo_id to `download_hf_artifact`;
+the LH path routes through the decoded namespace/table/label/revision.
 """
 
 from unittest.mock import MagicMock, patch

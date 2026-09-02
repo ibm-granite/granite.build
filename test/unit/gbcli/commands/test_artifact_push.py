@@ -248,7 +248,7 @@ def test_hf_space_uri_rejected(push_env, tmp_path):
         tmp_path, ["--uri", "hf:///spaces/org/some-space", "--artifact-name", "x"]
     )
     assert result.exit_code != 0
-    assert "'model', 'dataset', and 'bucket'" in result.output
+    assert "'model', 'dataset', 'bucket'" in result.output
     push_env.push.assert_not_called()
 
 
@@ -306,7 +306,7 @@ def test_lh_uri_fileset_forwarded_to_push(push_env, tmp_path):
 
 
 def test_lh_uri_dataset_rejected(push_env, tmp_path):
-    """An lh:// dataset URI is rejected by the existing lh+dataset guard."""
+    """An lh:// dataset URI is rejected: push cannot push lh dataset content."""
     with patch(
         "gbcli.commands.command_artifact.gb_environment_config",
     ) as gb_env:
@@ -321,7 +321,7 @@ def test_lh_uri_dataset_rejected(push_env, tmp_path):
             ],
         )
     assert result.exit_code != 0
-    assert "does not support artifact type 'dataset'" in result.output
+    assert "store 'lh' is only allowed for artifact types" in result.output
     push_env.push.assert_not_called()
 
 
@@ -399,4 +399,14 @@ def test_missing_type_without_uri_errors(push_env, tmp_path):
     result = _invoke(tmp_path, ["--artifact-name", "x"])
     assert result.exit_code != 0
     assert "Artifact type or artifact uri is required" in result.output
+    push_env.push.assert_not_called()
+
+
+def test_lh_bucket_rejected(push_env, tmp_path):
+    """buckets are HF-only, so `--store lh -t bucket` is rejected."""
+    result = _invoke(
+        tmp_path, ["--store", "lh", "-t", "bucket", "--artifact-name", "x"]
+    )
+    assert result.exit_code != 0
+    assert "store 'lh' is only allowed for artifact types" in result.output
     push_env.push.assert_not_called()

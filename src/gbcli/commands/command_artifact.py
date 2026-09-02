@@ -185,12 +185,9 @@ def _resolve_uri(
         )
         ctx.exit(1)
 
-    # Parse the URI once through the shared URI layer. The store is just the
-    # URI scheme; the identity fields come from get_metadata(). A malformed URI,
-    # an unresolved template variable, or an unknown scheme all surface as a
-    # ValueError/RuntimeError -- report cleanly instead of as a traceback.
-    # (LhURI validates in its constructor; HfURI validates lazily in
-    # get_metadata(), so both calls are guarded.)
+    # Parse once: the store is the URI scheme, the identity comes from
+    # get_metadata(). get_metadata() is inside the try because HfURI validates
+    # lazily there; a bad URI surfaces as ValueError/RuntimeError, not a traceback.
     try:
         uri_obj = URI.get_uri(uri)
         store = uri_obj.uri.scheme
@@ -208,12 +205,8 @@ def _resolve_uri(
 
     uri_env = None
     if store == "hf":
-        # The type, owner, repo and (when applicable) revision are all
-        # encoded in the URI (hf:///[type/]owner/repo[/revision]), so the
-        # flags that would otherwise supply them are redundant and rejected
-        # outright. This mirrors the Lakehouse path, which likewise refuses
-        # any of these flags alongside a URI (see below), and sidesteps the
-        # ambiguity of an explicit "main" reading as "no revision given".
+        # type/owner/repo/revision come from the URI, so the flags that would
+        # supply them are rejected.
         if type or hf_organization or label or revision:
             click.echo(hf_conflict_msg, err=True)
             ctx.exit(1)
@@ -221,12 +214,11 @@ def _resolve_uri(
         type = str(metadata["hf_type"])
         hf_organization = metadata["owner"]
         label = metadata["repo"]
-        # Buckets decode to revision "" (no revision concept); None lets
-        # the service default it to "main" as the non-URI path does.
+        # Buckets decode to revision ""; None lets the service default to "main".
         revision = metadata["revision"] or None
     else:  # store == "lh"
-        # The Lakehouse environment is the lh://<env> host (urlparse lowercases
-        # it). Only needed here, for the prod-vs-non-prod guard.
+        # The Lakehouse environment is the lh://<env> host, used only for the
+        # prod-vs-non-prod guard below.
         uri_env = uri_obj.uri.hostname
         cli_env = str(gb_environment_config().lakehouse_environment).lower()
 
@@ -275,22 +267,29 @@ def _resolve_uri(
     )
 
 
-# The HuggingFace store only holds models, datasets and buckets (no tables or
-# filesets), independent of how the store/type were supplied (a URI or explicit
-# flags). Shared by `artifact push` and `artifact register` so the rule and its
-# message cannot drift.
-HF_STORE_ALLOWED_TYPES = ["model", "dataset", "bucket"]
+# Artifact types each store accepts. Buckets are HuggingFace-only; Lakehouse
+# push additionally cannot push dataset content (register may still record an
+# existing lh dataset).
+_HF_ALLOWED_TYPES = ("model", "dataset", "bucket")
+_LH_ALLOWED_TYPES = ("model", "table", "fileset", "dataset")
+_LH_PUSH_ALLOWED_TYPES = ("model", "table", "fileset")
 
 
-def _validate_hf_store_type(ctx, store: str, type: str | None) -> None:
-    """Reject an artifact ``type`` the HuggingFace store cannot hold.
+def _validate_store_type(ctx, store: str, type: str | None, is_push: bool) -> None:
+    """Reject an artifact ``type`` incompatible with ``store``.
 
-    A no-op unless ``store == "hf"``. Shared by ``push`` and ``register``.
+    The single place the store-vs-type matrix lives; shared by ``push`` and
+    ``register`` (``is_push`` selects the stricter Lakehouse rules).
     """
-    if store == "hf" and type not in HF_STORE_ALLOWED_TYPES:
+    if store == "hf":
+        allowed = _HF_ALLOWED_TYPES
+    else:  # store == "lh"
+        allowed = _LH_PUSH_ALLOWED_TYPES if is_push else _LH_ALLOWED_TYPES
+    if type not in allowed:
+        allowed_str = ", ".join(f"'{t}'" for t in allowed)
         click.echo(
-            f"❌ Error: store 'hf' is only allowed for artifact types 'model', "
-            f"'dataset', and 'bucket'. Got type '{type}'.",
+            f"❌ Error: store '{store}' is only allowed for artifact types "
+            f"{allowed_str}. Got type '{type}'.",
             err=True,
         )
         ctx.exit(1)
@@ -456,13 +455,9 @@ def push(
 ):
     """A file (for a table) or a directory (for a model, fileset, dataset, or bucket) is uploaded and registered. Additional options will be required depending on the type of artifact."""
 
-    # === URI decoding ===
-    # --uri is syntactic sugar: the store and identity are decoded from the URI
-    # and drive the rest of the command exactly as the individual flags would.
-    # Shared with `artifact register` via _resolve_uri. push has no
-    # --revision/--namespace/--version/--dataset/--force flags, so those are
-    # passed as None/False here and the decoded lh-only extras are discarded
-    # (push overwrites revision/version and sends namespace=None downstream).
+    # --uri is syntactic sugar: _resolve_uri decodes the store and identity.
+    # push has no --revision/--namespace/--version/--dataset/--force, so those
+    # are passed None/False and the decoded lh-only extras are discarded.
     if uri:
         resolved = _resolve_uri(
             ctx,
@@ -511,17 +506,7 @@ def push(
     # For HuggingFace, default is private unless --public flag is used
     private = not public if store == "hf" else False
 
-    # Validate store type compatibility with artifact type
-    _validate_hf_store_type(ctx, store, type)
-
-    # push-only: Lakehouse does not support pushing dataset content (register
-    # does allow recording an existing lh dataset, so this guard stays in push).
-    if store == "lh" and type == "dataset":
-        click.echo(
-            f"❌ Error: Push with store 'lh' does not support artifact type 'dataset'. Use store 'hf' instead.",
-            err=True,
-        )
-        ctx.exit(1)
+    _validate_store_type(ctx, store, type, is_push=True)
 
     if not skip_version_check:
         try:
@@ -540,10 +525,8 @@ def push(
         )
         ctx.exit(1)  # Exit with a non-zero status
 
-    # `and not uri` guards: with a URI the type/label are derived from the URI
-    # itself (e.g. an hf:// dataset/bucket URI legitimately sets label from the
-    # repo), and any user-supplied conflicting flag was already rejected in
-    # _resolve_uri. Only the non-URI, user-supplied combinations are invalid.
+    # `and not uri`: with a URI, type/label are URI-derived (a conflicting flag
+    # was already rejected in _resolve_uri); only user-supplied combos are wrong.
     if (
         (type == "model" or type == "fileset" or type == "dataset" or type == "bucket")
         and table
@@ -850,11 +833,8 @@ def push(
             # if existing artifact registration
             if existing_registration:
                 artifact_id = existing_registration.get("uuid")
-                # Decode the existing (Lakehouse) artifact's URI via the shared
-                # URI layer rather than indexing raw "/"-split segments. This
-                # block only runs for store == "lh" (see the guard above), so
-                # the URI is always lh:// and the metadata carries the
-                # namespace/table/label/revision/version fields below.
+                # This block only runs for the lh store, so the URI is lh:// and
+                # its metadata carries the fields read below.
                 existing_meta = URI.get_uri(
                     existing_registration.get("uri")
                 ).get_metadata()
@@ -879,10 +859,7 @@ def push(
                     table=existing_meta.get("table_name"),
                     dataset=None,
                     label=(
-                        # NOTE: keyed on the outer `type` (the pushed artifact's
-                        # type), not existing_type — preserved from the original
-                        # split-based code. model_label and fileset_label live at
-                        # the same URI segment, so either key resolves it.
+                        # Keyed on the pushed artifact's `type`, not existing_type.
                         (
                             existing_meta.get("model_label")
                             or existing_meta.get("fileset_label")
@@ -1306,11 +1283,8 @@ def register(
                 )
                 ctx.exit(1)
 
-    # === URI decoding ===
-    # The store is derived from the URI scheme (lh:// or hf://); the two are
-    # decoded differently and only the Lakehouse branch has an "environment".
-    # Shared with `artifact push` via _resolve_uri so the parsing and
-    # mutual-exclusivity rules cannot drift between the two commands.
+    # --uri is syntactic sugar: _resolve_uri decodes the store and identity
+    # (shared with `artifact push`).
     uri_env = None
     if uri:
         resolved = _resolve_uri(
@@ -1366,8 +1340,7 @@ def register(
         )
         ctx.exit(1)
 
-    # Validate store type compatibility with artifact type
-    _validate_hf_store_type(ctx, store, type)
+    _validate_store_type(ctx, store, type, is_push=False)
 
     # === Type-specific handling ===
     # Prompts, tables, revisions and filesets/tables are all Lakehouse
