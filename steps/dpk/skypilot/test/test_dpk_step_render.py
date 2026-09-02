@@ -176,15 +176,15 @@ class TestStepContract:
         """The supported relative-source mechanism — how src/ reaches the node."""
         assert launcher["file_mounts"] == {"src": "src"}
 
-    def test_transform_defaults_empty_and_is_the_only_mode(self, defaults):
-        """The step runs exactly one DPK transform; there is no second mode.
+    def test_transform_is_the_only_mode(self, defaults):
+        """The step runs exactly one DPK transform, with no arbitrary-command mode.
 
-        `command` was removed once `validate: true` replaced its only use (running
-        the bundled validator). Arbitrary-command execution lives in `byoc` and the
-        built-in `command` step, so a second way to do it here was unused surface.
+        The transform's own pip extra is its whole dependency set, so a build never
+        names packages either.
         """
         assert defaults["transform"] == ""
         assert "command" not in defaults
+        assert "packages" not in defaults
 
 
 class TestImageSelection:
@@ -256,12 +256,7 @@ class TestDerivations:
         ]
 
     def test_ray_enabled_also_switches_the_module(self, launcher, defaults):
-        """THE reason this is one flag rather than two.
-
-        Ray needs the extra AND the .ray.runtime module. The previous
-        `pip_extras: ["ray"]` + `module:` pair let a build set one without the
-        other, which failed on the node rather than at render time.
-        """
+        """Ray needs the extra AND the .ray.runtime module — one flag sets both."""
         cfg = _transform_cfg(defaults, ray_enabled=True)
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _opt(argv, "--module") == "dpk_tokenization2arrow.ray.runtime"
@@ -421,18 +416,17 @@ class TestOutputPathDefault:
 
 
 class TestArgsIsTheOnlyFlagChannel:
-    """`args` is the single way to pass transform flags — one quoting model.
+    """`args` is the single way to pass transform flags, so one quoting model.
 
-    `extra_args` (a raw, unquoted string appended to the argv) was removed: the only
-    thing it could do that `args` cannot was shell expansion on the node, and a
-    per-run value is better written with the build.yaml's own Jinja, which resolves
-    at render time and is therefore visible in the persisted config and in lineage.
-    A value that must vary per run is a $${PARAM} build parameter or
-    {{ run_metadata.* }}, both resolved before the step renders.
+    Every value is quoted for the shell, so it reaches the transform byte-for-byte
+    and nothing is word-split by accident. A value that must vary per run is a
+    $${PARAM} build parameter or {{ run_metadata.* }}, both resolved before the step
+    renders — so they land in the persisted config and in lineage rather than being
+    decided on a node.
     """
 
-    def test_no_extra_args_field_remains(self, defaults):
-        """Guard the removal: re-adding it would restore two quoting models."""
+    def test_no_raw_flag_string_channel(self, defaults):
+        """A second, unquoted flag channel would mean two quoting models."""
         assert "extra_args" not in defaults
 
     def test_no_args_yields_no_flags(self, launcher, defaults):
@@ -584,8 +578,9 @@ class TestRenderedShellIsValid:
         [
             ({}, _BINDINGS),
             ({"args": {"tkn_chunk_size": 0, "flag": True}}, _BINDINGS),
-            ({"image": "quay.io/org/dpk:1"}, _BINDINGS),
-            ({"packages": ["pyarrow"]}, _BINDINGS),
+            ({"args": {"off": False, "unset": None}}, _BINDINGS),
+            ({"dpk_image": "quay.io/org/dpk:1"}, _BINDINGS),
+            ({"ray_enabled": True}, _BINDINGS),
         ],
     )
     def test_transform_mode_parses(self, launcher, defaults, cfg_kwargs, bindings):

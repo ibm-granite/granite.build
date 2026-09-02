@@ -153,9 +153,7 @@ backend is reachable:
 > **No cluster coverage of the cross-node `env:///shared` handoff.** It was covered by the
 > two-target form of the `slurm` fixture, which `validate: true` replaced (see that fixture's
 > build.yaml). Nothing exercises a two-target `env://` handoff end to end now; restore the
-> two-target form from git history if a handoff regression is ever suspected. (The other thing
-> that form covered, command mode, no longer exists — `command` was removed once `validate`
-> replaced its only use.)
+> two-target form from git history if a handoff regression is ever suspected.
 
 > **Image mode has no cluster coverage either**, because the local Docker SLURM cluster has no
 > Pyxis SPANK plugin and so cannot run container images at all. `dpk_image` is exercised only

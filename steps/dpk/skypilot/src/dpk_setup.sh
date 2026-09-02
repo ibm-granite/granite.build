@@ -20,9 +20,9 @@
 #   --index-url   package index passed to `uv pip install`.
 #   --            everything after it is a pip requirement to install, already
 #                 resolved by the caller (the derived
-#                 data-prep-toolkit-transforms[extra]==version, plus any extra
-#                 `packages`). Zero requirements is valid — the caller may want a
-#                 bare venv — so the install is skipped rather than failing.
+#                 data-prep-toolkit-transforms[extra]==version). Zero requirements
+#                 is valid — the caller may want a bare venv — so the install is
+#                 skipped rather than failing.
 set -euo pipefail
 
 venv=""

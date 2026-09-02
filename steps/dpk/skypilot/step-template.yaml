@@ -89,8 +89,6 @@ config:
     #   3. passes --run_locally true, so DPK starts a local Ray cluster instead of
     #      trying to connect to one at ray://localhost:10001 (its default) that this
     #      step never provisions
-    # The previous `pip_extras` + `module` pair covered only 1 and 2, and left 3 to
-    # be discovered on a hung job.
     #
     # Derived by RULE, deliberately without a per-transform exception table: the
     # module is always dpk_<transform>.ray.runtime. That holds for 32 of the 43
@@ -110,9 +108,6 @@ config:
     # dpk_<name>.runtime). `ray_enabled` already handles the .ray.runtime case, so
     # this is for anything neither rule covers.
     module: ""
-    # Additional pip requirements installed alongside the transform, e.g.
-    # ["pyarrow"] for a transform whose extra omits something you need.
-    packages: []
     pip_index_url: "https://pypi.org/simple"
     # Container image to run the transform in, from ANY registry (quay.io,
     # us.icr.io, a private one). Give the plain reference — the step adds
@@ -189,7 +184,7 @@ environment_configs:
             bash ./src/dpk_setup.sh \
               --venv ./venv \
               --index-url '{{ config.dpk_config.pip_index_url }}' \
-              --{% if dpk_req %} '{{ dpk_req }}'{% endif %}{% for p in config.dpk_config.packages %} '{{ p }}'{% endfor %}
+              --{% if dpk_req %} '{{ dpk_req }}'{% endif %}
             {%- endif %}
           # run starts in the same working directory as setup, so ./venv and
           # ./src are both relative.

@@ -26,12 +26,10 @@ artifact marker, so reaching SUCCESS proves:
   register nothing;
 * ``validation.json`` was written into the registered output directory.
 
-This replaced a two-target ``tokenize`` -> ``validate`` build, where the second
-target bound the first's output and drove the validator through the step's old
-command mode (since removed, once ``validate`` replaced its only use). The flag
-removed roughly 25 lines of build.yaml, and retired this fixture's cluster-level
-coverage of the cross-node ``env:///shared`` handoff; the sibling build.yaml records
-where to look if a handoff regression is ever suspected.
+One target rather than two: the flag removes the need for a downstream target that
+binds this output just to check it. That also means this fixture no longer covers the
+cross-node ``env:///shared`` handoff — the sibling build.yaml records where to look if
+a handoff regression is ever suspected.
 
 Input is a public ``hf://`` dataset, so no HF_TOKEN is needed — the launcher's
 ``hf download`` runs anonymously.

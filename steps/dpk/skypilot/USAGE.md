@@ -39,7 +39,6 @@ you name it, and the step derives the python module and the pip dependencies.
 | `ray_enabled` | bool | no | Run on DPK's Ray runtime instead of pure python. Default `false`. See [Running on Ray](#running-on-ray). |
 | `dpk_version` | string | no | DPK release to install. Default `1.1.8`. Ignored when `dpk_image` is set. |
 | `dpk_image` | string | no | Container image to run in. Default `""` = the bare launcher node. See [Running in a container image](#running-in-a-container-image). |
-| `packages` | list | no | Extra pip requirements installed alongside the transform, e.g. `["pyarrow"]`. |
 | `pip_index_url` | string | no | Index for the pip install. Default `https://pypi.org/simple`. |
 | `module` | string | no | Override the derived python module. An escape hatch — see [Running on Ray](#running-on-ray) for the case that needs it. |
 

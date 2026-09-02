@@ -3,11 +3,8 @@ granite.build:
   # DPK tokenize WITH VALIDATION, on the local Docker SLURM cluster (via SkyPilot).
   #
   # ONE target, because `validate: true` folds the check into the transform's own
-  # step. Before that flag existed this fixture was two targets — tokenize, then a
-  # command-mode `validate` target that bound tokenize's output, re-declared the
-  # source input, and ran the bundled validator through ~5 lines of shell. That is
-  # the boilerplate the flag replaces, and diffing this file against its own git
-  # history is the clearest statement of what the feature buys.
+  # step rather than needing a second target to bind its output and run the
+  # validator.
   #
   # WHAT REACHING SUCCESS PROVES:
   #   1. `transform: tokenization2arrow` derives the module
@@ -29,8 +26,6 @@ granite.build:
   #     the bytes survive only if the producer writes them somewhere the consumer
   #     can read; on this cluster /tmp is per-node but /shared is mounted on all of
   #     them; and
-  #   * command mode running a bundled script on real infra — since removed from the
-  #     step entirely, once `validate: true` replaced its only use.
   # The handoff is no longer covered end to end anywhere: test_dpk_run_sh.py executes
   # the validator hook and the marker contract, but nothing exercises two targets
   # sharing a filesystem. If a handoff regression is ever suspected, restore the
