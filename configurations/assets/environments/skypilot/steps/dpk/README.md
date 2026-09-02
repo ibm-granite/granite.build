@@ -34,7 +34,7 @@ you name it, and the step derives the python module and the pip dependencies.
 | `input` | string | **yes** | Name of a declared target `inputs:` entry. Becomes the transform's `input_folder`. |
 | `output` | string | **yes** | Name of a declared target `outputs:` entry. Used as the registered artifact's ID. |
 | `args` | map | no | Transform flags, rendered in order as `--<key> '<value>'`. Keys are the **full flag name** as DPK spells it, without leading dashes. See [Transform flags](#transform-flags). |
-| `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match. See [Inputs, outputs, and bundled scripts](#inputs-outputs-and-bundled-scripts). |
+| `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match, and a path another target reads must be on the shared filesystem. See [When a downstream target reads the output](#when-a-downstream-target-reads-the-output). |
 | `validate` | bool | no | Check the transform's output before registering it. Default `false`. See [Validating output](#validating-output). |
 | `ray_enabled` | bool | no | Run on DPK's Ray runtime instead of pure python. Default `false`. See [Running on Ray](#running-on-ray). |
 | `dpk_version` | string | no | DPK release to install. Default `1.1.8`. Ignored when `dpk_image` is set. |
@@ -42,6 +42,81 @@ you name it, and the step derives the python module and the pip dependencies.
 | `packages` | list | no | Extra pip requirements installed alongside the transform, e.g. `["pyarrow"]`. |
 | `pip_index_url` | string | no | Index for the pip install. Default `https://pypi.org/simple`. |
 | `module` | string | no | Override the derived python module. An escape hatch — see [Running on Ray](#running-on-ray) for the case that needs it. |
+
+## Per-transform DPK documentation
+
+The step derives the module and dependencies, but a transform's **flag names come from DPK**.
+Each transform's docs live in the DPK repo, pinned below to the `v1.1.8` tag — the release
+`dpk_version` installs by default, so the flags match the code you are running. Change the
+tag in the URL if you set a different `dpk_version`.
+
+The paths are not derivable from the transform name (the category is not encoded in it, and
+`tokenization2arrow` shares a directory with `tokenization`), hence the table.
+
+| Transform | Docs |
+|---|---|
+| `blocklist` | [universal/blocklist](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/blocklist/README.md) |
+| `bloom` | [universal/bloom](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/bloom/README.md) |
+| `c4_annotator` | [universal/c4_annotator](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/c4_annotator/README.md) |
+| `code2parquet` | [code/code2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/code2parquet/README.md) |
+| `code_profiler` | [code/code_profiler](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/code_profiler/README.md) |
+| `code_quality` | [code/code_quality](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/code_quality/README.md) |
+| `collapse` | [universal/collapse](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/collapse/README.md) |
+| `doc_chunk` | [language/doc_chunk](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/doc_chunk/README.md) |
+| `doc_id` | [universal/doc_id](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/doc_id/README.md) |
+| `doc_quality` | [language/doc_quality](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/doc_quality/README.md) |
+| `docling2parquet` | [language/docling2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/docling2parquet/README.md) |
+| `ededup` | [universal/ededup](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/ededup/README.md) |
+| `enrichment` | [language/enrichment](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/enrichment/README.md) |
+| `extreme_tokenized` | [language/extreme_tokenized](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/extreme_tokenized/README.md) |
+| `faces` | [images](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/images/README.md) (shared) |
+| `fdedup` | [universal/fdedup](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/fdedup/README.md) |
+| `filter` | [universal/filter](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/filter/README.md) |
+| `fineweb_quality_annotator` | [universal/fineweb_quality_annotator](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/fineweb_quality_annotator/README.md) |
+| `folder2parquet` | [universal/folder2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/folder2parquet/README.md) |
+| `gneissweb_classification` | [language/gneissweb_classification](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/gneissweb_classification/README.md) |
+| `gopher_repetition_annotator` | [universal/gopher_repetition_annotator](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/gopher_repetition_annotator/README.md) |
+| `hap` | [universal/hap](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/hap/README.md) |
+| `header_cleanser` | [code/header_cleanser](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/header_cleanser/README.md) |
+| `html2parquet` | [language/html2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/html2parquet/README.md) |
+| `lang_id` | [language/lang_id](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/lang_id/README.md) |
+| `license_select` | [code/license_select](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/license_select/README.md) |
+| `malware` | [code/malware](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/malware/README.md) |
+| `ml_filter` | [language/ml_filter](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/ml_filter/README.md) |
+| `nsfw` | [images](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/images/README.md) (shared) |
+| `opensearch` | [universal/opensearch](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/opensearch/README.md) |
+| `people` | [images](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/images/README.md) (shared) |
+| `pii_redactor` | [language/pii_redactor](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/pii_redactor/README.md) |
+| `profiler` | [universal/profiler](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/profiler/README.md) |
+| `proglang_select` | [code/proglang_select](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/proglang_select/README.md) |
+| `readability` | [language/readability](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/readability/README.md) |
+| `rep_removal` | [universal/rep_removal](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/rep_removal/README.md) |
+| `repo_level_order` | [code/repo_level_order](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/repo_level_order/README.md) |
+| `resize` | [universal/resize](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/resize/README.md) |
+| `similarity` | [language/similarity](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/similarity/README.md) |
+| `text_encoder` | [language/text_encoder](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/text_encoder/README.md) |
+| `tokenization` | [universal/tokenization](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/tokenization/README.md) |
+| `tokenization2arrow` | [universal/tokenization (README-tkn2arrow.md)](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/tokenization/README-tkn2arrow.md) |
+| `web2parquet` | [universal/web2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/web2parquet/README.md) |
+| `yara` | [code/yara](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/yara/README.md) |
+
+Notes on the irregular entries, all verified against the tag:
+
+- **`tokenization2arrow`** is documented in `README-tkn2arrow.md`, not the directory's
+  `README.md` (which covers the older `tokenization`). The two transforms share a directory
+  and a pip extra, but are different modules.
+- **`faces` / `nsfw` / `people`** have no per-transform README; the shared
+  `transforms/images/README.md` documents all three.
+The table lists the transforms a build can actually run. Three DPK entries are deliberately
+absent because they are **not installable from PyPI** — verified against the published
+`data-prep-toolkit-transforms==1.1.8` wheel, which ships 44 `dpk_*` modules and declares 50
+extras:
+
+- **`c4_annotator`** and **`noop`** — neither module is in the wheel and neither is a
+  declared extra, so `transform: noop` / `transform: c4_annotator` cannot resolve at all
+  (`noop` is a test fixture in any case). They are not a dependency problem; there is
+  nothing to install.
+- **`dpk_transform_chain`** — a chaining utility, not a data transform.
 
 ## What `transform` derives
 
@@ -246,112 +321,6 @@ build.yaml if you want to check what a run will actually use.
 If you need genuine shell logic — a computed path, a conditional, a pipeline — that is not
 this step's job. Use the [`byoc`](../../byoc/skypilot/USAGE.md) step or the built-in
 `command` step, either of which runs an arbitrary command alongside your DPK targets.
-
-## Per-transform DPK documentation
-
-The step derives the module and dependencies, but a transform's **flag names come from DPK**.
-Each transform's docs live in the DPK repo, pinned below to the `v1.1.8` tag — the release
-`dpk_version` installs by default, so the flags match the code you are running. Change the
-tag in the URL if you set a different `dpk_version`.
-
-The paths are not derivable from the transform name (the category is not encoded in it, and
-`tokenization2arrow` shares a directory with `tokenization`), hence the table.
-
-| Transform | Docs |
-|---|---|
-| `blocklist` | [universal/blocklist](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/blocklist/README.md) |
-| `bloom` | [universal/bloom](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/bloom/README.md) |
-| `c4_annotator` | [universal/c4_annotator](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/c4_annotator/README.md) |
-| `code2parquet` | [code/code2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/code2parquet/README.md) |
-| `code_profiler` | [code/code_profiler](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/code_profiler/README.md) |
-| `code_quality` | [code/code_quality](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/code_quality/README.md) |
-| `collapse` | [universal/collapse](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/collapse/README.md) |
-| `doc_chunk` | [language/doc_chunk](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/doc_chunk/README.md) |
-| `doc_id` | [universal/doc_id](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/doc_id/README.md) |
-| `doc_quality` | [language/doc_quality](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/doc_quality/README.md) |
-| `docling2parquet` | [language/docling2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/docling2parquet/README.md) |
-| `ededup` | [universal/ededup](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/ededup/README.md) |
-| `enrichment` | [language/enrichment](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/enrichment/README.md) |
-| `extreme_tokenized` | [language/extreme_tokenized](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/extreme_tokenized/README.md) |
-| `faces` | [images](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/images/README.md) (shared) |
-| `fdedup` | [universal/fdedup](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/fdedup/README.md) |
-| `filter` | [universal/filter](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/filter/README.md) |
-| `fineweb_quality_annotator` | [universal/fineweb_quality_annotator](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/fineweb_quality_annotator/README.md) |
-| `folder2parquet` | [universal/folder2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/folder2parquet/README.md) |
-| `gneissweb_classification` | [language/gneissweb_classification](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/gneissweb_classification/README.md) |
-| `gopher_repetition_annotator` | [universal/gopher_repetition_annotator](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/gopher_repetition_annotator/README.md) |
-| `hap` | [universal/hap](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/hap/README.md) |
-| `header_cleanser` | [code/header_cleanser](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/header_cleanser/README.md) |
-| `html2parquet` | [language/html2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/html2parquet/README.md) |
-| `lang_id` | [language/lang_id](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/lang_id/README.md) |
-| `license_select` | [code/license_select](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/license_select/README.md) |
-| `malware` | [code/malware](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/malware/README.md) |
-| `ml_filter` | [language/ml_filter](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/ml_filter/README.md) |
-| `nsfw` | [images](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/images/README.md) (shared) |
-| `opensearch` | [universal/opensearch](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/opensearch/README.md) |
-| `people` | [images](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/images/README.md) (shared) |
-| `pii_redactor` | [language/pii_redactor](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/pii_redactor/README.md) |
-| `profiler` | [universal/profiler](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/profiler/README.md) |
-| `proglang_select` | [code/proglang_select](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/proglang_select/README.md) |
-| `readability` | [language/readability](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/readability/README.md) |
-| `rep_removal` | [universal/rep_removal](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/rep_removal/README.md) |
-| `repo_level_order` | [code/repo_level_order](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/repo_level_order/README.md) |
-| `resize` | [universal/resize](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/resize/README.md) |
-| `similarity` | [language/similarity](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/similarity/README.md) |
-| `text_encoder` | [language/text_encoder](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/language/text_encoder/README.md) |
-| `tokenization` | [universal/tokenization](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/tokenization/README.md) |
-| `tokenization2arrow` | [universal/tokenization (README-tkn2arrow.md)](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/tokenization/README-tkn2arrow.md) |
-| `web2parquet` | [universal/web2parquet](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/universal/web2parquet/README.md) |
-| `yara` | [code/yara](https://github.com/data-prep-kit/data-prep-kit/blob/v1.1.8/transforms/code/yara/README.md) |
-
-Notes on the irregular entries, all verified against the tag:
-
-- **`tokenization2arrow`** is documented in `README-tkn2arrow.md`, not the directory's
-  `README.md` (which covers the older `tokenization`). The two transforms share a directory
-  and a pip extra, but are different modules.
-- **`faces` / `nsfw` / `people`** have no per-transform README; the shared
-  `transforms/images/README.md` documents all three.
-The table lists the transforms a build can actually run. Three DPK entries are deliberately
-absent because they are **not installable from PyPI** — verified against the published
-`data-prep-toolkit-transforms==1.1.8` wheel, which ships 44 `dpk_*` modules and declares 50
-extras:
-
-- **`c4_annotator`** and **`noop`** — neither module is in the wheel and neither is a
-  declared extra, so `transform: noop` / `transform: c4_annotator` cannot resolve at all
-  (`noop` is a test fixture in any case). They are not a dependency problem; there is
-  nothing to install.
-- **`dpk_transform_chain`** — a chaining utility, not a data transform.
-
-## Inputs, outputs, and bundled scripts
-
-How to declare a target's `inputs:`/`outputs:`, which URI schemes stage where, how
-`output_path` must line up with an output's `uri`, and what the step ships in `src/` are all
-documented in `steps/dpk/skypilot/README.md` in the granite.build repository, alongside the
-step's other implementation detail.
-
-The short version for writing a build:
-
-* Every declared input is exported to the step as `$GB_INPUT_<name>`; `input:` names which
-  one feeds the transform.
-* The step registers the output for you, from `output` and the path it wrote to.
-* If an output's `uri` names a path, set `output_path` to match it. On `skypilot/slurm` and
-  `skypilot/lsf` a path another target reads must be on the shared filesystem
-  (`env:///shared/…`); the `./output` default lives in the per-target workdir and is removed
-  when that target finishes.
-
-## Working directory and paths
-
-Both `setup` and `run` start in the same **working directory** (the step's per-run workdir),
-so the step never needs its absolute location. The bundled `src/` is mounted at `./src`, the
-default `output_path` writes to `./output`, and in bare-node mode the virtualenv is created at
-`./venv` and activated for you. Use relative paths from there; derive an absolute one at run
-time with `$(pwd)` when a marker needs it.
-
-That workdir is `${shared_workdir}/builds/<build_id>/runs/<targetrun_id>` where the
-environment configures a `shared_workdir` (slurm, lsf), and SkyPilot's own `~/sky_workdir`
-where it does not (aws, kubernetes). Either way it is **per target** and removed when the
-target finishes — which is why anything a *downstream* target reads needs an explicit path
-outside it.
 
 ## Example build.yaml
 
