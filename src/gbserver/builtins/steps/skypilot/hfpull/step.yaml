@@ -88,13 +88,27 @@ environment_configs:
             # notation (e.g. 1e2), signs, inf/nan all fall back to the default
             # rather than diverging. A positive sub-second value rounds up to 1s
             # (the poll granularity) rather than down to 0; explicit 0 (or 0.0)
-            # stays 0 (reclaim any stalled peer immediately).
+            # stays 0 (reclaim any stalled peer immediately). The value is clamped
+            # to HFPULL_LOCK_TTL_MAX (1 year) -- both so it matches the Python
+            # clamp and so an absurd value can't overflow bash 64-bit arithmetic.
             HFPULL_LOCK_TTL_DEFAULT=900
+            HFPULL_LOCK_TTL_MAX=31536000
             hfpull_lock_ttl() {
-                local raw="${GB_HFPULL_LOCK_TIMEOUT:-}" secs
+                local raw="${GB_HFPULL_LOCK_TIMEOUT:-}" intpart secs
                 if [[ -z "${raw// }" ]]; then echo "${HFPULL_LOCK_TTL_DEFAULT}"; return; fi
                 if [[ "${raw}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-                    secs=$(( 10#${raw%%.*} ))  # base 10 so a leading zero (e.g. 08) is not octal
+                    intpart="${raw%%.*}"
+                    # Strip leading zeros so the digit-count guard below is on the
+                    # true magnitude (all-zeros -> empty -> 0).
+                    intpart="${intpart#"${intpart%%[!0]*}"}"; [[ -z "${intpart}" ]] && intpart=0
+                    # >8 significant digits necessarily exceeds the 1-year cap and
+                    # would risk overflowing bash arithmetic, so clamp before it.
+                    if (( ${#intpart} > 8 )); then
+                        secs="${HFPULL_LOCK_TTL_MAX}"
+                    else
+                        secs=$(( 10#${intpart} ))  # base 10 so a leading zero is not octal
+                        (( secs > HFPULL_LOCK_TTL_MAX )) && secs="${HFPULL_LOCK_TTL_MAX}"
+                    fi
                     if (( secs == 0 )) && [[ ! "${raw}" =~ ^0+([.]0+)?$ ]]; then secs=1; fi
                     echo "${secs}"
                 else
@@ -171,11 +185,11 @@ environment_configs:
             }
             trap 'hfpull_cleanup' EXIT
 
-            # True if dest itself or any file under it was modified at/after epoch
+            # True if $1 itself or any file under it was modified at/after epoch
             # $2 (the holder's write progress). -print -quit stops at the first
             # match so a live download is cheap to confirm; matches
             # fs_lock._has_recent_activity.
-            hfpull_dest_written_since() {
+            hfpull_written_since() {
                 local root="$1" cut="$2" hit
                 [[ -e "${root}" ]] || return 1
                 hit="$(find "${root}" -newermt "@${cut}" -print -quit 2>/dev/null)"
@@ -194,9 +208,15 @@ environment_configs:
             }
 
             hfpull_acquire_lock() {
-                local dest="$1" container lockdir ttl created now interval last_check
+                local dest="$1" container lockdir ttl created now interval last_check scratch
                 container="$(dirname "${dest}")/.gb-hfpull-locks"
                 lockdir="${container}/$(basename "${dest}").lock"
+                # Liveness watches HF's internal scratch dir (where the download's
+                # own writes land), not the whole dest: being HF-internal it is far
+                # less likely to be touched by an unrelated process sharing the
+                # model cache, and it is small (cheap to scan). Matches
+                # HfURI.pull's progress_path for repo pulls.
+                scratch="${dest}/.cache/huggingface/download"
                 ttl="$(hfpull_lock_ttl)"
                 # Throttle the staleness check to at most every ${interval}s
                 # (clamped 1..30); the mkdir attempt still runs every poll so a
@@ -235,16 +255,16 @@ environment_configs:
                     now="$(date +%s)"
                     if (( now - last_check >= interval )); then
                         last_check="${now}"
-                        # A peer holds it. Reclaim only if past the ttl AND dest
-                        # shows no recent writes (a dead holder); otherwise keep
-                        # waiting for the live holder. Mirrors
+                        # A peer holds it. Reclaim only if past the ttl AND the
+                        # scratch dir shows no recent writes (a dead holder);
+                        # otherwise keep waiting for the live holder. Mirrors
                         # SharedFileSystemLock._clear_if_stale (info line 2 is the
-                        # holder's start time; fall back to the lock dir's mtime).
+                        # holder's start time; fall back to the lock dir mtime).
                         created="$(sed -n 2p "${lockdir}/lock.info" 2>/dev/null || true)"
                         if ! [[ "${created}" =~ ^[0-9]+$ ]]; then created="$(stat -c %Y "${lockdir}" 2>/dev/null || echo 0)"; fi
                         if ! [[ "${created}" =~ ^[0-9]+$ ]]; then created=0; fi
-                        if (( now - created > ttl )) && ! hfpull_dest_written_since "${dest}" "$(( now - ttl ))"; then
-                            echo "hfpull: reclaiming stale download lock ${lockdir} (no progress under ${dest} for >${ttl}s)" >&2
+                        if (( now - created > ttl )) && ! hfpull_written_since "${scratch}" "$(( now - ttl ))"; then
+                            echo "hfpull: reclaiming stale download lock ${lockdir} (no download progress in ${scratch} for >${ttl}s)" >&2
                             hfpull_break_lock "${lockdir}"
                             continue
                         fi

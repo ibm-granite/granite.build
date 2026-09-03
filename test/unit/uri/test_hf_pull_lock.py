@@ -42,6 +42,7 @@ from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF
 from gbcommon.uri.hf import (
     DEFAULT_HFPULL_LOCK_TTL_S,
     HFPULL_LOCK_TIMEOUT_ENV,
+    HFPULL_LOCK_TTL_MAX_S,
     HfType,
     HfURI,
     _hfpull_lock_path,
@@ -435,3 +436,15 @@ def test_lock_ttl_reads_env_matching_the_shell_parse(monkeypatch):
     assert _hfpull_lock_ttl() == 0.0
     monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "0.0")
     assert _hfpull_lock_ttl() == 0.0
+
+    # Clamp to the max (matches the shell clamp, and keeps bash 64-bit arithmetic
+    # from overflowing on an absurd value and silently re-diverging).
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, str(int(HFPULL_LOCK_TTL_MAX_S)))
+    assert _hfpull_lock_ttl() == HFPULL_LOCK_TTL_MAX_S  # exactly max: unchanged
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "99999999")
+    assert _hfpull_lock_ttl() == HFPULL_LOCK_TTL_MAX_S  # above max: clamped
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "9" * 24)
+    assert _hfpull_lock_ttl() == HFPULL_LOCK_TTL_MAX_S  # would overflow bash: clamped
+    # Leading zeros don't inflate the magnitude past the clamp.
+    monkeypatch.setenv(HFPULL_LOCK_TIMEOUT_ENV, "0000000005")
+    assert _hfpull_lock_ttl() == 5.0
