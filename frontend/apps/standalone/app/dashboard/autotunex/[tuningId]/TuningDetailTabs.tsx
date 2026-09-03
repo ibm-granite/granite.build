@@ -1,6 +1,6 @@
 'use client'
 
-import { Tabs, TabList, Tab, TabPanels, TabPanel, FormLabel, Modal } from '@carbon/react'
+import { Tabs, TabList, Tab, TabPanels, TabPanel, FormLabel, InlineNotification, Modal } from '@carbon/react'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getConfiguration } from '@granite-build/ui-core/api/autotunex'
@@ -38,7 +38,7 @@ function DetailsPanel({ job }: { job: JobRead }) {
   })
   const isAdmin = spaces.some((s) => s.is_admin)
 
-  const { data: configuration } = useQuery({
+  const { data: configuration, isError: isConfigError } = useQuery({
     queryKey: ['autotunex-config', job.config_id, isAdmin],
     queryFn: () => getConfiguration(job.config_id, isAdmin ? 'all' : 'own'),
     enabled: configOpen,
@@ -89,13 +89,26 @@ function DetailsPanel({ job }: { job: JobRead }) {
         onRequestClose={() => setConfigOpen(false)}
         size="lg"
       >
-        {configuration ? <ConfigDisplay configuration={configuration} /> : <p>Loading…</p>}
+        {isConfigError ? (
+          <InlineNotification
+            kind="error"
+            title="Couldn't load this configuration"
+            subtitle="It may have been deleted, or you may not have access to it."
+            lowContrast
+            hideCloseButton
+          />
+        ) : configuration ? (
+          <ConfigDisplay configuration={configuration} />
+        ) : (
+          <p>Loading…</p>
+        )}
       </Modal>
 
     <SettingsDatasetView
         open={datasetOpen}
         datasetId={job.dataset_id}
         onClose={() => setDatasetOpen(false)}
+        scope={isAdmin ? 'all' : 'own'}
       />
     </div>
   )

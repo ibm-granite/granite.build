@@ -70,6 +70,17 @@ export function ConfigurationsTable() {
     return () => clearTimeout(timer)
   }, [searchInput])
 
+  // `selectedIds` shadows Carbon's own selection, and Carbon rebuilds its
+  // checkboxes from whatever rows it is handed. A selection left over from a
+  // previous page/size/search/scope would therefore stay in `selectedIds`
+  // while disappearing from the UI — the batch bar and the confirmation count
+  // would disagree, and the delete would remove configurations the user can no longer
+  // see. It also keeps `anyUndeletable` honest, since `byId` only holds the
+  // current page. Clear it whenever the visible set changes.
+  useEffect(() => {
+    setSelectedIds((prev) => (prev.length === 0 ? prev : []))
+  }, [page, pageSize, q, scope])
+
   // No "current active space" concept exists in this dashboard (no space
   // context/provider), so the own/all scope toggle is gated on the viewer
   // being an admin of at least one space — same convention used by the
@@ -88,8 +99,8 @@ export function ConfigurationsTable() {
   const items = data?.items ?? []
   const total = data?.total ?? 0
 
-  const { data: viewedConfig, isLoading: isViewLoading } = useQuery({
-    queryKey: ['autotunex-config', viewId],
+  const { data: viewedConfig, isLoading: isViewLoading, isError: isViewError } = useQuery({
+    queryKey: ['autotunex-config', viewId, scope],
     queryFn: () => getConfiguration(viewId as string, scope),
     enabled: viewId != null,
   })
@@ -270,7 +281,15 @@ export function ConfigurationsTable() {
         size="lg"
         onRequestClose={() => setViewId(null)}
       >
-        {isViewLoading || !viewedConfig ? (
+        {isViewError ? (
+          <InlineNotification
+            kind="error"
+            title="Couldn't load this configuration"
+            subtitle="It may have been deleted, or you may not have access to it."
+            lowContrast
+            hideCloseButton
+          />
+        ) : isViewLoading || !viewedConfig ? (
           <InlineLoading description="Loading configuration…" />
         ) : (
           <ConfigDisplay configuration={viewedConfig} />

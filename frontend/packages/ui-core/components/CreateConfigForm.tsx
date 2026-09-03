@@ -1,11 +1,11 @@
 'use client'
 
-import { Fragment, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Checkbox, ContentSwitcher, Dropdown, FormLabel, MultiSelect, NumberInput, Select, SelectItem, Switch, TextInput, Toggle } from '@carbon/react'
 import type { Configuration, ConfigForm, TuningGoal } from '../types'
 import { getOption, parseCommaList, toUpperCase } from '../lib/autotunex/wizardUtils'
 import { computeSectionNames } from '../lib/autotunex/configSections'
-import { formatValues, parseValuesInput } from '../lib/autotunex/hyperparamValues'
+import { formatValues, maxConcurrentTrialsCap, parseValuesInput } from '../lib/autotunex/hyperparamValues'
 import { GeneralConfigForm } from './GeneralConfigForm'
 import { TimeInput } from './TimeInput'
 import styles from './CreateConfigForm.module.scss'
@@ -95,6 +95,23 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
     if (presetGoal === 'sft' || trainingMode === 'offline_tuning') return 'none'
     return availableRlTuners[0] || rlTuners[0] || ''
   })
+
+  // The Tuner / RL-algorithm dropdowns drive only the local state above, but
+  // every caller POSTs the algorithm from `config.tuner_type` /
+  // `config.rl_tuner_type`. Mirror the selection into the config — including the
+  // seeded initial value, which the user may never touch — otherwise picking
+  // DPO/KTO/VeRA silently launches plain LoRA SFT (`tuner_type || 'lora'`) and
+  // picking GRPO/PPO/DAPO launches with no tuner at all (both fields null).
+  // 'none' is the dropdown's sentinel for "no RL algorithm" and maps to null.
+  // Returning `prev` unchanged when already in sync keeps this stable even if
+  // the parent passes a fresh `setConfig` identity each render.
+  useEffect(() => {
+    setConfig((prev) => {
+      const rl = selectedRlTuner === 'none' || selectedRlTuner === '' ? null : selectedRlTuner
+      if (prev.tuner_type === selectedTuner && (prev.rl_tuner_type ?? null) === rl) return prev
+      return { ...prev, tuner_type: selectedTuner, rl_tuner_type: rl }
+    })
+  }, [selectedTuner, selectedRlTuner, setConfig])
 
   // Stable set of top-level config sections present at mount (editing hyperparam
   // values never adds/removes a top-level section, so this only needs deriving once).
@@ -376,7 +393,7 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
                   helperText={value.description}
                   value={value.default}
                   min={value.min_val}
-                  max={Math.floor(gpu.max_val / gpu.default)}
+                  max={maxConcurrentTrialsCap(gpu.max_val, gpu.default)}
                   step={value.type === 'float' ? 0.01 : 1}
                   onChange={(_e, { value: v }) => updateGenericField(sectionKey, key, { default: typeof v === 'number' ? v : Number(v) })}
                 />
@@ -395,7 +412,7 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
                     const num = typeof v === 'number' ? v : Number(v)
                     updateGenericField(sectionKey, key, { default: num })
                     if (config.tune_config?.max_concurrent_trials) {
-                      updateGenericField('tune_config', 'max_concurrent_trials', { default: Math.floor(value.max_val / num) })
+                      updateGenericField('tune_config', 'max_concurrent_trials', { default: maxConcurrentTrialsCap(value.max_val, num) })
                     }
                   }}
                 />

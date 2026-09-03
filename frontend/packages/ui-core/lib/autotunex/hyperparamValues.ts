@@ -34,3 +34,19 @@ export function parseValuesInput(raw: string, minVal: number, maxVal: number): V
 export function formatValues(values: unknown): string {
   return Array.isArray(values) ? values.join(',') : String(values ?? '')
 }
+
+/**
+ * Cap for "Max concurrent trials", derived from the GPU budget and the GPUs each
+ * trial takes.
+ *
+ * Guards the divisor. Carbon's `NumberInput` (without `allowEmpty`) reports
+ * `Number('') === 0` when the user clears "Num GPUs per trial", so 0 is a normal
+ * mid-edit value — and `maxGpus / 0` is `Infinity`, which renders as "Value must
+ * be between 1 and Infinity" and, because `JSON.stringify(Infinity)` is
+ * `"null"`, saves `max_concurrent_trials.default: null`. A non-positive or
+ * non-finite trial size means no meaningful concurrency, so the cap is 1.
+ */
+export function maxConcurrentTrialsCap(maxGpus: number, gpusPerTrial: number): number {
+  if (!Number.isFinite(maxGpus) || !Number.isFinite(gpusPerTrial) || gpusPerTrial <= 0) return 1
+  return Math.max(1, Math.floor(maxGpus / gpusPerTrial))
+}

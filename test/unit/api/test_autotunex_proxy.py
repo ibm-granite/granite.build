@@ -19,6 +19,7 @@ import gzip
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 import gbserver.api.autotunex_proxy as proxy_mod
 from gbserver.api.autotunex_proxy import router
@@ -248,3 +249,63 @@ def test_does_not_leak_cookies_between_requests(monkeypatch):
         None,
         "",
     ), f"cookie leaked to a cookie-less request: {seen_cookies[1]!r}"
+
+
+def test_streams_request_body_instead_of_buffering(monkeypatch):
+    """A dataset upload must be relayed incrementally.
+
+    ``await request.body()`` materialized the entire request in this process (and
+    again inside httpx), so a multi-GB training set risked OOMing gbserver for a
+    request it only relays. Reading the body is therefore made a hard failure
+    here, while the forwarded bytes and framing are asserted unchanged.
+    """
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content
+        seen["content_length"] = request.headers.get("content-length")
+        seen["transfer_encoding"] = request.headers.get("transfer-encoding")
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(proxy_mod, "AUTOTUNEX_URL", "http://autotunex.test")
+    monkeypatch.setattr(proxy_mod, "_client", _client_with_handler(handler))
+
+    async def _forbidden_body(self):
+        raise AssertionError("proxy must stream the request body, not buffer it")
+
+    monkeypatch.setattr(Request, "body", _forbidden_body)
+
+    payload = b"x" * (256 * 1024)
+    client = TestClient(_make_app())
+    resp = client.post(
+        "/api/autotunex/datasets/abc/upload",
+        content=payload,
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    assert resp.status_code == 200
+    assert seen["body"] == payload
+    # The client's Content-Length is passed through rather than dropped, so httpx
+    # keeps that framing instead of switching the upstream to chunked.
+    assert seen["content_length"] == str(len(payload))
+    assert seen["transfer_encoding"] is None
+
+
+def test_bodyless_get_is_not_given_chunked_encoding(monkeypatch):
+    """Streaming must not add a body to a request that never declared one."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["transfer_encoding"] = request.headers.get("transfer-encoding")
+        seen["body"] = request.content
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(proxy_mod, "AUTOTUNEX_URL", "http://autotunex.test")
+    monkeypatch.setattr(proxy_mod, "_client", _client_with_handler(handler))
+
+    client = TestClient(_make_app())
+    resp = client.get("/api/autotunex/jobs")
+
+    assert resp.status_code == 200
+    assert seen["transfer_encoding"] is None
+    assert seen["body"] == b""

@@ -41,9 +41,10 @@ _UPSTREAM_PREFIX = "/api/v1"
 # Public path this proxy is mounted at; the browser side of the mapping.
 _PUBLIC_PREFIX = "/api/autotunex"
 
-# Headers we must not forward verbatim: httpx sets Host from the URL and
-# recomputes request length; the StreamingResponse sets its own framing.
-_DROP_REQUEST_HEADERS = {"host", "content-length"}
+# Headers we must not forward verbatim: httpx sets Host from the URL; the
+# StreamingResponse sets its own framing on the way back. Content-Length is
+# deliberately NOT dropped -- see the body handling in proxy_autotunex.
+_DROP_REQUEST_HEADERS = {"host"}
 _DROP_RESPONSE_HEADERS = {
     "content-length",
     "transfer-encoding",
@@ -116,7 +117,24 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
     # browser's, or empty) so the jar is never consulted for injection.
     if not any(k.lower() == "cookie" for k in fwd_headers):
         fwd_headers["cookie"] = ""
-    body = await request.body()
+
+    # Forward the body as a stream rather than reading it with request.body().
+    # Buffering would fully materialize a multi-GB training-set upload in this
+    # process (and again inside httpx) -- exactly the case the generous write
+    # timeout above exists to support.
+    #
+    # The client's Content-Length is passed through: the bytes are relayed
+    # unchanged so it stays accurate, and httpx honours an explicit
+    # Content-Length instead of falling back to Transfer-Encoding: chunked,
+    # which keeps the upstream wire format identical to the browser's.
+    #
+    # Only attach a body when the request declares one, so a bodyless GET/HEAD
+    # is not sent with a spurious chunked encoding.
+    declares_body = (
+        request.headers.get("content-length") is not None
+        or "transfer-encoding" in request.headers
+    )
+    content = request.stream() if declares_body else None
 
     client = _get_client()
     upstream_request = client.build_request(
@@ -127,7 +145,7 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
         # list is invariant so mypy rejects list[tuple[str, str]] against the
         # wider pair type it declares. Duplicate keys are preserved either way.
         params=tuple(request.query_params.multi_items()),
-        content=body,
+        content=content,
     )
     try:
         upstream = await client.send(upstream_request, stream=True)

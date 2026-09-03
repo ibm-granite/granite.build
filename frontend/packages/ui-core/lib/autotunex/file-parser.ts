@@ -57,16 +57,65 @@ export function parseCsvLine(line: string): string[] {
   return result
 }
 
-export function parseCsv(content: string, maxLines?: number): ParseResult {
-  const lines = content.trim().split('\n')
-  if (lines.length === 0) return []
+// A CSV record can span several physical lines, because a quoted field may
+// contain newlines. Record boundaries therefore have to be found with quote
+// state carried across those lines: splitting the file on '\n' first shears
+// such a record apart and misaligns every following field against the headers.
+//
+// Quote state is just the parity of the quote count, so a doubled ("") escape
+// needs no lookahead — it flips parity twice and lands back inside the field.
+// That also makes the scanner safe to feed arbitrary chunks, where a lookahead
+// could fall off the end of one.
+export type CsvScanState = { inQuotes: boolean; partial: string }
 
-  const headers = parseCsvLine(lines[0])
+export function createCsvScanState(): CsvScanState {
+  return { inQuotes: false, partial: '' }
+}
+
+/**
+ * Feed one chunk of CSV text through the scanner, invoking `onRecord` for each
+ * complete record. Quote state and the trailing incomplete record live in
+ * `state`, so a caller streaming a file resumes by passing the same state to
+ * the next chunk; after the final chunk a non-empty `state.partial` is the last
+ * unterminated record.
+ */
+export function scanCsvChunk(
+  chunk: string,
+  state: CsvScanState,
+  onRecord: (record: string) => void
+): void {
+  let start = 0
+  for (let i = 0; i < chunk.length; i++) {
+    const char = chunk[i]
+    if (char === '"') {
+      state.inQuotes = !state.inQuotes
+    } else if (char === '\n' && !state.inQuotes) {
+      onRecord(state.partial + chunk.slice(start, i))
+      state.partial = ''
+      start = i + 1
+    }
+  }
+  state.partial += chunk.slice(start)
+}
+
+export function splitCsvRecords(content: string): string[] {
+  const state = createCsvScanState()
+  const records: string[] = []
+  scanCsvChunk(content, state, (record) => records.push(record))
+  if (state.partial !== '') records.push(state.partial)
+  return records
+}
+
+export function parseCsv(content: string, maxLines?: number): ParseResult {
+  const records = splitCsvRecords(content.trim())
+  if (records.length === 0) return []
+
+  const headers = parseCsvLine(records[0])
   const result: ParseResult = []
-  const end = maxLines ? Math.min(lines.length, maxLines + 1) : lines.length
+  const end = maxLines ? Math.min(records.length, maxLines + 1) : records.length
 
   for (let i = 1; i < end; i++) {
-    const values = parseCsvLine(lines[i])
+    const values = parseCsvLine(records[i])
     const obj: Record<string, any> = {}
     headers.forEach((header, index) => {
       obj[header] = values[index] || ''
@@ -164,4 +213,75 @@ export async function parseParquet(buffer: ArrayBuffer, maxLines?: number): Prom
 
 export function countParquetRows(buffer: ArrayBuffer): Promise<number> {
   return parquetReadObjects({ file: buffer }).then((rows) => rows.length)
+}
+
+/**
+ * Count dataset records by streaming `file` in chunks, so a large upload is
+ * never materialized as one string. Used by the Web Worker for big files and by
+ * the main thread when the worker is unavailable — one implementation, so the
+ * small-file and large-file paths cannot report different totals.
+ *
+ * Counts the unit the parsers return: CSV data records excluding the header row
+ * (honouring newlines inside quoted fields), JSONL objects that actually parse,
+ * JSON array entries, Parquet rows.
+ */
+export async function countRecordsInBlob(file: Blob, fileName: string): Promise<number> {
+  if (fileName.endsWith('.parquet')) return countParquetRows(await file.arrayBuffer())
+  // A JSON array's entry count has no relationship to its line structure (a
+  // pretty-printed file spans many lines per entry), so this one format must be
+  // parsed to be counted; nothing incremental is possible without a streaming
+  // JSON parser.
+  if (fileName.endsWith('.json')) return parseJson(await file.text()).length
+
+  const isCsv = fileName.endsWith('.csv')
+  const isJsonl = fileName.endsWith('.jsonl')
+  const decoder = new TextDecoder('utf-8')
+  const reader = file.stream().getReader()
+  const csvState = createCsvScanState()
+  let remainder = ''
+  let count = 0
+
+  const tally = (record: string) => {
+    if (record.trim() === '') return
+    if (isJsonl) {
+      try {
+        JSON.parse(record)
+      } catch {
+        return
+      }
+    }
+    count++
+  }
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const text = decoder.decode(value, { stream: true })
+      // Only CSV needs quote-aware boundaries. Applying the CSV scanner to
+      // JSONL would be wrong: a quote inside a JSON string would toggle quote
+      // state, swallow the following newline and merge two records into one.
+      if (isCsv) {
+        scanCsvChunk(text, csvState, tally)
+      } else {
+        const lines = (remainder + text).split('\n')
+        remainder = lines.pop() ?? ''
+        for (const line of lines) tally(line)
+      }
+    }
+
+    const tail = decoder.decode()
+    if (isCsv) {
+      scanCsvChunk(tail, csvState, tally)
+      if (csvState.partial !== '') tally(csvState.partial)
+      // The first record is the header row, not data. Guarded so an empty file
+      // reports 0 rather than -1.
+      return count > 0 ? count - 1 : 0
+    }
+    remainder += tail
+    if (remainder) tally(remainder)
+    return count
+  } finally {
+    reader.releaseLock()
+  }
 }
