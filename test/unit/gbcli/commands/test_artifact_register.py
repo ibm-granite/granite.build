@@ -31,7 +31,6 @@ import pytest
 from click.testing import CliRunner
 
 from gbcli.commands.command_artifact import cli
-from gbcli.utils.utils import DecodedURIResponse
 
 # These tests exercise a @reject_standalone command; patch is_standalone -> False.
 
@@ -254,7 +253,7 @@ def test_malformed_hf_uri_clean_error(register_env):
         ]
     )
     assert result.exit_code != 0
-    assert "invalid HuggingFace URI" in result.output
+    assert "invalid artifact URI" in result.output
     register_env.assert_not_called()
 
 
@@ -281,7 +280,7 @@ def test_hf_uri_undefined_template_var_clean_error(register_env):
     finally:
         logging.disable(logging.NOTSET)
     assert result.exit_code != 0
-    assert "invalid HuggingFace URI" in result.output
+    assert "invalid artifact URI" in result.output
     register_env.assert_not_called()
 
 
@@ -313,7 +312,25 @@ def test_hf_space_uri_rejected(register_env):
         ]
     )
     assert result.exit_code != 0
-    assert "'model', 'dataset' and 'bucket'" in result.output
+    assert "'model', 'dataset', 'bucket'" in result.output
+    register_env.assert_not_called()
+
+
+def test_lh_bucket_rejected(register_env):
+    """buckets are HF-only, so `--store lh -t bucket` is rejected for register too."""
+    result = _invoke(
+        [
+            "--store",
+            "lh",
+            "-t",
+            "bucket",
+            "--artifact-name",
+            "x",
+            "--certify-no-restrictions",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "store 'lh' is only allowed for artifact types" in result.output
     register_env.assert_not_called()
 
 
@@ -449,36 +466,23 @@ def test_hf_uri_rejects_lakehouse_table_flag(register_env):
 
 # --- Lakehouse (lh://) regression coverage -------------------------------------
 #
-# This PR restructured the lh:// decode branch (moved it under the new `else`,
-# wrapped the type-handling block in `if store == "lh":`, and changed the model
-# label check from `if label == ""` to `if not label`). The HF path above is
-# well covered, but nothing exercises lh:// at the command level, so these two
-# tests pin that the decoded fields still reach `register_artifact` unchanged.
-# `decode_uri` and `compare_env_uri` are patched so the flow stays hermetic:
-# compare_env_uri returns matching environments so the mismatch branch is skipped.
+# The lh:// branch decodes the URI through the shared URI layer (URI.get_uri +
+# get_metadata in _resolve_uri). These tests pass real, valid lh:// URIs so the
+# URI class does the parsing, and patch `gb_environment_config` so the CLI env
+# matches the URI's environment and the cross-env mismatch branch is skipped.
+# Valid lh layout: lh://<env>/<ns>/<models|datasets|filesets>/<table>/...
 
 
 def test_lh_uri_model_decodes_through_to_register(register_env):
     """`--uri lh://...` for a model forwards the decoded type/namespace/table/label/revision."""
-    decoded = DecodedURIResponse(
-        uri="lh://prod/ns/model_shared/my-model/v3",
-        namespace="ns",
-        table_name="model_shared",
-        type="model",
-        model_label="my-model",
-        model_revision="v3",
-    )
-    with (
-        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
-        patch(
-            "gbcli.commands.command_artifact.compare_env_uri",
-            return_value=("prod", "prod"),
-        ),
-    ):
+    with patch(
+        "gbcli.commands.command_artifact.gb_environment_config",
+    ) as gb_env:
+        gb_env.return_value.lakehouse_environment = "prod"
         result = _invoke(
             [
                 "--uri",
-                "lh://prod/ns/model_shared/my-model/v3",
+                "lh://prod/ns/models/model_shared/my-model/v3",
                 "--artifact-name",
                 "my-model",
                 "--certify-no-restrictions",
@@ -500,24 +504,14 @@ def test_lh_uri_model_decodes_through_to_register(register_env):
 
 def test_lh_uri_dataset_decodes_through_to_register(register_env):
     """`--uri lh://...` for a dataset forwards the decoded dataset/table and nulls model fields."""
-    decoded = DecodedURIResponse(
-        uri="lh://prod/ns/tbl/my-dataset",
-        namespace="ns",
-        table_name="tbl",
-        type="dataset",
-        dataset_name="my-dataset",
-    )
-    with (
-        patch("gbcli.commands.command_artifact.decode_uri", return_value=decoded),
-        patch(
-            "gbcli.commands.command_artifact.compare_env_uri",
-            return_value=("prod", "prod"),
-        ),
-    ):
+    with patch(
+        "gbcli.commands.command_artifact.gb_environment_config",
+    ) as gb_env:
+        gb_env.return_value.lakehouse_environment = "prod"
         result = _invoke(
             [
                 "--uri",
-                "lh://prod/ns/tbl/my-dataset",
+                "lh://prod/ns/datasets/tbl/my-dataset",
                 "--artifact-name",
                 "my-dataset",
                 "--certify-no-restrictions",

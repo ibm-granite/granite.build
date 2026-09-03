@@ -13,7 +13,6 @@ from typing import List, Optional
 import humanize
 import yaml
 from git import RemoteProgress
-from pydantic import BaseModel
 from rich.console import Console
 from rich.markdown import (
     ConsoleOptions,
@@ -48,9 +47,6 @@ from gbcli.utils.gbserver import get_artifacts, make_gbserver_call
 from gbcli.utils.gh_auth import get_user
 from gbcli.utils.spaceutil import resolve_space
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
-from gbcommon.types.gbenvconfig import gb_environment_config
-from gbcommon.uri.lh import LhURI
-from gbcommon.uri.uri import URI
 
 _KNOWN_GH_DOMAINS = list(
     dict.fromkeys([DEFAULT_GH_DOMAIN, "github.ibm.com", "github.com"])
@@ -312,44 +308,6 @@ def resolve_to_space_key(expression: str):
     return repo if repo else canonical_expression
 
 
-class DecodedURIResponse(BaseModel):
-    uri: str
-    namespace: str
-    table_name: str
-    type: str
-    model_label: Optional[str] = None
-    model_revision: Optional[str] = None
-    fileset_label: Optional[str] = None
-    fileset_version: Optional[str] = None
-    dataset_name: Optional[str] = None
-
-
-def __get_lh_decoded_uri_response(uri: LhURI) -> DecodedURIResponse:
-    metadata = uri.get_metadata()
-    response = DecodedURIResponse(**metadata)
-    return response
-
-
-def decode_uri(
-    uri_input: str,
-) -> DecodedURIResponse:
-    uri = URI.get_uri(uri_input)
-
-    if not isinstance(uri, LhURI):
-        raise Exception(f"Error: Artifact URI formatted incorrectly.")
-
-    assert isinstance(uri, LhURI)
-    response = __get_lh_decoded_uri_response(uri)
-    return response
-
-
-def compare_env_uri(uri: str):
-    return (
-        uri.split("/")[2],
-        str(gb_environment_config().lakehouse_environment).lower(),
-    )
-
-
 def format_artifact_tags(artifacts: list):
     formatted_artifacts = []
 
@@ -376,34 +334,6 @@ def is_official_artifact(artifact):
             else:
                 return False
     return False
-
-
-def get_artifact_formatted_name(decoded_artifact: DecodedURIResponse):
-    # table : <namespace_name>.<table_name>
-    # dataset : <dataset_name>|<namespace_name>.<table_name>
-    # model : <model_label>.<revision>|<namespace_name>.<table_name>
-    # fileset: <label>.<version>|<table_name>
-
-    type = decoded_artifact.type
-    namespace = decoded_artifact.namespace
-    table = decoded_artifact.table_name
-
-    match type:
-        case "dataset":
-            dataset = decoded_artifact.dataset_name
-            return f"{dataset}|{namespace}.{table}"
-        case "model":
-            model_name = decoded_artifact.model_label
-            revision = decoded_artifact.model_revision
-            return f"{model_name}.{revision}|{namespace}.{table}"
-        case "fileset":
-            label = decoded_artifact.fileset_label
-            version = decoded_artifact.fileset_version
-            return f"{label}.{version}|{namespace}.{table}"
-        case "table":
-            return f"{namespace}.{table}"
-        case _:
-            return None
 
 
 def parse_artifact_identifier(identifier: str):
