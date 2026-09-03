@@ -399,6 +399,24 @@ def test_rename_unsupported_notice_logged_once_per_process(tmp_path, caplog):
     assert len(notices) == 1, f"expected one INFO notice, got {len(notices)}"
 
 
+def test_release_logs_released_only_when_it_actually_removed(tmp_path, caplog):
+    """release() logs 'released' only on an actual removal, not a peer-dir restore.
+
+    In the stale-break-then-recreate race, _move_aside_and_remove restores the
+    peer's recreated dir and returns False; release must not then claim the lock
+    was 'released' (misleading in the log). Gate the INFO on the return value.
+    """
+    lock = SharedFileSystemLock(tmp_path / "rel.lock", timeout=1)
+    assert lock.acquire() is True
+    with caplog.at_level(logging.INFO, logger="gbcommon.utils.fs_lock"):
+        with patch.object(lock, "_move_aside_and_remove", return_value=False):
+            lock.release()
+    # Match the message template (not the formatted path, which can contain the
+    # test name "...released...").
+    released = [r for r in caplog.records if "released" in str(r.msg)]
+    assert released == [], "must not log 'released' when the lock was not removed"
+
+
 def test_still_owned_reflects_on_disk_ownership(tmp_path):
     """still_owned() re-reads the FS, so it flips False once a peer reclaims us."""
     lock = SharedFileSystemLock(tmp_path / "s.lock", timeout=1)

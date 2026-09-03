@@ -339,12 +339,16 @@ class SharedFileSystemLock:
                 # would otherwise have its live dir deleted -- os.replace acts on
                 # whatever occupies the path, which may now be the peer's. If the
                 # captured dir is not ours, it is restored instead of removed.
-                self._move_aside_and_remove("released", verify_ours=True)
-                logger.info(
-                    "SharedFileSystemLock: released %s (%s)",
-                    self.lock_path,
-                    self.identity,
-                )
+                if self._move_aside_and_remove("released", verify_ours=True):
+                    # Log only on an actual removal -- not when the capture
+                    # restored a peer's dir it had recreated in the check/act
+                    # window (return False). That race is unreachable with a
+                    # progress_path set, as hfpull always does.
+                    logger.info(
+                        "SharedFileSystemLock: released %s (%s)",
+                        self.lock_path,
+                        self.identity,
+                    )
         except OSError:
             # Another process may have force-cleared a stale lock; don't crash
             # cleanup over it.

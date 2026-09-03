@@ -222,7 +222,14 @@ environment_configs:
 
             # Break a stale lock by moving it aside atomically, then removing the
             # moved copy (single winner; matches _move_aside_and_remove). A loser's
-            # mv fails and it simply retries mkdir.
+            # mv fails and it simply retries mkdir. Where the mount cannot rename a
+            # directory (mv fails wholesale, e.g. ENOTEMPTY on object-store/AFM
+            # FUSE), fall back to a single-winner delete: exactly one waiter claims
+            # the break via an atomic mkdir of a .breaking marker, deletes the
+            # stale lock, then drops the claim; losers skip and retry mkdir. An
+            # aged claim (older than ttl) is a crashed breaker's and is reaped so
+            # it cannot wedge the break. Matches
+            # SharedFileSystemLock._remove_without_rename / _reap_if_abandoned.
             hfpull_break_lock() {
                 local lockdir="$1" ttl="$2" grave claim cnow cmtime
                 grave="${lockdir}.stale.$$.${RANDOM}"
