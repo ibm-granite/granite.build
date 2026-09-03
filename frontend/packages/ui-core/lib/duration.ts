@@ -2,7 +2,7 @@
  * Elapsed-time formatting, shared by every place that shows a duration so the
  * dashboard tiles and the build drawer never drift apart.
  *
- * Format: `6s`, `2m 14s`, `2m` (trailing zero units dropped), `1h 3m`.
+ * Format: `6s`, `2m 4s`, `2m` (trailing zero units dropped), `1h 3m`.
  */
 export function formatDurationSeconds(seconds: number): string {
   if (seconds < 60) return `${seconds}s`
