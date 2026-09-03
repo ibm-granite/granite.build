@@ -407,7 +407,6 @@ def _pull_hf_repo(
                 first,
             )
             raise
-        _fence_self_heal()
         logger.warning(
             "hfpull: HF download cache for %s looks corrupt (%s); retrying "
             "with force_download=True",
@@ -415,13 +414,16 @@ def _pull_hf_repo(
             first,
         )
 
+    # Re-fence immediately before each destructive step, so a peer that reclaims
+    # the lock in the window since the last check can't have its tree mutated
+    # (force_download re-downloads/unlinks). If evicted, abandon to the re-wait.
+    _fence_self_heal()
     try:
         _download(True)
         return
     except Exception as second:
         if not _is_recoverable_hf_cache_error(second):
             raise
-        _fence_self_heal()
         logger.warning(
             "hfpull: force_download retry for %s still failed (%s); clearing "
             "scratch download cache %s and retrying once more",
@@ -430,6 +432,8 @@ def _pull_hf_repo(
             dest / _HF_DOWNLOAD_SCRATCH,
         )
 
+    # Re-fence immediately before the destructive scratch rm -rf + re-download.
+    _fence_self_heal()
     _clear_hf_download_scratch(dest)
     _download(True)
 

@@ -41,13 +41,17 @@ holder that legitimately outlasts the ttl -- so pair the two, or use a finite
 ``timeout`` and treat a ``False`` return as "proceed anyway". ``ttl`` defaults to
 ``None`` (never break a held lock).
 
-Reclaiming a stale lock and releasing an owned one both move the lock dir aside
-with an atomic ``os.replace`` before removing it, so two waiters racing to break
-the same lock cannot both succeed and re-take it, and a release can never rmdir a
-directory a peer has since recreated. A residual window remains only for a
-``ttl``-without-``progress_path`` caller whose holder is declared stale in the
-same instant it releases; a ``progress_path`` closes it (a releasing holder has
-just written, so it is never stale).
+Reclaiming a stale lock and releasing an owned one both capture the lock dir with
+an atomic ``os.replace`` before removing it, so two waiters racing to break the
+same lock cannot both succeed and re-take it. ``os.replace`` acts on whatever
+occupies the path, though, so a release racing a peer's stale-break-then-recreate
+could capture the peer's *fresh* dir; release therefore re-checks the captured
+dir's identity and restores it instead of deleting when it is no longer ours (a
+narrow third-party-``mkdir``-during-restore residual remains, which a POSIX
+rename cannot close; the on-acquire reaper cleans the orphan). This whole race is
+unreachable when a ``progress_path`` is set -- a releasing holder has just
+written, so a peer never declares it stale to begin with -- and only a
+``ttl``-without-``progress_path`` caller can approach it.
 """
 
 import logging
@@ -257,11 +261,13 @@ class SharedFileSystemLock:
             return
         try:
             if self._owned_by_us():
-                # Move our dir aside atomically before removing it (same
-                # single-winner discipline as the stale-break): if a peer broke
-                # our lock first, the replace fails and we stop -- we never rmdir
-                # a path a peer may have since recreated.
-                self._move_aside_and_remove("released")
+                # Capture our dir aside atomically, then delete it only after
+                # re-confirming it is still ours (verify_ours): a peer that
+                # stale-broke and re-created lock_path in the check/act window
+                # would otherwise have its live dir deleted -- os.replace acts on
+                # whatever occupies the path, which may now be the peer's. If the
+                # captured dir is not ours, it is restored instead of removed.
+                self._move_aside_and_remove("released", verify_ours=True)
         except OSError:
             # Another process may have force-cleared a stale lock; don't crash
             # cleanup over it.
@@ -269,13 +275,25 @@ class SharedFileSystemLock:
         finally:
             self._held = False
 
-    def _move_aside_and_remove(self, reason: str) -> bool:
+    def _move_aside_and_remove(self, reason: str, *, verify_ours: bool = False) -> bool:
         """Atomically ``os.replace`` ``lock_path`` to a unique name, then delete.
 
         ``os.replace`` of a directory is atomic, so exactly one racer captures a
         given lock-dir inode; a loser gets ``ENOENT`` (the dir moved) and returns
         False. Removing the *moved* dir cannot disturb whoever wins a subsequent
         ``mkdir`` of ``lock_path``. Returns whether this caller did the removal.
+
+        ``os.replace`` acts on whatever occupies ``lock_path`` at that instant,
+        which -- for a release racing a peer's stale-break-then-recreate -- may
+        already be the peer's fresh dir. With ``verify_ours`` the captured dir's
+        identity is re-checked after the capture and, if it is no longer ours, it
+        is restored rather than deleted (so a release never destroys a live
+        peer's lock). A narrow residual remains -- a third party ``mkdir``-ing
+        ``lock_path`` between our capture and restore -- which a POSIX rename
+        cannot close; the reaper cleans the resulting orphan. Stale-breaks pass
+        ``verify_ours=False`` (they legitimately remove a *peer's* dead dir); that
+        path's own freshly-acquired-lock race is bounded instead by the age +
+        progress checks in :meth:`_clear_if_stale`.
         """
         graveyard = self.lock_path.with_name(
             f"{self.lock_path.name}.{reason}.{os.getpid()}.{time.monotonic_ns()}"
@@ -283,6 +301,14 @@ class SharedFileSystemLock:
         try:
             os.replace(self.lock_path, graveyard)
         except OSError:
+            return False
+        if verify_ours and self._identity_at(graveyard / "lock.info") != self.identity:
+            # Captured a dir a peer recreated in the check/act window -- restore
+            # it rather than delete a live peer's lock.
+            try:
+                os.replace(graveyard, self.lock_path)
+            except OSError:
+                pass  # lock_path re-occupied; leave the orphan for the reaper
             return False
         shutil.rmtree(graveyard, ignore_errors=True)
         return True
@@ -325,16 +351,20 @@ class SharedFileSystemLock:
             self._last_acquire_error = e
             return False
 
+    @staticmethod
+    def _identity_at(info_file: Path) -> Optional[str]:
+        """First line (the recorded owner identity) of *info_file*, or None."""
+        try:
+            return info_file.read_text().splitlines()[0].strip()
+        except (OSError, IndexError):
+            return None
+
     def _owned_by_us(self) -> bool:
         # acquire() only reports success after writing our identity, so a
         # missing/unreadable info file here means a peer broke our lock (a ttl
         # stale-break moves the whole dir aside, so our info file is gone with
         # it). Never remove a lock we cannot positively confirm is still ours.
-        try:
-            first_line = self.info_file.read_text().splitlines()[0].strip()
-        except (OSError, IndexError):
-            return False
-        return first_line == self.identity
+        return self._identity_at(self.info_file) == self.identity
 
     def _lock_age_anchor(self) -> Optional[float]:
         """Best available creation time for the staleness check.

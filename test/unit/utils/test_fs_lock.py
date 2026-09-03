@@ -292,6 +292,28 @@ def test_still_owned_reflects_on_disk_ownership(tmp_path):
     assert lock.lock_path.exists()
 
 
+def test_release_capture_restores_a_peer_recreated_dir(tmp_path):
+    """Release must not delete a dir a peer recreated in the check/act window.
+
+    ``os.replace`` captures whatever occupies ``lock_path``; if a peer stale-broke
+    and re-created it with its own identity after our ownership check, the capture
+    grabs the peer's *live* dir. ``verify_ours`` must then restore it rather than
+    rmtree a peer's lock.
+    """
+    lock = SharedFileSystemLock(tmp_path / "r.lock", timeout=1)
+    assert lock.acquire() is True
+    # Simulate the recreated-by-a-peer state at capture time.
+    lock.info_file.write_text("host:peer|pid:999\n123\n")
+
+    removed = lock._move_aside_and_remove("released", verify_ours=True)
+
+    assert removed is False, "must not remove a dir that is no longer ours"
+    assert lock.lock_path.is_dir(), "the peer's recreated lock must be restored"
+    assert lock._identity_at(lock.info_file) == "host:peer|pid:999"
+    # No graveyard debris left from the capture/restore.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["r.lock"]
+
+
 def test_still_owned_false_when_not_held(tmp_path):
     lock = SharedFileSystemLock(tmp_path / "s2.lock", timeout=1)
     assert lock.still_owned() is False  # never acquired

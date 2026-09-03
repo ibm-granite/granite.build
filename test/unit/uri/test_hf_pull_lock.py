@@ -341,6 +341,46 @@ def test_pull_rewaits_instead_of_self_healing_under_a_peer(tmp_path):
     assert forces == [False, False], "must re-wait, not force-download under a peer"
 
 
+def test_pull_rewaits_before_final_scratch_clear_when_evicted(tmp_path):
+    """Eviction right before the final scratch rm -rf abandons, not clobbers.
+
+    The last self-heal step (scratch clear + re-download) re-fences immediately
+    before it (finding C). If a peer reclaims the lock after the force retry
+    fails but before the scratch clear, we must abandon to the re-wait loop --
+    NOT rm -rf the scratch dir the new owner may be writing.
+    """
+    dest = tmp_path / "org" / "repo" / "h"
+    lock_path = _hfpull_lock_path(dest)
+    scratch = dest / ".cache" / "huggingface" / "download"
+    scratch.mkdir(parents=True)
+    (scratch / "leftover.incomplete").write_text("partial")
+    calls = []
+
+    def fake_download(*_args, **_kwargs):
+        calls.append(_kwargs.get("force_download"))
+        n = len(calls)
+        if n == 1:
+            raise _incomplete_error(dest)  # first attempt: recoverable
+        if n == 2:
+            # Force retry still fails AND a peer reclaims us right here, so the
+            # fence before the scratch clear must trip.
+            shutil.rmtree(lock_path, ignore_errors=True)
+            raise OSError(
+                "Consistency check failed: file should be of size 10 but has size 5"
+            )
+        # n >= 3: after re-acquiring, the retry succeeds.
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        result = uri.pull(dest)
+
+    assert result is True
+    # normal, force-retry, then (after re-wait) a fresh normal download.
+    assert calls == [False, True, False]
+    # The evicted attempt must NOT have cleared the scratch dir under the peer.
+    assert (scratch / "leftover.incomplete").exists(), "scratch cleared under a peer"
+
+
 def test_pull_gives_up_after_repeated_eviction(tmp_path, monkeypatch):
     """Repeated eviction is capped: past HFPULL_MAX_LOCK_REWAITS, fail cleanly.
 
