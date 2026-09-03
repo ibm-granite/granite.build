@@ -1,0 +1,59 @@
+name: Sync ui-core Branch
+
+# Republishes frontend/packages/ui-core as the root of a rolling `ui-core` branch, so
+# external consumers can track main instead of only tagged releases. Needed because
+# Yarn Classic v1 can't consume a subdirectory of a git dependency and this repo's
+# root is a Python project — see scripts/sync-ui-core-branch.sh's header.
+#
+# Complements scripts/publish-ui-core.sh, which cuts an immutable ui-core-<tag> at
+# release time via tag-main.sh. Tags for pinned releases; this branch for "current".
+#
+# NOTE: GitHub only runs `schedule` triggers on the default branch, so the scheduled
+# run always splits main. Use `workflow_dispatch` to run it on demand from any branch.
+
+on:
+  schedule:
+    # Every 2 hours. The off-the-hour minute avoids the congestion that delays
+    # scheduled runs queued on the hour (same rationale as nightly-tests.yml).
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Ref to split. Forks validating this workflow should pass upstream/main."
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    # Scheduled runs are restricted to the canonical repo — scheduled workflows also
+    # fire on a fork's own default branch, and a fork republishing its (possibly
+    # stale) main as `ui-core` would mislead anyone who pinned to it. Manual dispatch
+    # stays available everywhere so a fork can validate the script end-to-end before
+    # these changes are proposed here.
+    if: github.event_name == 'workflow_dispatch' || github.repository == 'ibm-granite/granite.build'
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 — `git subtree split` walks the full history of the prefix.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Only forks need this: they split upstream's main rather than their own, so the
+      # content published is upstream's regardless of how stale the fork is. Skipped
+      # on the canonical repo, where `main` is already the right source.
+      - name: Add upstream remote (forks only)
+        if: github.repository != 'ibm-granite/granite.build'
+        run: |
+          git remote add upstream https://github.com/ibm-granite/granite.build.git
+          git fetch upstream main
+
+      - name: Sync ui-core branch
+        run: scripts/sync-ui-core-branch.sh "${{ inputs.source_ref || 'main' }}" ui-core origin
