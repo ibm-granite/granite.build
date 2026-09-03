@@ -38,6 +38,7 @@ import {
 } from '@granite-build/ui-core/api/autotunex'
 import { getRequiredColumns, isModelSelectionValid, normalizeTokenizerListFields, overlayColumnMapping } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { normalizeVerlRows } from '@granite-build/ui-core/lib/autotunex/verlNormalize'
+import { DATASET_READY_TIMEOUT_MS } from '@granite-build/ui-core/lib/autotunex/datasetReady'
 import { ALGORITHM_DETAILS, ALGORITHM_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import { clearDraft, saveDraft } from './wizardDraft'
 import { Step0GetStarted } from './steps/Step0GetStarted'
@@ -49,7 +50,6 @@ import styles from './StartTuningWizard.module.scss'
 
 const DRAFT_DEBOUNCE_MS = 500
 const DATASET_READY_POLL_MS = 1500
-const DATASET_READY_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
  * The v0.3.5 multipart upload returns 202 with status "uploading" — the

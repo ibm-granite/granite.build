@@ -151,15 +151,24 @@ function MyBuildsTile() {
 }
 // ── AutoTuneX tiles ─────────────────────────────────────────────────────
 
-// Builds tagged either "autotunex" or "model-customisation" are both treated
-// as model-customisation activity elsewhere (see BuildDetails.tsx), and the
-// gbserver tags filter is AND-only — so we fetch both and dedupe by uuid.
+// A build counts as model-customisation activity under any of these tags — the
+// same three spellings BuildDetails.tsx gates its AutoTuneX tabs on. Keep the two
+// lists in step: a tag only one of them knows about makes the tile disagree with
+// the build page.
+const MODEL_CUSTOMISATION_TAGS = [
+  "model-customization",
+  "model-customisation",
+  "autotunex",
+];
+
+// The gbserver tags filter is AND-only, so one tag per request, then dedupe by
+// uuid (a build carrying two spellings would otherwise be counted twice).
 async function fetchModelCustomisationStats() {
-  const [modelCustomization] = await Promise.all([
-    listBuilds({ tags: ["model-customization"] }),
-  ]);
+  const results = await Promise.all(
+    MODEL_CUSTOMISATION_TAGS.map((tag) => listBuilds({ tags: [tag] })),
+  );
   const byId = new Map<string, Build>();
-  for (const b of [...modelCustomization.items]) byId.set(b.uuid, b);
+  for (const r of results) for (const b of r.items) byId.set(b.uuid, b);
   const builds = Array.from(byId.values());
 
   return {
