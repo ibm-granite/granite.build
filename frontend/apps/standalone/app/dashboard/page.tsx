@@ -149,6 +149,62 @@ function MyBuildsTile() {
     </BaseTile>
   );
 }
+// ── AutoTuneX tiles ─────────────────────────────────────────────────────
+
+// Builds tagged either "autotunex" or "model-customisation" are both treated
+// as model-customisation activity elsewhere (see BuildDetails.tsx), and the
+// gbserver tags filter is AND-only — so we fetch both and dedupe by uuid.
+async function fetchModelCustomisationStats() {
+  const [modelCustomization] = await Promise.all([
+    listBuilds({ tags: ["model-customization"] }),
+  ]);
+  const byId = new Map<string, Build>();
+  for (const b of [...modelCustomization.items]) byId.set(b.uuid, b);
+  const builds = Array.from(byId.values());
+
+  return {
+    total: builds.length,
+    running: builds.filter((b) => b.status === "running").length,
+    pending: builds.filter((b) => b.status === "pending" || b.status === "submitted").length,
+    completed: builds.filter((b) => b.status === "success").length,
+    failed: builds.filter((b) => b.status === "failed").length,
+    cancelled: builds.filter((b) => b.status === "cancelled").length,
+  };
+}
+
+function AutoTuneXTile() {
+  const startTuningLink = (
+    <Link
+      href="/dashboard/autotunex/start-tuning"
+      className="cds--link"
+      style={{ fontSize: "0.875rem" }}
+    >
+      Start tuning
+    </Link>
+  );
+
+  const { data: stats, isFetching, refetch } = useQuery({
+    queryKey: ["model-customisation-stats"],
+    queryFn: fetchModelCustomisationStats,
+  });
+  const [isRefreshing, markRefreshing] = useRefreshState(isFetching);
+  return (
+    <BaseTile
+      title="Model Customization"
+      action={startTuningLink}
+      isRefreshing={isRefreshing}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+        <StatRow label="Total tunings" value={stats?.total ?? "—"} />
+        <StatRow label="Running" value={stats?.running ?? "—"} />
+        <StatRow label="Pending" value={stats?.pending ?? "—"} />
+        <StatRow label="Completed" value={stats?.completed ?? "—"} />
+        <StatRow label="Cancelled" value={stats?.cancelled ?? "—"} />
+        <StatRow label="Failed" value={stats?.failed ?? "—"} />
+      </div>
+    </BaseTile>
+  );
+}
 
 function ClusterStatusTile() {
   const { data: todayData, isFetching, refetch } = useQuery({
@@ -605,13 +661,14 @@ export default function HomePage() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
+          gridTemplateColumns: "repeat(5, 1fr)",
           gap: "1rem",
           marginBottom: "1rem",
           alignItems: "stretch",
         }}
       >
         <MyBuildsTile />
+        <AutoTuneXTile />
         <ClusterStatusTile />
         <SpacesOverviewTile />
         <BuildStatsTile />

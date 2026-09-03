@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react'
 import styles from './BuildDetails.module.scss'
+import detailStyles from './DetailsPanel.module.scss'
 import {
   Tab,
   TabListVertical,
@@ -14,6 +15,8 @@ import { parse as parseYaml } from 'yaml'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import type { Build, BuildEvent, BuildStatusDetail, BuildTargetRun } from '@granite-build/ui-core/types'
 import { DetailsPanel } from './DetailsPanel'
+import { AutoTuneXPanel } from './AutoTuneXPanel'
+import { AutoTuneXTrialsPanel, AutoTuneXLogsPanel } from './AutoTuneXJobPanels'
 import { LogsPanel } from './LogsPanel'
 import { TargetsPanel } from './TargetsPanel'
 import { HistoryPanel } from './HistoryPanel'
@@ -48,6 +51,8 @@ export function BuildDetails({
   const logsHide = hasLogs ? undefined : 'none'
   const aiAnalysisHide = hasLogs ? 'none' : undefined
   const isActive = ACTIVE_STATUSES.has(build?.status ?? '')
+  const isAutotunex = (build?.tags?.includes('autotunex') || build?.tags?.includes('model-customisation') || build?.tags?.includes('model-customization')) ?? false
+  const autotunexHide = isAutotunex ? undefined : 'none'
 
 
   // Fetch build archive to extract planned (not-yet-run) targets from the definition
@@ -97,11 +102,16 @@ export function BuildDetails({
             <Tab>Definition</Tab>
             <Tab style={{ display: aiAnalysisHide }}>AI Analysis</Tab>
             <Tab>Lineage</Tab>
+            <Tab style={{ display: autotunexHide }}>Hyperparameters</Tab>
+            <Tab style={{ display: autotunexHide }}>Tuning Logs</Tab>
           </TabListVertical>
           <TabPanels>
             <TabPanel style={{ overflowY: 'auto', height: '100%' }}>
-              <DetailsPanel build={build} status={status} loading={loadingBuild} />
-              <div style={{ borderTop: '1px solid var(--cds-border-subtle-01)', margin: '2rem 1rem' }} />
+              <div className={detailStyles.fieldsGrid}>
+                <DetailsPanel build={build} status={status} loading={loadingBuild} />
+                {isAutotunex && <AutoTuneXPanel buildId={buildId} />}
+              </div>
+              <div style={{ borderTop: '1px solid var(--cds-border-subtle-01)', margin: '1rem 1rem' }} />
               <TargetsPanel targets={mergedTargets} />
             </TabPanel>
             <TabPanel style={{ display: logsHide, overflow: 'hidden', height: '100%', padding: 0 }}>
@@ -124,6 +134,12 @@ export function BuildDetails({
                 loading={loadingBuild || loadingStatus}
                 statusError={statusError}
               />
+            </TabPanel>
+            <TabPanel style={{ display: autotunexHide, overflowY: 'auto', height: '100%' }}>
+              <AutoTuneXTrialsPanel buildId={buildId} />
+            </TabPanel>
+            <TabPanel style={{ display: autotunexHide, overflowY: 'auto', height: '100%' }}>
+              <AutoTuneXLogsPanel buildId={buildId} />
             </TabPanel>
           </TabPanels>
         </TabsVertical>

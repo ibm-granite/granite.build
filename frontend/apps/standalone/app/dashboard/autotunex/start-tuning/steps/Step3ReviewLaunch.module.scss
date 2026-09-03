@@ -1,0 +1,168 @@
+.experimentNameField {
+  max-width: 500px;
+}
+
+.cardColumn {
+  flex: 1 1 320px;
+  min-width: 280px;
+}
+
+.cardColumnWide {
+  flex: 1.2 1 360px;
+  min-width: 300px;
+}
+
+.reviewCard {
+  padding: 1.25rem !important;
+  height: 100%;
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.625rem;
+  border-bottom: 2px solid var(--cds-border-subtle, #e0e0e0);
+}
+
+.cardIcon {
+  color: var(--cds-interactive, #0f62fe);
+  flex-shrink: 0;
+}
+
+.cardHeading {
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.cardRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.cardRowTop {
+  align-items: flex-start;
+}
+
+.cardLabel {
+  color: var(--cds-text-secondary, #525252);
+  font-weight: 500;
+  min-width: 76px;
+  flex-shrink: 0;
+}
+
+.cardValue {
+  word-break: break-word;
+}
+
+.cardValueTruncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.sectionDivider {
+  border-top: 1px solid var(--cds-border-subtle, #e0e0e0);
+  margin: 0.5rem 0 0.25rem;
+}
+
+.sectionLabel {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cds-text-secondary, #525252);
+  margin-bottom: 0.25rem;
+}
+
+.configGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 1.25rem;
+}
+
+.configField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.configKey {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--cds-text-secondary, #525252);
+  letter-spacing: 0.02em;
+}
+
+.configVal {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.resourceRow {
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+}
+
+.resourceItem {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.columnTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.emptyHint {
+  color: var(--cds-text-secondary, #525252);
+  font-size: 0.8125rem;
+}
+
+.launchSteps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.launchStep {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  color: var(--cds-text-secondary, #525252);
+}
+
+.launchStepActive {
+  background: var(--cds-layer-selected, #edf5ff);
+  color: var(--cds-interactive, #0f62fe);
+  font-weight: 500;
+}
+
+.launchStepDone {
+  color: var(--cds-support-success, #198038);
+}
+
+.progressLabel {
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+}

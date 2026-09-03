@@ -1,10 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import type { CSSProperties } from "react";
 import { useQuery, useQueries } from "@tanstack/react-query";
-import Link from "next/link";
-import { Button, InlineNotification, Modal, SkeletonText } from "@carbon/react";
+import NextLink from "next/link";
+import {
+  Button,
+  CopyButton,
+  InlineNotification,
+  Link as CarbonLink,
+  Modal,
+  SkeletonText,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@carbon/react";
 import { Document } from "@carbon/icons-react";
 import { BuildStatusBadge } from "@granite-build/ui-core/components/BuildStatusBadge";
 import { getArtifact, getBuildStepLog } from "@granite-build/ui-core/api/gbserver";
@@ -25,20 +37,56 @@ function isUUID(s: string) {
   );
 }
 
-const thStyle: CSSProperties = {
-  padding: "0.25rem 1rem 0.25rem 0",
-  fontSize: "0.875rem",
-  fontWeight: 400,
-  color: "var(--cds-text-secondary)",
-  textAlign: "left",
-  whiteSpace: "nowrap",
-};
+/** Middle-truncate long IDs/URIs so they stay on one line; the full value is shown on hover and copied intact. */
+function middleEllipsis(value: string, max = 48) {
+  if (value.length <= max) return value;
+  const head = Math.ceil((max - 1) / 2);
+  const tail = Math.floor((max - 1) / 2);
+  return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
+}
 
-const tdStyle: CSSProperties = {
-  padding: "0.375rem 1rem 0.375rem 0",
-  fontSize: "0.875rem",
-  verticalAlign: "middle",
-};
+/** A monospace ID/URI value: middle-truncated with a hover title, optional Carbon link, and a Carbon copy button. */
+function ValueWithCopy({
+  value,
+  href,
+  copyLabel,
+}: {
+  value: string;
+  href?: string;
+  copyLabel: string;
+}) {
+  const display = middleEllipsis(value);
+  const textStyle = {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: "0.75rem",
+  } as const;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "0.25rem",
+        maxWidth: "100%",
+      }}
+    >
+      {href ? (
+        <CarbonLink as={NextLink} href={href} title={value} style={textStyle}>
+          {display}
+        </CarbonLink>
+      ) : (
+        <span title={value} style={{ ...textStyle, color: "var(--cds-text-secondary)" }}>
+          {display}
+        </span>
+      )}
+      <CopyButton
+        feedback="Copied!"
+        iconDescription={copyLabel}
+        size="sm"
+        onClick={() => navigator.clipboard.writeText(value)}
+      />
+    </span>
+  );
+}
 
 function StepLogModal({
   logTarget,
@@ -111,30 +159,26 @@ function ArtifactTable({
       >
         {title}
       </strong>
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead>
-          <tr>
-            <th style={{ ...thStyle, width: "45%" }}>Artifact ID</th>
-            <th style={thStyle}>URI</th>
-          </tr>
-        </thead>
-        <tbody>
+      <Table size="sm" useZebraStyles={false}>
+        <TableHead>
+          <TableRow>
+            <TableHeader>Artifact ID</TableHeader>
+            <TableHeader>URI</TableHeader>
+          </TableRow>
+        </TableHead>
+        <TableBody>
           {entries.map(([param, artifactId]) => {
             const linked = isUUID(artifactId);
             const artifact = linked ? artifactMap.get(artifactId) : undefined;
             return (
-              <tr key={param}>
-                <td style={{ ...tdStyle, wordBreak: "break-all" }}>
+              <TableRow key={param}>
+                <TableCell>
                   {linked ? (
-                    <Link
+                    <ValueWithCopy
+                      value={artifactId}
                       href={`/dashboard/artifacts/_/?id=${artifactId}`}
-                      style={{
-                        color: "var(--cds-link-primary)",
-                        fontSize: "0.75rem",
-                      }}
-                    >
-                      {artifactId}
-                    </Link>
+                      copyLabel="Copy artifact ID"
+                    />
                   ) : (
                     <span
                       style={{
@@ -145,22 +189,19 @@ function ArtifactTable({
                       {artifactId || "N/A"}
                     </span>
                   )}
-                </td>
-                <td
-                  style={{
-                    ...tdStyle,
-                    fontSize: "0.75rem",
-                    color: "var(--cds-text-secondary)",
-                    wordBreak: "break-all",
-                  }}
-                >
-                  {artifact?.uri ?? "—"}
-                </td>
-              </tr>
+                </TableCell>
+                <TableCell>
+                  {artifact?.uri ? (
+                    <ValueWithCopy value={artifact.uri} copyLabel="Copy URI" />
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
+              </TableRow>
             );
           })}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -233,22 +274,22 @@ export function TargetsPanel({ targets }: Props) {
                 />
               )}
 
-              {/* Target header */}
+              {/* Target header — status sits directly beside its target name */}
               <div
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  alignItems: "baseline",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.75rem",
+                  flexWrap: "wrap",
                   marginBottom: "1rem",
                 }}
               >
                 <p
                   style={{
                     fontSize: "0.875rem",
-                    color: "var(--cds-text-secondary)",
-                    marginBottom: "1rem",
-                    marginTop: 0,
-                    marginRight: "4rem",
+                    fontWeight: 600,
+                    color: "var(--cds-text-primary)",
+                    margin: 0,
                   }}
                 >
                   Target #{idx + 1} {name}
@@ -271,37 +312,35 @@ export function TargetsPanel({ targets }: Props) {
                   >
                     Steps
                   </strong>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        <th style={{ ...thStyle, width: "15rem" }}>Name</th>
-                        <th style={{ ...thStyle, width: "15rem" }}>Status</th>
-                        <th style={thStyle}>URI</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <Table size="sm" useZebraStyles={false}>
+                    <TableHead>
+                      <TableRow>
+                        <TableHeader>Name</TableHeader>
+                        <TableHeader>Status</TableHeader>
+                        <TableHeader>URI</TableHeader>
+                        <TableHeader aria-label="Actions" />
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
                       {target.steps.map((step) => (
-                        <tr key={step.step_name}>
-                          <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                        <TableRow key={step.step_name}>
+                          <TableCell style={{ whiteSpace: "nowrap" }}>
                             {step.step_name}
-                          </td>
-                          <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                          </TableCell>
+                          <TableCell style={{ whiteSpace: "nowrap" }}>
                             <BuildStatusBadge
                               status={step.status as BuildStatus}
                               showLabel
                             />
-                          </td>
-                          <td
-                            style={{
-                              ...tdStyle,
-                              fontSize: "0.75rem",
-                              color: "var(--cds-text-secondary)",
-                              wordBreak: "break-all",
-                            }}
-                          >
-                            {step.uri ?? "—"}
-                          </td>
-                          <td style={{ ...tdStyle, width: "2rem", padding: 0 }}>
+                          </TableCell>
+                          <TableCell>
+                            {step.uri ? (
+                              <ValueWithCopy value={step.uri} copyLabel="Copy URI" />
+                            ) : (
+                              "—"
+                            )}
+                          </TableCell>
+                          <TableCell style={{ width: "2.5rem" }}>
                             {step.log_path && (
                               <Button
                                 kind="ghost"
@@ -318,11 +357,11 @@ export function TargetsPanel({ targets }: Props) {
                                 }
                               />
                             )}
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       ))}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
               )}
 
