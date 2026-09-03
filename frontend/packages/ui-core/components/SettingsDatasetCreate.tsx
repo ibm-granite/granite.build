@@ -21,6 +21,7 @@ import { MagicWand } from '@carbon/icons-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnMapping, ColumnMetadata, DatasetStatus } from '../types'
 import { createDataset, uploadDataset, getDataset, getAutotuneDatasetTypes, suggestColumnMappingAI } from '../api/autotunex'
+import { DATASET_READY_TIMEOUT_MS } from '../lib/autotunex/datasetReady'
 import { processUploadedFileAsync } from '../lib/autotunex/processUploadedFile'
 import { extractColumnMetadata, getColumnsFromTypes, getRequiredColumnsFromTypes } from '../lib/autotunex/wizardUtils'
 import { ALGORITHM_TO_DATASET_TYPE } from '../config/autotunexAlgorithms'
@@ -32,10 +33,9 @@ interface Props {
   onCreated: () => void
 }
 
-// Matches the wizard's `waitForDatasetReady` timeout (StartTuningWizard.tsx)
-// so both upload paths give up on a stuck "uploading" dataset after the same
-// window instead of polling forever.
-const POLL_TIMEOUT_MS = 5 * 60 * 1000
+// Shared with the wizard's `waitForDatasetReady` so both upload paths give up on
+// a stuck "uploading" dataset after the same window instead of polling forever.
+const POLL_TIMEOUT_MS = DATASET_READY_TIMEOUT_MS
 
 // Dataset-type dropdown items → algorithm id (matches AutoTuneX).
 const TYPE_ITEMS = [
