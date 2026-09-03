@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gbcommon.uri.hf import HfURI
-from gbserver.spaces.resource_group import (
+from gbserver.spaces.hf_push_config import (
     apply_hf_step_overlay,
     resolve_hfpush_resource_group_id,
     resolve_space_resource_group_id,
@@ -51,9 +51,9 @@ class TestResolveSpaceResourceGroupId:
         admin = MagicMock(return_value=storage)
 
         with (
-            patch("gbserver.spaces.resource_group.get_admin_storage", admin),
+            patch("gbserver.spaces.hf_push_config.get_admin_storage", admin),
             patch(
-                "gbserver.spaces.resource_group.HfURI.resolve_resource_group_id_for_org"
+                "gbserver.spaces.hf_push_config.HfURI.resolve_resource_group_id_for_org"
             ) as mock_hf,
         ):
             result = resolve_space_resource_group_id(
@@ -74,11 +74,11 @@ class TestResolveSpaceResourceGroupId:
 
         with (
             patch(
-                "gbserver.spaces.resource_group.get_admin_storage",
+                "gbserver.spaces.hf_push_config.get_admin_storage",
                 return_value=storage,
             ),
             patch(
-                "gbserver.spaces.resource_group.HfURI.resolve_resource_group_id_for_org",
+                "gbserver.spaces.hf_push_config.HfURI.resolve_resource_group_id_for_org",
                 return_value="resolved-id",
             ) as mock_hf,
         ):
@@ -101,11 +101,11 @@ class TestResolveSpaceResourceGroupId:
 
         with (
             patch(
-                "gbserver.spaces.resource_group.get_admin_storage",
+                "gbserver.spaces.hf_push_config.get_admin_storage",
                 return_value=storage,
             ),
             patch(
-                "gbserver.spaces.resource_group.HfURI.resolve_resource_group_id_for_org",
+                "gbserver.spaces.hf_push_config.HfURI.resolve_resource_group_id_for_org",
                 return_value="resolved-id",
             ),
         ):
@@ -126,11 +126,11 @@ class TestResolveSpaceResourceGroupId:
 
         with (
             patch(
-                "gbserver.spaces.resource_group.get_admin_storage",
+                "gbserver.spaces.hf_push_config.get_admin_storage",
                 return_value=storage,
             ),
             patch(
-                "gbserver.spaces.resource_group.HfURI.resolve_resource_group_id_for_org",
+                "gbserver.spaces.hf_push_config.HfURI.resolve_resource_group_id_for_org",
                 return_value=None,
             ),
         ):
@@ -157,15 +157,15 @@ class TestResolveSpaceResourceGroupId:
 
         with (
             patch(
-                "gbserver.spaces.resource_group.get_admin_storage",
+                "gbserver.spaces.hf_push_config.get_admin_storage",
                 return_value=storage,
             ),
             patch(
-                "gbserver.spaces.resource_group.HfURI.space_name_to_resource_group_name",
+                "gbserver.spaces.hf_push_config.HfURI.space_name_to_resource_group_name",
                 return_value="gbspace-public",
             ),
             patch(
-                "gbserver.spaces.resource_group.HfURI.resolve_resource_group_id_for_org",
+                "gbserver.spaces.hf_push_config.HfURI.resolve_resource_group_id_for_org",
                 return_value="non-default-id",
             ) as mock_hf,
         ):
@@ -191,15 +191,15 @@ class TestResolveSpaceResourceGroupId:
 
         with (
             patch(
-                "gbserver.spaces.resource_group.get_admin_storage",
+                "gbserver.spaces.hf_push_config.get_admin_storage",
                 return_value=storage,
             ),
             patch(
-                "gbserver.spaces.resource_group.HfURI.space_name_to_resource_group_name",
+                "gbserver.spaces.hf_push_config.HfURI.space_name_to_resource_group_name",
                 return_value="gbspace-public",
             ),
             patch(
-                "gbserver.spaces.resource_group.HfURI.resolve_resource_group_id_for_org"
+                "gbserver.spaces.hf_push_config.HfURI.resolve_resource_group_id_for_org"
             ) as mock_hf,
         ):
             result = resolve_space_resource_group_id(
@@ -229,6 +229,7 @@ def _make_hfuri(owner="ibm-research", repo="my-model"):
 def _output_config(hf_cfg):
     """BuildTargetOutputConfig-alike carrying a store_push hf block."""
     cfg = MagicMock()
+    cfg.public = None  # no top-level public (a real output defaults it to None)
     cfg.store_push = MagicMock()
     cfg.store_push.config = {"hf": hf_cfg}
     return cfg
@@ -245,7 +246,7 @@ class TestResolveHfpushResourceGroupIdNonEnterprise:
 
     def test_non_enterprise_skips_resolution(self):
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id"
         ) as mock_resolve:
             rg_id, private, _ = resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="my-user"),
@@ -278,7 +279,7 @@ class TestResolveHfpushResourceGroupIdNonEnterprise:
     def test_absent_enterprise_list_keeps_legacy_behavior(self):
         """None (key absent) => every org is Enterprise, so resolution still runs."""
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
             return_value="resolved-id",
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
@@ -294,7 +295,7 @@ class TestResolveHfpushResourceGroupIdNonEnterprise:
 class TestResolveHfpushResourceGroupIdEnterprise:
     def test_enterprise_resolves_via_space(self):
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
             return_value="space-id",
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
@@ -309,7 +310,7 @@ class TestResolveHfpushResourceGroupIdEnterprise:
 
     def test_pinned_id_used_verbatim_without_resolver(self):
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id"
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="ibm-research"),
@@ -324,7 +325,7 @@ class TestResolveHfpushResourceGroupIdEnterprise:
     def test_use_resource_group_false_opts_out(self):
         """An Enterprise org can opt out with use_resource_group: false."""
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id"
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="ibm-research"),
@@ -353,7 +354,7 @@ class TestResolveHfpushConfigPrecedence:
 
     def test_env_level_store_push_is_honored(self):
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
             return_value="ignored",
         ) as mock_resolve:
             _, private, _ = resolve_hfpush_resource_group_id(
@@ -361,7 +362,7 @@ class TestResolveHfpushConfigPrecedence:
                 assetstore=_make_assetstore(["ibm-research"]),
                 space_name="public",
                 storepush_config=_storepush_config(
-                    {"resource_group_name": "env-group", "private": False}
+                    {"resource_group_name": "env-group", "public": True}
                 ),
             )
 
@@ -370,14 +371,14 @@ class TestResolveHfpushConfigPrecedence:
 
     def test_build_yaml_overrides_environment(self):
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id"
         ) as mock_resolve:
             rg_id, private, _ = resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="ibm-research"),
                 assetstore=_make_assetstore(["ibm-research"]),
                 space_name="public",
                 storepush_config=_storepush_config(
-                    {"resource_group_id": "env-id", "private": False}
+                    {"resource_group_id": "env-id", "public": True}
                 ),
                 output_config=_output_config({"resource_group_id": "build-id"}),
             )
@@ -388,10 +389,12 @@ class TestResolveHfpushConfigPrecedence:
 
 
 class TestSanitizeHfStepOverlay:
-    def test_strips_use_resource_group(self):
+    def test_strips_resolution_only_keys(self):
+        # ``use_resource_group`` and ``public`` are consumed during resolution and
+        # must never leak into the worker step's ``hf`` block; other keys stay.
         assert sanitize_hf_step_overlay(
-            {"private": True, "use_resource_group": False}
-        ) == {"private": True}
+            {"type": "model", "use_resource_group": False, "public": True}
+        ) == {"type": "model"}
 
     def test_handles_empty_and_none(self):
         assert sanitize_hf_step_overlay({}) == {}
@@ -444,7 +447,7 @@ class TestUseResourceGroupAcrossLevels:
 
     def test_output_opt_out_overrides_inherited_group(self):
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id"
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="ibm-research"),
@@ -489,10 +492,10 @@ class TestUseResourceGroupAcrossLevels:
         explicit output-level `resource_group_id` — inverting the documented
         precedence and dropping a pinned group with no error.
         """
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id"
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="ibm-research"),
@@ -508,10 +511,10 @@ class TestUseResourceGroupAcrossLevels:
 
     def test_output_pinned_name_overrides_environment_opt_out(self):
         """Same for a pinned name, which does go through the resolver."""
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
             return_value="rg-from-name",
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
@@ -527,10 +530,10 @@ class TestUseResourceGroupAcrossLevels:
 
     def test_environment_pin_does_not_override_output_opt_out(self):
         """The reverse: a lower-level pin must not defeat a higher-level opt-out."""
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id"
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="ibm-research"),
@@ -544,10 +547,10 @@ class TestUseResourceGroupAcrossLevels:
         mock_resolve.assert_not_called()
 
     def test_opt_out_at_both_levels_still_opts_out(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id"
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id"
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
                 hfuri=_make_hfuri(owner="ibm-research"),
@@ -563,7 +566,7 @@ class TestUseResourceGroupAcrossLevels:
     def test_environment_opt_out_is_overridable_by_output(self):
         """The reverse direction: an output can turn resource groups back on."""
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
             return_value="rg-on",
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
@@ -581,30 +584,30 @@ class TestUseResourceGroupAcrossLevels:
 class TestNullConfigValuesTreatedAsUnset:
     """An explicit yaml null means "not set here", not "override with None".
 
-    A bare `private:` in build.yaml parses as None. Merging it wholesale would
-    erase a value inherited from environment.yaml, and a None reaching the step
-    config renders as the string "None" in the worker templates — failing their
-    `== "True"` test, so a repo meant to be private would be created public.
+    A bare `public:` in build.yaml parses as None. Merging it wholesale would
+    erase a value inherited from environment.yaml. The resolver returns the
+    internal ``private`` bool (``public`` flipped): ``public`` unset/null → the
+    safe default, a private repo (``private is True``).
     """
 
     @pytest.mark.parametrize(
         "env_hf,output_hf,expected",
         [
             # A null at the output level must not erase the environment value.
-            ({"private": False}, {"private": None}, False),
+            ({"public": True}, {"public": None}, False),
             # A real value at the output level still wins.
-            ({"private": False}, {"private": True}, True),
-            # A null with nothing to inherit falls back to the default (True).
-            (None, {"private": None}, True),
-            ({"private": None}, {"private": None}, True),
+            ({"public": True}, {"public": False}, True),
+            # A null with nothing to inherit falls back to the default (private).
+            (None, {"public": None}, True),
+            ({"public": None}, {"public": None}, True),
             # Unchanged behavior for values that are actually set.
-            (None, {"private": False}, False),
-            ({"private": False}, None, False),
+            (None, {"public": True}, False),
+            ({"public": True}, None, False),
             (None, None, True),
         ],
     )
     def test_private_resolution(self, env_hf, output_hf, expected):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         _, private, _ = resolve_hfpush_resource_group_id(
             hfuri=_make_hfuri(owner="my-user"),
@@ -618,23 +621,23 @@ class TestNullConfigValuesTreatedAsUnset:
 
     def test_private_is_always_a_bool(self):
         """Never a None: the worker templates stringify whatever they are given."""
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         _, private, _ = resolve_hfpush_resource_group_id(
             hfuri=_make_hfuri(owner="my-user"),
             assetstore=_make_assetstore([]),
             space_name="public",
-            output_config=_output_config({"private": None}),
+            output_config=_output_config({"public": None}),
         )
 
         assert isinstance(private, bool)
 
     def test_null_use_resource_group_does_not_disable_resolution(self):
         """`use_resource_group:` with no value must not read as an opt-out."""
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
             return_value="rg",
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
@@ -649,7 +652,7 @@ class TestNullConfigValuesTreatedAsUnset:
 
     def test_null_resource_group_id_does_not_pin(self):
         """A null id must not count as a pinned group on a non-Enterprise org."""
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         rg_id, _, _ = resolve_hfpush_resource_group_id(
             hfuri=_make_hfuri(owner="my-user"),
@@ -671,15 +674,15 @@ class TestQuotedBooleanForms:
     being truthy. Before that, a quoted value silently inverted the user's intent.
     """
 
-    @pytest.mark.parametrize("value", ["false", "no", "off", "0", "False", " false "])
-    def test_quoted_private_is_public(self, value):
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+    @pytest.mark.parametrize("value", ["true", "yes", "on", "1", "True", " true "])
+    def test_quoted_public_is_public(self, value):
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         _, private, _ = resolve_hfpush_resource_group_id(
             hfuri=_make_hfuri(owner="my-user"),
             assetstore=_make_assetstore([]),
             space_name="public",
-            output_config=_output_config({"private": value}),
+            output_config=_output_config({"public": value}),
         )
 
         assert private is False
@@ -687,10 +690,10 @@ class TestQuotedBooleanForms:
     @pytest.mark.parametrize("value", ["false", "no", "off", "0"])
     def test_quoted_use_resource_group_opts_out(self, value):
         """A quoted opt-out must actually skip resolution."""
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         with patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
             return_value="rg",
         ) as mock_resolve:
             rg_id, _, _ = resolve_hfpush_resource_group_id(
@@ -703,15 +706,15 @@ class TestQuotedBooleanForms:
         assert rg_id is None
         mock_resolve.assert_not_called()
 
-    def test_unrecognized_private_stays_private(self):
+    def test_unrecognized_public_stays_private(self):
         """A typo fails safe: unparseable means private, never public."""
-        from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
+        from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 
         _, private, _ = resolve_hfpush_resource_group_id(
             hfuri=_make_hfuri(owner="my-user"),
             assetstore=_make_assetstore([]),
             space_name="public",
-            output_config=_output_config({"private": "flase"}),
+            output_config=_output_config({"public": "treu"}),
         )
 
         assert private is True
@@ -727,12 +730,12 @@ class TestHfPushConfigError:
     """
 
     def test_is_a_valueerror_subclass(self):
-        from gbserver.spaces.resource_group import HfPushConfigError
+        from gbserver.spaces.hf_push_config import HfPushConfigError
 
         assert issubclass(HfPushConfigError, ValueError)
 
     def test_non_enterprise_pin_raises_the_subtype(self):
-        from gbserver.spaces.resource_group import (
+        from gbserver.spaces.hf_push_config import (
             HfPushConfigError,
             resolve_hfpush_resource_group_id,
         )
@@ -746,7 +749,7 @@ class TestHfPushConfigError:
             )
 
     def test_same_level_contradiction_raises_the_subtype(self):
-        from gbserver.spaces.resource_group import (
+        from gbserver.spaces.hf_push_config import (
             HfPushConfigError,
             resolve_hfpush_resource_group_id,
         )
@@ -766,43 +769,43 @@ class TestResolveHfpushPrivate:
     """The standalone ``private`` resolver used by the non-Hfstore push branch."""
 
     def test_defaults_to_private(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_private
+        from gbserver.spaces.hf_push_config import resolve_hfpush_private
 
         assert resolve_hfpush_private() is True
 
-    def test_honors_explicit_false(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_private
+    def test_honors_explicit_public(self):
+        from gbserver.spaces.hf_push_config import resolve_hfpush_private
 
         assert (
-            resolve_hfpush_private(output_config=_output_config({"private": False}))
+            resolve_hfpush_private(output_config=_output_config({"public": True}))
             is False
         )
 
     def test_output_overrides_environment(self):
-        from gbserver.spaces.resource_group import resolve_hfpush_private
+        from gbserver.spaces.hf_push_config import resolve_hfpush_private
 
         assert (
             resolve_hfpush_private(
-                storepush_config=_storepush_config({"private": True}),
-                output_config=_output_config({"private": False}),
+                storepush_config=_storepush_config({"public": False}),
+                output_config=_output_config({"public": True}),
             )
             is False
         )
 
     def test_agrees_with_the_full_resolver(self):
         """Same rule, so the two entry points must never diverge."""
-        from gbserver.spaces.resource_group import (
+        from gbserver.spaces.hf_push_config import (
             resolve_hfpush_private,
             resolve_hfpush_resource_group_id,
         )
 
         for hf_cfg in (
             {},
-            {"private": True},
-            {"private": False},
-            {"private": None},
-            {"private": "false"},
-            {"private": "flase"},
+            {"public": False},
+            {"public": True},
+            {"public": None},
+            {"public": "true"},
+            {"public": "treu"},
         ):
             output_config = _output_config(hf_cfg)
             _, from_full, _ = resolve_hfpush_resource_group_id(
@@ -812,3 +815,161 @@ class TestResolveHfpushPrivate:
                 output_config=output_config,
             )
             assert resolve_hfpush_private(output_config=output_config) is from_full
+
+
+class TestEnvLevelPublic:
+    """At the environment level `public` is written as `config.hf.public`.
+
+    Environment/store.yaml push config has no output field, so `config.hf.public`
+    is the only form; the resolver flips it to the internal `private`.
+    """
+
+    def _storepush(self, config):
+        cfg = MagicMock()
+        cfg.config = config
+        return cfg
+
+    def test_env_config_hf_public_makes_public(self):
+        from gbserver.spaces.hf_push_config import resolve_hfpush_private
+
+        assert (
+            resolve_hfpush_private(
+                storepush_config=self._storepush({"hf": {"public": True}})
+            )
+            is False
+        )
+
+    def test_env_default_is_private(self):
+        from gbserver.spaces.hf_push_config import resolve_hfpush_private
+
+        assert resolve_hfpush_private(storepush_config=self._storepush({})) is True
+
+
+class TestOutputPublicForms:
+    """The two `public` forms on a build.yaml output, folded + flipped here.
+
+    `public` is granite.build's surface vocabulary (default false → private),
+    written top-level or as `config.hf.public`. The resolver folds them to one and
+    flips to the internal `private`; `buildconfig` itself stays store-agnostic (it
+    just carries the field).
+    """
+
+    @staticmethod
+    def _output(**kwargs):
+        from gbserver.types.buildconfig import BuildTargetOutputConfig
+
+        return BuildTargetOutputConfig(**kwargs)
+
+    def _private(self, **kwargs):
+        from gbserver.spaces.hf_push_config import resolve_hfpush_private
+
+        return resolve_hfpush_private(output_config=self._output(**kwargs))
+
+    def test_top_level_public(self):
+        assert self._private(uri="hf:///o/r-{{ x }}", public=True) is False
+
+    def test_config_hf_public(self):
+        assert (
+            self._private(
+                uri="hf:///o/r", store_push={"config": {"hf": {"public": True}}}
+            )
+            is False
+        )
+
+    def test_omitted_is_private(self):
+        assert self._private(uri="hf:///o/r") is True
+
+    def test_equal_forms_collapse(self):
+        assert (
+            self._private(
+                uri="hf:///o/r",
+                public=True,
+                store_push={"config": {"hf": {"public": True}}},
+            )
+            is False
+        )
+
+    def test_conflicting_forms_raise(self):
+        from gbserver.spaces.hf_push_config import (
+            HfPushConfigError,
+            resolve_hfpush_private,
+        )
+
+        o = self._output(
+            uri="hf:///o/r",
+            public=True,
+            store_push={"config": {"hf": {"public": False}}},
+        )
+        with pytest.raises(HfPushConfigError, match="conflict"):
+            resolve_hfpush_private(output_config=o)
+
+    def test_null_hf_public_is_unset_not_a_conflict(self):
+        # A bare `config.hf.public:` (yaml null) is "unset", so a top-level
+        # `public: true` fills it rather than clashing.
+        assert (
+            self._private(
+                uri="hf:///o/r",
+                public=True,
+                store_push={"config": {"hf": {"public": None}}},
+            )
+            is False
+        )
+
+
+class TestValidateOutputPush:
+    """The load-time HF push guard, kept in the HF module (buildconfig delegates)."""
+
+    @staticmethod
+    def _output(**kwargs):
+        from gbserver.types.buildconfig import BuildTargetOutputConfig
+
+        return BuildTargetOutputConfig(**kwargs)
+
+    def _check(self, **kwargs):
+        from gbserver.spaces.hf_push_config import validate_output_push
+
+        return validate_output_push("out", self._output(**kwargs))
+
+    @pytest.mark.parametrize(
+        "uri", ["file:///t", "lh://a/b", "env:///abs", "cos://b/k"]
+    )
+    def test_public_on_non_hf_output_errors(self, uri):
+        assert self._check(uri=uri, public=True) is not None
+
+    def test_hf_block_on_non_hf_output_errors(self):
+        err = self._check(
+            uri="lh://a/b",
+            store_push={"config": {"hf": {"resource_group_name": "x"}}},
+        )
+        assert err is not None
+
+    def test_public_on_templated_hf_output_ok(self):
+        assert self._check(uri="hf:///o/r-{{ binding.path }}", public=True) is None
+
+    def test_no_push_options_ok(self):
+        assert self._check(uri="file:///t") is None
+
+    def test_same_level_conflict_surfaces_at_validate(self):
+        err = self._check(
+            uri="hf:///o/r",
+            public=True,
+            store_push={"config": {"hf": {"public": False}}},
+        )
+        assert err is not None and "conflict" in err.lower()
+
+    @pytest.mark.parametrize("private_val", [False, True, "false", None])
+    def test_retired_private_key_errors_loudly(self, private_val):
+        # The old `config.hf.private` key is no longer supported; instead of
+        # silently making the repo private, it must fail loudly pointing to `public`.
+        err = self._check(
+            uri="hf:///o/r",
+            store_push={"config": {"hf": {"private": private_val}}},
+        )
+        assert err is not None and "no longer supported" in err
+
+    def test_retired_private_key_on_non_hf_output_errors(self):
+        err = self._check(
+            uri="lh://a/b",
+            store_push={"config": {"hf": {"private": False}}},
+        )
+        assert err is not None

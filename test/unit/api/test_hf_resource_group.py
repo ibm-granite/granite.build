@@ -17,10 +17,10 @@
 """Unit tests for GET /hf/resource-group endpoint (mocked, no HF API calls).
 
 The endpoint delegates resolution to
-``gbserver.spaces.resource_group.resolve_space_resource_group_id`` (table-first
+``gbserver.spaces.hf_push_config.resolve_space_resource_group_id`` (table-first
 with HF API fallback + write-back). These tests patch that helper so they only
 exercise the endpoint's request/response contract; the helper's own logic is
-covered in ``test/unit/spaces/test_resource_group.py``.
+covered in ``test/unit/spaces/test_hf_push_config.py``.
 """
 
 from unittest.mock import patch

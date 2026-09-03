@@ -33,21 +33,25 @@ _FALSY_TOKENS = frozenset({"false", "null", "undefined", "no", "off", "0", ""})
 _TRUTHY_TOKENS = frozenset({"true", "yes", "on", "1"})
 
 
-def parse_boolean(value: object | None, default: bool = False) -> bool:
-    """Parse an env-var-style string (or an already-typed value) into a boolean.
+def parse_boolean(
+    value: object | None, default: bool = False, *, strict: bool = False
+) -> bool:
+    """Parse an env-var-style string (or already-typed value) into a boolean.
 
-    ``None`` (unset) → ``default``. Otherwise the value is stringified,
-    lower-cased and compared against the falsy token set (see ``_FALSY_TOKENS``);
-    a match is ``False``, anything else set is ``True``. A non-falsy value that
-    also isn't a recognized truthy token (a likely typo, e.g. ``on-prod``) is
-    still treated as ``True`` but logs a warning. This never raises — the single
-    place the string→bool rule is defined, shared by ``getenv_boolean`` and any
-    other caller that already has the string in hand.
+    ``None`` (unset) → ``default``. Otherwise falsy tokens (``_FALSY_TOKENS``) →
+    ``False``. For any other set value the two modes differ:
 
-    Accepts non-string input because YAML/JSON configs yield real ``bool`` (and
-    occasionally ``int``) values: ``str()`` maps those onto the same token sets
-    (``False``→``"false"``, ``0``→``"0"``), so a config value and its quoted
-    form resolve identically.
+    - lenient (default): anything not falsy → ``True``; an unrecognized value (a
+      likely typo, e.g. ``on-prod``) still → ``True`` but logs a warning.
+    - ``strict=True``: only a recognized truthy token → ``True``; an unrecognized
+      value → ``False`` with no warning. Use when a typo must fail *closed* — a
+      flag whose safe default and safe failure mode are both ``False`` (e.g. an
+      opt-in like making a HuggingFace repo ``public``).
+
+    Accepts non-string input because YAML/JSON yields real ``bool``/``int``;
+    ``str()`` maps those onto the same token sets, so a value and its quoted form
+    resolve identically. Never raises — the single place the string→bool rule
+    lives, shared by ``getenv_boolean`` and any caller holding the value.
     """
     if value is None:
         return default
@@ -55,8 +59,10 @@ def parse_boolean(value: object | None, default: bool = False) -> bool:
     if normalized in _FALSY_TOKENS:
         return False
     if normalized not in _TRUTHY_TOKENS:
+        if strict:
+            return False
         logger.warning(
-            "Unrecognized boolean value %r — treating as true; " "use one of %s / %s",
+            "Unrecognized boolean value %r — treating as true; use one of %s / %s",
             value,
             sorted(_TRUTHY_TOKENS),
             sorted(_FALSY_TOKENS),

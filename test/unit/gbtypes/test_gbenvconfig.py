@@ -257,3 +257,30 @@ class TestResolvedValues:
                 "build_start_via_github"
                 not in _GB_ENVIRONMENT_CONFIGS[env].feature_flags
             )
+
+
+class TestParseBooleanStrict:
+    """``strict=True`` fails closed: only a recognized truthy value → True.
+
+    Unlike lenient mode (unrecognized non-falsy → True), strict returns True only
+    for a real ``True`` or a recognized truthy token. Backs the HF ``public``
+    flag, where a typo must never silently opt into a public repo.
+    """
+
+    @pytest.mark.parametrize(
+        "value", [True, "true", "yes", "on", "1", "True", " true "]
+    )
+    def test_recognized_truthy_is_true(self, value):
+        assert gbenvconfig.parse_boolean(value, strict=True) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        [None, False, "false", "no", "off", "0", "", "null", "treu", "on-prod", "2"],
+    )
+    def test_everything_else_is_false(self, value):
+        assert gbenvconfig.parse_boolean(value, strict=True) is False
+
+    def test_strict_differs_from_lenient_on_a_typo(self):
+        """The whole point: an unrecognized value goes opposite ways."""
+        assert gbenvconfig.parse_boolean("treu") is True  # lenient default
+        assert gbenvconfig.parse_boolean("treu", strict=True) is False  # fail closed

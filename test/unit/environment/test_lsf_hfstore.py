@@ -63,7 +63,7 @@ def mock_resolve_rg():
     """Patch the resource group resolution used by pushasset_hfstore.
 
     Resolution is delegated to
-    ``gbserver.spaces.resource_group.resolve_hfpush_resource_group_id`` (imported
+    ``gbserver.spaces.hf_push_config.resolve_hfpush_resource_group_id`` (imported
     into the lsf env module); patch it there so tests never touch storage or the
     HF API. It returns ``(resource_group_id, private, hf_config)``; the default
     here mirrors a push with no resource group and the default private=True.
@@ -251,11 +251,12 @@ class TestPushassetHfstore:
     async def test_private_flag_from_storepush_config(
         self, lsf_env, mock_hfuri, mock_hf_metadata
     ):
-        """pushasset_hfstore picks up private=False from storepush_config.
+        """pushasset_hfstore picks up public=True (=> private=False) from storepush_config.
 
         Uses the real resolver (not ``mock_resolve_rg``) so the env-level
-        ``private`` actually flows through resolve_hfpush_resource_group_id.
-        The org is non-Enterprise here, so no HF API call is made.
+        ``public`` actually flows through resolve_hfpush_resource_group_id and is
+        flipped to the internal ``private``. The org is non-Enterprise here, so no
+        HF API call is made.
         """
         from gbserver.asset.hfstore import Hfstore
 
@@ -264,7 +265,7 @@ class TestPushassetHfstore:
         assetstore.get_enterprise_organizations.return_value = ["some-other-org"]
         storepush_config = MagicMock()
         storepush_config.mode = "default"
-        storepush_config.config = {"hf": {"private": False}}
+        storepush_config.config = {"hf": {"public": True}}
 
         with (
             patch("gbserver.environment.lsf.Asset") as mock_asset_cls,

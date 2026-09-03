@@ -18,10 +18,11 @@
 
 These environments have no hfpush step directory, so they call
 ``push_asset_hfstore`` directly instead of rendering a worker template. The
-resolved ``private`` value was previously discarded here, and
-``HfApi.create_repo``'s own default is PUBLIC — so a dropped ``private``
-publishes the artifact rather than failing loudly. Every test below asserts on
-the ``private`` kwarg that actually reaches ``HfURI.push``.
+surface flag is ``public`` (default false); it is flipped to the internal
+``private`` at the resolver boundary. ``HfApi.create_repo``'s own default is
+PUBLIC — so a dropped/mis-resolved value must fail closed to private rather than
+publishing. Every test below feeds a ``public`` config and asserts on the
+``private`` kwarg that actually reaches ``HfURI.push``.
 
 The tests exercise the real ``push_asset_hfstore`` (only ``HfURI.push`` and the
 resource-group lookup are mocked); mocking ``push_asset_hfstore`` itself, as the
@@ -87,6 +88,7 @@ def _run(hfuri, src, assetstore, output_config=None, storepush_config=None):
 def _output_config(hf_cfg):
     """A BuildTargetOutputConfig double carrying an ``hf`` push config."""
     output_config = MagicMock()
+    output_config.public = None  # no top-level public (real output defaults to None)
     output_config.store_push.config = {"hf": hf_cfg}
     return output_config
 
@@ -107,26 +109,26 @@ def test_no_config_defaults_to_private(src_dir, hfstore):
     assert _run(hfuri, src_dir, hfstore) is True
 
 
-def test_explicit_private_true_is_not_discarded(src_dir, hfstore):
-    """(3) A redundant explicit ``private: true`` must survive to HF."""
+def test_explicit_public_false_is_not_discarded(src_dir, hfstore):
+    """(3) A redundant explicit ``public: false`` must survive to HF as private."""
     hfuri = _hfuri()
-    assert _run(hfuri, src_dir, hfstore, _output_config({"private": True})) is True
+    assert _run(hfuri, src_dir, hfstore, _output_config({"public": False})) is True
 
 
-def test_explicit_private_false_is_honored(src_dir, hfstore):
-    """(2) Public is opt-in: only an explicit ``private: false`` gets it."""
+def test_explicit_public_true_is_honored(src_dir, hfstore):
+    """(2) Public is opt-in: only an explicit ``public: true`` gets it."""
     hfuri = _hfuri()
-    assert _run(hfuri, src_dir, hfstore, _output_config({"private": False})) is False
+    assert _run(hfuri, src_dir, hfstore, _output_config({"public": True})) is False
 
 
-def test_yaml_null_private_does_not_publish(src_dir, hfstore):
-    """A bare ``private:`` (yaml null) must not be read as "public".
+def test_yaml_null_public_does_not_publish(src_dir, hfstore):
+    """A bare ``public:`` (yaml null) must not be read as "public".
 
-    ``None`` is *present* as a key, so a ``.get("private", True)`` would return
-    None and HuggingFace would default the repo to public.
+    ``None`` is *present* as a key; the flip treats it (and any non-truthy value)
+    as private, so a bare ``public:`` keeps the repo private.
     """
     hfuri = _hfuri()
-    assert _run(hfuri, src_dir, hfstore, _output_config({"private": None})) is True
+    assert _run(hfuri, src_dir, hfstore, _output_config({"public": None})) is True
 
 
 def test_non_hfstore_assetstore_still_pushes_private(src_dir):
@@ -160,31 +162,30 @@ def test_resolver_failure_still_pushes_private(src_dir, hfstore):
         assert _run(hfuri, src_dir, hfstore) is True
 
 
-def test_quoted_private_false_is_honored(src_dir, hfstore):
-    """``private: "false"`` (quoted in yaml) must mean public, not truthy.
+def test_quoted_public_true_is_honored(src_dir, hfstore):
+    """``public: "true"`` (quoted in yaml) must mean public, not a truthy string.
 
-    A bare ``bool("false")`` is ``True``, so a quoted value used to silently
-    invert the user's intent. Resolution goes through ``parse_boolean``, which
-    folds the quoted falsy forms onto ``False``.
+    A bare ``bool("true")`` would also be ``True``, but the fail-closed flip only
+    honors *recognized* truthy tokens, folded case- and whitespace-insensitively.
     """
     hfuri = _hfuri()
-    assert _run(hfuri, src_dir, hfstore, _output_config({"private": "false"})) is False
+    assert _run(hfuri, src_dir, hfstore, _output_config({"public": "true"})) is False
 
 
-@pytest.mark.parametrize("value", ["no", "off", "0", "False", " false "])
-def test_quoted_falsy_forms_are_honored(src_dir, hfstore, value):
-    """The whole falsy token set works, case- and whitespace-insensitively."""
+@pytest.mark.parametrize("value", ["yes", "on", "1", "True", " true "])
+def test_quoted_truthy_forms_are_honored(src_dir, hfstore, value):
+    """The whole truthy token set works, case- and whitespace-insensitively."""
     hfuri = _hfuri()
-    assert _run(hfuri, src_dir, hfstore, _output_config({"private": value})) is False
+    assert _run(hfuri, src_dir, hfstore, _output_config({"public": value})) is False
 
 
-def test_unparseable_private_falls_back_to_private(src_dir, hfstore):
-    """A typo must fail *safe*: unrecognized means private, not public."""
+def test_unparseable_public_falls_back_to_private(src_dir, hfstore):
+    """A typo must fail *safe*: unrecognized ``public`` means private, not public."""
     hfuri = _hfuri()
-    assert _run(hfuri, src_dir, hfstore, _output_config({"private": "flase"})) is True
+    assert _run(hfuri, src_dir, hfstore, _output_config({"public": "treu"})) is True
 
 
-def test_output_level_private_overrides_environment_level(src_dir, hfstore):
+def test_output_level_public_overrides_environment_level(src_dir, hfstore):
     """build.yaml outranks environment.yaml, so a per-output opt-in wins.
 
     The intended usage: the environment keeps everything private, and a single
@@ -192,25 +193,25 @@ def test_output_level_private_overrides_environment_level(src_dir, hfstore):
     """
     hfuri = _hfuri()
     storepush_config = MagicMock()
-    storepush_config.config = {"hf": {"private": True}}
+    storepush_config.config = {"hf": {"public": False}}
     assert (
         _run(
             hfuri,
             src_dir,
             hfstore,
-            output_config=_output_config({"private": False}),
+            output_config=_output_config({"public": True}),
             storepush_config=storepush_config,
         )
         is False
     )
 
 
-def test_non_hfstore_honors_explicit_private_false(src_dir):
-    """The non-Hfstore branch must honor an explicit ``private: false`` too.
+def test_non_hfstore_honors_explicit_public_true(src_dir):
+    """The non-Hfstore branch must honor an explicit ``public: true`` too.
 
     It cannot classify the org (no Enterprise list without an ``Hfstore``), but
-    ``private`` is store-independent: hardcoding ``True`` here would silently
-    ignore a config the Hfstore branch obeys.
+    the public/private flag is store-independent: hardcoding ``private=True`` here
+    would silently ignore a config the Hfstore branch obeys.
     """
     hfuri = _hfuri()
     plain_store = MagicMock()  # not an Hfstore
@@ -221,6 +222,5 @@ def test_non_hfstore_honors_explicit_private_false(src_dir):
         return_value=None,
     ):
         assert (
-            _run(hfuri, src_dir, plain_store, _output_config({"private": False}))
-            is False
+            _run(hfuri, src_dir, plain_store, _output_config({"public": True})) is False
         )

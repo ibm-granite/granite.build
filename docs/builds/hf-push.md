@@ -10,8 +10,8 @@ This document covers two related things:
 > **TL;DR:** You almost never need `store_push`. An `hf://` URI on the output is
 > enough — the environment's asset store and the active g.b space supply the
 > defaults (private repo, and — for HF Enterprise orgs — a space-derived
-> resource group). Only reach for `store_push` when you need a per-output
-> override.
+> resource group). To publish a single output, add `public: true` next to its
+> `uri`. Reach for the full `store_push` block only for resource-group overrides.
 
 ---
 
@@ -95,7 +95,60 @@ With the above, the framework will:
 
 ---
 
+## Making an output public
+
+Outputs are private by default. To publish one, set `public: true` on the output
+— no `store_push` block, no `mode`:
+
+```yaml
+outputs:
+  download_file:
+    uri: hf://huggingface.co/datasets/myaccount/my-dataset-{{ binding.path | short_hash }}
+    public: true
+```
+
+`public` is a boolean, **default `false`** (private). Only an explicit truthy
+value (`true`/`yes`/`on`/`1`, quoted or not) publishes; anything else — omitted,
+`false`, an empty/`null` value, or an unrecognized typo — keeps the repo private.
+That fail-closed rule is deliberate: HuggingFace's own `create_repo` defaults to
+*public*, so a mis-set flag must never silently publish an artifact.
+
+`public` may also be written inside the push config, next to the resource-group
+keys, if you are already using a `store_push` block. Both forms mean the same thing:
+
+```yaml
+public: true                          # top-level (preferred)
+store_push: { config: { hf: { public: true } } }
+```
+
+Setting both on the same output with **conflicting** values is an error (it is
+almost always a copy-paste mistake); equal values are fine.
+
+> `public` is HuggingFace-only. Setting it (or any `store_push.config.hf.*` key)
+> on a non-`hf://` output — `lh://`, `env://`, `file://`, `cos://` — fails
+> validation at load time, since those stores have no notion of repo visibility.
+
+### `public` vs HuggingFace's `private`
+
+granite.build's surface flag is `public` (default false); HuggingFace's API uses
+`private` (`create_repo(private=...)`, `hf upload --private`). The two are the
+same setting inverted, and the inversion happens at exactly one place —
+[`_private_from_hf_cfg`](../../src/gbserver/spaces/hf_push_config.py), where the
+merged push config is resolved. Everything below that point (the resolver's
+return value, the emitted step config, the LSF/Helm/SkyPilot worker templates,
+and `gbcommon.uri.hf`) speaks `private`, matching the HF API; everything you
+write in `build.yaml`/`store.yaml` speaks `public`. You never write `private`.
+
+The former `store_push.config.hf.private` key is retired: it is rejected at load
+time with an error pointing to `public` (`private: false` becomes `public: true`),
+so an old config fails loudly rather than silently reverting to private.
+
+---
+
 ## The optional `store_push` block
+
+The full block is only needed for resource-group overrides (for `public`, prefer
+the top-level form above):
 
 ```yaml
 llm.build:
@@ -104,14 +157,17 @@ llm.build:
       outputs:
         <output-name>:
           uri: hf://huggingface.co/datasets/<org>/<repo>
+          public: true                            # optional; publishes the repo
           store_push:                # <-- optional, omit when defaults suffice
-            mode: "hfstore"
             config:
               hf:
-                private: false
                 resource_group_id: "abc123..."        # or use resource_group_name
                 resource_group_name: "gbspace-public"
 ```
+
+`mode` may be set but is not needed — the store is inferred from the `hf://` URI
+scheme, and `mode` is honored only by k8s (ignored, with a deprecation warning,
+elsewhere).
 
 `store_push` is evaluated per-output and **takes precedence** over any equivalent
 settings in `environment.yaml` (see [Relationship with `environment.yaml`](#relationship-with-environmentyaml)).
@@ -120,20 +176,21 @@ settings in `environment.yaml` (see [Relationship with `environment.yaml`](#rela
 
 #### `mode`
 
-| Value | Description |
-|-------|-------------|
-| `"hfstore"` | Push the output artifact to HuggingFace Hub. This is the only supported mode. |
+Optional and rarely needed. The store is inferred from the output `uri` scheme
+(`hf://` → the HF store); `mode` is honored only by the k8s environment and
+ignored — with a deprecation warning — everywhere else. Prefer omitting it (or
+`"default"`).
 
 If `store_push` is absent the environment-level push configuration from `environment.yaml`
 is used instead (see the [environments overview](../environments/README.md)).
 
-#### `config.hf`
+#### `config` and `config.hf`
 
 All fields are optional.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `private` | bool | `true` | Whether the HuggingFace repository should be **private**. Set to `false` to create or update a public repository. |
+| `public` | bool | `false` | Whether the HuggingFace repository should be **public**. Default (and any non-truthy/unrecognized value) → private. May be written as top-level `public` or `config.hf.public` — see [Making an output public](#making-an-output-public). |
 | `resource_group_id` | string | — | Pre-resolved HF Enterprise resource group id. When provided, no HF API lookup is performed — the id is used as-is. Enterprise orgs only — supplying it for a non-Enterprise org is an error. |
 | `resource_group_name` | string | — | Resource group name. Resolved to an id via the HF API at push time. Enterprise orgs only. |
 | `use_resource_group` | bool | `true` | Set to `false` to push to an Enterprise org **without** a resource group. Cannot be combined with `resource_group_id`/`resource_group_name`. See [Enterprise vs non-Enterprise organizations](#enterprise-vs-non-enterprise-organizations). |
@@ -262,7 +319,7 @@ If none of the above yield a value, no resource group is attached to the push.
 > re-verified at runtime.
 
 The space-table lookup + HF fallback + write-back is implemented in
-[`resolve_space_resource_group_id`](../../src/gbserver/spaces/resource_group.py),
+[`resolve_space_resource_group_id`](../../src/gbserver/spaces/hf_push_config.py),
 which wraps the HF-only resolver
 [`HfURI.resolve_resource_group_id_for_org`](../../src/gbcommon/uri/hf.py). It is
 called from the K8s, LSF, and SkyPilot push paths (and the CLI-facing
@@ -278,12 +335,11 @@ called from the K8s, LSF, and SkyPilot push paths (and the CLI-facing
 outputs:
   download_file:
     uri: hf://huggingface.co/datasets/my-org/my-dataset-{{ binding.path | short_hash }}
-    store_push:
-      mode: "hfstore"
-      config:
-        hf:
-          private: false
+    public: true
 ```
+
+See [Making an output public](#making-an-output-public) for the other accepted
+forms.
 
 ### Pin a specific resource group name (ignore the space default)
 
@@ -326,12 +382,15 @@ assetstores:
     pull:
       - mode: default
     push:
-      - mode: default
-        config:
+      - config:
           hf:
-            private: true
+            public: false            # the default; shown for illustration
             resource_group_name: "default-group"
 ```
+
+`public` at the environment level is written as `config.hf.public` (there is no
+output-level field here); it defaults to `false` (private), so you only set it to
+opt a whole environment's pushes into public.
 
 Fields in `build.yaml`'s `store_push` **override** the corresponding fields from the
 environment-level push config.  Any field not set in `build.yaml` falls back to the

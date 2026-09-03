@@ -40,7 +40,7 @@ class StoredSpace(BaseStoredItem):
     # Cached HuggingFace Enterprise resource group id for this space's DEFAULT
     # resource group (the ``gbspace-<space>`` group derived from the space name).
     # Populated from create-spaces YAML or lazily written back after a successful
-    # HF API lookup (see gbserver.spaces.resource_group). Only the default group's
+    # HF API lookup (see gbserver.spaces.hf_push_config). Only the default group's
     # id is cached here; an explicitly-requested non-default group is never stored.
     # Stored inside the existing ``json`` column, so no schema migration / new SQL
     # column is required.

@@ -87,7 +87,7 @@ def _reject_resource_group_for_non_enterprise(exit_fn, org: str) -> None:
     anything. Shared by ``artifact push`` and ``artifact register`` so the
     two user-facing messages cannot drift. Worded for the CLI flag; the
     server-side build.yaml equivalent is
-    :func:`gbserver.spaces.resource_group._non_enterprise_rg_error`.
+    :func:`gbserver.spaces.hf_push_config._non_enterprise_rg_error`.
 
     Args:
         exit_fn: The command's exit callable (``sys.exit`` or ``ctx.exit``).

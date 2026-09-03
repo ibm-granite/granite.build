@@ -50,7 +50,7 @@ def mock_resolve_rg():
     mock so tests can tune the return value / assert call behavior.
     """
     with patch(
-        "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+        "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
         return_value=None,
     ) as mock:
         yield mock
@@ -366,13 +366,14 @@ class TestPushassetHfstore:
     async def test_private_flag_from_output_config(
         self, skypilot_env, mock_hfuri, mock_resolve_rg
     ):
-        """pushasset_hfstore picks up private=False from output_config.store_push."""
+        """pushasset_hfstore picks up public=True (=> private=False) from output_config.store_push."""
         assetstore = _hfstore_mock()
 
         output_config = MagicMock()
+        output_config.public = None  # no top-level public
         output_config.space_name = None
         output_config.store_push = MagicMock()
-        output_config.store_push.config = {"hf": {"private": False}}
+        output_config.store_push.config = {"hf": {"public": True}}
 
         step_config = await skypilot_env.pushasset_hfstore(
             binding={"path": "/workspace/output/model"},
