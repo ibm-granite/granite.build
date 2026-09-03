@@ -29,6 +29,8 @@ from gbserver.api import event_subscribe as _event_subscribe  # noqa: F401
 from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
+from gbserver.api.autotunex_proxy import aclose_client as _autotunex_aclose_client
+from gbserver.api.autotunex_proxy import router as autotunex_router
 from gbserver.api.builds import builds_api
 from gbserver.api.environment_files import files_api
 from gbserver.api.lineage import lineage_api
@@ -132,6 +134,11 @@ if _ANALYTICS_ENABLED:
         )
 else:
     logger.info("Analytics not enabled — /api/analytics not mounted")
+
+
+# AutoTuneX reverse proxy — must be registered before the "/" static mount so it
+# wins over the SPA catch-all. See api/autotunex_proxy.py.
+root_api.include_router(autotunex_router)
 
 
 def _is_rsc_request(request: Request) -> bool:
@@ -241,3 +248,9 @@ async def _start_background_tasks():
             logger.info(
                 "Event publishing enabled (NATS mode) — no credential cleanup needed"
             )
+
+
+@root_api.on_event("shutdown")
+async def _close_autotunex_client():
+    """Close the AutoTuneX proxy's shared httpx client."""
+    await _autotunex_aclose_client()

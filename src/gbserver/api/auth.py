@@ -68,7 +68,10 @@ _PUBLIC_EXACT_PATHS = frozenset(
 # /dashboard prefix below; a new *top-level* page outside /dashboard needs a
 # new prefix here. /api/v1/auth is the OIDC pre-auth login flow (see
 # auth_routes.py) — deliberately public.
-_PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/dashboard", "/_next")
+# /api/autotunex is the standalone reverse proxy to the AutoTuneX server, which
+# enforces its own cookie auth (see api/autotunex_proxy.py) — gbserver must not
+# require its own token here or it would block the proxy before forwarding.
+_PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/api/autotunex", "/dashboard", "/_next")
 
 # Every mounted sub-app owns its own Swagger/OpenAPI doc pages directly under
 # its mount point (e.g. /api/v1/builds/docs, /api/v1/builds/openapi.json) — see
@@ -207,7 +210,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # OIDC redirects, static/SPA serving), so this also catches a future
         # mutating endpoint accidentally registered under an otherwise-public
         # prefix (e.g. POST /dashboard/something).
-        if request.method in ("GET", "HEAD") and _is_public_path(request.url.path):
+        path = request.url.path
+        # The AutoTuneX reverse proxy (api/autotunex_proxy.py) forwards to a server
+        # that enforces its own auth, so gbserver must not gate ANY method there —
+        # GET and mutating verbs alike. Other public prefixes stay GET/HEAD-only so a
+        # stray mutating endpoint under them still requires auth.
+        _is_autotunex_proxy = path == "/api/autotunex" or path.startswith("/api/autotunex/")
+        if _is_public_path(path) and (request.method in ("GET", "HEAD") or _is_autotunex_proxy):
+            response = await call_next(request)
+            return response
+
+        # Allow frontend bootstrap endpoints — client needs these before it has a token
+        if request.url.path in ("/api/config", "/api/environments"):
             response = await call_next(request)
             return response
 
