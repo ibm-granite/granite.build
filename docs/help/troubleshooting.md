@@ -127,6 +127,46 @@ into this.
 The dump is also useful when reproducing a customer's failure: it captures
 target/step state at the moment the assertion fired.
 
+## hfpull steps hang (concurrent pulls of the same model)
+
+When several targets pull the same `hf://` model into the shared cache, the
+pulls are serialized by a cross-process lock (a `mkdir` lock dir at
+`<cache>/<owner>/<repo>/.gb-hfpull-locks/<hash>.lock`, holding a `lock.info` of
+`host:...|pid:...` + a start timestamp). If one target finished but the others
+stay stuck — and the log repeats `breaking stale lock ...` — a holder failed to
+remove its lock. (This happened on object-store/AFM-backed caches where a
+directory rename fails; fixed in
+[#354](https://github.com/ibm-granite/granite.build/issues/354). Older images
+still hit it.)
+
+How reclaim works — worth knowing before you touch anything:
+
+- **Reclaim is passive**, driven by the *next* acquirer; there is no background
+  sweeper. A crashed holder's lock is broken by the next waiter once it is past
+  `GB_HFPULL_LOCK_TIMEOUT` (default **900s / 15 min**) with no writes under the
+  holder's HF scratch dir (`<hash>/.cache/huggingface/download/`). The window is
+  measured from the dead holder's *last write* and only elapses while a fresh
+  waiter is polling — so a crashed pull self-heals on the next pull. Routine
+  manual wiping is not required.
+- The `.gb-hfpull-locks/` **container** is never removed by design (removing it
+  races a peer creating a sibling lock), so one empty container dir persists per
+  `<owner>/<repo>/`. That is not a leak.
+
+To clear a stuck lock faster than the 15-min auto-recovery — **only when no
+hfpull is running for that repo**:
+
+```bash
+# 1. Confirm the recorded holder is dead (and, cross-node, nothing is writing
+#    under the sibling <hash>/.cache/huggingface/download/).
+cat <cache>/<owner>/<repo>/.gb-hfpull-locks/<hash>.lock/lock.info
+# 2. Then remove the lock (waiters grab it within ~1 poll):
+rm -rf <cache>/<owner>/<repo>/.gb-hfpull-locks/<hash>.lock
+```
+
+Deleting a *live* holder's lock reopens the corruption race from
+[#320](https://github.com/ibm-granite/granite.build/issues/320) — confirm the
+holder is dead first. Tune the window with `GB_HFPULL_LOCK_TIMEOUT` (seconds).
+
 ## Where to look when nothing else works
 
 - `gb build status <id>` — high-level state, errors per step.

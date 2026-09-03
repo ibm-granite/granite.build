@@ -16,6 +16,7 @@
 
 """Unit tests for ``SharedFileSystemLock`` (mkdir-based cross-node lock)."""
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -371,6 +372,31 @@ def test_abandoned_break_claim_does_not_wedge_stale_reclaim(tmp_path):
         acquired is True
     ), "an abandoned break-claim must be reaped, not deadlock the break"
     lock.release()
+
+
+def test_rename_unsupported_notice_logged_once_per_process(tmp_path, caplog):
+    """The dir-rename fallback notice fires once per process, not per release.
+
+    On a mount without directory rename the fallback is the *normal* path, so a
+    per-release WARNING would flood logs and look like a recurring fault. The
+    "cannot rename" notice is emitted once at INFO; later fallbacks stay quiet
+    (DEBUG).
+    """
+    fs_lock._rename_fallback_logged = False  # reset the process-wide flag
+    with patch("os.replace", side_effect=OSError(39, "Directory not empty")):
+        with caplog.at_level(logging.INFO, logger="gbcommon.utils.fs_lock"):
+            for name in ("one.lock", "two.lock", "three.lock"):
+                lock = SharedFileSystemLock(tmp_path / name, timeout=1)
+                assert lock.acquire() is True
+                lock.release()
+                assert not lock.lock_path.exists()  # fallback still frees each lock
+
+    notices = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.INFO and "cannot rename a directory" in r.getMessage()
+    ]
+    assert len(notices) == 1, f"expected one INFO notice, got {len(notices)}"
 
 
 def test_still_owned_reflects_on_disk_ownership(tmp_path):

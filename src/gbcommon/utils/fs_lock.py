@@ -98,6 +98,31 @@ OWNERSHIP_READ_RETRY_INTERVAL_S = 0.2
 # breaker's and is reaped rather than left to wedge future breaks.
 BREAK_CLAIM_SUFFIX = ".breaking"
 
+# On mounts that cannot rename a directory the removal fallback is the *normal*
+# path, so a per-call WARNING would flood the log. Announce it once per process
+# at INFO (so an operator sees the fallback is in use) and drop to DEBUG after.
+_rename_fallback_logged = False
+
+
+def _note_rename_unsupported(lock_path: Path, err: OSError) -> None:
+    """Log the directory-rename removal fallback once per process, then DEBUG."""
+    global _rename_fallback_logged
+    if not _rename_fallback_logged:
+        _rename_fallback_logged = True
+        logger.info(
+            "SharedFileSystemLock: this filesystem cannot rename a directory "
+            "(%s); using the direct-delete fallback for lock removal. Expected on "
+            "object-store/AFM-backed caches; not logged again this process.",
+            err,
+        )
+    else:
+        logger.debug(
+            "SharedFileSystemLock: os.replace of %s failed (%s); using the "
+            "no-rename removal fallback",
+            lock_path,
+            err,
+        )
+
 
 def _has_recent_activity(root: Path, min_mtime: float) -> bool:
     """True if *root* or any file under it was modified at/after *min_mtime*.
@@ -223,6 +248,7 @@ class SharedFileSystemLock:
         deadline = None if self.timeout is None else time.monotonic() + self.timeout
         self._last_acquire_error = None
         self._next_stale_check = 0.0  # check on the first contended poll
+        announced_wait = False  # so the "waiting" INFO is logged once, not per poll
         # Create the container dir once up front rather than on every poll (a
         # contended wait can otherwise re-issue this mkdir hundreds of times).
         # The container is not removed on release, so nothing recreates it mid-
@@ -276,8 +302,23 @@ class SharedFileSystemLock:
                         pass
                     return False
                 self._held = True
+                logger.info(
+                    "SharedFileSystemLock: acquired %s (%s)",
+                    self.lock_path,
+                    self.identity,
+                )
                 return True
 
+            # Reached only when contended and about to wait (a successful acquire
+            # returns above; a successful stale-break `continue`s). Announce the
+            # wait once so the log shows who is blocked on whom, not every poll.
+            if not announced_wait:
+                announced_wait = True
+                logger.info(
+                    "SharedFileSystemLock: %s is held; waiting (%s)",
+                    self.lock_path,
+                    self.identity,
+                )
             if deadline is None:
                 time.sleep(self.poll_interval)
                 continue
@@ -299,6 +340,11 @@ class SharedFileSystemLock:
                 # whatever occupies the path, which may now be the peer's. If the
                 # captured dir is not ours, it is restored instead of removed.
                 self._move_aside_and_remove("released", verify_ours=True)
+                logger.info(
+                    "SharedFileSystemLock: released %s (%s)",
+                    self.lock_path,
+                    self.identity,
+                )
         except OSError:
             # Another process may have force-cleared a stale lock; don't crash
             # cleanup over it.
@@ -340,15 +386,10 @@ class SharedFileSystemLock:
             # The mount cannot rename a directory (object-store/AFM-backed FUSE:
             # os.mkdir works but os.replace does not), so the capture cannot run.
             # Fall back to a direct removal that keeps the same guarantees via
-            # os.mkdir -- the primitive verified atomic here (issue #354). Logged,
-            # not swallowed: silently dropping this is what let a leaked lock hang
-            # every waiter for the full ttl.
-            logger.warning(
-                "SharedFileSystemLock: os.replace of %s failed (%s); using the "
-                "no-rename removal fallback",
-                self.lock_path,
-                e,
-            )
+            # os.mkdir -- the primitive verified atomic here (issue #354). Logged
+            # (once per process, then DEBUG), not swallowed: silently dropping this
+            # is what let a leaked lock hang every waiter for the full ttl.
+            _note_rename_unsupported(self.lock_path, e)
             return self._remove_without_rename(verify_ours=verify_ours)
         if verify_ours and self._identity_at(graveyard / "lock.info") != self.identity:
             # Captured a dir a peer recreated in the check/act window -- restore

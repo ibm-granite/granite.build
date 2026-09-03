@@ -192,6 +192,12 @@ environment_configs:
                     grave="${HFPULL_LOCK_DIR}.released.$$.${RANDOM}"
                     if mv "${HFPULL_LOCK_DIR}" "${grave}" 2>/dev/null; then
                         rm -rf "${grave}" 2>/dev/null || true
+                    else
+                        # Mount cannot rename a directory (mv fails, e.g.
+                        # ENOTEMPTY on an object-store/AFM FUSE cache). Ownership
+                        # is already confirmed, so delete our own lock directly
+                        # (matches _remove_without_rename, verify_ours path).
+                        rm -rf "${HFPULL_LOCK_DIR}" 2>/dev/null || true
                     fi
                 fi
                 HFPULL_LOCK_DIR=""
@@ -218,10 +224,20 @@ environment_configs:
             # moved copy (single winner; matches _move_aside_and_remove). A loser's
             # mv fails and it simply retries mkdir.
             hfpull_break_lock() {
-                local lockdir="$1" grave
+                local lockdir="$1" ttl="$2" grave claim cnow cmtime
                 grave="${lockdir}.stale.$$.${RANDOM}"
                 if mv "${lockdir}" "${grave}" 2>/dev/null; then
                     rm -rf "${grave}" 2>/dev/null || true
+                    return
+                fi
+                claim="${lockdir}.breaking"
+                if mkdir "${claim}" 2>/dev/null; then
+                    rm -rf "${lockdir}" 2>/dev/null || true
+                    rm -rf "${claim}" 2>/dev/null || true
+                else
+                    cnow="$(date +%s)"
+                    cmtime="$(stat -c %Y "${claim}" 2>/dev/null || echo "${cnow}")"
+                    if (( cnow - cmtime > ttl )); then rm -rf "${claim}" 2>/dev/null || true; fi
                 fi
             }
 
@@ -310,7 +326,7 @@ environment_configs:
                         if ! [[ "${created}" =~ ^[0-9]+$ ]]; then created=0; fi
                         if (( now - created > ttl )) && ! hfpull_written_since "${scratch}" "$(( now - ttl ))"; then
                             echo "hfpull: reclaiming stale download lock ${lockdir} (no download progress in ${scratch} for >${ttl}s)" >&2
-                            hfpull_break_lock "${lockdir}"
+                            hfpull_break_lock "${lockdir}" "${ttl}"
                             continue
                         fi
                     fi
