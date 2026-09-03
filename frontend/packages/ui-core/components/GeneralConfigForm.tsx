@@ -2,6 +2,7 @@
 
 import { NumberInput, Tile } from '@carbon/react'
 import type { ConfigData } from '../types'
+import { maxConcurrentTrialsCap } from '../lib/autotunex/hyperparamValues'
 import { TimeInput } from './TimeInput'
 import layoutStyles from './layout.module.scss'
 
@@ -30,6 +31,9 @@ export function GeneralConfigForm({ config, onConfigChange }: GeneralConfigFormP
   const maxConcurrentTrials = config.tune_config.max_concurrent_trials
   const numSamples = config.tune_config.num_samples
   const timeBudget = config.tune_config.time_budget_s
+  // Clearing "Num GPUs per trial" reports 0, so this divisor is guarded — see
+  // maxConcurrentTrialsCap.
+  const concurrentCap = maxConcurrentTrialsCap(numGpusPerTrial.max_val, numGpusPerTrial.default)
 
   return (
     <Tile>
@@ -52,7 +56,7 @@ export function GeneralConfigForm({ config, onConfigChange }: GeneralConfigFormP
                 ...prev.tune_config,
                 max_concurrent_trials: {
                   ...prev.tune_config.max_concurrent_trials,
-                  default: Math.floor(prev.training_config.num_gpus_per_trial.max_val / num),
+                  default: maxConcurrentTrialsCap(prev.training_config.num_gpus_per_trial.max_val, num),
                 },
               },
             }))
@@ -65,8 +69,8 @@ export function GeneralConfigForm({ config, onConfigChange }: GeneralConfigFormP
           helperText={maxConcurrentTrials.description}
           value={maxConcurrentTrials.default}
           min={maxConcurrentTrials.min_val}
-          max={Math.floor(numGpusPerTrial.max_val / numGpusPerTrial.default)}
-          invalidText={`Value must be between ${maxConcurrentTrials.min_val} and ${Math.floor(numGpusPerTrial.max_val / numGpusPerTrial.default)}`}
+          max={concurrentCap}
+          invalidText={`Value must be between ${maxConcurrentTrials.min_val} and ${concurrentCap}`}
           step={1}
           onChange={(_e, { value }) => {
             const num = typeof value === 'number' ? value : Number(value)
