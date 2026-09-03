@@ -285,6 +285,9 @@
   font-family: var(--cds-code-01-font-family, monospace);
   font-size: 0.875rem;
   font-variant-numeric: tabular-nums;
+  /* A container image ref (registry/org/name:tag) has no natural break
+     opportunities, so let it break anywhere rather than overflow the cell. */
+  overflow-wrap: anywhere;
 }
 
 /* ── Command block ───────────────────────────────────────────────────────── */

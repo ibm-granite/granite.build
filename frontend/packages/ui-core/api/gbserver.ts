@@ -136,7 +136,7 @@ function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
     launcher: typeof launcher === 'string' ? launcher : undefined,
     status_msg: (raw.status_msg as string) || undefined,
     finished_at: (raw.finished_at as string) || (json.finished_at as string) || undefined,
-    // Runtime metadata the step pushed at execution time (LLMB_STEP_METADATA
+    // Runtime metadata the step pushed at execution time (GB_STEP_METADATA
     // hook). Serialized in the status row's JSON blob alongside config; safe to
     // surface here because /builds/{id}/status is already read-gated.
     metadata: (raw.metadata as Record<string, unknown>) ?? undefined,
@@ -144,9 +144,25 @@ function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
 }
 
 function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
-  const steps: BuildStepRun[] = ((raw.steps as unknown[]) ?? []).map(
-    (s) => adaptStepRun(s as Record<string, unknown>)
-  )
+  // The server builds this list with storage.step_storage.get_by_where(), whose
+  // result order is documented as undefined (see Storage.get_by_where). Sort by
+  // start time here, at the single point where steps enter the client, so the
+  // step numbering, the `a → b → c` subtitle and the first-start/last-finish
+  // duration in stepDrawerSummary all agree on one order. Steps that have not
+  // started yet (queued) sort last, keeping the original relative order.
+  const steps: BuildStepRun[] = ((raw.steps as unknown[]) ?? [])
+    .map((s) => adaptStepRun(s as Record<string, unknown>))
+    .map((step, index) => ({ step, index }))
+    .sort((a, b) => {
+      const at = a.step.started_at ? Date.parse(a.step.started_at) : NaN
+      const bt = b.step.started_at ? Date.parse(b.step.started_at) : NaN
+      const aValid = Number.isFinite(at)
+      const bValid = Number.isFinite(bt)
+      if (aValid && bValid && at !== bt) return at - bt
+      if (aValid !== bValid) return aValid ? -1 : 1
+      return a.index - b.index // stable tiebreak for equal/absent timestamps
+    })
+    .map(({ step }) => step)
   const inputArtifacts = (raw.input_artifacts as Record<string, string>) ?? {}
   const outputArtifacts = (raw.output_artifacts as Record<string, unknown[]>) ?? {}
   return {

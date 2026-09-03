@@ -198,9 +198,11 @@ two read paths have deliberately different exposure rules:
 
 - `GET /builds/{build_id}/status` is gated by `authorize_build_read_access`, so its caller is already
   authorized for this build. The Lineage tab's step details use this path and widen nothing.
-- The jobstats/lineage path is readable by **any space member**, so `config`/`config_dir` are stripped
-  before emission (`wandb_jobstats.py`) and `job_input_params` is popped from search results
-  (`api/lineage.py`).
+- The jobstats/lineage path is readable by **any space member**, so `config`/`config_dir` are passed
+  through `redact_sensitive` before emission (`wandb_jobstats.py`) and `job_input_params` is redacted
+  the same way (`api/lineage.py`). The keys survive with secret-*named* values masked — this is
+  key-name masking plus URL-userinfo scrubbing, not removal, so a secret under an innocuous key name
+  is not caught (an accepted defense-in-depth tradeoff; see `utils/redaction.py`).
 
 Do not copy step config from the former into the latter.
 

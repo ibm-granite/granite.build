@@ -33,7 +33,7 @@ export interface BuildStepRun {
   launcher?: string
   status_msg?: string
   finished_at?: string
-  // Runtime key/values the step pushed via the LLMB_STEP_METADATA hook (e.g. a
+  // Runtime key/values the step pushed via the GB_STEP_METADATA hook (e.g. a
   // resolved git `commit_hash`), persisted in StoredStepRun.metadata and kept
   // separate from `config` (the declared build.yaml input). Free-form keys.
   metadata?: Record<string, unknown>

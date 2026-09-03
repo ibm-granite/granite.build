@@ -69,6 +69,9 @@ const REDUNDANT_MESSAGE_KEYS = new Set([
  * "Status: everything nominal" or "Type: the model was rebuilt" — a sentence
  * that happens to begin with a redundant key — would be silently deleted.
  *
+ * The table lives *inside* the fence and `extra_msg` after it, so the heuristic
+ * applies to fenced lines; unfenced free text is only ever stripped of headings.
+ *
  * The two signals that a line is a table row rather than a sentence:
  *   - a multi-word key ("Step URI", "Build ID") — prose almost never opens with
  *     one of these followed by a colon; or
@@ -78,9 +81,10 @@ const REDUNDANT_MESSAGE_KEYS = new Set([
  * Returns '' when nothing new is left, so the caller can omit the section.
  */
 function cleanStatusMessage(msg: string): string {
-  // Track fence open/close so the redundant-key heuristic runs only on the
-  // padded metadata table (which gbserver emits *outside* fences). A genuine log
-  // line like `Status  : ok` inside a fenced code block must survive verbatim.
+  // Track fence open/close. gbserver emits the padded metadata table *inside* a
+  // fenced block (see Run.create_message in gbserver/build/run.py), and
+  // `extra_msg` is appended after the closing fence — so the redundant-key
+  // heuristic must run on fenced lines, and free text outside survives verbatim.
   let inFence = false
   return msg
     .split('\n')
@@ -89,12 +93,11 @@ function cleanStatusMessage(msg: string): string {
         inFence = !inFence
         return false // drop the fence marker itself either way
       }
-      if (inFence) return true // inside a code block — keep verbatim
 
-      // Markdown headings outside fences are gbserver's section titles for the
-      // fields shown above; drop them. Inside a fence a `#` line is a shell
-      // comment, so this check must stay under the `inFence` guard.
-      if (/^#+\s/.test(line)) return false
+      // Markdown headings are gbserver's section titles for the fields shown
+      // above; drop them. Only outside a fence, where a `#` line is a heading
+      // rather than a shell comment in a captured command.
+      if (!inFence && /^#+\s/.test(line)) return false
 
       // Capture the key, the run of spaces before the colon, and the value.
       const match = /^\s*([A-Za-z][A-Za-z ]*?)( *):\s*(.*)$/.exec(line)
@@ -387,6 +390,23 @@ function ExecutionSummary({ step }: { step: BuildStepRun }) {
           {formatClock(finished)}
         </dd>
       </div>
+      {/* The launcher is read straight off config.launcher, but the container
+          image is resolved inside the compute environment at launch time and is
+          usually not persisted — so this is best-effort and falls back to the
+          same "Not recorded" placeholder the Source field uses. See
+          docs/builds/lineage.md. */}
+      <div className={styles.stepExecutionCell}>
+        <dt className={styles.stepExecutionLabel}>Launcher</dt>
+        <dd className={styles.stepExecutionValue}>
+          {step.launcher ?? <span className={styles.stepMuted}>{NOT_RECORDED}</span>}
+        </dd>
+      </div>
+      <div className={styles.stepExecutionCell}>
+        <dt className={styles.stepExecutionLabel}>Container image</dt>
+        <dd className={styles.stepExecutionValue} title={step.image}>
+          {step.image ?? <span className={styles.stepMuted}>{NOT_RECORDED}</span>}
+        </dd>
+      </div>
     </dl>
   )
 }
@@ -620,12 +640,23 @@ export function stepDrawerSummary(target: BuildTargetRun | undefined): {
       ? `Step · ${steps[0].step_name}`
       : `${steps.length} steps · ${steps.map((s) => s.step_name).join(' → ')}`
 
-  // Span the whole target: first start to last finish.
+  // Span the whole target: first start to last finish. Steps arrive sorted by
+  // start time (adaptTargetRun), so steps[0] is the earliest start — but take the
+  // latest finish explicitly, since a step that started earlier may finish later.
   const started = steps[0]?.started_at
-  const finished = finishedAt(steps[steps.length - 1])
+  const finishTimes = steps
+    .map((s) => finishedAt(s))
+    .filter((t): t is string => Boolean(t) && Number.isFinite(Date.parse(t as string)))
+  const finished = finishTimes.length
+    ? finishTimes.reduce((latest, t) => (Date.parse(t) > Date.parse(latest) ? t : latest))
+    : undefined
   const duration = formatDurationBetween(started, finished)
   const stamp = formatDateTime(finished ?? started)
-  const summary = [duration ? `Completed in ${duration}` : undefined, stamp]
+  // A failed or cancelled target did not "complete" — say how long it ran instead,
+  // or the header reads "Completed in 2m 4s" directly under a red Failed badge.
+  const durationLabel =
+    status === 'failed' || status === 'cancelled' ? 'Ran for' : 'Completed in'
+  const summary = [duration ? `${durationLabel} ${duration}` : undefined, stamp]
     .filter(Boolean)
     .join(' · ')
 
