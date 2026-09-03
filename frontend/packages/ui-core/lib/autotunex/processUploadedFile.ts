@@ -1,4 +1,4 @@
-import { parseCsv, parseJson, parseJsonl, parseParquet } from './file-parser'
+import { countRecordsInBlob, parseCsv, parseJson, parseJsonl, parseParquet } from './file-parser'
 
 // Files larger than this are handed to the Web Worker to keep the main thread
 // responsive; smaller files are parsed inline via the same file-parser
@@ -34,13 +34,22 @@ async function processInline(file: File, maxLines?: number): Promise<Record<stri
   throw new Error('Unsupported file type. Please upload a .jsonl, .json, .csv, or .parquet file.')
 }
 
+/**
+ * The worker could not run at all — construction blocked (CSP forbidding
+ * blob/module workers, the worker chunk missing from a static export) or the
+ * worker died. Only this is worth retrying on the main thread; a parse error
+ * the worker *reported* is deterministic, so retrying it just pays the full
+ * parse cost again to raise the same message.
+ */
+class WorkerUnavailableError extends Error {}
+
 function runInWorker<T>(postMessage: (worker: Worker) => void): Promise<T> {
   return new Promise((resolve, reject) => {
     let worker: Worker
     try {
       worker = new Worker(new URL('./file-processor.worker.ts', import.meta.url), { type: 'module' })
     } catch {
-      reject(new Error('worker-unavailable'))
+      reject(new WorkerUnavailableError('worker-unavailable'))
       return
     }
 
@@ -51,7 +60,7 @@ function runInWorker<T>(postMessage: (worker: Worker) => void): Promise<T> {
     }
     worker.onerror = (e) => {
       worker.terminate()
-      reject(new Error('Worker error: ' + (e.message || 'File processing failed')))
+      reject(new WorkerUnavailableError('Worker error: ' + (e.message || 'File processing failed')))
     }
 
     postMessage(worker)
@@ -88,7 +97,8 @@ export async function processUploadedFileAsync(
       if (isParquet && content instanceof ArrayBuffer) worker.postMessage(message, [content])
       else worker.postMessage(message)
     })
-  } catch {
+  } catch (err) {
+    if (!(err instanceof WorkerUnavailableError)) throw err
     return processInline(file, maxLines)
   }
 }
@@ -98,17 +108,22 @@ export async function processUploadedFileAsync(
  * file on the main thread for large uploads.
  */
 export async function countLinesInFileAsync(file: File): Promise<number> {
+  // Both paths call the same streaming counter, so the total can never depend on
+  // which side of the size threshold a file happens to fall on.
   if (file.size <= WORKER_SIZE_THRESHOLD || typeof Worker === 'undefined') {
-    const rows = await processInline(file)
-    return rows.length
+    return countRecordsInBlob(file, file.name)
   }
 
   try {
     return await runInWorker<number>((worker) => {
       worker.postMessage({ type: 'countLinesStream' as const, file, fileName: file.name })
     })
-  } catch {
-    const rows = await processInline(file)
-    return rows.length
+  } catch (err) {
+    if (!(err instanceof WorkerUnavailableError)) throw err
+    // Stream the count on the main thread rather than reading the whole file
+    // into one string and fully parsing it — the freeze the worker exists to
+    // avoid. (A .json array still has to be parsed to be counted; see
+    // countRecordsInBlob.)
+    return countRecordsInBlob(file, file.name)
   }
 }

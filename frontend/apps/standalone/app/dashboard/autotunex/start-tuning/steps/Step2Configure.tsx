@@ -58,6 +58,8 @@ interface Step2ConfigureProps {
   isCreatingConfig: boolean
   setIsCreatingConfig: (b: boolean) => void
   onPendingConfig: (data: PendingConfigData) => void
+  /** Rename of an already-pending config; must reach the payload POSTed at launch. */
+  onPendingConfigRename: (name: string) => void
   onPendingConfigUpdate: (data: PendingConfigUpdate) => void
   onClearPendingConfig: () => void
   autotuneEnabled: boolean
@@ -76,6 +78,7 @@ export function Step2Configure({
   isCreatingConfig,
   setIsCreatingConfig,
   onPendingConfig,
+  onPendingConfigRename,
   onPendingConfigUpdate,
   onClearPendingConfig,
   autotuneEnabled,
@@ -492,7 +495,10 @@ export function Step2Configure({
                   id="pending-config-name"
                   value={selectedConfig.name}
                   labelText="Configuration Name"
-                  onChange={(e) => setSelectedConfig({ ...selectedConfig, name: e.target.value })}
+                  onChange={(e) => {
+                    setSelectedConfig({ ...selectedConfig, name: e.target.value })
+                    onPendingConfigRename(e.target.value)
+                  }}
                 />
                 <div className={styles.createdConfigActions}>
                   <Button kind="tertiary" renderIcon={Edit} size="sm" onClick={openCreateForm}>Edit</Button>

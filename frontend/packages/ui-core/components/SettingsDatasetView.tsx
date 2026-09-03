@@ -25,6 +25,12 @@ interface Props {
   open: boolean
   datasetId: string | null
   onClose: () => void
+  /**
+   * Scope for the detail fetch. Must match the scope the caller listed with:
+   * defaulting to 'own' while the caller lists `scope=all` makes an admin's
+   * click on another user's dataset fail.
+   */
+  scope?: 'own' | 'all'
 }
 
 function formatBytes(bytes: number): string {
@@ -63,10 +69,10 @@ function PreviewTable({ rows }: { rows: Record<string, any>[] }) {
   )
 }
 
-export function SettingsDatasetView({ open, datasetId, onClose }: Props) {
-  const { data: dataset, isLoading } = useQuery<Dataset>({
-    queryKey: ['autotunex-dataset', datasetId, 'preview'],
-    queryFn: () => getDataset(datasetId as string, { preview: true, previewRows: 50 }),
+export function SettingsDatasetView({ open, datasetId, onClose, scope = 'own' }: Props) {
+  const { data: dataset, isLoading, isError } = useQuery<Dataset>({
+    queryKey: ['autotunex-dataset', datasetId, 'preview', scope],
+    queryFn: () => getDataset(datasetId as string, { preview: true, previewRows: 50, scope }),
     enabled: open && datasetId != null,
   })
 
@@ -78,7 +84,15 @@ export function SettingsDatasetView({ open, datasetId, onClose }: Props) {
       modalHeading={dataset ? `Dataset: ${dataset.name}` : 'Dataset'}
       onRequestClose={onClose}
     >
-      {isLoading || !dataset ? (
+      {isError ? (
+        <InlineNotification
+          kind="error"
+          title="Couldn't load this dataset"
+          subtitle="It may have been deleted, or you may not have access to it."
+          lowContrast
+          hideCloseButton
+        />
+      ) : isLoading || !dataset ? (
         <InlineLoading description="Loading dataset…" />
       ) : (
         <div>

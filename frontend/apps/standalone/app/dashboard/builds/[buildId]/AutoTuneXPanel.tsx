@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import { useState } from 'react'
-import { Link as CarbonLink, Modal, InlineLoading, SkeletonText } from '@carbon/react'
+import { Link as CarbonLink, Modal, InlineLoading, InlineNotification, SkeletonText } from '@carbon/react'
 import { useQuery } from '@tanstack/react-query'
 import { getConfiguration, getJobByBuildId } from '@granite-build/ui-core/api/autotunex'
 import { listSpaces } from '@granite-build/ui-core/api/gbserver'
@@ -54,9 +54,12 @@ export function AutoTuneXPanel({ buildId }: AutoTuneXPanelProps) {
   })
 
   // Loaded lazily when the configuration modal is opened (matches TuningDetailTabs).
-  const { data: configuration } = useQuery({
-    queryKey: ['autotunex-config', job?.config_id],
-    queryFn: () => getConfiguration(job!.config_id),
+  // The job above is fetched with the admin scope; the configuration must use
+  // the same one or an admin viewing another user's build gets the job and then
+  // a permanently-spinning configuration modal.
+  const { data: configuration, isError: isConfigError } = useQuery({
+    queryKey: ['autotunex-config', job?.config_id, isAdmin],
+    queryFn: () => getConfiguration(job!.config_id, isAdmin ? 'all' : 'own'),
     enabled: configOpen && !!job?.config_id,
   })
 
@@ -98,7 +101,15 @@ export function AutoTuneXPanel({ buildId }: AutoTuneXPanelProps) {
         size="lg"
         onRequestClose={() => setConfigOpen(false)}
       >
-        {configuration ? (
+        {isConfigError ? (
+          <InlineNotification
+            kind="error"
+            title="Couldn't load this configuration"
+            subtitle="It may have been deleted, or you may not have access to it."
+            lowContrast
+            hideCloseButton
+          />
+        ) : configuration ? (
           <ConfigDisplay configuration={configuration} />
         ) : (
           <InlineLoading description="Loading configuration…" />
@@ -109,6 +120,7 @@ export function AutoTuneXPanel({ buildId }: AutoTuneXPanelProps) {
         open={datasetOpen}
         datasetId={job.dataset_id}
         onClose={() => setDatasetOpen(false)}
+        scope={isAdmin ? 'all' : 'own'}
       />
     </>
   )
