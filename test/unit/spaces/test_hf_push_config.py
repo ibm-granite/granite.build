@@ -903,6 +903,18 @@ class TestOutputPublicForms:
         with pytest.raises(HfPushConfigError, match="conflict"):
             resolve_hfpush_private(output_config=o)
 
+    def test_null_hf_public_is_unset_not_a_conflict(self):
+        # A bare `config.hf.public:` (yaml null) is "unset", so a top-level
+        # `public: true` fills it rather than clashing.
+        assert (
+            self._private(
+                uri="hf:///o/r",
+                public=True,
+                store_push={"config": {"hf": {"public": None}}},
+            )
+            is False
+        )
+
 
 class TestValidateOutputPush:
     """The load-time HF push guard, kept in the HF module (buildconfig delegates)."""
@@ -944,3 +956,20 @@ class TestValidateOutputPush:
             store_push={"config": {"hf": {"public": False}}},
         )
         assert err is not None and "conflict" in err.lower()
+
+    @pytest.mark.parametrize("private_val", [False, True, "false", None])
+    def test_retired_private_key_errors_loudly(self, private_val):
+        # The old `config.hf.private` key is no longer supported; instead of
+        # silently making the repo private, it must fail loudly pointing to `public`.
+        err = self._check(
+            uri="hf:///o/r",
+            store_push={"config": {"hf": {"private": private_val}}},
+        )
+        assert err is not None and "no longer supported" in err
+
+    def test_retired_private_key_on_non_hf_output_errors(self):
+        err = self._check(
+            uri="lh://a/b",
+            store_push={"config": {"hf": {"private": False}}},
+        )
+        assert err is not None

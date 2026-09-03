@@ -244,9 +244,9 @@ def push_asset_hfstore(
         from gbserver.types.constants import get_hf_token
 
         # Resource groups cannot be classified without Hfstore's Enterprise org
-        # list, but `private` is store-independent: read it from the same merged
-        # config levels so an explicit `private: false` is honored here too
-        # (default stays True). Only the resource-group resolution below differs
+        # list, but the visibility flag is store-independent: read it from the same
+        # merged config levels so an explicit `public: true` is honored here too
+        # (default stays private). Only the resource-group resolution below differs
         # between the two branches.
         private = resolve_hfpush_private(
             storepush_config=storepush_config,

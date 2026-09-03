@@ -205,20 +205,44 @@ def _extract_hf(config: Optional[dict], top_public: object = None) -> dict:
     level, where there is no output field). ``top_public`` carries the output's
     top-level field (``None`` at the environment level); it is folded into the
     returned ``hf`` block so downstream reads one location. Setting both on the
-    same output with conflicting values raises; equal values collapse.
+    same output with conflicting values raises; equal values collapse. A yaml null
+    is "unset" on either form. The retired ``private`` key raises (see
+    :func:`_reject_retired_private`).
     """
     config = config or {}
     hf_cfg = config.get("hf") or {}
     hf_cfg = dict(hf_cfg) if isinstance(hf_cfg, dict) else {}
-    if top_public is not None:
-        if PUBLIC_KEY in hf_cfg and _differ(hf_cfg[PUBLIC_KEY], top_public):
-            raise HfPushConfigError(
-                f"conflicting public settings for one push "
-                f"('config.hf.{PUBLIC_KEY}: {hf_cfg[PUBLIC_KEY]}' vs "
-                f"'public: {top_public}') — keep one."
-            )
-        hf_cfg.setdefault(PUBLIC_KEY, top_public)
+    _reject_retired_private(hf_cfg)
+    hf_public = hf_cfg.get(PUBLIC_KEY)
+    if (
+        hf_public is not None
+        and top_public is not None
+        and _differ(hf_public, top_public)
+    ):
+        raise HfPushConfigError(
+            f"conflicting public settings for one push "
+            f"('config.hf.{PUBLIC_KEY}: {hf_public}' vs "
+            f"'public: {top_public}') — keep one."
+        )
+    if hf_public is None and top_public is not None:
+        hf_cfg[PUBLIC_KEY] = top_public
     return hf_cfg
+
+
+def _reject_retired_private(hf_cfg: dict) -> None:
+    """Reject the retired ``private`` key with a message pointing to ``public``.
+
+    ``private`` was replaced by ``public`` (inverted, default False). An old
+    ``config.hf.private`` reaching here would otherwise be ignored and silently
+    make the repo private, so fail loudly instead. Raised at load time via
+    :func:`validate_output_push` and defensively at resolve time.
+    """
+    if "private" in hf_cfg:
+        raise HfPushConfigError(
+            "`store_push.config.hf.private` is no longer supported; use `public` "
+            f"(inverted, default False) instead — e.g. `private: false` → "
+            f"`public: true`. Got `private: {hf_cfg['private']}`."
+        )
 
 
 def _hf_push_config_levels(
@@ -283,14 +307,15 @@ def validate_output_push(
 ) -> Optional[str]:
     """Validate an output's HuggingFace push config at load time; else ``None``.
 
-    Two load-time checks, so both fail fast with the output named:
+    Fails fast with the output named on:
 
     - non-``hf://`` guard: ``public`` and any ``store_push.config.hf.*`` key are
       HuggingFace-only (no other store reads ``store_push``), so on an ``lh://``/
       ``env://``/``file://``/``cos://`` output they are a misconfiguration that
       would otherwise be silently ignored.
-    - same-level ``public`` conflict: caught by folding the forms via
-      :func:`_hf_push_config_levels` (the single place the fold rule lives).
+    - the retired ``config.hf.private`` key, and a same-level ``public`` conflict:
+      both caught by folding the forms via :func:`_hf_push_config_levels` (the
+      single place those rules live).
 
     Returns an error string for the generic build validator to collect. Kept here
     so ``buildconfig`` stays generic.

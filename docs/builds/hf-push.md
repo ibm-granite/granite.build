@@ -139,6 +139,10 @@ return value, the emitted step config, the LSF/Helm/SkyPilot worker templates,
 and `gbcommon.uri.hf`) speaks `private`, matching the HF API; everything you
 write in `build.yaml`/`store.yaml` speaks `public`. You never write `private`.
 
+The former `store_push.config.hf.private` key is retired: it is rejected at load
+time with an error pointing to `public` (`private: false` becomes `public: true`),
+so an old config fails loudly rather than silently reverting to private.
+
 ---
 
 ## The optional `store_push` block
