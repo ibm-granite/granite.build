@@ -5,6 +5,7 @@ import { CopyButton, Link } from '@carbon/react'
 import styles from './LineagePanel.module.scss'
 import type { BuildStepRun, BuildTargetRun } from '@granite-build/ui-core/types'
 import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
+import { formatDurationBetween } from '@granite-build/ui-core/lib/duration'
 
 const NOT_RECORDED = 'Not recorded'
 
@@ -32,27 +33,6 @@ function formatDateTime(value: string | undefined): string | undefined {
   })
   const time = parsed.toLocaleTimeString([], { hour12: false, timeZoneName: 'short' })
   return `${date} at ${time}`
-}
-
-/**
- * `6s`, `2m 14s`, `1h 03m`. Derived from the start/finish pair rather than
- * read off the step — gbserver records no duration field.
- */
-function formatDuration(from: string | undefined, to: string | undefined): string | undefined {
-  if (!from || !to) return undefined
-  const start = new Date(from).getTime()
-  const end = new Date(to).getTime()
-  if (Number.isNaN(start) || Number.isNaN(end)) return undefined
-  const totalSeconds = Math.round((end - start) / 1000)
-  // Clock skew between the launcher and gbserver can put finish before start;
-  // showing a negative duration would be worse than showing none.
-  if (totalSeconds < 0) return undefined
-  if (totalSeconds < 60) return `${totalSeconds}s`
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, '0')}s`
-  const hours = Math.floor(minutes / 60)
-  return `${hours}h ${String(minutes % 60).padStart(2, '0')}m`
 }
 
 /** The step's own finish time, falling back to the mirrored `updated_at`. */
@@ -111,6 +91,11 @@ function cleanStatusMessage(msg: string): string {
       }
       if (inFence) return true // inside a code block — keep verbatim
 
+      // Markdown headings outside fences are gbserver's section titles for the
+      // fields shown above; drop them. Inside a fence a `#` line is a shell
+      // comment, so this check must stay under the `inFence` guard.
+      if (/^#+\s/.test(line)) return false
+
       // Capture the key, the run of spaces before the colon, and the value.
       const match = /^\s*([A-Za-z][A-Za-z ]*?)( *):\s*(.*)$/.exec(line)
       if (!match) return true // prose / blank line — keep
@@ -126,7 +111,6 @@ function cleanStatusMessage(msg: string): string {
     .join('\n')
     // Collapse the blank lines the removed rows leave behind.
     .replace(/\n{3,}/g, '\n\n')
-    .replace(/^#+\s.*$/gm, '')
     .trim()
 }
 
@@ -639,7 +623,7 @@ export function stepDrawerSummary(target: BuildTargetRun | undefined): {
   // Span the whole target: first start to last finish.
   const started = steps[0]?.started_at
   const finished = finishedAt(steps[steps.length - 1])
-  const duration = formatDuration(started, finished)
+  const duration = formatDurationBetween(started, finished)
   const stamp = formatDateTime(finished ?? started)
   const summary = [duration ? `Completed in ${duration}` : undefined, stamp]
     .filter(Boolean)

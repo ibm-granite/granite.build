@@ -29,6 +29,7 @@ import { useChartsTheme } from "@granite-build/ui-core/hooks/useTheme";
 import { BuildStatusBadge } from "@granite-build/ui-core/components/BuildStatusBadge";
 import { BaseTile } from "@granite-build/ui-core/components/BaseTile";
 import type { Build } from "@granite-build/ui-core/types";
+import { formatDurationSeconds } from "@granite-build/ui-core/lib/duration";
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
@@ -249,14 +250,6 @@ function BuildVolumeSparkline() {
 
 // ── Standalone-only tiles ─────────────────────────────────────────────────────
 
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
-  const m = Math.floor(seconds / 60), s = seconds % 60
-  if (m < 60) return s > 0 ? `${m}m ${s}s` : `${m}m`
-  const h = Math.floor(m / 60), rm = m % 60
-  return rm > 0 ? `${h}h ${rm}m` : `${h}h`
-}
-
 function BuildStatsTile() {
   const { data: stats, isFetching, refetch } = useQuery({
     queryKey: ["build-stats"],
@@ -311,7 +304,7 @@ function BuildStatsTile() {
           label="Avg duration"
           value={
             stats?.avgDuration != null
-              ? formatDuration(stats.avgDuration)
+              ? formatDurationSeconds(stats.avgDuration)
               : "—"
           }
         />

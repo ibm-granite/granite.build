@@ -174,6 +174,10 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
 // (including a bare org/name) → MODEL.
 function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType | null {
   if (!uri) return null
+  // Only HF URIs carry this convention (mirroring the backend's parse_hf_uri,
+  // which requires an hf:// prefix). Without the scope guard a plain
+  // `cos://bucket/datasets/eval.json` would be misread as a DATASET.
+  if (!/^(hf:\/\/|https:\/\/huggingface\.co\/)/.test(uri)) return null
   // Match the type segment in hf://[domain]/<type>/org/name or
   // hf:///<type>/org/name and in https://huggingface.co/<type>/org/name.
   const m = uri.match(/(?:^|\/)(datasets|models|spaces|buckets)\//)
