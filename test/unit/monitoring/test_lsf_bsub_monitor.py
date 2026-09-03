@@ -30,6 +30,7 @@ itself the assertion.
 import asyncio
 import contextlib
 import json
+import types
 from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -181,11 +182,21 @@ def _as_message_event(msg: str) -> BuildEvent:
 def _is_build_failing(event: BuildEvent) -> bool:
     """Ask the real RetryHandler whether this event fails the build.
 
-    Called unbound with a dummy ``self``: the method only touches ``self`` for a
-    log line. Reusing the real predicate rather than reimplementing its regex
-    keeps these tests honest if that logic changes.
+    Reusing the real predicate rather than reimplementing its regex keeps these
+    tests honest if that logic changes.
+
+    ``_is_terminal_failure_event`` now delegates JSON extraction to
+    ``self._parse_event_json``, so a bare ``MagicMock()`` self no longer works: a
+    mock's ``_parse_event_json(event)`` returns another (truthy) ``MagicMock``
+    instead of ``None``/a dict, which would classify *every* event -- even a
+    benign ``DONE`` -- as a terminal failure. Bind the real ``_parse_event_json``
+    onto the fake self so the predicate runs for real; the fake self is only
+    otherwise touched for ``self.launch_id`` in that method's debug branch, where
+    a mock attribute is harmless.
     """
-    return bool(RetryHandler._is_terminal_failure_event(MagicMock(), event))
+    fake = MagicMock()
+    fake._parse_event_json = types.MethodType(RetryHandler._parse_event_json, fake)
+    return bool(RetryHandler._is_terminal_failure_event(fake, event))
 
 
 def _has_terminal_failure(msgs: List[str]) -> bool:
@@ -520,6 +531,27 @@ async def test_stop_event_set_during_terminal_poll_is_not_a_failure():
 # ---------------------------------------------------------------------------
 # Case P / Q / R -- invariants
 # ---------------------------------------------------------------------------
+
+
+def test_is_build_failing_harness_distinguishes_benign_from_terminal():
+    """Guard the ``_is_build_failing`` harness itself against a truthy-mock trap.
+
+    ``_is_build_failing`` invokes the real ``RetryHandler._is_terminal_failure_event``
+    unbound with a fake ``self``. That predicate delegates to
+    ``self._parse_event_json``; if the fake self ever fails to run the real
+    method (e.g. a future ``self.*`` dependency is added that the fake doesn't
+    satisfy), a bare ``MagicMock`` silently returns a *truthy* mock, classifying
+    every event as a terminal failure and flipping every "must not fail"
+    assertion in this file into a false pass/fail. Pin both directions so that
+    regression fails loudly here, at the source, rather than as a confusing wave
+    of unrelated failures: a benign informational line must NOT fail the build,
+    and a real ``state == "Failed"`` block MUST.
+    """
+    assert _is_build_failing(_as_message_event("LSF job 12345: RUN -> DONE")) is False
+    assert (
+        _is_build_failing(_as_message_event('```json\n{"state": "Failed"}\n```'))
+        is True
+    )
 
 
 @pytest.mark.asyncio

@@ -117,6 +117,7 @@ The run-relevant environment variables:
 | `GBTEST_MODE` | `mock` (quick suite) or `live` (extended/CI). |
 | `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` | `job` (k8s), `process`, or `thread`. Use `thread` for local test runs. |
 | `GBTEST_SPS_IBMCLOUD_API_KEY` | Loads test secrets from IBM Cloud Secrets Manager (SPS). |
+| `GBTEST_STANDALONE_ENVIRONMENT` | Under `GB_ENVIRONMENT=STANDALONE`, which environment's HF resource group pushes target. The **source** default is empty, i.e. the production `gbspace-public` a real standalone user must get; `test/conftest.py` defaults it to `STAGING` for any pytest run, so tests push to a group the CI token can write. Set it explicitly (including to empty) to override. |
 | **IBM infrastructure** | For `ibm`-marked / live-cluster tests: |
 | `GBSERVER_IMAGE_TAG` | The gbserver build-runner image tag to run against. |
 | `GBSERVER_SIDECAR_MONITORING_IMAGE_TAG` | The monitoring sidecar image tag. |

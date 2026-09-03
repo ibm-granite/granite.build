@@ -325,6 +325,7 @@ class Docker(Environment):
         assetstore=None,
         run_metadata=None,
         storepush_config=None,
+        output_config=None,
         **_kwargs,
     ) -> Any:
         """Upload a local file or directory to a HuggingFace repo.
@@ -342,6 +343,12 @@ class Docker(Environment):
             uri: Target HfURI string or object.
             assetstore: Hfstore instance whose secrets supply the HF token.
             run_metadata: EntityRunMetadata with build_id and target_name.
+            storepush_config: Environment-level push config. Its ``hf`` block is
+                forwarded so the resource group settings apply here as they do on
+                the step-based environments.
+            output_config: Per-output build.yaml config, forwarded so
+                ``store_push.config.hf`` (including ``use_resource_group``) is
+                honored.
 
         Returns:
             The resolved HfURI after a successful push.
@@ -360,6 +367,8 @@ class Docker(Environment):
             uri=uri,
             assetstore=assetstore,
             run_metadata=run_metadata,
+            storepush_config=storepush_config,
+            output_config=output_config,
         )
 
     # ------------------------------------------------------------------

@@ -57,18 +57,18 @@ environment_configs:
             export HF_SOURCE
             BINDING_ID='{{ config.hfpush_config.binding_id }}'
 
-            # Mocked iff the op (or "all") is listed in GBTEST_MOCKED_HF_OPS;
-            # tolerant of spaces/case to match gbcommon.types.testing.hf_mocked_ops.
-            # GBTEST_MOCKED_HF_OPS arrives as a worker env var (sky.Task envs),
-            # not via hfpush_config — it is test-harness state, not a push param.
+            # Mocked when GBTEST_MOCK_HF is "true" (case-insensitive), matching
+            # gbcommon.types.testing.is_hf_mocked. GBTEST_MOCK_HF arrives as a
+            # worker env var (sky.Task envs), not via hfpush_config — it is
+            # test-harness state, not a push param.
+            # Keep identical to the other hfpull/hfpush step scripts (lsf + skypilot);
+            # skypilot embeds this inline (no shared file on the worker), so the copies
+            # are kept byte-identical to prevent behavioral drift.
             hf_mocked() {
-                local ops=",${GBTEST_MOCKED_HF_OPS:-},"
-                ops=${ops// /}
-                ops=${ops,,}
-                case "$ops" in *,"$1",*|*,all,*) return 0 ;; *) return 1 ;; esac
+                case "${GBTEST_MOCK_HF:-}" in [Tt][Rr][Uu][Ee]) return 0 ;; *) return 1 ;; esac
             }
-            if hf_mocked push; then
-                echo "[GBTEST_MOCKED_HF_OPS] mocking hfpush — skipping create_repo and upload"
+            if hf_mocked; then
+                echo "[GBTEST_MOCK_HF] mocking hfpush — skipping create_repo and upload"
                 echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
                 echo 'hfpush end'
                 exit 0

@@ -51,6 +51,7 @@ from typing import Optional
 import pytest
 from libgbtest.utils import AbstractSingletonStorageUsingTest
 
+from gbserver.storage.singleton_storage import reset_admin_storage
 from gbserver.storage.sql.engine_cache import get_singleton_engine_cache
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.storage_factory import StorageFactory
@@ -156,6 +157,8 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
         """
         get_singleton_engine_cache().dispose_all()
         self.storage = None
+        # Don't leave a singleton pointing at the temp db we're about to delete.
+        reset_admin_storage()
         if self._prev_gb_home is None:
             os.environ.pop("GB_HOME_DIR", None)
         else:

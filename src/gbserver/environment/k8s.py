@@ -74,7 +74,10 @@ from gbserver.environment.environment import (
     Environment,
     EventLogLineParserConfig,
 )
-from gbserver.spaces.resource_group import resolve_space_resource_group_id
+from gbserver.spaces.resource_group import (
+    apply_hf_step_overlay,
+    resolve_hfpush_resource_group_id,
+)
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     EntityRunMetadata,
@@ -2281,33 +2284,20 @@ class K8s(Environment):
         # resource_group_name is configured (ignored if resource_group_name is set).
         space_name = output_config.space_name if output_config else None
 
-        # Resolve hf fields from build.yaml store_push (highest priority)
-        hf_resource_group_id = None
-        hf_resource_group_name = None
-        hf_private = True
-        if output_config is not None and output_config.store_push is not None:
-            hf_cfg = output_config.store_push.config.get("hf", {})
-            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
-            hf_resource_group_name = hf_cfg.get(
-                "resource_group_name", hf_resource_group_name
-            )
-            hf_private = hf_cfg.get("private", hf_private)
-
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
-        if hf_resource_group_id:
-            resource_group_id: Optional[str] = hf_resource_group_id
-        else:
-            # Table-first resolution (cached id on the space row) with HF API
-            # fallback + write-back. HfURI still only receives the resolved id.
-            resource_group_id = resolve_space_resource_group_id(
-                space_name=space_name,
-                organization=hfuri.get_owner(),
-                token=assetstore.resolve_token(hfuri),
-                resource_group_name=hf_resource_group_name,
-                host=hfuri.get_host(),
-            )
+        # Enterprise/non-enterprise split + config precedence (environment-level
+        # storepush_config, overridden by build.yaml store_push) + table-first
+        # resolution all live in the shared helper. A non-Enterprise org
+        # resolves to None with no HF API call.
+        resource_group_id, hf_private, _hf_cfg = resolve_hfpush_resource_group_id(
+            hfuri=hfuri,
+            assetstore=assetstore,
+            space_name=space_name,
+            storepush_config=storepush_config,
+            output_config=output_config,
+        )
 
         hfpush_config = Hfstore.build_hfpush_step_config(
             hfuri=hfuri,
@@ -2316,20 +2306,11 @@ class K8s(Environment):
             hf_private=hf_private,
             hf_resource_group_id=resource_group_id,
         )
-        # Apply remaining hf fields from environment-level storepush_config
-        if (
-            storepush_config is not None
-            and storepush_config.config is not None
-            and "hf" in storepush_config.config
-        ):
-            hfpush_config["hf"].update(storepush_config.config["hf"])
-        # Apply remaining hf fields from build.yaml store_push (highest priority)
-        if (
-            output_config is not None
-            and output_config.store_push is not None
-            and "hf" in output_config.store_push.config
-        ):
-            hfpush_config["hf"].update(output_config.store_push.config["hf"])
+        # Apply remaining hf fields from the merged push config (environment
+        # level, overridden by build.yaml store_push; strips use_resource_group,
+        # re-asserts the resolved resource_group_id). Shared with skypilot so the
+        # overlay invariants cannot drift between the two.
+        apply_hf_step_overlay(hfpush_config, _hf_cfg, resource_group_id)
         hfpush_stepuri = "space://steps/hfpush"
         if (
             storepush_config is not None

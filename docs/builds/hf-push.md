@@ -9,8 +9,9 @@ This document covers two related things:
 
 > **TL;DR:** You almost never need `store_push`. An `hf://` URI on the output is
 > enough — the environment's asset store and the active g.b space supply the
-> defaults (private repo, space-derived resource group). Only reach for
-> `store_push` when you need a per-output override.
+> defaults (private repo, and — for HF Enterprise orgs — a space-derived
+> resource group). Only reach for `store_push` when you need a per-output
+> override.
 
 ---
 
@@ -88,7 +89,7 @@ llm.build:
 With the above, the framework will:
 - Derive the HF repo **type** (`dataset`) from the URI.
 - Use `private: true` by default (inherited from the environment or the built-in default).
-- Attach a resource group derived from the active g.b space (`gbspace-<space>`), so pushes into Enterprise-gated namespaces like `ibm-research` work out of the box.
+- Attach a resource group derived from the active g.b space (`gbspace-<space>`) **when the target org is an HF Enterprise org**, so pushes into Enterprise-gated namespaces like `ibm-research` work out of the box. Pushes to a non-Enterprise org (an individual user namespace, say) skip resource groups entirely — see [Enterprise vs non-Enterprise organizations](#enterprise-vs-non-enterprise-organizations).
 
 **Use `store_push` only when you need to override one of these defaults for a single output.**
 
@@ -133,11 +134,101 @@ All fields are optional.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `private` | bool | `true` | Whether the HuggingFace repository should be **private**. Set to `false` to create or update a public repository. |
-| `resource_group_id` | string | — | Pre-resolved HF Enterprise resource group id. When provided, no HF API lookup is performed — the id is used as-is. |
-| `resource_group_name` | string | — | Resource group name. Resolved to an id via the HF API at push time. |
+| `resource_group_id` | string | — | Pre-resolved HF Enterprise resource group id. When provided, no HF API lookup is performed — the id is used as-is. Enterprise orgs only — supplying it for a non-Enterprise org is an error. |
+| `resource_group_name` | string | — | Resource group name. Resolved to an id via the HF API at push time. Enterprise orgs only. |
+| `use_resource_group` | bool | `true` | Set to `false` to push to an Enterprise org **without** a resource group. Cannot be combined with `resource_group_id`/`resource_group_name`. See [Enterprise vs non-Enterprise organizations](#enterprise-vs-non-enterprise-organizations). |
 
 The HuggingFace **repo type** (`model`, `dataset`, `space`) is not configurable here — it
 is derived automatically from the `uri` scheme (e.g. `hf:///datasets/…` → `dataset`).
+
+---
+
+## Enterprise vs non-Enterprise organizations
+
+Resource groups are an **HF Enterprise** feature. Pushing into an Enterprise-gated
+namespace like `ibm-research` requires a resource group id; pushing into an
+individual user namespace (`my-user/my-model`) or a plain community org has no
+resource group at all.
+
+There is no non-admin HF API that tells the two apart, so the split is
+**configuration-driven**. The `hf` asset store's `store.yaml` lists the orgs that
+use Enterprise resource groups:
+
+```yaml
+# assetstores/hf/store.yaml
+base_uri: "hf:/"
+config:
+  token_secretname: HF_TOKEN
+  enterprise_organizations:
+    - ibm-research
+    - ibm-granite
+```
+
+| Push target | Behavior |
+|-------------|----------|
+| Org **in** `enterprise_organizations` | A resource group is resolved (see [Resource group resolution](#resource-group-resolution)). Unchanged from before. |
+| Org **not in** the list | Resource group resolution is **skipped entirely** — no space lookup, no HF API call. Pinning a resource group is an error. |
+| Key **absent** | Every org is treated as Enterprise. This is the pre-split behavior, kept for backward compatibility. |
+| Key present but empty (`[]`) | No org is treated as Enterprise. |
+
+Matching is a case-insensitive **exact** match on the org name. There is no glob
+or wildcard support — `ibm-*` matches nothing, and `"*"` is a literal name.
+
+### Setting this for a remote space
+
+`store.yaml` is loaded server-side from the space's git repo, so for a remote
+space, edit `assetstores/hf/store.yaml` **in that space repo** and add the
+`enterprise_organizations` key shown above. There is no CLI or API to set it.
+
+> **Two places to keep in sync.** The CLI (`gb artifact push/register --store hf`)
+> cannot read `store.yaml` — it is server-side only — so it reads the same list
+> from `hf_enterprise_organizations` in
+> [`src/gbcommon/types/gbenvconfig.py`](../../src/gbcommon/types/gbenvconfig.py).
+> When you change one, change the other.
+
+### Opting an Enterprise org out
+
+An org that *is* in the list can still push without a resource group by setting
+`use_resource_group: false`:
+
+```yaml
+outputs:
+  scratch_model:
+    uri: hf://huggingface.co/ibm-research/scratch-{{ binding.path | short_hash }}
+    store_push:
+      mode: "hfstore"
+      config:
+        hf:
+          use_resource_group: false
+```
+
+Combining it with an explicit `resource_group_id`/`resource_group_name` **in the
+same push config** is contradictory and raises `ValueError`. Across levels the
+higher one wins, per the priority table above:
+
+| `environment.yaml` push | output `store_push` | Result |
+|---|---|---|
+| `resource_group_name: …` | `use_resource_group: false` | No resource group — the per-output opt-out wins, which is what makes it usable when the environment supplies a group as the level-3 fallback. |
+| `use_resource_group: false` | `resource_group_id: …` | That id — an output-level pin is priority 1, so it re-enables resource groups over an inherited opt-out. |
+| `use_resource_group: false` | `use_resource_group: true` | Resource group resolved from the space. |
+| `use_resource_group: false` | *(nothing)* | No resource group. |
+
+### Errors
+
+Pinning a resource group for a non-Enterprise org fails the push:
+
+```
+Resource group 'gbspace-public' was configured for HuggingFace organization
+'my-user', but 'my-user' is not an HF Enterprise organization. Resource groups
+apply only to Enterprise organizations. Remove
+store_push.config.hf.resource_group_id / resource_group_name, or add 'my-user'
+to enterprise_organizations in the hf asset store's store.yaml.
+```
+
+The CLI reports the equivalent for `--resource-group-id`.
+
+> Pulling is unaffected by any of this. `hf` downloads never use a resource
+> group — only the HF token's access matters.
 
 ---
 
@@ -149,6 +240,7 @@ must agree (the resolver raises `ValueError` on mismatch).
 
 | Priority | Source | Notes |
 |----------|--------|-------|
+| 0 | **Enterprise check** (`store.yaml` → `config.enterprise_organizations`) | Evaluated *first*. If the URI's org is not an Enterprise org, everything below is skipped and no resource group is attached. An Enterprise org with `use_resource_group: false` is likewise skipped. See [Enterprise vs non-Enterprise organizations](#enterprise-vs-non-enterprise-organizations). |
 | 1 | `store_push.config.hf.resource_group_id` (build.yaml) | Per-output pre-resolved id. No HF API call. |
 | 2 | `store_push.config.hf.resource_group_name` (build.yaml) | Per-output name. Resolved via HF API. |
 | 3 | `environment.yaml` → `assetstores[].push[].config.hf.resource_group_id` / `resource_group_name` | Environment-level fallback. |

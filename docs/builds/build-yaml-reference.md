@@ -155,11 +155,13 @@ and [Asset stores — In-memory](../asset-stores/README.md#store-types-and-uri-s
 | Field    | Type   | Required | Notes |
 |----------|--------|----------|-------|
 | `mode`   | string | yes      | `hfstore`, `lhstore`, `cosstore`, etc. |
-| `config` | object | no       | Mode-specific (e.g. `hf.private`, `hf.resource_group`). |
+| `config` | object | no       | Mode-specific (e.g. `hf.private`, `hf.resource_group_id`, `hf.resource_group_name`, `hf.use_resource_group`). |
 
 For HuggingFace specifically, see [`hf-push.md`](hf-push.md) — it documents
-the full URI format, resource-group resolution, and the relationship between
-`store_push` here and the environment-level `store_push` block.
+the full URI format, resource-group resolution, the Enterprise vs
+non-Enterprise organization split (including `hf.use_resource_group`), and the
+relationship between `store_push` here and the environment-level `store_push`
+block.
 
 ### `event_selectors`
 

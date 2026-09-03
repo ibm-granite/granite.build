@@ -208,6 +208,7 @@
         
         COMMAND_SH_EXIT_CODE="$?"
         echo "COMMAND_SH_EXIT_CODE: ${COMMAND_SH_EXIT_CODE}"
+        {{- include "gbstepbase.normalizeOutputPermissions" . | trimAll " " | indent 8 }}
         {{- if .Values.k8s.sleep_on_end }}
         echo
         echo 'sleeping at the end so that the user can exec inside the container'

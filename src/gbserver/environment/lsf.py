@@ -50,7 +50,7 @@ from gbserver.monitoring.lsf_bsub_monitor import LSFBsubMonitor
 from gbserver.monitoring.streams.log_stream_base import LogStreamSource
 from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.resilience.strategies.aspera_failure import AsperaRetryStrategy
-from gbserver.spaces.resource_group import resolve_space_resource_group_id
+from gbserver.spaces.resource_group import resolve_hfpush_resource_group_id
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     EntityRunMetadata,
@@ -1533,43 +1533,25 @@ class Lsf(Environment):
         hf_metadata = Asset(uri=hfuri).get_metadata()
         logger.info("hf_metadata: %s", hf_metadata)
 
-        hf_resource_group_id: Optional[str] = None
-        hf_resource_group_name: Optional[str] = None
-        hf_private = True
-        # Environment-level storepush_config (lower priority).
-        if storepush_config is not None and storepush_config.config is not None:
-            hf_cfg = storepush_config.config.get("hf", {})
-            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
-            hf_resource_group_name = hf_cfg.get(
-                "resource_group_name", hf_resource_group_name
-            )
-            hf_private = hf_cfg.get("private", hf_private)
-        # build.yaml output store_push (higher priority, overrides).
-        if output_config is not None and output_config.store_push is not None:
-            hf_cfg = output_config.store_push.config.get("hf", {})
-            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
-            hf_resource_group_name = hf_cfg.get(
-                "resource_group_name", hf_resource_group_name
-            )
-            hf_private = hf_cfg.get("private", hf_private)
-
         space_name = output_config.space_name if output_config else None
 
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
-        if hf_resource_group_id:
-            resource_group_id: Optional[str] = hf_resource_group_id
-        else:
-            # Table-first resolution (cached id on the space row) with HF API
-            # fallback + write-back. HfURI still only receives the resolved id.
-            resource_group_id = resolve_space_resource_group_id(
-                space_name=space_name,
-                organization=hfuri.get_owner(),
-                token=assetstore.resolve_token(hfuri),
-                resource_group_name=hf_resource_group_name,
-                host=hfuri.get_host(),
-            )
+        # Enterprise/non-enterprise split + config precedence + table-first
+        # resolution all live in the shared helper; a non-Enterprise org
+        # resolves to None without any HF API call.
+        # NOTE: unlike k8s/skypilot, LSF applies no post-hoc overlay of the
+        # remaining `hf.*` keys onto hfpush_config — it never did, and the LSF
+        # command.sh template consumes only the keys build_hfpush_step_config
+        # emits. `_hf_cfg` is therefore unused here by design.
+        resource_group_id, hf_private, _hf_cfg = resolve_hfpush_resource_group_id(
+            hfuri=hfuri,
+            assetstore=assetstore,
+            space_name=space_name,
+            storepush_config=storepush_config,
+            output_config=output_config,
+        )
 
         hfpush_config = Hfstore.build_hfpush_step_config(
             hfuri=hfuri,

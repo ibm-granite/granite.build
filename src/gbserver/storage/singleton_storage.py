@@ -110,6 +110,17 @@ def get_storage_factory() -> StorageFactory:
     return __STORAGE_FACTORY
 
 
+def reset_admin_storage() -> None:
+    """Clear the cached singleton so the next get_admin_storage() rebuilds it.
+
+    A test that swaps in prefixed storage (or tears down its backing db) clears
+    this on teardown; otherwise the next get_admin_storage() reuses the stale
+    singleton, which points at tables that are now gone.
+    """
+    global __STORAGE
+    __STORAGE = None
+
+
 def get_admin_storage() -> SingletonAdminStorage:
     """Get the tuple of storage instances that the REST apis should be using.
 

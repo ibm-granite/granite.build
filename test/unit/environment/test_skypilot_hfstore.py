@@ -41,16 +41,16 @@ def mock_hfuri():
 
 @pytest.fixture
 def mock_resolve_rg():
-    """Patch the server-side resource group resolver used by pushasset_hfstore.
+    """Patch the space-based resource group resolver used by pushasset_hfstore.
 
-    Resolution is delegated to
-    ``gbserver.spaces.resource_group.resolve_space_resource_group_id`` (imported
-    into the skypilot env module); patch it there so tests never touch storage
-    or the HF API. Yields the mock so tests can tune the return value / assert
-    call behavior.
+    ``resolve_hfpush_resource_group_id`` (the shared helper the skypilot env
+    calls) is left real so the Enterprise split and config precedence are
+    genuinely exercised; only its innermost space/HF lookup is patched, here at
+    its definition site so tests never touch storage or the HF API. Yields the
+    mock so tests can tune the return value / assert call behavior.
     """
     with patch(
-        "gbserver.environment.skypilot.resolve_space_resource_group_id",
+        "gbserver.spaces.resource_group.resolve_space_resource_group_id",
         return_value=None,
     ) as mock:
         yield mock
@@ -62,6 +62,9 @@ def _hfstore_mock(token: str = "tok-abc"):
 
     store = MagicMock(spec=Hfstore)
     store.resolve_token.return_value = token
+    # These tests target "myorg"; declare it Enterprise so a resource group
+    # applies (a non-Enterprise org skips resolution by design).
+    store.get_enterprise_organizations.return_value = ["myorg"]
     return store
 
 

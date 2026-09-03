@@ -18,7 +18,7 @@
 
 import os
 from pathlib import Path
-from typing import Dict, Optional, Self, Union
+from typing import Dict, List, Optional, Self, Union
 
 from huggingface_hub import create_repo, upload_file, upload_folder
 
@@ -74,6 +74,37 @@ class Hfstore(Assetstore):
             else self.DEFAULT_TOKEN_KEY
         )
         return {"token_secretname": token_key}
+
+    def get_enterprise_organizations(self) -> Optional[List[str]]:
+        """Return the Enterprise HF org names declared in store.yaml.
+
+        Read from ``config.enterprise_organizations``. ``None`` (the key is
+        absent) means *every* org is treated as Enterprise, preserving the
+        behavior from before the enterprise/non-enterprise split; callers pass
+        the result straight to :func:`is_enterprise_hf_org`, which encodes that
+        rule.
+
+        Returns:
+            The configured org names, or ``None`` when the key is absent.
+
+        Raises:
+            ValueError: If the key is present but is not a list.
+        """
+        if (
+            self.config
+            and isinstance(self.config.config, dict)
+            and "enterprise_organizations" in self.config.config
+        ):
+            orgs = self.config.config["enterprise_organizations"]
+            if orgs is None:
+                return None
+            if not isinstance(orgs, list):
+                raise ValueError(
+                    "assetstore config 'enterprise_organizations' must be a "
+                    f"list of org names, got {type(orgs).__name__}"
+                )
+            return [str(o) for o in orgs]
+        return None
 
     def get_asset_type(self, uri: URI) -> ArtifactType:
         assert isinstance(uri, HfURI)
@@ -142,9 +173,15 @@ class Hfstore(Assetstore):
             "path_in_repo": hfuri.get_path_in_repo(),
             "private": hf_private,
             "binding_id": binding_id,
+            # ``private`` lives only at the top level: every step template reads
+            # ``hfpush_config.private`` (LSF command.sh, Helm _helpers.tpl,
+            # skypilot step.yaml), never ``hf.private``. It is deliberately not
+            # duplicated into this nested block — the k8s/skypilot overlay
+            # (sanitize_hf_step_overlay + .update) rewrites ``hf.*`` from the raw
+            # push config and does not re-resolve ``private``, so a nested copy
+            # would be silently overwritten with the unresolved value.
             "hf": {
                 "type": hf_type,
-                "private": hf_private,
                 "resource_group_id": hf_resource_group_id,
             },
         }

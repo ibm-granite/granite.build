@@ -8,7 +8,12 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from gbserver.spaces.resource_group import resolve_space_resource_group_id
+from gbserver.spaces.resource_group import (
+    HfPushConfigError,
+    resolve_hfpush_private,
+    resolve_hfpush_resource_group_id,
+    resolve_space_resource_group_id,
+)
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -106,6 +111,8 @@ def push_asset_hfstore(
     uri: Optional[Any] = None,
     assetstore=None,
     run_metadata=None,
+    storepush_config=None,
+    output_config=None,
     **_kwargs,
 ) -> Any:
     """Upload a local file or directory to a HuggingFace repo.
@@ -118,20 +125,41 @@ def push_asset_hfstore(
     Suitable for any local environment (Bash, Docker, etc.) that writes
     outputs to the host filesystem and wants to push them to HF.
 
+    The space name is read from the thread-local URI space config and used to
+    derive the Enterprise resource group; :meth:`HfURI.push` receives the
+    *resolved* ``resource_group_id`` (never a name — passing a name would make
+    push re-derive it and hit the admin-gated endpoint, defeating the cache) plus
+    the resolved ``private`` flag.
+
+    Resource groups exist only in HF Enterprise orgs. For a non-Enterprise
+    namespace resolution is skipped entirely, and a resolution *miss* on an
+    Enterprise org (the usual case for a non-admin standalone token) is logged and
+    the push proceeds without a group. Artifacts are private unless a push config
+    explicitly asks for public.
+
     Args:
         src: Local file or directory path to push.
         binding_id: Output binding name included in the commit message.
         uri: Target HfURI string or object.
-        assetstore: Hfstore instance whose secrets supply the HF token.
+        assetstore: Hfstore instance whose secrets supply the HF token. Only an
+            ``Hfstore`` declares the Enterprise org list; any other value (or
+            ``None``) cannot classify the org, so resource group resolution is
+            attempted unconditionally while ``private`` is still honored.
         run_metadata: EntityRunMetadata with ``build_id`` and ``target_name``.
-            The current space name is resolved from the thread-local URI space config
-            and passed as ``resource_group_name`` to :meth:`HfURI.push`.
+        storepush_config: Environment-level ``store_push`` (environment.yaml)
+            supplying ``config.hf`` (``resource_group_id`` /
+            ``resource_group_name`` / ``use_resource_group`` / ``private``).
+        output_config: Per-output config whose ``store_push`` (build.yaml)
+            overrides the environment level.
 
     Returns:
         The resolved HfURI after a successful push.
 
     Raises:
         ValueError: If ``uri`` is absent or ``src`` is empty.
+        HfPushConfigError: If the push config is unsatisfiable for the target org
+            (a resource group pinned for a non-Enterprise org, or a pin combined
+            with ``use_resource_group: false``). A subclass of ``ValueError``.
         RuntimeError: If the HuggingFace push operation fails.
     """
     from gbcommon.uri.hf import HfURI
@@ -158,45 +186,91 @@ def push_asset_hfstore(
     )
 
     # Resolve the space name from the thread-local space config so the repo is
-    # created inside the correct Enterprise resource group automatically.
+    # created inside the correct Enterprise resource group automatically. The
+    # standalone aliases ("standalone", "local") are folded onto "public" by
+    # HfURI.space_name_to_resource_group_name, so this no longer needs to
+    # hardcode a space name to get a resolvable resource group.
     space_config = URI.get_space_config()
     space_name = space_config.get("space", {}).get("name") or None
 
-    space_name = "public"  # TODO: use the right thing here.
+    # Resource groups exist only in HF Enterprise organizations, and which orgs
+    # those are is configured on the asset store (store.yaml
+    # ``config.enterprise_organizations``). For a non-Enterprise org — an
+    # individual user namespace or a plain community org — skip resolution
+    # entirely: no space lookup, no HF API call.
+    from gbserver.asset.hfstore import Hfstore
 
-    # Resolve the resource group id server-side (table-first: cached default id
-    # on the space row, HF API only as a fallback + write-back) and hand HfURI
-    # the resolved id. This lets the standalone/local push reuse a cached id
-    # without an admin-scoped HF token.
-    #
-    # Fall back to the server HF token when no assetstore is supplied.
-    from gbserver.types.constants import get_hf_token
-
-    token = (
-        assetstore.resolve_token(hfuri) if assetstore is not None else get_hf_token()
-    )
-    # Best-effort: in standalone the local user's token typically CANNOT resolve
-    # the resource group id via the HF API (that needs org-admin scope), so a
-    # miss here is expected. Don't abort — log and push with resource_group_id
-    # = None, matching pre-cache behavior: HfURI.push -> create_repo(exist_ok=
-    # True) succeeds for an existing repo, and surfaces its own error otherwise.
-    # (A future enterprise-vs-non-enterprise split will remove the need for an
-    # id entirely on the non-enterprise path.)
+    # Route through the same helper the step-based environments use, so
+    # store_push settings (resource_group_id / resource_group_name /
+    # use_resource_group) are honored identically here. Only Hfstore declares the
+    # Enterprise org list; any other assetstore means we cannot classify, so fall
+    # back to the pre-split behavior of attempting resolution.
     resource_group_id = None
-    try:
-        resource_group_id = resolve_space_resource_group_id(
-            space_name=space_name,
-            organization=hfuri.get_owner(),
-            token=token,
-            host=hfuri.get_host(),
+    # Default to a private repo. This must be initialized here, not only in the
+    # Hfstore branch below: the non-Hfstore path and both `except` paths fall
+    # through to hfuri.push(), and HuggingFace's own create_repo default is
+    # PUBLIC, so leaving it unbound/None would publish the artifact.
+    private = True
+    if isinstance(assetstore, Hfstore):
+        # Best-effort: in standalone the local user's token typically CANNOT
+        # resolve the resource group id via the HF API (that needs org-admin
+        # scope), so a miss here is expected. Don't abort — log and push with
+        # resource_group_id = None: HfURI.push -> create_repo(exist_ok=True)
+        # succeeds for an existing repo, and surfaces its own error otherwise.
+        # Only a *configuration* error aborts (HfPushConfigError: a group pinned
+        # for a non-Enterprise org, or a pin contradicting use_resource_group) —
+        # the push would otherwise silently ignore what was asked. A plain
+        # ValueError must NOT abort: resolve_resource_group_id_for_org raises one
+        # for an unresolvable group name, which is the expected non-admin-token
+        # miss described above.
+        try:
+            resource_group_id, private, _hf_cfg = resolve_hfpush_resource_group_id(
+                hfuri=hfuri,
+                assetstore=assetstore,
+                space_name=space_name,
+                storepush_config=storepush_config,
+                output_config=output_config,
+            )
+        except HfPushConfigError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Could not resolve HuggingFace resource group id for space '%s' "
+                "(pushing without one): %s",
+                space_name,
+                e,
+            )
+    else:
+        from gbserver.types.constants import get_hf_token
+
+        # Resource groups cannot be classified without Hfstore's Enterprise org
+        # list, but `private` is store-independent: read it from the same merged
+        # config levels so an explicit `private: false` is honored here too
+        # (default stays True). Only the resource-group resolution below differs
+        # between the two branches.
+        private = resolve_hfpush_private(
+            storepush_config=storepush_config,
+            output_config=output_config,
         )
-    except Exception as e:
-        logger.warning(
-            "Could not resolve HuggingFace resource group id for space '%s' "
-            "(pushing without one): %s",
-            space_name,
-            e,
+        token = (
+            assetstore.resolve_token(hfuri)
+            if assetstore is not None
+            else get_hf_token()
         )
+        try:
+            resource_group_id = resolve_space_resource_group_id(
+                space_name=space_name,
+                organization=hfuri.get_owner(),
+                token=token,
+                host=hfuri.get_host(),
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not resolve HuggingFace resource group id for space '%s' "
+                "(pushing without one): %s",
+                space_name,
+                e,
+            )
 
     logger.info("Pushing %s → %s (space=%s)", src, URI.get_uristr(hfuri), space_name)
     # Pass only the pre-resolved id (not space_name): HfURI.push would otherwise
@@ -205,6 +279,7 @@ def push_asset_hfstore(
     hfuri.push(
         src,
         commit_message=commit_message,
+        private=private,
         resource_group_id=resource_group_id,
     )
     return hfuri

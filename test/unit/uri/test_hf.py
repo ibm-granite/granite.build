@@ -17,6 +17,7 @@
 """Tests for HfURI, covering the pull(), push(), exists(), and delete() methods."""
 
 import json
+import os
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -24,10 +25,11 @@ import pytest
 from pydantic import BaseModel
 
 from gbcommon.types.testing import (
-    ENV_VAR_GBTEST_MOCKED_HF_OPS,
-    HF_OP_PUSH,
+    ENV_VAR_GBTEST_MOCK_HF,
+    ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT,
     disable_hf_mocks,
     enable_hf_mocks,
+    standalone_rg_environment,
 )
 from gbcommon.uri.hf import (
     DEFAULT_REVISION,
@@ -51,11 +53,11 @@ def _disable_hf_op_mocking(monkeypatch):
 
     These unit tests exercise the *real* HfURI methods (pull/push/exists/delete
     and resource-group resolution) against a mocked HfApi / snapshot_download.
-    A suite-level GBTEST_MOCKED_HF_OPS (e.g. exported by ``make quick-tests``)
-    would otherwise short-circuit those methods before they call the mocked Hub,
-    so clear it here; monkeypatch restores the prior value after each test.
+    A suite-level GBTEST_MOCK_HF (forced true in mock mode) would otherwise
+    short-circuit those methods before they call the mocked Hub, so clear it
+    here; monkeypatch restores the prior value after each test.
     """
-    monkeypatch.delenv(ENV_VAR_GBTEST_MOCKED_HF_OPS, raising=False)
+    monkeypatch.delenv(ENV_VAR_GBTEST_MOCK_HF, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +357,108 @@ class TestHfURIPushUnit:
                 uri.push(src_dir)
         MockApi.return_value.upload_folder.assert_not_called()
 
+    def test_push_rejects_unreadable_file_in_directory(self, tmp_path):
+        """An unreadable file is named up front, before any Hub API call.
+
+        This is the failure mode from a producing step that wrote its output
+        ``0600`` while running as a different UID: ``upload_folder`` would only
+        hit it mid-commit and surface a ``PermissionError`` with no HTTP status,
+        which reads like a Hub outage.
+
+        ``os.access`` is patched rather than using ``chmod``: the test process
+        owns the files it creates, and the owner (like root) is granted access
+        regardless of the mode bits, so a real ``chmod(0o600)`` here would not
+        reproduce the failure at all.
+        """
+        src_dir = tmp_path / "ckpt"
+        src_dir.mkdir()
+        good = src_dir / "config.json"
+        good.write_text("{}")
+        bad = src_dir / "adapter_model.safetensors"
+        bad.write_bytes(b"x" * 32)
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        real_access = os.access
+
+        def fake_access(path, mode, **kwargs):
+            if str(path) == str(bad):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            with patch("gbcommon.uri.hf.os.access", side_effect=fake_access):
+                with pytest.raises(PermissionError, match="adapter_model.safetensors"):
+                    uri.push(src_dir)
+        MockApi.return_value.upload_folder.assert_not_called()
+
+    def test_push_rejects_untraversable_subdirectory(self, tmp_path):
+        """A subdirectory that cannot be traversed is reported, not silently skipped.
+
+        ``rglob`` cannot see through a directory missing ``r-x``, so without an
+        explicit check an unreadable subtree looks merely empty.
+        """
+        src_dir = tmp_path / "ckpt"
+        src_dir.mkdir()
+        (src_dir / "top.bin").write_bytes(b"y" * 8)
+        sub = src_dir / "sub"
+        sub.mkdir()
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        real_access = os.access
+
+        def fake_access(path, mode, **kwargs):
+            if str(path) == str(sub):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            with patch("gbcommon.uri.hf.os.access", side_effect=fake_access):
+                with pytest.raises(PermissionError, match="sub"):
+                    uri.push(src_dir)
+        MockApi.return_value.upload_folder.assert_not_called()
+
+    def test_push_unreadable_report_is_capped_but_counts_all(self, tmp_path):
+        """Every unreadable path is counted; the listing itself is truncated."""
+        src_dir = tmp_path / "ckpt"
+        src_dir.mkdir()
+        for i in range(25):
+            (src_dir / f"f{i:02d}.bin").write_bytes(b"z" * 4)
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        with patch("gbcommon.uri.hf.HfApi"):
+            with patch("gbcommon.uri.hf.os.access", return_value=False):
+                with pytest.raises(PermissionError) as excinfo:
+                    uri.push(src_dir)
+
+        msg = str(excinfo.value)
+        assert "25 path(s)" in msg
+        assert "and 15 more" in msg
+        assert msg.count(".bin") == HfURI._MAX_UNREADABLE_REPORTED
+
+    def test_push_rejects_unreadable_single_file(self, tmp_path):
+        """The single-file push path checks readability too."""
+        src = tmp_path / "solo.bin"
+        src.write_bytes(b"w" * 8)
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            with patch("gbcommon.uri.hf.os.access", return_value=False):
+                with pytest.raises(PermissionError, match="solo.bin"):
+                    uri.push(src)
+        MockApi.return_value.upload_file.assert_not_called()
+
+    def test_push_accepts_group_readable_directory(self, tmp_path):
+        """The readability gate does not reject a normal, readable tree."""
+        src_dir = tmp_path / "ckpt"
+        src_dir.mkdir()
+        (src_dir / "model.safetensors").write_bytes(b"v" * 16)
+        (src_dir / "config.json").write_text("{}")
+        uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+        with patch("gbcommon.uri.hf.HfApi") as MockApi:
+            uri.push(src_dir)
+        MockApi.return_value.upload_folder.assert_called_once()
+
     def test_push_normalizes_adapter_local_base_model(self, tmp_path):
         """A LoRA adapter's pod-local base_model path is rewritten to owner/repo."""
         src_dir = tmp_path / "adapter"
@@ -531,9 +635,15 @@ def test_pull_downloads_tiny_public_model(tmp_path):
 
     Uses hf-internal-testing/tiny-random-bert — a minimal fixture model
     maintained by HuggingFace specifically for CI/testing (< 1 MB).
-    No token is required; the repo is public.
-    Skipped automatically if the Hub is unreachable.
+    No token is required; the repo is public. This is a pure HF-API integration
+    test (it verifies real downloaded files), so it runs only under a live-HF
+    run (GBTEST_LIVE_HF=true or GBTEST_MODE=live) and is skipped otherwise —
+    it belongs to the extended/live suite, not mock CI.
     """
+    from libgbtest.mode import is_live
+
+    if not is_live("hf"):
+        pytest.skip("HF not live — skipping real pull integration test")
 
     uri = HfURI.from_parts(
         owner="hf-internal-testing",
@@ -560,14 +670,21 @@ def test_pull_downloads_tiny_public_model(tmp_path):
 def test_push_uploads_file_to_huggingface(tmp_path):
     """Upload a small file to a temporary HF repo and verify it lands there.
 
-    Requires HF_TOKEN to be set with write access to the authenticated user's
-    namespace.  The test creates a throwaway repo, pushes one file, asserts
-    it appears in the repo's file listing, then deletes the repo.
-    Skipped automatically when HF_TOKEN is absent or the Hub is unreachable.
+    This is a pure HF-API integration test: it does a real push and then asserts
+    the file exists on the Hub, which is meaningless (and would fail) when HF is
+    mocked. It runs only under a live-HF run (GBTEST_LIVE_HF=true or
+    GBTEST_MODE=live) and requires HF_TOKEN with write access to the
+    authenticated user's namespace; otherwise it is skipped. It creates a
+    throwaway repo, pushes one file, asserts it appears in the repo's file
+    listing, then deletes the repo. Belongs to the extended/live suite.
     """
     import os
 
     from huggingface_hub import HfApi
+    from libgbtest.mode import is_live
+
+    if not is_live("hf"):
+        pytest.skip("HF not live — skipping real push integration test")
 
     token = os.getenv("HF_TOKEN")
     if not token:
@@ -954,13 +1071,115 @@ class TestSpaceNameToResourceGroupName:
 
     def test_standalone_uses_write_rg_suffix(self, monkeypatch):
         # STANDALONE test mode targets the configured write resource group
-        # (GB_TEST_STANDALONE_ENVIRONMENT, "STAGING" by default) so test
+        # (GBTEST_STANDALONE_ENVIRONMENT) so test
         # artifacts have a real RG to push to.
         monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
-        monkeypatch.setattr("gbcommon.uri.hf.GB_TEST_STANDALONE_ENVIRONMENT", "STAGING")
+        monkeypatch.setenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, "STAGING")
         assert (
             HfURI.space_name_to_resource_group_name("public")
             == "gbspace-public-staging"
+        )
+
+    @pytest.mark.parametrize("alias", ["standalone", "local", "public"])
+    def test_standalone_space_resolves_to_gbspace_public(self, monkeypatch, alias):
+        """The behavior real standalone users get: "gbspace-public", no suffix.
+
+        Under GB_ENVIRONMENT=STANDALONE the three space names `gbserver
+        standalone --space-dir` registers ("public", "standalone", "local") are
+        one space sharing one resource group, and the group provisioned for it is
+        the production `gbspace-public`. Community and internal users have no
+        access to `gbspace-public-staging` / `-dev`, so resolution must not land
+        on those.
+
+        GBTEST_STANDALONE_ENVIRONMENT is set empty here explicitly. That is
+        also its default, so this is what an unset var produces too (see
+        test_standalone_default_is_production_group); setting it makes the test
+        independent of the default.
+        """
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
+        monkeypatch.setenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, "")
+        assert HfURI.space_name_to_resource_group_name(alias) == "gbspace-public"
+
+    def test_conftest_defaults_the_session_to_staging(self):
+        """The pytest session itself must be redirected away from production.
+
+        test/conftest.py setdefault()s GBTEST_STANDALONE_ENVIRONMENT=STAGING at
+        session start, so every pytest entry point — not just the extended-tests
+        Makefile target — aims a live standalone push at a group the CI token
+        owns. This asserts that wiring is in place; the source default is empty
+        (see test_standalone_default_is_production_group), so losing the conftest
+        line would silently point live test pushes at gbspace-public.
+
+        Read from os.environ, not via monkeypatch: the point is the ambient
+        session value.
+        """
+        assert os.environ.get(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT) == "STAGING"
+
+    def test_standalone_default_is_production_group(self, monkeypatch):
+        """An UNSET GBTEST_STANDALONE_ENVIRONMENT must give the production group.
+
+        This is the real-user path: nobody outside CI sets a GBTEST_ variable, so
+        the default alone decides which group a standalone push targets. A
+        non-empty default (this was "STAGING") silently sends real users to
+        gbspace-public-staging, which they cannot write. Deleting the var rather
+        than setting it empty is the point of this test.
+        """
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
+        monkeypatch.delenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, raising=False)
+        assert standalone_rg_environment() == ""
+        assert HfURI.space_name_to_resource_group_name("public") == "gbspace-public"
+
+    @pytest.mark.parametrize(
+        "redirect,expected",
+        [
+            ("STAGING", "gbspace-public-staging"),
+            ("DEV", "gbspace-public-dev"),
+        ],
+    )
+    def test_standalone_alias_honors_test_redirection(
+        self, monkeypatch, redirect, expected
+    ):
+        """A test run redirects the standalone space to a group it owns.
+
+        GBTEST_STANDALONE_ENVIRONMENT exists so a test run pushes into a
+        non-production group instead of the real one. Alias folding happens first,
+        so "standalone" redirects to that environment's *public* group.
+        """
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "STANDALONE")
+        monkeypatch.setenv(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, redirect)
+        assert HfURI.space_name_to_resource_group_name("standalone") == expected
+
+    @pytest.mark.parametrize("alias", ["standalone", "local"])
+    def test_standalone_aliases_fold_onto_public(self, monkeypatch, alias):
+        """ "standalone"/"local" name the same space as "public".
+
+        `gbserver standalone --space-dir` registers all three as rows pointing at
+        one directory, and only "public" has a provisioned HF resource group, so
+        deriving "gbspace-standalone"/"gbspace-local" would name a group that
+        does not exist on the Hub.
+        """
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "PROD")
+        assert HfURI.space_name_to_resource_group_name(alias) == "gbspace-public"
+
+    @pytest.mark.parametrize("alias", ["STANDALONE", "Local", "  local  "])
+    def test_alias_match_is_case_and_whitespace_insensitive(self, monkeypatch, alias):
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "PROD")
+        assert HfURI.space_name_to_resource_group_name(alias) == "gbspace-public"
+
+    def test_alias_folding_still_gets_the_env_suffix(self, monkeypatch):
+        """Folding happens before the suffix, so the two compose."""
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "DEV")
+        assert (
+            HfURI.space_name_to_resource_group_name("standalone")
+            == "gbspace-public-dev"
+        )
+
+    def test_non_alias_space_name_is_not_rewritten(self, monkeypatch):
+        """Only the standalone aliases fold; a real space keeps its own group."""
+        monkeypatch.setattr("gbcommon.uri.hf.GB_ENVIRONMENT", "PROD")
+        assert (
+            HfURI.space_name_to_resource_group_name("my-team-space")
+            == "gbspace-my-team-space"
         )
 
     def test_empty_space_name_returns_empty(self, monkeypatch):
@@ -1198,12 +1417,12 @@ class TestHfURIPushErrorVisibility:
         assert "403" in caplog.text
 
     def test_mocked_push_short_circuits(self, tmp_path):
-        """With the op mocked, push() returns without touching HfApi."""
+        """With HF mocked, push() returns without touching HfApi."""
         src = tmp_path / "f.bin"
         src.write_bytes(b"data")
         uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.DATASET)
 
-        enable_hf_mocks(HF_OP_PUSH)
+        enable_hf_mocks()
         try:
             with patch("gbcommon.uri.hf.HfApi") as MockApi:
                 uri.push(src)

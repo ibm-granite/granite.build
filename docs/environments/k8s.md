@@ -132,6 +132,64 @@ chmod -R g+rwX /gb-read-write/hfcache
 A directory's mode can only be changed by its owner or root, so run this with sufficient
 privilege; anything it cannot fix is recreated group-writable the next time a pull recreates it.
 
+### Artifact permissions on step output (post-workload `chmod`)
+
+A `umask` sets the *default* mode for newly created files, but it can only mask bits **off** the
+mode a writer asks for — it cannot add any. A workload that explicitly creates a file `0600` gets
+`0600` under any umask. `safetensors` does exactly this (it writes via `mkstemp`, which is `0600`
+by design), so a training step can leave `adapter_model.safetensors` unreadable to every UID but
+its own, sitting beside `0644` siblings.
+
+Because the next step runs in a different pod on a different UID, a subsequent `hfpush` then fails
+on a file that plainly exists:
+
+```
+[Errno 13] Permission denied: '/gb-read-write/custom_output_xxx/model/adapter_model.safetensors'
+```
+
+BYOI steps can run arbitrary code and set arbitrary modes, so the only reliable point of control
+is *after* the workload exits. The step container normalizes the output tree once the workload is
+done:
+
+```bash
+chmod -R g+rwX "${OUTPUT_PATH}"
+```
+
+The block lives in one place — the `gbstepbase.normalizeOutputPermissions` define in
+`charts/gbstepbase/templates/_utils.tpl` — and both the single- and multi-container templates
+`include` it. It references no chart values, so the same copy serves both contexts.
+
+- It runs **before** the exit-code check, so a failed run's partial output is normalized too —
+  later pods still read and retry against it.
+- `g+rwX` (capital `X`) adds group-execute only to directories and files that are *already*
+  executable, never to data files.
+- It is a no-op when `OUTPUT_PATH` is unset or absent, which is the case for the built-in steps
+  (`hfpush`, `hfpull`, `lhpush`, …) — they consume artifacts rather than produce them.
+
+**This is a guard, not a gate.** The artifact is often already readable, and some environments
+forbid `chmod` outright — a read-only or root-squashed mount, or files owned by another UID — so a
+`chmod` failure says nothing about whether the step succeeded and **never fails the step**. It is
+not silent either, since it predicts a later push failure: the step logs a `WARNING` naming the
+paths it could not fix. `chmod -R` continues past individual errors, so a partial pass still does
+its work.
+
+The warning goes to **stdout**, not stderr, and the listing is capped at 10 paths (with the true
+total reported). Both are deliberate: only `command.sh` is tee'd into `/logs/output.log` — the file
+the sidecar monitor tails — and this block runs after that pipeline, so a bare stderr write would
+never reach the log an operator actually reads. Uncapped, a wholly root-squashed tree would emit one
+line per file and flood both the log and the event stream.
+
+`hfpush` also checks readability *before* it starts uploading, so an artifact that is still
+unreadable names every offending path up front instead of failing mid-commit with a
+`PermissionError` that carries no HTTP status (which reads like a Hub outage rather than a local
+`EACCES`).
+
+> [!NOTE]
+> `fsGroup` in a pod `securityContext` is the other way to solve this, but it depends on the
+> volume's CSI driver honouring ownership management — many NFS-backed RWX volumes ignore it — and
+> these charts never see the PVC object (`/gb-read-write` is a path assumed to be pre-mounted).
+> It also cannot fix files that already exist. The `chmod` pass has neither limitation.
+
 ## `step.yaml` — launcher and monitor types
 
 | `type` | Method | When to use |

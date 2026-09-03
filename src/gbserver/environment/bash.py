@@ -368,6 +368,7 @@ class Bash(Environment):
         assetstore=None,
         run_metadata=None,
         storepush_config=None,
+        output_config=None,
         **_kwargs,
     ) -> Any:
         """Upload a local file/dir to a HuggingFace repo (hf:// output).
@@ -382,7 +383,10 @@ class Bash(Environment):
         :param assetstore: ``Hfstore`` whose secrets supply the HF token.
         :param run_metadata: ``EntityRunMetadata`` with build/target identifiers.
         :param storepush_config: Environment-level push config; ``mode`` must be
-            unset or ``"default"``.
+            unset or ``"default"``. Its ``hf`` block is forwarded so the resource
+            group settings apply here as they do on the step-based environments.
+        :param output_config: Per-output build.yaml config, forwarded so
+            ``store_push.config.hf`` (including ``use_resource_group``) is honored.
         :returns: The resolved ``HfURI`` after a successful push.
         :raises ValueError: on a non-'default' mode, or a binding without 'path'.
         """
@@ -395,6 +399,8 @@ class Bash(Environment):
             uri=uri,
             assetstore=assetstore,
             run_metadata=run_metadata,
+            storepush_config=storepush_config,
+            output_config=output_config,
         )
 
     async def pushasset_filestore(

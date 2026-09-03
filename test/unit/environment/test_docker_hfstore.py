@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gbcommon.uri.hf import HfType, HfURI
+from gbserver.asset.hfstore import Hfstore
 from gbserver.environment.docker import Docker
 from gbserver.environment.environment import BINDING_KEY
 from gbserver.environment.local_assets import (
@@ -195,9 +196,15 @@ def test_resolve_host_path_prefers_longest_prefix(docker_env, tmp_path):
 
 @pytest.fixture
 def push_assetstore():
-    """Mock assetstore with an HF_TOKEN in its secrets."""
+    """Mock assetstore with an HF_TOKEN in its secrets.
+
+    Declares the "org" namespace used by these tests as an HF Enterprise org so
+    the push path resolves a resource group; a non-Enterprise org skips
+    resolution by design (see is_enterprise_hf_org).
+    """
     store = MagicMock()
     store.get_secrets.return_value = {"HF_TOKEN": "test-hf-token"}
+    store.get_enterprise_organizations.return_value = ["org"]
     return store
 
 
@@ -261,6 +268,7 @@ async def test_pushasset_hfstore_calls_hfuri_push(
     mock_push.assert_called_once_with(
         src,
         commit_message="Upload via gbserver [build= target= output=]",
+        private=True,
         resource_group_id="rg-id",
     )
 
@@ -383,6 +391,9 @@ async def test_push_asset_hfstore_uses_cached_resource_group_id(tmp_path):
     store = MagicMock()
     store.get_secrets.return_value = {"HF_TOKEN": "tok"}
     store.resolve_token.return_value = "tok"
+    # "org" must be declared Enterprise, or the resource group is skipped by
+    # design (see is_enterprise_hf_org).
+    store.get_enterprise_organizations.return_value = ["org"]
     uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
 
     with (
@@ -404,6 +415,7 @@ async def test_push_asset_hfstore_uses_cached_resource_group_id(tmp_path):
     mock_push.assert_called_once_with(
         src,
         commit_message="Upload via gbserver [build= target= output=my-output]",
+        private=True,
         resource_group_id="cached-rg-id",
     )
 
@@ -413,7 +425,8 @@ async def test_push_asset_hfstore_best_effort_on_resolve_failure(tmp_path):
     """A failed resource-group resolution does not abort the push.
 
     In standalone the local user's token typically can't resolve the id via the
-    HF API. The push must proceed with resource_group_id=None (matching
+    HF API. The push must still be private (the default survives the failure
+    path) and proceed with resource_group_id=None (matching
     pre-cache behavior) rather than raising.
     """
     src = tmp_path / "model.bin"
@@ -441,6 +454,7 @@ async def test_push_asset_hfstore_best_effort_on_resolve_failure(tmp_path):
     mock_push.assert_called_once_with(
         src,
         commit_message="Upload via gbserver [build= target= output=my-output]",
+        private=True,
         resource_group_id=None,
     )
 
@@ -551,3 +565,150 @@ def test_pull_asset_hfstore_bucket_cache_path_omits_revision(tmp_path):
         result = pull_asset_hfstore(uri, store, sc)
 
     assert result == tmp_path / "cache" / "org" / "my-bucket"
+
+
+@pytest.mark.asyncio
+async def test_push_asset_hfstore_tolerates_non_hfstore_assetstore(tmp_path):
+    """A non-Hfstore assetstore must not abort the push.
+
+    ``get_enterprise_organizations()`` is declared only on ``Hfstore``, and this
+    inline path (shared by the Bash and Docker environments) has no isinstance
+    assert — so reading it directly would turn any other assetstore into a fatal
+    AttributeError on a best-effort code path. Absent the list we fall back to
+    None, which ``is_enterprise_hf_org`` treats as "every org is Enterprise",
+    i.e. the pre-split behavior.
+    """
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+    # A double WITHOUT get_enterprise_organizations (spec= omits it).
+    store = MagicMock(spec=["get_secrets", "resolve_token"])
+    store.get_secrets.return_value = {"HF_TOKEN": "tok"}
+    store.resolve_token.return_value = "tok"
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+
+    with (
+        patch(
+            "gbserver.environment.local_assets.resolve_space_resource_group_id",
+            return_value="rg-id",
+        ) as mock_resolve,
+        patch.object(HfURI, "push", return_value=True) as mock_push,
+    ):
+        result = push_asset_hfstore(
+            src=str(src), binding_id="out", uri=uri, assetstore=store
+        )
+
+    assert result is uri
+    # None => treated as Enterprise, so resolution still runs (pre-split behavior).
+    mock_resolve.assert_called_once()
+    assert mock_push.call_args.kwargs["resource_group_id"] == "rg-id"
+
+
+@pytest.mark.asyncio
+async def test_push_asset_hfstore_honors_store_push_use_resource_group(tmp_path):
+    """The inline path must honor store_push, like the step-based environments.
+
+    bash/docker have no hfpush step, so `store_push.config.hf` reaches HF only if
+    they forward it into push_asset_hfstore. Without that, documented build.yaml
+    fields (use_resource_group / resource_group_id / resource_group_name) are
+    silently dropped on exactly the two environments where the non-Enterprise use
+    case lives.
+    """
+    from gbserver.types.assetstoreconfig import AssetStoreConfig
+
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+    store = Hfstore(
+        AssetStoreConfig(base_uri="hf:/", config={"enterprise_organizations": ["org"]})
+    )
+    store.resolve_token = lambda uri: "tok"  # type: ignore[method-assign]
+    store.get_secrets = lambda: {"HF_TOKEN": "tok"}  # type: ignore[method-assign]
+
+    output_config = MagicMock()
+    output_config.store_push = MagicMock()
+    output_config.store_push.config = {"hf": {"use_resource_group": False}}
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with (
+        patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            return_value="should-not-be-used",
+        ) as mock_resolve,
+        patch.object(HfURI, "push", return_value=True) as mock_push,
+    ):
+        push_asset_hfstore(
+            src=str(src),
+            binding_id="out",
+            uri=uri,
+            assetstore=store,
+            output_config=output_config,
+        )
+
+    assert mock_push.call_args.kwargs["resource_group_id"] is None
+    mock_resolve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_docker_pushasset_forwards_push_configs(docker_env, tmp_path):
+    """docker.pushasset_hfstore must forward both push configs to the helper."""
+    src = tmp_path / "m.bin"
+    src.write_bytes(b"w")
+    storepush_config = MagicMock()
+    storepush_config.mode = "default"
+    storepush_config.config = {"hf": {"private": False}}
+    output_config = MagicMock()
+    output_config.store_push = MagicMock()
+    output_config.store_push.config = {"hf": {"resource_group_id": "rg-out"}}
+
+    with patch(
+        "gbserver.environment.docker.push_asset_hfstore", return_value=None
+    ) as mock_helper:
+        await docker_env.pushasset_hfstore(
+            binding={"path": str(src)},
+            uri=HfURI.from_parts(owner="org", repo="r"),
+            assetstore=MagicMock(),
+            storepush_config=storepush_config,
+            output_config=output_config,
+        )
+
+    kwargs = mock_helper.call_args.kwargs
+    assert kwargs["storepush_config"] is storepush_config
+    assert kwargs["output_config"] is output_config
+
+
+@pytest.mark.asyncio
+async def test_push_asset_hfstore_uses_the_resolved_space_name(tmp_path):
+    """The inline push must forward the space from the space config, not a literal.
+
+    This path used to overwrite the resolved name with a hardcoded "public", so
+    every bash/docker push to an Enterprise org resolved its resource group as if
+    the build lived in the `public` space. The standalone aliases are folded onto
+    "public" inside HfURI.space_name_to_resource_group_name instead, so a real
+    space name now survives.
+    """
+    from gbcommon.uri.uri import URI
+    from gbserver.types.assetstoreconfig import AssetStoreConfig
+
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+    store = Hfstore(
+        AssetStoreConfig(
+            base_uri="hf:/", config={"enterprise_organizations": ["ibm-research"]}
+        )
+    )
+    store.resolve_token = lambda uri: "tok"  # type: ignore[method-assign]
+    store.get_secrets = lambda: {"HF_TOKEN": "tok"}  # type: ignore[method-assign]
+
+    uri = HfURI.from_parts(owner="ibm-research", repo="repo", hf_type=HfType.MODEL)
+    with (
+        patch.object(
+            URI, "get_space_config", return_value={"space": {"name": "my-team-space"}}
+        ),
+        patch(
+            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            return_value="rg-id",
+        ) as mock_resolve,
+        patch.object(HfURI, "push", return_value=True),
+    ):
+        push_asset_hfstore(src=str(src), binding_id="out", uri=uri, assetstore=store)
+
+    assert mock_resolve.call_args.kwargs["space_name"] == "my-team-space"

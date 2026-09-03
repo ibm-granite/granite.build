@@ -60,16 +60,17 @@ def mock_hfuri():
 
 @pytest.fixture
 def mock_resolve_rg():
-    """Patch the server-side resource group resolver used by pushasset_hfstore.
+    """Patch the resource group resolution used by pushasset_hfstore.
 
     Resolution is delegated to
-    ``gbserver.spaces.resource_group.resolve_space_resource_group_id`` (imported
+    ``gbserver.spaces.resource_group.resolve_hfpush_resource_group_id`` (imported
     into the lsf env module); patch it there so tests never touch storage or the
-    HF API.
+    HF API. It returns ``(resource_group_id, private, hf_config)``; the default
+    here mirrors a push with no resource group and the default private=True.
     """
     with patch(
-        "gbserver.environment.lsf.resolve_space_resource_group_id",
-        return_value=None,
+        "gbserver.environment.lsf.resolve_hfpush_resource_group_id",
+        return_value=(None, True, {}),
     ) as mock:
         yield mock
 
@@ -248,12 +249,19 @@ class TestPushassetHfstore:
 
     @pytest.mark.asyncio
     async def test_private_flag_from_storepush_config(
-        self, lsf_env, mock_hfuri, mock_hf_metadata, mock_resolve_rg
+        self, lsf_env, mock_hfuri, mock_hf_metadata
     ):
-        """pushasset_hfstore picks up private=False from storepush_config."""
+        """pushasset_hfstore picks up private=False from storepush_config.
+
+        Uses the real resolver (not ``mock_resolve_rg``) so the env-level
+        ``private`` actually flows through resolve_hfpush_resource_group_id.
+        The org is non-Enterprise here, so no HF API call is made.
+        """
         from gbserver.asset.hfstore import Hfstore
 
         assetstore = MagicMock(spec=Hfstore)
+        # Non-Enterprise org => resource group resolution is skipped entirely.
+        assetstore.get_enterprise_organizations.return_value = ["some-other-org"]
         storepush_config = MagicMock()
         storepush_config.mode = "default"
         storepush_config.config = {"hf": {"private": False}}

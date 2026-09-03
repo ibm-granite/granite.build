@@ -129,6 +129,31 @@ def create_unhealthy_event(node_name: str = "worker-node-1") -> BuildEvent:
     )
 
 
+def create_quota_exhaustion_event(state: str = "Running") -> BuildEvent:
+    """A still-live AppWrapper (``state``) whose pod is stuck in FailedScheduling
+    due to cluster-wide GPU exhaustion -- transient scheduling backpressure, not
+    a terminal failure. Matches UnhealthyInsufficientPodsRetryStrategy."""
+    events = [
+        {
+            "object_type": "Pod",
+            "object_name": "gbtest-0-0",
+            "reason": "FailedScheduling",
+            "message": "0/179 nodes are available: 156 Insufficient nvidia.com/gpu.",
+        }
+    ]
+    data = {"appwrapper": "gbtest", "state": state, "events": events}
+    msg = f"```json\n{json.dumps(data, indent=2)}\n```"
+    payload = EventPayload.payload_parser(
+        event_type=BuildEventType.MESSAGE_EVENT,
+        data={"msg": msg},
+    )
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(build_id="test-build-id"),
+        type=BuildEventType.MESSAGE_EVENT,
+        payload=payload,
+    )
+
+
 class TestRetryHandler:
     """Tests for RetryHandler orchestration logic."""
 
@@ -650,7 +675,12 @@ class TestExhaustedRetriableIsTerminal:
         """max_retries reached + a strategy would retry + no terminal json block
         -> raise WorkloadFailedException instead of silently forwarding."""
         handler = self._handler(0, AlwaysRetryStrategy())
-        await handler.get_wrapper_queue().put(create_test_event("transient error"))
+        event = create_test_event("transient error")
+        # Coupling that preserves #254: a stateless event (no json state block) is
+        # not a live non-terminal state, so the exhausted-retriable escalation is
+        # allowed to fire and unblock a monitor's deferred wait (e.g. LSF).
+        assert handler._is_live_nonterminal_state(event) is False
+        await handler.get_wrapper_queue().put(event)
         with pytest.raises(WorkloadFailedException):
             await asyncio.wait_for(handler.process_events(), timeout=5.0)
         # The event is still forwarded downstream before the exception is raised.
@@ -671,3 +701,47 @@ class TestExhaustedRetriableIsTerminal:
         handler.stop()
         await processor_task  # completes without raising
         assert handler.downstream_queue.qsize() == 1
+
+    @pytest.mark.asyncio
+    async def test_running_appwrapper_with_quota_exhaustion_does_not_raise(
+        self: Self,
+    ) -> None:
+        """Regression for #335: a retriable quota-exhaustion event on a still-live
+        (state=Running) AppWrapper must NOT be failed as terminal even when retries
+        are disabled (max_retries=0). The workload is alive and merely waiting for
+        GPU capacity; the exhausted-retriable escalation is only meant to unblock a
+        monitor deferred-waiting for a retry (e.g. LSF), not to fail a running one."""
+        handler = self._handler(
+            0, UnhealthyInsufficientPodsRetryStrategy(object_types=["AppWrapper"])
+        )
+        await handler.get_wrapper_queue().put(create_quota_exhaustion_event("Running"))
+        processor_task = asyncio.create_task(handler.process_events())
+        for _ in range(100):
+            if handler.downstream_queue.qsize() >= 1:
+                break
+            await asyncio.sleep(0.01)
+        handler.stop()
+        await processor_task  # completes without raising
+        assert handler.downstream_queue.qsize() == 1
+        assert handler.environment.retry_called is False
+
+    def test_is_live_nonterminal_state(self: Self) -> None:
+        """A present, non-terminal state (Running/Unhealthy) is live; a terminal
+        state (Failed) or a stateless event is not -- so LSF-style plain failure
+        events still escalate when retries are exhausted."""
+        h = self._handler(0, NeverRetryStrategy())
+        assert (
+            h._is_live_nonterminal_state(create_quota_exhaustion_event("Running"))
+            is True
+        )
+        assert (
+            h._is_live_nonterminal_state(create_quota_exhaustion_event("Unhealthy"))
+            is True
+        )
+        failed = create_test_event('\n```json\n{"state": "Failed"}\n```\n')
+        assert h._is_live_nonterminal_state(failed) is False
+        exception = create_test_event('\n```json\n{"state": "Exception: boom"}\n```\n')
+        assert h._is_live_nonterminal_state(exception) is False
+        assert (
+            h._is_live_nonterminal_state(create_test_event("transient error")) is False
+        )

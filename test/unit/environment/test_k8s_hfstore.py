@@ -266,3 +266,226 @@ class TestSharedPvcPermissions:
             text = template.read_text(encoding="utf-8")
             assert "run_as_root_group" in text, f"{template.name}: no gate"
             assert "runAsGroup: 0" in text, f"{template.name}: no runAsGroup"
+
+
+class TestArtifactPermissionNormalization:
+    """Guards for the post-workload chmod that makes produced artifacts readable.
+
+    A umask only masks bits off the mode a writer asks for, so a workload that
+    explicitly creates a file ``0600`` (safetensors' ``mkstemp`` does) still
+    leaves it unreadable to a later pod on a different UID. BYOI steps can run
+    anything and set any mode, so the only reliable point of control is after
+    the workload exits: normalize the tree where it becomes shared state.
+    """
+
+    WORKLOAD_TEMPLATES = CONTAINER_TEMPLATES[:2]
+    # The block itself lives in one place; both container templates `include` it.
+    UTILS_TEMPLATE = CHART_DIR / "charts/gbstepbase/templates/_utils.tpl"
+    INCLUDE_NAME = "gbstepbase.normalizeOutputPermissions"
+
+    @classmethod
+    def _epilogue(cls) -> list[str]:
+        """Return the shared chmod epilogue's bash body, de-indented.
+
+        Read from the single ``define`` rather than from each container template:
+        the block is emitted at column 0 there and the call sites re-indent it,
+        which is what makes one copy serve both contexts.
+        """
+        lines = cls.UTILS_TEMPLATE.read_text(encoding="utf-8").splitlines()
+        starts = [
+            i
+            for i, ln in enumerate(lines)
+            if ln.strip() == f'{{{{- define "{cls.INCLUDE_NAME}" }}}}'
+        ]
+        assert len(starts) == 1, f"expected exactly one {cls.INCLUDE_NAME} define"
+        i = starts[0]
+        end = next(
+            n for n in range(i + 1, len(lines)) if lines[n].strip() == "{{- end }}"
+        )
+        return lines[i + 1 : end]
+
+    @pytest.mark.parametrize("template", WORKLOAD_TEMPLATES, ids=lambda p: p.name)
+    def test_epilogue_is_included_not_duplicated(self, template):
+        """Each container template calls the shared define -- it does not inline it.
+
+        The block is ~30 lines of bash; two hand-maintained copies would drift.
+        """
+        text = template.read_text(encoding="utf-8")
+        assert self.INCLUDE_NAME in text, f"{template.name}: does not include the block"
+        assert "g+rwX" not in text, f"{template.name}: still inlines the chmod"
+
+    def test_epilogue_defined_exactly_once(self):
+        """Exactly one copy of the bash exists across the whole chart."""
+        copies = [
+            p
+            for p in CHART_DIR.rglob("*.tpl")
+            if "g+rwX" in p.read_text(encoding="utf-8")
+        ]
+        assert copies == [self.UTILS_TEMPLATE], f"chmod bash duplicated in {copies}"
+
+    @pytest.mark.parametrize("template", WORKLOAD_TEMPLATES, ids=lambda p: p.name)
+    def test_epilogue_runs_after_workload_but_before_exit_check(self, template):
+        """Ordering: after the workload's exit code is captured, before it is acted on.
+
+        It must follow the workload (there is nothing to fix before that) and
+        precede the ``exit 1``, so a failed run's partial output is normalized
+        too -- later pods still read and retry against it.
+        """
+        lines = template.read_text(encoding="utf-8").splitlines()
+        capture = [
+            i
+            for i, ln in enumerate(lines)
+            if ln.strip().startswith("COMMAND_SH_EXIT_CODE=")
+        ]
+        include = [i for i, ln in enumerate(lines) if self.INCLUDE_NAME in ln]
+        check = [
+            i
+            for i, ln in enumerate(lines)
+            if ln.strip().startswith('if [[ "${COMMAND_SH_EXIT_CODE}" != "0" ]]')
+        ]
+        assert include, f"{template.name}: no epilogue include"
+        assert capture, f"{template.name}: no exit-code capture"
+        assert check, f"{template.name}: no exit-code check"
+        assert (
+            min(capture) < include[0]
+        ), f"{template.name}: epilogue precedes the workload"
+        assert include[0] < min(
+            check
+        ), f"{template.name}: epilogue after the exit check"
+
+    @staticmethod
+    def _stub_chmod(directory: Path, lines: int, exit_code: int) -> Path:
+        """Put a ``chmod`` on PATH that emits ``lines`` errors and exits ``exit_code``.
+
+        Stands in for a mount that refuses ``chmod`` -- a read-only or
+        root-squashed PVC, or files owned by another UID -- which cannot be
+        reproduced as the owning user, since the owner may always chmod its own
+        files regardless of the mode bits.
+        """
+        stub = directory / "chmod"
+        body = ["#!/bin/sh"]
+        for n in range(lines):
+            body.append(
+                f'echo "chmod: Unable to change file mode on /out/f{n}.bin:'
+                ' Operation not permitted" >&2'
+            )
+        body.append(f"exit {exit_code}")
+        stub.write_text("\n".join(body) + "\n")
+        stub.chmod(0o755)
+        return stub
+
+    @pytest.mark.parametrize("exit_code", (0, 1), ids=("chmod-exit-0", "chmod-exit-1"))
+    def test_epilogue_never_fails_the_step(self, exit_code, tmp_path):
+        """A refused ``chmod`` must not fail the step -- the guard is not a gate.
+
+        Some environments forbid ``chmod`` outright while the artifact is already
+        perfectly readable, so a non-zero ``chmod`` here says nothing about
+        whether the step succeeded.
+        """
+        block = "\n".join(self._epilogue())
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "f.bin").write_bytes(b"x")
+        stub_dir = tmp_path / f"bin{exit_code}"
+        stub_dir.mkdir()
+        self._stub_chmod(stub_dir, lines=3, exit_code=exit_code)
+
+        result = subprocess.run(
+            ["bash", "-c", f"set -o pipefail\nOUTPUT_PATH={out}\n{block}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": f"{stub_dir}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_epilogue_reports_failures_where_the_monitor_can_see_them(self, tmp_path):
+        """A refused ``chmod`` must be visible, and capped.
+
+        Only ``command.sh`` is tee'd to ``/logs/output.log`` -- the file the
+        sidecar monitor tails -- and this block runs after that pipeline, so the
+        diagnostics must go to stdout or they never reach the log an operator
+        reads. The listing is capped because a wholly root-squashed tree emits
+        one line per file.
+        """
+        block = "\n".join(self._epilogue())
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "f.bin").write_bytes(b"x")
+        stub_dir = tmp_path / "bin"
+        stub_dir.mkdir()
+        self._stub_chmod(stub_dir, lines=25, exit_code=1)
+
+        result = subprocess.run(
+            ["bash", "-c", f"set -o pipefail\nOUTPUT_PATH={out}\n{block}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": f"{stub_dir}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        # On stdout, not stderr: stderr would bypass the monitored log.
+        assert "WARNING" in result.stdout, "failure not reported on stdout"
+        assert "25 path(s)" in result.stdout, "true failure count not reported"
+        assert "and 15 more" in result.stdout, "listing not capped"
+        assert result.stdout.count("Operation not permitted") == 10, "cap not applied"
+
+    def test_epilogue_uses_capital_x(self):
+        """``g+rwX`` must not become ``g+rwx`` -- that would mark data executable."""
+        block = "\n".join(self._epilogue())
+        assert "g+rwX" in block, "expected g+rwX"
+        assert "g+rwx" not in block, "g+rwx would chmod data +x"
+
+    def test_rendered_epilogue_makes_a_0600_artifact_group_readable(self, tmp_path):
+        """Run the real block: the reported failure mode must be fixed.
+
+        Reproduces the reported tree -- a 0600 ``adapter_model.safetensors``
+        beside 0644 siblings -- and asserts the epilogue makes it group-readable
+        while leaving the group-execute bit off the data files.
+        """
+        block = "\n".join(self._epilogue())
+        out = tmp_path / "custom_output"
+        sub = out / "granite-4.1-3b_finance"
+        sub.mkdir(parents=True)
+        data = sub / "adapter_model.safetensors"
+        data.write_bytes(b"x")
+        data.chmod(0o600)
+        readme = sub / "README.md"
+        readme.write_text("x")
+        readme.chmod(0o644)
+        script = sub / "run.sh"
+        script.write_text("x")
+        script.chmod(0o744)
+        sub.chmod(0o755)
+
+        result = subprocess.run(
+            ["bash", "-c", f"set -o pipefail\nOUTPUT_PATH={out}\n{block}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+        mode = lambda f: f.stat().st_mode & 0o777
+        assert mode(data) & 0o040, "data file still not group-readable"
+        assert not mode(data) & 0o010, "data file must not become group-executable"
+        assert mode(readme) & 0o040, "sibling file not group-readable"
+        assert mode(script) & 0o010, "already-executable file should keep group-execute"
+        assert mode(sub) & 0o050, "directory must stay group-readable/traversable"
+
+    def test_rendered_epilogue_is_a_noop_without_output_path(self, tmp_path):
+        """Built-in steps set no OUTPUT_PATH; the block must exit cleanly anyway.
+
+        ``OUTPUT_PATH`` comes from the gbstep chart's values.yaml, so hfpush and
+        the other built-in k8s steps run this block with the variable unset.
+        """
+        block = "\n".join(self._epilogue())
+        for script in (
+            f"set -o pipefail\nunset OUTPUT_PATH\n{block}",
+            f"set -o pipefail\nOUTPUT_PATH={tmp_path}/missing\n{block}",
+        ):
+            result = subprocess.run(
+                ["bash", "-c", script], capture_output=True, text=True, check=False
+            )
+            assert result.returncode == 0, result.stderr
+            assert "Normalizing" not in result.stdout

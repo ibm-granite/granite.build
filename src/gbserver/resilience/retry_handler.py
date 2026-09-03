@@ -394,10 +394,22 @@ class RetryHandler:
                 # retry -- but can't, because retry_count >= max_retries -- would
                 # be neither relaunched nor raised, leaving a monitor's deferred
                 # wait (e.g. LSF's _retry_pending_after_monitor) hanging forever.
+                #
+                # But this escalation must not fire while the workload is still
+                # live: a retriable event that reports a present, non-terminal
+                # state (e.g. a K8s AppWrapper still Running/Unhealthy whose pod
+                # is stuck in FailedScheduling on cluster-wide GPU exhaustion) is
+                # transient backpressure, not a failure. Failing it -- especially
+                # when retries are disabled (max_retries == 0, so retry_count 0 >=
+                # 0 is immediately true) -- would turn a workload that is merely
+                # waiting for capacity, and may still succeed, into a false-positive
+                # build failure (#335). Stateless failure events (e.g. LSF's) carry
+                # no state and so still escalate.
                 retries_exhausted_on_retriable = (
                     not retry_triggered
                     and self.retry_count >= self.max_retries
                     and self._is_retriable_event(event)
+                    and not self._is_live_nonterminal_state(event)
                 )
 
                 # Always forward the event downstream, but enrich with retry metadata
@@ -685,6 +697,67 @@ class RetryHandler:
         """Stop processing events."""
         self.stop_processing = True
 
+    def _parse_event_json(self: Self, event: BuildEvent) -> Optional[dict]:
+        """Parse the ```json block an AppWrapper monitor embeds in the event msg.
+
+        Single source of truth for the state classifiers
+        (``_is_terminal_failure_event`` / ``_is_live_nonterminal_state``) and the
+        failure-message formatter, so the extraction can't drift between them.
+
+        Args:
+            event: BuildEvent from the monitor
+
+        Returns:
+            The decoded object, or ``None`` when the event has no ``msg``, no
+            ```json``` block, the block is not valid JSON, or it does not decode
+            to an object.
+        """
+        msg = getattr(event.payload, "msg", None)
+        if not msg:
+            return None
+        json_match = re.search(r"```json\s*\n(.*?)\n```", msg, re.DOTALL)
+        if not json_match:
+            return None
+        try:
+            data = json.loads(json_match.group(1))
+        except (json.JSONDecodeError, AttributeError) as e:
+            logger.debug(
+                "[RetryHandler launch_id %s] Could not parse event message as JSON: %s",
+                self.launch_id,
+                e,
+            )
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _is_live_nonterminal_state(self: Self, event: BuildEvent) -> bool:
+        """
+        Report whether the event shows the workload is still live / non-terminal.
+
+        A retriable event that reports a present, non-terminal ``state`` (e.g. a
+        K8s AppWrapper still ``Running``/``Unhealthy`` while a pod waits on GPU
+        capacity) describes transient backpressure, not a failure -- so it must
+        not be escalated to a terminal verdict when retries are exhausted/disabled
+        (see ``process_events``).
+
+        Returns False when no ``state`` can be parsed (e.g. LSF-style plain failure
+        events), so those still escalate, and False for terminal states
+        (``Failed`` / ``Exception:``), which are handled by
+        ``_is_terminal_failure_event``.
+
+        Args:
+            event: BuildEvent from the monitor
+
+        Returns:
+            bool: True if the event reports a present, non-terminal state
+        """
+        data = self._parse_event_json(event)
+        if data is None:
+            return False
+        state = data.get("state", "")
+        if not state or state == "Failed" or state.startswith("Exception:"):
+            return False
+        return True
+
     def _is_terminal_failure_event(self: Self, event: BuildEvent) -> bool:
         """
         Determine if an event represents a terminal workload failure.
@@ -713,27 +786,12 @@ class RetryHandler:
         ):
             return True
 
-        msg = getattr(payload, "msg", None)
-        if not msg:
+        data = self._parse_event_json(event)
+        if data is None:
             return False
-
-        # Parse JSON from markdown code blocks
-        try:
-            # Extract JSON from ```json ... ``` blocks
-            json_match = re.search(r"```json\s*\n(.*?)\n```", msg, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(1))
-                state = data.get("state", "")
-                # Terminal states that should stop the build
-                return state == "Failed" or state.startswith("Exception:")
-        except (json.JSONDecodeError, AttributeError) as e:
-            logger.debug(
-                "[RetryHandler launch_id %s] Could not parse event message as JSON: %s",
-                self.launch_id,
-                e,
-            )
-
-        return False
+        state = data.get("state", "")
+        # Terminal states that should stop the build
+        return state == "Failed" or state.startswith("Exception:")
 
     def _extract_failure_message(self: Self, event: BuildEvent) -> str:
         """
@@ -745,26 +803,19 @@ class RetryHandler:
         Returns:
             str: Error message describing the failure
         """
-        if not event.payload or not hasattr(event.payload, "msg"):
-            return f"Workload failed for launch_id {self.launch_id}"
+        data = self._parse_event_json(event)
+        if data is not None:
+            appwrapper = data.get("appwrapper", "unknown")
+            state = data.get("state", "Failed")
+            return (
+                f"[RetryHandler launch_id {self.launch_id}] {appwrapper} is in a {state} state. "
+                + "Build will stop because of an appwrapper workload error. "
+                + "The `failed_pods` and `events` sections in the message above have more error details."
+            )
 
-        msg = event.payload.msg
+        # No parseable AppWrapper JSON: preserve the original wording,
+        # distinguishing "no message at all" from "message present but not JSON".
+        msg = getattr(event.payload, "msg", None) if event.payload else None
         if not msg:
             return f"Workload failed for launch_id {self.launch_id}"
-
-        # Try to extract more context from JSON
-        try:
-            json_match = re.search(r"```json\s*\n(.*?)\n```", msg, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(1))
-                appwrapper = data.get("appwrapper", "unknown")
-                state = data.get("state", "Failed")
-                return (
-                    f"[RetryHandler launch_id {self.launch_id}] {appwrapper} is in a {state} state. "
-                    + "Build will stop because of an appwrapper workload error. "
-                    + "The `failed_pods` and `events` sections in the message above have more error details."
-                )
-        except (json.JSONDecodeError, AttributeError):
-            pass
-
         return f"[RetryHandler launch_id {self.launch_id}] Workload failed. See event message for details."
