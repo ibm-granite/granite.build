@@ -102,11 +102,7 @@ outputs:
     uri: file:workspace/checkpoint
   model:
     uri: hf://huggingface.co/my-org/my-model
-    store_push:
-      mode: hf_push 
-      config:
-        hf:
-          private: false
+    public: true                     # HF-only: publish the repo (default private)
   server_url:
     uri: "mem://server_url"          # opaque value passed to a downstream target (no type/store_push)
 ```
@@ -114,6 +110,7 @@ outputs:
 | Field             | Type    | Required | Default | Notes |
 |-------------------|---------|----------|---------|-------|
 | `uri`             | string  | no       | —       | Output URI. Supports Jinja templating, e.g. `hf://huggingface.co/datasets/.../{{ run_metadata.targetsteprun_id \| short_hash }}`. |
+| `public`          | bool    | no       | `false` | HuggingFace-only convenience flag: publish the pushed repo. Default (private) needs no key. Only valid on `hf://` outputs. See [`hf-push.md`](hf-push.md#making-an-output-public). |
 | `store_push`      | object  | no       | —       | Push to a remote store after the step writes the artifact. See [`hf-push.md`](hf-push.md) for the HF case. |
 | `event_selectors` | list    | no       | `[]`    | Event-payload matchers used by downstream `inputs.event` triggers. |
 
@@ -154,8 +151,8 @@ and [Asset stores — In-memory](../asset-stores/README.md#store-types-and-uri-s
 
 | Field    | Type   | Required | Notes |
 |----------|--------|----------|-------|
-| `mode`   | string | yes      | `hfstore`, `lhstore`, `cosstore`, etc. |
-| `config` | object | no       | Mode-specific (e.g. `hf.private`, `hf.resource_group_id`, `hf.resource_group_name`, `hf.use_resource_group`). |
+| `mode`   | string | no       | Rarely needed — the store is inferred from the output `uri` scheme. Honored only by k8s; ignored (deprecation warning) elsewhere. |
+| `config` | object | no       | Store-specific (e.g. `hf.public`, `hf.resource_group_id`, `hf.resource_group_name`, `hf.use_resource_group`). |
 
 For HuggingFace specifically, see [`hf-push.md`](hf-push.md) — it documents
 the full URI format, resource-group resolution, the Enterprise vs

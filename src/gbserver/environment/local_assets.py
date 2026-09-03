@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from gbserver.spaces.resource_group import (
+from gbserver.spaces.hf_push_config import (
     HfPushConfigError,
     resolve_hfpush_private,
     resolve_hfpush_resource_group_id,
@@ -148,7 +148,7 @@ def push_asset_hfstore(
         run_metadata: EntityRunMetadata with ``build_id`` and ``target_name``.
         storepush_config: Environment-level ``store_push`` (environment.yaml)
             supplying ``config.hf`` (``resource_group_id`` /
-            ``resource_group_name`` / ``use_resource_group`` / ``private``).
+            ``resource_group_name`` / ``use_resource_group`` / ``public``).
         output_config: Per-output config whose ``store_push`` (build.yaml)
             overrides the environment level.
 

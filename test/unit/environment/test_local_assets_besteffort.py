@@ -42,7 +42,7 @@ from gbcommon.uri.hf import HfURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.hfstore import Hfstore
 from gbserver.environment.local_assets import push_asset_hfstore
-from gbserver.spaces.resource_group import HfPushConfigError
+from gbserver.spaces.hf_push_config import HfPushConfigError
 
 
 @pytest.fixture
@@ -147,7 +147,7 @@ def test_miss_from_the_real_resolver_chain_still_pushes(
         patch.object(HfURI, "_resolve_resource_group_id", return_value=None),
         patch("gbcommon.uri.hf.HfApi"),
         patch("gbcommon.uri.hf.is_hf_mocked", return_value=False),
-        patch("gbserver.spaces.resource_group.get_admin_storage") as get_storage,
+        patch("gbserver.spaces.hf_push_config.get_admin_storage") as get_storage,
     ):
         get_storage.return_value.space_storage.get_by_name.return_value = None
         _run(src=src_dir, hfuri=hfuri, assetstore=enterprise_store)

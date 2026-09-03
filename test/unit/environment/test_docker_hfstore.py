@@ -630,7 +630,7 @@ async def test_push_asset_hfstore_honors_store_push_use_resource_group(tmp_path)
     uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
     with (
         patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
             return_value="should-not-be-used",
         ) as mock_resolve,
         patch.object(HfURI, "push", return_value=True) as mock_push,
@@ -654,7 +654,7 @@ async def test_docker_pushasset_forwards_push_configs(docker_env, tmp_path):
     src.write_bytes(b"w")
     storepush_config = MagicMock()
     storepush_config.mode = "default"
-    storepush_config.config = {"hf": {"private": False}}
+    storepush_config.config = {"hf": {"public": True}}
     output_config = MagicMock()
     output_config.store_push = MagicMock()
     output_config.store_push.config = {"hf": {"resource_group_id": "rg-out"}}
@@ -704,7 +704,7 @@ async def test_push_asset_hfstore_uses_the_resolved_space_name(tmp_path):
             URI, "get_space_config", return_value={"space": {"name": "my-team-space"}}
         ),
         patch(
-            "gbserver.spaces.resource_group.resolve_space_resource_group_id",
+            "gbserver.spaces.hf_push_config.resolve_space_resource_group_id",
             return_value="rg-id",
         ) as mock_resolve,
         patch.object(HfURI, "push", return_value=True),
