@@ -361,7 +361,9 @@ def _pull_hf_repo(
     live holder look dead, so a peer reclaims the lock. Before each destructive
     self-heal step we therefore re-check ``lock.still_owned()``; if we no longer
     own it we raise :class:`_HfEvicted` rather than mutate a tree the new owner is
-    writing (which would re-induce #320 via dueling repairs). An
+    writing (which would re-induce #320 via dueling repairs). The final download
+    has no following step to re-fence, so a failure there also re-checks ownership
+    and re-waits on eviction instead of surfacing as a build failure. An
     operator-requested ``force`` on the initial attempt is honored regardless.
     """
     lock_held = lock is not None
@@ -435,7 +437,19 @@ def _pull_hf_repo(
     # Re-fence immediately before the destructive scratch rm -rf + re-download.
     _fence_self_heal()
     _clear_hf_download_scratch(dest)
-    _download(True)
+    try:
+        _download(True)
+    except Exception:
+        # Unlike the two earlier attempts -- each of which falls through to a
+        # *following* fenced step that would catch an eviction -- this final
+        # download has nothing after it. A peer that reclaims the lock *during*
+        # it surfaces here as a raw download error, which would otherwise fail
+        # the build instead of counting as a re-wait like every other eviction
+        # point. Re-check ownership: if we were evicted, abandon to the re-wait
+        # (raise _HfEvicted); if we still hold the lock the failure is genuine
+        # and propagates.
+        _fence_self_heal()
+        raise
 
 
 class HfType(StrEnum):

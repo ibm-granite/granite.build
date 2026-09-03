@@ -18,10 +18,12 @@
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+import gbcommon.utils.fs_lock as fs_lock
 from gbcommon.utils.fs_lock import SharedFileSystemLock, _has_recent_activity
 
 
@@ -317,6 +319,52 @@ def test_release_capture_restores_a_peer_recreated_dir(tmp_path):
 def test_still_owned_false_when_not_held(tmp_path):
     lock = SharedFileSystemLock(tmp_path / "s2.lock", timeout=1)
     assert lock.still_owned() is False  # never acquired
+
+
+def test_ownership_retries_a_transient_read_error_not_eviction(tmp_path, monkeypatch):
+    """A transient info-read glitch on a lock we hold must not read as eviction.
+
+    A stale NFS handle / GPFS attribute-cache miss can make ``lock.info`` briefly
+    unreadable on a lock that still names us. Concluding "not ours" there would,
+    in the self-heal fence, abandon a live download to a re-wait while the on-disk
+    dir still names us -- re-acquire then keeps failing until ttl. So a transient
+    read *error* is retried; the second read succeeds and we are still the owner.
+    """
+    monkeypatch.setattr(fs_lock, "OWNERSHIP_READ_RETRY_INTERVAL_S", 0)  # no real wait
+    lock = SharedFileSystemLock(tmp_path / "u.lock", timeout=1)
+    assert lock.acquire() is True
+
+    real_read = Path.read_text
+    reads = {"n": 0}
+
+    def flaky_read(self, *args, **kwargs):
+        if self == lock.info_file:
+            reads["n"] += 1
+            if reads["n"] == 1:
+                raise OSError(116, "Stale file handle")  # transient, dir still there
+        return real_read(self, *args, **kwargs)
+
+    with patch.object(Path, "read_text", flaky_read):
+        assert lock.still_owned() is True, "a transient read glitch is not eviction"
+    assert reads["n"] >= 2, "the transient read error should have been retried"
+    lock.release()
+
+
+def test_ownership_does_not_retry_a_genuinely_absent_info(tmp_path):
+    """A moved-aside (absent) info file is a real handoff: conclude at once.
+
+    Only an *error* on a present lock is ambiguous; a genuinely gone file
+    (``FileNotFoundError`` -- a peer stale-broke and moved the dir aside) is
+    definitively not ours, so it must not burn the retry budget on every eviction.
+    """
+    lock = SharedFileSystemLock(tmp_path / "v.lock", timeout=1)
+    assert lock.acquire() is True
+    lock.info_file.unlink()  # the dir was moved aside under us
+
+    with patch("gbcommon.utils.fs_lock.time.sleep") as mock_sleep:
+        assert lock.still_owned() is False
+    mock_sleep.assert_not_called()  # no retry/backoff for a genuine handoff
+    lock.release()
 
 
 def test_write_info_timestamp_is_integer_for_shell_interop(tmp_path):

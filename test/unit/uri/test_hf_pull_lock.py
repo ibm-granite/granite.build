@@ -381,6 +381,76 @@ def test_pull_rewaits_before_final_scratch_clear_when_evicted(tmp_path):
     assert (scratch / "leftover.incomplete").exists(), "scratch cleared under a peer"
 
 
+def test_pull_rewaits_when_evicted_during_final_download(tmp_path):
+    """Eviction *during* the final self-heal download re-waits, not hard-fails.
+
+    The last self-heal step (scratch clear + re-download) has no following fenced
+    step, so an eviction that lands mid-download surfaces as a raw download error.
+    Unlike the earlier attempts -- which fall through to a fence that catches the
+    eviction -- this one must re-check ownership on failure and abandon to the
+    re-wait (like every other eviction point) rather than fail the build. Here the
+    retry after re-acquiring the freed lock succeeds.
+    """
+    dest = tmp_path / "org" / "repo" / "h"
+    lock_path = _hfpull_lock_path(dest)
+    scratch = dest / ".cache" / "huggingface" / "download"
+    scratch.mkdir(parents=True)
+    calls = []
+
+    def fake_download(*_args, **_kwargs):
+        calls.append(_kwargs.get("force_download"))
+        n = len(calls)
+        if n == 1:
+            raise _incomplete_error(dest)  # recoverable -> force retry
+        if n == 2:
+            raise OSError(  # recoverable -> scratch clear + final retry
+                "Consistency check failed: file should be of size 10 but has size 5"
+            )
+        if n == 3:
+            # Evicted right as the final download runs: a peer reclaims (and
+            # releases) our lock, and the download then errors.
+            shutil.rmtree(lock_path, ignore_errors=True)
+            raise _incomplete_error(dest)
+        # n >= 4: after re-acquiring the freed lock, a fresh download succeeds.
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        result = uri.pull(dest)
+
+    assert result is True, "an eviction in the final download must re-wait, not fail"
+    # normal, force-retry, evicted final, then (after re-wait) a fresh normal pull.
+    assert calls == [False, True, True, False]
+    assert not lock_path.exists(), "the re-acquired lock is released after success"
+
+
+def test_pull_propagates_final_download_failure_when_still_owned(tmp_path):
+    """A genuine (non-eviction) final-download failure still fails the pull.
+
+    The final-attempt eviction re-check must not swallow real errors: if we still
+    hold the lock when the final download raises, that is a genuine failure and
+    propagates (pull returns False) with no re-wait.
+    """
+    dest = tmp_path / "org" / "repo" / "h"
+    calls = []
+
+    def fake_download(*_args, **_kwargs):
+        calls.append(_kwargs.get("force_download"))
+        n = len(calls)
+        if n == 1:
+            raise _incomplete_error(dest)  # recoverable
+        if n == 2:
+            raise OSError("Consistency check failed: size 10 vs 5")  # recoverable
+        # n == 3: final download fails for an unrelated reason, lock still held.
+        raise ValueError("boom")
+
+    uri = HfURI.from_parts(owner="org", repo="repo", hf_type=HfType.MODEL)
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        result = uri.pull(dest)
+
+    assert result is False, "a real final-download failure must propagate, not re-wait"
+    assert calls == [False, True, True], "no re-wait when we still own the lock"
+
+
 def test_pull_gives_up_after_repeated_eviction(tmp_path, monkeypatch):
     """Repeated eviction is capped: past HFPULL_MAX_LOCK_REWAITS, fail cleanly.
 

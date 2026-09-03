@@ -126,12 +126,30 @@ HFPULL_EVICTED_RC=75
 HFPULL_MAX_LOCK_REWAITS=5
 HFPULL_REWAITS=0
 
+# True if lock dir $1 currently names us. Retries a few times on an empty/failed
+# read before concluding "not ours": a transient shared-FS glitch (stale handle,
+# attr-cache miss) on a lock we still hold must not read as eviction/foreign --
+# that would misfire the fence (self-stall until ttl) or skip our own release. A
+# real handoff reads a *different*, non-empty owner and returns at once. Mirrors
+# SharedFileSystemLock._owned_by_us.
+hfpull_owned_by_us() {
+    local lockdir="$1" owner i=0
+    while (( i < 4 )); do
+        owner="$(head -n1 "${lockdir}/lock.info" 2>/dev/null || true)"
+        [[ "${owner}" == "${HFPULL_IDENTITY}" ]] && return 0
+        [[ -n "${owner}" ]] && return 1
+        i=$(( i + 1 ))
+        if (( i < 4 )); then sleep 0.2; fi
+    done
+    return 1
+}
+
 # True if we still hold the lock (its info still names us). Mirrors
 # SharedFileSystemLock.still_owned: a long stall can make a live holder look
 # dead and a peer reclaim it, so the holder fences its own work against that.
 hfpull_still_owned() {
     [[ -n "${HFPULL_LOCK_DIR}" ]] || return 1
-    [[ "$(head -n1 "${HFPULL_LOCK_DIR}/lock.info" 2>/dev/null || true)" == "${HFPULL_IDENTITY}" ]]
+    hfpull_owned_by_us "${HFPULL_LOCK_DIR}"
 }
 
 # Count an eviction re-wait and drop our stale lock handle so the next loop
@@ -155,9 +173,8 @@ hfpull_release_lock() {
     # move it aside atomically before removing (matches _move_aside_and_remove,
     # so a peer that broke our lock cannot have its fresh dir rmdir'd from under
     # it).
-    local owner grave
-    owner="$(head -n1 "${HFPULL_LOCK_DIR}/lock.info" 2>/dev/null || true)"
-    if [[ "${owner}" == "${HFPULL_IDENTITY}" ]]; then
+    local grave
+    if hfpull_owned_by_us "${HFPULL_LOCK_DIR}"; then
         grave="${HFPULL_LOCK_DIR}.released.$$.${RANDOM}"
         if mv "${HFPULL_LOCK_DIR}" "${grave}" 2>/dev/null; then
             rm -rf "${grave}" 2>/dev/null || true
@@ -317,6 +334,14 @@ hfpull_download() {
     echo "hfpull: force re-download still failed; clearing scratch download cache ${HF_DEST}/.cache/huggingface/download and retrying once more" >&2
     rm -rf "${HF_DEST}/.cache/huggingface/download"
     if hf_download_attempt "--force-download" "$@"; then return 0; fi
+    # Unlike the earlier attempts, this final download has no following fence: a
+    # peer that evicted us *during* it surfaces as a raw failure here, so re-check
+    # ownership and abandon to the re-wait rather than fail the build (matches
+    # _pull_hf_repo's final-attempt eviction re-check).
+    if ! hfpull_still_owned; then
+        echo "hfpull: download lock was reclaimed during final self-heal; abandoning to re-wait" >&2
+        return "${HFPULL_EVICTED_RC}"
+    fi
     return 1
 }
 

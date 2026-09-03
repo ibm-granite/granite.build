@@ -67,6 +67,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_POLL_INTERVAL_S = 1.0
 DEFAULT_TIMEOUT_S = 10.0
 
+# Re-reads of lock.info before concluding a lock we hold is no longer ours, when
+# the read *errors transiently* (stale NFS handle, GPFS attribute-cache miss, EIO)
+# on a lock dir that still exists. Such a glitch on a lock that physically still
+# names us must not be misread as eviction: in the self-heal fence that would
+# abandon a live download to a re-wait while the on-disk dir still names us, so
+# re-acquire keeps failing and the holder's own writes read as "recent activity"
+# -- self-stalling until ttl. A *genuinely* absent info file (``FileNotFoundError``
+# -- a peer moved the whole dir aside in a stale-break) is a real handoff and is
+# concluded at once; likewise a read that returns a *different* owner. Retrying is
+# reserved for the ambiguous transient-error case.
+OWNERSHIP_READ_RETRIES = 3
+OWNERSHIP_READ_RETRY_INTERVAL_S = 0.2
+
 
 def _has_recent_activity(root: Path, min_mtime: float) -> bool:
     """True if *root* or any file under it was modified at/after *min_mtime*.
@@ -360,11 +373,29 @@ class SharedFileSystemLock:
             return None
 
     def _owned_by_us(self) -> bool:
-        # acquire() only reports success after writing our identity, so a
-        # missing/unreadable info file here means a peer broke our lock (a ttl
-        # stale-break moves the whole dir aside, so our info file is gone with
-        # it). Never remove a lock we cannot positively confirm is still ours.
-        return self._identity_at(self.info_file) == self.identity
+        # acquire() only reports success after writing our identity, so the info
+        # file names us for as long as we hold the lock. Reading a *different*
+        # owner, or finding the file *gone* (``FileNotFoundError`` -- a ttl
+        # stale-break moved the whole dir aside), is a real handoff: conclude "not
+        # ours" at once. But a *transient* read error (stale NFS handle, GPFS
+        # attribute-cache miss, EIO) on a lock dir that still exists must not be
+        # misread as eviction -- in the fence that would abandon a live download
+        # and then self-stall until ttl (the dir still names us, so re-acquire
+        # keeps failing). Retry only that ambiguous case. Never remove/abandon a
+        # lock we cannot positively confirm is ours.
+        for attempt in range(OWNERSHIP_READ_RETRIES + 1):
+            try:
+                recorded = self.info_file.read_text().splitlines()[0].strip()
+            except FileNotFoundError:
+                return False  # the dir was moved aside: a genuine handoff
+            except (OSError, IndexError):
+                # Transient error, or a breaker that mkdir'd but has not yet
+                # written its identity; retry before concluding.
+                if attempt < OWNERSHIP_READ_RETRIES:
+                    time.sleep(OWNERSHIP_READ_RETRY_INTERVAL_S)
+                continue
+            return recorded == self.identity
+        return False
 
     def _lock_age_anchor(self) -> Optional[float]:
         """Best available creation time for the staleness check.
