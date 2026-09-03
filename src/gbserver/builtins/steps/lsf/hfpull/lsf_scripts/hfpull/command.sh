@@ -211,7 +211,7 @@ hfpull_break_lock() {
 }
 
 hfpull_acquire_lock() {
-    local dest="$1" container lockdir ttl created now interval last_check scratch have_newermt
+    local dest="$1" container lockdir ttl created now interval last_check scratch have_newermt start
     container="$(dirname "${dest}")/.gb-hfpull-locks"
     lockdir="${container}/$(basename "${dest}").lock"
     # Liveness watches HF's internal scratch dir (where the download's own writes
@@ -245,6 +245,7 @@ hfpull_acquire_lock() {
     # persistent container (matches fs_lock._reap_graveyards).
     rm -rf "${container}"/*.stale.* "${container}"/*.released.* 2>/dev/null || true
     last_check=0
+    start="$(date +%s)"
     while :; do
         if mkdir "${lockdir}" 2>/dev/null; then
             if printf '%s\n%s\n' "${HFPULL_IDENTITY}" "$(date +%s)" > "${lockdir}/lock.info" 2>/dev/null; then
@@ -265,6 +266,18 @@ hfpull_acquire_lock() {
             return 0
         fi
         now="$(date +%s)"
+        # Without GNU find the reclaim branch below is disabled, so a crashed
+        # holder's lock would never be reclaimed and this loop would spin
+        # forever. Bound the wait by the ttl window, then proceed unlocked (HF's
+        # per-file locks + self-heal are the backstop), matching the
+        # infra-failure fall-through above. The Python path reclaims a dead
+        # holder via ttl on every platform; the shell can only approximate that
+        # here by giving up the wait. A live holder legitimately exceeding ttl
+        # on such a worker is the accepted cost of a missing GNU find.
+        if (( ! have_newermt )) && (( now - start >= ttl )); then
+            echo "hfpull: waited ${ttl}s for download lock ${lockdir} with no liveness probe (GNU find required to reclaim a dead holder); proceeding without lock" >&2
+            return 0
+        fi
         if (( have_newermt )) && (( now - last_check >= interval )); then
             last_check="${now}"
             # A peer holds it. Reclaim only if past the ttl AND the scratch dir
