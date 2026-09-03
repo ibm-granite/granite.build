@@ -410,11 +410,17 @@ def test_other_api_paths_still_require_auth():
 
 
 def test_autotunex_proxy_bypasses_auth_for_non_get_methods():
-    """The AutoTuneX proxy exemption must be method-agnostic — the proxied
-    server enforces its own cookie auth, so gbserver must not gate POST (or any
-    other verb) either. Regression guard for the GET/HEAD-only bypass in
-    dispatch: without the `_is_autotunex_proxy` carve-out, this POST would
-    401 despite /api/autotunex being in _PUBLIC_PATH_PREFIXES. Control:
+    """The AutoTuneX proxy exemption must be method-agnostic, so gbserver does
+    not gate POST (or any other verb) before forwarding to the proxy.
+
+    This asserts the exemption is wired as designed; it is NOT a claim that the
+    request ends up authenticated. AutoTuneX defaults to
+    auth_providers=["disabled"], so the 200 below is an unauthenticated write
+    reaching the proxy — safe only in the localhost-only standalone deployment
+    documented on auth._PUBLIC_PATH_PREFIXES. Regression guard for the
+    GET/HEAD-only bypass in dispatch: without the `_is_autotunex_proxy`
+    carve-out, this POST would 401 despite /api/autotunex being in
+    _PUBLIC_PATH_PREFIXES. Control:
     POST /api/v1/thing (a non-public route) must still 401, proving auth is
     otherwise enforced and it's specifically the autotunex prefix that's
     exempt."""

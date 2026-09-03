@@ -68,9 +68,20 @@ _PUBLIC_EXACT_PATHS = frozenset(
 # /dashboard prefix below; a new *top-level* page outside /dashboard needs a
 # new prefix here. /api/v1/auth is the OIDC pre-auth login flow (see
 # auth_routes.py) — deliberately public.
-# /api/autotunex is the standalone reverse proxy to the AutoTuneX server, which
-# enforces its own cookie auth (see api/autotunex_proxy.py) — gbserver must not
-# require its own token here or it would block the proxy before forwarding.
+# /api/autotunex is the standalone reverse proxy to the AutoTuneX server (see
+# api/autotunex_proxy.py). It is deliberately public for ALL methods so gbserver
+# does not block the proxy before forwarding.
+#
+# WARNING: this is the one entry here that is both public and accepts mutating
+# verbs, and it does NOT inherit protection from the upstream: AutoTuneX defaults
+# to auth_providers=["disabled"] (DisabledAuthenticator), which authenticates
+# nothing. The exemption is therefore only safe in a localhost-only standalone
+# deployment — the configuration gbserver standalone actually ships (auth_mode
+# apikey with no GBSERVER_API_KEY, where _is_localhost already admits the
+# dashboard). Do NOT expose gbserver on a reachable interface with
+# AUTOTUNEX_API_URL set: anyone who can reach the port could then POST
+# /api/autotunex/jobs (which launches a real build) or DELETE datasets and
+# configurations, bypassing GBSERVER_API_KEY/OIDC entirely.
 _PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/api/autotunex", "/dashboard", "/_next")
 
 # Every mounted sub-app owns its own Swagger/OpenAPI doc pages directly under
@@ -211,10 +222,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # mutating endpoint accidentally registered under an otherwise-public
         # prefix (e.g. POST /dashboard/something).
         path = request.url.path
-        # The AutoTuneX reverse proxy (api/autotunex_proxy.py) forwards to a server
-        # that enforces its own auth, so gbserver must not gate ANY method there —
-        # GET and mutating verbs alike. Other public prefixes stay GET/HEAD-only so a
-        # stray mutating endpoint under them still requires auth.
+        # The AutoTuneX reverse proxy (api/autotunex_proxy.py) is exempt for ANY
+        # method — GET and mutating verbs alike — so gbserver does not block it
+        # before forwarding. This does NOT mean the upstream authenticates the
+        # request: see the warning on _PUBLIC_PATH_PREFIXES above for the
+        # localhost-only deployment constraint this assumes. Other public
+        # prefixes stay GET/HEAD-only so a stray mutating endpoint under them
+        # still requires auth.
         _is_autotunex_proxy = path == "/api/autotunex" or path.startswith(
             "/api/autotunex/"
         )
