@@ -42,6 +42,7 @@ _REQUIRED = [
     "--force-download",  # corrupt-cache self-heal retry
     ".cache/huggingface/download",  # scratch-cache clear on repeated corruption
     "Consistency check failed",  # recoverable-error classification
+    ".breaking",  # no-rename removal fallback: single-winner break claim (#354)
 ]
 
 

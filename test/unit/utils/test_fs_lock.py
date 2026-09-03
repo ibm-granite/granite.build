@@ -16,6 +16,7 @@
 
 """Unit tests for ``SharedFileSystemLock`` (mkdir-based cross-node lock)."""
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -276,6 +277,144 @@ def test_timeout_none_reclaims_dead_holder_without_hanging(tmp_path):
     )
     assert lock.acquire() is True
     lock.release()
+
+
+# --- removal must survive a mount without atomic directory rename ----------
+#
+# The removal path (release and stale-break) renames the lock dir aside with
+# ``os.replace`` before deleting it, as a TOCTOU guard. But ``os.replace`` of a
+# directory is a rename, and the object-store/AFM-backed FUSE mounts these locks
+# target (see the module docstring) do not support renaming a directory: it
+# raises OSError there. ``mkdir`` (acquire) works on such a mount but
+# ``os.replace`` (removal) does not -- an asymmetry that leaks every lock. These
+# tests pin the observed production hang (build e87ceebb: a holder's release
+# left the lock behind and waiters re-logged "breaking stale lock" every poll
+# forever under ``timeout=None``) by simulating that rename failure.
+
+# ENOTSUP is what a directory rename raises on an object-store-backed FUSE mount.
+_DIR_RENAME_UNSUPPORTED = OSError(95, "Operation not supported")
+
+
+def test_release_removes_owned_lock_when_dir_rename_unsupported(tmp_path):
+    """Release must free an owned lock even where directory rename is unsupported.
+
+    Currently ``release`` removes the lock only via ``os.replace``; when that
+    raises it is swallowed and the lock dir is left behind (a leak that blocks
+    every waiter for the full ttl). Removal must fall back to a direct delete so
+    an owned lock is actually freed.
+    """
+    lock = SharedFileSystemLock(tmp_path / "rn.lock", timeout=1)
+    assert lock.acquire() is True
+
+    with patch("os.replace", side_effect=_DIR_RENAME_UNSUPPORTED):
+        lock.release()
+
+    assert lock.is_held is False
+    assert (
+        not lock.lock_path.exists()
+    ), "an owned lock must be freed even without dir rename"
+
+
+def test_stale_lock_reclaimed_when_dir_rename_unsupported(tmp_path):
+    """A dead holder's lock must be reclaimable where directory rename is unsupported.
+
+    Same mount limitation as release: if the stale-break's ``os.replace`` raises
+    and is swallowed, ``_clear_if_stale`` never clears the lock, so a waiter
+    (``timeout=None`` in hfpull) re-logs "breaking stale lock" every poll and
+    hangs forever. The break must fall back to a direct delete.
+    """
+    lock_path = tmp_path / "repo" / ".gb-hfpull-locks" / "rev.lock"
+    dest = tmp_path / "repo" / "rev"
+    dest.mkdir(parents=True)
+    old = time.time() - 1000
+    os.utime(dest, (old, old))  # no recent progress => holder looks dead
+    _stale_peer_lock(lock_path, age_s=1000)
+
+    lock = SharedFileSystemLock(
+        lock_path, timeout=1, poll_interval=0.02, ttl=1, progress_path=dest
+    )
+    with patch("os.replace", side_effect=_DIR_RENAME_UNSUPPORTED):
+        acquired = lock.acquire()
+
+    assert (
+        acquired is True
+    ), "a dead holder's lock must be reclaimed even without dir rename"
+    lock.release()
+
+
+def test_abandoned_break_claim_does_not_wedge_stale_reclaim(tmp_path):
+    """A crashed breaker's leftover claim must not deadlock future stale-breaks.
+
+    The dir-rename fallback picks a single break winner via an atomic ``mkdir``
+    of a ``<lock>.breaking`` marker. A breaker holds that marker only across one
+    ``rmtree``, so a marker older than the ttl is a crashed breaker's abandoned
+    claim; it must be reaped or every future waiter would block on it forever --
+    reintroducing the very hang #354 fixes.
+    """
+    lock_path = tmp_path / "repo" / ".gb-hfpull-locks" / "rev.lock"
+    dest = tmp_path / "repo" / "rev"
+    dest.mkdir(parents=True)
+    old = time.time() - 1000
+    os.utime(dest, (old, old))  # no recent progress => holder looks dead
+    _stale_peer_lock(lock_path, age_s=1000)
+    # A previous breaker crashed still holding the claim; make it clearly aged.
+    claim = lock_path.with_name(lock_path.name + ".breaking")
+    claim.mkdir()
+    os.utime(claim, (old, old))
+
+    lock = SharedFileSystemLock(
+        lock_path, timeout=2, poll_interval=0.02, ttl=1, progress_path=dest
+    )
+    with patch("os.replace", side_effect=_DIR_RENAME_UNSUPPORTED):
+        acquired = lock.acquire()
+
+    assert (
+        acquired is True
+    ), "an abandoned break-claim must be reaped, not deadlock the break"
+    lock.release()
+
+
+def test_rename_unsupported_notice_logged_once_per_process(tmp_path, caplog):
+    """The dir-rename fallback notice fires once per process, not per release.
+
+    On a mount without directory rename the fallback is the *normal* path, so a
+    per-release WARNING would flood logs and look like a recurring fault. The
+    "cannot rename" notice is emitted once at INFO; later fallbacks stay quiet
+    (DEBUG).
+    """
+    fs_lock._rename_fallback_logged = False  # reset the process-wide flag
+    with patch("os.replace", side_effect=OSError(39, "Directory not empty")):
+        with caplog.at_level(logging.INFO, logger="gbcommon.utils.fs_lock"):
+            for name in ("one.lock", "two.lock", "three.lock"):
+                lock = SharedFileSystemLock(tmp_path / name, timeout=1)
+                assert lock.acquire() is True
+                lock.release()
+                assert not lock.lock_path.exists()  # fallback still frees each lock
+
+    notices = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.INFO and "cannot rename a directory" in r.getMessage()
+    ]
+    assert len(notices) == 1, f"expected one INFO notice, got {len(notices)}"
+
+
+def test_release_logs_released_only_when_it_actually_removed(tmp_path, caplog):
+    """release() logs 'released' only on an actual removal, not a peer-dir restore.
+
+    In the stale-break-then-recreate race, _move_aside_and_remove restores the
+    peer's recreated dir and returns False; release must not then claim the lock
+    was 'released' (misleading in the log). Gate the INFO on the return value.
+    """
+    lock = SharedFileSystemLock(tmp_path / "rel.lock", timeout=1)
+    assert lock.acquire() is True
+    with caplog.at_level(logging.INFO, logger="gbcommon.utils.fs_lock"):
+        with patch.object(lock, "_move_aside_and_remove", return_value=False):
+            lock.release()
+    # Match the message template (not the formatted path, which can contain the
+    # test name "...released...").
+    released = [r for r in caplog.records if "released" in str(r.msg)]
+    assert released == [], "must not log 'released' when the lock was not removed"
 
 
 def test_still_owned_reflects_on_disk_ownership(tmp_path):

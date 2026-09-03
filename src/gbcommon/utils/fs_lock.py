@@ -52,6 +52,15 @@ rename cannot close; the on-acquire reaper cleans the orphan). This whole race i
 unreachable when a ``progress_path`` is set -- a releasing holder has just
 written, so a peer never declares it stale to begin with -- and only a
 ``ttl``-without-``progress_path`` caller can approach it.
+
+Some shared mounts (object-store/AFM-backed FUSE) support ``os.mkdir`` but *not*
+renaming a directory, so ``os.replace`` cannot run there at all -- left
+unhandled, that leaks every lock and hangs waiters for the full ``ttl`` (issue
+#354). When ``os.replace`` fails, removal falls back to a direct delete that
+keeps the same guarantees using ``os.mkdir``: release deletes only after
+re-confirming ownership, and the stale-break selects a single winner via an
+atomic ``mkdir`` of a ``<lock>.breaking`` claim (reaped if a crashed breaker
+leaves it behind).
 """
 
 import logging
@@ -79,6 +88,40 @@ DEFAULT_TIMEOUT_S = 10.0
 # reserved for the ambiguous transient-error case.
 OWNERSHIP_READ_RETRIES = 3
 OWNERSHIP_READ_RETRY_INTERVAL_S = 0.2
+
+# Suffix for the break-claim marker used by the dir-rename fallback (issue #354).
+# On mounts that do not support renaming a directory (object-store/AFM-backed
+# FUSE), ``os.replace`` cannot capture the lock dir, so the stale-break selects a
+# single winner by atomically ``mkdir``-ing ``<lock>.breaking`` instead -- the one
+# operation verified atomic there. The winner alone deletes the stale lock; the
+# marker is held only across that delete, so one older than ``ttl`` is a crashed
+# breaker's and is reaped rather than left to wedge future breaks.
+BREAK_CLAIM_SUFFIX = ".breaking"
+
+# On mounts that cannot rename a directory the removal fallback is the *normal*
+# path, so a per-call WARNING would flood the log. Announce it once per process
+# at INFO (so an operator sees the fallback is in use) and drop to DEBUG after.
+_rename_fallback_logged = False
+
+
+def _note_rename_unsupported(lock_path: Path, err: OSError) -> None:
+    """Log the directory-rename removal fallback once per process, then DEBUG."""
+    global _rename_fallback_logged
+    if not _rename_fallback_logged:
+        _rename_fallback_logged = True
+        logger.info(
+            "SharedFileSystemLock: this filesystem cannot rename a directory "
+            "(%s); using the direct-delete fallback for lock removal. Expected on "
+            "object-store/AFM-backed caches; not logged again this process.",
+            err,
+        )
+    else:
+        logger.debug(
+            "SharedFileSystemLock: os.replace of %s failed (%s); using the "
+            "no-rename removal fallback",
+            lock_path,
+            err,
+        )
 
 
 def _has_recent_activity(root: Path, min_mtime: float) -> bool:
@@ -205,6 +248,7 @@ class SharedFileSystemLock:
         deadline = None if self.timeout is None else time.monotonic() + self.timeout
         self._last_acquire_error = None
         self._next_stale_check = 0.0  # check on the first contended poll
+        announced_wait = False  # so the "waiting" INFO is logged once, not per poll
         # Create the container dir once up front rather than on every poll (a
         # contended wait can otherwise re-issue this mkdir hundreds of times).
         # The container is not removed on release, so nothing recreates it mid-
@@ -258,8 +302,23 @@ class SharedFileSystemLock:
                         pass
                     return False
                 self._held = True
+                logger.info(
+                    "SharedFileSystemLock: acquired %s (%s)",
+                    self.lock_path,
+                    self.identity,
+                )
                 return True
 
+            # Reached only when contended and about to wait (a successful acquire
+            # returns above; a successful stale-break `continue`s). Announce the
+            # wait once so the log shows who is blocked on whom, not every poll.
+            if not announced_wait:
+                announced_wait = True
+                logger.info(
+                    "SharedFileSystemLock: %s is held; waiting (%s)",
+                    self.lock_path,
+                    self.identity,
+                )
             if deadline is None:
                 time.sleep(self.poll_interval)
                 continue
@@ -280,7 +339,16 @@ class SharedFileSystemLock:
                 # would otherwise have its live dir deleted -- os.replace acts on
                 # whatever occupies the path, which may now be the peer's. If the
                 # captured dir is not ours, it is restored instead of removed.
-                self._move_aside_and_remove("released", verify_ours=True)
+                if self._move_aside_and_remove("released", verify_ours=True):
+                    # Log only on an actual removal -- not when the capture
+                    # restored a peer's dir it had recreated in the check/act
+                    # window (return False). That race is unreachable with a
+                    # progress_path set, as hfpull always does.
+                    logger.info(
+                        "SharedFileSystemLock: released %s (%s)",
+                        self.lock_path,
+                        self.identity,
+                    )
         except OSError:
             # Another process may have force-cleared a stale lock; don't crash
             # cleanup over it.
@@ -313,8 +381,20 @@ class SharedFileSystemLock:
         )
         try:
             os.replace(self.lock_path, graveyard)
-        except OSError:
+        except FileNotFoundError:
+            # A racer already moved lock_path aside; we lost. (Distinct from the
+            # OSError below so a genuine handoff is not mistaken for a mount that
+            # cannot rename.)
             return False
+        except OSError as e:
+            # The mount cannot rename a directory (object-store/AFM-backed FUSE:
+            # os.mkdir works but os.replace does not), so the capture cannot run.
+            # Fall back to a direct removal that keeps the same guarantees via
+            # os.mkdir -- the primitive verified atomic here (issue #354). Logged
+            # (once per process, then DEBUG), not swallowed: silently dropping this
+            # is what let a leaked lock hang every waiter for the full ttl.
+            _note_rename_unsupported(self.lock_path, e)
+            return self._remove_without_rename(verify_ours=verify_ours)
         if verify_ours and self._identity_at(graveyard / "lock.info") != self.identity:
             # Captured a dir a peer recreated in the check/act window -- restore
             # it rather than delete a live peer's lock.
@@ -325,6 +405,63 @@ class SharedFileSystemLock:
             return False
         shutil.rmtree(graveyard, ignore_errors=True)
         return True
+
+    def _remove_without_rename(self, *, verify_ours: bool) -> bool:
+        """Remove ``lock_path`` directly, for mounts without atomic dir rename.
+
+        Used only when :meth:`_move_aside_and_remove`'s ``os.replace`` capture is
+        unavailable (issue #354). Preserves the same guarantees using ``os.mkdir``
+        -- the one operation verified atomic/coherent on these shared mounts.
+        Returns whether ``lock_path`` is gone afterwards.
+
+        * release (``verify_ours=True``): re-confirm the on-disk lock still records
+          us immediately before deleting, so a peer that stale-broke and recreated
+          it is not destroyed; if it is no longer ours, leave it. (For hfpull this
+          check/act window is unreachable anyway -- a releasing holder has just
+          written under its ``progress_path``, so no peer declares it stale.)
+        * stale-break (``verify_ours=False``): atomically ``mkdir`` a
+          ``<lock>.breaking`` claim so exactly one waiter deletes the stale dir;
+          losers back off and just retry their ``mkdir`` of ``lock_path`` (itself
+          single-winner). A claim older than ``ttl`` is a crashed breaker's and is
+          reaped, so it cannot wedge the break.
+        """
+        if verify_ours:
+            if not self._owned_by_us():
+                return False
+            shutil.rmtree(self.lock_path, ignore_errors=True)
+            return not self.lock_path.exists()
+
+        claim = self.lock_path.with_name(self.lock_path.name + BREAK_CLAIM_SUFFIX)
+        try:
+            os.mkdir(claim)
+        except FileExistsError:
+            # Another waiter holds the break-claim. If it is an abandoned (aged)
+            # claim from a crashed breaker, reap it so a later poll can retry;
+            # otherwise a live breaker has it and we simply back off.
+            self._reap_if_abandoned(claim)
+            return False
+        except OSError:
+            return False
+        try:
+            shutil.rmtree(self.lock_path, ignore_errors=True)
+        finally:
+            shutil.rmtree(claim, ignore_errors=True)
+        return not self.lock_path.exists()
+
+    def _reap_if_abandoned(self, claim: Path) -> None:
+        """Reap a break-claim only if it is older than ``ttl`` (crashed breaker).
+
+        A live breaker holds the claim across a single ``rmtree`` (far younger
+        than any sensible ``ttl``), so an aged claim is abandoned. Without a
+        ``ttl`` the stale-break never runs, so no claim is ever created.
+        """
+        if self.ttl is None:
+            return
+        try:
+            if time.time() - claim.stat().st_mtime > self.ttl:
+                shutil.rmtree(claim, ignore_errors=True)
+        except OSError:
+            pass
 
     def _reap_graveyards(self) -> None:
         """Sweep leftover moved-aside lock dirs from the container (best-effort).
