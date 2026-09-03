@@ -17,6 +17,26 @@ dependencies = [
     "aiosqlite>=0.19",
 ]
 
+[project.optional-dependencies]
+# Agent Chat's read-only dashboard tools (services/chat_agents/dashboard_tools.py).
+# Everything else they need — httpx, sqlalchemy — is already a base dependency
+# above; `regex` is the only addition.
+#
+# Deliberately does NOT pull in `mcp`: the gbmcp tool surface (build_start,
+# secret_*, build_status, ...) additionally needs the `gbmcp` console script, which
+# is coupled to gbcli's full client layer and so can't be shipped from this
+# distribution without dragging in most of the top-level one — which is the very
+# thing this distribution exists to avoid. Chat detects that at startup and runs on
+# the dashboard tools alone (see tool_loop_backend._gbmcp_available). Install the
+# top-level granite.build distribution with its own [chat] extra for the full set.
+chat = [
+    # search_build_yaml matches model-chosen regex against build.yaml content, and
+    # stdlib re never releases the GIL during a match — so a catastrophically
+    # backtracking pattern would freeze the whole single-threaded server. The regex
+    # package's timeout= is a hard bound enforced inside its own matching loop.
+    "regex",
+]
+
 [project.scripts]
 gb-ui-backend = "gb_ui_backend.__main__:main"
 

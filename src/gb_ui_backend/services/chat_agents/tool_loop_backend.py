@@ -16,7 +16,7 @@ import sys
 import time
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 from urllib.parse import urlparse
 
 from gb_ui_backend.config import (
@@ -67,16 +67,35 @@ _ROUTE_MAP_TEXT = "\n".join(
 )
 
 
-def _build_system_prompt(cloud_logs_available: bool) -> str:
-    log_search_line = (
-        "- `search_build_logs`: search a build's logs (prefer this over `build_log` when the "
-        "user wants to search history, not just the latest log)\n"
-        if cloud_logs_available
-        else ""
-    )
-    return f"""You are the granite.build dashboard assistant.
-You help users understand their builds, spaces, and artifacts using the tools available to
-you. Most tools are read-only. A few genuinely change state:
+def _gbmcp_available() -> bool:
+    """Whether the gbmcp tool surface can be used in this install.
+
+    Requires both the `mcp` client library and the `gbmcp` console script. Both
+    ship with the top-level granite.build distribution, but an external consumer
+    installing only `granite-build-analytics` (src/gb_ui_backend's own
+    pyproject.toml) has neither — gbmcp is coupled to gbcli's full client surface,
+    so bundling it there would defeat that distribution's purpose.
+
+    Chat still works without them, on the dashboard tools alone; see
+    ToolLoopBackend._run_session_owner.
+    """
+    if not _MCP_AVAILABLE:
+        return False
+    try:
+        _resolve_gbmcp_bin()
+        return True
+    except RuntimeError:
+        return False
+
+
+def _build_system_prompt(
+    cloud_logs_available: bool, gbmcp_available: bool = True
+) -> str:
+    # Every tool named in this block is a gbmcp tool. Describing them when gbmcp
+    # isn't running would have the model announce capabilities it has no tool for,
+    # then confabulate results — worse than not mentioning them at all.
+    gbmcp_tools_guidance = (
+        """Most tools are read-only. A few genuinely change state:
 
 - `secret_list`/`secret_get`/`secret_create`/`secret_update` run immediately, no
   confirmation needed. But `secret_get`/`secret_create`/`secret_update` never hand you (or
@@ -90,19 +109,49 @@ you. Most tools are read-only. A few genuinely change state:
   approve it, you'll see a note about the outcome the next time they message you. Say
   plainly that you're asking for confirmation — never claim the build started or gbserver
   stopped just because you called the tool.
-- Cancelling a build works differently: call `{NAVIGATION_TOOL_NAME}` with `build_detail`
-  (see below) to send the user to the build's own page, where the real Cancel button and its
-  own confirmation dialog live — there is no `build_cancel` tool available to you directly.
 - Deleting a secret has no tool at all — decline and explain that it happens via the
   granite.build CLI (`gb`) outside this dashboard.
-
+- Cancelling a build works differently: call `{nav}` with `build_detail` (see below) to send
+  the user to the build's own page, where the real Cancel button and its own confirmation
+  dialog live — there is no `build_cancel` tool available to you directly.
+""".format(nav=NAVIGATION_TOOL_NAME)
+        if gbmcp_available
+        # Stated as one paragraph rather than a bullet list of absent tools: naming
+        # them individually invites the model to treat them as things it might still
+        # attempt. Cancellation is called out because there IS something useful to do
+        # (navigate the user there), unlike the rest.
+        else """All of your tools are read-only. You cannot change any state in this
+deployment — you cannot start, stop or cancel builds, and you have no access to secrets at
+all. When a user asks for any of that, say so plainly and never imply you attempted it. For
+cancelling specifically, call `{nav}` with `build_detail` (see below) to send them to the
+build's own page, where the real Cancel button lives; anything else happens through the
+granite.build CLI (`gb`) outside this dashboard.
+""".format(nav=NAVIGATION_TOOL_NAME)
+    )
+    single_build_line = (
+        "  Use `build_status`/`build_describe`/`build_log` for a single build you already have the ID for.\n"
+        if gbmcp_available
+        else ""
+    )
+    log_search_line = (
+        (
+            "- `search_build_logs`: search a build's logs (prefer this over `build_log` when the "
+            "user wants to search history, not just the latest log)\n"
+            if gbmcp_available
+            else "- `search_build_logs`: search a build's logs\n"
+        )
+        if cloud_logs_available
+        else ""
+    )
+    return f"""You are the granite.build dashboard assistant.
+You help users understand their builds, spaces, and artifacts using the tools available to
+you. {gbmcp_tools_guidance}
 Tool selection guidance:
 - Use `search_builds` for anything filtered or bulk (by user, date range, status, space).
-  Use `build_status`/`build_describe`/`build_log` for a single build you already have the ID for.
-{log_search_line}- `search_build_yaml` / `search_build_errors` scan many builds at once — mention the cost
+{single_build_line}{log_search_line}- `search_build_yaml` / `search_build_errors` scan many builds at once — mention the cost
   (they scan a bounded recent window) if the user asks for something very broad.
-- For a deep investigation of one build (failure, root cause), combine `get_ai_analysis`,
-  `build_log`, and `search_build_errors` yourself — there is no separate "investigate" tool.
+- For a deep investigation of one build (failure, root cause), combine `get_ai_analysis`
+  and `search_build_errors` yourself — there is no separate "investigate" tool.
 - `search_docs` answers "how do I..." / "what is..." questions about granite.build itself
   (build.yaml syntax, CLI usage, spaces, secrets, environments) — prefer it over guessing.
 
@@ -254,7 +303,12 @@ class _Session:
 
     def __init__(
         self,
-        mcp_session: "ClientSession",
+        # None when gbmcp isn't available and this session runs on the dashboard
+        # tools alone. Only ever dereferenced by confirm_action(), which is
+        # unreachable in that mode: pending_confirmations is populated solely by
+        # build_confirmable_gbmcp_tools()'s handlers, so it stays empty and
+        # confirm_action() returns {"found": False} before touching this.
+        mcp_session: Optional["ClientSession"],
         tools: list[ToolSpec],
         event_queue: "asyncio.Queue[NormalizedEvent]",
         pending_confirmations: dict[str, dict],
@@ -288,10 +342,13 @@ class _Session:
 
 class ToolLoopBackend(ChatAgentBackend):
     def __init__(self, config: Config) -> None:
-        if not _MCP_AVAILABLE:
-            raise RuntimeError(
-                "mcp is not installed. Install it with `pip install -e '.[chat]'`."
-            )
+        # gbmcp is optional rather than required. An external consumer installing
+        # only granite-build-analytics has neither `mcp` nor the `gbmcp` script (see
+        # _gbmcp_available), and previously that raised here — so chat was reachable
+        # via /chat/status, reported itself enabled, and then failed on the first
+        # message. It now degrades to the dashboard tools, which are pure-Python and
+        # need no subprocess.
+        self._gbmcp_enabled = _gbmcp_available()
         self._config = config
         self._sessions: dict[str, _Session] = {}
         self._lock = asyncio.Lock()
@@ -301,8 +358,13 @@ class ToolLoopBackend(ChatAgentBackend):
         # backend-wide config); per-session state (history, tools, the gbmcp
         # connection) lives on _Session instead.
         self._provider = _build_provider(
-            config, _build_system_prompt(cloud_logs_available)
+            config, _build_system_prompt(cloud_logs_available, self._gbmcp_enabled)
         )
+        if not self._gbmcp_enabled:
+            logger.info(
+                "Chat starting without gbmcp — read-only dashboard tools only. Install the "
+                "granite.build distribution with the [chat] extra to enable the gbmcp tools."
+            )
         # Also backend-wide, not per session, for the same reason as
         # self._provider above: build_dashboard_tools() is a pure function
         # of config — every session would otherwise reconstruct the same
@@ -328,8 +390,28 @@ class ToolLoopBackend(ChatAgentBackend):
         subprocess), this task enters the stack, publishes the constructed
         _Session via `holder`, then blocks on `close_event` until told to
         shut down — and closes the stack itself, right here, when it does.
+
+        When gbmcp isn't available there is no subprocess and no stack to own, but
+        this task still owns the session's lifetime so the create/evict plumbing in
+        _get_or_create_session and _evict_idle_sessions_locked is identical either way.
         """
+        # Declared once for both paths below. In the gbmcp-less path
+        # pending_confirmations stays empty — no confirmable tools exist to populate
+        # it — but it's still passed so _Session's shape doesn't vary by mode.
+        event_queue: "asyncio.Queue[NormalizedEvent]" = asyncio.Queue()
+        pending_confirmations: dict[str, dict] = {}
         try:
+            if not self._gbmcp_enabled:
+                holder["session"] = _Session(
+                    mcp_session=None,
+                    tools=[build_navigation_tool(event_queue)] + self._dashboard_tools,
+                    event_queue=event_queue,
+                    pending_confirmations=pending_confirmations,
+                )
+                ready_event.set()
+                await close_event.wait()
+                return
+
             async with AsyncExitStack() as stack:
                 params = StdioServerParameters(
                     command=_resolve_gbmcp_bin(),
@@ -342,8 +424,6 @@ class ToolLoopBackend(ChatAgentBackend):
                 )
                 await mcp_session.initialize()
 
-                event_queue: "asyncio.Queue[NormalizedEvent]" = asyncio.Queue()
-                pending_confirmations: dict[str, dict] = {}
                 listed_tools = (await mcp_session.list_tools()).tools
                 tools = (
                     build_gbmcp_tools(mcp_session, listed_tools)
@@ -481,6 +561,15 @@ class ToolLoopBackend(ChatAgentBackend):
                 return {"found": True, "approved": False}
 
             try:
+                if session.mcp_session is None:
+                    # Unreachable in the dashboard-tools-only mode: pending_confirmations
+                    # is populated solely by build_confirmable_gbmcp_tools()'s handlers,
+                    # which aren't built when gbmcp is unavailable, so the pop above
+                    # already returned {"found": False}. Raised rather than asserted so
+                    # that if some future caller does populate it, the failure is
+                    # reported back through the same path below instead of surfacing as
+                    # an AttributeError on None.
+                    raise RuntimeError("gbmcp is not available in this deployment")
                 result = await session.mcp_session.call_tool(action, pending["args"])
                 text = _extract_mcp_result_text(result)
                 is_error = result.isError
