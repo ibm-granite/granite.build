@@ -225,8 +225,8 @@ hfpull_acquire_lock() {
     # once, but the dest walk is not repeated every second. Matches
     # SharedFileSystemLock._stale_check_interval.
     interval=$(( ttl / 4 )); (( interval < 1 )) && interval=1; (( interval > 30 )) && interval=30
-    # The liveness probe needs GNU find's -newermt (the workers ship GNU
-    # findutils/coreutils; we already rely on `stat -c`). Probe it once: if it is
+    # The liveness probe needs find's -newermt (the workers' find supports it;
+    # we already rely on `stat -c`). Probe it once: if it is
     # unsupported (BSD/busybox find), the probe would silently return "no
     # activity" and every past-ttl lock would look dead -> peers would break LIVE
     # holders mid-download and re-induce the corruption this guards against. So
@@ -235,7 +235,7 @@ hfpull_acquire_lock() {
     have_newermt=1
     if ! find "${HFPULL_LAST_OUT}" -newermt "@0" >/dev/null 2>&1; then
         have_newermt=0
-        echo "hfpull: 'find -newermt' unsupported (GNU findutils required); will wait for the lock holder without reclaiming stale locks, to avoid breaking a live download" >&2
+        echo "hfpull: this find lacks '-newermt'; will wait for the lock holder without reclaiming stale locks, to avoid breaking a live download" >&2
     fi
     if ! mkdir -p "${container}" 2>/dev/null; then
         echo "hfpull: cannot create lock container ${container}; proceeding without lock" >&2
@@ -266,16 +266,16 @@ hfpull_acquire_lock() {
             return 0
         fi
         now="$(date +%s)"
-        # Without GNU find the reclaim branch below is disabled, so a crashed
-        # holder's lock would never be reclaimed and this loop would spin
+        # Without -newermt support the reclaim branch below is disabled, so a
+        # crashed holder's lock would never be reclaimed and this loop would spin
         # forever. Bound the wait by the ttl window, then proceed unlocked (HF's
         # per-file locks + self-heal are the backstop), matching the
         # infra-failure fall-through above. The Python path reclaims a dead
         # holder via ttl on every platform; the shell can only approximate that
         # here by giving up the wait. A live holder legitimately exceeding ttl
-        # on such a worker is the accepted cost of a missing GNU find.
+        # on such a worker is the accepted cost of a find without -newermt.
         if (( ! have_newermt )) && (( now - start >= ttl )); then
-            echo "hfpull: waited ${ttl}s for download lock ${lockdir} with no liveness probe (GNU find required to reclaim a dead holder); proceeding without lock" >&2
+            echo "hfpull: waited ${ttl}s for download lock ${lockdir} with no liveness probe (find -newermt required to reclaim a dead holder); proceeding without lock" >&2
             return 0
         fi
         if (( have_newermt )) && (( now - last_check >= interval )); then
