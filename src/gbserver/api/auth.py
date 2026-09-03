@@ -215,13 +215,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # that enforces its own auth, so gbserver must not gate ANY method there —
         # GET and mutating verbs alike. Other public prefixes stay GET/HEAD-only so a
         # stray mutating endpoint under them still requires auth.
-        _is_autotunex_proxy = path == "/api/autotunex" or path.startswith("/api/autotunex/")
-        if _is_public_path(path) and (request.method in ("GET", "HEAD") or _is_autotunex_proxy):
-            response = await call_next(request)
-            return response
-
-        # Allow frontend bootstrap endpoints — client needs these before it has a token
-        if request.url.path in ("/api/config", "/api/environments"):
+        _is_autotunex_proxy = path == "/api/autotunex" or path.startswith(
+            "/api/autotunex/"
+        )
+        if _is_public_path(path) and (
+            request.method in ("GET", "HEAD") or _is_autotunex_proxy
+        ):
             response = await call_next(request)
             return response
 

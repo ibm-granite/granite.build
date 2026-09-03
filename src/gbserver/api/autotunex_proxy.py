@@ -95,9 +95,7 @@ def _rewrite_location(value: str) -> str:
     redirect) are left untouched.
     """
     parts = urlsplit(value)
-    if parts.path == _UPSTREAM_PREFIX or parts.path.startswith(
-        _UPSTREAM_PREFIX + "/"
-    ):
+    if parts.path == _UPSTREAM_PREFIX or parts.path.startswith(_UPSTREAM_PREFIX + "/"):
         new_path = _PUBLIC_PREFIX + parts.path[len(_UPSTREAM_PREFIX) :]
         return urlunsplit(("", "", new_path, parts.query, parts.fragment))
     return value
@@ -125,7 +123,10 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
         request.method,
         url,
         headers=fwd_headers,
-        params=request.query_params.multi_items(),
+        # tuple(), not the list multi_items() returns: httpx accepts either, but
+        # list is invariant so mypy rejects list[tuple[str, str]] against the
+        # wider pair type it declares. Duplicate keys are preserved either way.
+        params=tuple(request.query_params.multi_items()),
         content=body,
     )
     try:

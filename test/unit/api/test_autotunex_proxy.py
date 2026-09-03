@@ -160,9 +160,7 @@ def test_rewrites_absolute_upstream_location_header(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             307,
-            headers={
-                "location": "http://autotunex.test/api/v1/datasets/ABC123"
-            },
+            headers={"location": "http://autotunex.test/api/v1/datasets/ABC123"},
         )
 
     monkeypatch.setattr(proxy_mod, "AUTOTUNEX_URL", "http://autotunex.test")
@@ -183,9 +181,7 @@ def test_rewrites_location_when_upstream_url_has_trailing_slash(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             307,
-            headers={
-                "location": "http://autotunex.test/api/v1/datasets/XYZ"
-            },
+            headers={"location": "http://autotunex.test/api/v1/datasets/XYZ"},
         )
 
     monkeypatch.setattr(proxy_mod, "AUTOTUNEX_URL", "http://autotunex.test/")
@@ -243,13 +239,12 @@ def test_does_not_leak_cookies_between_requests(monkeypatch):
     # unrelated requests/users. Using two clients isolates that.
     app = _make_app()
     # Request 1: user A carries their cookie; upstream returns Set-Cookie.
-    TestClient(app).get(
-        "/api/autotunex/auth/me", headers={"cookie": "session=USER_A"}
-    )
+    TestClient(app).get("/api/autotunex/auth/me", headers={"cookie": "session=USER_A"})
     # Request 2: a different, cookie-less request must NOT carry USER_A upstream.
     TestClient(app).get("/api/autotunex/job/by_build_id/x")
 
     assert seen_cookies[0] == "session=USER_A"
-    assert seen_cookies[1] in (None, ""), (
-        f"cookie leaked to a cookie-less request: {seen_cookies[1]!r}"
-    )
+    assert seen_cookies[1] in (
+        None,
+        "",
+    ), f"cookie leaked to a cookie-less request: {seen_cookies[1]!r}"
