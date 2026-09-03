@@ -104,3 +104,14 @@ def test_copy_lh_model_proceeds_to_copy_with_source_table(copy_env):
     assert args[2] == "model_shared"  # source_table (from URI table_name)
     assert args[4] == "my-model"  # model_label
     assert args[5] == "v3"  # revision
+
+
+def test_copy_name_identifier_clean_error(copy_env):
+    """A name-format identifier (not a UUID/URI) errors cleanly, not with a
+    traceback from an unbound is_hf_artifact."""
+    result = _invoke("ns.tbl")
+    assert result.exit_code != 0
+    assert "Artifact identifier formatted incorrectly" in result.output
+    copy_env.fetch_artifact.assert_not_called()
+    copy_env.fetch_artifact_uri.assert_not_called()
+    copy_env.artifact_copy.assert_not_called()

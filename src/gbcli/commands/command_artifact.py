@@ -217,9 +217,9 @@ def _resolve_uri(
         # Buckets decode to revision ""; None lets the service default to "main".
         revision = metadata["revision"] or None
     else:  # store == "lh"
-        # The Lakehouse environment is the lh://<env> host, used only for the
-        # prod-vs-non-prod guard below.
-        uri_env = uri_obj.uri.hostname
+        # The Lakehouse environment is the lh://<env> host, normalized to lower
+        # case once here and reused (it also flows to register_artifact lh_env).
+        uri_env = (uri_obj.uri.hostname or "").lower()
         cli_env = str(gb_environment_config().lakehouse_environment).lower()
 
         if uri_env == "prod" and cli_env != "prod":
@@ -859,13 +859,13 @@ def push(
                     table=existing_meta.get("table_name"),
                     dataset=None,
                     label=(
-                        # Keyed on the pushed artifact's `type`, not existing_type.
-                        (
-                            existing_meta.get("model_label")
-                            or existing_meta.get("fileset_label")
+                        existing_meta.get("model_label")
+                        if existing_type == "model"
+                        else (
+                            existing_meta.get("fileset_label")
+                            if existing_type == "fileset"
+                            else None
                         )
-                        if type in ("fileset", "model")
-                        else None
                     ),
                     revision=revision,
                     version=version,
@@ -2716,6 +2716,14 @@ def copy(
             uri_store = uri_obj.uri.scheme
             uri_metadata = uri_obj.get_metadata()
             is_hf_artifact = uri_store == "hf"
+        else:
+            # copy takes an artifact UUID or URI; a name-format identifier is
+            # unsupported (guarding the branch-local vars read below).
+            click.echo(
+                f"❌ Artifact identifier formatted incorrectly. Please try again with artifact UUID or URI.",
+                err=True,
+            )
+            sys.exit(1)  # Exit with a non-zero status
 
         if is_hf_artifact:
             click.echo(

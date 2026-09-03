@@ -410,3 +410,49 @@ def test_lh_bucket_rejected(push_env, tmp_path):
     assert result.exit_code != 0
     assert "store 'lh' is only allowed for artifact types" in result.output
     push_env.push.assert_not_called()
+
+
+def test_checksum_collision_check_existence_label_keys_on_existing_type(
+    push_env, tmp_path
+):
+    """On a checksum collision, check_existence's label is derived from the
+    EXISTING artifact's type/URI (consistent with revision/version), not the
+    pushed --type."""
+    existing_uri = "lh://prod/ns/models/model_shared/found-model/v7"
+    push_env.existing_checksum_artifacts.return_value = {
+        "uuid": "existing-uuid",
+        "type": "model",
+        "uri": existing_uri,
+        "status": "success",
+    }
+    push_env.check_existence.return_value = {"success": False}
+    with patch(
+        "gbcli.commands.command_artifact.calculate_checksum_",
+        return_value="c" * 32,
+    ):
+        # Pushed type is model; --calculate-checksum triggers the collision path.
+        # size/variant/model-type are supplied so no interactive prompt fires.
+        _invoke(
+            tmp_path,
+            [
+                "--store",
+                "lh",
+                "-t",
+                "model",
+                "--size",
+                "8b",
+                "--variant",
+                "base",
+                "--model-type",
+                "granite",
+                "--calculate-checksum",
+                "--artifact-name",
+                "x",
+            ],
+        )
+    kwargs = push_env.check_existence.call_args.kwargs
+    assert kwargs["type"] == "model"
+    assert kwargs["namespace"] == "ns"
+    assert kwargs["table"] == "model_shared"
+    assert kwargs["label"] == "found-model"  # from the existing URI, not None
+    assert kwargs["revision"] == "v7"
