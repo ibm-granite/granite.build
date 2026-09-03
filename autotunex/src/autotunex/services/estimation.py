@@ -21,8 +21,10 @@ from typing import Any
 from autotunex.core.exceptions import ConfigurationNotFoundError, DomainValidationError
 from autotunex.db.repositories.protocols import ConfigurationRepository
 from autotunex.models.auth import Principal
+from autotunex.models.common import DataScope
 from autotunex.models.estimation import EstimateUsagesRequest, EstimateUsagesResponse
 from autotunex.models.job import ONLINE_RL_TUNER_TYPES
+from autotunex.services.scoping import sees_nothing
 
 _PARAM_COUNT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)([bBmM])")
 
@@ -268,17 +270,45 @@ class EstimationService:
     ) -> tuple[dict[str, Any] | None, str | None, str | None]:
         """Return ``(config_data, tuner_type, rl_tuner_type)`` for ``request``.
 
-        Reads a saved configuration, owner-scoped, when ``config_id`` is set
-        (fixing the 2025 unscoped lookup); otherwise passes through the
-        inline fields, which :class:`EstimateUsagesRequest` already validated
-        to be present exactly when ``config_id`` is not.
+        Reads a saved configuration when ``config_id`` is set, scoped to the
+        caller's own configurations plus the shared system tier
+        (``include_shared=True``); otherwise passes through the inline fields,
+        which :class:`EstimateUsagesRequest` already validated to be present
+        exactly when ``config_id`` is not.
+
+        The endpoint exposes no ``scope`` parameter, so this read is *always*
+        own-scope — there is no admin cross-user widening to resolve, and
+        :func:`~autotunex.services.scoping.sees_nothing` therefore reduces to
+        "has the caller an identity to filter by at all?". Asking it is what
+        makes the scoping real rather than incidental:
+        :meth:`ConfigurationRepository.get` applies its ownership predicate only
+        when ``owner_id is not None``, since ``None`` is the deliberate
+        admin-``scope=all`` unscoped view. An *unprovisioned* caller — a real
+        provider's verified email with no ``users`` row while
+        ``auto_provision_users`` is off — carries ``user_id=None`` and so reached
+        that unscoped branch by accident, reading any owner's ``config_data``
+        through an endpoint that has no cross-user view to speak of.
+        ``include_shared`` did not cover it: it widens an already-scoped query and
+        is ignored outright when ``owner_id`` is ``None``.
+
+        Refused as a 404 rather than a 403, matching how every other owner-scoped
+        *read* in this codebase treats a caller with no resolvable identity (see
+        ``sees_nothing``'s contract and ``ForbiddenError``'s docstring): existence
+        never leaks on a read path. Standalone mode is unaffected — ``get_principal``
+        always provisions the standalone owner, independent of
+        ``auto_provision_users``, so a standalone caller has a real ``user_id`` and
+        both its own and the shared starter configurations resolve normally.
         """
         if request.config_id is not None:
             repository = self._configuration_repository
             if repository is None:
                 raise ConfigurationNotFoundError(request.config_id)
+            if sees_nothing(self._principal, DataScope.OWN):
+                raise ConfigurationNotFoundError(request.config_id)
 
-            config = await repository.get(request.config_id, owner_id=self._principal.user_id)
+            config = await repository.get(
+                request.config_id, owner_id=self._principal.user_id, include_shared=True
+            )
             if config is None:
                 raise ConfigurationNotFoundError(request.config_id)
 

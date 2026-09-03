@@ -9,6 +9,7 @@ from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from autotunex.core.exceptions import JobReferenceConflictError
+from autotunex.db.repositories import sqlalchemy as sqlalchemy_repositories
 from autotunex.db.repositories.sqlalchemy import SqlAlchemyJobRepository
 from autotunex.db.tables import (
     ConfigurationTable,
@@ -17,6 +18,7 @@ from autotunex.db.tables import (
     JobTable,
     LogEntryTable,
     ResultTable,
+    TrainingMetricTable,
     TrialTable,
     UserTable,
 )
@@ -205,6 +207,136 @@ async def test_delete_succeeds_when_a_log_entry_has_a_non_uuid_trial_id(
     assert await session.scalar(select(func.count()).select_from(LogEntryTable)) == 0
 
 
+async def test_delete_cascades_to_training_metrics(
+    session: AsyncSession,
+    user: UserTable,
+    configuration: ConfigurationTable,
+    ready_dataset: DatasetTable,
+) -> None:
+    """``training_metrics`` must be cleared explicitly, not left to the FK.
+
+    MySQL cascades it via ``ON DELETE CASCADE``, which is why the omission was
+    invisible in production — but dev and test SQLite runs without
+    ``PRAGMA foreign_keys=ON`` and would orphan these rows forever.
+    """
+    repository = SqlAlchemyJobRepository(session)
+    job = await repository.create(
+        user_id=str(user.id),
+        config_id=configuration.id,
+        dataset_id=ready_dataset.id,
+        model="m",
+        model_source="huggingface",
+        experiment_name="exp",
+        tuning_type=None,
+        seed=42,
+        autotune=True,
+        config_snapshot={},
+        reward_function_code=None,
+        reward_function_name=None,
+    )
+    session.add(TrainingMetricTable(job_id=job.id, global_step=1, loss=0.5, split="train"))
+    await session.commit()
+
+    deleted = await repository.delete(job.id)
+
+    assert deleted is True
+    assert await session.scalar(select(func.count()).select_from(TrainingMetricTable)) == 0
+
+
+async def test_delete_clears_child_rows_spanning_several_batches(
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+    user: UserTable,
+    configuration: ConfigurationTable,
+    ready_dataset: DatasetTable,
+) -> None:
+    """The batch loop must keep going until the child table is empty.
+
+    Shrinks the batch size rather than inserting 5,000 rows: the behaviour under
+    test is that a row count which is *not* a whole multiple of the batch size
+    still terminates with everything gone — five rows over batches of two.
+    """
+    monkeypatch.setattr(sqlalchemy_repositories, "_DELETE_BATCH_SIZE", 2)
+    repository = SqlAlchemyJobRepository(session)
+    job = await repository.create(
+        user_id=str(user.id),
+        config_id=configuration.id,
+        dataset_id=ready_dataset.id,
+        model="m",
+        model_source="huggingface",
+        experiment_name="exp",
+        tuning_type=None,
+        seed=42,
+        autotune=True,
+        config_snapshot={},
+        reward_function_code=None,
+        reward_function_name=None,
+    )
+    for index in range(5):
+        session.add(LogEntryTable(job_id=job.id, level="INFO", message=f"line {index}"))
+    await session.commit()
+
+    deleted = await repository.delete(job.id)
+
+    assert deleted is True
+    assert await session.scalar(select(func.count()).select_from(LogEntryTable)) == 0
+
+
+async def test_delete_leaves_another_jobs_log_entries_alone(
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+    user: UserTable,
+    configuration: ConfigurationTable,
+    ready_dataset: DatasetTable,
+) -> None:
+    """Batching must not widen the delete beyond the job being removed.
+
+    The batch loop pages by primary key, so a bug that dropped the ``job_id``
+    filter from either the ``SELECT`` or the ``DELETE`` would still terminate and
+    still pass the single-job tests — only a second job catches it.
+    """
+    monkeypatch.setattr(sqlalchemy_repositories, "_DELETE_BATCH_SIZE", 2)
+    repository = SqlAlchemyJobRepository(session)
+    doomed = await repository.create(
+        user_id=str(user.id),
+        config_id=configuration.id,
+        dataset_id=ready_dataset.id,
+        model="m",
+        model_source="huggingface",
+        experiment_name="doomed",
+        tuning_type=None,
+        seed=42,
+        autotune=True,
+        config_snapshot={},
+        reward_function_code=None,
+        reward_function_name=None,
+    )
+    survivor = await repository.create(
+        user_id=str(user.id),
+        config_id=configuration.id,
+        dataset_id=ready_dataset.id,
+        model="m",
+        model_source="huggingface",
+        experiment_name="survivor",
+        tuning_type=None,
+        seed=42,
+        autotune=True,
+        config_snapshot={},
+        reward_function_code=None,
+        reward_function_name=None,
+    )
+    for index in range(5):
+        session.add(LogEntryTable(job_id=doomed.id, level="INFO", message=f"doomed {index}"))
+        session.add(LogEntryTable(job_id=survivor.id, level="INFO", message=f"kept {index}"))
+    await session.commit()
+
+    deleted = await repository.delete(doomed.id)
+
+    assert deleted is True
+    remaining = await session.scalars(select(LogEntryTable.job_id))
+    assert set(remaining.all()) == {survivor.id}
+
+
 async def test_delete_returns_false_for_an_unknown_job(session: AsyncSession) -> None:
     repository = SqlAlchemyJobRepository(session)
 
@@ -231,6 +363,12 @@ async def test_delete_does_not_load_child_rows_into_memory(
     Counting statements would not catch the regression: SQLite batches the
     old per-row deletes into one ``executemany`` per table, so only the
     pre-load ``SELECT``s distinguish the two paths on this dialect.
+
+    ``log_entries`` and ``training_metrics`` are the exception — they are paged
+    in batches, so they *are* read. What must not regress is the shape of that
+    read: primary key only and ``LIMIT``-bounded, never the ``MEDIUMTEXT``
+    ``message`` column, which is the part that would put gigabytes through the
+    session. The bounded tables must still be read not at all.
     """
     repository = SqlAlchemyJobRepository(session)
     job = await repository.create(
@@ -282,13 +420,24 @@ async def test_delete_does_not_load_child_rows_into_memory(
     deleted = await repository.delete(job.id)
 
     assert deleted is True
-    child_selects = [
+    bounded = ("trials", "results", "gb_tasks")
+    assert [
         s
         for s in statements
         if s.lstrip().upper().startswith("SELECT")
-        and any(f"from {t}" in s.lower() for t in ("trials", "results", "log_entries", "gb_tasks"))
+        and any(f"from {t}" in s.lower() for t in bounded)
+    ] == []
+
+    paged = [
+        s
+        for s in statements
+        if s.lstrip().upper().startswith("SELECT")
+        and any(f"from {t}" in s.lower() for t in ("log_entries", "training_metrics"))
     ]
-    assert child_selects == [], child_selects
+    assert paged, "the unbounded child tables should be paged by primary key"
+    for statement in paged:
+        assert "LIMIT" in statement.upper(), statement
+        assert "message" not in statement.lower(), statement
 
 
 async def _seed_logs(session: AsyncSession, job: JobTable) -> None:
@@ -594,7 +743,11 @@ async def test_get_by_build_id_returns_the_job_for_a_matching_task(
     build_id = uuid4()
     session.add(
         GbTaskTable(
-            job_id=job.id, type=GbTaskType.TUNING, status=RunStatus.RUNNING, build_id=build_id
+            job_id=job.id,
+            type=GbTaskType.TUNING,
+            status=RunStatus.RUNNING,
+            build_id=build_id,
+            updated_at="2026-08-07 00:05:00",
         )
     )
     await session.commit()
@@ -602,7 +755,11 @@ async def test_get_by_build_id_returns_the_job_for_a_matching_task(
     found = await repository.get_by_build_id(build_id)
 
     assert found is not None
-    assert found.id == job.id
+    row_job, finished_at = found
+    assert row_job.id == job.id
+    # finished_at arrives as a computed column, since this lookup does not load
+    # tasks — the same contract as the lean list's rows.
+    assert finished_at == "2026-08-07 00:05:00"
 
 
 async def test_get_by_build_id_returns_none_for_an_unknown_build(
@@ -643,3 +800,55 @@ async def test_get_by_build_id_honours_the_owner_filter(
     found = await repository.get_by_build_id(build_id, owner_id=uuid4())
 
     assert found is None
+
+
+async def test_get_by_build_id_does_not_load_the_job_s_tasks(
+    session: AsyncSession,
+    engine: AsyncEngine,
+    user: UserTable,
+    configuration: ConfigurationTable,
+    ready_dataset: DatasetTable,
+) -> None:
+    """One round trip: the build filter is a join, and `tasks` is never selected.
+
+    The response shape for this lookup (``JobDetail``) nests no tasks, so loading
+    them would be pure waste. Asserting on the statements rather than the returned
+    object is what actually pins that — a `selectinload` would leave the return
+    value identical.
+    """
+    repository = SqlAlchemyJobRepository(session)
+    job = await repository.create(
+        user_id=str(user.id),
+        config_id=configuration.id,
+        dataset_id=ready_dataset.id,
+        model="m",
+        model_source="huggingface",
+        experiment_name="exp",
+        tuning_type=None,
+        seed=42,
+        autotune=True,
+        config_snapshot={},
+        reward_function_code=None,
+        reward_function_name=None,
+    )
+    build_id = uuid4()
+    session.add_all(
+        [
+            GbTaskTable(job_id=job.id, type=GbTaskType.TUNING, build_id=build_id),
+            GbTaskTable(job_id=job.id, type=GbTaskType.RITS, build_id=uuid4()),
+        ]
+    )
+    await session.commit()
+    statements: list[str] = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def _capture(conn: object, cursor: object, statement: str, *_args: object) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    found = await repository.get_by_build_id(build_id)
+
+    assert found is not None
+    assert len(statements) == 1
+    # A second task on the same job must not multiply the result either.
+    assert found[0].id == job.id

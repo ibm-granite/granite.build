@@ -8,7 +8,10 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from autotunex.db.repositories.sqlalchemy import SqlAlchemyJobRepository
+from autotunex.db.repositories.sqlalchemy import (
+    SqlAlchemyJobRepository,
+    SqlAlchemyTrialRepository,
+)
 from autotunex.db.tables import (
     ConfigurationTable,
     DatasetTable,
@@ -324,10 +327,13 @@ async def test_reconcile_never_modifies_trials(engine: AsyncEngine) -> None:
 
     async with factory() as session:
         job = await SqlAlchemyJobRepository(session).get(job_id)
+        # Read through the trial repository: the job detail no longer eager-loads
+        # trials, so this is now the only read path for them.
+        trials, total = await SqlAlchemyTrialRepository(session).page(job_id, limit=50, offset=0)
     assert job is not None and job.status == RunStatus.ERROR
     # The pre-existing completed trial is untouched — the 2025 cascade bug.
-    assert len(job.trials) == 1
-    assert job.trials[0].status == RunStatus.COMPLETED
+    assert total == 1
+    assert [trial.status for trial in trials] == [RunStatus.COMPLETED]
 
 
 async def test_auth_error_does_not_raise_and_leaves_the_job(engine: AsyncEngine) -> None:

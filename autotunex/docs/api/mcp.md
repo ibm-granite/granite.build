@@ -31,8 +31,10 @@ enabled (in `auth_providers`). MCP has no bearer or session-cookie transport of 
 threads only the `X-API-Key` header — so mounting MCP without that provider leaves no middle
 ground, and the server logs a startup warning. Under standalone/disabled auth every tool call
 *succeeds* as the standalone system owner, with no credential check at all; under an `oidc`-
-or `session`-only deployment every tool call *fails* with a missing-credentials error, because
-the key is the only credential MCP can carry.
+or `session`-only deployment every tool call *fails* with an authentication error — a
+missing-credentials one when no `X-API-Key` is sent, an invalid-credential one when a key is
+sent but no `api_key` verifier is registered — because the key is the only credential MCP can
+carry.
 
 ## Exposed tools
 

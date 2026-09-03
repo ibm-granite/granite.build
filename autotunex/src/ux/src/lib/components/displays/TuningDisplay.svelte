@@ -228,11 +228,13 @@
 		}
 		let tuning = $tunings.find((job) => job.id === id);
 
-		// GET /jobs returns the lean JobSummary shape (no tasks, autotune, build_id, trials,
-		// or config_snapshot), so a tuning taken from the $tunings list store is missing the
+		// GET /jobs returns the lean JobSummary shape (no tasks, autotune, build_id, or
+		// config_snapshot), so a tuning taken from the $tunings list store is missing the
 		// fields the detail tabs gate on — Trials on `autotune`, and Status/GB Logs/Tasks on
 		// `build_id`/`github_pr_url` (derived from tasks). Always fetch the full JobRead from
 		// GET /jobs/{id} and merge it over any list-sourced object so those tabs render.
+		// Neither shape carries the trials themselves — they come from their own endpoint,
+		// below, which is why this is now one detail fetch rather than two.
 		const detail = await api.getJob(id, { include_logs: false });
 		tuning = tuning ? { ...tuning, ...detail } : detail;
 

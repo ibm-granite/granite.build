@@ -174,10 +174,15 @@ async def _get_job(svc: ScopedServices, params: BaseModel) -> str:
 
 
 async def _get_job_trials(svc: ScopedServices, params: BaseModel) -> str:
-    """Return one job's trials in summary shape (id, status), max 50."""
+    """Return one job's trials in summary shape (id, status), max 50.
+
+    Reads the first page of ``TrialService`` rather than a whole job: trials are
+    no longer nested on the job detail, and fetching one to slice 50 trials was
+    always the expensive way to ask this question.
+    """
     assert isinstance(params, _JobIdParams)
-    job = await svc.job.get(UUID(params.job_id))
-    trials = [{"id": t.id, "status": t.status.value} for t in job.trials[:_LIST_LIMIT]]
+    page = await svc.trials.list_trials(UUID(params.job_id), limit=_LIST_LIMIT, offset=0)
+    trials = [{"id": t.id, "status": t.status.value} for t in page.items]
     return json.dumps(trials, default=str)
 
 
@@ -189,10 +194,10 @@ async def _get_job_results(svc: ScopedServices, params: BaseModel) -> str:
     ``results`` row for the caller, so there is no separate results lookup here.
     """
     assert isinstance(params, _JobIdParams)
-    job = await svc.job.get(UUID(params.job_id))
+    page = await svc.trials.list_trials(UUID(params.job_id), limit=_LIST_LIMIT, offset=0)
     results = [
         {"trial_id": t.id, "status": t.status.value, "metric": t.metric, "metrics": t.metrics}
-        for t in job.trials[:_LIST_LIMIT]
+        for t in page.items
     ]
     return json.dumps(results, default=str)
 

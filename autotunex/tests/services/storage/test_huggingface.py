@@ -8,6 +8,7 @@ explicitly per test so an ambient ``GB_TOKEN``/``HF_TOKEN`` cannot change result
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import traceback
 from pathlib import Path
@@ -384,6 +385,16 @@ async def test_preview_returns_rows_for_both_splits(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv(HF_ENV, "hf_tok")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/splits":
+            return httpx.Response(
+                200,
+                json={
+                    "splits": [
+                        {"config": "default", "split": "train"},
+                        {"config": "default", "split": "validation"},
+                    ]
+                },
+            )
         split = request.url.params["split"]
         return httpx.Response(200, json={"rows": [{"row": {"split": split}}]})
 
@@ -416,6 +427,16 @@ async def test_preview_uses_and_closes_its_own_client_when_none_injected(
     closed: list[bool] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/splits":
+            return httpx.Response(
+                200,
+                json={
+                    "splits": [
+                        {"config": "default", "split": "train"},
+                        {"config": "default", "split": "validation"},
+                    ]
+                },
+            )
         split = request.url.params["split"]
         return httpx.Response(200, json={"rows": [{"row": {"split": split}}]})
 
@@ -449,6 +470,16 @@ async def test_preview_partial_when_validation_unavailable(
     monkeypatch.setenv(HF_ENV, "hf_tok")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/splits":
+            return httpx.Response(
+                200,
+                json={
+                    "splits": [
+                        {"config": "default", "split": "train"},
+                        {"config": "default", "split": "validation"},
+                    ]
+                },
+            )
         if request.url.params["split"] == "train":
             return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
         return httpx.Response(404, json={"error": "no validation split"})
@@ -550,3 +581,67 @@ async def test_preview_never_raises_on_unexpected_error(
         )
 
     assert preview == DatasetPreview(train=[], validation=[])
+
+
+async def test_preview_not_ready_when_splits_unavailable(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+    caplog.set_level(logging.WARNING)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # The whole repo is still precomputing: the viewer 500s on /splits.
+        return httpx.Response(500, text="not ready")
+
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
+
+    assert preview.train == []
+    assert preview.validation == []
+    assert preview.viewer_ready is False
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name.startswith("autotunex") and record.levelno == logging.WARNING
+    ]
+    assert any("finance_0f55c1a6" in record.getMessage() for record in warnings)
+
+
+async def test_preview_uses_the_config_discovered_from_splits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+    row_configs: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/splits":
+            return httpx.Response(
+                200,
+                json={
+                    "splits": [
+                        {"config": "custom", "split": "train"},
+                        {"config": "custom", "split": "validation"},
+                    ]
+                },
+            )
+        row_configs.append(request.url.params["config"])
+        return httpx.Response(200, json={"rows": [{"row": {"ok": 1}}]})
+
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
+
+    assert row_configs == ["custom", "custom"]  # both /rows fetches used the discovered config
+    assert preview.train == [{"ok": 1}]
+    assert preview.viewer_ready is True

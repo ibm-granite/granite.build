@@ -1,6 +1,6 @@
 [project]
 name = "autotune"
-version = "0.7.7"
+version = "0.8.0"
 description = "AutoTune: Automated Tuning for Foundation Models"
 authors = [
     {name = "RADU MARINESCU", email = "radu.marinescu@ie.ibm.com"},

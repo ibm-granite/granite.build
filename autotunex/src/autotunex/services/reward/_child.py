@@ -6,6 +6,13 @@ Started as ``python -m autotunex.services.reward._child`` by
 :class:`SubprocessRewardExecutor`. Reads ``{code, function_name, test_cases}``
 JSON from stdin; writes a result JSON to stdout. Never trusted to self-limit —
 the parent also enforces a wall-clock ``SIGKILL``.
+
+**Coverage stops here, deliberately.** Nothing in this module runs in the test
+process: it only ever executes as a separate interpreter that
+:class:`SubprocessRewardExecutor` spawns, so covering it would mean a subprocess
+coverage harness in CI. It is exercised end-to-end through that executor's own
+tests instead — what is untested is this file's lines, not the sandbox's
+behaviour. See ibm-granite/granite.build#318 for the decision.
 """
 
 from __future__ import annotations

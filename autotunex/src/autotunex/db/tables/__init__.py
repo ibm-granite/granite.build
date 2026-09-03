@@ -21,6 +21,7 @@ from autotunex.db.tables.gb_tasks import GbTaskTable
 from autotunex.db.tables.jobs import JobTable
 from autotunex.db.tables.log_entries import LogEntryTable
 from autotunex.db.tables.results import ResultTable
+from autotunex.db.tables.training_metrics import TrainingMetricTable
 from autotunex.db.tables.trials import TrialTable
 from autotunex.db.tables.users import UserTable
 
@@ -31,6 +32,7 @@ __all__ = [
     "JobTable",
     "LogEntryTable",
     "ResultTable",
+    "TrainingMetricTable",
     "TrialTable",
     "UserTable",
 ]

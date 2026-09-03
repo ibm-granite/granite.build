@@ -9,7 +9,7 @@ translate them.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, overload
 from uuid import UUID
 
 from autotunex.core.exceptions import (
@@ -35,11 +35,18 @@ from autotunex.models.job import (
     ONLINE_RL_TUNER_TYPES,
     TERMINAL_JOB_STATUSES,
     JobCreate,
+    JobDetail,
     JobRead,
+    JobShape,
     JobSummary,
 )
 from autotunex.models.status import DatasetStatus, GbTaskType, RunStatus
-from autotunex.services.mappers import job_to_read, job_to_summary
+from autotunex.services.mappers import (
+    job_to_detail,
+    job_to_read,
+    job_to_summary,
+    latest_task_update,
+)
 from autotunex.services.protocols import JobRunner
 from autotunex.services.scoping import resolve_owner_filter, sees_nothing
 
@@ -67,12 +74,58 @@ class JobService:
         self._principal = principal
         self._runner = runner
 
-    async def get(self, job_id: UUID, *, scope: DataScope = DataScope.OWN) -> JobRead:
+    # Overloaded so that ``shape`` selects the *static* return type, not just the
+    # runtime one. Without this every caller of the default shape — the chat
+    # assistant's get_job tool reads ``job.tasks`` — would see the union and need a
+    # narrowing assert to reach a JobRead-only field. The third signature is what
+    # the router matches: it passes a runtime ``JobShape``, not a literal.
+    @overload
+    async def get(
+        self,
+        job_id: UUID,
+        *,
+        scope: DataScope = ...,
+        shape: Literal[JobShape.FULL] = ...,
+    ) -> JobRead: ...
+
+    @overload
+    async def get(
+        self, job_id: UUID, *, scope: DataScope = ..., shape: Literal[JobShape.LEAN]
+    ) -> JobDetail: ...
+
+    @overload
+    async def get(
+        self, job_id: UUID, *, scope: DataScope = ..., shape: JobShape
+    ) -> JobRead | JobDetail: ...
+
+    async def get(
+        self,
+        job_id: UUID,
+        *,
+        scope: DataScope = DataScope.OWN,
+        shape: JobShape = JobShape.FULL,
+    ) -> JobRead | JobDetail:
         """Return the job with ``job_id``, scoped to the caller.
 
         With the default ``scope=own`` the caller sees only its own job; an
         admin passing ``scope=all`` may fetch any owner's. A non-admin passing
         ``scope=all`` is refused (403) before any row is read.
+
+        ``shape`` chooses how much of the job to report and is orthogonal to
+        ``scope``: :attr:`~autotunex.models.job.JobShape.FULL` (the default) returns
+        :class:`JobRead`, and ``LEAN`` returns :class:`JobDetail` — the job's own
+        record without the nested ``tasks`` array or the ``config_snapshot`` blob.
+
+        ``LEAN`` trims the *response*, not the query. The repository still eager-loads
+        ``tasks`` either way, so both shapes cost the same two round trips; do not read
+        this parameter as a performance switch. Skipping the load would mean returning
+        ``(job, finished_at)`` from ``JobRepository.get`` — ``finished_at`` cannot be
+        derived from an unloaded collection without a ``MissingGreenlet`` — which is a
+        Protocol change rippling through every caller of that method. Because tasks
+        *are* loaded, ``LEAN`` derives ``finished_at`` from them exactly as ``FULL``
+        does, so the field holds the same value in both shapes. That is the one way
+        this differs from :meth:`get_by_build_id`, which returns the same
+        :class:`JobDetail` shape but computes ``finished_at`` by subquery.
 
         Raises:
             ScopeNotPermittedError: a non-admin requested ``scope=all``.
@@ -84,17 +137,29 @@ class JobService:
         job = await self._repository.get(job_id, owner_id=owner_id)
         if job is None:
             raise JobNotFoundError(job_id)
+        if shape is JobShape.LEAN:
+            return job_to_detail(job, finished_at=latest_task_update(job.tasks))
         return job_to_read(job)
 
-    async def get_by_build_id(self, build_id: UUID, *, scope: DataScope = DataScope.OWN) -> JobRead:
+    async def get_by_build_id(
+        self, build_id: UUID, *, scope: DataScope = DataScope.OWN
+    ) -> JobDetail:
         """Return the job whose build task carries ``build_id``, scoped to the caller.
 
         Locates the job by its granite.build ``build_id`` (stored on ``gb_tasks``)
-        instead of its own id, then returns the same :class:`JobRead` payload and
-        applies the same scoping as :meth:`get`: own data by default, an admin may
-        pass ``scope=all``, and a non-admin passing it is refused (403) before any
-        row is read. A build whose job belongs to someone else (under
-        ``scope=own``) is a 404, indistinguishable from an unknown build.
+        instead of its own id, and applies the same scoping as :meth:`get`: own
+        data by default, an admin may pass ``scope=all``, and a non-admin passing
+        it is refused (403) before any row is read. A build whose job belongs to
+        someone else (under ``scope=own``) is a 404, indistinguishable from an
+        unknown build.
+
+        Returns the leaner :class:`JobDetail`, **not** :class:`JobRead`: this
+        lookup omits the nested build ``tasks`` array and the ``config_snapshot``
+        blob. A caller arriving by build id already holds the identifier the tasks
+        array exists to expose, and the snapshot embeds the whole configuration as
+        it ran — by far the heaviest field on the response. Both remain on
+        ``GET /jobs/{id}``. Dropping ``tasks`` also takes this lookup from three
+        round trips to one.
 
         Raises:
             ScopeNotPermittedError: a non-admin requested ``scope=all``.
@@ -103,10 +168,11 @@ class JobService:
         owner_id = resolve_owner_filter(self._principal, scope)
         if sees_nothing(self._principal, scope):
             raise BuildNotFoundError(build_id)
-        job = await self._repository.get_by_build_id(build_id, owner_id=owner_id)
-        if job is None:
+        found = await self._repository.get_by_build_id(build_id, owner_id=owner_id)
+        if found is None:
             raise BuildNotFoundError(build_id)
-        return job_to_read(job)
+        job, finished_at = found
+        return job_to_detail(job, finished_at)
 
     async def list(
         self,
@@ -142,11 +208,13 @@ class JobService:
 
         Ownership comes from ``principal.user_id``, never the request. Both the
         configuration and the dataset are re-verified against the caller's own
-        ownership (create never widens scope, so even an admin may only
-        reference its own configuration and dataset), the dataset must be
-        ``ready``, and an online-RL configuration must carry a reward function.
-        The configuration is snapshotted so later edits do not rewrite what
-        this job ran.
+        ownership or the shared system tier (``include_shared=True`` widens the
+        lookup only that far — even an admin may not reference another real
+        owner's configuration or dataset), the dataset must be ``ready``, and
+        an online-RL configuration must carry a reward function. The created
+        job is always owned by the caller regardless of which tier the
+        configuration or dataset came from, and the configuration is
+        snapshotted so later edits do not rewrite what this job ran.
 
         Raises:
             CallerNotProvisionedError: the caller has no ``user_id`` to own the job.
@@ -164,12 +232,14 @@ class JobService:
         owner_filter = owner_id
 
         configuration = await self._configuration_repository.get(
-            data.config_id, owner_id=owner_filter
+            data.config_id, owner_id=owner_filter, include_shared=True
         )
         if configuration is None:
             raise ConfigurationNotFoundError(data.config_id)
 
-        dataset = await self._dataset_repository.get(data.dataset_id, owner_id=owner_filter)
+        dataset = await self._dataset_repository.get(
+            data.dataset_id, owner_id=owner_filter, include_shared=True
+        )
         if dataset is None:
             raise DatasetNotFoundError(data.dataset_id)
         if dataset.status != DatasetStatus.READY:

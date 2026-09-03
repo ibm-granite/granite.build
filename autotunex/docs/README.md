@@ -37,8 +37,8 @@ quick front door; the pages here go deeper.
   tokens, and browser sessions.
 - **[Authentication testing](authentication-testing.md)** — a runbook for exercising each
   auth provider against a running server.
-- **[Jobs API](api/jobs.md)** — submit, list, read, cancel, delete and reconcile jobs,
-  read their logs, and download result reports.
+- **[Jobs API](api/jobs.md)** — submit, list, read, cancel, delete and reconcile jobs, page
+  their trials, read their logs and per-step training metrics, and download result reports.
 - **[Reward functions API](api/reward-functions.md)** — validate a user-supplied
   online-RL reward function: static analysis plus an optional sandboxed test run.
 - **[Configurations API](api/configurations.md)** — full CRUD for reusable tuning

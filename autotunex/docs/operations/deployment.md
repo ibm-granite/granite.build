@@ -153,9 +153,11 @@ missing — configure them alongside this choice.
 
 Inject secrets — database credentials, `AUTOTUNEX_SESSION_SECRET`, OIDC client
 secrets, `GB_TOKEN`, `HF_TOKEN`, API keys — from the environment or a secret
-store, never from a committed file. `.env` is git-ignored; only `.env.example`
-(placeholders) is committed. Register only the **SHA-256 digest** of an API key,
-never the raw key.
+store, never from a committed file. `.env` is git-ignored; the only committed
+placeholders are `.env.example`, `.env.aio.example` and the per-runner
+`envs/*.env.example` files, plus the two subprojects' own
+`src/api-bridge/.env.example` and `src/ux/.env.example`. Register only the
+**SHA-256 digest** of an API key, never the raw key.
 
 ## 8. Run under a production ASGI server
 
@@ -263,12 +265,22 @@ the container and point `AUTOTUNEX_DATABASE_SSL_CA` and
 `AUTOTUNEX_DATABASE_SSL_MODE` at it — both services read the same two settings
 (`compose.yaml` carries the mount, commented out).
 
-At build time, `GB_REF` picks the granite.build branch to build and
-`PUBLIC_AUTOTUNEX_API_URL` (empty by default, meaning same-origin) matters only
-if the API is fronted elsewhere. `INSTALL_AUTOTUNE_CORE=1` additionally installs
+At build time, `GB_REPO` and `GB_REF` pick the granite.build source the
+in-container gbserver is cloned and built from: they default to
+`https://github.com/priyanshu891/granite.build.git` and the branch
+`feat/autotunex-endpoint-migration` respectively, so the gbserver in this image
+is built from that fork branch — **not** from the `ibm-granite` repository the
+`granite-build` pip extra fetches (see below). Override both to build gbserver
+from somewhere else. `PUBLIC_AUTOTUNEX_API_URL` (empty by default, meaning
+same-origin) matters only if the API is fronted elsewhere.
+`INSTALL_AUTOTUNE_CORE=1` additionally installs
 the `autotune` training core that the `local` backend needs, from the vendored
-`src/fm-tune[core,mlx]` already in the build context — no credentials and no
-private repo fetch, just a much larger image (torch/Ray). `GB_TOKEN` and
+`src/fm-tune[core,mlx]` already in the build context, and switches the AutoTuneX
+install from the `[mysql]` extra to `[mysql,granite-build]`. That extra is a VCS
+dependency, so the build makes one more `git` fetch, separate from the gbserver
+clone above — the `granite.build` **pip package** from the public
+`github.com/ibm-granite/granite.build` at its `stable` tag — though still no
+credentials, just a much larger image (torch/Ray). `GB_TOKEN` and
 `GITHUB_HOST` play no part in the build: they are run-time settings (the token the
 `llmb` backend requires, plus the entrypoint's git credentials, which matter only
 if you point `AUTOTUNEX_BASH_FM_TUNE_ROOT` at a repo URL instead of the vendored
@@ -285,6 +297,30 @@ run under a different one (`runAsUser: 0`) — which git would otherwise reject 
 [`docker/aio/README.md`](../../docker/aio/README.md) goes deeper: the full service
 table, the plain `docker run` invocation, the optional training-core build, why
 the baked gbserver URL is plain HTTP, and a runtime smoke test.
+
+### `llmb`-ready image (`Dockerfile.gb`)
+
+`Dockerfile.gb` is a third top-level image with the same single-container shape as
+the root `Dockerfile` — API plus the built SPA, non-root, port 8000, a `/data`
+volume, a `/health` `HEALTHCHECK` — but built for the **`llmb`** backend instead
+of `local`. It installs AutoTuneX as `".[granite-build, mysql, mcp]"`, so the
+`llmb` CLI and the MySQL driver are in the image, plus the vendored `src/fm-tune`
+at its torch-free base (the catalog imports; no Ray/torch, so no in-process
+training). Its baked defaults differ from the table above in three places:
+`AUTOTUNEX_JOB_BACKEND=llmb`, `AUTOTUNEX_AUTO_CREATE_SCHEMA=false`, and
+`AUTOTUNEX_JOB_TRAINER_REF=oss-main`. It bundles neither gbserver nor the
+api-bridge, so unlike the AIO image it needs an **external** granite.build
+server — and it does not bake `GB_ENVIRONMENT`, so the `llmb` backend starts in
+its **custom_code** shape, whose startup check requires four settings the image
+leaves unset: `AUTOTUNEX_JOB_RUNTIME_IMAGE`, `AUTOTUNEX_JOB_TRAINER_REPO`,
+`AUTOTUNEX_JOB_OUTPUT_URI_ROOT` and `AUTOTUNEX_GB_SERVER_URL`. Supply all four at
+run time, plus the token environment variable `AUTOTUNEX_GB_TOKEN_ENV` names
+(`GB_TOKEN` by default), or the `llmb` backend refuses to start. Setting
+`GB_ENVIRONMENT=standalone` (unprefixed — granite.build's own variable) instead
+selects the local-`bash` spec, which drops the three custom_code-only inputs and
+leaves `AUTOTUNEX_GB_SERVER_URL` plus the token variable as the only run-time
+requirements. It has no `compose.yaml` service and no `make` target; build and run
+it directly.
 
 ## Security
 

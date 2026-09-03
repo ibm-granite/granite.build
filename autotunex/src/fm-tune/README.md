@@ -1,6 +1,6 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-![Static Badge](https://img.shields.io/badge/version-0.7.5-red?style=flat)
+[![Python 3.10+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+![Static Badge](https://img.shields.io/badge/version-0.8.0-red?style=flat)
 
 # AutoTune: Distributed Fine-Tuning for Foundation Models
 
@@ -24,7 +24,7 @@ AutoTune handles the full pipeline: hyperparameter search, distributed training 
 
 ### Prerequisites
 
-- Python 3.10+ (3.12 recommended)
+- Python 3.12+ (3.12 recommended)
 - CUDA 12.x compatible GPU(s)
 - Linux for training (flash-attn is Linux-only; macOS works for development without flash-attn)
 
@@ -174,7 +174,7 @@ QLoRA, RL (offline and online), multi-GPU, and DeepSpeed/FSDP are **not**
 supported on MPS.
 
 ```bash
-uv pip install -e ".[full]"   # deepspeed and verl are excluded on macOS automatically
+uv pip install -e ".[core]"   # deepspeed is skipped on macOS via its platform marker; verl/flash-attn live only in the [full] extra
 
 python main.py \
   --config_file autotune/configs/autotune_mac.yaml \

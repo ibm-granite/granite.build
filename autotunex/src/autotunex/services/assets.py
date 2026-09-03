@@ -149,12 +149,13 @@ class AssetService:
     def _map(artifacts: Any) -> list[AssetSummary]:  # noqa: ANN401 — genuinely-arbitrary JSON
         """Tolerantly map ``output_artifacts`` to a list of :class:`AssetSummary`.
 
-        ``output_artifacts`` is typed ``dict | None`` on the ORM, but as a JSON
-        column its runtime shape is not actually enforced: historic or
-        runner-written rows may hold a bare list of file descriptors instead of
-        a dict wrapper. This tolerates ``list``, ``dict`` with a ``files`` or
-        ``assets`` key, or ``None`` — never raising on an unexpected shape, since
-        a coarse empty result is preferable to a 500 on the Results panel.
+        ``output_artifacts`` is free-form JSON written by the tuning pipeline, so
+        its runtime shape is not enforced: pipeline rows may hold a bare list of
+        file descriptors instead of a dict wrapper (both are declared on the ORM
+        and on :class:`JobRead`). This tolerates ``list``, ``dict`` with a
+        ``files`` or ``assets`` key, or ``None`` — never raising on an unexpected
+        shape, since a coarse empty result is preferable to a 500 on the Results
+        panel.
         """
         items: list[dict[str, Any]]
         if isinstance(artifacts, list):

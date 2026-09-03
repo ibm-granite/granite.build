@@ -2,17 +2,26 @@
 # SPDX-License-Identifier: Apache-2.0
 """A preview-only fallback decorator over two storage backends.
 
-When the primary backend (typically HuggingFace) cannot produce a preview — no
-rows in either split, whether because the dataset has no ``artifact_url``, the HF
-viewer is disabled or unavailable, or the token is missing — the decorator reads a
-bounded preview from a fallback backend (local storage) instead. Only ``preview``
+When the primary backend cannot produce a preview — no rows in either split — the
+decorator reads a bounded preview from a fallback backend instead. Only ``preview``
 is augmented; ``persist`` and ``delete`` belong to the active backend and delegate
-straight to the primary.
+straight to the primary, so wrapping never changes where a dataset is written.
 
-This exists so datasets whose files also live on local disk (carried over from an
-earlier version of the app, or uploaded through the local path) still show a
-preview under the HuggingFace backend, rather than the UX's "Unable to load
-dataset".
+The decorator is deliberately **direction-agnostic**, and the registry composes it
+both ways:
+
+- ``primary=HuggingFace, fallback=local`` under the ``huggingface`` backend, so a
+  dataset whose files also live on local disk (carried over from an earlier version
+  of the app, or uploaded through the local path) still previews when the HF viewer
+  cannot answer — no ``artifact_url``, viewer disabled/unavailable, or token missing.
+- ``primary=local, fallback=HuggingFace`` whenever storage resolves to local, so a
+  dataset row carrying an ``hf://`` locator still previews even though the local
+  write path holds none of its files. Resolving to local storage is a *write*-path
+  decision (``llmb artifact push`` is disabled in granite.build standalone mode);
+  the HF dataset-viewer read is unaffected by it.
+
+Either way the alternative is the UX's "Unable to load dataset" on a dataset that
+is perfectly readable.
 """
 
 from __future__ import annotations
@@ -72,6 +81,14 @@ class PreviewFallbackStorageBackend:
         as-is. The fallback read is guarded so a failure degrades to the primary's
         empty result — this method never raises and always returns a
         :class:`~autotunex.models.dataset.DatasetPreview`.
+
+        When the fallback is *also* empty, the result carrying
+        ``viewer_ready=False`` wins, so "the HF viewer is still precomputing"
+        survives instead of being masked by the local backend's default
+        ``viewer_ready=True`` — otherwise a freshly-pushed, not-yet-indexed dataset
+        would report "ready" with a blank table instead of "preview will appear
+        shortly". Which side holds that signal depends on the composition (see the
+        module docstring), so this cannot simply prefer the primary.
         """
         primary_result = await self._primary.preview(
             dataset_id=dataset_id,
@@ -86,7 +103,7 @@ class PreviewFallbackStorageBackend:
         # so a fallback failure degrades to the primary's (empty) result rather than
         # propagating. `BLE001` is not in this project's selected ruff rules.
         try:
-            return await self._fallback.preview(
+            fallback_result = await self._fallback.preview(
                 dataset_id=dataset_id,
                 name=name,
                 data_format=data_format,
@@ -99,6 +116,16 @@ class PreviewFallbackStorageBackend:
                 dataset_id,
             )
             return primary_result
+        if fallback_result.train or fallback_result.validation:
+            return fallback_result
+        # Both empty: keep whichever side reported a not-ready viewer, so a
+        # freshly-pushed, not-yet-indexed HF repo still reports "preview will appear
+        # shortly" instead of a blank table claiming to be ready. Which side that is
+        # depends on the composition — HF is the primary under the `huggingface`
+        # backend and the fallback under `local` — so this cannot assume the primary.
+        if not fallback_result.viewer_ready and primary_result.viewer_ready:
+            return fallback_result
+        return primary_result
 
     async def delete(self, *, dataset_id: UUID, name: str, artifact_url: str | None) -> None:
         """Delegate deletion to the primary backend."""

@@ -44,6 +44,7 @@ def make_settings(
     auth_providers: list[AuthProviderName] | None = None,
     api_keys: dict[str, str] | None = None,
     auto_provision_users: bool = False,
+    login_activity_throttle_minutes: int = 15,
     oidc_issuer: str | None = None,
     oidc_jwks_uri: str | None = None,
     oidc_audience: str | None = None,
@@ -107,6 +108,10 @@ def make_settings(
             verified-email caller with no matching row. Defaults to ``False``,
             matching ``Settings``'s own default, so existing callers are
             unaffected.
+        login_activity_throttle_minutes: How stale ``users.last_login_at`` must
+            be before an authenticated request refreshes it. Defaults to
+            ``Settings``'s own 15, so existing callers are unaffected; a test
+            that cares passes ``0`` to record unconditionally.
         oidc_issuer: The issuer a bearer token must carry, for the ``"oidc"``
             provider. Defaults to ``None``, matching every existing caller.
         oidc_jwks_uri: Where the issuer's signing keys would be fetched from,
@@ -189,11 +194,11 @@ def make_settings(
         environment="test",
         database_url="sqlite+aiosqlite:///:memory:",
         auto_create_schema=False,
-        max_trials_limit=50,
         log_level="WARNING",
         auth_providers=resolved_auth_providers,
         api_keys=api_keys if api_keys is not None else {},
         auto_provision_users=auto_provision_users,
+        login_activity_throttle_minutes=login_activity_throttle_minutes,
         standalone_email=standalone_email,
         standalone_role=standalone_role,
         oidc_issuer=oidc_issuer,

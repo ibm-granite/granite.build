@@ -9,6 +9,7 @@ credential kind is configured.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from http import HTTPStatus
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autotunex.core.auth.disabled import SYSTEM_STANDALONE_EMAIL
 from autotunex.db.tables import ConfigurationTable, DatasetTable, JobTable, UserTable
 from autotunex.models.auth import Principal
 from tests.conftest import API
@@ -204,3 +206,60 @@ async def test_me_metadata_returns_zeros_for_an_unresolvable_caller(
         "number_of_configurations": 0,
         "number_of_datasets": 0,
     }
+
+
+async def test_the_user_list_reports_the_last_login_time(
+    client: AsyncClient, as_principal: Callable[[Principal], None], session: AsyncSession
+) -> None:
+    """Backs the Users table's "Last login on" column."""
+    logged_in_at = datetime(2026, 3, 4, 5, 6, 7, tzinfo=UTC)
+    admin = UserTable(
+        id=uuid4(), email="admin@example.com", role="admin", last_login_at=logged_in_at
+    )
+    session.add(admin)
+    await session.commit()
+    as_principal(_admin(admin.id))
+
+    response = await client.get(f"{API}/users")
+
+    assert response.json()["items"][0]["last_login_at"] == "2026-03-04T05:06:07Z"
+
+
+async def test_a_user_who_has_never_logged_in_reports_a_null_last_login(
+    client: AsyncClient, as_principal: Callable[[Principal], None], admin_user: UserTable
+) -> None:
+    """Honest ``null`` rather than a stand-in timestamp — see the column's docstring."""
+    as_principal(_admin(admin_user.id))
+
+    response = await client.get(f"{API}/users/{admin_user.id}")
+
+    assert response.json()["last_login_at"] is None
+
+
+async def test_using_the_app_makes_the_users_table_report_a_last_login(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """End-to-end guard for the reported bug, through the real principal chain.
+
+    No ``as_principal`` override: the caller is resolved by the standalone provider
+    exactly as a deployment would, so this exercises ``get_principal`` ->
+    ``_record_activity`` -> ``touch_login`` and then reads the value back out of
+    the endpoint the Users tab actually calls. Before ``last_login_at`` existed,
+    that column was ``updated_at`` and never moved off the row's creation time.
+
+    The row is created here, with ``last_login_at`` explicitly unset, precisely so
+    provisioning does *not* run: ``provision`` stamps the column itself, so a test
+    that let the caller be provisioned would still pass with the per-request
+    refresh deleted — verified by removing it. Pre-existing row, no stamp, is the
+    only arrangement that pins the activity path.
+    """
+    standalone = UserTable(
+        id=uuid4(), email=SYSTEM_STANDALONE_EMAIL, role="admin", last_login_at=None
+    )
+    session.add(standalone)
+    await session.commit()
+
+    response = await client.get(f"{API}/users")
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["items"][0]["last_login_at"] is not None

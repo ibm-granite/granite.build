@@ -27,9 +27,8 @@ class ConfigurationTable(Base):
     ``config_data`` is a schema-less ``JSON`` blob of tuning settings, in the
     shape the tuning pipeline writes (``tune_config`` / ``tuners_config`` /
     ``training_config`` / ``tuners_rl_config`` / ``training_rl_config``). The
-    configuration endpoints require only that it be a non-empty object; they do
-    *not* validate it against :mod:`autotunex.models.search_space`, whose
-    ``SearchSpace`` describes the unbuilt search layer, not this column.
+    configuration endpoints require only that it be a non-empty object; the
+    structure within it is the tuning core's contract, not the API's.
     """
 
     __tablename__ = "configurations"

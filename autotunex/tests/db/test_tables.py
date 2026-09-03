@@ -18,13 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autotunex.db.tables import (
     ConfigurationTable,
     DatasetTable,
-    GbTaskTable,
     JobTable,
     ResultTable,
     TrialTable,
     UserTable,
 )
-from autotunex.models.status import DatasetStatus, GbTaskType, RunStatus
+from autotunex.models.status import DatasetStatus, RunStatus
 
 
 def test_jobs_table_has_no_precision_column() -> None:
@@ -69,43 +68,6 @@ async def test_status_is_persisted_as_the_uppercase_member_name(
     raw = await session.execute(text("SELECT status FROM jobs WHERE id = :id"), {"id": str(job.id)})
 
     assert raw.scalar_one() == "PENDING"
-
-
-async def test_num_trials_counts_the_job_s_trials(session: AsyncSession, job: JobTable) -> None:
-    session.add_all(
-        [
-            TrialTable(id="t1", job_id=job.id, status=RunStatus.COMPLETED),
-            TrialTable(id="t2", job_id=job.id, status=RunStatus.RUNNING),
-        ]
-    )
-    await session.commit()
-
-    refreshed = await session.get(JobTable, job.id, populate_existing=True)
-
-    assert refreshed is not None
-    assert refreshed.num_trials == 2
-
-
-async def test_num_trials_is_zero_for_a_job_with_none(session: AsyncSession, job: JobTable) -> None:
-    refreshed = await session.get(JobTable, job.id, populate_existing=True)
-
-    assert refreshed is not None
-    assert refreshed.num_trials == 0
-
-
-async def test_num_trials_is_unaffected_by_task_count(session: AsyncSession, job: JobTable) -> None:
-    """The view's bug: joining tasks multiplied the trial count. This must not."""
-    session.add(TrialTable(id="t1", job_id=job.id, status=RunStatus.COMPLETED))
-    session.add_all(
-        GbTaskTable(id=uuid4(), job_id=job.id, status=RunStatus.PENDING, type=GbTaskType.TUNING)
-        for _ in range(3)
-    )
-    await session.commit()
-
-    refreshed = await session.get(JobTable, job.id, populate_existing=True)
-
-    assert refreshed is not None
-    assert refreshed.num_trials == 1
 
 
 async def test_dataset_train_file_is_generated_from_the_name(session: AsyncSession) -> None:

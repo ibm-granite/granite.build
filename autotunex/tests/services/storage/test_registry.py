@@ -8,6 +8,10 @@ is patched where a resolvable binary is needed so the tests do not depend on a r
 
 from __future__ import annotations
 
+from pathlib import Path
+from uuid import UUID
+
+import httpx
 import pytest
 
 from autotunex.services.storage.fallback import PreviewFallbackStorageBackend
@@ -22,12 +26,40 @@ def _both_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GB_TOKEN", "gb_xxx")
 
 
-def test_forced_local_is_local(monkeypatch: pytest.MonkeyPatch) -> None:
+# --- Local-resolved backends keep an HF preview fallback -----------------------
+#
+# Choosing local storage is a *write*-path decision: `llmb artifact push` is
+# disabled under GB_ENVIRONMENT=STANDALONE, and `auto` degrades when llmb or the
+# tokens are missing. Reading a preview instead goes over the HF dataset-viewer
+# HTTP API, which needs neither llmb nor the GB token. So a dataset row that
+# already carries an `hf://` locator (pushed before the switch to standalone, or
+# written by another deployment sharing the database) must still preview: local is
+# the primary (it owns persist/delete and the file:// locator) with HF as a
+# preview-only fallback.
+
+HF_HOSTED_ID = UUID("10d94a61-0000-4000-8000-000000000000")
+HF_HOSTED_URL = f"hf://huggingface.co/datasets/ibm-research/eli5-test_{str(HF_HOSTED_ID)[:8]}"
+
+
+def _local_primary(backend: object, *, emit_file_uri: bool) -> None:
+    """Assert ``backend`` is local-primary with an HF preview fallback."""
+    assert isinstance(backend, PreviewFallbackStorageBackend)
+    primary = backend._primary
+    assert isinstance(primary, LocalStorageBackend)
+    assert primary._emit_file_uri is emit_file_uri
+    assert isinstance(backend._fallback, HuggingFaceStorageBackend)
+
+
+def test_forced_local_writes_locally_and_previews_from_hf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `local` pins where files are *written*; it does not blind the preview to a
+    # dataset whose files live on HuggingFace.
     _both_tokens(monkeypatch)  # present, but local is forced
 
     backend = get_storage_backend(make_settings(dataset_storage_backend="local"))
 
-    assert isinstance(backend, LocalStorageBackend)
+    _local_primary(backend, emit_file_uri=False)
 
 
 def test_forced_huggingface_wraps_hf_with_local_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,7 +93,7 @@ def test_auto_without_tokens_falls_back_to_local(monkeypatch: pytest.MonkeyPatch
 
     backend = get_storage_backend(make_settings(dataset_storage_backend="auto"))
 
-    assert isinstance(backend, LocalStorageBackend)
+    _local_primary(backend, emit_file_uri=False)
 
 
 def test_auto_missing_gb_token_falls_back_to_local(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -71,7 +103,8 @@ def test_auto_missing_gb_token_falls_back_to_local(monkeypatch: pytest.MonkeyPat
 
     backend = get_storage_backend(make_settings(dataset_storage_backend="auto"))
 
-    assert isinstance(backend, LocalStorageBackend)
+    # The HF token alone cannot push, but it is all the viewer read needs.
+    _local_primary(backend, emit_file_uri=False)
 
 
 def test_huggingface_backend_receives_viewer_settings(
@@ -113,8 +146,7 @@ def test_auto_standalone_bash_uses_local_with_file_uri(monkeypatch: pytest.Monke
         make_settings(dataset_storage_backend="auto", gb_environment="standalone")
     )
 
-    assert isinstance(backend, LocalStorageBackend)
-    assert backend._emit_file_uri is True
+    _local_primary(backend, emit_file_uri=True)
 
 
 def test_auto_standalone_lsf_uses_local_without_file_uri(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,8 +162,7 @@ def test_auto_standalone_lsf_uses_local_without_file_uri(monkeypatch: pytest.Mon
         )
     )
 
-    assert isinstance(backend, LocalStorageBackend)
-    assert backend._emit_file_uri is False
+    _local_primary(backend, emit_file_uri=False)
 
 
 def test_forced_local_standalone_bash_emits_file_uri(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,12 +170,54 @@ def test_forced_local_standalone_bash_emits_file_uri(monkeypatch: pytest.MonkeyP
         make_settings(dataset_storage_backend="local", gb_environment="standalone")
     )
 
-    assert isinstance(backend, LocalStorageBackend)
-    assert backend._emit_file_uri is True
+    _local_primary(backend, emit_file_uri=True)
 
 
 def test_forced_local_non_standalone_emits_no_file_uri(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = get_storage_backend(make_settings(dataset_storage_backend="local"))
 
-    assert isinstance(backend, LocalStorageBackend)
-    assert backend._emit_file_uri is False
+    _local_primary(backend, emit_file_uri=False)
+
+
+async def test_auto_standalone_previews_an_hf_hosted_dataset_from_the_viewer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The reported bug, end to end: BASH runner + ``auto`` + an ``hf://`` dataset.
+
+    Nothing for this dataset is on local disk (the HF push stages into a temp dir
+    and never populates ``dataset_storage_dir``), so the local primary yields an
+    empty preview and the HF fallback must serve the rows.
+    """
+    monkeypatch.setenv("HF_TOKEN", "hf_tok")
+    monkeypatch.setenv("GB_TOKEN", "gb_tok")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        return httpx.Response(200, json={"rows": [{"row": {"text": "hello"}}]})
+
+    # Bind the real class first: patching the attribute on the shared `httpx`
+    # module rebinds it for this module too, so a lambda calling
+    # `httpx.AsyncClient` would recurse into itself.
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "autotunex.services.storage.huggingface.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    backend = get_storage_backend(
+        make_settings(
+            dataset_storage_backend="auto",
+            gb_environment="standalone",
+            dataset_storage_dir=tmp_path,
+        )
+    )
+    preview = await backend.preview(
+        dataset_id=HF_HOSTED_ID,
+        name="eli5-test",
+        data_format="jsonl",
+        artifact_url=HF_HOSTED_URL,
+        rows=10,
+    )
+
+    assert preview.train == [{"text": "hello"}]

@@ -21,17 +21,17 @@ if TYPE_CHECKING:
 class LogEntryTable(Base):
     """One log line emitted during a job or trial.
 
-    Two mirrored defects, both in ``docs/schema-review.md``: ``trial_id`` is
-    ``CHAR(36)`` while ``trials.id`` is ``VARCHAR(10)``, so it carries no foreign
-    key and can never match (item A2); and ``timestamp`` is a bare ``DATETIME``
-    with no timezone, unlike every other timestamp in the schema (item C4). The
-    latter is why this column uses plain ``DateTime`` rather than
+    Two mirrored defects, only the first recorded in ``docs/schema-review.md``:
+    ``trial_id`` is ``CHAR(36)`` while ``trials.id`` is ``VARCHAR(16)``, so it
+    carries no foreign key and can never match (item A2); and ``timestamp`` is a
+    bare ``DATETIME`` with no timezone, unlike every other timestamp in the
+    schema. The latter is why this column uses plain ``DateTime`` rather than
     :class:`autotunex.db.types.UtcDateTime` — mirroring means mirroring the flaw.
 
     ``trial_id`` is mapped as a plain string, not :class:`~autotunex.db.types.Uuid36`,
     even though the underlying column is wide enough to hold a dashed UUID: the
     values the pipeline actually writes there are ``trials.id``-shaped short codes
-    (``VARCHAR(10)``, see :class:`~autotunex.db.tables.trials.TrialTable`), the
+    (``VARCHAR(16)``, see :class:`~autotunex.db.tables.trials.TrialTable`), the
     same convention :class:`~autotunex.db.tables.results.ResultTable.trial_id`
     already follows. ``Uuid36`` would raise ``ValueError`` reading back anything
     that is not a well-formed UUID — i.e. every real row — so it is wrong here

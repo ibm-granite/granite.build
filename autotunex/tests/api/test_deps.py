@@ -8,6 +8,7 @@ database resolution is exercised through the ``session`` fixture.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -15,6 +16,7 @@ from uuid import UUID, uuid4
 from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autotunex.api.deps import get_authenticated_principal, get_principal, get_session
@@ -255,6 +257,10 @@ class _RecordingUserRepository:
         """Fail loudly: the email-less path must never reach provisioning."""
         raise AssertionError("provision must not be called for an email-less principal")
 
+    async def touch_login(self, email: str) -> None:
+        """Fail loudly: with no row resolved there is no login to record."""
+        raise AssertionError("touch_login must not be called when no user row matched")
+
     async def get_by_email(self, email: str) -> UserTable | None:
         """Record the lookup and report no match."""
         self.calls.append(email)
@@ -334,3 +340,88 @@ async def test_an_ambiguous_identity_is_a_problem_detail_that_names_neither_emai
     assert response.headers["content-type"].startswith("application/problem+json")
     assert response.json()["detail"] == "The account could not be resolved."
     assert "alice" not in response.text.lower()
+
+
+async def test_stage_two_records_a_login_for_a_caller_that_has_none(
+    session: AsyncSession,
+) -> None:
+    """The regression: an authenticated request must register as a login."""
+    user = UserTable(id=uuid4(), email="caller@example.com", role="user")
+    session.add(user)
+    await session.commit()
+    authenticated = Principal(email="caller@example.com", provider="session", is_admin=False)
+
+    await get_principal(authenticated, SqlAlchemyUserRepository(session), make_settings())
+
+    await session.refresh(user)
+    assert user.last_login_at is not None
+
+
+async def test_stage_two_refreshes_a_login_older_than_the_throttle_window(
+    session: AsyncSession,
+) -> None:
+    stale = datetime.now(UTC) - timedelta(hours=2)
+    user = UserTable(id=uuid4(), email="caller@example.com", role="user", last_login_at=stale)
+    session.add(user)
+    await session.commit()
+    authenticated = Principal(email="caller@example.com", provider="session", is_admin=False)
+
+    await get_principal(
+        authenticated,
+        SqlAlchemyUserRepository(session),
+        make_settings(login_activity_throttle_minutes=15),
+    )
+
+    await session.refresh(user)
+    assert user.last_login_at is not None
+    assert user.last_login_at > stale
+
+
+async def test_stage_two_leaves_a_recent_login_alone(session: AsyncSession) -> None:
+    """Throttling is what keeps this off the hot path: no write per request."""
+    recent = datetime.now(UTC) - timedelta(minutes=1)
+    user = UserTable(id=uuid4(), email="caller@example.com", role="user", last_login_at=recent)
+    session.add(user)
+    await session.commit()
+    authenticated = Principal(email="caller@example.com", provider="session", is_admin=False)
+
+    await get_principal(
+        authenticated,
+        SqlAlchemyUserRepository(session),
+        make_settings(login_activity_throttle_minutes=15),
+    )
+
+    await session.refresh(user)
+    assert user.last_login_at == recent
+
+
+async def test_stage_two_records_no_login_for_an_unprovisioned_caller(
+    session: AsyncSession,
+) -> None:
+    """No row means no login to record — and no crash."""
+    authenticated = Principal(email="ghost@example.com", provider="session", is_admin=False)
+
+    resolved = await get_principal(
+        authenticated, SqlAlchemyUserRepository(session), make_settings()
+    )
+
+    assert resolved.user_id is None
+
+
+async def test_a_failed_login_write_does_not_break_the_request(
+    session: AsyncSession,
+) -> None:
+    """Bookkeeping must never turn a working GET into a 500."""
+
+    class _FailingTouch(SqlAlchemyUserRepository):
+        async def touch_login(self, email: str) -> None:
+            raise OperationalError("UPDATE users", {}, Exception("lock wait timeout"))
+
+    user = UserTable(id=uuid4(), email="caller@example.com", role="user")
+    session.add(user)
+    await session.commit()
+    authenticated = Principal(email="caller@example.com", provider="session", is_admin=False)
+
+    resolved = await get_principal(authenticated, _FailingTouch(session), make_settings())
+
+    assert resolved.user_id == user.id

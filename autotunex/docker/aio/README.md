@@ -6,11 +6,16 @@ evaluation. Design: [`docs/superpowers/specs/2026-08-18-unified-aio-docker-image
 | Service | Port | Published | UI |
 | --- | --- | --- | --- |
 | AutoTuneX API + SvelteKit SPA | 8000 | yes | `http://localhost:8000/autotune` |
-| granite.build `gbserver` (standalone) | 8080 | yes | `http://localhost:8080` |
+| front proxy (Caddy) → gbserver | 8080 | yes | `http://localhost:8080` |
+| granite.build `gbserver` (standalone) | 8090 | **no** (loopback only) | via the proxy on 8080 |
 | api-bridge (MySQL write-path) | 8001 | **no** (loopback only) | — |
 
-The three services run in one container under `supervisord`, each in its own
-virtualenv. granite.build is built from the fork branch
+The four services run in one container under `supervisord`; the three Python
+ones each have their own virtualenv, while Caddy is a static binary lifted from
+its official image. The proxy owns the exposed `:8080` and dials gbserver over
+loopback, so gbserver sees a `127.0.0.1` peer for every caller — which is what
+its standalone auth requires (see [`Caddyfile`](Caddyfile)).
+granite.build is built from the fork branch
 `feat/autotunex-endpoint-migration` via its public **standalone** path (no
 internal Artifactory). AutoTuneX submits builds to the co-located gbserver
 through the `llmb` CLI (`AUTOTUNEX_JOB_BACKEND=llmb`, `GB_ENVIRONMENT=standalone`).
@@ -95,9 +100,9 @@ Apple silicon (`sys_platform == 'darwin' and platform_machine == 'arm64'`), so o
 
 These are the integration points that cannot be checked at build time:
 
-1. `curl -f http://localhost:8000/health` → AutoTuneX up and DB reachable.
+1. `curl -f http://localhost:8000/health/ready` → AutoTuneX up and DB reachable.
 2. Open `http://localhost:8080` → gbserver dashboard renders.
-3. `docker exec <container> supervisorctl status` → all three `RUNNING`.
+3. `docker exec <container> supervisorctl status` → all four `RUNNING`.
 4. Submit a job through AutoTuneX and confirm the `llmb` CLI reaches the local
    gbserver (see the design doc's "assumptions to validate").
 

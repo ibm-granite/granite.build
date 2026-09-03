@@ -772,11 +772,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         A Dict summarizing the training results (per ray.tune).
     """
-    from autotune.logging_setup import setup_logging
+    from autotune.logging_setup import bind_trial_id, setup_logging
 
     setup_logging()
 
     trial_id = tune.get_context().get_trial_id()
+    bind_trial_id(trial_id)
     logger.info(f"[AutoTune] Training driver multi GPU verl (trial {trial_id})")
 
     local_config = deepcopy(config)

@@ -144,6 +144,40 @@ class AdminRequiredError(ForbiddenError):
         super().__init__("This action requires administrator privileges.")
 
 
+class SystemResourceProtectedError(ForbiddenError):
+    """A row owned by the reserved system user may not be deleted.
+
+    The shared tier (:data:`~autotunex.core.constants.SYSTEM_USER_ID`) is curated
+    starter content that *every* caller reads and launches from, so a delete is
+    not a per-tenant loss — it removes the row for everybody, irreversibly. Read
+    access being deliberately wide is exactly what makes the delete narrow.
+
+    This is a standing invariant on the row's owner, not a consequence of the
+    ownership filter: ``include_shared=False`` on the mutation paths only protects
+    a *provisioned non-admin*, and left three principals through — an admin
+    widening with ``?scope=all`` (no owner filter at all), and any caller whose own
+    resolved ``user_id`` is the system user's, which is the single-owner standalone
+    deployment where "every caller" is that one owner.
+
+    The one sanctioned way to curate shared content is to assume the system user
+    (``POST /auth/assume/{id}``): that requires a real admin, is already audited by
+    ``api/routers/auth.py``, and makes the destructive act explicit rather than a
+    side effect of who the ambient principal happens to be. See
+    :func:`autotunex.services.scoping.is_delete_protected`.
+
+    A 403 rather than a 404: the row is already readable by this caller, so naming
+    it leaks nothing, and the UI needs to tell "protected" apart from "gone" to
+    explain itself in the delete dialog.
+    """
+
+    title = "System Resource Protected"
+
+    def __init__(self, resource: str, resource_id: object) -> None:
+        super().__init__(
+            f"{resource} {resource_id} is provided by the system and cannot be deleted."
+        )
+
+
 class ConflictError(AutoTuneXError):
     """A request conflicts with the current state of a resource."""
 
@@ -382,7 +416,7 @@ class AmbiguousIdentityError(AutoTuneXError):
     by picking a row would settle admin-ness by row order — the matched rows can
     carry different ``role`` values — so the lookup fails closed instead. The
     root fix is a ``UNIQUE INDEX ON users (lower(email))``, tracked under
-    CLAUDE.md open decision 7's schema work.
+    CLAUDE.md open decision 6's schema work.
 
     The detail is a fixed string, distinct from the generic 500 handler's, so an
     operator reading a client-side trace can tell the two apart. It deliberately
@@ -399,18 +433,6 @@ class DomainValidationError(AutoTuneXError):
 
     status_code = HTTPStatus.UNPROCESSABLE_ENTITY
     title = "Unprocessable Entity"
-
-
-class InvalidSearchSpaceError(DomainValidationError):
-    """The hyperparameter search space is not usable.
-
-    Raised by the (unbuilt) search layer — see ``SearchEngine`` in
-    ``services/protocols.py`` and CLAUDE.md open decision 3. It does *not* gate
-    ``configurations.config_data``, which is an untyped ``JSON`` blob the tuning
-    pipeline writes in a far richer shape than :mod:`autotunex.models.search_space`
-    describes; that blob is validated only by :class:`InvalidConfigDataError`'s
-    non-empty-object rule.
-    """
 
 
 class InvalidConfigDataError(DomainValidationError):

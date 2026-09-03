@@ -16,12 +16,20 @@ import-time crash. This keeps the module importable (and the rest of the test
 suite runnable) on a credential-free install that never selects ``job_backend=local``.
 The Ray-callback class is likewise defined inside :meth:`run`, because its base
 class (``ray.tune.Callback``) only exists after that lazy import.
+
+**Coverage stops inside :meth:`run`, deliberately.** Everything past the lazy
+import needs a live Ray cluster, and Ray is absent from the base ``.[dev]``
+install CI runs — pulling it in for one module's coverage is not a trade worth
+making on a standard runner. The lazy-import guard and the surrounding seams are
+covered; the pipeline body is not. See ibm-granite/granite.build#318.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -43,6 +51,7 @@ from autotunex.services.local.packaging import (
 from autotunex.services.local.protocols import (
     LocalRunContext,
     LogRecord,
+    TrainingMetricRecord,
     TrialSink,
     inject_reward_function,
 )
@@ -54,6 +63,72 @@ if TYPE_CHECKING:
     from typing import TextIO
 
 logger = get_logger(__name__)
+
+FMTUNE_METRIC_MARKER = "@@FMTUNE_METRIC@@"
+
+_SPLIT_MAX_LEN = 16
+"""``training_metrics.split`` is ``VARCHAR(16)``; MySQL errors on a longer value."""
+
+
+def _export_run_env(job_id: str) -> None:
+    """Export the Ray / tokenizers / fm-tune env vars one local run depends on.
+
+    Called from :meth:`AutotuneLocalTrainer.run` before ``ray.init()`` so that
+    trial-worker processes inherit every one of these. Extracted to module level
+    so the exports can be asserted without standing up Ray.
+
+    These are Ray/tokenizers/fm-tune runtime knobs rather than AutoTuneX settings,
+    so writing them here does not violate the "settings only via get_settings()"
+    rule.
+
+    Args:
+        job_id: The job id fm-tune's metrics callback stamps onto every row.
+    """
+    # Faithful to the 2025 runner: keep Ray from chdir-ing into each trial dir (so
+    # relative output paths resolve against output_dir) and silence the tokenizers
+    # fork warning.
+    os.environ["RAY_CHDIR_TO_TRIAL_DIR"] = "0"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    # fm-tune's in-process metrics callback
+    # (``autotune.callbacks.training_metrics.TrainingMetricsCallback``) reads this
+    # to stamp the real job id into its emitted row and printed marker line.
+    os.environ["AUTOTUNE_JOB_ID"] = job_id
+    # Metric capture reads fm-tune's marker lines off the trial workers' stdout, and
+    # Ray's log dedup (on by default) collapses same-pattern worker lines within its
+    # aggregation window into one "[repeated Nx across cluster]" line. Every metric
+    # line differs only in its numbers, so it is a single pattern to Ray: dedup would
+    # silently thin a per-step series down to roughly one point per window, and the
+    # collapsed line then fails to parse as JSON and lands in the logs instead.
+    os.environ["RAY_DEDUP_LOGS"] = "0"
+
+
+def _finite(value: float | int | str | None) -> float | None:
+    """Coerce a JSON metric value to a storable float, dropping NaN/Inf.
+
+    ``json.loads`` round-trips the non-standard ``NaN``/``Infinity`` tokens that
+    ``json.dumps`` emits for a diverging loss. SQLite quietly stores NaN as NULL,
+    but a MySQL ``DOUBLE`` bind formats it as the bare token ``nan`` and the INSERT
+    fails — which :meth:`_forward`'s ``suppress`` would swallow, losing the row *and*
+    its log-line fallback. Dropping just the offending value to NULL keeps the rest
+    of the row (step, epoch, the other metrics), which is exactly the point at which
+    a diverging run is most worth charting.
+
+    The annotation is the set of JSON scalars a metric field can arrive as; anything
+    else (an object, an array) reaches this as ``Any`` from ``json.loads`` and raises
+    below, which the caller turns into the plain-log fallback.
+
+    Raises:
+        TypeError: ``value`` is not numeric — the caller falls back to plain logging.
+        ValueError: ``value`` is a non-numeric string, likewise.
+    """
+    if value is None:
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+"""Shared contract with fm-tune's ``training_metrics.METRIC_MARKER`` — a marked
+stdout line the emitter prints in local mode. Both repos change together."""
 
 
 class AutotuneLocalTrainer:
@@ -196,12 +271,7 @@ class AutotuneLocalTrainer:
                 )
                 self._context.current_trial_id = None
 
-        # Faithful to the 2025 runner: keep Ray from chdir-ing into each trial dir
-        # (so relative output paths resolve against output_dir) and silence the
-        # tokenizers fork warning. These are Ray/tokenizers runtime knobs, not
-        # AutoTuneX settings, so writing them here does not violate the settings rule.
-        os.environ["RAY_CHDIR_TO_TRIAL_DIR"] = "0"
-        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        _export_run_env(str(ctx.job_id))
 
         # Online RL: persist the reward function and point the snapshot at it.
         if ctx.reward_function_code is not None:
@@ -450,6 +520,13 @@ class _SinkStream:
     A line produced on the asyncio event-loop thread is passed through only, never
     sent to the sink (see :func:`_current_thread_has_running_loop`): the sink
     blocks the caller on a loop round-trip, which on the loop thread deadlocks.
+
+    A forwarded line containing :data:`FMTUNE_METRIC_MARKER` — fm-tune's
+    per-step metrics emitter, printed from inside a Ray worker — is parsed as a
+    JSON payload and routed to ``sink.training_metric`` instead of
+    ``sink.log``, so a training step is recorded once, not double-written as a
+    log line. A malformed marker line (parse failure) falls back to ``sink.log``
+    so the line is never silently dropped.
     """
 
     def __init__(
@@ -487,6 +564,8 @@ class _SinkStream:
     def _forward(self, line: str) -> None:
         # capturing logs must never break the run
         with suppress(Exception):
+            if FMTUNE_METRIC_MARKER in line and self._forward_metric(line):
+                return
             self._sink.log(
                 LogRecord(
                     trial_id=self._context.current_trial_id,
@@ -497,6 +576,34 @@ class _SinkStream:
                     epoch=None,
                 )
             )
+
+    def _forward_metric(self, line: str) -> bool:
+        """Parse a marked metric line and forward it; return False to fall back to log."""
+        try:
+            payload = line.split(FMTUNE_METRIC_MARKER, 1)[1].strip()
+            data = json.loads(payload)
+            # A payload with no ``global_step`` at all is not a metric row; fall back
+            # to logging it rather than recording a bogus step 0 — same outcome as a
+            # ``global_step`` that will not coerce, which the ``except`` below handles.
+            if not isinstance(data, dict) or "global_step" not in data:
+                return False
+            # ``extra`` is persisted as-is and read back through ``MetricPointRead``,
+            # whose ``dict | None`` annotation would 500 on anything else.
+            extra = data.get("extra")
+            record = TrainingMetricRecord(
+                trial_id=data.get("trial_id") or self._context.current_trial_id,
+                global_step=int(data["global_step"]),
+                epoch=_finite(data.get("epoch")),
+                loss=_finite(data.get("loss")),
+                grad_norm=_finite(data.get("grad_norm")),
+                learning_rate=_finite(data.get("learning_rate")),
+                split=str(data.get("split") or "train")[:_SPLIT_MAX_LEN],
+                extra=extra if isinstance(extra, dict) else None,
+            )
+        except (IndexError, ValueError, TypeError, AttributeError):
+            return False
+        self._sink.training_metric(record)
+        return True
 
     def flush(self) -> None:
         """Flush the console and forward any residual (newline-less) buffer."""

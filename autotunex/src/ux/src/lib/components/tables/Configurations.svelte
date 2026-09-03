@@ -19,9 +19,8 @@
 	import { appState, notifications } from '$lib/app';
 
 	// The seed/system account that owns configurations shipped out of the box. Stable
-	// across deployments (unlike an email domain literal), so it gates the delete
-	// button both for "is this row owned by the system account" and "is the viewer
-	// the system account".
+	// across deployments (unlike an email domain literal), and the same id the
+	// backend guards on (`core/constants.py`, `services/scoping.py`).
 	const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000001';
 
 	let api = new API();
@@ -162,6 +161,51 @@
 		}
 	}
 
+	// Deletes each id independently. Without the per-id try/catch a single rejection
+	// (a 403 on system-provided starter content, a 409 from a configuration a tuning
+	// still references) aborted the loop and silently left the rest of the selection
+	// undeleted, while the counter was decremented for deletes that never happened.
+	// Reporting the first failure matters too: `Table` removes every selected row
+	// optimistically on submit, so a swallowed error reads as a successful delete
+	// until the refetch below puts the row back.
+	async function handleDelete(ids: string[]) {
+		const failures: string[] = [];
+		for (const id of ids) {
+			try {
+				await api.deleteConfiguration(id);
+				userMetadata.update((prev) => ({
+					...prev,
+					number_of_configurations: prev.number_of_configurations - 1
+				}));
+			} catch (err) {
+				failures.push(Utils.problemDetail(err, 'Could not delete configuration'));
+			}
+		}
+		if (failures.length > 0) {
+			notifications.set({
+				show: true,
+				kind: 'error',
+				title:
+					failures.length === ids.length
+						? 'Delete failed'
+						: `Deleted ${ids.length - failures.length} of ${ids.length}`,
+				subtitle: failures[0],
+				timeout: 6000
+			});
+		}
+		// Deliberately invalidates the tuning-wizard/form cache — see the comment on
+		// the same call in handleImportSubmit above. Not a dead write.
+		appState.update((prev) => ({ ...prev, isConfigurationsLoaded: false }));
+		await fetchPage();
+		// Deleting the last row(s) on a page beyond the first can strand the user on
+		// an empty page — step back one page and refetch rather than leave them there.
+		if (rows.length === 0 && page > 1) {
+			page -= 1;
+			prevKey = `${page} ${pageSize} ${q}`;
+			await fetchPage();
+		}
+	}
+
 	let configHeaders = [
 		{ key: 'name', value: 'Name' },
 		{ key: 'associated_jobs', value: 'Tunings' },
@@ -243,6 +287,30 @@
 		}
 	}
 
+	// A system-owned configuration is starter content every account sees, so deleting
+	// one removes it for the whole deployment — the backend refuses it with a 403 for
+	// every caller (`services/scoping.is_delete_protected`). Mirror that verdict here
+	// so the user is told why in the delete dialog instead of watching a request fail,
+	// and mirror its single exemption: an admin actively impersonating the system user
+	// (`impersonator` set, and acting *as* that account) is curating shared content on
+	// purpose, and is allowed through both here and server-side.
+	$: isCuratingSystemContent =
+		!!$currentUser?.impersonator && $currentUser?.user_id === SYSTEM_USER_ID;
+	$: selectedSystemConfigs = (rows ?? []).filter(
+		(conf) => selectedId?.includes(conf.id) && conf.user_id === SYSTEM_USER_ID
+	);
+	// Export -> Import is named because it genuinely produces an owned, editable copy
+	// (the import path posts each row through createConfiguration, so the new rows
+	// belong to the caller), and both buttons are in this table's own toolbar.
+	$: deleteBlockedMessage =
+		selectedSystemConfigs.length > 0 && !isCuratingSystemContent
+			? `${selectedSystemConfigs.map((conf) => `"${conf.name}"`).join(', ')} ${
+					selectedSystemConfigs.length === 1 ? 'is' : 'are'
+			  } provided with AutoTuneX and shared with every account, so ${
+					selectedSystemConfigs.length === 1 ? 'it cannot' : 'they cannot'
+			  } be deleted. Use Export, then Import, to keep an editable copy of your own.`
+			: null;
+
 	// reset tuning id when modal is closed
 	$: if (!openView) {
 		selectedTuning = null;
@@ -266,10 +334,7 @@
 		bind:page
 		bind:pageSize
 		on:search={(e) => onSearch(e.detail)}
-		disableDeleteButton={rows
-			?.filter((conf) => selectedId?.includes(conf.id))
-			.map((item) => item.user_id)
-			?.includes(SYSTEM_USER_ID) && $currentUser?.user_id !== SYSTEM_USER_ID}
+		{deleteBlockedMessage}
 		bind:openView
 		bind:selectedRowIds={selectedId}
 		submitBtnDisable={config?.name === '' ||
@@ -377,25 +442,7 @@
 				});
 			}
 		}}
-		on:delete={async (e) => {
-			for (let id of e.detail) {
-				await api.deleteConfiguration(id);
-				userMetadata.update((prev) => {
-					return { ...prev, number_of_configurations: prev.number_of_configurations - 1 };
-				});
-			}
-			// Deliberately invalidates the tuning-wizard/form cache — see the comment on
-			// the same call in handleImportSubmit above. Not a dead write.
-			appState.update((prev) => ({ ...prev, isConfigurationsLoaded: false }));
-			await fetchPage();
-			// Deleting the last row(s) on a page beyond the first can strand the user on
-			// an empty page — step back one page and refetch rather than leave them there.
-			if (rows.length === 0 && page > 1) {
-				page -= 1;
-				prevKey = `${page} ${pageSize} ${q}`;
-				await fetchPage();
-			}
-		}}
+		on:delete={(e) => handleDelete(e.detail)}
 		on:view={(e) => {
 			entityName = e.detail.row.name;
 		}}

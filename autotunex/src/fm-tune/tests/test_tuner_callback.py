@@ -66,8 +66,10 @@ class TestTrialCallbacks:
         cb, handler = self._build()
         trial = self._make_trial()
         cb.on_trial_start(iteration=0, trials=[trial], trial=trial)
-        # set_trial_id called with the trial id
-        handler.set_trial_id.assert_any_call("trial-0001")
+        # Attribution is context-scoped, not stamped onto the shared handler:
+        # mutating handler.trial_id is what let concurrent trials overwrite each
+        # other's labels (see tests/test_trial_log_attribution.py).
+        handler.set_trial_id.assert_not_called()
         # record_data called with RECORD_TRIAL type
         record_calls = [c for c in handler.record_data.call_args_list]
         assert any(c.kwargs.get("record_type") == RecordType.RECORD_TRIAL for c in record_calls)

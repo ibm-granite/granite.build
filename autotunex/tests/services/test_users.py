@@ -43,6 +43,10 @@ class FakeUserRepository:
         self._admin_count = admin_count
         self._counts = counts
 
+    async def touch_login(self, email: str) -> None:
+        """Unused by ``UserService``; stubbed only to satisfy the Protocol."""
+        raise NotImplementedError
+
     async def list(self, *, limit: int, offset: int) -> tuple[list[UserTable], int]:
         items = list(self._users.values())
         return items[offset : offset + limit], len(items)

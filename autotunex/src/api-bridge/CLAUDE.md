@@ -58,16 +58,29 @@ its sync equivalent — `pymysql` / `psycopg` / stdlib `sqlite3`), with optional
 `.env.example`. PostgreSQL needs the optional driver: `pip install "autotunex-api-bridge[postgres]"`.
 `database.Database()` raises at startup if `AUTOTUNEX_DATABASE_URL` is unset.
 
-## Lint/format only — not part of `make check`
+## Lint, format, and test from the root — but not typecheck or coverage
 
 This subproject is linted and formatted from the **root** `make lint` / `make format`, which
 lint it by explicit path (`ruff check src/api-bridge`) under this directory's own nested
 `[tool.ruff]` config (relaxed vs. the main service — no `ANN`/`D`, plus a few legacy-code
 codes ignored). The root config's `extend-exclude` skips `src/api-bridge` so the strict main
-config never governs it. It
-is deliberately **outside** the main service's `make test`, `make typecheck` (mypy strict),
-and coverage targets — this package is not typed to that bar and has its own test setup
-under `src/api-bridge/tests/`.
+config never governs it.
+
+Its **test suite** is run by the root `make test-subprojects` target, which `pip install`s
+this package with its `[dev]` extra and then runs `pytest` from **this** directory — so pytest
+uses this `pyproject.toml` as rootdir and does not inherit the main service's `pytest-asyncio`
+config. `make check` invokes `test-subprojects` after the main `test`, so this suite gates
+alongside everything else — including the granite.build monorepo's `autotunex-ci.yml`, which
+runs `make check` against the landed subtree. The `[dev]` extra pins `httpx==0.28.1` (matching
+the main service) because `fastapi`/`starlette`'s `TestClient`, used by
+`tests/test_server_auth.py`, imports it. The tests are self-contained (they inject an explicit
+in-memory `Database(engine=…)` or `monkeypatch.setenv` a `sqlite://` URL), so the standalone
+run needs no `.env` and no live database.
+
+It remains deliberately **outside** the main service's `make typecheck` (mypy strict) and
+coverage targets — this package is not typed to that bar. It is also **not** picked up by the
+bare `pytest` / `make test` at the repo root (whose `testpaths = ["tests"]` covers only the
+main service); `make test-subprojects` is the entry point for this standalone suite.
 
 ## More detail
 

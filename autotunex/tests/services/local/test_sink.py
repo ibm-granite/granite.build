@@ -18,9 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from autotunex.db.tables import ConfigurationTable, DatasetTable, JobTable, UserTable
 from autotunex.db.tables.log_entries import LogEntryTable
 from autotunex.db.tables.results import ResultTable
+from autotunex.db.tables.training_metrics import TrainingMetricTable
 from autotunex.db.tables.trials import TrialTable
 from autotunex.models.status import DatasetStatus, RunStatus
-from autotunex.services.local.protocols import LogRecord
+from autotunex.services.local.protocols import LogRecord, TrainingMetricRecord
 from autotunex.services.local.sink import DbTrialSink, SinkLogHandler
 
 
@@ -162,6 +163,118 @@ async def test_sink_log_persists_a_trial_tagged_entry(engine: AsyncEngine) -> No
             .all()
         )
     assert any(row.trial_id == "t01" and row.message == "Trial t01 started" for row in rows)
+
+
+async def test_sink_training_metric_persists_a_row_from_a_worker_thread(
+    engine: AsyncEngine,
+) -> None:
+    """The stream-parse end and the repository end are each covered; this is the bridge.
+
+    ``DbTrialSink.training_metric`` is the only place ``coerce_trial_id`` is applied
+    to a metric row, so it is also the only place a trial id that charts can join
+    against is established.
+    """
+    factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    job_id = await _seed_job(factory)
+    loop = asyncio.get_running_loop()
+    sink = DbTrialSink(session_factory=factory, loop=loop, job_id=job_id)
+
+    await asyncio.to_thread(
+        sink.training_metric,
+        TrainingMetricRecord(
+            trial_id="t01",
+            global_step=12,
+            epoch=0.5,
+            loss=1.25,
+            grad_norm=2.0,
+            learning_rate=1e-6,
+            split="train",
+            extra={"k": "v"},
+        ),
+    )
+
+    async with factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(TrainingMetricTable).where(TrainingMetricTable.job_id == job_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [(r.trial_id, r.global_step, r.loss, r.extra) for r in rows] == [
+        ("t01", 12, 1.25, {"k": "v"})
+    ]
+
+
+async def test_sink_training_metric_coerces_an_overlong_ray_trial_id(
+    engine: AsyncEngine,
+) -> None:
+    """``trials.id``/``training_metrics.trial_id`` are VARCHAR(16); Ray ids run longer.
+
+    The coercion must match the one ``_SinkCallback`` applies when it writes the
+    ``trials`` row, or ``GET /jobs/{id}/trials/{trial_id}/metrics`` would never join.
+    """
+    factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    job_id = await _seed_job(factory)
+    loop = asyncio.get_running_loop()
+    sink = DbTrialSink(session_factory=factory, loop=loop, job_id=job_id)
+    raw = "ray_" + "b" * 40
+
+    await asyncio.to_thread(
+        sink.training_metric,
+        TrainingMetricRecord(
+            trial_id=raw,
+            global_step=1,
+            epoch=None,
+            loss=None,
+            grad_norm=None,
+            learning_rate=None,
+            split="train",
+            extra=None,
+        ),
+    )
+
+    async with factory() as session:
+        row = (
+            await session.execute(
+                select(TrainingMetricTable).where(TrainingMetricTable.job_id == job_id)
+            )
+        ).scalar_one()
+    assert row.trial_id == DbTrialSink.coerce_trial_id(raw)
+    assert len(row.trial_id or "") <= 16
+
+
+async def test_sink_training_metric_keeps_a_null_trial_id_null(engine: AsyncEngine) -> None:
+    """The final-training run has no ``trials`` row, so job-level metrics carry no trial."""
+    factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    job_id = await _seed_job(factory)
+    loop = asyncio.get_running_loop()
+    sink = DbTrialSink(session_factory=factory, loop=loop, job_id=job_id)
+
+    await asyncio.to_thread(
+        sink.training_metric,
+        TrainingMetricRecord(
+            trial_id=None,
+            global_step=3,
+            epoch=None,
+            loss=0.5,
+            grad_norm=None,
+            learning_rate=None,
+            split="eval",
+            extra=None,
+        ),
+    )
+
+    async with factory() as session:
+        row = (
+            await session.execute(
+                select(TrainingMetricTable).where(TrainingMetricTable.job_id == job_id)
+            )
+        ).scalar_one()
+    assert row.trial_id is None
+    assert row.split == "eval"
 
 
 class _FakeSearcher:

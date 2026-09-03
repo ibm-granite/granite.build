@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-training audit dev dev-api-bridge docker-api-bridge test test-cov lint format typecheck check migration migrate migrations-check downgrade clean
+.PHONY: help install install-training audit dev dev-api-bridge docker-api-bridge test test-cov test-subprojects lint format typecheck check migration migrate migrations-check downgrade clean
 
 PYTHON ?= python
 PORT ?= 8000
@@ -39,6 +39,10 @@ test:  ## Run the test suite
 test-cov:  ## Run tests with a coverage report
 	pytest --cov=autotunex --cov-report=term-missing --cov-report=xml
 
+test-subprojects:  ## Install and run the standalone subproject test suites (api-bridge)
+	uv pip install -e "./src/api-bridge[dev]" || $(PYTHON) -m pip install -e "./src/api-bridge[dev]"
+	cd src/api-bridge && pytest
+
 lint:  ## Check lint and formatting
 	ruff check .
 	ruff format --check .
@@ -58,7 +62,7 @@ format:  ## Apply lint fixes and formatting
 typecheck:  ## Run mypy in strict mode
 	mypy
 
-check: lint typecheck test  ## Everything CI runs
+check: lint typecheck test test-subprojects  ## Everything CI runs
 
 migration:  ## Autogenerate a migration: make migration m="add trials table"
 	@test -n "$(m)" || (echo 'Usage: make migration m="description"' && exit 1)
@@ -67,7 +71,7 @@ migration:  ## Autogenerate a migration: make migration m="add trials table"
 migrate:  ## Apply migrations up to head
 	alembic upgrade head
 
-migrations-check:  ## Fail if db/tables.py has drifted from the migrations
+migrations-check:  ## Fail if db/tables/ has drifted from the migrations
 	alembic check
 
 downgrade:  ## Roll back one migration

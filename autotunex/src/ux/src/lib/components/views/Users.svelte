@@ -41,9 +41,12 @@
 			display: (date: Date) => new Date(date).toLocaleString()
 		},
 		{
-			key: 'updated_at',
+			key: 'last_login_at',
 			value: 'Last login on',
-			display: (date: Date) => new Date(date).toLocaleString()
+			// Null when the backend holds no record of a login for this user at all.
+			// An em dash, not a fabricated date: `new Date(null)` is the 1970 epoch,
+			// which would read as a real (and very wrong) login.
+			display: (date: Date | null) => (date ? new Date(date).toLocaleString() : '—')
 		},
 		{ key: 'action', empty: true }
 	];

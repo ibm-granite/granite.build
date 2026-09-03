@@ -12,6 +12,7 @@ from __future__ import annotations
 import builtins
 import io
 import logging
+import os
 import sys
 import threading
 from collections.abc import Mapping, Sequence
@@ -22,11 +23,12 @@ from uuid import UUID
 import pytest
 
 from autotunex.core.exceptions import AutotuneCoreUnavailableError
-from autotunex.services.local.protocols import LocalRunContext, LogRecord
+from autotunex.services.local.protocols import LocalRunContext, LogRecord, TrainingMetricRecord
 from autotunex.services.local.trainer import (
     AutotuneLocalTrainer,
     _capture_run_logs,
     _capture_std_streams,
+    _export_run_env,
     _run_cancel_watcher,
     _SinkStream,
     _trial_event_log,
@@ -106,6 +108,9 @@ class _RecordingSink:
 
     def log(self, record: LogRecord) -> None:
         self.records.append(record)
+
+    def training_metric(self, record: TrainingMetricRecord) -> None:
+        pass
 
 
 def test_capture_run_logs_captures_trainer_and_autotune_lines_as_job_level() -> None:
@@ -252,3 +257,35 @@ def test_watcher_exits_without_shutdown_on_normal_completion() -> None:
     t.join(timeout=2)
 
     assert calls == []
+
+
+def test_export_run_env_stamps_the_job_id_for_fm_tunes_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AUTOTUNE_JOB_ID", raising=False)
+
+    _export_run_env("11111111-2222-3333-4444-555555555555")
+
+    assert os.environ["AUTOTUNE_JOB_ID"] == "11111111-2222-3333-4444-555555555555"
+
+
+def test_export_run_env_disables_ray_log_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Ray's dedup collapses same-pattern worker lines, and every metric marker line
+    # differs only in its numbers — leaving it on silently thins the series.
+    monkeypatch.setenv("RAY_DEDUP_LOGS", "1")
+
+    _export_run_env("job")
+
+    assert os.environ["RAY_DEDUP_LOGS"] == "0"
+
+
+def test_export_run_env_keeps_the_2025_ray_and_tokenizers_knobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RAY_CHDIR_TO_TRIAL_DIR", raising=False)
+    monkeypatch.delenv("TOKENIZERS_PARALLELISM", raising=False)
+
+    _export_run_env("job")
+
+    assert os.environ["RAY_CHDIR_TO_TRIAL_DIR"] == "0"
+    assert os.environ["TOKENIZERS_PARALLELISM"] == "false"

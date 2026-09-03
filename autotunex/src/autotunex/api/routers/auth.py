@@ -45,6 +45,7 @@ import httpx
 import jwt
 from fastapi import APIRouter, Cookie, Depends
 from fastapi.responses import JSONResponse, RedirectResponse, Response
+from sqlalchemy.exc import SQLAlchemyError
 
 from autotunex.api.deps import (
     PrincipalDep,
@@ -253,6 +254,7 @@ async def callback(
     settings: SettingsDep,
     id_token_verifier: Annotated[OidcBearerVerifier | None, Depends(get_id_token_verifier)],
     http_client: Annotated[httpx.AsyncClient, Depends(get_http_client)],
+    user_repository: Annotated[UserRepository, Depends(get_user_repository)],
     code: str | None = None,
     state: str | None = None,
     oauth_flow: Annotated[str | None, Cookie(alias=_FLOW_COOKIE)] = None,
@@ -427,6 +429,22 @@ async def callback(
     if not email:
         logger.warning("Rejecting /auth/callback: the ID token's email claim was missing or empty.")
         raise InvalidCredentialsError()
+    # A completed login is the one unambiguous "this person is here" event the
+    # system gets, so it is recorded unconditionally — unlike the throttled
+    # per-request refresh in `deps._record_activity`, which would otherwise skip
+    # a fresh login that landed inside its window. Best-effort for the same
+    # reason that one is: the caller has authenticated successfully, and failing
+    # the login over a bookkeeping column would deny them the app entirely. A
+    # caller with no `users` row (provisioning off) records nothing — the
+    # repository treats that as a no-op, not an error.
+    try:
+        await user_repository.touch_login(email)
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "Could not record the last-login time for a completed login: %s. The "
+            "login itself succeeded.",
+            type(exc).__name__,
+        )
     session_token = mint_session_token(
         email=email, secret=bff.secret, ttl_hours=settings.session_ttl_hours
     )

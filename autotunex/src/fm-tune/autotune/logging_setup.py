@@ -21,6 +21,50 @@ _CONFIGURED = False
 LOG_FMT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
+# Bridge settings a worker process needs to build its own log handler.
+BRIDGE_ENV_KEYS = ("AUTOTUNE_JOB_ID", "AUTOTUNE_ENDPOINT_URL")
+
+
+def bridge_env_vars():
+    """The bridge env vars currently set, as a dict (empty when logging is off).
+
+    Worker processes on *other* nodes do not inherit the driver's environment,
+    so these have to travel explicitly as a job-level Ray ``runtime_env``.
+    Without them a worker builds no handler and its logs can only reach the
+    backend via the driver's forwarded stdout, where they are job-level and
+    cannot be attributed to a trial.
+    """
+    return {k: os.environ[k] for k in BRIDGE_ENV_KEYS if os.environ.get(k)}
+
+
+def bridge_runtime_env():
+    """``ray.init`` kwargs that carry the bridge settings to workers.
+
+    Returns an empty dict when bridge logging is off (the default), so the
+    Ray runtime_env machinery is only engaged for runs that actually need it.
+    """
+    env = bridge_env_vars()
+    return {"runtime_env": {"env_vars": env}} if env else {}
+
+
+def bind_trial_id(trial_id):
+    """Attribute this process's log records to ``trial_id``.
+
+    Called by each driver once it knows its trial. A trial worker process
+    serves one trial at a time, so setting the handler default here is correct
+    and — unlike a context-scoped id — covers records emitted from any thread
+    in the process (HF Trainer, dataloader workers, DeepSpeed). The driver
+    process must never do this: every trial's forwarded output converges on its
+    handler, so a process-wide id there is exactly the bug this avoids.
+    """
+    if not trial_id:
+        return
+    from autotune.callbacks.logging_service import BufferedLogHandler
+
+    for h in logging.getLogger().handlers:
+        if isinstance(h, BufferedLogHandler):
+            h.set_trial_id(trial_id)
+
 
 def setup_logging(log_level=logging.INFO):
     """Configure the root logger for the current process.

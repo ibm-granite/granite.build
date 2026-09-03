@@ -41,8 +41,9 @@ SAMPLE_CONFIG: dict[str, Any] = {
 }
 """A non-empty ``config_data`` blob in the real (schema-less) shape.
 
-Deliberately *not* a :class:`SearchSpace` — the API accepts any non-empty JSON
-object, and pinning that means the sample must not be the toy search-space form.
+Mirrors what the tuning pipeline actually writes: the API accepts any non-empty
+JSON object, so the sample must exercise the real shape rather than a tidied-up
+one the service never sees.
 """
 
 ADMIN_ID = uuid4()
@@ -81,7 +82,11 @@ class FakeConfigurationRepository:
         )
 
     async def get(
-        self, configuration_id: UUID, *, owner_id: UUID | None = None
+        self,
+        configuration_id: UUID,
+        *,
+        owner_id: UUID | None = None,
+        include_shared: bool = False,
     ) -> ConfigurationTable | None:
         config = self.configs.get(configuration_id)
         if config is None:
@@ -91,7 +96,13 @@ class FakeConfigurationRepository:
         return config
 
     async def list(
-        self, *, limit: int, offset: int, owner_id: UUID | None = None, q: str | None = None
+        self,
+        *,
+        limit: int,
+        offset: int,
+        owner_id: UUID | None = None,
+        q: str | None = None,
+        include_shared: bool = False,
     ) -> tuple[Sequence[ConfigurationTable], int]:
         matching = [
             config

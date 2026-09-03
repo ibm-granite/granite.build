@@ -104,8 +104,9 @@ copy the `id` from one response into the next step. If you have
 automatically, but it is not required.
 
 The flow is: **configuration → dataset (create, then upload) → job → read
-back → logs**. A job references an existing configuration and dataset, so those
-must exist first, and the dataset must be `ready` before a job can use it.
+back → trials → logs**. A job references an existing configuration and dataset,
+so those must exist first, and the dataset must be `ready` before a job can use
+it.
 
 ### 1. Create a configuration
 
@@ -162,8 +163,9 @@ CONFIG_ID=8f14e45f-ceea-467d-9a1e-4b2c3d4e5f60   # paste your own id here
 Registering a dataset happens in two parts: first create the metadata record,
 then upload the training file to it.
 
-**Create the record.** Only a `name` and a `data_format` (`jsonl`, `csv`, or
-`parquet`) are needed; `description` is optional.
+**Create the record.** Only a `name` is required; `data_format` defaults to
+`jsonl` (`csv` and `parquet` are the other accepted values) and `description`
+is optional.
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/api/v1/datasets \
@@ -304,7 +306,6 @@ Returns `201 Created` with the job in status `pending`:
     }
   },
   "output_artifacts": null,
-  "trials": [],
   "is_stale": false,
   "created_at": "2026-08-11T10:05:00Z",
   "updated_at": "2026-08-11T10:05:00Z",
@@ -323,8 +324,9 @@ instead. See [api/jobs.md](api/jobs.md) for the full submission contract.
 
 ### 4. Read the job back
 
-Fetch one job for full detail — including the nested `tasks`, the `trials`
-list, `num_trials`, and the two JSON blobs:
+Fetch one job for full detail — including the nested `tasks`, `num_trials`, and
+the two JSON blobs (trials are not nested here; see step 5 for
+`GET /jobs/{id}/trials`):
 
 ```bash
 curl -s "http://127.0.0.1:8000/api/v1/jobs/${JOB_ID}" | python -m json.tool
@@ -364,9 +366,10 @@ curl -s "http://127.0.0.1:8000/api/v1/jobs?limit=20&offset=0" | python -m json.t
 }
 ```
 
-`model_source`, `tuning_type`, `num_trials`, the nested `tasks`, the `trials`,
-`is_stale`, and the JSON blobs live only on the detail response above — fetch
-them per-job after showing the list.
+`model_source`, `tuning_type`, `rl_tuner_type`, `autotune`, `ray_address`,
+`cleanup`, `num_trials`, the nested `tasks`, `is_stale`, and the JSON blobs
+live only on the detail response above — fetch them per-job after showing the
+list.
 
 `is_stale` is `true` when the live configuration's behavioural settings no longer
 match what the job snapshotted at submit; it is detail-only, never on
@@ -376,7 +379,30 @@ match what the job snapshotted at submit; it is detail-only, never on
 rather than a datetime because the column is `VARCHAR(255)`, and `null` when the
 job has no build tasks — which is the case here.
 
-### 5. Read the logs
+### 5. Read a page of trials
+
+Trials are not nested on the job detail response. They have their own endpoint:
+`GET /jobs/{id}/trials` — a paged `Page[TrialRead]`, oldest first, with `limit`
+(1–100, default 50), `offset` and `scope`.
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/jobs/${JOB_ID}/trials?limit=50&offset=0" \
+  | python -m json.tool
+```
+
+```json
+{
+  "items": [],
+  "total": 0,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+A visible job with no trials yet is an empty page, not a `404` — which is what
+you get on the default setup, since nothing runs the job.
+
+### 6. Read the logs
 
 Job-level log lines are read newest-first, by keyset cursor:
 
@@ -410,7 +436,8 @@ To actually run tuning, choose a job backend:
 - **`AUTOTUNEX_JOB_BACKEND=local`** runs the HPO pipeline in-process. It needs
   the optional `autotune` trainer package installed and the dataset's files
   available on local disk, and it drives the job to a terminal state itself,
-  persisting trials, results, and logs as it goes.
+  persisting trials, results, and logs as it goes. The slim install above does
+  not include the training stack — run `make install-training` for that.
 - Other backends submit the run to an external builder rather than executing
   in-process.
 

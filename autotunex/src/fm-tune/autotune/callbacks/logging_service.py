@@ -17,12 +17,46 @@ import json
 import logging
 import os
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from enum import Enum
 from logging import LogRecord
 from typing import Dict, Optional, Protocol
 
 import requests
+
+# The trial that owns log records emitted by the *current* execution context.
+#
+# In the Tune driver process every trial's output converges on one root-logger
+# handler: Ray runs with ``log_to_driver=True``, so each worker's stdout is
+# forwarded into the driver, where ``main.py`` swaps ``sys.stdout`` for
+# ``PrintLogger`` -> ``logging``. Those lines arrive on Ray's log-forwarding
+# thread, interleaved with the Tune control thread that runs the trial
+# callbacks. A single mutable ``handler.trial_id`` therefore labels each record
+# with whichever trial most recently fired a callback, filing trial A's logs
+# under trial B. A ContextVar is scoped to the thread/task that set it, so a
+# callback can claim its own records without claiming everyone else's.
+_current_trial_id: ContextVar[Optional[str]] = ContextVar("fmtune_current_trial_id", default=None)
+
+
+@contextmanager
+def trial_context(trial_id: Optional[str]):
+    """Attribute log records emitted in this context to ``trial_id``.
+
+    Scoped to the calling thread (and to the current asyncio task), so
+    concurrent trials cannot overwrite each other's attribution.
+    """
+    token = _current_trial_id.set(trial_id)
+    try:
+        yield
+    finally:
+        _current_trial_id.reset(token)
+
+
+def current_trial_id() -> Optional[str]:
+    """The context-scoped trial id, or None outside any trial context."""
+    return _current_trial_id.get()
 
 
 class LogDestination(Enum):
@@ -38,6 +72,7 @@ class RecordType(Enum):
     RECORD_TRIAL = "record_trial"
     UPDATE_STATUS = "update_status"
     RECORD_RESULT = "insert_trial_result"
+    RECORD_METRICS = "record_metrics"
 
 
 class DatabaseProtocol(Protocol):
@@ -131,9 +166,7 @@ class BufferedLogHandler(logging.Handler):
     def _periodic_flush(self):
         """Called by the timer — flush if buffer has entries, then reschedule."""
         try:
-            with self.lock:
-                if self.buffer:
-                    self.flush()
+            self.flush()
         finally:
             self._start_flush_timer()
 
@@ -190,6 +223,24 @@ class BufferedLogHandler(logging.Handler):
         if self.buffer and self.job_id is not None:
             self.flush()
 
+    def _resolve_trial_id(self, record: LogRecord) -> Optional[str]:
+        """Decide which trial owns ``record``.
+
+        Precedence: an explicit ``trial_id`` on the record
+        (``logger.info(..., extra={"trial_id": ...})``), then the
+        context-scoped id set by :func:`trial_context`, then this handler's
+        own default. The default is only meaningful in a trial worker
+        process, which serves one trial at a time; in the driver it stays
+        ``None`` so a job-level line is never filed under an unrelated trial.
+        """
+        explicit = getattr(record, "trial_id", None)
+        if explicit is not None:
+            return explicit
+        scoped = _current_trial_id.get()
+        if scoped is not None:
+            return scoped
+        return self.trial_id
+
     def emit(self, record: LogRecord):
         """
         Emit a record by adding it to the buffer and potentially flushing.
@@ -199,7 +250,7 @@ class BufferedLogHandler(logging.Handler):
             # Format the log record
             log_entry = {
                 "job_id": self.job_id,
-                "trial_id": self.trial_id,
+                "trial_id": self._resolve_trial_id(record),
                 "level": record.levelname,
                 "filename": record.filename,
                 "function": record.funcName,
@@ -213,29 +264,30 @@ class BufferedLogHandler(logging.Handler):
 
             # Only buffer for logging if job_id is set
             if self.job_id is not None:
-                self.buffer.append(log_entry)
-
-                if self.auto_flush or len(self.buffer) >= self.buffer_size:
+                with self.lock:
+                    self.buffer.append(log_entry)
+                    should_flush = self.auto_flush or len(self.buffer) >= self.buffer_size
+                if should_flush:
                     self.flush()
 
         except Exception as e:
             self.handleError(record)
             self.silent_log_operation(f"Error in emit: {str(e)}")
 
-    def _flush_to_database(self):
-        """Flush buffer to database."""
+    def _flush_to_database(self, batch: list):
+        """Flush ``batch`` to database."""
         if self.db is not None:
             # Convert ISO string back to datetime for database
             db_buffer = []
-            for entry in self.buffer:
+            for entry in batch:
                 db_entry = entry.copy()
                 db_entry["timestamp"] = datetime.fromisoformat(entry["timestamp"])
                 db_buffer.append(db_entry)
 
             self.db.insert_logs(buffer=db_buffer)
 
-    def _flush_to_http(self):
-        """Flush buffer to HTTP endpoint."""
+    def _flush_to_http(self, batch: list):
+        """Flush ``batch`` to HTTP endpoint."""
         if self.endpoint_url is None:
             raise ValueError("Endpoint URL not set")
         self.silent_log_operation(f"logger uri:- {self.endpoint_url}/record_logs", "debug.log")
@@ -245,7 +297,7 @@ class BufferedLogHandler(logging.Handler):
                 response = requests.post(
                     url,
                     headers=self.endpoint_headers,
-                    data=json.dumps(self.buffer),
+                    data=json.dumps(batch),
                     timeout=self.timeout,
                 )
                 response.raise_for_status()
@@ -257,31 +309,41 @@ class BufferedLogHandler(logging.Handler):
                     raise e
 
     def flush(self):
-        """Flush the buffer by writing all records to the configured destination."""
-        if not self.buffer:
-            return
+        """Write buffered records to the configured destination.
+
+        The buffer is *detached* under the lock before the (blocking) send, so
+        records emitted concurrently — Ray's log-forwarding thread is a steady
+        source of them — land in the fresh buffer instead of being discarded by
+        a post-send reset. The send itself runs outside the lock so a slow
+        endpoint cannot stall every thread that logs.
+        """
+        with self.lock:
+            if not self.buffer or self.job_id is None:
+                return
+            if self._destination is None:
+                self.silent_log_operation(
+                    f"Warning: {len(self.buffer)} log entries buffered but no destination available"
+                )
+                return
+            batch, self.buffer = self.buffer, []
 
         try:
-            if self.job_id is not None:
-                if self._destination == LogDestination.DATABASE:
-                    self._flush_to_database()
-                elif self._destination == LogDestination.HTTP:
-                    self._flush_to_http()
-                else:
-                    self.silent_log_operation(
-                        f"Warning: {len(self.buffer)} log entries buffered but no destination available"
-                    )
-                    return
-
-                self.buffer = []  # Clear the buffer after successful flush
+            if self._destination == LogDestination.DATABASE:
+                self._flush_to_database(batch)
+            else:
+                self._flush_to_http(batch)
 
         except Exception as e:
+            # Keep the batch for the next attempt (pre-existing retry
+            # behaviour) and leave a durable copy on disk.
+            with self.lock:
+                self.buffer = batch + self.buffer
             log_path = os.getenv("LOG_PATH", "./logs")
             os.makedirs(f"{log_path}/logs", exist_ok=True)
 
             file_path = f"{log_path}/logs/{self.job_id}.json"
             with open(file_path, "w") as file:
-                json.dump(self.buffer, file, indent=4)
+                json.dump(batch, file, indent=4)
             self.silent_log_operation(f"Error in flush: {e}")
             # Optionally implement additional retry logic here
 

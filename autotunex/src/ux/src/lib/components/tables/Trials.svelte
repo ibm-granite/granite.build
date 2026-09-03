@@ -16,6 +16,7 @@
 		ToolbarBatchActions
 	} from 'carbon-components-svelte';
 	import Compare from '../Compare.svelte';
+	import TrialMetricsChart from '../displays/TrialMetricsChart.svelte';
 	import { Utils } from '$lib/utils';
 	import { onDestroy } from 'svelte';
 	import type { Trial } from '$lib/app-types';
@@ -37,6 +38,12 @@
 	let selectedRowIds: string[] = [];
 
 	const expandedTrials = new Set<string>();
+
+	// Per-row expanded-tab index (Logs=0, Configuration=1, Training Curves=2). Bound on
+	// the inner Tabs so each expanded row tracks its own selection independently, and so
+	// the chart mounts only when its tab is visible (a LineChart mis-measures in a hidden
+	// 0-size TabContent). Initialized to 0 on expand so Logs still shows by default.
+	let trialTab: Record<string, number> = {};
 
 	const flattenObject = (obj: Record<string, any>, parentKey = '', sep = '.') => {
 		const flatObj: Record<string, any> = {};
@@ -110,6 +117,7 @@
 		on:click:row--expand={async (e) => {
 			const trialId = e.detail.row.id;
 			if (e.detail.expanded) {
+				trialTab = { ...trialTab, [trialId]: trialTab[trialId] ?? 0 };
 				expandedTrials.add(trialId);
 				if (['SUBMITTED', 'PENDING', 'RUNNING'].includes(e.detail.row.status)) {
 					startTrialLogPoll(jobId, trialId);
@@ -185,9 +193,10 @@
 		</svelte:fragment>
 		<svelte:fragment slot="expanded-row" let:row>
 			{@const trialLogEntry = $trialLogsStore[row.id]}
-			<Tabs type="container">
+			<Tabs type="container" bind:selected={trialTab[row.id]}>
 				<Tab label="Logs" />
 				<Tab label="Configuration" />
+				<Tab label="Training Curves" />
 				<svelte:fragment slot="content">
 					<TabContent>
 						{#if !trialLogEntry}
@@ -219,6 +228,11 @@
 							wrapText
 							style="max-width: 100%; word-break: break-word;"
 						/>
+					</TabContent>
+					<TabContent>
+						{#if trialTab[row.id] === 2}
+							<TrialMetricsChart {jobId} trialId={row.id} status={row.status} />
+						{/if}
 					</TabContent>
 				</svelte:fragment>
 			</Tabs>

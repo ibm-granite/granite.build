@@ -16,7 +16,9 @@ to the real MySQL database directly:
 ```
 POST /api/v1/jobs        →  submit a tuning run (references an existing config + dataset)
 GET  /api/v1/jobs        →  a lean page of jobs — identity, status, owner/config/dataset labels
-GET  /api/v1/jobs/{id}   →  one job, full detail: tasks, trials, per-trial metrics, JSON blobs
+GET  /api/v1/jobs/{id}   →  one job, full detail: tasks, trial budget, config snapshot
+GET  /api/v1/jobs/{id}/trials         →  that job's trials, paged (not on the detail above)
+GET  /api/v1/jobs/by-build-id/{bid}   →  the same job by its build id, minus tasks + snapshot
 ```
 
 > ### Project status: submission + read path implemented; execution is backend-gated
@@ -47,8 +49,8 @@ uvicorn autotunex.main:app --reload
 ```
 
 `make install` runs both installs for you. The second one supplies the slim, torch-free
-`autotune` catalog that the configuration-template and dataset-format endpoints need —
-without it they return `503`.
+`autotune` catalog that the configuration-template, dataset-format and `suggest-mapping`
+endpoints need — without it they return `503`.
 
 The server starts on <http://127.0.0.1:8000> and creates a local SQLite database
 (`autotunex.db`) on first run. No database server needed.
@@ -143,14 +145,19 @@ tasks relate, plus the job lifecycle — see [concepts](docs/concepts.md).
 ## API surface
 
 Resource endpoints are mounted under `/api/v1`; `/auth/*`, `/health` and `/mcp` are
-unprefixed. Reads are own-data by default; an admin widens to every owner's rows per request
-with `?scope=all` (a non-admin who asks gets a `403`). Every endpoint is runnable from the
-browser at [Swagger UI](http://127.0.0.1:8000/docs), and the full reference lives in
-[`docs/api/`](docs/api/).
+unprefixed. Reads and owner-scoped writes are own-data by default; an admin widens reads,
+updates and deletes to every owner's rows per request with `?scope=all` (a non-admin who asks
+gets a `403`). Configuration and dataset reads additionally return the **shared system tier** —
+curated starter content owned by a reserved system user — which every caller sees even under the
+default `scope=own`; mutations never widen to it, and **deleting** one is refused for every
+caller with a `403` (only an admin impersonating the system user may curate it). Jobs have no
+shared tier. Every endpoint
+is runnable from the browser at [Swagger UI](http://127.0.0.1:8000/docs), and the full reference
+lives in [`docs/api/`](docs/api/).
 
 | Resource | Endpoints | Reference |
 | --- | --- | --- |
-| **Jobs** | `POST`/`GET` `/jobs`, `GET`/`DELETE` `/jobs/{id}`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/reconcile`, `POST /jobs/estimate-usages`, `POST /jobs/generate-test-solutions`, `GET /jobs/by-build-id/{build_id}`, result-report (list/file/archive), job/trial/gb logs | [jobs.md](docs/api/jobs.md) |
+| **Jobs** | `POST`/`GET` `/jobs`, `GET`/`DELETE` `/jobs/{id}`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/reconcile` (admin), `POST /jobs/estimate-usages`, `POST /jobs/generate-test-solutions`, `GET /jobs/by-build-id/{build_id}`, `GET /jobs/{id}/trials`, result-report (list/file/archive), job/trial/gb logs, per-step training metrics (`GET /jobs/{id}/metrics`, `GET /jobs/{id}/trials/{trial_id}/metrics`) | [jobs.md](docs/api/jobs.md) |
 | **Reward functions** | `POST /reward-functions/validate` (validate an online-RL reward function, sandboxed) | [reward-functions.md](docs/api/reward-functions.md) |
 | **Configurations** | full CRUD `/configurations` (+ `GET /configurations/template`) | [configurations.md](docs/api/configurations.md) |
 | **Datasets** | full CRUD `/datasets`, `POST /datasets/{id}/upload`, `?preview=true` | [datasets.md](docs/api/datasets.md) |
@@ -185,9 +192,10 @@ selected by `AUTOTUNEX_LSF_CLUSTER`).
 AutoTuneX ships a natural-language **assistant** that can query and act on your jobs,
 configurations, datasets, and account, and — optionally — a standalone **MCP server** exposing
 the same operations to external MCP clients (Claude Desktop, Cursor). Both run in-process as the
-authenticated caller, so a tool only ever sees your own data. They reuse the same
+authenticated caller, so a tool only ever sees your own data. The assistant reuses the same
 OpenAI-compatible LLM gateway as dataset intelligence (`AUTOTUNEX_LLM_BASE_URL`,
-`AUTOTUNEX_LLM_API_KEY`, `AUTOTUNEX_LLM_MODEL`) and return `503` when it is unset.
+`AUTOTUNEX_LLM_API_KEY`, `AUTOTUNEX_LLM_MODEL`) and returns `503` when it is unset; the MCP
+server exposes the same shared tool registry and needs no LLM at all.
 
 The MCP server is off by default and lives behind an optional dependency:
 
@@ -230,10 +238,10 @@ to exercise each provider against a running server.
 make install     # install the package with dev dependencies
 make dev         # run the API with autoreload
 make test        # pytest
-make lint        # ruff check + format check
-make format      # apply ruff formatting and autofixes
+make lint        # ruff check + format check (+ src/api-bridge, src/fm-tune)
+make format      # apply ruff formatting and autofixes (+ src/api-bridge, src/fm-tune)
 make typecheck   # mypy (strict)
-make check       # lint + typecheck + test — the three CI jobs you can run locally
+make check       # lint + typecheck + test + test-subprojects — the CI jobs you can run locally
                  # (CI also runs the migrations matrix, DCO, OSS-compliance and gitleaks)
 make migrate     # alembic upgrade head — see the warning below before using this on a real database
 ```
@@ -251,8 +259,8 @@ Migrations are verified against SQLite, PostgreSQL 16 and MySQL 8.4 in CI.
 
 For an established deployment, *stamp* the baseline revision as already-applied and then upgrade
 only the later revisions, rather than building the schema from scratch. The full procedure — the
-exact `alembic stamp` / `alembic upgrade` commands, and the one post-baseline revision that
-migrates data — is in [database & migrations](docs/operations/database.md). For a fresh, empty
+exact `alembic stamp` / `alembic upgrade` commands, and the two post-baseline revisions that
+migrate data — is in [database & migrations](docs/operations/database.md). For a fresh, empty
 database (local development, tests, CI) none of this applies: `alembic upgrade head` builds the
 whole schema normally.
 

@@ -27,6 +27,27 @@ class LogEntry(BaseModel):
         setattr(self, key, value)
 
 
+class TrainingMetric(BaseModel):
+    # Non-optional: training_metrics.job_id is NOT NULL, so a null here would pass
+    # validation and then fail the INSERT as a caught IntegrityError — reported to
+    # the caller as HTTP 200 {"success": false}. Reject it at the edge instead.
+    job_id: str = Field(..., description="Job ID as a 36-character UUID")
+    trial_id: str | None = None
+    global_step: int = Field(..., description="Global training step")
+    epoch: float | None = None
+    loss: float | None = None
+    grad_norm: float | None = None
+    learning_rate: float | None = None
+    split: str = Field("train", description="'train' or 'eval'")
+    extra: dict[str, Any] | None = None
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+
 class JobStatus(str, Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"

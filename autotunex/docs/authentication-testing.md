@@ -79,8 +79,10 @@ without disturbing the others.
 revoking one means editing the value and restarting the process.
 
 **A key inherits the authority of the `users` row it maps to.** Mapping a service
-key to an `admin` row grants it org-wide job visibility. Map machine callers to
-their own non-admin rows unless you specifically want that.
+key to an `admin` row grants it the *ability* to request the cross-user view with
+`?scope=all`, not automatic cross-user visibility — by default it still sees only
+its own rows. Map machine callers to their own non-admin rows unless you
+specifically want that.
 
 ## `oidc` — bearer tokens
 
@@ -336,5 +338,5 @@ suite drives these endpoints over `https://testserver`.
   `POST /auth/assume/{user_id}` and `POST /auth/unassume`; `POST /auth/logout`;
   and `POST /chat` / `POST /chat/stream`, whose tool registry can create a
   configuration and launch a job. Double-submit tokens across all mutating
-  endpoints remain a tracked repo-wide change — see `CLAUDE.md`'s open decision 6.
+  endpoints remain a tracked repo-wide change — see `CLAUDE.md`'s open decision 5.
 - **API keys do not rotate**, as above.

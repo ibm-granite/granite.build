@@ -3,8 +3,10 @@
 """The TuningLauncher seam.
 
 A launcher turns a job's persisted data into a cluster submission and returns
-the handle the cluster gives back. It is the "submit a whole job" seam, distinct
-from the per-trial ``TrainingBackend`` in ``services/protocols.py``.
+the handle the cluster gives back. Submission is deliberately whole-job: the
+launcher hands the work off and the tuning core decides how to search within it,
+which is why there is no per-trial training seam anywhere in the service. Pairs
+with ``JobRunner`` in ``services/protocols.py``.
 """
 
 from __future__ import annotations

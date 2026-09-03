@@ -26,7 +26,7 @@ class ResultTable(Base):
     ``trial_id`` is ``UNIQUE``, so this is one-to-one with ``trials`` despite
     looking like a one-to-many. ``job_id`` is therefore derivable from the trial
     and is a denormalization the schema keeps — see ``docs/schema-review.md``
-    item D3.
+    item D2.
     """
 
     __tablename__ = "results"

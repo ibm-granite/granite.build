@@ -58,6 +58,18 @@ class UserRead(BaseModel):
     role: str | None = None
     created_at: datetime
     updated_at: datetime
+    last_login_at: datetime | None = None
+    """When this user last authenticated — the Users table's "Last login on".
+
+    Deliberately *not* ``updated_at``, which the frontend read as a last login
+    before this field existed: ``updated_at`` moves whenever the row changes, so
+    an admin editing someone's role rendered as that person logging in. Existing
+    logins were carried over from ``updated_at`` when the column landed (the old
+    code really did store them there), so this is not empty for users who had
+    signed in before. ``None`` where the database holds no evidence of a login at
+    all — a user the tuning pipeline created and never authenticated as — reported
+    as ``null`` rather than papered over with ``created_at``.
+    """
 
 
 class UserMetadata(BaseModel):

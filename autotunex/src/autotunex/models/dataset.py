@@ -70,6 +70,15 @@ class DatasetPreview(BaseModel):
 
     train: list[dict[str, Any]]
     validation: list[dict[str, Any]]
+    viewer_ready: bool = True
+    """Whether the backend's viewer could serve a definitive answer.
+
+    ``False`` only when the HuggingFace dataset viewer was unavailable or still
+    precomputing the repo, so empty ``train``/``validation`` mean "not ready yet"
+    rather than "genuinely empty" — the UI shows "preview will appear shortly"
+    instead of a blank table. Defaults ``True`` so every other backend and every
+    empty-preview literal keeps its existing meaning untouched.
+    """
 
 
 class DatasetRead(BaseModel):

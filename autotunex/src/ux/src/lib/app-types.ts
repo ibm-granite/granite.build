@@ -65,7 +65,7 @@ export type Tuning = {
 	// (config_data / tuner types differ). Detail response only; merged onto the
 	// snapshot object by `getJobConfigSnapshot` for the drift banner.
 	is_stale?: boolean;
-	output_artifacts?: Record<string, any> | null;
+	output_artifacts?: Record<string, any> | any[] | null;
 	assets?: Assets[];
 	build_status?: BuildStatus;
 	logs?: Log[];
@@ -105,6 +105,10 @@ export type Dataset = {
 	associated_jobs: Job[];
 	validation_data?: Pair[];
 	train_data?: Pair[];
+	// From the API's preview.viewer_ready: false means the HuggingFace dataset viewer
+	// is still precomputing, so empty preview rows mean "not ready yet", not "empty".
+	// Undefined when no preview was requested or returned.
+	viewer_ready?: boolean;
 };
 
 export interface Configuration {
@@ -115,6 +119,20 @@ export interface Configuration {
 	rl_tuner_type?: string | null;
 	artifact_id: string;
 	artifact_url: string;
+	// ABSENT on list items. GET /configurations returns the lean shape and omits it
+	// (the server does not even load the column); it is present on
+	// GET /configurations/{id} and on the POST/PUT responses. Read the detail when
+	// you need the search space — ConfigDisplay.fetchConfig and
+	// Step2Configure.selectConfig both already fetch it on a miss and memoize it
+	// back into the `configurations` store.
+	//
+	// Typed as required rather than optional despite that, deliberately. Marking it
+	// optional adds 33 `possibly undefined` errors, every one of them in
+	// ConfigDisplay, which only ever renders a *fetched detail* and so cannot
+	// actually hit them. The real fix is to mirror the backend and split this into
+	// list and detail types, which means retyping the `configurations` store and the
+	// prop chain through Tunings -> CreateTuningForm -> ConfigDisplay — a refactor
+	// worth doing on its own, not as a side effect of leaning one endpoint.
 	config_data: ConfigData;
 	associated_jobs: Job[];
 	created_at: Date;
@@ -350,7 +368,14 @@ export type User = {
 	email: string;
 	role: string;
 	created_at: Date;
+	// When the row last changed. Not a login time — an admin changing someone's
+	// role moves this. The Users table read it as "Last login on" until
+	// last_login_at existed, which is why a role edit looked like a login.
 	updated_at: Date;
+	// When the user last authenticated. Null only where the backend has no record
+	// of a login at all — e.g. a user the tuning pipeline created and never
+	// signed in as. Render it, never assume a date.
+	last_login_at: Date | null;
 };
 
 export type DatasetForm = {
@@ -513,6 +538,29 @@ export type LogPage = {
 	logs: Log[];
 	has_more: boolean;
 	next_before_id: number | null;
+};
+
+// Per-step training metrics (GET /jobs/{id}/trials/{trial_id}/metrics and
+// /jobs/{id}/metrics). One row per HF Trainer log event; maps 1:1 to the backend
+// MetricPointRead (no api-mappers entry needed). `split` is 'train' | 'eval' but
+// kept as string — the backend column is not an enum.
+export type MetricPoint = {
+	id: number;
+	trial_id: string | null;
+	global_step: number;
+	epoch: number | null;
+	loss: number | null;
+	grad_norm: number | null;
+	learning_rate: number | null;
+	split: string;
+	extra: Record<string, unknown> | null;
+	created_at: string | null;
+};
+
+export type MetricPage = {
+	metrics: MetricPoint[];
+	has_more: boolean;
+	next_after_id: number | null;
 };
 
 export type Assets = {

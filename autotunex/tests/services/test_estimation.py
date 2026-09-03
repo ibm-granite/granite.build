@@ -7,8 +7,12 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from autotunex.core.constants import SYSTEM_USER_ID
 from autotunex.core.exceptions import ConfigurationNotFoundError, DomainValidationError
+from autotunex.db.repositories.sqlalchemy import SqlAlchemyConfigurationRepository
+from autotunex.db.tables import ConfigurationTable, UserTable
 from autotunex.models.auth import Principal
 from autotunex.models.estimation import EstimateUsagesRequest
 from autotunex.services.estimation import (
@@ -158,7 +162,9 @@ class _FakeConfigRepo:
     def __init__(self, config: object | None) -> None:
         self._config = config
 
-    async def get(self, config_id: object, *, owner_id: object) -> object | None:
+    async def get(
+        self, config_id: object, *, owner_id: object, include_shared: bool = False
+    ) -> object | None:
         return self._config
 
 
@@ -192,3 +198,26 @@ async def test_saved_config_is_used_when_config_id_is_given() -> None:
 
     assert response.model_size_billion_params == 7.0
     assert response.num_gpus >= 1
+
+
+async def test_estimate_resolves_a_system_owned_saved_config(session: AsyncSession) -> None:
+    session.add(UserTable(id=SYSTEM_USER_ID, email="system@autotunex.local", role="user"))
+    await session.commit()
+    system_config = ConfigurationTable(
+        id=uuid4(),
+        user_id=str(SYSTEM_USER_ID),
+        name="starter",
+        tuner_type="sft",
+        rl_tuner_type=None,
+        config_data=_CONFIG_DATA,
+    )
+    session.add(system_config)
+    await session.commit()
+    repository = SqlAlchemyConfigurationRepository(session)
+    service = EstimationService(configuration_repository=repository, principal=_principal())
+
+    response = await service.estimate(
+        EstimateUsagesRequest(model_name="x-7b", config_id=system_config.id)
+    )
+
+    assert response is not None

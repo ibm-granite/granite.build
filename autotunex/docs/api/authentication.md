@@ -129,7 +129,8 @@ AUTOTUNEX_API_KEYS={"<sha256-digest>": "service-owner@example.com"}
 ```
 
 Each digest must be 64 lowercase hex characters, or startup fails with a clear
-error (and the offending key is withheld from the message).
+error (and the offending key is withheld from the message). Enabling
+`"api_key"` with `AUTOTUNEX_API_KEYS` unset or empty also fails startup.
 
 > The mapped email must belong to a real `users` row — or enable just-in-time
 > provisioning with `AUTOTUNEX_AUTO_PROVISION_USERS=true` — for the key to see
@@ -227,7 +228,8 @@ For a browser UI. The service acts as a backend-for-frontend (BFF): it runs the
 OIDC authorization-code + PKCE flow server-side and hands the browser an
 httpOnly session cookie. **No token ever reaches JavaScript.**
 
-The flow uses these endpoints, plus two admin-only impersonation endpoints documented below:
+The flow uses these endpoints, plus two impersonation endpoints documented below (the
+`assume` half admin-only):
 
 | Endpoint            | Method | Purpose                                                                  |
 | ------------------- | ------ | ------------------------------------------------------------------------ |
@@ -307,7 +309,7 @@ set it to the client id in that combined case as well.
 | Setting                              | Default | Meaning                                                                 |
 | ------------------------------------ | ------- | ----------------------------------------------------------------------- |
 | `AUTOTUNEX_OIDC_END_SESSION_ENDPOINT`| unset   | The IdP's RP-initiated logout URL, returned by `/auth/logout` if set.   |
-| `AUTOTUNEX_SESSION_TTL_HOURS`        | `8`     | How long a minted session cookie lasts (bounded `1`–`24`).              |
+| `AUTOTUNEX_SESSION_TTL_HOURS`        | `8`     | How long a minted `session` cookie lasts, and how long an `autotunex_assume` impersonation overlay lasts (bounded `1`–`24`). |
 
 ### Deployment requirements
 
@@ -374,7 +376,9 @@ never the effective/assumed identity, so an admin cannot chain one impersonation
 into another. The caller's own `is_admin` privileges are **preserved** while only
 the data-owner identity switches — an admin keeps admin powers while acting as the
 target. The overlay is carried in a signed, expiring `autotunex_assume` httpOnly
-cookie, separate from the `session` cookie: the real login is never re-minted.
+cookie, separate from the `session` cookie: the real login is never re-minted. Its
+lifetime — both the token's `exp` and the cookie's `max-age` — comes from the same
+`AUTOTUNEX_SESSION_TTL_HOURS` setting that bounds the session cookie.
 `POST /auth/unassume` simply clears that cookie, and so does `POST /auth/logout`.
 
 **`impersonator` is the only signal that an overlay is active.** While one is,

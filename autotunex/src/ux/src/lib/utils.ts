@@ -598,6 +598,27 @@ export class Utils {
 		return result;
 	}
 
+	/**
+	 * Pull a human-readable reason out of whatever `API.handleResponse` threw.
+	 *
+	 * It rejects with the parsed RFC 9457 problem+json body (`{title, status,
+	 * detail}`), so `detail` is the server's own sentence and the best thing to
+	 * show — a domain refusal like "Configuration <id> is provided by the system
+	 * and cannot be deleted" explains itself far better than any generic string
+	 * assembled here. Falls back to `title`, then to a real `Error.message`, then
+	 * to the caller's default, so a network failure (which throws a `TypeError`,
+	 * not a problem body) still reports something.
+	 */
+	static problemDetail(error: unknown, fallback: string): string {
+		if (error && typeof error === 'object') {
+			const body = error as { detail?: unknown; title?: unknown };
+			if (typeof body.detail === 'string' && body.detail.trim()) return body.detail;
+			if (typeof body.title === 'string' && body.title.trim()) return body.title;
+		}
+		if (error instanceof Error && error.message.trim()) return error.message;
+		return fallback;
+	}
+
 	static getNameFromUrl(url: string) {
 		try {
 			const urlObj = new URL(url);

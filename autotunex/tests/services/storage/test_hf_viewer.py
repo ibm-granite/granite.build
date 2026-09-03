@@ -122,3 +122,74 @@ async def test_fetch_rows_wraps_transport_errors() -> None:
             await hf_viewer.fetch_rows(
                 client, base_url=BASE, repo_id="o/r", split="train", limit=10, token="t"
             )
+
+
+async def test_discover_config_returns_config_matching_preferred_split() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/splits"
+        assert request.url.params["dataset"] == "owner/repo"
+        assert "split" not in request.url.params  # /splits takes only the dataset
+        assert request.headers["authorization"] == "Bearer tok"
+        return httpx.Response(
+            200,
+            json={
+                "splits": [
+                    {"dataset": "owner/repo", "config": "alt", "split": "test"},
+                    {"dataset": "owner/repo", "config": "main", "split": "train"},
+                ],
+                "pending": [],
+                "failed": [],
+            },
+        )
+
+    async with _client(handler) as client:
+        config = await hf_viewer.discover_config(
+            client, base_url=BASE, repo_id="owner/repo", token="tok"
+        )
+
+    assert config == "main"
+
+
+async def test_discover_config_falls_back_to_first_entry_without_preferred_split() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"splits": [{"config": "only", "split": "test"}]})
+
+    async with _client(handler) as client:
+        config = await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token="t")
+
+    assert config == "only"
+
+
+async def test_discover_config_omits_auth_header_without_token() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "authorization" not in request.headers
+        return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+
+    async with _client(handler) as client:
+        await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token=None)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(500, text="boom"),
+        httpx.Response(404, json={"error": "not found"}),
+        httpx.Response(200, json={"splits": []}),
+        httpx.Response(200, json={"nope": 1}),
+        httpx.Response(200, json={"splits": [{"split": "train"}]}),  # entry has no config
+        httpx.Response(200, text="not json"),
+    ],
+)
+async def test_discover_config_raises_unavailable(response: httpx.Response) -> None:
+    async with _client(lambda request: response) as client:
+        with pytest.raises(hf_viewer.HFViewerUnavailable):
+            await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token="t")
+
+
+async def test_discover_config_wraps_transport_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    async with _client(handler) as client:
+        with pytest.raises(hf_viewer.HFViewerUnavailable):
+            await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token="t")

@@ -10,10 +10,25 @@ for owner resolution, and [../concepts.md](../concepts.md) for the domain model.
 
 ## Ownership and scope
 
-Reads and mutations are owner-scoped. By default a caller — admin included — sees only its
-own configurations. An admin widens to all owners per request with `scope=all` (`own` |
-`all`, default `own`); a non-admin passing `scope=all` gets a **403**. `POST` is always
-own-scoped; a caller with no resolvable owner gets a **403** on create.
+Reads and mutations are owner-scoped. By default a caller — admin included — sees its own
+configurations **plus** the shared system tier: rows owned by the reserved system user
+(`00000000-0000-0000-0000-000000000001`), the curated starter configurations every caller
+can read and launch a job from. An admin widens to all owners per request with `scope=all`
+(`own` | `all`, default `own`); a non-admin passing `scope=all` gets a **403**. `POST` is
+always own-scoped; a caller with no resolvable owner gets a **403** on create.
+
+Mutations never widen to the shared tier, so `PUT` against a system-owned configuration
+returns **404** — only an admin via `scope=all` may edit one.
+
+`DELETE` against a system-owned configuration is refused outright, for **every** caller:
+a normal user, an admin passing `scope=all`, and a caller whose own identity resolves to
+the system user all get a **403** (`title`: `System Resource Protected`). Starter content
+is shared by the whole deployment, so a delete is not a per-tenant loss. The single
+exemption is an admin with an active impersonation overlay onto the system user
+(`POST /auth/assume/{id}`) — the sanctioned way to curate shared content. To keep an
+editable copy of a shared configuration instead, `GET` it and `POST` its `name`,
+`tuner_type`, `rl_tuner_type` and `config_data` back as a new configuration, which is
+created under your own ownership.
 
 `config_data` shape is **not** validated. The tuning pipeline writes a rich, evolving
 structure, so the API requires only that `config_data` be a non-empty JSON object.
@@ -74,7 +89,7 @@ See [the `ConfigurationRead` shape](#the-configurationread-shape). On create,
 
 ## GET /api/v1/configurations
 
-List the caller's configurations, newest first. Returns a `Page<ConfigurationRead>`.
+List the caller's configurations, newest first. Returns a `Page<ConfigurationSummary>`.
 
 ### Query parameters
 
@@ -85,10 +100,17 @@ List the caller's configurations, newest first. Returns a `Page<ConfigurationRea
 | `scope` | string | `own` | `own` \| `all` (admin only for `all`) |
 | `q` | string | `none` | Case-insensitive substring filter. Matches the configuration name. |
 
-### Response `200` — `Page<ConfigurationRead>`
+### Response `200` — `Page<ConfigurationSummary>`
 
-`{ "items": ConfigurationRead[], "total": int, "limit": int, "offset": int }`. Here
+`{ "items": ConfigurationSummary[], "total": int, "limit": int, "offset": int }`. Here
 `associated_jobs` is populated (owner-scoped) for each configuration.
+
+`ConfigurationSummary` is the lean list shape: every field of `ConfigurationRead` except
+`config_data`, which is *absent* rather than `null` — a `null` could not be told apart from a
+row that genuinely has no `config_data` stored. See
+[the `ConfigurationRead` shape](#the-configurationread-shape) below for those fields; a client
+that needs a configuration's search space reads
+`GET /api/v1/configurations/{configuration_id}`.
 
 ### Notable statuses
 
@@ -195,6 +217,9 @@ Fully replace a configuration's mutable fields. Same body as create
 
 Delete a configuration. Returns `204` with an empty body.
 
+A configuration owned by the reserved system user cannot be deleted by anyone — see
+*Ownership and scope* above. `scope=all` does not override it.
+
 ### Path & query parameters
 
 | Name | In | Type | Default | Notes |
@@ -207,6 +232,7 @@ Delete a configuration. Returns `204` with an empty body.
 | Status | When |
 | --- | --- |
 | `403` | Non-admin requesting `scope=all` |
+| `403` | The configuration belongs to the shared system tier (`title`: `System Resource Protected`); refused for every caller except an admin impersonating the system user |
 | `404` | No such configuration, or not the caller's |
 | `409` | A job still references this configuration (delete is restricted) |
 

@@ -1,6 +1,6 @@
 # Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
-"""The ``StorageBackend`` seam — the ``ArtifactStore`` abstraction (open decision 4).
+"""The ``StorageBackend`` seam — the ``ArtifactStore`` abstraction (open decision 3).
 
 Backends move persisted dataset files somewhere durable and can read a bounded
 preview back. They never touch FastAPI or the database — they work in file

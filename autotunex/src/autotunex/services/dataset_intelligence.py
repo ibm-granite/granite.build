@@ -101,6 +101,12 @@ def _extract_json(text: str) -> dict[str, Any]:
             depth -= 1
             if depth == 0:
                 result = json.loads(stripped[start : index + 1])
+                # Unreachable in practice, and deliberately kept: the slice always
+                # opens with the `{` that `start` found and closes with this `}`, and
+                # in JSON only an object can open with `{` — so json.loads either
+                # raises or returns a dict. This is the one line coverage cannot
+                # reach; the guard stays because it costs nothing and the invariant
+                # it asserts is an argument, not something the type system enforces.
                 if not isinstance(result, dict):
                     raise ValueError("Extracted JSON is not an object.")
                 return result

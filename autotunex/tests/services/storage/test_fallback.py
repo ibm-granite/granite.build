@@ -105,6 +105,24 @@ async def test_preview_returns_empty_when_both_are_empty() -> None:
     assert result.validation == []
 
 
+async def test_preview_preserves_primary_not_ready_when_fallback_is_also_empty() -> None:
+    # HF primary: viewer still precomputing -> empty + viewer_ready=False.
+    # Local fallback: no local files for an HF-hosted dataset -> empty (+ default
+    # viewer_ready=True). The primary's not-ready signal must survive rather than
+    # be masked by the fallback's default, so the UI can still say "preview will
+    # appear shortly" instead of showing a bare blank table.
+    primary = RecordingBackend(DatasetPreview(train=[], validation=[], viewer_ready=False))
+    fallback = RecordingBackend(_empty())
+    backend = PreviewFallbackStorageBackend(primary=primary, fallback=fallback)
+
+    result = await _preview(backend)
+
+    assert result.train == []
+    assert result.validation == []
+    assert result.viewer_ready is False
+    assert fallback.preview_calls == 1  # fallback is still consulted in case local has rows
+
+
 async def test_preview_degrades_to_primary_when_fallback_raises() -> None:
     primary = RecordingBackend(_empty())
     fallback = RecordingBackend(_empty(), raises=True)
@@ -142,3 +160,18 @@ async def test_persist_and_delete_delegate_to_primary_only() -> None:
 
     assert (primary.persist_calls, primary.delete_calls) == (1, 1)
     assert (fallback.persist_calls, fallback.delete_calls) == (0, 0)
+
+
+async def test_preview_preserves_a_not_ready_signal_from_the_fallback() -> None:
+    # The reversed composition (local primary, HF fallback) puts the viewer's
+    # readiness signal in the *fallback*. Local storage always reports
+    # viewer_ready=True, so returning the primary unconditionally when both are
+    # empty would mask "still precomputing" behind a blank, ready-looking table —
+    # the same defect commit 6752f089 fixed for the primary=HF direction.
+    primary = RecordingBackend(_empty())
+    fallback = RecordingBackend(DatasetPreview(train=[], validation=[], viewer_ready=False))
+    backend = PreviewFallbackStorageBackend(primary=primary, fallback=fallback)
+
+    result = await _preview(backend)
+
+    assert result.viewer_ready is False
