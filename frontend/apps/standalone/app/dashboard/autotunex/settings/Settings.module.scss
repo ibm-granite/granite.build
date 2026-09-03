@@ -1,0 +1,15 @@
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+.section {
+  // Two columns on wide screens; each column grows to fill half the row but
+  // never shrinks below a readable width — below that the flex wraps and the
+  // sections stack vertically.
+  flex: 1 1 28rem;
+  min-width: 0;
+  margin-bottom: 1rem;
+}
