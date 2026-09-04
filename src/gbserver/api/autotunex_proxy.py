@@ -110,7 +110,20 @@ def _rewrite_location(value: str) -> str:
 
 @router.api_route("/api/autotunex/{path:path}", methods=_PROXY_METHODS)
 async def proxy_autotunex(request: Request, path: str) -> Response:
-    url = f"{AUTOTUNEX_URL}{_UPSTREAM_PREFIX}/{path}"
+    # httpx applies RFC 3986 dot-segment removal when it parses a URL, so a `..`
+    # segment in `path` escapes the /api/v1 mount and turns this into a relay to
+    # ANY path on the upstream host (uvicorn hands the raw ASGI path through
+    # unnormalized, so a non-browser client can send one). Resolve the URL first
+    # and refuse anything that no longer sits under the API prefix.
+    #
+    # The base is rstripped so a trailing slash on AUTOTUNEX_API_URL cannot make
+    # that `//api/v1/...`, which the check would read as leaving the API space
+    # (and which was previously forwarded upstream as a double slash).
+    upstream_url = httpx.URL(f"{AUTOTUNEX_URL.rstrip('/')}{_UPSTREAM_PREFIX}/{path}")
+    if not upstream_url.path.startswith(_UPSTREAM_PREFIX + "/"):
+        logger.warning("rejected AutoTuneX proxy path escaping the API mount: %r", path)
+        return JSONResponse({"detail": "Invalid proxy path."}, status_code=400)
+
     fwd_headers = {
         k: v
         for k, v in request.headers.items()
@@ -145,7 +158,7 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
     client = _get_client()
     upstream_request = client.build_request(
         request.method,
-        url,
+        upstream_url,
         headers=fwd_headers,
         # tuple(), not the list multi_items() returns: httpx accepts either, but
         # list is invariant so mypy rejects list[tuple[str, str]] against the
