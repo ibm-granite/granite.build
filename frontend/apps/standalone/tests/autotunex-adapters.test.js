@@ -24,7 +24,18 @@ describe('pageQuery', () => {
   })
 
   it('clamps limit to 100 even when pageSize is larger', () => {
-    assert.deepEqual(pageQuery({ page: 2, pageSize: 150 }), { limit: 100, offset: 150, scope: 'own' })
+    // offset must follow the clamped limit. Asserting offset 150 with limit 100
+    // locked in a paging gap: records 100-149 could never be fetched.
+    assert.deepEqual(pageQuery({ page: 2, pageSize: 150 }), { limit: 100, offset: 100, scope: 'own' })
+  })
+
+  it('pages contiguously when pageSize exceeds the cap', () => {
+    const pages = [1, 2, 3].map((page) => pageQuery({ page, pageSize: 150 }))
+    assert.deepEqual(
+      pages.map((q) => q.offset),
+      [0, 100, 200],
+      'each page must start where the previous one ended'
+    )
   })
 
   it('passes through q and an explicit scope when given', () => {

@@ -202,6 +202,7 @@ function AutoTuneXTile() {
       title="Model Customization"
       action={startTuningLink}
       isRefreshing={isRefreshing}
+      onRefresh={() => { markRefreshing(); void refetch() }}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
         <StatRow label="Total tunings" value={stats?.total ?? "—"} />

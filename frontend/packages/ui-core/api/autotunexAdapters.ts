@@ -24,7 +24,11 @@ import type {
 /** Converts the frontend's {page,pageSize,q,scope} into the API's ?limit&offset&q&scope. */
 export function pageQuery(p: ListParams): Record<string, string | number> {
   const limit = Math.min(p.pageSize, 100)
-  const offset = Math.max(0, (p.page - 1) * p.pageSize)
+  // offset is derived from the CLAMPED limit, not the requested pageSize: with a
+  // pageSize above the cap the two disagree and whole records are skipped —
+  // page 2 of pageSize 150 asked for offset 150 while only fetching 100, so
+  // records 100-149 were unreachable.
+  const offset = Math.max(0, (p.page - 1) * limit)
   const params: Record<string, string | number> = { limit, offset, scope: p.scope ?? 'own' }
   if (p.q) params.q = p.q
   return params

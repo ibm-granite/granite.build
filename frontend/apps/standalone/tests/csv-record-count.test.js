@@ -26,9 +26,11 @@ const assert = require('node:assert/strict')
 
 const {
   parseCsv,
+  parseCsvLine,
   countRecordsInBlob,
   createCsvScanState,
   scanCsvChunk,
+  MAX_CSV_RECORD_CHARS,
 } = require('../../../packages/ui-core/lib/autotunex/file-parser.ts')
 
 // A quoted value spanning three physical lines, plus a doubled ("") escape.
@@ -182,5 +184,52 @@ describe('countRecordsInBlob — JSON array', () => {
     const pretty = JSON.stringify(rows, null, 2)
     assert.ok(pretty.split('\n').length > 100, 'fixture must be many lines per entry')
     assert.equal(await countRecordsInBlob(blob(pretty), 'd.json'), 25)
+  })
+})
+
+describe('parseCsvLine — a quote only opens a field at the field start', () => {
+  it('treats a mid-field quote as literal and keeps the field count', () => {
+    // Previously the quote opened a quoted region, so the following comma looked
+    // quoted and the record collapsed from 4 fields to 2 (dropping the quote).
+    const fields = parseCsvLine('x3,He said "hi, there,ok')
+    assert.equal(fields.length, 4)
+    assert.deepEqual(fields, ['x3', 'He said "hi', 'there', 'ok'])
+  })
+
+  it('still strips a properly quoted field and its escapes', () => {
+    assert.deepEqual(parseCsvLine('"a,b","he said ""hi""",c'), ['a,b', 'he said "hi"', 'c'])
+  })
+
+  it('tolerates padding before an opening quote', () => {
+    // `a, "b,c"` — a space after the comma must not stop the quote from opening,
+    // or the embedded comma would split the field.
+    assert.deepEqual(parseCsvLine('a, "b,c"'), ['a', 'b,c'])
+  })
+
+  it('keeps an empty trailing field', () => {
+    assert.deepEqual(parseCsvLine('a,b,'), ['a', 'b', ''])
+  })
+})
+
+describe('scanCsvChunk — padding before an opening quote', () => {
+  it('protects newlines in a padded quoted field, agreeing with parseCsvLine', () => {
+    const rows = parseCsv('a,b\nx, "multi\nline"\ny,plain')
+    assert.equal(rows.length, 2, 'the padded quoted field must not split the record')
+    assert.equal(rows[0].b, 'multi\nline')
+  })
+})
+
+describe('scanCsvChunk — unterminated quoted field is bounded', () => {
+  it('throws a descriptive error instead of buffering the whole file', () => {
+    // An opening quote that never closes previously accumulated the remainder of
+    // the file into one string, defeating the streaming and risking OOM.
+    const runaway = 'h\n"' + 'x'.repeat(MAX_CSV_RECORD_CHARS + 1)
+    assert.throws(() => parseCsv(runaway), /Unterminated quoted field/)
+  })
+
+  it('does not fire for a large but well-formed file', () => {
+    const rows = ['a,b']
+    for (let i = 0; i < 20000; i++) rows.push(`v${i},"quoted ${i}"`)
+    assert.equal(parseCsv(rows.join('\n')).length, 20000)
   })
 })

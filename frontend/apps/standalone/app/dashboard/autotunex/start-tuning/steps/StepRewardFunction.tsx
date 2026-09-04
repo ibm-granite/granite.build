@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import Editor from '@monaco-editor/react'
+import Editor, { loader } from '@monaco-editor/react'
 import {
   Button,
   InlineLoading,
@@ -12,6 +12,15 @@ import {
   Tag,
 } from '@carbon/react'
 import { Play, Add, TrashCan, Checkmark, ListBoxes } from '@carbon/icons-react'
+
+// @monaco-editor/react's default loader pulls Monaco from jsdelivr at runtime, so
+// the editor never appears in an air-gapped deployment. Setting MONACO_VS_PATH
+// points it at a self-hosted copy of Monaco's `vs` directory instead. Configured
+// at module scope so it is applied before the first <Editor> mounts; left alone
+// when unset, which keeps the CDN default for ordinary deployments.
+if (process.env.MONACO_VS_PATH) {
+  loader.config({ paths: { vs: process.env.MONACO_VS_PATH } })
+}
 import type { ParsedDataRow, RewardFunctionValidationResult } from '@granite-build/ui-core/types'
 import { AUTOTUNEX_FEATURES, getDataset, generateTestSolutions, validateRewardFunction } from '@granite-build/ui-core/api/autotunex'
 import styles from './StepRewardFunction.module.scss'
