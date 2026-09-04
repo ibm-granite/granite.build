@@ -133,8 +133,12 @@ export function DatasetsTable() {
   const rows = items.map((d) => ({
     id: d.id,
     name: d.name,
-    train_records: formatCompact(d.train_records),
-    validation_records: formatCompact(d.validation_records),
+    // Raw numbers, not formatCompact strings: Carbon's isSortable compares
+    // numbers numerically but falls back to localeCompare for strings, where
+    // parseFloat('1.2K') is 1.2 — so "1.2K" sorted before "980". The compact
+    // form is applied at render instead.
+    train_records: d.train_records,
+    validation_records: d.validation_records,
     created_at: d.created_at ?? '',
   }))
 
@@ -222,6 +226,9 @@ export function DatasetsTable() {
                               </CarbonLink>
                             ) : cell.info.header === 'created_at' ? (
                               cell.value ? new Date(cell.value as string).toLocaleString() : '—'
+                            ) : cell.info.header === 'train_records' ||
+                              cell.info.header === 'validation_records' ? (
+                              formatCompact(cell.value as number)
                             ) : (
                               (cell.value as React.ReactNode)
                             )}

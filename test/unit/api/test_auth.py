@@ -399,9 +399,16 @@ class TestAuthMiddlewareApiKeyMode:
         assert response.status_code == 401
 
 
-def test_autotunex_proxy_prefix_is_public():
-    assert _is_public_path("/api/autotunex") is True
-    assert _is_public_path("/api/autotunex/job/by_build_id/abc") is True
+def test_autotunex_proxy_prefix_is_not_unconditionally_public():
+    """The proxy must not sit in the unconditional allow-list.
+
+    Its exemption is granted in dispatch() and gated on the caller being
+    loopback, because the upstream authenticates nothing of its own. Listing the
+    prefix here as well would make it public to every caller and re-open the
+    unauthenticated write surface.
+    """
+    assert _is_public_path("/api/autotunex") is False
+    assert _is_public_path("/api/autotunex/job/by_build_id/abc") is False
 
 
 def test_other_api_paths_still_require_auth():
@@ -410,17 +417,14 @@ def test_other_api_paths_still_require_auth():
 
 
 def test_autotunex_proxy_bypasses_auth_for_non_get_methods():
-    """The AutoTuneX proxy exemption must be method-agnostic, so gbserver does
-    not gate POST (or any other verb) before forwarding to the proxy.
+    """From loopback the exemption must be method-agnostic, so gbserver does not
+    gate POST (or any other verb) before forwarding to the proxy.
 
-    This asserts the exemption is wired as designed; it is NOT a claim that the
-    request ends up authenticated. AutoTuneX defaults to
-    auth_providers=["disabled"], so the 200 below is an unauthenticated write
-    reaching the proxy — safe only in the localhost-only standalone deployment
-    documented on auth._PUBLIC_PATH_PREFIXES. Regression guard for the
-    GET/HEAD-only bypass in dispatch: without the `_is_autotunex_proxy`
-    carve-out, this POST would 401 despite /api/autotunex being in
-    _PUBLIC_PATH_PREFIXES. Control:
+    TestClient's peer is "testclient", which counts as loopback, so this covers
+    the standalone/all-in-one case where the exemption applies. The off-loopback
+    case is covered by test_autotunex_proxy_requires_auth_off_loopback.
+    Regression guard for the GET/HEAD-only bypass in dispatch: without the
+    `_is_autotunex_proxy` carve-out this POST would 401. Control:
     POST /api/v1/thing (a non-public route) must still 401, proving auth is
     otherwise enforced and it's specifically the autotunex prefix that's
     exempt."""
@@ -451,3 +455,65 @@ def test_autotunex_proxy_bypasses_auth_for_non_get_methods():
 
     assert proxy_response.status_code == 200
     assert other_response.status_code == 401
+
+
+def test_autotunex_proxy_requires_auth_off_loopback():
+    """Off loopback the proxy authenticates exactly like any other API path.
+
+    The exemption exists so gbserver does not block the co-located proxy before
+    forwarding; it is not a licence for remote callers. AutoTuneX defaults to
+    auth_providers=["disabled"], so without this gate a gbserver with
+    GBSERVER_API_KEY set still let anyone who could reach the port POST
+    /api/autotunex/jobs (launching a real build) or DELETE datasets.
+    """
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+
+    @app.post("/api/autotunex/{path:path}")
+    async def autotunex_post(path: str):
+        return JSONResponse(content={"path": path})
+
+    @app.get("/api/autotunex/{path:path}")
+    async def autotunex_get(path: str):
+        return JSONResponse(content={"path": path})
+
+    env = {
+        "GBSERVER_AUTH_MODE": "apikey",
+        "GBSERVER_API_KEY": "secret",
+        "GBSERVER_API_USER": "test-user",
+    }
+    # A non-loopback peer, the way a request arriving over a published port or a
+    # cluster Route does.
+    with patch.dict(os.environ, env, clear=False):
+        client = TestClient(app, client=("203.0.113.7", 44444))
+        post_response = client.post("/api/autotunex/jobs")
+        get_response = client.get("/api/autotunex/jobs")
+
+    assert post_response.status_code == 401
+    assert get_response.status_code == 401
+
+
+def test_autotunex_proxy_still_exempt_from_loopback_with_api_key_set():
+    """The loopback gate must not break the deployment the exemption serves.
+
+    standalone ships auth_mode=apikey; the all-in-one image additionally fronts
+    gbserver with a co-located Caddy that dials 127.0.0.1, so the peer is always
+    loopback. Both must keep working even when an API key is configured.
+    """
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+
+    @app.post("/api/autotunex/{path:path}")
+    async def autotunex_post(path: str):
+        return JSONResponse(content={"path": path})
+
+    env = {
+        "GBSERVER_AUTH_MODE": "apikey",
+        "GBSERVER_API_KEY": "secret",
+        "GBSERVER_API_USER": "test-user",
+    }
+    with patch.dict(os.environ, env, clear=False):
+        client = TestClient(app, client=("127.0.0.1", 44444))
+        response = client.post("/api/autotunex/jobs")
+
+    assert response.status_code == 200

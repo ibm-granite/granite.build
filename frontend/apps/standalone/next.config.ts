@@ -7,6 +7,11 @@ if (process.env.NODE_ENV !== 'production') {
 const isProd = process.env.NODE_ENV === 'production'
 const gbserverApiUrl = process.env.GBSERVER_API_URL
 const autotunexApiUrl = process.env.AUTOTUNEX_API_URL
+// Where the reward-function editor loads the Monaco assets from. Unset, the
+// @monaco-editor/react loader fetches them from jsdelivr, which fails in an
+// air-gapped deployment; point this at a self-hosted copy of Monaco's `vs`
+// directory (e.g. /monaco/vs served from public/) to work offline.
+const monacoVsPath = process.env.MONACO_VS_PATH
 
 const nextConfig: NextConfig = {
   // output: 'export' is standalone-only — it conflicts with rewrites (used in dev).
@@ -17,7 +22,11 @@ const nextConfig: NextConfig = {
   // Next only compiles first-party code by default, so opt this workspace package in too.
   transpilePackages: ['@granite-build/ui-core'],
   // Expose the API URLs to the client bundle without a NEXT_PUBLIC_ prefix.
-  env: { GBSERVER_API_URL: gbserverApiUrl ?? '', AUTOTUNEX_API_URL: autotunexApiUrl ?? '' },
+  env: {
+    GBSERVER_API_URL: gbserverApiUrl ?? '',
+    AUTOTUNEX_API_URL: autotunexApiUrl ?? '',
+    MONACO_VS_PATH: monacoVsPath ?? '',
+  },
   // Dev mode: proxy /api/* to gbserver and /api/autotunex/* to the AutoTuneX
   // server, both server-side (no CORS). Both are optional — omit either URL to
   // run the UI without that backend (pages load, data shows empty). In standalone
