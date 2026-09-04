@@ -10,12 +10,13 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, String, cast, delete, func, or_, select, update
+from sqlalchemy import ColumnElement, Select, String, cast, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import InstrumentedAttribute, defer, joinedload, selectinload
 
 from autotunex.core.config import ADMIN_ROLE
+from autotunex.core.constants import SYSTEM_USER_ID
 from autotunex.core.exceptions import (
     AmbiguousIdentityError,
     ConfigurationInUseError,
@@ -33,9 +34,11 @@ from autotunex.db.tables import (
     JobTable,
     LogEntryTable,
     ResultTable,
+    TrainingMetricTable,
     TrialTable,
     UserTable,
 )
+from autotunex.db.tables._helpers import utcnow
 from autotunex.models.status import TERMINAL_RUN_STATUSES, DatasetStatus, GbTaskType, RunStatus
 
 logger = get_logger(__name__)
@@ -50,6 +53,55 @@ exact clause :meth:`SqlAlchemyJobRepository.list` uses, rather than restating
 it and asserting on the restatement.
 """
 
+_TRIAL_PAGE_ORDER = (TrialTable.created_at.asc(), TrialTable.id.asc())
+"""The trials page's ordering, oldest first with an ``id`` tiebreaker.
+
+Ascending, unlike :data:`_PAGE_ORDER`: trials read as the chronological record of
+what the search evaluated, and the UX renders them that way. ``created_at`` alone
+is not unique, so the ``id`` tiebreaker is what keeps offset pagination stable —
+two trials sharing a timestamp could otherwise repeat or vanish between requests.
+``trials.created_at`` is ``NOT NULL``, so there is no dialect divergence over
+where NULLs sort (a zero date written by a lax MySQL ``sql_mode`` reads back as
+``None`` through ``UtcDateTime``, but it is a real value in the ``ORDER BY``).
+Pulled out so a test can assert on the exact clause rather than a restatement of
+it.
+"""
+
+
+def _finished_at_column() -> ColumnElement[str | None]:
+    """The job's run end as a correlated scalar subquery: ``MAX(gb_tasks.updated_at)``.
+
+    Used by every read that does not load ``tasks`` — the lean list and the
+    build-id lookup — so those shapes can still report ``finished_at`` in a single
+    round trip. ``gb_tasks.updated_at`` is a ``VARCHAR``; ``MAX`` over the
+    zero-padded ISO-8601 gbserver emits is the chronological latest. ``NULL`` when
+    the job has no task with an update time.
+
+    A function rather than a module constant because a correlated subquery is
+    bound to the statement it is compiled into, and reusing one object across two
+    statements risks carrying correlation state between them.
+    """
+    return (
+        select(func.max(GbTaskTable.updated_at))
+        .where(GbTaskTable.job_id == JobTable.id)
+        .correlate(JobTable)
+        .scalar_subquery()
+        .label("finished_at")
+    )
+
+
+_DELETE_BATCH_SIZE = 5_000
+"""Rows removed per statement when clearing a job's unbounded child tables.
+
+Bounds the lock window of
+:meth:`SqlAlchemyJobRepository._delete_children_in_batches`. At stage's observed
+~264 bytes/row average this is well under a couple of MB per statement — small
+enough to finish far inside MySQL's 50s ``innodb_lock_wait_timeout``, large
+enough that clearing millions of rows does not cost millions of round trips.
+Module-level so a test can shrink it rather than inserting 5,000 rows to prove
+the loop iterates.
+"""
+
 
 def _search_pattern(q: str) -> str:
     r"""Return a LIKE pattern matching ``q`` as a literal substring.
@@ -60,6 +112,28 @@ def _search_pattern(q: str) -> str:
     """
     escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+def _owner_or_shared(
+    user_id_column: InstrumentedAttribute[str], owner_id: UUID, *, include_shared: bool
+) -> ColumnElement[bool]:
+    """Ownership predicate: the caller's rows, plus the shared system tier when asked.
+
+    ``include_shared`` widens the filter to rows owned by the reserved system
+    user (:data:`~autotunex.core.constants.SYSTEM_USER_ID`) — the curated
+    starter configs/datasets every caller may read and use, but that only the
+    system user itself (or an admin via ``scope=all``) may modify. Read and
+    read-for-use paths pass ``include_shared=True``; every mutation leaves it
+    ``False``, so system rows stay read-only by construction.
+
+    The comparison is a raw, unfolded string match, matching
+    :class:`SqlAlchemyJobRepository`'s equivalent predicate: ``str(owner_id)``
+    is already canonical lowercase, and folding case here would cost the index.
+    """
+    own = user_id_column == str(owner_id)
+    if include_shared:
+        return or_(own, user_id_column == str(SYSTEM_USER_ID))
+    return own
 
 
 class SqlAlchemyJobRepository:
@@ -115,19 +189,23 @@ class SqlAlchemyJobRepository:
     async def get(self, job_id: UUID, *, owner_id: UUID | None = None) -> JobTable | None:
         """Return the job with ``job_id`` owned by ``owner_id``, or ``None``.
 
-        Loads tasks, trials and their results too — the detail response needs
-        them, and a lazy load would raise ``MissingGreenlet`` under async
-        SQLAlchemy. ``tasks`` is loaded here rather than in ``_view_shaped``: the
-        lean list (``JobSummary``) never nests tasks, only the detail response
-        (``JobRead``) does.
+        Loads ``tasks`` too — the detail response nests them, and a lazy load
+        would raise ``MissingGreenlet`` under async SQLAlchemy. Loaded here rather
+        than in ``_view_shaped`` because the lean list (``JobSummary``) never
+        nests tasks, only the detail response (``JobRead``) does.
+
+        Trials are deliberately **not** loaded. They are an unbounded child
+        collection, and eager-loading them with their one-to-one ``results`` rows
+        cost two further round trips and put every trial's ``config`` and
+        ``metrics`` blob into a response that is also polled while a job runs.
+        ``JobRead`` no longer carries them; they are paged by
+        :meth:`SqlAlchemyTrialRepository.page` behind ``GET /jobs/{id}/trials``.
+        ``num_trials`` needs no query at all: it is the trial budget declared by the
+        job's own ``config_snapshot``, resolved by
+        :func:`~autotunex.services.mappers.resolve_planned_trials`.
         """
         statement = (
-            self._view_shaped()
-            .options(
-                selectinload(JobTable.tasks),
-                selectinload(JobTable.trials).selectinload(TrialTable.result),
-            )
-            .where(JobTable.id == job_id)
+            self._view_shaped().options(selectinload(JobTable.tasks)).where(JobTable.id == job_id)
         )
         if owner_id is not None:
             # Deliberate asymmetry with get_by_email below, which folds case on
@@ -146,21 +224,34 @@ class SqlAlchemyJobRepository:
 
     async def get_by_build_id(
         self, build_id: UUID, *, owner_id: UUID | None = None
-    ) -> JobTable | None:
-        """Return the job whose ``gb_task`` carries ``build_id``; see the Protocol docstring.
+    ) -> tuple[JobTable, str | None] | None:
+        """Return ``(job, finished_at)`` for the job whose task carries ``build_id``.
 
-        Resolves the build to its job id from ``gb_tasks`` and delegates to
-        :meth:`get`, so the detail response's eager-loading and the ``owner_id``
-        filter are reused verbatim rather than restated. ``LIMIT 1`` guards the
-        pathological duplicate-``build_id`` case without raising, and the scope
-        check stays entirely in :meth:`get`.
+        One round trip, not three. This used to resolve the build to a job id and
+        then delegate to :meth:`get`, which cost a second query plus a third for
+        the ``tasks`` this shape no longer returns. Instead the build filter is a
+        join, and ``finished_at`` — the only thing the mapper needed ``tasks`` for —
+        arrives as a correlated subquery, exactly as it does for the lean list.
+
+        The join cannot multiply job rows: it is filtered to the single task
+        carrying this ``build_id``. ``LIMIT 1`` still guards the pathological
+        duplicate-``build_id`` case without raising.
         """
-        job_id = await self._session.scalar(
-            select(GbTaskTable.job_id).where(GbTaskTable.build_id == build_id).limit(1)
+        statement = (
+            self._view_shaped()
+            .add_columns(_finished_at_column())
+            .join(GbTaskTable, GbTaskTable.job_id == JobTable.id)
+            .where(GbTaskTable.build_id == build_id)
+            .limit(1)
         )
-        if job_id is None:
+        if owner_id is not None:
+            # Raw, unfolded string comparison, for the reasons in :meth:`get`.
+            statement = statement.where(JobTable.user_id == str(owner_id))
+        result = await self._session.execute(statement)
+        row = result.unique().first()
+        if row is None:
             return None
-        return await self.get(job_id, owner_id=owner_id)
+        return row[0], row[1]
 
     async def is_visible(self, job_id: UUID, *, owner_id: UUID | None = None) -> bool:
         """Cheap ``SELECT`` existence-and-scope probe; see the Protocol docstring."""
@@ -230,18 +321,9 @@ class SqlAlchemyJobRepository:
         ``ILIKE`` against it directly). Applied to both statements so ``total``
         can never disagree with the number of items returned.
         """
-        # finished_at = the job's run end for the Total-time column: the latest
-        # gb_tasks.updated_at. A correlated scalar subquery keeps this a single
-        # round trip — the lean list never loads tasks (see _view_shaped). It is a
-        # VARCHAR string; MAX over the zero-padded ISO-8601 gbserver emits is the
-        # chronological latest. NULL when the job has no task with an update time.
-        finished_at = (
-            select(func.max(GbTaskTable.updated_at))
-            .where(GbTaskTable.job_id == JobTable.id)
-            .correlate(JobTable)
-            .scalar_subquery()
-            .label("finished_at")
-        )
+        # finished_at keeps this a single round trip — the lean list never loads
+        # tasks (see _view_shaped). See _finished_at_column for the semantics.
+        finished_at = _finished_at_column()
         total_statement = self._total_statement()
         page_statement = (
             self._view_shaped()
@@ -320,6 +402,54 @@ class SqlAlchemyJobRepository:
         job.status = status
         await self._session.commit()
 
+    async def _delete_children_in_batches(
+        self,
+        table: type[LogEntryTable] | type[TrainingMetricTable],
+        job_id: UUID,
+    ) -> None:
+        """Delete one high-volume child table's rows for ``job_id`` in bounded batches.
+
+        ``log_entries`` and ``training_metrics`` are the two tables a long tuning
+        run grows without bound — stage carried 16.4M ``log_entries`` rows over
+        4.1GB on 2026-08-31 — so a single ``DELETE ... WHERE job_id = :id`` takes
+        millions of row locks and unlinks gigabytes of off-page ``MEDIUMTEXT`` in
+        one statement. That ran past MySQL's 50s ``innodb_lock_wait_timeout``
+        against ``src/api-bridge``'s concurrent ``insert_logs`` batches and
+        surfaced as ``(1205, 'Lock wait timeout exceeded')``. Batching keeps each
+        statement's lock set proportional to :data:`_DELETE_BATCH_SIZE` rather than
+        to the job's lifetime row count.
+
+        Selects a page of primary keys and deletes by ``id IN (...)`` rather than
+        using ``DELETE ... LIMIT``: that clause is MySQL-only (PostgreSQL rejects
+        it outright, and SQLite needs a non-default compile flag), and this
+        repository must run on all three. Both tables have an autoincrement
+        integer ``id``, so ordering by it makes the paging deterministic.
+
+        Commits per batch, which is what bounds the lock window — see
+        :meth:`delete` for why losing single-transaction atomicity is safe here.
+        """
+        while True:
+            ids = (
+                (
+                    await self._session.execute(
+                        select(table.id)
+                        .where(table.job_id == job_id)
+                        .order_by(table.id)
+                        .limit(_DELETE_BATCH_SIZE)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not ids:
+                return
+            await self._session.execute(
+                delete(table).where(table.id.in_(ids)).execution_options(synchronize_session=False)
+            )
+            await self._session.commit()
+            if len(ids) < _DELETE_BATCH_SIZE:
+                return
+
     async def delete(self, job_id: UUID, *, owner_id: UUID | None = None) -> bool:
         """Delete a job scoped to ``owner_id``, cascading its trials, results, tasks and logs.
 
@@ -336,9 +466,25 @@ class SqlAlchemyJobRepository:
         ``ON DELETE CASCADE``; ``synchronize_session=False`` keeps each one a pure
         emit with no pre-``SELECT`` to reconcile the (unused) identity map.
 
+        Set-based was not sufficient on its own: ``log_entries`` and
+        ``training_metrics`` grow without bound per job, so those two go through
+        :meth:`_delete_children_in_batches` and commit incrementally. The other
+        children are bounded by trial count and stay single statements.
+
+        **This is deliberately no longer one atomic transaction.** A single
+        transaction is what produced the ``log_entries`` lock-wait timeout, and
+        atomicity buys nothing for a delete-everything operation. The order makes
+        an interrupted delete safe rather than corrupting: children are removed
+        before ``jobs``, so a crash mid-way leaves the job row present and still
+        visible, and the caller (or the user) can simply issue the delete again —
+        it is idempotent, and each retry starts from a smaller remainder. The
+        inverse order would leave unreachable orphans.
+
         ``results`` is deleted before ``trials`` because ``results.trial_id``
-        references it, and every child before ``jobs`` — so the order stays legal
-        where FKs are enforced and is harmless where they are not.
+        references it, ``training_metrics`` is included because nothing else
+        removes it on a dialect that does not enforce ``ON DELETE CASCADE``, and
+        every child precedes ``jobs`` — so the order stays legal where FKs are
+        enforced and is harmless where they are not.
         """
         if not await self.is_visible(job_id, owner_id=owner_id):
             return False
@@ -347,11 +493,8 @@ class SqlAlchemyJobRepository:
             .where(ResultTable.job_id == job_id)
             .execution_options(synchronize_session=False)
         )
-        await self._session.execute(
-            delete(LogEntryTable)
-            .where(LogEntryTable.job_id == job_id)
-            .execution_options(synchronize_session=False)
-        )
+        await self._delete_children_in_batches(LogEntryTable, job_id)
+        await self._delete_children_in_batches(TrainingMetricTable, job_id)
         await self._session.execute(
             delete(TrialTable)
             .where(TrialTable.job_id == job_id)
@@ -448,10 +591,12 @@ class SqlAlchemyTrialRepository:
     """Trial persistence backed by an :class:`AsyncSession`.
 
     Satisfies :class:`autotunex.db.repositories.protocols.TrialRepository`.
-    Write-only: a job's trials are read back through
-    :meth:`SqlAlchemyJobRepository.get`, which eager-loads them for the detail
-    response. Owns its transactions (``commit`` lives here, per the layering
-    rule).
+    Owns its transactions (``commit`` lives here, per the layering rule).
+
+    Reads live here too, in :meth:`page`. They used to go through
+    :meth:`SqlAlchemyJobRepository.get`, which eager-loaded a job's whole trial
+    list for the detail response; that response no longer carries trials, so
+    trial reads belong with trial persistence.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -517,6 +662,32 @@ class SqlAlchemyTrialRepository:
         )
         await self._session.commit()
 
+    async def page(
+        self, job_id: UUID, *, limit: int, offset: int
+    ) -> tuple[Sequence[TrialTable], int]:
+        """Return one page of the job's trials plus the unpaginated total.
+
+        ``joinedload`` for the trial's ``results`` row, not ``selectinload``:
+        the relationship is a scalar one-to-one, so the join cannot multiply
+        rows, and folding it into this statement costs one round trip instead of
+        two. The caller must have verified the job is visible to the principal
+        first (``JobRepository.is_visible``) — this method applies no ownership
+        filter of its own, exactly like ``logs_page`` and ``metrics_page``.
+        """
+        total = await self._session.scalar(
+            select(func.count()).select_from(TrialTable).where(TrialTable.job_id == job_id)
+        )
+        statement = (
+            select(TrialTable)
+            .options(joinedload(TrialTable.result))
+            .where(TrialTable.job_id == job_id)
+            .order_by(*_TRIAL_PAGE_ORDER)
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self._session.execute(statement)
+        return result.unique().scalars().all(), total or 0
+
 
 class SqlAlchemyResultRepository:
     """Result persistence backed by an :class:`AsyncSession`.
@@ -557,6 +728,60 @@ class SqlAlchemyResultRepository:
         await self._session.commit()
 
 
+class SqlAlchemyTrainingMetricsRepository:
+    """Per-step metrics persistence backed by an :class:`AsyncSession`.
+
+    Satisfies :class:`~autotunex.db.repositories.protocols.TrainingMetricsRepository`.
+    Append-only; owns its transactions.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def insert(
+        self,
+        job_id: UUID,
+        *,
+        trial_id: str | None,
+        global_step: int,
+        epoch: float | None,
+        loss: float | None,
+        grad_norm: float | None,
+        learning_rate: float | None,
+        split: str,
+        extra: dict[str, Any] | None,
+    ) -> None:
+        """Append one metrics row to ``job_id``, committing."""
+        self._session.add(
+            TrainingMetricTable(
+                job_id=job_id,
+                trial_id=trial_id,
+                global_step=global_step,
+                epoch=epoch,
+                loss=loss,
+                grad_norm=grad_norm,
+                learning_rate=learning_rate,
+                split=split,
+                extra=extra,
+            )
+        )
+        await self._session.commit()
+
+    async def metrics_page(
+        self, job_id: UUID, *, trial_id: str | None, after_id: int, limit: int
+    ) -> tuple[Sequence[TrainingMetricTable], bool]:
+        """Ascending keyset page (oldest first) for charting; see the Protocol."""
+        statement = select(TrainingMetricTable).where(TrainingMetricTable.job_id == job_id)
+        if trial_id is not None:
+            statement = statement.where(TrainingMetricTable.trial_id == trial_id)
+        if after_id > 0:
+            statement = statement.where(TrainingMetricTable.id > after_id)
+        statement = statement.order_by(TrainingMetricTable.id.asc()).limit(limit + 1)
+        rows = (await self._session.execute(statement)).scalars().all()
+        has_more = len(rows) > limit
+        return rows[:limit], has_more
+
+
 _CONFIG_PAGE_ORDER = (ConfigurationTable.created_at.desc(), ConfigurationTable.id.desc())
 """Newest-first ordering for the configuration list, with an ``id`` tiebreaker.
 
@@ -583,33 +808,72 @@ class SqlAlchemyConfigurationRepository:
         self._session = session
 
     async def get(
-        self, configuration_id: UUID, *, owner_id: UUID | None = None
+        self,
+        configuration_id: UUID,
+        *,
+        owner_id: UUID | None = None,
+        include_shared: bool = False,
     ) -> ConfigurationTable | None:
-        """Return the configuration with ``configuration_id`` owned by ``owner_id``."""
+        """Return the configuration with ``configuration_id``, scoped to ``owner_id``.
+
+        With ``include_shared`` and an ``owner_id`` set, rows owned by the
+        reserved system user (the shared starter-content tier) are visible too.
+        ``include_shared`` is ignored when ``owner_id`` is ``None`` — the
+        admin/standalone unscoped view already returns every row.
+        """
         statement = select(ConfigurationTable).where(ConfigurationTable.id == configuration_id)
         if owner_id is not None:
-            # Raw, unfolded string comparison, matching SqlAlchemyJobRepository:
-            # str(owner_id) is canonical lowercase, and folding would cost the index.
-            statement = statement.where(ConfigurationTable.user_id == str(owner_id))
+            statement = statement.where(
+                _owner_or_shared(
+                    ConfigurationTable.user_id, owner_id, include_shared=include_shared
+                )
+            )
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 
     async def list(
-        self, *, limit: int, offset: int, owner_id: UUID | None = None, q: str | None = None
+        self,
+        *,
+        limit: int,
+        offset: int,
+        owner_id: UUID | None = None,
+        q: str | None = None,
+        include_shared: bool = False,
     ) -> tuple[Sequence[ConfigurationTable], int]:
         """Return one page of configurations, newest first, plus the total.
 
         ``q``, when given, is a case-insensitive substring filter on ``name``,
         applied to both statements so ``total`` can never disagree with the
-        number of items returned.
+        number of items returned. ``include_shared`` widens the ``owner_id``
+        filter to also admit the reserved system user's rows (the shared
+        starter-content tier); ignored when ``owner_id`` is ``None``.
+
+        Per the Protocol, ``config_data`` is not loaded on these rows and touching
+        it raises rather than fetching it — see the ``defer`` call below.
         """
         total_statement = select(func.count()).select_from(ConfigurationTable)
         page_statement = (
-            select(ConfigurationTable).order_by(*_CONFIG_PAGE_ORDER).limit(limit).offset(offset)
+            select(ConfigurationTable)
+            # `config_data` is the whole search space, and no caller of this list
+            # wants it — the API's list shape drops it and the frontend refetches
+            # the detail when it needs one. Deferring stops it being selected at
+            # all, so a page of 20 no longer reads, transfers and parses 20 JSON
+            # blobs; trimming only the response shape would still pay for every
+            # one of those. `raiseload` makes an accidental access raise instead
+            # of quietly issuing a fresh SELECT per row — an N+1 that tests would
+            # not notice and production would feel. `get`/`create`/`update` are
+            # untouched; they legitimately need the column.
+            .options(defer(ConfigurationTable.config_data, raiseload=True))
+            .order_by(*_CONFIG_PAGE_ORDER)
+            .limit(limit)
+            .offset(offset)
         )
         if owner_id is not None:
-            total_statement = total_statement.where(ConfigurationTable.user_id == str(owner_id))
-            page_statement = page_statement.where(ConfigurationTable.user_id == str(owner_id))
+            predicate = _owner_or_shared(
+                ConfigurationTable.user_id, owner_id, include_shared=include_shared
+            )
+            total_statement = total_statement.where(predicate)
+            page_statement = page_statement.where(predicate)
         if q:
             predicate = ConfigurationTable.name.ilike(_search_pattern(q), escape="\\")
             total_statement = total_statement.where(predicate)
@@ -716,30 +980,54 @@ class SqlAlchemyDatasetRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get(self, dataset_id: UUID, *, owner_id: UUID | None = None) -> DatasetTable | None:
-        """Return the dataset with ``dataset_id`` owned by ``owner_id``, or ``None``."""
+    async def get(
+        self,
+        dataset_id: UUID,
+        *,
+        owner_id: UUID | None = None,
+        include_shared: bool = False,
+    ) -> DatasetTable | None:
+        """Return the dataset with ``dataset_id``, scoped to ``owner_id``.
+
+        With ``include_shared`` and an ``owner_id`` set, system-owned datasets
+        (the shared starter tier) are visible too; ignored when ``owner_id`` is
+        ``None``.
+        """
         statement = select(DatasetTable).where(DatasetTable.id == dataset_id)
         if owner_id is not None:
-            statement = statement.where(DatasetTable.user_id == str(owner_id))
+            statement = statement.where(
+                _owner_or_shared(DatasetTable.user_id, owner_id, include_shared=include_shared)
+            )
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 
     async def list(
-        self, *, limit: int, offset: int, owner_id: UUID | None = None, q: str | None = None
+        self,
+        *,
+        limit: int,
+        offset: int,
+        owner_id: UUID | None = None,
+        q: str | None = None,
+        include_shared: bool = False,
     ) -> tuple[Sequence[DatasetTable], int]:
         """Return one page of datasets, newest first, plus the total.
 
         ``q``, when given, is a case-insensitive substring filter on ``name``,
         applied to both statements so ``total`` can never disagree with the
-        number of items returned.
+        number of items returned. ``include_shared`` widens the ``owner_id``
+        filter to also admit the reserved system user's rows (the shared
+        starter-content tier); ignored when ``owner_id`` is ``None``.
         """
         total_statement = select(func.count()).select_from(DatasetTable)
         page_statement = (
             select(DatasetTable).order_by(*_DATASET_PAGE_ORDER).limit(limit).offset(offset)
         )
         if owner_id is not None:
-            total_statement = total_statement.where(DatasetTable.user_id == str(owner_id))
-            page_statement = page_statement.where(DatasetTable.user_id == str(owner_id))
+            predicate = _owner_or_shared(
+                DatasetTable.user_id, owner_id, include_shared=include_shared
+            )
+            total_statement = total_statement.where(predicate)
+            page_statement = page_statement.where(predicate)
         if q:
             predicate = DatasetTable.name.ilike(_search_pattern(q), escape="\\")
             total_statement = total_statement.where(predicate)
@@ -883,6 +1171,11 @@ class SqlAlchemyUserRepository:
     async def provision(self, email: str) -> UserTable:
         """Get-or-create the ``users`` row for an already-verified ``email``.
 
+        ``last_login_at`` is stamped here because reaching provisioning *is* a
+        successful authentication — a first-time caller has just logged in, and
+        leaving it ``None`` until the throttle window lapsed would show a brand-new
+        user a blank "last login" while they were demonstrably using the app.
+
         ``role`` is set explicitly to ``"user"`` rather than relying on the
         column default: a provisioned account must never be an admin, and pinning
         it here keeps that true even if the schema default ever changes. On the
@@ -891,7 +1184,7 @@ class SqlAlchemyUserRepository:
         (case-insensitively, so a different-cased duplicate is never created)
         rather than surfacing the error.
         """
-        user = UserTable(email=email, role="user")
+        user = UserTable(email=email, role="user", last_login_at=utcnow())
         self._session.add(user)
         try:
             await self._session.flush()
@@ -903,6 +1196,33 @@ class SqlAlchemyUserRepository:
             raise
         await self._session.commit()
         return user
+
+    async def touch_login(self, email: str) -> None:
+        """Stamp ``users.last_login_at`` for ``email`` with the current time.
+
+        A single ``UPDATE`` keyed on ``func.lower(email)`` — the same predicate
+        :meth:`get_by_email` uses, so the two agree across dialects — rather than
+        loading the row and mutating it. That keeps this to one round trip on a
+        path that runs per request, and confines the write to the one column: an
+        ORM flush would emit whatever else happened to be dirty in the shared
+        request session.
+
+        Silently affects no rows when the email is unknown, which is the intended
+        no-op for an authenticated-but-unprovisioned caller.
+
+        ``updated_at`` is expected to move as a side effect — the ORM's
+        ``onupdate`` fires here, and the live MySQL schema's ``ON UPDATE
+        CURRENT_TIMESTAMP`` would regardless. That is correct and harmless: the
+        row really did change. The invariant that matters runs the other way, and
+        holds by construction — nothing but this method and :meth:`provision`
+        writes ``last_login_at``, so a role change can never masquerade as a login.
+        """
+        await self._session.execute(
+            update(UserTable)
+            .where(func.lower(UserTable.email) == email.lower())
+            .values(last_login_at=utcnow())
+        )
+        await self._session.commit()
 
     async def get_by_email(self, email: str) -> UserTable | None:
         """Return the user with ``email``, comparing case-insensitively.
@@ -917,7 +1237,7 @@ class SqlAlchemyUserRepository:
         raises rather than choosing, because the rows can carry different
         ``role`` values and a tiebreak would decide admin-ness by row order while
         hiding the duplication. The root fix is a ``UNIQUE INDEX ON users
-        (lower(email))``, tracked under CLAUDE.md open decision 7's schema work;
+        (lower(email))``, tracked under CLAUDE.md open decision 6's schema work;
         this method only has to fail safely until then.
 
         Raises:

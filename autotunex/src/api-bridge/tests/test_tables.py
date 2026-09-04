@@ -8,7 +8,14 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import create_engine, insert, select
 
-from api_bridge.tables import UtcDateTime, Uuid36Str, configurations, metadata, users
+from api_bridge.tables import (
+    UtcDateTime,
+    Uuid36Str,
+    configurations,
+    metadata,
+    training_metrics,
+    users,
+)
 
 
 def _sqlite_engine():
@@ -28,6 +35,7 @@ def test_metadata_create_all_builds_every_table():
         "trials",
         "results",
         "log_entries",
+        "training_metrics",
         "gb_tasks",
     } <= names
 
@@ -123,3 +131,17 @@ def test_enum_write_is_not_cast_to_varchar_on_postgres():
 
     sql = str(update(jobs).values(status="COMPLETED").compile(dialect=pg.dialect()))
     assert "::VARCHAR" not in sql.upper()
+
+
+def test_training_metrics_declares_no_single_column_trial_id_index():
+    """The Alembic revision creates only the composite keyset indexes.
+
+    A bare ``index=True`` here would make ``create_all()`` build an index the main
+    service's migrations never create — metadata drift between the two writers of
+    this same table.
+    """
+    single_column = [
+        ix.name for ix in training_metrics.indexes if [c.name for c in ix.columns] == ["trial_id"]
+    ]
+
+    assert single_column == []

@@ -50,6 +50,7 @@ from autotunex.core.logging import get_logger
 from autotunex.models.dataset import DatasetPreview
 from autotunex.services.storage.hf_viewer import (
     HFViewerUnavailable,
+    discover_config,
     fetch_rows,
     repo_id_from_artifact_url,
 )
@@ -68,12 +69,16 @@ _URI_RE = re.compile(r"(?:hf://|lh://|https://huggingface\.co/)\S+")
 def _rows_or_empty(result: list[dict[str, Any]] | BaseException) -> list[dict[str, Any]]:
     """Unwrap one ``asyncio.gather`` split result: rows on success, ``[]`` on error.
 
-    A ``HFViewerUnavailable`` (viewer down or still precomputing) is expected and
-    silent; any other exception is logged at DEBUG. Either way a failing split
-    degrades to an empty list so the other split still shows.
+    A ``HFViewerUnavailable`` (viewer down or still precomputing) is logged at
+    WARNING — its message names the repo, config, split, and HTTP status, so an
+    empty preview is no longer silent — while any other exception is logged at
+    DEBUG. Either way a failing split degrades to an empty list so the other split
+    still shows.
     """
     if isinstance(result, BaseException):
-        if not isinstance(result, HFViewerUnavailable):
+        if isinstance(result, HFViewerUnavailable):
+            logger.warning("HF dataset viewer unavailable for a split: %s", result)
+        else:
             logger.debug("HF split fetch failed unexpectedly: %r", result)
         return []
     return result
@@ -353,18 +358,35 @@ class HuggingFaceStorageBackend:
             return empty
 
     async def _preview_from_viewer(self, repo_id: str, token: str, rows: int) -> DatasetPreview:
-        """Fetch ``train`` and ``validation`` concurrently; a failed split → ``[]``.
+        """Discover the config via ``/splits``, then fetch ``train``/``validation`` rows.
+
+        ``/splits`` is queried first: it yields the repo's real config (subset)
+        name and is the viewer's authoritative "is this dataset precomputed"
+        signal. If it is unavailable — down, or still precomputing — the whole
+        preview is reported ``viewer_ready=False`` and no ``/rows`` fetch is
+        attempted (the rows cannot exist yet). Otherwise the two splits are fetched
+        concurrently with the discovered config; a single failed split degrades to
+        ``[]`` while the other still shows, and ``viewer_ready`` stays ``True``
+        unless *both* splits were unavailable — a fully-empty preview caused by the
+        viewer, not by a genuinely empty dataset.
 
         Uses the injected client when present (tests), else opens a short-lived one
-        bounded by ``hf_viewer_timeout_seconds`` and closes it. Two serial fetches
-        would roughly double the latency preview adds to the request, so they run
-        under a single ``asyncio.gather``.
+        bounded by ``hf_viewer_timeout_seconds`` and closes it.
         """
         client = self._http_client
         owns_client = client is None
         if client is None:
             client = httpx.AsyncClient(timeout=self._hf_viewer_timeout_seconds)
         try:
+            try:
+                config = await discover_config(
+                    client, base_url=self._hf_viewer_base_url, repo_id=repo_id, token=token
+                )
+            except HFViewerUnavailable as exc:
+                logger.warning(
+                    "HF dataset viewer not ready for %s (config discovery): %s", repo_id, exc
+                )
+                return DatasetPreview(train=[], validation=[], viewer_ready=False)
             # Unpacked in two steps: mypy's overload resolution for
             # ``asyncio.gather(..., return_exceptions=True)`` cannot infer the
             # per-element ``T | BaseException`` type when the call target is a
@@ -378,6 +400,7 @@ class HuggingFaceStorageBackend:
                     split="train",
                     limit=rows,
                     token=token,
+                    config=config,
                 ),
                 fetch_rows(
                     client,
@@ -386,6 +409,7 @@ class HuggingFaceStorageBackend:
                     split="validation",
                     limit=rows,
                     token=token,
+                    config=config,
                 ),
                 return_exceptions=True,
             )
@@ -393,9 +417,13 @@ class HuggingFaceStorageBackend:
         finally:
             if owns_client:
                 await client.aclose()
+        both_unavailable = all(
+            isinstance(result, HFViewerUnavailable) for result in (train_result, validation_result)
+        )
         return DatasetPreview(
             train=_rows_or_empty(train_result),
             validation=_rows_or_empty(validation_result),
+            viewer_ready=not both_unavailable,
         )
 
     async def delete(self, *, dataset_id: UUID, name: str, artifact_url: str | None) -> None:

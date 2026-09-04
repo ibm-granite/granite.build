@@ -211,7 +211,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def _root_redirect() -> RedirectResponse:
-        """Send the bare service root to the interactive API docs.
+        """Send the bare service root to the SPA at ``/autotune``.
 
         The SPA, when configured, mounts at ``frontend_base_path`` (``/autotune``
         by default), so ``/`` is otherwise unhandled and 404s. A temporary

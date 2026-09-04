@@ -335,7 +335,8 @@ class Settings(BaseSettings):
 
     hf_viewer_base_url: str = "https://datasets-server.huggingface.co"
     """Base URL of the HuggingFace dataset-viewer service; the client appends
-    ``/rows``. Override to point at a mirror or an enterprise viewer."""
+    ``/splits`` (to discover the repo's config name and readiness) and ``/rows``.
+    Override to point at a mirror or an enterprise viewer."""
 
     hf_hub_base_url: str = "https://huggingface.co"
     """Base URL of the HuggingFace Hub API, used to list a job's output-model
@@ -343,9 +344,10 @@ class Settings(BaseSettings):
     mirror or a test double."""
 
     hf_viewer_timeout_seconds: float = Field(default=2.5, gt=0)
-    """Per-call HTTP timeout for one viewer ``/rows`` fetch. Preview fetches the
-    two splits concurrently, so this also bounds the latency preview adds to a
-    ``GET /datasets/{id}?preview=true`` read."""
+    """Per-call HTTP timeout for one viewer request. A preview makes a ``/splits``
+    call to discover the config, then fetches the two splits' ``/rows``
+    concurrently, so the worst-case latency preview adds to a
+    ``GET /datasets/{id}?preview=true`` read is roughly two of these timeouts."""
 
     # --- LLM intelligence (Phase 2; optional) ----------------------------
     llm_base_url: str | None = None
@@ -436,8 +438,12 @@ class Settings(BaseSettings):
     """Root URI for run artifacts; the run's output is a subpath. Required when ``llmb``."""
 
     job_callback_url: str | None = None
-    """Base URL a cluster worker reports back to. Inert until the ingest spec ships;
-    emitted into the build's start command only when set."""
+    """The api-bridge / callback base URL the build reports to.
+
+    The ``custom_code`` and LSF start commands emit it as
+    ``--autotunex_server_url`` only when it is set; the standalone local-bash
+    variant ALWAYS emits it as ``AUTOTUNEX_SERVER_URL``, defaulting to
+    ``http://localhost:8001`` (the api-bridge) when this is unset."""
 
     gb_token_env: str = "GB_TOKEN"
     """Name of the env var holding the llmb/gb auth token.
@@ -576,10 +582,6 @@ class Settings(BaseSettings):
     returning ``JobCancellationInProgressError``. The cancel is latched regardless;
     this only bounds the wait. Read as ``AUTOTUNEX_LOCAL_CANCEL_TIMEOUT_SECONDS``."""
 
-    # --- Limits ----------------------------------------------------------
-    max_trials_limit: int = Field(default=100, ge=1)
-    """Server-side ceiling on ``max_trials`` for any submitted job."""
-
     # --- Auth --------------------------------------------------------------
     auth_providers: list[AuthProviderName] = Field(
         default_factory=_default_auth_providers, min_length=1
@@ -625,7 +627,27 @@ class Settings(BaseSettings):
     ``UNIQUE(email)`` insert and re-reads the winner rather than erroring). Note
     this makes even a ``GET`` write to the database on a caller's first request —
     the deliberate cost of JIT, which is why it is opt-in. See CLAUDE.md open
-    decision 5.
+    decision 4.
+    """
+
+    login_activity_throttle_minutes: int = Field(default=15, ge=0)
+    """How stale ``users.last_login_at`` must be before a request refreshes it.
+
+    Backs the Users table's "Last login on" column. A completed browser login
+    (``/auth/callback``) always records itself; this governs the *other* half —
+    the refresh on any authenticated request in ``api/deps.get_principal``, which
+    is what gives API-key and OIDC-bearer callers a value at all, since neither
+    ever passes through the login flow.
+
+    A window rather than a write per request: unthrottled, every ``GET`` from
+    every caller would carry an ``UPDATE`` and a commit, and the value is only
+    ever read at minute granularity by a human looking at a table. 15 minutes
+    bounds the cost to at most one write per caller per quarter hour while
+    keeping the column accurate enough to answer "was this person here today".
+    Raise it to trade precision for fewer writes.
+
+    ``0`` disables throttling and records on every request — meant for tests and
+    for diagnosing whether the touch fires at all, not for production.
     """
 
     allow_insecure_no_auth: bool = False

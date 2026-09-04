@@ -110,10 +110,6 @@ class FakeJobRepository:
         job.dataset = DatasetTable(
             id=job.dataset_id, user_id=job.user_id, name="alpaca", description="d"
         )
-        # num_trials is a column_property backed by a correlated subquery, which
-        # only resolves for a session-bound row. A detached fake stands in with a
-        # plain attribute instead of running a query.
-        job.num_trials = 0
         self.jobs[job.id] = job
         if build_id is not None:
             self.builds[build_id] = job.id
@@ -129,17 +125,22 @@ class FakeJobRepository:
 
     async def get_by_build_id(
         self, build_id: UUID, *, owner_id: UUID | None = None
-    ) -> JobTable | None:
-        """Resolve ``build_id`` to a seeded job, honouring the owner filter.
+    ) -> tuple[JobTable, str | None] | None:
+        """Resolve ``build_id`` to a seeded ``(job, finished_at)``, honouring the owner filter.
 
-        Mirrors the real repository's resolve-then-get: look up the job id
-        registered for ``build_id``, then reuse :meth:`get` so the owner filter
-        is applied identically.
+        Returns the pair the real repository returns: this lookup does not load
+        ``tasks``, so ``finished_at`` is a computed value rather than something the
+        mapper derives. Reuses :meth:`get` for the owner filter so it is applied
+        identically, and reports ``None`` for ``finished_at`` — these tests seed no
+        build tasks.
         """
         job_id = self.builds.get(build_id)
         if job_id is None:
             return None
-        return await self.get(job_id, owner_id=owner_id)
+        job = await self.get(job_id, owner_id=owner_id)
+        if job is None:
+            return None
+        return job, None
 
     async def list(
         self, *, limit: int, offset: int, owner_id: UUID | None = None, q: str | None = None

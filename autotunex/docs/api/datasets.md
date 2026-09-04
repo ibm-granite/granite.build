@@ -10,10 +10,24 @@ for owner resolution, and [../concepts.md](../concepts.md) for the domain model.
 
 ## Ownership and scope
 
-Reads and mutations are owner-scoped. By default a caller — admin included — sees only its
-own datasets. An admin widens to all owners per request with `scope=all` (`own` | `all`,
-default `own`); a non-admin passing `scope=all` gets a **403**. `POST` and `upload` are
-always own-scoped.
+Reads and mutations are owner-scoped. By default a caller — admin included — sees its own
+datasets **plus** the shared system tier: rows owned by the reserved system user
+(`00000000-0000-0000-0000-000000000001`), the curated starter datasets every caller can
+read and launch a job from. An admin widens to all owners per request with `scope=all`
+(`own` | `all`, default `own`); a non-admin passing `scope=all` gets a **403**. `POST` and
+`upload` are always own-scoped.
+
+Mutations never widen to the shared tier, so `PUT` against a system-owned dataset returns
+**404** — only an admin via `scope=all` may edit one. `upload` takes no `scope` parameter
+at all: it is strictly own-only, so not even an admin can upload into a shared dataset, or
+into another owner's.
+
+`DELETE` against a system-owned dataset is refused outright, for **every** caller: a normal
+user, an admin passing `scope=all`, and a caller whose own identity resolves to the system
+user all get a **403** (`title`: `System Resource Protected`), because starter content is
+shared by the whole deployment. The single exemption is an admin with an active
+impersonation overlay onto the system user (`POST /auth/assume/{id}`). Mirrors
+`configurations.md` exactly.
 
 ## Endpoints
 
@@ -78,8 +92,8 @@ List the caller's datasets, newest first. Returns a `Page<DatasetRead>`.
 
 ### Response `200` — `Page<DatasetRead>`
 
-`{ "items": DatasetRead[], "total": int, "limit": int, "offset": int }`. List responses do
-not include a `preview` (that is a per-item detail option).
+`{ "items": DatasetRead[], "total": int, "limit": int, "offset": int }`. List responses
+always report `preview` as `null` — a populated preview is a detail-endpoint option.
 
 ### Notable statuses
 
@@ -116,10 +130,10 @@ pipeline, which never flips `status` to `ready`). A backend failure while previe
 | `data_format` | string | `jsonl` \| `csv` \| `parquet` |
 | `status` | string | Lifecycle: `empty` \| `uploading` \| `ready` \| `error` |
 | `status_detail` | string \| null | Extra detail, e.g. an error message |
-| `train_file` | string | Stored train-file name/path |
+| `train_file` | string | Generated from `name` as `<name>_train`; not writable |
 | `train_records` | int \| null | Row count once processed |
 | `train_file_size` | int \| null | Bytes once processed |
-| `validation_file` | string | Stored validation-file name/path |
+| `validation_file` | string | Generated from `name` as `<name>_validation`; not writable |
 | `validation_records` | int \| null | Row count once processed |
 | `validation_file_size` | int \| null | Bytes once processed |
 | `artifact_id` | string \| null | Stored-artifact id (server-set) |
@@ -131,8 +145,12 @@ pipeline, which never flips `status` to `ready`). A backend failure while previe
 
 **`DatasetJobRef`:** `{ id: UUID, experiment_name: string|null, status: string }`.
 
-**`preview`** (a `DatasetPreview`): `{ "train": [ {row}, ... ], "validation": [ {row}, ... ] }`
-— each a list of raw JSON rows bounded by `preview_rows`.
+**`preview`** (a `DatasetPreview`):
+`{ "train": [ {row}, ... ], "validation": [ {row}, ... ], "viewer_ready": bool }` — `train`
+and `validation` are each a list of raw JSON rows bounded by `preview_rows`. `viewer_ready`
+(default `true`) is `false` only when the HuggingFace dataset viewer was unavailable or
+still precomputing, so empty `train`/`validation` there mean "not ready yet" rather than
+"genuinely empty".
 
 ```json
 {
@@ -143,10 +161,10 @@ pipeline, which never flips `status` to `ready`). A backend failure while previe
   "data_format": "jsonl",
   "status": "ready",
   "status_detail": null,
-  "train_file": "train.jsonl",
+  "train_file": "support-tickets_train",
   "train_records": 1200,
   "train_file_size": 240000,
-  "validation_file": "validation.jsonl",
+  "validation_file": "support-tickets_validation",
   "validation_records": 200,
   "validation_file_size": 40000,
   "artifact_id": "b7c1...",
@@ -154,7 +172,11 @@ pipeline, which never flips `status` to `ready`). A backend failure while previe
   "associated_jobs": [],
   "created_at": "2026-08-10T12:00:00Z",
   "updated_at": "2026-08-10T12:05:00Z",
-  "preview": { "train": [{ "input": "...", "output": "..." }], "validation": [] }
+  "preview": {
+    "train": [{ "input": "...", "output": "..." }],
+    "validation": [],
+    "viewer_ready": true
+  }
 }
 ```
 
@@ -200,6 +222,9 @@ create (`DatasetCreate`). Returns `DatasetRead`.
 
 Delete a dataset (and best-effort clean its stored files). Returns `204`.
 
+A dataset owned by the reserved system user cannot be deleted by anyone — see *Ownership
+and scope* above. `scope=all` does not override it.
+
 ### Path & query parameters
 
 | Name | In | Type | Default | Notes |
@@ -212,6 +237,7 @@ Delete a dataset (and best-effort clean its stored files). Returns `204`.
 | Status | When |
 | --- | --- |
 | `403` | Non-admin requesting `scope=all` |
+| `403` | The dataset belongs to the shared system tier (`title`: `System Resource Protected`); refused for every caller except an admin impersonating the system user |
 | `404` | No such dataset, or not the caller's |
 | `409` | A job still references this dataset |
 
@@ -236,10 +262,17 @@ Supports gzip-compressed bodies via the `Content-Encoding: gzip` request header.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `train_file` | file | yes | Training file; its extension sets the format |
+| `train_file` | file | yes | Training file; its extension sets the format (accepted set below) |
 | `validation_file` | file | no | Optional validation file; its format must match the train file's |
 | `validation_percentage` | int | no | Split a validation set from train; mutually exclusive with `validation_file` |
 | `column_mapping` | string | no | JSON string, a flat `{target: source}` object |
+
+Accepted extensions — anything else is a **415**. A trailing `.gz` on the *filename* is
+stripped before this lookup, so `train.jsonl.gz` is accepted:
+
+- `.jsonl`, `.json` → `jsonl`
+- `.csv` → `csv`
+- `.parquet`, `.pq` → `parquet`
 
 ```bash
 curl -X POST https://example.com/api/v1/datasets/9f30.../upload \
@@ -320,7 +353,7 @@ straight into the `column_mapping` form field of an upload.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `dataset_format` | string | Detected/assumed source format |
+| `dataset_format` | string | The training-format catalog key chosen; equals `target_format` when one was supplied |
 | `tuning_type` | string | Inferred tuning type |
 | `confidence` | float | 0.0–1.0 |
 | `column_mapping` | object (string → string) | Flat `{target: source}`; unmapped targets are dropped |

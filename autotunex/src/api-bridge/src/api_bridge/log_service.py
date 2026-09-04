@@ -47,6 +47,22 @@ class LogService:
             logger.error("Failed to insert logs", exc_info=e)
             raise HTTPException(status_code=400, detail=f"Something went wrong: {e}")
 
+    async def record_metrics(self, metrics: list[bridge_models.TrainingMetric]):
+        """Record a batch of per-step training-metrics rows."""
+        try:
+            # NaN/Infinity survive json.loads and pydantic float parsing, but a MySQL
+            # DOUBLE bind formats NaN as the bare token `nan` and the whole batch INSERT
+            # fails — reported as HTTP 200 {"success": false}, losing every row. Drop the
+            # offending values to NULL, exactly as record_logs does for log payloads.
+            rows = [_sanitize_nan(m.model_dump()) for m in metrics]
+            result = self.db.insert_metrics(rows)
+            if result:
+                return {"message": "metrics inserted", "success": True}
+            return {"message": "failed to insert metrics", "success": False}
+        except Exception as e:
+            logger.error("Failed to insert metrics", exc_info=e)
+            raise HTTPException(status_code=400, detail=f"Something went wrong: {e}")
+
     async def insert_trial(self, data: bridge_models.Trial) -> str:
         try:
             result = self.db.insert_trial(data=data)

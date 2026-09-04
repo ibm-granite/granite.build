@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autotunex.api.deps import get_dataset_runner, get_storage_backend
 from autotunex.core.auth.disabled import SYSTEM_STANDALONE_EMAIL
 from autotunex.core.config import Settings, get_settings
+from autotunex.core.constants import SYSTEM_USER_ID
 from autotunex.db.tables import DatasetTable, JobTable, UserTable
 from autotunex.models.auth import Principal
 from autotunex.models.status import DatasetStatus
@@ -651,3 +652,171 @@ async def test_upload_with_both_validation_file_and_percentage_is_422(
     )
 
     assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+# Shared system-owned datasets.
+
+
+async def _seed_system_dataset(
+    session: AsyncSession, *, name: str = "starter", status: DatasetStatus = DatasetStatus.READY
+) -> DatasetTable:
+    """Persist the system owner and one dataset it owns."""
+    session.add(UserTable(id=SYSTEM_USER_ID, email="system@autotunex.local", role="user"))
+    await session.commit()
+    dataset = DatasetTable(
+        id=uuid4(),
+        user_id=str(SYSTEM_USER_ID),
+        name=name,
+        description="Curated starter dataset.",
+        data_format="jsonl",
+        status=status,
+        train_records=100,
+        train_file_size=2048,
+    )
+    session.add(dataset)
+    await session.commit()
+    await session.refresh(dataset, ["train_file", "validation_file"])
+    return dataset
+
+
+async def test_list_includes_system_datasets_for_a_normal_user(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    session: AsyncSession,
+) -> None:
+    _act_as(as_principal, user)
+    system_dataset = await _seed_system_dataset(session)
+
+    response = await client.get(f"{API}/datasets")
+
+    assert response.status_code == HTTPStatus.OK
+    assert str(system_dataset.id) in {item["id"] for item in response.json()["items"]}
+
+
+async def test_get_returns_a_system_dataset_for_a_normal_user(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    session: AsyncSession,
+) -> None:
+    _act_as(as_principal, user)
+    system_dataset = await _seed_system_dataset(session)
+
+    response = await client.get(f"{API}/datasets/{system_dataset.id}")
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["id"] == str(system_dataset.id)
+    assert response.json()["user_id"] == str(SYSTEM_USER_ID)
+
+
+async def test_upload_to_a_system_dataset_by_a_normal_user_is_404(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    session: AsyncSession,
+) -> None:
+    _act_as(as_principal, user)
+    system_dataset = await _seed_system_dataset(session, status=DatasetStatus.EMPTY)
+
+    response = await client.post(
+        f"{API}/datasets/{system_dataset.id}/upload",
+        files=_multipart(b'{"a": 1}\n', "train.jsonl"),
+    )
+
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+async def test_update_of_a_system_dataset_by_a_normal_user_is_404(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    session: AsyncSession,
+) -> None:
+    _act_as(as_principal, user)
+    system_dataset = await _seed_system_dataset(session)
+
+    response = await client.put(
+        f"{API}/datasets/{system_dataset.id}",
+        json={"name": "renamed", "description": "new", "data_format": "csv"},
+    )
+
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+# Delete-protection of the shared tier, mirroring
+# ``tests/api/routers/test_configurations.py`` case for case: a system-owned
+# dataset is starter content shared by every caller, so the guard is an invariant
+# on the row's owner rather than a by-product of the ownership filter.
+
+
+async def test_delete_of_a_system_dataset_by_a_normal_user_is_403(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    session: AsyncSession,
+) -> None:
+    _act_as(as_principal, user)
+    system_dataset = await _seed_system_dataset(session)
+
+    response = await client.delete(f"{API}/datasets/{system_dataset.id}")
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.json()["title"] == "System Resource Protected"
+
+
+async def test_delete_of_a_system_dataset_by_an_admin_with_scope_all_is_403(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    session: AsyncSession,
+) -> None:
+    admin = UserTable(id=uuid4(), email="admin@example.com", role="admin")
+    session.add(admin)
+    await session.commit()
+    as_principal(Principal(email=admin.email, provider="session", user_id=admin.id, is_admin=True))
+    system_dataset = await _seed_system_dataset(session)
+
+    response = await client.delete(f"{API}/datasets/{system_dataset.id}", params={"scope": "all"})
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+async def test_delete_of_a_system_dataset_by_a_caller_resolving_to_the_system_user_is_403(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    session: AsyncSession,
+) -> None:
+    system_dataset = await _seed_system_dataset(session)
+    as_principal(
+        Principal(
+            email="system@autotunex.local",
+            provider="standalone",
+            user_id=SYSTEM_USER_ID,
+            is_admin=True,
+        )
+    )
+
+    response = await client.delete(f"{API}/datasets/{system_dataset.id}")
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+async def test_delete_of_a_system_dataset_while_impersonating_the_system_user_succeeds(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    session: AsyncSession,
+) -> None:
+    system_dataset = await _seed_system_dataset(session)
+    as_principal(
+        Principal(
+            email="system@autotunex.local",
+            provider="session",
+            user_id=SYSTEM_USER_ID,
+            is_admin=True,
+            impersonator="admin@example.com",
+        )
+    )
+
+    response = await client.delete(f"{API}/datasets/{system_dataset.id}")
+
+    assert response.status_code == HTTPStatus.NO_CONTENT

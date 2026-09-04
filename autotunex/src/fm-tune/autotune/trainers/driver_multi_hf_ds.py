@@ -45,7 +45,11 @@ from transformers import (
 from transformers.utils.logging import disable_progress_bar, enable_progress_bar
 
 # Local
+from autotune.callbacks.training_metrics import TrainingMetricsCallback
 from autotune.cluster import compute_ray_data_sizing, ray_data_block_target
+
+# Local
+from autotune.tools._chat_utils import template_supports_kwarg
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
@@ -230,18 +234,54 @@ def _build_deepspeed_config(strategy: str) -> dict:
 # --- Dataset handling ---
 
 
-def _apply_chat_template_to_df(df, tokenizer, input_col: str):
+def _thinking_kwargs(tokenizer, thinking: bool = False):
+    """``{"enable_thinking": thinking}`` when the chat template supports it, else ``{}``.
+
+    Granite 4.2 defaults to ``enable_thinking=True``, which ends the rendered
+    prompt inside an *open* ``<think>`` block — so an SFT target would be trained
+    as reasoning content rather than as the answer. Older templates ignore the
+    kwarg, and a non-Granite template might reject an unknown one, so the flag is
+    only forwarded when the template actually mentions it.
+    """
+    if template_supports_kwarg(getattr(tokenizer, "chat_template", None), "enable_thinking"):
+        return {"enable_thinking": thinking}
+    return {}
+
+
+def _apply_chat_template_to_df(df, tokenizer, input_col: str, thinking: bool = False):
     """Convert message-list rows in ``df[input_col]`` to plain strings via the
     tokenizer's chat template. Handles optional ``documents`` and ``tools``
     columns for RAG / tool-use prompts. Returns ``df`` unchanged if the column
     doesn't hold message lists (detected by inspecting the first row) or if
     the DataFrame is empty.
 
+    ``thinking`` is off by default; see :func:`_thinking_kwargs`.
+
     Shared between the Arrow and Ray Data backends to keep chat-template
     handling in a single place.
     """
     if input_col not in df.columns or len(df) == 0:
         return df
+
+    first_val = df[input_col].iloc[0]
+    if not isinstance(first_val, list):
+        return df
+
+    has_documents = "documents" in df.columns and isinstance(df["documents"].iloc[0], list)
+    has_tools = "tools" in df.columns and isinstance(df["tools"].iloc[0], list)
+
+    base_kwargs = {"tokenize": False, "add_generation_prompt": True, **_thinking_kwargs(tokenizer, thinking)}
+
+    def _render(row):
+        kwargs = dict(base_kwargs)
+        if has_documents:
+            kwargs["documents"] = row["documents"]
+        if has_tools:
+            kwargs["tools"] = row["tools"]
+        return tokenizer.apply_chat_template(row[input_col], **kwargs)
+
+    df[input_col] = df.apply(_render, axis=1)
+    return df
 
     first_val = df[input_col].iloc[0]
     if not isinstance(first_val, list):
@@ -372,6 +412,7 @@ def _make_tokenize_fn(
     input_col: str,
     output_col: str,
     max_length: int,
+    thinking: bool = False,
 ) -> Callable[[Any], Dict[str, Any]]:
     """Build a map_batches function that applies chat template (if needed)
     and tokenizes the batch. The tokenizer is constructed lazily inside the
@@ -396,7 +437,7 @@ def _make_tokenize_fn(
             state["tokenizer"] = tokenizer
         tokenizer = state["tokenizer"]
 
-        df = _apply_chat_template_to_df(df, tokenizer, input_col)
+        df = _apply_chat_template_to_df(df, tokenizer, input_col, thinking)
 
         tokenized = tokenize_batch(
             batch=df,
@@ -448,6 +489,7 @@ def _load_tokenize_and_save(
     output_arrow_path: str,
     percentage: float = 1.0,
     chunk_size: int = 50000,
+    thinking: bool = False,
 ) -> int:
     """
     Load a dataset, tokenize in chunks, and save as Arrow IPC file.
@@ -479,7 +521,7 @@ def _load_tokenize_and_save(
         df = df.head(n)
         logger.info(f"[AutoTune] Subsampled to {len(df)} rows ({percentage * 100:.0f}%)")
 
-    df = _apply_chat_template_to_df(df, tokenizer, input_col)
+    df = _apply_chat_template_to_df(df, tokenizer, input_col, thinking)
 
     logger.info("[AutoTune] First instance (after formatting):")
     logger.info(f"  {input_col}: {df[input_col].iloc[0]}")
@@ -572,7 +614,7 @@ def _extract_metrics_from_log_history(log_history: list) -> Dict[str, Any]:
 
 def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     """Training function executed by each Ray Train worker (one per GPU)."""
-    from autotune.logging_setup import setup_logging
+    from autotune.logging_setup import bind_trial_id, setup_logging
 
     setup_logging()
 
@@ -589,6 +631,7 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     is_qlora = training_config.get("tuning_algorithm") == "qlora"
     steps_per_epoch = train_loop_config.get("steps_per_epoch")
     trial_id = train_loop_config.get("trial_id")
+    bind_trial_id(trial_id)
 
     output_dir = training_config.get("output_dir")
     attn_implementation = training_config.get("use_flash_attention", "eager")
@@ -830,6 +873,11 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         install_alora_gc_safety_wrapper(trainer.model)
         trainer.add_callback(AloraGradCheckpointDrainCallback())
 
+    # Persist per-step training metrics (loss/grad_norm/lr/epoch) to AutotuneX.
+    # Added unconditionally on every worker; on_log self-guards to rank 0 via
+    # state.is_world_process_zero — independent of the per-epoch top-rung gate below.
+    trainer.add_callback(TrainingMetricsCallback(trial_id=trial_id))
+
     # RayTrainReportCallback reports metrics from workers back to the driver
     # via train.report(). Without it, ray_trainer.fit() returns Result with
     # metrics=None. Checkpoint saving only triggers when checkpoint_config is
@@ -963,11 +1011,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         A Dict summarizing the training results for Ray Tune.
     """
-    from autotune.logging_setup import setup_logging
+    from autotune.logging_setup import bind_trial_id, setup_logging
 
     setup_logging()
 
     trial_id = tune.get_context().get_trial_id()
+    bind_trial_id(trial_id)
 
     logger.info(f"[AutoTune] Training driver multi GPU HF+DeepSpeed (trial {trial_id})")
     logger.info(f"[AutoTune] Config: {config}")
@@ -996,6 +1045,10 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     hpo_search = training_config.get("hpo_search", False)
 
     # Set the input and output column names expected in the dataset files.
+    # Granite 4.2 defaults thinking on, which would train the target inside an
+    # open <think> block; disabled unless the config asks otherwise.
+    thinking = not training_config.get("disable_thinking", True)
+
     input_col = "input"
     output_col = "output"
 
@@ -1077,6 +1130,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             max_length=max_length,
             output_arrow_path=train_arrow_path,
             percentage=percentage,
+            thinking=thinking,
         )
         _load_tokenize_and_save(
             file_path=eval_file,
@@ -1086,6 +1140,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             max_length=max_length,
             output_arrow_path=eval_arrow_path,
             percentage=percentage,
+            thinking=thinking,
         )
         worker_data_kwargs = {
             "data_backend": "arrow",
@@ -1113,6 +1168,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             input_col=input_col,
             output_col=output_col,
             max_length=max_length,
+            thinking=thinking,
         )
         # Fan tokenization out across the whole cluster. Two levers, both required:
         #   1. Repartition into >= `concurrency` blocks. Ray Data launches at most

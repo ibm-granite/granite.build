@@ -53,6 +53,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import ray
 
 from autotune.cluster import release_sockets, reserve_ports
+from autotune.logging_setup import bridge_runtime_env
 from autotune.lsf.log_utils import (
     banner,
     dump_env_fingerprint,
@@ -101,7 +102,12 @@ def _ray_init_with_timeout(address: str, timeout_s: float) -> bool:
 
     def _target() -> None:
         try:
-            ray.init(address=address, log_to_driver=True, logging_level=logging.INFO)
+            ray.init(
+                address=address,
+                log_to_driver=True,
+                logging_level=logging.INFO,
+                **bridge_runtime_env(),
+            )
         except BaseException as e:  # noqa: BLE001 — best-effort
             err.append(e)
         finally:

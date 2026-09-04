@@ -30,6 +30,7 @@ from autotunex.services.mappers import (
     dataset_to_read,
     latest_task_update,
     resolve_config_name,
+    resolve_planned_trials,
     resolve_rl_tuner_type,
     trial_to_read,
     user_to_read,
@@ -116,6 +117,113 @@ def test_rl_tuner_type_falls_back_to_the_configuration(job: JobTable) -> None:
     job.config_snapshot = None
 
     assert resolve_rl_tuner_type(job) is None
+
+
+def test_planned_trials_reads_the_descriptor_default(job: JobTable) -> None:
+    """The catalog shape: num_samples is a descriptor dict, the value is its default."""
+    job.config_snapshot = {
+        "config_data": {
+            "tune_config": {
+                "num_samples": {
+                    "description": "Number of samples from the search space",
+                    "default": 32,
+                    "min_val": 1,
+                    "max_val": 10000,
+                    "type": "int",
+                    "required": True,
+                }
+            }
+        }
+    }
+
+    assert resolve_planned_trials(job) == 32
+
+
+def test_planned_trials_reads_a_bare_scalar(job: JobTable) -> None:
+    """The other shape in the wild — see src/ux/.../forms/default_config.ts."""
+    job.config_snapshot = {"config_data": {"tune_config": {"num_samples": 4}}}
+
+    assert resolve_planned_trials(job) == 4
+
+
+def test_planned_trials_accepts_an_integral_float(job: JobTable) -> None:
+    """JSON round-trips can widen an int; reporting 0 would be the misleading zero."""
+    job.config_snapshot = {"config_data": {"tune_config": {"num_samples": 32.0}}}
+
+    assert resolve_planned_trials(job) == 32
+
+
+def test_planned_trials_is_zero_without_a_snapshot(job: JobTable) -> None:
+    """Pipeline-written rows have no snapshot, so there is no budget to report."""
+    job.config_snapshot = None
+
+    assert resolve_planned_trials(job) == 0
+
+
+def test_planned_trials_is_zero_when_the_snapshot_has_no_config_data(job: JobTable) -> None:
+    job.config_snapshot = {"name": "as-it-ran"}
+
+    assert resolve_planned_trials(job) == 0
+
+
+def test_planned_trials_is_zero_when_config_data_has_no_tune_config(job: JobTable) -> None:
+    job.config_snapshot = {"config_data": {"training_config": {"num_epochs": 2}}}
+
+    assert resolve_planned_trials(job) == 0
+
+
+def test_planned_trials_is_zero_when_tune_config_has_no_num_samples(job: JobTable) -> None:
+    job.config_snapshot = {"config_data": {"tune_config": {"search_alg": "lds"}}}
+
+    assert resolve_planned_trials(job) == 0
+
+
+def test_planned_trials_is_zero_when_the_descriptor_has_no_default(job: JobTable) -> None:
+    job.config_snapshot = {
+        "config_data": {"tune_config": {"num_samples": {"min_val": 1, "max_val": 10000}}}
+    }
+
+    assert resolve_planned_trials(job) == 0
+
+
+def test_planned_trials_rejects_a_boolean(job: JobTable) -> None:
+    """Bool is an int subclass in Python, so True would otherwise read as a budget of 1."""
+    job.config_snapshot = {"config_data": {"tune_config": {"num_samples": True}}}
+
+    assert resolve_planned_trials(job) == 0
+
+
+def test_planned_trials_clamps_a_negative_to_zero(job: JobTable) -> None:
+    """JobDetail.num_trials is Field(ge=0); an unclamped negative would 500 the read."""
+    job.config_snapshot = {"config_data": {"tune_config": {"num_samples": -5}}}
+
+    assert resolve_planned_trials(job) == 0
+
+
+def test_planned_trials_is_zero_for_a_non_numeric_value(job: JobTable) -> None:
+    job.config_snapshot = {"config_data": {"tune_config": {"num_samples": "many"}}}
+
+    assert resolve_planned_trials(job) == 0
+
+
+def test_planned_trials_is_zero_when_tune_config_is_not_a_dict(job: JobTable) -> None:
+    job.config_snapshot = {"config_data": {"tune_config": ["num_samples"]}}
+
+    assert resolve_planned_trials(job) == 0
+
+
+def test_planned_trials_never_falls_back_to_the_live_configuration(
+    job: JobTable, configuration: ConfigurationTable
+) -> None:
+    """Unlike resolve_config_name, this reports only what the job actually ran with.
+
+    The live row can have drifted since submit — that is what is_stale reports — so
+    borrowing its budget would describe a search this job never ran.
+    """
+    configuration.config_data = {"tune_config": {"num_samples": {"default": 99}}}
+    job.config_snapshot = {"config_data": {"tune_config": {"search_alg": "lds"}}}
+
+    assert resolve_planned_trials(job) == 0
 
 
 async def test_dataset_to_read_carries_generated_filenames_and_jobs(

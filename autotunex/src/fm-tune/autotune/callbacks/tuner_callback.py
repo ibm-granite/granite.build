@@ -19,7 +19,7 @@ from typing import Optional, Protocol
 from ray.tune import Callback
 from ray.tune.experiment.trial import Trial
 
-from autotune.callbacks.logging_service import BufferedLogHandler, RecordType
+from autotune.callbacks.logging_service import BufferedLogHandler, RecordType, trial_context
 
 logger = logging.getLogger(__name__)
 
@@ -48,76 +48,68 @@ class CustomLoggerCallback(Callback):
         self.handler = handler
 
     def on_trial_start(self, iteration, trials, trial: Trial):
-        if self.handler:
-            self.handler.set_trial_id(trial.trial_id)
-        data = {
-            "id": trial.trial_id,
-            "job_id": self.handler.get_job_id(),
-            "status": "RUNNING",
-            "config": self.sanitized_result({"config": trial.config}),
-        }
+        with trial_context(trial.trial_id):
+            data = {
+                "id": trial.trial_id,
+                "job_id": self.handler.get_job_id(),
+                "status": "RUNNING",
+                "config": self.sanitized_result({"config": trial.config}),
+            }
 
-        self.handler.record_data(data, record_type=RecordType.RECORD_TRIAL)
+            self.handler.record_data(data, record_type=RecordType.RECORD_TRIAL)
 
-        self.logger.info(f"::::::::::::::: Trial_{trial.trial_id} Initialized :::::::::::::::\n")
+            self.logger.info(f"::::::::::::::: Trial_{trial.trial_id} Initialized :::::::::::::::\n")
 
-        self.logger.info(f"trial_id: {trial.trial_id}")
-        self.logger.info(f"iterations: {iteration}")
-        self.logger.info(f"trial_fn: {trial.trainable_name}")
-        self.logger.info(f"trial_status: {trial.status}\n")
-        self.logger.info(">>>>>>>>>>>>> trial_config <<<<<<<<<<<<<\n")
-        for key, value in trial.config.items():
-            self.logger.info(f"{key}: {value}")
-        self.logger.info(f"::::::::::::::: Trial_{trial.trial_id} Started :::::::::::::::\n")
-        if self.handler:
-            self.handler.flush()
+            self.logger.info(f"trial_id: {trial.trial_id}")
+            self.logger.info(f"iterations: {iteration}")
+            self.logger.info(f"trial_fn: {trial.trainable_name}")
+            self.logger.info(f"trial_status: {trial.status}\n")
+            self.logger.info(">>>>>>>>>>>>> trial_config <<<<<<<<<<<<<\n")
+            for key, value in trial.config.items():
+                self.logger.info(f"{key}: {value}")
+            self.logger.info(f"::::::::::::::: Trial_{trial.trial_id} Started :::::::::::::::\n")
+            if self.handler:
+                self.handler.flush()
 
     def on_trial_result(self, iteration, trials, trial, result, **info):
-        if self.handler:
-            self.handler.set_trial_id(trial.trial_id)
-        self.logger.info(f"--------- Trial_{trial.trial_id} Result Start -----------")
-        self.logger.info(f"trial_id: {trial.trial_id}")
-        self.logger.info(f"iterations: {iteration}")
-        self.logger.info(f"trial_fn: {trial.trainable_name}")
-        self.logger.info(f"trial_config: {trial.config}")
-        self.logger.info(f"trial_status: {trial.status}")
-        self.logger.info(f"Trial {trial.trial_id} reported result: {result}")
-        self.logger.info(f"--------- Result for Trial_{trial.trial_id} End -----------")
-        self.logger.info(f"......... TRIAL_JOB_ID.....{self.job_id}.............")
-        # job.insert_trial_results(id=self.job_id, result=result)
-        result = {
-            **result,
-            "id": self.handler.get_job_id(),
-            "job_id": self.handler.get_job_id(),
-            "config": self.sanitized_result(result),
-        }
-        print("sanitized results: ", result)
-        self.handler.record_data(result, record_type=RecordType.RECORD_RESULT)
-        status = {"id": trial.trial_id, "status": "COMPLETED"}
-        self.handler.record_data(status, record_type=RecordType.UPDATE_STATUS)
+        with trial_context(trial.trial_id):
+            self.logger.info(f"--------- Trial_{trial.trial_id} Result Start -----------")
+            self.logger.info(f"trial_id: {trial.trial_id}")
+            self.logger.info(f"iterations: {iteration}")
+            self.logger.info(f"trial_fn: {trial.trainable_name}")
+            self.logger.info(f"trial_config: {trial.config}")
+            self.logger.info(f"trial_status: {trial.status}")
+            self.logger.info(f"Trial {trial.trial_id} reported result: {result}")
+            self.logger.info(f"--------- Result for Trial_{trial.trial_id} End -----------")
+            self.logger.info(f"......... TRIAL_JOB_ID.....{self.job_id}.............")
+            # job.insert_trial_results(id=self.job_id, result=result)
+            result = {
+                **result,
+                "id": self.handler.get_job_id(),
+                "job_id": self.handler.get_job_id(),
+                "config": self.sanitized_result(result),
+            }
+            print("sanitized results: ", result)
+            self.handler.record_data(result, record_type=RecordType.RECORD_RESULT)
+            status = {"id": trial.trial_id, "status": "COMPLETED"}
+            self.handler.record_data(status, record_type=RecordType.UPDATE_STATUS)
 
-        if self.handler:
-            self.handler.set_trial_id(None)
-            self.handler.flush()
+            if self.handler:
+                self.handler.flush()
 
     def on_trial_complete(self, iteration, trials, trial, **info):
-        if self.handler:
-            self.handler.set_trial_id(trial.trial_id)
-
-        self.logger.info(f"--------- Trial_{trial.trial_id} Completed -----------")
-        if self.handler:
-            self.handler.set_trial_id(None)
-            self.handler.flush()
+        with trial_context(trial.trial_id):
+            self.logger.info(f"--------- Trial_{trial.trial_id} Completed -----------")
+            if self.handler:
+                self.handler.flush()
 
     def on_trial_error(self, iteration, trials, trial: Trial, **info):
-        if self.handler:
-            self.handler.set_trial_id(trial.trial_id)
-        self.logger.error(f"Error occured during trial_{trial.trial_id} execution")
-        status = {"id": trial.trial_id, "status": "ERROR"}
-        self.handler.record_data(status, record_type=RecordType.UPDATE_STATUS)
-        if self.handler:
-            self.handler.set_trial_id(None)
-            self.handler.flush()
+        with trial_context(trial.trial_id):
+            self.logger.error(f"Error occured during trial_{trial.trial_id} execution")
+            status = {"id": trial.trial_id, "status": "ERROR"}
+            self.handler.record_data(status, record_type=RecordType.UPDATE_STATUS)
+            if self.handler:
+                self.handler.flush()
 
     def sanitized_result(self, data):
         config_copy = data["config"].copy() if isinstance(data["config"], dict) else {}

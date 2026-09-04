@@ -168,8 +168,8 @@ async def get_current_user(request: Request) -> base_models.AuthUser:
     )
 
 
-# API_BRIDGE_TOKEN gates the 4 write routes below (record_logs, insert_trials,
-# update_status, insert_trial_result). Unlike get_current_user, this is checked
+# API_BRIDGE_TOKEN gates the 5 write routes below (record_logs, record_metrics,
+# insert_trials, update_status, insert_trial_result). Unlike get_current_user, this is checked
 # once at import time (not per request) so the log line below fires exactly once
 # at startup rather than flooding the log on every unauthenticated request.
 API_BRIDGE_TOKEN = os.getenv("API_BRIDGE_TOKEN")
@@ -214,6 +214,17 @@ async def record_logs(logs: list[bridge_models.LogEntry]):
     Record Log Entries
     """
     return await log.record_logs(logs)
+
+
+@prefix_router.post(
+    "/api/record_metrics", tags=["Utils"], dependencies=[Depends(require_write_token)]
+)
+async def record_metrics(
+    metrics: list[bridge_models.TrainingMetric] | bridge_models.TrainingMetric,
+):
+    """Record per-step training metrics (single row or a batch)."""
+    batch = metrics if isinstance(metrics, list) else [metrics]
+    return await log.record_metrics(batch)
 
 
 @prefix_router.post(

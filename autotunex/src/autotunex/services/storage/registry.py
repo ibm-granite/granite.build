@@ -49,6 +49,30 @@ def _huggingface_with_local_fallback(settings: Settings) -> PreviewFallbackStora
     )
 
 
+def _local_with_hf_preview_fallback(
+    settings: Settings, *, emit_file_uri: bool
+) -> PreviewFallbackStorageBackend:
+    """Local-storage primary with a HuggingFace preview fallback (the mirror above).
+
+    Resolving to local storage is a *write*-path decision: ``llmb artifact push``
+    is disabled under ``GB_ENVIRONMENT=STANDALONE``, and ``auto`` degrades when
+    ``llmb`` or the tokens are missing. Reading a preview instead goes over the HF
+    dataset-viewer HTTP API, which needs neither ``llmb`` nor the GB token — so the
+    two decisions do not follow from each other, and collapsing them silently cost
+    the preview of any dataset whose files live on HuggingFace.
+
+    Wrapping keeps every write purely local (``persist``/``delete`` delegate to the
+    primary, so the ``file://`` locator the bash build mounts is unchanged) while a
+    dataset row that already carries an ``hf://`` locator — pushed before the
+    deployment switched to standalone, or written by another deployment sharing the
+    database — still previews rather than rendering "Unable to load dataset".
+    """
+    return PreviewFallbackStorageBackend(
+        primary=LocalStorageBackend(root=settings.dataset_storage_dir, emit_file_uri=emit_file_uri),
+        fallback=_huggingface(settings),
+    )
+
+
 def _llmb_enabled(settings: Settings) -> bool:
     """Usable when ``llmb`` resolves and BOTH tokens are present.
 
@@ -82,14 +106,18 @@ def get_storage_backend(settings: Settings) -> StorageBackend:
     ``dataset_files`` input; the remote LSF/SkyPilot build cannot read a local
     path, so no locator is emitted there (its dataset hosting is a separate, open
     concern).
+
+    Every branch that resolves to local storage returns it wrapped with a
+    HuggingFace **preview** fallback (``_local_with_hf_preview_fallback``), so the
+    write-path decision above never costs the preview of a dataset row that already
+    carries an ``hf://`` locator. Writes stay local either way.
     """
-    root = settings.dataset_storage_dir
     standalone = settings.gb_environment == "standalone"
     # Only the same-host bash build consumes the dataset off local disk.
     local_bash_standalone = standalone and not settings.lsf_cluster
 
     if settings.dataset_storage_backend == "local":
-        return LocalStorageBackend(root=root, emit_file_uri=local_bash_standalone)
+        return _local_with_hf_preview_fallback(settings, emit_file_uri=local_bash_standalone)
     if settings.dataset_storage_backend == "huggingface":
         # Validation refuses a forced `huggingface` only for the same-host bash
         # standalone case, so this branch is reached for non-standalone deployments
@@ -103,7 +131,7 @@ def get_storage_backend(settings: Settings) -> StorageBackend:
             "`llmb artifact push` is unavailable; using local storage%s.",
             " with a file:// locator" if local_bash_standalone else "",
         )
-        return LocalStorageBackend(root=root, emit_file_uri=local_bash_standalone)
+        return _local_with_hf_preview_fallback(settings, emit_file_uri=local_bash_standalone)
     if _llmb_enabled(settings):
         return _huggingface_with_local_fallback(settings)
     logger.info(
@@ -111,7 +139,7 @@ def get_storage_backend(settings: Settings) -> StorageBackend:
         settings.gb_token_env,
         settings.hf_token_env,
     )
-    return LocalStorageBackend(root=root)
+    return _local_with_hf_preview_fallback(settings, emit_file_uri=False)
 
 
 def resolve_artifact_lister(

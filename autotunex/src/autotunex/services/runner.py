@@ -134,6 +134,9 @@ class InProcessJobRunner:
                 logger.error("Job %s vanished before launch; nothing to submit.", job_id)
                 return
             try:
+                # Unscoped by id on purpose: the job's ownership was validated at
+                # submission, and this must still resolve shared system-owned
+                # datasets. Do NOT add owner_id here.
                 dataset = await datasets.get(job.dataset_id)
                 handle: LaunchHandle = await self._launcher.launch(_context_from(job, dataset))
             # Broad except is intentional: any launch failure must land the job in

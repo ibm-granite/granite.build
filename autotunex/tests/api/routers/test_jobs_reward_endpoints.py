@@ -17,7 +17,9 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autotunex.api.deps import get_reward_tools_service
-from autotunex.db.tables import JobTable, UserTable
+from autotunex.core.auth.disabled import SYSTEM_STANDALONE_EMAIL
+from autotunex.core.constants import SYSTEM_USER_ID
+from autotunex.db.tables import ConfigurationTable, JobTable, UserTable
 from autotunex.models.auth import Principal
 from autotunex.services.llm.base import ChatDelta
 from autotunex.services.reward.tools import RewardToolsService
@@ -85,6 +87,145 @@ async def test_estimate_usages_rejects_an_unparseable_model_name(client: AsyncCl
 
     assert response.status_code == 422
     assert response.headers["content-type"].startswith(PROBLEM_JSON)
+
+
+# --- estimate-usages: the saved-configuration (config_id) path ---
+#
+# Reading a saved configuration is an owner-scoped read, and this endpoint takes no
+# `scope` parameter, so it is *always* own-scope plus the shared system tier. The
+# repository applies its ownership predicate only when `owner_id is not None`, which
+# made an unprovisioned caller's `None` mean "no filter" and handed it any owner's
+# `config_data`. These tests pin every principal that reaches the lookup.
+
+
+async def _seed_config(
+    session: AsyncSession, *, owner_id: str, name: str = "saved"
+) -> ConfigurationTable:
+    """Persist one configuration owned by ``owner_id``."""
+    config = ConfigurationTable(
+        id=uuid4(),
+        user_id=owner_id,
+        name=name,
+        tuner_type="sft",
+        rl_tuner_type=None,
+        config_data=_CONFIG_DATA,
+    )
+    session.add(config)
+    await session.commit()
+    return config
+
+
+async def _estimate_with(client: AsyncClient, config_id: object) -> Any:  # noqa: ANN401
+    """POST an estimate that resolves its configuration by id."""
+    return await client.post(
+        f"{API}/jobs/estimate-usages",
+        json={"model_name": "meta-llama/Llama-2-7b", "config_id": str(config_id)},
+    )
+
+
+async def test_estimate_usages_reads_the_callers_own_saved_configuration(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    session: AsyncSession,
+) -> None:
+    _act_as(as_principal, user)
+    config = await _seed_config(session, owner_id=str(user.id))
+
+    response = await _estimate_with(client, config.id)
+
+    assert response.status_code == 200
+    assert response.json()["model_size_billion_params"] == 7.0
+
+
+async def test_estimate_usages_reads_a_shared_system_configuration(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    session: AsyncSession,
+) -> None:
+    _act_as(as_principal, user)
+    session.add(UserTable(id=SYSTEM_USER_ID, email="system@autotunex.local", role="user"))
+    await session.commit()
+    config = await _seed_config(session, owner_id=str(SYSTEM_USER_ID), name="starter")
+
+    response = await _estimate_with(client, config.id)
+
+    assert response.status_code == 200
+
+
+async def test_estimate_usages_hides_another_owners_saved_configuration(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    session: AsyncSession,
+) -> None:
+    other = UserTable(id=uuid4(), email="other@example.com", role="user")
+    session.add(other)
+    await session.commit()
+    _act_as(as_principal, user)
+    config = await _seed_config(session, owner_id=str(other.id))
+
+    response = await _estimate_with(client, config.id)
+
+    assert response.status_code == 404
+
+
+async def test_estimate_usages_hides_a_saved_configuration_from_an_unprovisioned_caller(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    session: AsyncSession,
+) -> None:
+    # An authenticated caller whose verified email has no `users` row (a real
+    # provider with `auto_provision_users` off) carries `user_id=None`. That reached
+    # the repository's deliberate unscoped branch and read the row outright.
+    owner = UserTable(id=uuid4(), email="owner@example.com", role="user")
+    session.add(owner)
+    await session.commit()
+    config = await _seed_config(session, owner_id=str(owner.id))
+    as_principal(
+        Principal(email="ghost@example.com", provider="session", user_id=None, is_admin=False)
+    )
+
+    response = await _estimate_with(client, config.id)
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith(PROBLEM_JSON)
+
+
+# Standalone mode must keep working: its principal is always provisioned (see
+# `api.deps.get_principal`, which provisions the standalone owner regardless of
+# `auto_provision_users`), so it has a real `user_id` and the guard never fires for
+# it. These two drive the *real* authenticator — no `as_principal` override — so a
+# regression that refused standalone callers would fail here.
+
+
+async def test_estimate_usages_in_standalone_mode_reads_its_own_configuration(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    # Provision the standalone owner exactly as a first request would, then give it a
+    # configuration to read back.
+    owner = UserTable(id=uuid4(), email=SYSTEM_STANDALONE_EMAIL, role="user")
+    session.add(owner)
+    await session.commit()
+    config = await _seed_config(session, owner_id=str(owner.id))
+
+    response = await _estimate_with(client, config.id)
+
+    assert response.status_code == 200
+    assert response.json()["model_size_billion_params"] == 7.0
+
+
+async def test_estimate_usages_in_standalone_mode_reads_a_shared_system_configuration(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    session.add(UserTable(id=SYSTEM_USER_ID, email="system@autotunex.local", role="user"))
+    await session.commit()
+    config = await _seed_config(session, owner_id=str(SYSTEM_USER_ID), name="starter")
+
+    response = await _estimate_with(client, config.id)
+
+    assert response.status_code == 200
 
 
 # --- generate-test-solutions ---

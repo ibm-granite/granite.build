@@ -242,7 +242,12 @@ class User(BaseModel):
     email: str = Field(..., description="User email address")
     role: Roles = Field(..., description="role of the user")
     created_at: datetime | None = Field(None, description="Account creation timestamp")
-    updated_at: datetime | None = Field(None, description="Last login timestamp")
+    updated_at: datetime | None = Field(
+        None, description="When the row last changed — not a login time"
+    )
+    last_login_at: datetime | None = Field(
+        None, description="When the user last authenticated; null if never"
+    )
     jobs: list[SimpleJobResponse] | None = None
     configs: list[SimpleConfiguration] | None = None
     datasets: list[DatasetResponse] | None = None

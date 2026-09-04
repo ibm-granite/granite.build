@@ -23,7 +23,7 @@ class GbTaskTable(Base):
 
     ``started_at`` and ``updated_at`` are ``VARCHAR(255)`` in the schema, not
     timestamps, and are mirrored as strings — the API does not pretend otherwise.
-    ``docs/schema-review.md`` item A5 recommends converting them. There are also
+    ``docs/schema-review.md`` item B5 recommends converting them. There are also
     no ``created_at``/``updated_at`` timestamp columns of the usual shape here.
     """
 

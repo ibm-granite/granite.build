@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Tuple
 import ray
 
 from autotune.device import detect_accelerator, object_store_bytes
+from autotune.logging_setup import bridge_runtime_env
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,7 @@ def start_local_ray_cluster() -> Dict:
         _temp_dir=temp_dir,
         log_to_driver=True,
         logging_level=logging.INFO,
+        **bridge_runtime_env(),
     )
     logger.info(f"Local Ray cluster started (temp_dir={temp_dir})")
 

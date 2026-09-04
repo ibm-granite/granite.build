@@ -8,6 +8,7 @@ sides at the query makes all three dialects agree, at the cost of the
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -237,3 +238,74 @@ async def test_metadata_counts_the_users_jobs_configs_and_datasets(
     jobs, configs, datasets = await repository.metadata(user.id)
 
     assert (jobs, configs, datasets) == (1, 1, 1)
+
+
+async def test_touch_login_records_the_login_time(session: AsyncSession) -> None:
+    user = UserTable(id=uuid4(), email="tester@example.com", role="user")
+    session.add(user)
+    await session.commit()
+    repository: UserRepository = SqlAlchemyUserRepository(session)
+
+    await repository.touch_login("tester@example.com")
+
+    await session.refresh(user)
+    assert user.last_login_at is not None
+
+
+async def test_touch_login_advances_a_previously_recorded_login(session: AsyncSession) -> None:
+    earlier = datetime(2026, 1, 1, tzinfo=UTC)
+    user = UserTable(id=uuid4(), email="tester@example.com", role="user", last_login_at=earlier)
+    session.add(user)
+    await session.commit()
+    repository = SqlAlchemyUserRepository(session)
+
+    await repository.touch_login("tester@example.com")
+
+    await session.refresh(user)
+    assert user.last_login_at is not None
+    assert user.last_login_at > earlier
+
+
+async def test_touch_login_matches_the_email_case_insensitively(session: AsyncSession) -> None:
+    """Same dialect-independent folding ``get_by_email`` guarantees."""
+    user = UserTable(id=uuid4(), email="tester@example.com", role="user")
+    session.add(user)
+    await session.commit()
+    repository = SqlAlchemyUserRepository(session)
+
+    await repository.touch_login("TESTER@EXAMPLE.COM")
+
+    await session.refresh(user)
+    assert user.last_login_at is not None
+
+
+async def test_touch_login_is_a_no_op_for_an_unknown_email(session: AsyncSession) -> None:
+    """An authenticated caller with no ``users`` row has no login to record."""
+    repository = SqlAlchemyUserRepository(session)
+
+    await repository.touch_login("ghost@example.com")
+
+
+async def test_a_role_change_does_not_disturb_the_recorded_login(session: AsyncSession) -> None:
+    """The regression guard: this is what reusing ``updated_at`` got wrong."""
+    logged_in_at = datetime(2026, 1, 1, tzinfo=UTC)
+    user = UserTable(
+        id=uuid4(), email="tester@example.com", role="user", last_login_at=logged_in_at
+    )
+    session.add(user)
+    await session.commit()
+    repository = SqlAlchemyUserRepository(session)
+
+    await repository.set_role(user.id, "admin")
+
+    await session.refresh(user)
+    assert user.last_login_at == logged_in_at
+
+
+async def test_provision_records_the_first_login(session: AsyncSession) -> None:
+    """A caller provisioned on first sight is logging in at that moment."""
+    repository = SqlAlchemyUserRepository(session)
+
+    user = await repository.provision("newcomer@example.com")
+
+    assert user.last_login_at is not None

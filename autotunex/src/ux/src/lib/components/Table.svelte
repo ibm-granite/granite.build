@@ -6,6 +6,7 @@
 		Button,
 		DataTable,
 		DataTableSkeleton,
+		InlineNotification,
 		Toolbar,
 		ToolbarContent,
 		ToolbarSearch,
@@ -42,6 +43,17 @@
 	export let showActionButton: boolean = true;
 	export let submitBtnDisable: boolean = false;
 	export let disableDeleteButton: boolean = false;
+	/**
+	 * Why the current selection cannot be deleted, or `null` when it can.
+	 *
+	 * Deliberately a *message* rather than another boolean: `disableDeleteButton`
+	 * greys the toolbar button out, which makes the delete dialog unreachable and
+	 * so leaves the user with no way to find out why. Setting this instead keeps
+	 * the button clickable and blocks the dialog's own Delete, with the reason
+	 * rendered where the user is already looking. The caller owns the wording, so
+	 * `Table` needs no knowledge of what makes a given row protected.
+	 */
+	export let deleteBlockedMessage: string | null = null;
 	export let primaryButtonText = 'OK';
 	export let secondaryButtonText = 'Cancel';
 	export let passiveCreateModal = false;
@@ -278,7 +290,8 @@
 
 <DeleteDialog
 	bind:open={openDelete}
-	primaryButtonDisabled={selectedRows?.some((row) => row?.is_published && !row?.github_pr_url) ||
+	primaryButtonDisabled={deleteBlockedMessage !== null ||
+		selectedRows?.some((row) => row?.is_published && !row?.github_pr_url) ||
 		selectedRows.some((row) => row?.associated_jobs?.length > 0)}
 	{entity}
 	on:submit={(e) => {
@@ -288,7 +301,17 @@
 		openDelete = false;
 	}}
 >
-	<slot name="delete" {selectedRows}>
-		<p>This is a permanent action and cannot be undone.</p>
-	</slot>
+	{#if deleteBlockedMessage}
+		<InlineNotification
+			kind="info"
+			lowContrast
+			hideCloseButton
+			title="Cannot delete"
+			subtitle={deleteBlockedMessage}
+		/>
+	{:else}
+		<slot name="delete" {selectedRows}>
+			<p>This is a permanent action and cannot be undone.</p>
+		</slot>
+	{/if}
 </DeleteDialog>

@@ -1,7 +1,7 @@
 # Schema review: `resources/autotunex_schema.sql`
 
 Date: 2026-07-29
-Status: recommendations only — **apart from the four deviations in section F, none of
+Status: recommendations only — **apart from the five deviations in section F, none of
 section A–D is applied to the ORM**
 
 ## How to read this
@@ -12,7 +12,7 @@ and other systems may depend on its current columns and types. This document rec
 could be corrected and normalized, so the decision to change any of it is explicit and
 separate.
 
-Four deviations from the file are applied. See section F.
+Five deviations from the file are applied. See section F.
 
 Severity: **high** — risks data loss or wrong answers. **medium** — will bite at scale or
 during a migration. **low** — hygiene.
@@ -54,8 +54,11 @@ Recommended: `RESTRICT` on the user foreign keys, or soft-delete `users` with a
 
 ### A4. Every timestamp stops working in 2038 — high
 
-All `created_at` / `updated_at` columns are `TIMESTAMP`, which MySQL stores as a 32-bit
-value spanning `1970-01-01` to `2038-01-19 03:14:07`. `DATETIME` spans years 1000–9999.
+The `created_at` / `updated_at` pairs on the six tables that carry them — `users`,
+`configurations`, `datasets`, `jobs`, `trials` and `results` — are `TIMESTAMP`, which MySQL
+stores as a 32-bit value spanning `1970-01-01` to `2038-01-19 03:14:07`. `DATETIME` spans
+years 1000–9999. `gb_tasks` is the exception, and a worse one: its `started_at` / `updated_at`
+are `VARCHAR(255)` and it has no `created_at` at all — see B5.
 
 `TIMESTAMP` also converts to the session timezone on read while `DATETIME` does not, so
 every reader has to pin its session timezone to get consistent values back. Switching to
@@ -109,6 +112,13 @@ The grouping exists only to compute `num_trials`. A scalar subquery removes it e
 (SELECT COUNT(*) FROM trials t WHERE t.job_id = j.id) AS num_trials
 ```
 
+That recommendation is for **direct-MySQL consumers of the view only**. The API no longer
+counts trial rows at all: its `num_trials` is the configured trial budget
+(`config_data.tune_config.num_samples`), not a row count — read from the job's own
+`config_snapshot` by `resolve_planned_trials` (`src/autotunex/services/mappers.py:300`), with
+the actual row count served as the `GET /jobs/{id}/trials` page's `total`. So the view's
+`COUNT(DISTINCT t.id)` and the API's `num_trials` now intentionally differ.
+
 ### B4. `ORDER BY` in a view blocks predicate pushdown — medium
 
 `:150` forces MySQL to materialize the view (temptable algorithm) instead of merging it, so
@@ -136,7 +146,7 @@ Recommended: `DATETIME`, with `created_at` added and `ON UPDATE CURRENT_TIMESTAM
 | C1 | `user_id VARCHAR(255)` references `users.id VARCHAR(36)` | 14, 28, 49 | `CHAR(36)`; the extra 219 bytes are indexed on every table | med |
 | C2 | `VARCHAR(36)` and `CHAR(36)` used interchangeably for the same UUIDs | 48, 52, 74, 98 | Pick one — `CHAR(36)`, or `BINARY(16)` for ~2.25× smaller indexes | low |
 | C3 | No index on `log_entries(job_id, timestamp)`, `log_entries(trial_id)`, `jobs(status)`, `jobs(user_id, created_at)` | — | Add. Foreign keys get implicit indexes; these are not covered, and log retrieval is the hottest read path | med |
-| C4 | No `started_at` / `finished_at` on `jobs` or `trials` | — | Add. Duration is currently uncomputable, and `updated_at` is a poor proxy | med |
+| C4 | No `started_at` / `finished_at` on `jobs` or `trials` | — | Add. Duration is only derivable indirectly today: the job list computes `finished_at` as `MAX(gb_tasks.updated_at)` and a client renders `finished_at - created_at`. That is `NULL` for a job with no build task (the `local` backend), sorts `VARCHAR` timestamps lexicographically (B5), treats submit time as the start, and gives no per-trial duration at all — real columns fix all four. `updated_at` remains a poor proxy | med |
 | C5 | `gb_tasks` has no `created_at`, and `updated_at` has no `ON UPDATE` | 108-122 | Add both | low |
 | C6 | `SET GLOBAL time_zone` in a schema script | — | **Resolved** — no longer present in the schema file. If it returns: it needs `SYSTEM_VARIABLES_ADMIN` and affects every other database on the server, so set the timezone per connection instead | med |
 | C7 | Database is `autotune`; everything else says `autotunex` | 1-2 | Align | low |
@@ -295,6 +305,11 @@ with no dialect branch. Dropping these columns (D5) removes the problem entirely
 **The view.** Postgres rejects it for the grouping reason in B3, and
 `JSON_UNQUOTE(JSON_EXTRACT(...))` is MySQL-only (`->>` on Postgres, `json_extract` on
 SQLite). The API composes the equivalent query in SQLAlchemy instead, so this costs nothing.
+Equivalent in *shape*, not column for column: `num_trials` needs no `trials` query there at
+all, because the API reports the configured trial budget
+(`config_data.tune_config.num_samples`), not a row count
+(`src/autotunex/db/repositories/sqlalchemy.py:202`). The corrected view below keeps the
+row-count semantics, for the direct-MySQL consumers it is written for.
 
 Three behavioural differences remain that no abstraction removes:
 
@@ -305,8 +320,10 @@ Three behavioural differences remain that no abstraction removes:
    text. Compare parsed JSON, never raw strings.
 
 One operational note: SQLite disables foreign keys unless `PRAGMA foreign_keys=ON` is issued
-per connection. Without it, the `CASCADE` and `RESTRICT` rules in this schema are silently
-unenforced in tests.
+per connection. The test fixtures do issue it (`tests/conftest.py:254-258`), so the `CASCADE`
+and `RESTRICT` rules in this schema are enforced under test. `src/autotunex/db/session.py`
+does not, so it is a SQLite *runtime* — a dev or standalone deployment pointed at a SQLite
+URL — that leaves them silently unenforced.
 
 ### Corrected view
 
@@ -354,6 +371,10 @@ Changes: columns enumerated instead of `j.*` (B2); `num_trials` via scalar subqu
 `config_snapshot` and `output_artifacts` omitted as unsuitable for list queries; `user_email`
 instead of `user` (C11).
 
+The `num_trials` subquery here deliberately preserves the view's own row-count meaning — it is
+not what the API computes. The API's `num_trials` is the configured trial budget
+(`config_data.tune_config.num_samples`), not a row count.
+
 The latest-task subquery orders by `started_at`, which is a `VARCHAR` (B5) — it sorts
 lexicographically and is correct only for zero-padded ISO strings. Fixing B5 makes it
 reliable.
@@ -377,7 +398,7 @@ What the process found that this report did not already cover:
   database the ORM itself produced. Nothing currently diffs against the schema file. Adding
   `with_variant(mysql.TIMESTAMP(), "mysql")` to `UtcDateTime` was evaluated and **not
   applied**: it would not change what CI's `alembic check` reports (both sides would just
-  agree on `TIMESTAMP` instead), and it reintroduces the 2038 cutoff on all 12 timestamp
+  agree on `TIMESTAMP` instead), and it reintroduces the 2038 cutoff on all 13 timestamp
   columns for no CI-visible benefit — exactly the tradeoff A4 already documents. Mirroring
   the defect, bugs included, remains the deliberate choice here.
 - **The `mysql` extra was missing a real runtime dependency: `cryptography`.** MySQL 8.4
@@ -409,7 +430,7 @@ What the process found that this report did not already cover:
 
 ## F. Deviations applied to the ORM
 
-Four changes are applied, at the maintainer's request. Each has an Alembic revision, and that
+Five changes are applied, at the maintainer's request. Each has an Alembic revision, and that
 migration history — not this list — is the authority on how the ORM diverges from the file.
 
 **`jobs.precision` is removed** (`:59`, revision `78f6bb7de0df`). It was `VARCHAR(50) NOT
@@ -460,3 +481,30 @@ dataset-upload lifecycle the API needs.
 `c628b830e8a3`, `db/tables/jobs.py:72-73`). Also absent from the schema file. An online-RL
 job persists its reward function in these dedicated columns rather than inside
 `config_snapshot`.
+
+**The `training_metrics` table is added** (revision `f09bd54b61b7`,
+`db/tables/training_metrics.py`). The whole table is absent from the schema file. It backs the
+per-step training-metrics read path, and is created with two `id`-trailing indexes —
+`(job_id, id)` and `(job_id, trial_id, id)` — so that path's keyset page is served by the
+index alone rather than falling back to a sort. Dual declaration is not what makes it special
+— `src/api-bridge` mirrors all nine shared tables in its own metadata
+(`src/api-bridge/src/api_bridge/tables.py:133-276`) and writes most of them. What is unique is
+that `training_metrics` is the only one of those nine with no definition in the schema file to
+anchor the two, so its two metadata declarations must stay in step by convention alone.
+
+### The one non-baseline revision that is not a deviation — `0a2caef2a185`
+
+`0a2caef2a185` widens `trials.id` and its foreign key `results.trial_id` from `VARCHAR(10)` to
+`VARCHAR(16)` (`alembic/versions/0a2caef2a185_widen_trial_id_to_16.py:31-45`). It is recorded
+here for completeness rather than as a sixth deviation: it moves the ORM *toward* the file, not
+away from it. The baseline creates both columns at `sa.String(length=10)`
+(`alembic/versions/1fb645a87b48_baseline_real_schema.py:195`, `:220`) — narrower than Ray's
+trial ids, which would truncate — while the file already declares the wider type at
+`resources/autotunex_schema.sql:73` and `:99`. A1 cites that `:73` correctly for the file, but
+the migrations do not start there.
+
+That asymmetry has a consequence for the live-MySQL procedure. A database built from
+`resources/autotunex_schema.sql` directly starts *past* the baseline for those two columns, so
+`alembic stamp 1fb645a87b48` followed by `upgrade head` would re-apply a widen already in
+place — a straight stamp-then-upgrade does not describe such a database. The divergence needs
+reconciling; `CLAUDE.md`'s migrations section records the same gap.

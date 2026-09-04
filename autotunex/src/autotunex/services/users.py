@@ -92,9 +92,9 @@ class UserService:
     async def my_metadata(self) -> UserMetadata:
         """Return the calling principal's own usage counts.
 
-        A caller with no resolvable ``user_id`` (unprovisioned, or unrestricted
-        standalone) owns nothing, so this returns zeros without a database call —
-        it is the caller's own view, so zeros leak nothing and no 403 applies.
+        A caller with no resolvable ``user_id`` (unprovisioned) owns nothing, so
+        this returns zeros without a database call — it is the caller's own view,
+        so zeros leak nothing and no 403 applies.
         """
         if self._principal.user_id is None:
             return UserMetadata(number_of_jobs=0, number_of_configurations=0, number_of_datasets=0)

@@ -3,8 +3,9 @@
 
 """Tests for the api-bridge write-route bearer-token guard.
 
-``server.require_write_token`` gates the 4 write routes (``record_logs``,
-``record_trial``/``insert_trials``, ``update_status``, ``insert_trial_result``)
+``server.require_write_token`` gates the 5 write routes (``record_logs``,
+``record_metrics``, ``record_trial``/``insert_trials``, ``update_status``,
+``insert_trial_result``)
 so a network caller can no longer write to production MySQL with no credential
 at all. These tests exercise the guard through the real FastAPI app on an
 in-memory SQLite database, covering both the token-configured and
@@ -101,6 +102,20 @@ def test_update_status_is_reachable_with_no_header_when_token_is_unset(monkeypat
     ("path", "body"),
     [
         ("/fmtune/api/record_logs", [{"job_id": None, "trial_id": None}]),
+        (
+            "/fmtune/api/record_metrics",
+            {
+                "job_id": "11111111-1111-1111-1111-111111111111",
+                "trial_id": "t1",
+                "global_step": 10,
+                "epoch": 0.1,
+                "loss": 1.0,
+                "grad_norm": 1.0,
+                "learning_rate": 1e-6,
+                "split": "train",
+                "extra": {},
+            },
+        ),
         (
             "/fmtune/api/record_trial",
             {

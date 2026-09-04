@@ -418,3 +418,132 @@ class TestSelectBestCheckpoint:
             {"_step": 20, "critic/score/mean": 0.5},
         ]
         assert _select_best_checkpoint(ckpts, steps) == "/x/global_step_20"
+
+
+# Template stand-ins: 4.2 branches on enable_thinking, 4.1 does not.
+GRANITE42_TEMPLATE = "{%- if enable_thinking %}<|im_start|>assistant<think>{%- endif %}"
+GRANITE41_TEMPLATE = "{%- if documents %}{%- set x = (document | tojson) %}{%- endif %}"
+
+
+def _thinking_tok(template):
+    tok = MagicMock()
+    tok.chat_template = template
+    tok.apply_chat_template.return_value = "RENDERED"
+    return tok
+
+
+class TestThinkingKwargs:
+    """Granite 4.2 defaults thinking on; the drivers must turn it off."""
+
+    def test_forwarded_when_template_supports_it(self):
+        from autotune.trainers.driver_single import _thinking_kwargs
+
+        assert _thinking_kwargs(_thinking_tok(GRANITE42_TEMPLATE)) == {"enable_thinking": False}
+
+    def test_absent_when_template_ignores_it(self):
+        from autotune.trainers.driver_single import _thinking_kwargs
+
+        assert _thinking_kwargs(_thinking_tok(GRANITE41_TEMPLATE)) == {}
+
+    def test_absent_when_no_template(self):
+        from autotune.trainers.driver_single import _thinking_kwargs
+
+        assert _thinking_kwargs(_thinking_tok(None)) == {}
+
+    def test_override_enables_thinking(self):
+        from autotune.trainers.driver_single import _thinking_kwargs
+
+        assert _thinking_kwargs(_thinking_tok(GRANITE42_TEMPLATE), thinking=True) == {"enable_thinking": True}
+
+    def test_all_three_drivers_share_the_helper(self):
+        from autotune.trainers.driver_multi_hf_ds import _thinking_kwargs as ds
+        from autotune.trainers.driver_multi_hf_fsdp import _thinking_kwargs as fsdp
+        from autotune.trainers.driver_single import _thinking_kwargs as single
+
+        tok = _thinking_tok(GRANITE42_TEMPLATE)
+        assert single(tok) == fsdp(tok) == ds(tok) == {"enable_thinking": False}
+
+
+class TestChatTemplateThinking:
+    """The thinking flag reaches apply_chat_template in every driver."""
+
+    ROW = {"input": [{"role": "user", "content": "Q"}]}
+
+    def test_single_driver_disables_thinking(self):
+        from autotune.trainers.driver_single import _make_chat_template_mapper
+
+        tok = _thinking_tok(GRANITE42_TEMPLATE)
+        _make_chat_template_mapper(tok, "input")(dict(self.ROW))
+        assert tok.apply_chat_template.call_args.kwargs["enable_thinking"] is False
+
+    def test_single_driver_override(self):
+        from autotune.trainers.driver_single import _make_chat_template_mapper
+
+        tok = _thinking_tok(GRANITE42_TEMPLATE)
+        _make_chat_template_mapper(tok, "input", thinking=True)(dict(self.ROW))
+        assert tok.apply_chat_template.call_args.kwargs["enable_thinking"] is True
+
+    def test_single_driver_skips_unsupported_template(self):
+        from autotune.trainers.driver_single import _make_chat_template_mapper
+
+        tok = _thinking_tok(GRANITE41_TEMPLATE)
+        _make_chat_template_mapper(tok, "input")(dict(self.ROW))
+        assert "enable_thinking" not in tok.apply_chat_template.call_args.kwargs
+
+    def test_plain_string_rows_are_untouched(self):
+        from autotune.trainers.driver_single import _make_chat_template_mapper
+
+        tok = _thinking_tok(GRANITE42_TEMPLATE)
+        out = _make_chat_template_mapper(tok, "input")({"input": "already a string"})
+        assert out["input"] == "already a string"
+        tok.apply_chat_template.assert_not_called()
+
+    @pytest.mark.parametrize("driver", ["driver_multi_hf_fsdp", "driver_multi_hf_ds"])
+    def test_multi_gpu_drivers_disable_thinking(self, driver):
+        import importlib
+
+        mod = importlib.import_module(f"autotune.trainers.{driver}")
+        tok = _thinking_tok(GRANITE42_TEMPLATE)
+        mod._apply_chat_template_to_df(pd.DataFrame([dict(self.ROW)]), tok, "input")
+        assert tok.apply_chat_template.call_args.kwargs["enable_thinking"] is False
+
+    @pytest.mark.parametrize("driver", ["driver_multi_hf_fsdp", "driver_multi_hf_ds"])
+    def test_multi_gpu_drivers_override(self, driver):
+        import importlib
+
+        mod = importlib.import_module(f"autotune.trainers.{driver}")
+        tok = _thinking_tok(GRANITE42_TEMPLATE)
+        mod._apply_chat_template_to_df(pd.DataFrame([dict(self.ROW)]), tok, "input", thinking=True)
+        assert tok.apply_chat_template.call_args.kwargs["enable_thinking"] is True
+
+    @pytest.mark.parametrize("driver", ["driver_multi_hf_fsdp", "driver_multi_hf_ds"])
+    @pytest.mark.parametrize("has_documents", [False, True])
+    @pytest.mark.parametrize("has_tools", [False, True])
+    def test_documents_and_tools_still_forwarded(self, driver, has_documents, has_tools):
+        # The four documents x tools branches were collapsed to one call site;
+        # this pins that the collapse is behaviour-preserving.
+        import importlib
+
+        mod = importlib.import_module(f"autotune.trainers.{driver}")
+        tok = _thinking_tok(GRANITE42_TEMPLATE)
+        row = dict(self.ROW)
+        if has_documents:
+            row["documents"] = [{"text": "D"}]
+        if has_tools:
+            row["tools"] = [{"type": "function"}]
+
+        mod._apply_chat_template_to_df(pd.DataFrame([row]), tok, "input")
+        kwargs = tok.apply_chat_template.call_args.kwargs
+        assert ("documents" in kwargs) is has_documents
+        assert ("tools" in kwargs) is has_tools
+        assert kwargs["enable_thinking"] is False
+
+    @pytest.mark.parametrize("driver", ["driver_multi_hf_fsdp", "driver_multi_hf_ds"])
+    def test_non_message_column_untouched(self, driver):
+        import importlib
+
+        mod = importlib.import_module(f"autotune.trainers.{driver}")
+        tok = _thinking_tok(GRANITE42_TEMPLATE)
+        df = mod._apply_chat_template_to_df(pd.DataFrame([{"input": "plain"}]), tok, "input")
+        assert df["input"].iloc[0] == "plain"
+        tok.apply_chat_template.assert_not_called()

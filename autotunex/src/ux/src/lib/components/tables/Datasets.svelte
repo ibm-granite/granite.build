@@ -7,11 +7,17 @@
 	import CreateDatasetForm from '../forms/CreateDatasetForm.svelte';
 	import { API } from '$lib/api';
 	import DatasetDisplay from '../displays/DatasetDisplay.svelte';
-	import { showLoader, userMetadata } from '$lib/store';
+	import { showLoader, userMetadata, currentUser } from '$lib/store';
 	import type { Dataset, DatasetForm, ColumnMapping } from '$lib/app-types';
 	import { appState, notifications } from '$lib/app';
+	import { Utils } from '$lib/utils';
 
 	const api = new API();
+
+	// The seed/system account that owns the datasets shipped out of the box — the
+	// same id the backend guards on (`core/constants.py`, `services/scoping.py`),
+	// and the same literal the three config-side components already pin.
+	const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000001';
 
 	let dataset: DatasetForm;
 	let columnMapping: ColumnMapping = {};
@@ -27,6 +33,50 @@
 	// closed, so a cancelled-then-reopened flow for a DIFFERENT dataset can't
 	// reuse a stale id. The success path also nulls it before closing.
 	$: if (!openCreateDataset) createdDatasetId = null;
+
+	// Per-id try/catch for the same reasons as the configurations table: one rejection
+	// (a 403 on shared starter content, a 409 from a dataset a tuning still references)
+	// must not abort the rest of the batch, the counter must only move for a delete
+	// that happened, and the failure has to be surfaced — `Table` removes the rows
+	// optimistically on submit, so a swallowed error reads as success until the
+	// refetch below puts them back.
+	async function handleDelete(ids: string[]) {
+		const failures: string[] = [];
+		for (const id of ids) {
+			try {
+				await api.deleteDataset(id);
+				userMetadata.update((prev) => ({
+					...prev,
+					number_of_datasets: prev.number_of_datasets - 1
+				}));
+			} catch (err) {
+				failures.push(Utils.problemDetail(err, 'Could not delete dataset'));
+			}
+		}
+		if (failures.length > 0) {
+			notifications.set({
+				show: true,
+				kind: 'error',
+				title:
+					failures.length === ids.length
+						? 'Delete failed'
+						: `Deleted ${ids.length - failures.length} of ${ids.length}`,
+				subtitle: failures[0],
+				timeout: 6000
+			});
+		}
+		// Deliberately invalidates the tuning-wizard/form cache — see the comment on
+		// the same call in createDataset above. Not a dead write.
+		appState.update((prev) => ({ ...prev, isDatasetsLoaded: false }));
+		await fetchPage();
+		// Deleting the last row(s) on a page beyond the first can strand the user on
+		// an empty page — step back one page and refetch rather than leave them there.
+		if (rows.length === 0 && page > 1) {
+			page -= 1;
+			prevKey = `${page} ${pageSize} ${q}`;
+			await fetchPage();
+		}
+	}
 
 	let datasetHeaders = [
 		{ key: 'name', value: 'Name' },
@@ -186,6 +236,21 @@
 			});
 		}
 	};
+	// A system-owned dataset is shared starter content: deleting one takes it from
+	// every account at once, so the backend refuses it with a 403 for every caller
+	// (`services/scoping.is_delete_protected`). Mirrored here — reason and exemption
+	// both — exactly as in `Configurations.svelte`; see the comment there.
+	$: isCuratingSystemContent =
+		!!$currentUser?.impersonator && $currentUser?.user_id === SYSTEM_USER_ID;
+	$: selectedSystemDatasets = (rows ?? []).filter(
+		(row) => selectedId?.includes(row.id) && row.user_id === SYSTEM_USER_ID
+	);
+	$: deleteBlockedMessage =
+		selectedSystemDatasets.length > 0 && !isCuratingSystemContent
+			? `${selectedSystemDatasets.map((row) => `"${row.name}"`).join(', ')} ${
+					selectedSystemDatasets.length === 1 ? 'is' : 'are'
+			  } provided with AutoTuneX and cannot be deleted.`
+			: null;
 </script>
 
 {#if loaded}
@@ -209,25 +274,8 @@
 		bind:page
 		bind:pageSize
 		on:search={(e) => onSearch(e.detail)}
-		on:delete={async (e) => {
-			for (let id of e.detail) {
-				await api.deleteDataset(id);
-				userMetadata.update((prev) => {
-					return { ...prev, number_of_datasets: prev.number_of_datasets - 1 };
-				});
-			}
-			// Deliberately invalidates the tuning-wizard/form cache — see the comment on
-			// the same call in createDataset above. Not a dead write.
-			appState.update((prev) => ({ ...prev, isDatasetsLoaded: false }));
-			await fetchPage();
-			// Deleting the last row(s) on a page beyond the first can strand the user on
-			// an empty page — step back one page and refetch rather than leave them there.
-			if (rows.length === 0 && page > 1) {
-				page -= 1;
-				prevKey = `${page} ${pageSize} ${q}`;
-				await fetchPage();
-			}
-		}}
+		{deleteBlockedMessage}
+		on:delete={(e) => handleDelete(e.detail)}
 		on:new={async () => {
 			if (dataset?.train_file && dataset?.validation_file && dataset?.name) {
 				showLoader.set(true);

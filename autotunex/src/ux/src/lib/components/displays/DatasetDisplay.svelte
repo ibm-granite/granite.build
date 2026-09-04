@@ -119,7 +119,16 @@
 	}
 </script>
 
-{#if !isLoading && dataset?.train_data && dataset?.validation_data}
+{#if !isLoading && dataset?.viewer_ready === false}
+	<InlineNotification
+		kind="info"
+		lowContrast
+		title="Preview not ready"
+		subtitle="The dataset viewer is still preparing this dataset. The preview will appear shortly — reopen it in a moment."
+		hideCloseButton
+		style="width: 100%"
+	/>
+{:else if !isLoading && dataset?.train_data && dataset?.validation_data}
 	<Tabs>
 		<Tab label="Train" />
 		<Tab label="Validation" />

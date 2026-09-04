@@ -82,7 +82,13 @@ class FakeDatasetRepository:
             for d in self.datasets.values()
         )
 
-    async def get(self, dataset_id: UUID, *, owner_id: UUID | None = None) -> DatasetTable | None:
+    async def get(
+        self,
+        dataset_id: UUID,
+        *,
+        owner_id: UUID | None = None,
+        include_shared: bool = False,
+    ) -> DatasetTable | None:
         dataset = self.datasets.get(dataset_id)
         if dataset is None:
             return None
@@ -91,7 +97,13 @@ class FakeDatasetRepository:
         return dataset
 
     async def list(
-        self, *, limit: int, offset: int, owner_id: UUID | None = None, q: str | None = None
+        self,
+        *,
+        limit: int,
+        offset: int,
+        owner_id: UUID | None = None,
+        q: str | None = None,
+        include_shared: bool = False,
     ) -> tuple[Sequence[DatasetTable], int]:
         matching = [
             d for d in self.datasets.values() if owner_id is None or d.user_id == str(owner_id)

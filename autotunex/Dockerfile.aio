@@ -27,7 +27,9 @@
 # =============================================================================
 
 ARG PYTHON_VERSION=3.12
-ARG NODE_VERSION=20
+# Node 22 (LTS): granite.build's frontend pulls @carbon/themes>=11.79, whose
+# package engines require node>=22 — yarn --frozen-lockfile aborts on node 20.
+ARG NODE_VERSION=22
 ARG GB_REPO=https://github.com/priyanshu891/granite.build.git
 ARG GB_REF=feat/autotunex-endpoint-migration
 
@@ -75,14 +77,33 @@ RUN git clone --filter=blob:none --branch "${GB_REF}" "${GB_REPO}" /opt/granite.
 
 WORKDIR /opt/granite.build/frontend
 
-# corepack ships with Node 20; it activates the yarn version the frontend
+# corepack ships with the Node base image; it activates the yarn version the frontend
 # declares. This mirrors the repo's `make build-frontend` recipe: build the
 # Next.js dashboard, then stage the static export where gbserver serves it from
-# (src/gbserver/static/ui/). If the fork already commits static/ui, this simply
-# rebuilds it — harmless.
+# (src/gbserver/static/ui/) — the fork does NOT track static/ui, so this build is
+# the only source of the dashboard the pod serves.
+#
+# CRITICAL — delete .env*.local BEFORE `yarn build`. next.config.ts inlines
+# GBSERVER_API_URL/AUTOTUNEX_API_URL into the CLIENT bundle, and Next.js loads
+# .env.local in every environment except `test` — `next build` included. GB_REF is
+# a moving BRANCH, so a dev-only .env.local committed there (as one was, in
+# granite.build 295f449) silently bakes baseURL=http://127.0.0.1:8080 into the
+# static export. The dashboard then XHRs to the VIEWER's own loopback and every
+# /api/v1/* call dies with net::ERR_CONNECTION_REFUSED behind a Route, while the
+# server-rendered pages still load 200 — which is why it reads as a UI bug rather
+# than a build bug. UNSET is the value we want: apiBase() then returns relative
+# paths and the dashboard calls the origin gbserver served it from, which is what
+# Caddy fronts on :8080. The grep is a tripwire — fail the build loudly here
+# rather than ship a bundle that only breaks in someone's browser.
 RUN corepack enable \
+    && rm -f .env.local .env.production.local .env.development.local \
     && yarn install --frozen-lockfile \
     && yarn build \
+    && if grep -rq "127\.0\.0\.1:8080" out/; then \
+         echo "FATAL: loopback API base URL baked into the dashboard bundle" >&2; \
+         echo "       check for a committed frontend/.env*.local on ${GB_REF}" >&2; \
+         exit 1; \
+       fi \
     && mkdir -p ../src/gbserver/static/ui \
     && rsync -a --delete out/ ../src/gbserver/static/ui/ \
     # Drop the frontend build artifacts once the static export is staged into

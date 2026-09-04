@@ -12,7 +12,10 @@ import type {
 	Dataset,
 	Estimation,
 	LogPage,
+	MetricPage,
+	MetricPoint,
 	Resources,
+	Trial,
 	Tuning,
 	TuningForm,
 	User
@@ -24,7 +27,8 @@ import {
 	mapConfiguration,
 	mapDataset,
 	mapJob,
-	mapMappingSuggestion
+	mapMappingSuggestion,
+	mapTrial
 } from './api-mappers';
 import type { Page } from './api-mappers';
 
@@ -249,12 +253,34 @@ export class API {
 		return mapJob(job);
 	};
 
-	// --- Derived from the nested job payload (no dedicated endpoint) --------------
+	// --- Trials (their own endpoint) ---------------------------------------------
 
-	getTrialsByJobId = async (jobId: string) => (await this.getJob(jobId)).trials ?? [];
+	// GET /jobs/{id}/trials is paginated (limit max 100); loop offsets so the Trials
+	// table — which paginates client-side over the whole array — still sees every
+	// trial. Mirrors getConfigurations/getDatasets/getUsers above.
+	//
+	// This used to read `(await this.getJob(jobId)).trials`, which cost a second
+	// fetch of the whole job detail (trials and their results included) on top of
+	// the one TuningDisplay had already made, on every load and every poll tick.
+	getTrialsByJobId = async (jobId: string): Promise<Trial[]> => {
+		const limit = 100;
+		const out: Trial[] = [];
+		for (let offset = 0; ; offset += limit) {
+			const page = await fetch(`${API_BASE}/jobs/${jobId}/trials?limit=${limit}&offset=${offset}`, {
+				credentials: 'include'
+			}).then(this.handleResponse);
+			const batch = unwrapPage(page).map(mapTrial);
+			out.push(...batch);
+			if (batch.length < limit || out.length >= pageTotal(page)) break;
+		}
+		return out;
+	};
 
+	// The UX nests metric/metrics under `score`; mapTrial already builds it.
 	getResultsByJobId = async (jobId: string) =>
-		((await this.getJob(jobId)).trials ?? []).map((t: any) => t.score).filter(Boolean);
+		(await this.getTrialsByJobId(jobId)).map((t: any) => t.score).filter(Boolean);
+
+	// --- Derived from the nested job payload (no dedicated endpoint) --------------
 
 	getAllTaskByJob = async (jobId: string) => (await this.getJob(jobId)).tasks ?? [];
 
@@ -643,6 +669,36 @@ export class API {
 			credentials: 'include'
 		}).then(this.handleResponse);
 	};
+
+	// --- Training metrics (per-step; ascending keyset by id) ----------------------
+
+	// Page a metrics endpoint to completion. The endpoint returns ascending keyset
+	// pages (default limit 1000) and a trial is only ~10 points/epoch, so this is
+	// usually a single request — but loop on has_more to be safe. Mirrors the
+	// getLogs/getTrialLogs URL+auth pattern. No api-mappers entry: MetricPage maps
+	// 1:1 to the frontend type. `handleResponse` returns undefined on a 401 (it
+	// redirects), so the `?.` guards yield [] rather than throwing.
+	pageMetrics = async (url: string): Promise<MetricPoint[]> => {
+		const out: MetricPoint[] = [];
+		let afterId = 0;
+		for (;;) {
+			const sep = url.includes('?') ? '&' : '?';
+			const page: MetricPage = await fetch(`${url}${sep}after_id=${afterId}`, {
+				credentials: 'include'
+			}).then(this.handleResponse);
+			out.push(...(page?.metrics ?? []));
+			if (!page?.has_more || page.next_after_id == null || page.next_after_id <= afterId) break;
+			afterId = page.next_after_id;
+		}
+		return out;
+	};
+
+	getTrialMetrics = async (jobId: string, trialId: string): Promise<MetricPoint[]> =>
+		this.pageMetrics(`${API_BASE}/jobs/${jobId}/trials/${trialId}/metrics`);
+
+	// Phase 2 (cross-trial overlay). Added now to unblock it; no Phase 1 UI consumes it.
+	getJobMetrics = async (jobId: string): Promise<MetricPoint[]> =>
+		this.pageMetrics(`${API_BASE}/jobs/${jobId}/metrics`);
 
 	// Live build (gb) logs: oldest-first string lines. 503 when the reader is disabled.
 	getGBLogs = async (jobId: string, all = false): Promise<string[]> => {

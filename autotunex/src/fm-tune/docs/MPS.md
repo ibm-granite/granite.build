@@ -19,13 +19,15 @@ cd granite.build/autotunex/fm-tune
 uv venv --python 3.12 .venv
 source .venv/bin/activate
 
-uv pip install -e ".[full]"
+uv pip install -e ".[core]"
 ```
 
-On macOS, `deepspeed` and `verl` (both CUDA-only) are automatically excluded
-via `sys_platform` markers in `pyproject.toml` — `.[full]` installs cleanly
-without attempting to compile or resolve either, since online RL isn't
-supported on MPS anyway.
+On macOS, `deepspeed` (CUDA-only) is automatically excluded via its
+`sys_platform != 'darwin'` marker in `pyproject.toml`, so `.[core]` installs
+cleanly without attempting to compile or resolve it. `verl` and `flash-attn`
+live only in the `.[full]` extra (verl is additionally gated to non-macOS), so
+there's nothing `.[full]` buys you locally — online RL isn't supported on MPS
+anyway. Stick with `.[core]`.
 
 ## Support Matrix
 

@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Annotated
 
 import httpx
 from fastapi import Cookie, Depends, Request
 from fastapi.security import APIKeyCookie, APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autotunex.core.auth.disabled import STANDALONE_PROVIDER
@@ -29,19 +31,25 @@ from autotunex.core.exceptions import (
     BuildReconcileUnavailableError,
     LlmNotConfiguredError,
 )
+from autotunex.core.logging import get_logger
 from autotunex.db.repositories.protocols import (
     ConfigurationRepository,
     DatasetRepository,
     JobRepository,
+    TrainingMetricsRepository,
+    TrialRepository,
     UserRepository,
 )
 from autotunex.db.repositories.sqlalchemy import (
     SqlAlchemyConfigurationRepository,
     SqlAlchemyDatasetRepository,
     SqlAlchemyJobRepository,
+    SqlAlchemyTrainingMetricsRepository,
+    SqlAlchemyTrialRepository,
     SqlAlchemyUserRepository,
 )
 from autotunex.db.session import get_session_factory
+from autotunex.db.tables import UserTable
 from autotunex.models.auth import Principal
 from autotunex.services.assets import AssetService
 from autotunex.services.autotune import AutotuneCore, AutotuneCoreAdapter
@@ -62,6 +70,7 @@ from autotunex.services.llm.registry import get_llm_client as build_llm_client
 from autotunex.services.local.runner import LocalJobRunner
 from autotunex.services.local.trainer import AutotuneLocalTrainer
 from autotunex.services.logs import LogService
+from autotunex.services.metrics import MetricsService
 from autotunex.services.protocols import JobRunner
 from autotunex.services.reconcile.on_demand import OnDemandReconciler
 from autotunex.services.reconcile.protocols import BuildStatusReader
@@ -76,7 +85,10 @@ from autotunex.services.runner import InProcessJobRunner, NoOpJobRunner
 from autotunex.services.storage.artifacts import FilesystemArtifactLister, HuggingFaceArtifactLister
 from autotunex.services.storage.base import StorageBackend
 from autotunex.services.storage.registry import get_storage_backend as build_storage_backend
+from autotunex.services.trials import TrialService
 from autotunex.services.users import UserService
+
+logger = get_logger(__name__)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -211,6 +223,46 @@ def get_user_repository(session: SessionDep) -> UserRepository:
     return SqlAlchemyUserRepository(session)
 
 
+async def _record_activity(
+    user: UserTable, user_repository: UserRepository, settings: Settings
+) -> None:
+    """Refresh ``user.last_login_at`` if it is older than the throttle window.
+
+    This is the half of last-login tracking that covers callers who never see the
+    login flow: an API key or an OIDC bearer token authenticates on every request
+    and passes through ``/auth/callback`` exactly never, so without this their
+    "Last login on" would stay blank forever.
+
+    Throttled against the value already loaded on ``user`` — an in-Python
+    comparison, no extra query — so the common case costs nothing and a write
+    happens at most once per caller per window. ``0`` writes every time.
+
+    Best-effort by design. A login timestamp is bookkeeping, and this runs inside
+    the dependency chain of *every* authenticated request, including plain reads;
+    a lock-wait timeout or a momentarily read-only replica must not turn a working
+    ``GET`` into a 500 over a column nobody's request depends on. So a database
+    failure here is logged and swallowed, and the caller's own principal is
+    resolved from the row already in hand. Narrow on ``SQLAlchemyError``, not
+    ``Exception``: a bug in this function should still surface.
+
+    Called with the *real* principal's row (this is stage two, before
+    ``get_effective_principal`` applies any impersonation overlay), so an admin
+    acting as someone else records the login against their own identity and never
+    against the assumed one.
+    """
+    window = timedelta(minutes=settings.login_activity_throttle_minutes)
+    if user.last_login_at is not None and datetime.now(UTC) - user.last_login_at < window:
+        return
+    try:
+        await user_repository.touch_login(user.email)
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "Could not record last-login activity for a caller: %s. The request "
+            "continues; only the Users table's last-login column is affected.",
+            type(exc).__name__,
+        )
+
+
 async def get_principal(
     authenticated: Annotated[Principal, Depends(get_authenticated_principal)],
     user_repository: Annotated[UserRepository, Depends(get_user_repository)],
@@ -258,6 +310,8 @@ async def get_principal(
     )
     if user is None and should_provision:
         user = await user_repository.provision(authenticated.email)
+    if user is not None:
+        await _record_activity(user, user_repository, settings)
     if authenticated.provider == STANDALONE_PROVIDER:
         is_admin = authenticated.is_admin
     else:
@@ -510,6 +564,46 @@ def get_log_service(
 
 
 LogServiceDep = Annotated[LogService, Depends(get_log_service)]
+
+
+def get_training_metrics_repository(session: SessionDep) -> TrainingMetricsRepository:
+    """Provide the training-metrics repository implementation."""
+    return SqlAlchemyTrainingMetricsRepository(session)
+
+
+def get_metrics_service(
+    metrics_repository: Annotated[
+        TrainingMetricsRepository, Depends(get_training_metrics_repository)
+    ],
+    job_repository: Annotated[JobRepository, Depends(get_job_repository)],
+    principal: PrincipalDep,
+) -> MetricsService:
+    """Provide the metrics service, scoped to the resolved principal."""
+    return MetricsService(
+        metrics_repository=metrics_repository, job_repository=job_repository, principal=principal
+    )
+
+
+MetricsServiceDep = Annotated[MetricsService, Depends(get_metrics_service)]
+
+
+def get_trial_repository(session: SessionDep) -> TrialRepository:
+    """Provide the trial repository implementation."""
+    return SqlAlchemyTrialRepository(session)
+
+
+def get_trial_service(
+    trial_repository: Annotated[TrialRepository, Depends(get_trial_repository)],
+    job_repository: Annotated[JobRepository, Depends(get_job_repository)],
+    principal: PrincipalDep,
+) -> TrialService:
+    """Provide the trial service, scoped to the resolved principal."""
+    return TrialService(
+        trial_repository=trial_repository, job_repository=job_repository, principal=principal
+    )
+
+
+TrialServiceDep = Annotated[TrialService, Depends(get_trial_service)]
 
 
 def get_configuration_repository(session: SessionDep) -> ConfigurationRepository:

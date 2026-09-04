@@ -73,6 +73,20 @@ class LogRecord:
     epoch: float | None
 
 
+@dataclass(frozen=True)
+class TrainingMetricRecord:
+    """One per-step metrics row captured during a local run."""
+
+    trial_id: str | None
+    global_step: int
+    epoch: float | None
+    loss: float | None
+    grad_norm: float | None
+    learning_rate: float | None
+    split: str
+    extra: dict[str, Any] | None
+
+
 class TrialSink(Protocol):
     """Where a trainer reports trial lifecycle events during a local run.
 
@@ -100,6 +114,10 @@ class TrialSink(Protocol):
 
     def log(self, record: LogRecord) -> None:
         """Persist a captured log line."""
+        ...
+
+    def training_metric(self, record: TrainingMetricRecord) -> None:
+        """Persist one per-step training-metrics row."""
         ...
 
 

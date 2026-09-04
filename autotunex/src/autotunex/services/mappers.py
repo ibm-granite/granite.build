@@ -16,13 +16,19 @@ from autotunex.db.tables import (
     GbTaskTable,
     JobTable,
     LogEntryTable,
+    TrainingMetricTable,
     TrialTable,
     UserTable,
 )
-from autotunex.models.configuration import ConfigurationJobRef, ConfigurationRead
+from autotunex.models.configuration import (
+    ConfigurationJobRef,
+    ConfigurationRead,
+    ConfigurationSummary,
+)
 from autotunex.models.dataset import DatasetJobRef, DatasetPreview, DatasetRead
-from autotunex.models.job import JobRead, JobSummary
+from autotunex.models.job import JobDetail, JobRead, JobSummary
 from autotunex.models.log import LogEntryRead
+from autotunex.models.metric import MetricPointRead
 from autotunex.models.task import GbTaskRead
 from autotunex.models.trial import TrialRead
 from autotunex.models.user import UserRead
@@ -44,6 +50,28 @@ def configuration_to_read(
         tuner_type=configuration.tuner_type,
         rl_tuner_type=configuration.rl_tuner_type,
         config_data=configuration.config_data,
+        associated_jobs=associated_jobs,
+        created_at=configuration.created_at,
+        updated_at=configuration.updated_at,
+    )
+
+
+def configuration_to_summary(
+    configuration: ConfigurationTable, associated_jobs: list[ConfigurationJobRef]
+) -> ConfigurationSummary:
+    """Convert a configuration row to its lean list representation.
+
+    Deliberately never reads ``configuration.config_data``. The repository's list
+    query defers that column with ``raiseload=True``, so touching it here would
+    raise rather than quietly re-query — which is the intended protection, but it
+    means this function's field list is load-bearing, not merely a subset.
+    """
+    return ConfigurationSummary(
+        id=configuration.id,
+        user_id=configuration.user_id,
+        name=configuration.name,
+        tuner_type=configuration.tuner_type,
+        rl_tuner_type=configuration.rl_tuner_type,
         associated_jobs=associated_jobs,
         created_at=configuration.created_at,
         updated_at=configuration.updated_at,
@@ -114,6 +142,52 @@ def resolve_rl_tuner_type(job: JobTable) -> str | None:
     return job.configuration.rl_tuner_type
 
 
+def resolve_planned_trials(job: JobTable) -> int:
+    """Return how many trials this job's configuration asked the search to evaluate.
+
+    The planned *budget*, not a count of rows. Read from the job's own
+    ``config_snapshot`` at ``config_data.tune_config.num_samples``. A ``pending`` job
+    has no trial rows yet and a ``running`` one has only some, so counting rows
+    under-reports for every job that has not finished — which is the one case where
+    the caller could have counted for itself. The live row count is ``Page.total``
+    from ``GET /jobs/{id}/trials``.
+
+    Unlike :func:`resolve_config_name` and :func:`resolve_rl_tuner_type`, this does
+    **not** fall back to the live ``configurations`` row, and that asymmetry is
+    deliberate: the number must describe what this job ran with, and :attr:`is_stale`
+    exists precisely because the live row can have drifted since submit. A job with
+    no snapshot — some pipeline-written rows — therefore reports ``0`` rather than a
+    budget it never used.
+
+    ``num_samples`` occurs in two shapes in the wild: the catalog's descriptor
+    (``{"default": 32, "type": "int", ...}``, which is what the wizard writes and
+    what ``fm-tune/autotune/configs/autotune.yaml`` declares) and a bare scalar (see
+    ``src/ux/src/lib/components/forms/default_config.ts``). Both are read, for the
+    same reason ``output_artifacts`` accepts a union — that is the column's real
+    shape, not laxity. Anything else reports ``0``.
+    """
+    snapshot = job.config_snapshot
+    if not isinstance(snapshot, dict):
+        return 0
+    config_data = snapshot.get("config_data")
+    if not isinstance(config_data, dict):
+        return 0
+    tune_config = config_data.get("tune_config")
+    if not isinstance(tune_config, dict):
+        return 0
+    num_samples = tune_config.get("num_samples")
+    if isinstance(num_samples, dict):
+        num_samples = num_samples.get("default")
+    # bool is an int subclass, so `num_samples: true` would otherwise read as 1.
+    if isinstance(num_samples, bool):
+        return 0
+    if isinstance(num_samples, int):
+        return max(num_samples, 0)
+    if isinstance(num_samples, float) and num_samples.is_integer():
+        return max(int(num_samples), 0)
+    return 0
+
+
 def gb_task_to_read(task: GbTaskTable) -> GbTaskRead:
     """Convert a build task row to its API representation."""
     return GbTaskRead(
@@ -147,10 +221,10 @@ def latest_task_update(tasks: Sequence[GbTaskTable]) -> str | None:
 def job_to_summary(job: JobTable, finished_at: str | None = None) -> JobSummary:
     """Convert a job row to the lean list representation (``GET /jobs``).
 
-    ``finished_at`` (the latest ``gb_tasks.updated_at``) is supplied by the list
-    query as a computed column, because the lean list does not load ``tasks``.
-    :func:`job_to_read`, which does load them, derives it via
-    :func:`latest_task_update` instead.
+    ``finished_at`` (the latest ``gb_tasks.updated_at``) is supplied by the caller's
+    query as a computed column, because neither this shape nor :func:`job_to_detail`
+    loads ``tasks``. Only :func:`job_to_read` does, and it alone derives the value
+    via :func:`latest_task_update`.
     """
     return JobSummary(
         id=job.id,
@@ -217,14 +291,18 @@ def _config_is_stale(job: JobTable) -> bool:
     )
 
 
-def job_to_read(job: JobTable) -> JobRead:
-    """Convert a job row to the full detail representation.
+def job_to_detail(job: JobTable, finished_at: str | None = None) -> JobDetail:
+    """Convert a job row to the child-free detail shape (``GET /jobs/by-build-id``).
 
     Reuses :func:`job_to_summary`'s already-validated lean fields via attribute
-    access, then adds the detail-only fields directly from ``job``.
+    access, then adds the row's own detail columns.
+
+    ``finished_at`` is supplied by the caller's query as a computed column, for the
+    same reason the lean list supplies it: this shape does not load ``tasks``, so
+    it cannot derive the value with :func:`latest_task_update`.
     """
-    summary = job_to_summary(job, finished_at=latest_task_update(job.tasks))
-    return JobRead(
+    summary = job_to_summary(job, finished_at=finished_at)
+    return JobDetail(
         id=summary.id,
         user_id=summary.user_id,
         status=summary.status,
@@ -245,12 +323,26 @@ def job_to_read(job: JobTable) -> JobRead:
         ray_address=job.ray_address,
         cleanup=job.cleanup,
         autotune=job.autotune,
-        num_trials=job.num_trials,
+        num_trials=resolve_planned_trials(job),
+        output_artifacts=job.output_artifacts,
+        is_stale=_config_is_stale(job),
+    )
+
+
+def job_to_read(job: JobTable) -> JobRead:
+    """Convert a job row to the full detail representation (``GET /jobs/{id}``).
+
+    Reuses :func:`job_to_detail`'s already-validated fields via attribute access,
+    then adds the two this shape alone carries: the nested ``tasks`` array and the
+    ``config_snapshot``. ``finished_at`` is derived here with
+    :func:`latest_task_update` rather than passed in, because this shape does load
+    ``tasks``.
+    """
+    detail = job_to_detail(job, finished_at=latest_task_update(job.tasks))
+    return JobRead(
+        **detail.model_dump(),
         tasks=[gb_task_to_read(task) for task in job.tasks],
         config_snapshot=job.config_snapshot,
-        output_artifacts=job.output_artifacts,
-        trials=[trial_to_read(trial) for trial in job.trials],
-        is_stale=_config_is_stale(job),
     )
 
 
@@ -267,6 +359,22 @@ def log_entry_to_read(entry: LogEntryTable) -> LogEntryRead:
     )
 
 
+def metric_point_to_read(row: TrainingMetricTable) -> MetricPointRead:
+    """Convert a ``training_metrics`` row to its API shape (field-by-field, per house style)."""
+    return MetricPointRead(
+        id=row.id,
+        trial_id=row.trial_id,
+        global_step=row.global_step,
+        epoch=row.epoch,
+        loss=row.loss,
+        grad_norm=row.grad_norm,
+        learning_rate=row.learning_rate,
+        split=row.split,
+        extra=row.extra,
+        created_at=row.created_at,
+    )
+
+
 def user_to_read(user: UserTable) -> UserRead:
     """Convert a user row to its API representation.
 
@@ -279,4 +387,5 @@ def user_to_read(user: UserTable) -> UserRead:
         role=user.role,
         created_at=user.created_at,
         updated_at=user.updated_at,
+        last_login_at=user.last_login_at,
     )

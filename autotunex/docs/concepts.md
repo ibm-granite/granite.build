@@ -36,7 +36,7 @@ Everything in AutoTuneX is one of a small number of entities. Understanding how 
 
 A **user** is an identity — the owner of configurations, datasets, and jobs. It is not itself an owned resource; it is *who owns* the resources.
 
-A user's **role** is strict on the way in and lenient on the way out: a write accepts only `admin` or `user` (`PATCH /users/{id}` rejects anything else with a `422`, and the same two values are the only ones `standalone_role` will start up with), while a read tolerates whatever the column happens to hold — it is nullable, and may carry a legacy or tuning-pipeline-written value. On that read side only the exact value `admin` grants the ability to widen scope, and anything else — including an unset role — is a regular user. Ownership matters on every read: resources are scoped per caller, so by default you see only your own configurations, datasets, and jobs — and this is true for admins too. An admin can *choose* to widen a request to see everyone's data, but being an admin does not remove the ownership filter automatically; it grants the ability to ask for the wider view. A regular user cannot ask for it at all.
+A user's **role** is strict on the way in and lenient on the way out: a write accepts only `admin` or `user` (`PATCH /users/{id}` rejects anything else with a `422`, and the same two values are the only ones `standalone_role` will start up with), while a read tolerates whatever the column happens to hold — it is nullable, and may carry a legacy or tuning-pipeline-written value. On that read side only the exact value `admin` grants the ability to widen scope, and anything else — including an unset role — is a regular user. Ownership matters on every read: resources are scoped per caller, so by default you see your own configurations and datasets plus a **shared system tier** — curated starter content owned by a reserved system user, visible to everyone — and only your own jobs, which have no shared tier at all. That default holds for admins too. An admin can *choose* to widen a request to see everyone's data, but being an admin does not remove the ownership filter automatically; it grants the ability to ask for the wider view. A regular user cannot ask for it at all.
 
 The practical consequence: when you list your jobs, you get *your* jobs. That is a feature, not a limitation.
 
@@ -52,6 +52,8 @@ A configuration also carries two optional labels:
 - `rl_tuner_type` — the kind of reinforcement-learning tuner, when the configuration is for RL-based tuning.
 
 Configurations support full create/read/update/delete through the API — they are the resource you author and revise most directly.
+
+Alongside the ones you create, your configuration list also includes the shared system tier: curated starter configurations owned by a reserved system user. You can read them and reference them from your jobs exactly like your own, but they are not yours to change — an attempt to update one behaves as though it did not exist, and a delete is refused for *every* caller with a `403` (`System Resource Protected`): starter content is shared by the whole deployment, so a delete is not a per-tenant loss. The one exemption is an admin with an active impersonation overlay onto the system user (`POST /auth/assume/{id}`).
 
 ### Dataset
 
@@ -82,6 +84,8 @@ The lifecycle is not one-way: a `ready` or `error` dataset can be uploaded again
 | `error` | The upload failed. |
 
 A job may only be submitted against a dataset that is `ready`. This is why the dataset lifecycle exists as a first-class thing: it is the signal that the training data is actually available.
+
+Datasets carry the same shared system tier as configurations: alongside your own, your list includes curated starter datasets owned by the reserved system user. You can read them and submit jobs against them, but not change them — an update or an upload aimed at one behaves as though the dataset were not there, while a delete is refused with the same `403` a shared configuration's is, for every caller and with the same single impersonation exemption.
 
 ### Job
 
@@ -126,7 +130,7 @@ Results are what the job compares to decide which configuration performed best.
 
 ### Task
 
-A **task** is a build or deployment step attached to a job — for example, running the actual tuning, or downloading a produced artifact. A single job may have several tasks, and the API nests them as a `tasks` array on the job rather than flattening them into the job's own row.
+A **task** is a build or deployment step attached to a job — for example, running the actual tuning, or downloading a produced artifact. A single job may have several tasks, and the API nests them as a `tasks` array on the job **detail** response (`GET /jobs/{id}`) rather than flattening them into the job's own row.
 
 Tasks are how a job's out-of-band build and deployment work is tracked. Treat them as the operational steps that surround a run; the specific kinds available depend on how your deployment is configured.
 
@@ -184,7 +188,7 @@ Two subtleties worth calling out:
 
 Putting the entities and the state machine together, a typical job looks like this:
 
-1. **You submit a job.** It references a configuration and a `ready` dataset. AutoTuneX validates that you own both, snapshots the configuration into `config_snapshot`, and accepts the job in the `pending` state. Submission never blocks on training — tuning runs are long, so the API hands the job off and returns immediately.
+1. **You submit a job.** It references a configuration and a `ready` dataset. AutoTuneX validates that you own both — or that they are shared system content — snapshots the configuration into `config_snapshot`, and accepts the job in the `pending` state. The job is yours either way: drawing on shared starter content does not make the job shared. Submission never blocks on training — tuning runs are long, so the API hands the job off and returns immediately.
 2. **A runner picks it up.** A backend executes the job, moving it to `running`.
 3. **Trials run.** For each candidate point in the search space, the job runs a trial, and each trial records its metrics as a result.
 4. **The job reaches a terminal state** — `completed` on success, or `error` / `terminated` otherwise.

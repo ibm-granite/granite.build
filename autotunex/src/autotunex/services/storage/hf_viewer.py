@@ -59,6 +59,62 @@ def repo_id_from_artifact_url(artifact_url: str | None) -> str | None:
     return "/".join(segments[-2:])
 
 
+async def discover_config(
+    client: httpx.AsyncClient,
+    *,
+    base_url: str,
+    repo_id: str,
+    token: str | None,
+    prefer_split: str = "train",
+) -> str:
+    """Discover the datasets-server config (subset) name for ``repo_id``.
+
+    Calls ``GET {base_url}/splits`` (which takes only the dataset id) and returns
+    the ``config`` of the split entry matching ``prefer_split`` when one is
+    present, else the first usable entry's config. This replaces assuming
+    ``config="default"``: for a single-subset repo the answer *is* ``default``,
+    but reading it back means a repo whose push produced a differently-named
+    subset still previews instead of failing permanently on ``/rows``.
+
+    Raises :class:`HFViewerUnavailable` on a transport error, a non-200 status, a
+    malformed body, or an empty/absent ``splits`` list — the last of which is the
+    viewer's "still precomputing / not ready yet" signal, and the caller degrades
+    it to a not-ready preview rather than fetching rows that cannot exist yet.
+    """
+    params = {"dataset": repo_id}
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        response = await client.get(
+            f"{base_url.rstrip('/')}/splits", params=params, headers=headers
+        )
+    except httpx.HTTPError as exc:
+        raise HFViewerUnavailable(f"{repo_id}#splits: transport error: {exc}") from exc
+
+    if response.status_code != 200:
+        raise HFViewerUnavailable(f"{repo_id}#splits: HTTP {response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HFViewerUnavailable(f"{repo_id}#splits: malformed JSON") from exc
+
+    splits = payload.get("splits") if isinstance(payload, dict) else None
+    if not isinstance(splits, list) or not splits:
+        raise HFViewerUnavailable(f"{repo_id}#splits: no splits listed (viewer not ready)")
+    # Keep (split, config) pairs where config is a real string; capturing it here
+    # (rather than re-indexing the dict later) gives the returns a concrete str type.
+    candidates: list[tuple[str | None, str]] = []
+    for entry in splits:
+        if isinstance(entry, dict) and isinstance(entry.get("config"), str):
+            split = entry.get("split")
+            candidates.append((split if isinstance(split, str) else None, entry["config"]))
+    if not candidates:
+        raise HFViewerUnavailable(f"{repo_id}#splits: no usable split entries")
+    for split, config in candidates:
+        if split == prefer_split:
+            return config
+    return candidates[0][1]
+
+
 async def fetch_rows(
     client: httpx.AsyncClient,
     *,

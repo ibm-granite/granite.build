@@ -49,6 +49,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 import httpx
 import jwt
@@ -56,9 +57,11 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from autotunex.core.auth.oidc import OidcBearerVerifier
 from autotunex.core.config import Settings, get_settings
+from autotunex.db.tables import UserTable
 from autotunex.models.auth import Principal
 from tests.conftest import API, make_settings
 
@@ -859,3 +862,53 @@ async def test_logout_clears_the_session_cookie_and_returns_the_end_session_endp
     assert "httponly" in set_cookie
     assert "secure" in set_cookie
     assert "samesite=lax" in set_cookie
+
+
+async def test_a_completed_login_records_itself_against_the_users_row(
+    bff_client: AsyncClient, session: AsyncSession
+) -> None:
+    """The regression this column exists for: logging in must set a login time."""
+    user = UserTable(id=uuid4(), email="dev@example.com", role="user")
+    session.add(user)
+    await session.commit()
+    state = await _login(bff_client)
+
+    await bff_client.get(
+        "/auth/callback", params={"code": "auth-code", "state": state}, follow_redirects=False
+    )
+
+    await session.refresh(user)
+    assert user.last_login_at is not None
+
+
+async def test_a_completed_login_is_recorded_even_within_the_throttle_window(
+    bff_client: AsyncClient, session: AsyncSession
+) -> None:
+    """A login is definitive, so unlike per-request activity it is never throttled."""
+    recent = datetime.now(UTC) - timedelta(minutes=1)
+    user = UserTable(id=uuid4(), email="dev@example.com", role="user", last_login_at=recent)
+    session.add(user)
+    await session.commit()
+    state = await _login(bff_client)
+
+    await bff_client.get(
+        "/auth/callback", params={"code": "auth-code", "state": state}, follow_redirects=False
+    )
+
+    await session.refresh(user)
+    assert user.last_login_at is not None
+    assert user.last_login_at > recent
+
+
+async def test_a_login_by_a_caller_with_no_users_row_still_completes(
+    bff_client: AsyncClient,
+) -> None:
+    """Nothing to record when provisioning is off — and that must not fail the login."""
+    state = await _login(bff_client)
+
+    response = await bff_client.get(
+        "/auth/callback", params={"code": "auth-code", "state": state}, follow_redirects=False
+    )
+
+    assert response.status_code == HTTPStatus.FOUND
+    assert "session" in response.cookies

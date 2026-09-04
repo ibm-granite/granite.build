@@ -20,7 +20,8 @@ resolved to a principal.
 Both endpoints require authentication — the `get_principal` router dependency `401`s an
 unauthenticated caller before either body runs. The resolved principal scopes every tool
 call the agent makes: a tool the assistant runs on your behalf sees only your own jobs,
-configurations, and datasets, exactly as the corresponding REST endpoint would.
+and your own configurations and datasets plus the shared system tier, exactly as the
+corresponding REST endpoint would.
 
 ## Endpoints
 

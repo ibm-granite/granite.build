@@ -36,11 +36,12 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     sections, load data, train, and tune.report() a metric dict. All MLX
     specifics live in autotune.mlx_backend.
     """
-    from autotune.logging_setup import setup_logging
+    from autotune.logging_setup import bind_trial_id, setup_logging
 
     setup_logging()
 
     trial_id = tune.get_context().get_trial_id()
+    bind_trial_id(trial_id)
     logger.info(f"[AutoTune][MLX] Trial {trial_id} config: {config}")
 
     local_config = deepcopy(config)

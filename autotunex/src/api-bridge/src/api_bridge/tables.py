@@ -138,6 +138,14 @@ users = Table(
     Column("role", String(50), server_default="user"),
     Column("created_at", UtcDateTime),
     Column("updated_at", UtcDateTime),
+    # Declared, never written here. The main service stamps it on authentication
+    # (Alembic revision ``a3c71d94e5b2``); a pipeline-created user has not logged
+    # in, so leaving it NULL is correct. It is declared anyway because
+    # ``metadata.create_all()`` is how this subproject's tests build their schema,
+    # and a table created without the column would diverge from the one the main
+    # service migrates — the same two-declarations-in-step rule
+    # ``training_metrics`` carries.
+    Column("last_login_at", UtcDateTime),
 )
 
 configurations = Table(
@@ -237,6 +245,25 @@ log_entries = Table(
     Column("iteration", Integer),
     Column("epoch", Float),
     Column("timestamp", DateTime),  # bare DATETIME: client-supplied, mirrors the schema flaw
+)
+
+training_metrics = Table(
+    "training_metrics",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("job_id", Uuid36Str, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False),
+    # No index=True: trial_id is covered by the composite (job_id, trial_id, id)
+    # keyset index, and declaring one here would make create_all() build an index
+    # that Alembic never creates — metadata drift against the main service's ORM.
+    Column("trial_id", String(16)),
+    Column("global_step", Integer, nullable=False),
+    Column("epoch", Float),
+    Column("loss", Float),
+    Column("grad_norm", Float),
+    Column("learning_rate", Float),
+    Column("split", String(16), nullable=False),
+    Column("extra", JSON),
+    Column("created_at", UtcDateTime),
 )
 
 gb_tasks = Table(

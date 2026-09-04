@@ -75,6 +75,20 @@ def test_read_carries_status_jobs_and_optional_preview() -> None:
     assert read.preview is not None and read.preview.train == [{"a": 1}]
 
 
+def test_preview_reports_viewer_ready_by_default() -> None:
+    # Default True keeps every non-HF backend and empty-preview literal unchanged;
+    # only the HF backend flips it to False when the viewer is still precomputing.
+    preview = DatasetPreview(train=[], validation=[])
+
+    assert preview.viewer_ready is True
+
+
+def test_preview_can_signal_the_viewer_is_not_ready() -> None:
+    preview = DatasetPreview(train=[], validation=[], viewer_ready=False)
+
+    assert preview.viewer_ready is False
+
+
 def test_read_preview_defaults_to_none() -> None:
     now = datetime.now(UTC)
 

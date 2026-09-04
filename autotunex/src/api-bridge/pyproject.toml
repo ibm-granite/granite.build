@@ -24,7 +24,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# httpx is a test dependency: fastapi/starlette's TestClient (used by
+# tests/test_server_auth.py) imports it. Pinned to match the main service's
+# httpx==0.28.1 so the two trees resolve the same version.
+dev = ["pytest>=8", "httpx==0.28.1"]
 # Synchronous PostgreSQL driver (psycopg 3). Optional so the base install carries
 # no LGPL dependency; the bridge coerces any Postgres URL to postgresql+psycopg.
 # Verify/lock the exact version at install time.

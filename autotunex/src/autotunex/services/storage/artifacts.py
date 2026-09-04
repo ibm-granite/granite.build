@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """List a job's downloadable output files from its artifact source.
 
-The ``ArtifactLister`` seam extends the storage layer (open decision 4) with a
+The ``ArtifactLister`` seam extends the storage layer (open decision 3) with a
 read-only "list the files at this location" capability used by the
 result-report endpoint. Each backend takes a source-specific ``location`` — a
 filesystem path, or an ``owner/repo`` id — and returns

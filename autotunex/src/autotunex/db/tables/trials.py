@@ -26,7 +26,7 @@ class TrialTable(Base):
 
     ``id`` is ``VARCHAR(16)`` in the schema — a short opaque code assigned by the
     tuning pipeline, not a UUID, and not generated here. ``docs/schema-review.md``
-    item A3 notes that ``log_entries.trial_id`` is ``CHAR(36)`` and therefore
+    item A2 notes that ``log_entries.trial_id`` is ``CHAR(36)`` and therefore
     cannot reference it; that mismatch is mirrored rather than fixed.
 
     ``Enum(RunStatus, name="run_status")`` appears in three tables with the same

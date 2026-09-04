@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from autotunex.core.constants import SYSTEM_USER_ID
 from autotunex.core.exceptions import ScopeNotPermittedError
 from autotunex.models.auth import Principal
 from autotunex.models.common import DataScope
@@ -52,3 +53,48 @@ def sees_nothing(principal: Principal, scope: DataScope) -> bool:
     the resource's not-found error (get/update/delete).
     """
     return scope is DataScope.OWN and principal.user_id is None
+
+
+def is_system_owned(owner_user_id: str | UUID | None) -> bool:
+    """Whether ``owner_user_id`` is the reserved system user's.
+
+    ``configurations.user_id`` / ``datasets.user_id`` are ``VARCHAR`` columns, so
+    a row's owner arrives as a string while a principal's arrives as a ``UUID``;
+    both are compared through ``str()`` here rather than at each call site. The
+    comparison is exact, matching the unfolded string predicate the repository
+    filters with (``_owner_or_shared``) — the constant is already canonical
+    lowercase and folding case would only invent a second, looser notion of
+    "is this the system row" for the two to drift apart on.
+    """
+    return owner_user_id is not None and str(owner_user_id) == str(SYSTEM_USER_ID)
+
+
+def is_delete_protected(principal: Principal, owner_user_id: str | UUID | None) -> bool:
+    """Whether a row owned by ``owner_user_id`` is undeletable by ``principal``.
+
+    The shared tier is readable by everyone and deletable by (almost) no one: a
+    system-owned row is starter content the whole deployment launches from, and
+    removing it takes it from every caller at once. Ownership scoping alone does
+    not express that — ``resolve_owner_filter`` hands an admin who asked for
+    ``scope=all`` an unfiltered ``owner_id=None``, and a caller whose own identity
+    resolves to the system row passes the strict filter outright — so the rule is
+    stated here, once, and enforced before any scope is consulted.
+
+    The single exemption is an *active impersonation overlay* onto the system user:
+    ``impersonator`` is only ever set by ``api.deps.get_effective_principal`` for a
+    genuinely-admin caller presenting a valid ``autotunex_assume`` cookie, and
+    ``POST /auth/assume`` logs it. Requiring the overlay rather than merely
+    ``user_id == SYSTEM_USER_ID`` is the load-bearing half: it keeps a deployment
+    whose ambient principal happens to *be* the system owner — the single-owner
+    standalone case — from handing every caller a delete on shared content.
+
+    Update is deliberately not covered: editing curated content in place is
+    recoverable and stays available to an admin via ``scope=all``, while a delete
+    is not. See :class:`~autotunex.core.exceptions.SystemResourceProtectedError`.
+    """
+    if not is_system_owned(owner_user_id):
+        return False
+    is_assuming_system_user = principal.impersonator is not None and is_system_owned(
+        principal.user_id
+    )
+    return not is_assuming_system_user

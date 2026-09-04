@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autotunex.core.constants import SYSTEM_USER_ID
 from autotunex.db.tables import ConfigurationTable, DatasetTable, JobTable, UserTable
 from autotunex.models.auth import Principal
 from autotunex.models.status import DatasetStatus, RunStatus
@@ -246,6 +247,52 @@ async def test_create_cannot_reference_another_users_real_config_or_dataset(
     )
 
     assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+async def test_create_against_system_owned_config_and_dataset_succeeds(
+    client: AsyncClient,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    session: AsyncSession,
+) -> None:
+    """A user may submit a tuning against curated, system-owned starter content."""
+    session.add(UserTable(id=SYSTEM_USER_ID, email="system@autotunex.local", role="user"))
+    await session.commit()
+    system_config = ConfigurationTable(
+        id=uuid4(),
+        user_id=str(SYSTEM_USER_ID),
+        name="starter-config",
+        tuner_type="optuna",
+        rl_tuner_type=None,
+        config_data={"learning_rate": {"kind": "float", "low": 1e-6, "high": 1e-3, "log": True}},
+    )
+    system_dataset = DatasetTable(
+        id=uuid4(),
+        user_id=str(SYSTEM_USER_ID),
+        name="starter-dataset",
+        description="Curated starter dataset.",
+        data_format="jsonl",
+        status=DatasetStatus.READY,
+        train_records=100,
+        train_file_size=2048,
+    )
+    session.add_all([system_config, system_dataset])
+    await session.commit()
+    await session.refresh(system_dataset, ["train_file", "validation_file"])
+    _act_as(as_principal, user)
+
+    response = await client.post(
+        f"{API}/jobs",
+        json={
+            "config_id": str(system_config.id),
+            "dataset_id": str(system_dataset.id),
+            "model": "m",
+            "experiment_name": "e",
+        },
+    )
+
+    assert response.status_code == HTTPStatus.CREATED
+    assert response.json()["user_id"] == str(user.id)
 
 
 async def test_create_online_rl_with_reward_function_persists_it(
@@ -554,6 +601,80 @@ async def test_get_trial_logs_returns_only_that_trials_lines(
     assert [row["id"] for row in body["logs"]] == [2]
 
 
+async def _seed_metric(
+    session: AsyncSession,
+    job: JobTable,
+    *,
+    id: int,
+    trial_id: str | None,
+    global_step: int,
+    loss: float,
+) -> None:
+    from autotunex.db.tables import TrainingMetricTable
+
+    session.add(
+        TrainingMetricTable(
+            id=id,
+            job_id=job.id,
+            trial_id=trial_id,
+            global_step=global_step,
+            loss=loss,
+            split="train",
+        )
+    )
+    await session.commit()
+
+
+async def test_get_job_metrics_returns_ascending_page(
+    client: AsyncClient,
+    session: AsyncSession,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    job: JobTable,
+) -> None:
+    _act_as(as_principal, user)
+    await _seed_metric(session, job, id=1, trial_id="t1", global_step=10, loss=3.0)
+    await _seed_metric(session, job, id=2, trial_id="t1", global_step=20, loss=2.0)
+
+    response = await client.get(f"{API}/jobs/{job.id}/metrics")
+
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert [p["global_step"] for p in body["metrics"]] == [10, 20]
+    assert body["has_more"] is False
+    assert body["next_after_id"] is None
+
+
+async def test_get_trial_metrics_filters_by_trial(
+    client: AsyncClient,
+    session: AsyncSession,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    job: JobTable,
+) -> None:
+    _act_as(as_principal, user)
+    await _seed_metric(session, job, id=1, trial_id="t1", global_step=1, loss=1.0)
+    await _seed_metric(session, job, id=2, trial_id="t2", global_step=1, loss=2.0)
+
+    response = await client.get(f"{API}/jobs/{job.id}/trials/t2/metrics")
+
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert [p["loss"] for p in body["metrics"]] == [2.0]
+
+
+async def test_get_job_metrics_of_another_users_job_is_404(
+    client: AsyncClient, as_principal: Callable[[Principal], None], user: UserTable, job: JobTable
+) -> None:
+    as_principal(
+        Principal(email="other@example.com", provider="session", user_id=uuid4(), is_admin=False)
+    )
+
+    response = await client.get(f"{API}/jobs/{job.id}/metrics")
+
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
 async def test_get_gb_logs_returns_a_list_of_strings(
     client: AsyncClient,
     session: AsyncSession,
@@ -614,6 +735,87 @@ async def test_get_job_by_build_id_returns_the_job(
 
     assert response.status_code == HTTPStatus.OK
     assert response.json()["id"] == str(job.id)
+
+
+async def test_get_job_by_build_id_omits_tasks_and_the_config_snapshot(
+    client: AsyncClient,
+    session: AsyncSession,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    job: JobTable,
+) -> None:
+    """The lookup returns ``JobDetail``, not ``JobRead``.
+
+    A caller that arrived by build id already holds the identifier the tasks array
+    exists to expose, and ``config_snapshot`` embeds the whole configuration as it
+    ran — the heaviest field on the response. Both stay on ``GET /jobs/{id}``.
+    """
+    from autotunex.db.tables import GbTaskTable
+    from autotunex.models.status import GbTaskType
+
+    _act_as(as_principal, user)
+    job.config_snapshot = {
+        "name": "as-it-ran",
+        "config_data": {"lr": 3e-5, "tune_config": {"num_samples": {"default": 12}}},
+    }
+    session.add(job)
+    build_id = uuid4()
+    session.add(GbTaskTable(job_id=job.id, type=GbTaskType.TUNING, build_id=build_id))
+    await session.commit()
+
+    response = await client.get(f"{API}/jobs/by-build-id/{build_id}")
+
+    body = response.json()
+    assert "tasks" not in body
+    assert "config_snapshot" not in body
+    assert "trials" not in body
+    # Everything else the detail shape carries is still here, config_name included —
+    # that is read *from* the snapshot, so dropping the blob must not drop the label.
+    assert body["config_name"] == "as-it-ran"
+    assert body["num_trials"] == 12
+    assert body["model_source"] == "huggingface"
+    assert body["is_stale"] is True
+
+
+async def test_get_job_by_build_id_still_reports_finished_at(
+    client: AsyncClient,
+    session: AsyncSession,
+    as_principal: Callable[[Principal], None],
+    user: UserTable,
+    job: JobTable,
+) -> None:
+    """``finished_at`` survives dropping ``tasks`` — it comes back as a computed column.
+
+    It is the one field the mapper previously derived from the loaded tasks, so it
+    is the one that would silently go ``null`` if the subquery were dropped.
+    """
+    from autotunex.db.tables import GbTaskTable
+    from autotunex.models.status import GbTaskType
+
+    _act_as(as_principal, user)
+    build_id = uuid4()
+    session.add_all(
+        [
+            GbTaskTable(
+                job_id=job.id,
+                type=GbTaskType.TUNING,
+                build_id=build_id,
+                updated_at="2026-08-07 00:05:00",
+            ),
+            GbTaskTable(
+                job_id=job.id,
+                type=GbTaskType.RITS,
+                build_id=uuid4(),
+                updated_at="2026-08-07 00:09:00",
+            ),
+        ]
+    )
+    await session.commit()
+
+    response = await client.get(f"{API}/jobs/by-build-id/{build_id}")
+
+    # The latest across *all* the job's tasks, not just the one matched by build_id.
+    assert response.json()["finished_at"] == "2026-08-07 00:09:00"
 
 
 async def test_get_job_by_build_id_unknown_build_is_404(

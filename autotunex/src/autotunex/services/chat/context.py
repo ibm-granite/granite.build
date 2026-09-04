@@ -20,6 +20,7 @@ from autotunex.db.repositories.sqlalchemy import (
     SqlAlchemyConfigurationRepository,
     SqlAlchemyDatasetRepository,
     SqlAlchemyJobRepository,
+    SqlAlchemyTrialRepository,
     SqlAlchemyUserRepository,
 )
 from autotunex.db.session import get_session_factory
@@ -37,6 +38,7 @@ from autotunex.services.logs import LogService
 from autotunex.services.protocols import JobRunner
 from autotunex.services.runner import InProcessJobRunner, NoOpJobRunner
 from autotunex.services.storage.registry import get_storage_backend
+from autotunex.services.trials import TrialService
 from autotunex.services.users import UserService
 
 
@@ -80,6 +82,7 @@ class ScopedServices:
     dataset: DatasetService
     user: UserService
     logs: LogService
+    trials: TrialService
 
 
 @dataclass(slots=True)
@@ -146,5 +149,10 @@ class ToolContext:
                     repository=job_repo,
                     principal=self.principal,
                     gb_log_reader=get_gb_log_reader(self.settings),
+                ),
+                trials=TrialService(
+                    trial_repository=SqlAlchemyTrialRepository(session),
+                    job_repository=job_repo,
+                    principal=self.principal,
                 ),
             )

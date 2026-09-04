@@ -45,6 +45,8 @@ Misconfiguration is caught at startup, not at request time. The service refuses 
 - **`"session"` enabled** without the full backend-for-frontend set (issuer, JWKS URI,
   audience, client id, client secret, authorization endpoint, token endpoint, public base
   URL, and session secret).
+- **A session secret shorter than 32 characters.** `AUTOTUNEX_SESSION_SECRET` is refused
+  below the HS256 key floor, even when the rest of the session set is present.
 - **A wildcard CORS origin.** `AUTOTUNEX_CORS_ALLOW_ORIGINS` must never contain `"*"`, in
   any configuration.
 - **`same_site=none` without an allowlist.** `AUTOTUNEX_SESSION_COOKIE_SAME_SITE=none`
@@ -75,7 +77,7 @@ Misconfiguration is caught at startup, not at request time. The service refuses 
 | `AUTOTUNEX_ENVIRONMENT` | Deployment environment: `dev`, `test`, or `prod`. `prod` enables the fail-fast auth checks above. | `dev` |
 | `AUTOTUNEX_DEBUG` | Verbose error output. Keep `false` in production. | `false` |
 | `AUTOTUNEX_LOG_LEVEL` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, or `ERROR`. | `INFO` |
-| `AUTOTUNEX_API_PREFIX` | Path prefix the versioned API is mounted under. `/health` sits outside it. | `/api/v1` |
+| `AUTOTUNEX_API_PREFIX` | Path prefix the versioned API is mounted under. `/health*` and `/auth/*` sit outside it. | `/api/v1` |
 
 ## Frontend (optional)
 
@@ -86,7 +88,7 @@ separately.
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `AUTOTUNEX_FRONTEND_DIR` | Directory of the built SPA to serve. When set to an existing directory, the app mounts it with SPA-fallback routing. A local checkout builds to `src/ux/build`. | *(unset — API only)* |
-| `AUTOTUNEX_FRONTEND_BASE_PATH` | URL prefix the SPA is mounted under. Must match the value baked into the UI's asset URLs at build time; changing it here alone is not enough — rebuild the UI with a matching base. | `/autotune` |
+| `AUTOTUNEX_FRONTEND_BASE_PATH` | URL prefix the SPA is mounted under. Must match the value baked into the UI's asset URLs at build time; changing it here alone is not enough — rebuild the UI with a matching base. Note also that the `/` root redirect targets a hard-coded `/autotune`, so a changed base path leaves `/` redirecting to a 404. | `/autotune` |
 
 ## Persistence
 
@@ -100,10 +102,10 @@ migrations.
 | `AUTOTUNEX_AUTO_CREATE_SCHEMA` | Create missing tables on startup. A development convenience — set `false` in production and run Alembic migrations instead. | `true` |
 | `AUTOTUNEX_DATABASE_SSL_CA` | Path to a CA-certificate PEM enabling verified TLS to the database; required for managed MySQL such as IBM Cloud Databases. MySQL URLs only. | *(unset)* |
 | `AUTOTUNEX_DATABASE_SSL_MODE` | How to negotiate TLS: `disable`, `require`, or `verify`. When unset it derives from `AUTOTUNEX_DATABASE_SSL_CA` (`verify` when a CA is set, else `disable`). MySQL URLs only. | *(unset — derived from SSL_CA)* |
-| `AUTOTUNEX_DATABASE_POOL_SIZE` | Warm connections kept open per worker and reused; size to cover request handlers plus the reconcile loop. Ignored for SQLite. | `10` |
-| `AUTOTUNEX_DATABASE_MAX_OVERFLOW` | Extra connections opened on demand beyond the pool size; the hard ceiling is size + overflow. Ignored for SQLite. | `5` |
-| `AUTOTUNEX_DATABASE_POOL_TIMEOUT_SECONDS` | Seconds a request waits for a free connection before failing. Ignored for SQLite. | `30.0` |
-| `AUTOTUNEX_DATABASE_POOL_RECYCLE_SECONDS` | Recycle a pooled connection older than this many seconds (`-1` disables); keep it under the database's `wait_timeout`. Server databases only. | `1800` |
+| `AUTOTUNEX_DATABASE_POOL_SIZE` | Warm connections kept open per worker and reused; size to cover request handlers plus the reconcile loop. Ignored for SQLite. Must be ≥ 1. | `10` |
+| `AUTOTUNEX_DATABASE_MAX_OVERFLOW` | Extra connections opened on demand beyond the pool size; the hard ceiling is size + overflow. Ignored for SQLite. Must be ≥ 0. | `5` |
+| `AUTOTUNEX_DATABASE_POOL_TIMEOUT_SECONDS` | Seconds a request waits for a free connection before failing. Ignored for SQLite. Must be > 0. | `30.0` |
+| `AUTOTUNEX_DATABASE_POOL_RECYCLE_SECONDS` | Recycle a pooled connection older than this many seconds (`-1` disables); keep it under the database's `wait_timeout`. Server databases only. Must be ≥ -1. | `1800` |
 | `AUTOTUNEX_DATABASE_POOL_PRE_PING` | Liveness-check a pooled connection on checkout, reconnecting if it is dead. Applies to every pool, SQLite included. | `true` |
 | `AUTOTUNEX_DATABASE_POOL_USE_LIFO` | Hand out the most-recently-used connection first, keeping a small subset hot under bursty traffic. Ignored for SQLite. | `true` |
 
@@ -119,17 +121,17 @@ migrations.
 | --- | --- | --- |
 | `AUTOTUNEX_DATASET_STORAGE_DIR` | Root directory for locally-stored dataset files. In-flight uploads stage under a `.staging` subdirectory of this path. | `artifacts/datasets` |
 | `AUTOTUNEX_DATASET_UPLOAD_MAX_BYTES` | Hard cap on a single uploaded file, enforced while streaming (returns 413 when exceeded). Must be ≥ 1. | `5368709120` (5 GiB) |
-| `AUTOTUNEX_DATASET_UPLOAD_MAX_CONCURRENT` | Max dataset uploads processed concurrently in-process; over-limit uploads queue. | `2` |
-| `AUTOTUNEX_DATASET_PROCESSING_TIMEOUT_SECONDS` | Backstop timeout for a dataset's off-request processing; on expiry the dataset is marked `error`. | `3600` |
-| `AUTOTUNEX_DATASET_PUSH_TIMEOUT_SECONDS` | Timeout for each `llmb` auth/push subprocess in the HuggingFace backend. | `1800` |
+| `AUTOTUNEX_DATASET_UPLOAD_MAX_CONCURRENT` | Max dataset uploads processed concurrently in-process; over-limit uploads queue. Must be ≥ 1. | `2` |
+| `AUTOTUNEX_DATASET_PROCESSING_TIMEOUT_SECONDS` | Backstop timeout for a dataset's off-request processing; on expiry the dataset is marked `error`. Must be > 0. | `3600` |
+| `AUTOTUNEX_DATASET_PUSH_TIMEOUT_SECONDS` | Timeout for each `llmb` auth/push subprocess in the HuggingFace backend. Must be > 0. | `1800` |
 | `AUTOTUNEX_DATASET_CLIENT_GZIP_ENABLED` | Whether the frontend gzip-compresses compressible (jsonl/json/csv) dataset uploads. Surfaced via `GET /api/v1/app-config`. | `true` |
-| `AUTOTUNEX_DATASET_CLIENT_GZIP_MIN_BYTES` | Skip client-side gzip below this file size. Surfaced via `GET /api/v1/app-config`. | `1048576` (1 MiB) |
-| `AUTOTUNEX_DATASET_CLIENT_PARQUET_PREVIEW_MAX_BYTES` | Byte threshold above which the frontend skips a local Parquet preview. Surfaced via `GET /api/v1/app-config`. | `104857600` (100 MiB) |
-| `AUTOTUNEX_DATASET_STORAGE_BACKEND` | Where datasets are stored: `auto`, `local`, or `huggingface`. `auto` resolves to `local` whenever `GB_ENVIRONMENT` is `standalone` (where `llmb artifact push` is unavailable), regardless of tokens; otherwise it resolves to `huggingface` when the `llmb` tooling and **both** token env vars are present, and `local` if not. Forcing `huggingface` without both tokens is refused at startup. | `auto` |
+| `AUTOTUNEX_DATASET_CLIENT_GZIP_MIN_BYTES` | Skip client-side gzip below this file size. Surfaced via `GET /api/v1/app-config`. Must be ≥ 0. | `1048576` (1 MiB) |
+| `AUTOTUNEX_DATASET_CLIENT_PARQUET_PREVIEW_MAX_BYTES` | Byte threshold above which the frontend skips a local Parquet preview. Surfaced via `GET /api/v1/app-config`. Must be ≥ 1. | `104857600` (100 MiB) |
+| `AUTOTUNEX_DATASET_STORAGE_BACKEND` | Where datasets are stored: `auto`, `local`, or `huggingface`. `auto` resolves to `local` whenever `GB_ENVIRONMENT` is `standalone` (where `llmb artifact push` is unavailable), regardless of tokens; otherwise it resolves to `huggingface` when the `llmb` tooling and **both** token env vars are present, and `local` if not. Forcing `huggingface` without both tokens is refused at startup. This setting governs **writes** only: whichever way it resolves, the *preview* path can read from the other side, so a dataset row carrying an `hf://` locator still previews under `local`, and one whose files are on disk still previews under `huggingface`. | `auto` |
 | `AUTOTUNEX_HF_TOKEN_ENV` | **Name** of the environment variable holding the HuggingFace token used for the HuggingFace storage backend. Only the variable's presence is checked; its value is never loaded into settings. | `HF_TOKEN` |
 | `AUTOTUNEX_HF_NAMESPACE` | Optional HuggingFace org/namespace prefix for the derived dataset-repo name. | *(unset)* |
-| `AUTOTUNEX_HF_PREVIEW_ENABLED` | Enable dataset preview via the HuggingFace dataset viewer. When off, HuggingFace-stored datasets return an empty preview; locally-stored datasets read rows from disk regardless. | `true` |
-| `AUTOTUNEX_HF_VIEWER_BASE_URL` | Base URL of the HuggingFace dataset-viewer service; the client appends `/rows`. Override to point at a mirror. | `https://datasets-server.huggingface.co` |
+| `AUTOTUNEX_HF_PREVIEW_ENABLED` | Enable dataset preview via the HuggingFace dataset viewer. When off, the viewer is never called — but the two backends are always wrapped in each other's preview fallback, so a HuggingFace-stored dataset whose files also exist under `AUTOTUNEX_DATASET_STORAGE_DIR` still previews from disk; the preview is empty only when they are not there. Conversely, a locally-stored dataset that carries an `hf://` locator falls back to the viewer when nothing is on disk — so turning this off is what makes *that* preview empty, including in `standalone`. | `true` |
+| `AUTOTUNEX_HF_VIEWER_BASE_URL` | Base URL of the HuggingFace dataset-viewer service; the client appends `/splits` (subset/readiness discovery) then `/rows`. Override to point at a mirror. | `https://datasets-server.huggingface.co` |
 | `AUTOTUNEX_HF_VIEWER_TIMEOUT_SECONDS` | Per-call HTTP timeout for one viewer fetch. Must be > 0. | `2.5` |
 | `AUTOTUNEX_HF_HUB_BASE_URL` | HuggingFace Hub API base URL used to list/download a job's output-model files (result-report endpoint). | `https://huggingface.co` |
 
@@ -161,7 +163,7 @@ the wall-clock kill always applies.
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
-| `AUTOTUNEX_REWARD_TIMEOUT_SECONDS` | Hard wall-clock (and CPU rlimit) budget for one sandboxed reward-function run. Must be ≥ 1. | `5` |
+| `AUTOTUNEX_REWARD_TIMEOUT_SECONDS` | Hard wall-clock budget for one sandboxed reward-function run; the child's `RLIMIT_CPU` is set to this plus 30 s of slack, so the parent's kill always wins the race. Must be ≥ 1. | `5` |
 | `AUTOTUNEX_REWARD_MEMORY_BYTES` | Address-space rlimit for the reward-sandbox child. Must be ≥ 1. | `536870912` (512 MiB) |
 
 ## Chat assistant + MCP server
@@ -224,7 +226,7 @@ spec anchors each run's output under `AUTOTUNEX_ARTIFACT_DIR`, resolved to an ab
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
-| `GB_ENVIRONMENT` | **Read without the `AUTOTUNEX_` prefix** — it reuses the build tooling's own `GB_ENVIRONMENT` variable, and the prefixed `AUTOTUNEX_GB_ENVIRONMENT` is deliberately ignored. Set to `standalone` to select the local-`bash` build spec. | *(unset)* |
+| `GB_ENVIRONMENT` | **Read without the `AUTOTUNEX_` prefix** — it reuses the build tooling's own `GB_ENVIRONMENT` variable, and the prefixed `AUTOTUNEX_GB_ENVIRONMENT` is deliberately ignored. Set to `standalone` to select the local-`bash` build spec — matched case-insensitively and whitespace-trimmed, so granite.build's own `GB_ENVIRONMENT=STANDALONE` selects it too. | *(unset)* |
 | `AUTOTUNEX_BASH_FM_TUNE_ROOT` | Trainer checkout/repo injected into the bash spec's environment. | *(unset)* |
 | `AUTOTUNEX_BASH_FM_TUNE_REF` | Branch/tag/commit of the trainer to check out; unset uses the repo's default branch. | *(unset)* |
 | `AUTOTUNEX_BASH_FM_TUNE_EXTRA` | The extras to install in the bash spec. | `full,mlx` |
@@ -267,12 +269,6 @@ the optional in-process HPO package is installed is a runtime concern.
 | `AUTOTUNEX_LOCAL_OUTPUT_DIR` | Root for a local run's output; the per-job subdir is `<dir>/<job_id>/`. Defaults to a subdirectory of the artifact directory, so overriding `AUTOTUNEX_ARTIFACT_DIR` moves it too unless set explicitly. | `<ARTIFACT_DIR>/local` (i.e. `artifacts/local`) |
 | `AUTOTUNEX_LOCAL_CANCEL_TIMEOUT_SECONDS` | Seconds `LocalJobRunner.cancel` waits for an in-process run to stop before returning `JobCancellationInProgressError`. The cancel is latched regardless; this only bounds the wait. | `30.0` |
 
-## Limits
-
-| Variable | Meaning | Default |
-| --- | --- | --- |
-| `AUTOTUNEX_MAX_TRIALS_LIMIT` | **Reserved / not currently enforced.** A server-side ceiling on a job's trial count that no code path checks today. Must be ≥ 1. Do not rely on it to bound trials. | `100` |
-
 ## Authentication
 
 The settings below configure how callers are authenticated and authorized. For how the
@@ -286,6 +282,7 @@ tokens, and browser sessions — see [../api/authentication.md](../api/authentic
 | `AUTOTUNEX_STANDALONE_ROLE` | Role the standalone principal carries: `admin` or `user`. Wins over any `users.role` column value. | `admin` |
 | `AUTOTUNEX_API_KEYS` | JSON map of a key's SHA-256 hex digest → the owner's email. Never store raw keys. Required and non-empty when `"api_key"` is enabled. | `{}` |
 | `AUTOTUNEX_AUTO_PROVISION_USERS` | Just-in-time provision a `users` row (always `role=user`) on a caller's first request when they have a resolvable, verified email but no row yet. Off by default; makes even a `GET` write on first request. | `false` |
+| `AUTOTUNEX_LOGIN_ACTIVITY_THROTTLE_MINUTES` | How stale `users.last_login_at` must be, in minutes, before an authenticated request refreshes it — what the Users table's "Last login on" column shows. A completed browser login always records itself; this governs the refresh on every other authenticated request, which is the only thing that gives API-key and OIDC-bearer callers a value at all (neither passes through `/auth/login`). Must be ≥ 0; `0` records on every request — meant for tests, not production. | `15` |
 | `AUTOTUNEX_ALLOW_INSECURE_NO_AUTH` | Permit `auth_providers=["disabled"]` while `environment=prod`. Off by default; setting it logs a loud startup warning. Only for a deliberate single-tenant, no-auth deployment. | `false` |
 
 ### OIDC bearer tokens

@@ -177,6 +177,9 @@ class LocalJobRunner:
             if job is None:
                 logger.error("Job %s vanished before the local run; nothing to do.", job_id)
                 return None
+            # Unscoped by id on purpose: the job's ownership was validated at
+            # submission, and this must still resolve shared system-owned
+            # datasets. Do NOT add owner_id here.
             dataset = await SqlAlchemyDatasetRepository(session).get(job.dataset_id)
             context = self._context_from(job, dataset)
             check_transition(job.status, RunStatus.RUNNING)

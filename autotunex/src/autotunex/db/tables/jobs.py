@@ -15,12 +15,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Boolean, Enum, ForeignKey, Integer, String, Text, func, select
-from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
+from sqlalchemy import JSON, Boolean, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from autotunex.db.base import Base
 from autotunex.db.tables._helpers import utcnow
-from autotunex.db.tables.trials import TrialTable
 from autotunex.db.types import UtcDateTime, Uuid36
 from autotunex.models.status import RunStatus
 
@@ -30,6 +29,7 @@ if TYPE_CHECKING:
     from autotunex.db.tables.gb_tasks import GbTaskTable
     from autotunex.db.tables.log_entries import LogEntryTable
     from autotunex.db.tables.results import ResultTable
+    from autotunex.db.tables.trials import TrialTable
     from autotunex.db.tables.users import UserTable
 
 
@@ -74,7 +74,10 @@ class JobTable(Base):
     ray_address: Mapped[str | None] = mapped_column(String(50), default=None)
     cleanup: Mapped[bool | None] = mapped_column(Boolean, default=True)
     autotune: Mapped[bool | None] = mapped_column(Boolean, default=True)
-    output_artifacts: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    # Written by the tuning pipeline, not by this service: an object for some
+    # writers, a bare list of file descriptors for the publish step. The union
+    # is the column's real shape — see JobRead.output_artifacts.
+    output_artifacts: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(JSON, default=None)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
@@ -93,17 +96,3 @@ class JobTable(Base):
     log_entries: Mapped[list[LogEntryTable]] = relationship(
         "LogEntryTable", back_populates="job", cascade="all, delete-orphan"
     )
-
-    num_trials: Mapped[int] = column_property(
-        select(func.count(TrialTable.id))
-        .where(TrialTable.job_id == id)
-        .correlate_except(TrialTable)
-        .scalar_subquery(),
-        deferred=False,
-    )
-    """Number of trials, as a correlated subquery.
-
-    The ``autotunex_jobs`` view computed this with ``COUNT(DISTINCT t.id)`` and a
-    ``GROUP BY``, which multiplied rows once ``gb_tasks`` was also joined. A
-    scalar subquery cannot do that: the count is per-job by construction.
-    """

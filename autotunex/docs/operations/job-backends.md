@@ -29,7 +29,7 @@ else in the codebase changes.
 | Backend (`AUTOTUNEX_JOB_BACKEND`) | What it does | Requirements | Models | When to use |
 | --- | --- | --- | --- | --- |
 | **`none`** (default) | No-op runner: accepts the job and does nothing — it stays `pending` forever. | None. | Any (nothing runs). | Exploring the API, or when an external system executes jobs and writes results back to the database. |
-| **`local`** | Runs the `autotune` HPO pipeline **in-process via Ray Tune**, with no external build system. Persists trials, results, and logs live and drives the job to `completed`/`error` itself. | The optional `autotune` trainer package installed; the dataset's files present on local disk. | `huggingface`, `custom_path`. | Self-contained HPO on one host (or against an existing Ray cluster). |
+| **`local`** | Runs the `autotune` HPO pipeline **in-process via Ray Tune**, with no external build system. Persists trials, results, logs, and per-step training metrics live and drives the job to `completed`/`error` itself. | The optional `autotune` trainer package installed; the dataset's files present on local disk. | `huggingface`, `custom_path`. | Self-contained HPO on one host (or against an existing Ray cluster). |
 | **`llmb`** | Submits a [granite.build](https://github.com/ibm-granite/granite.build) build (a `build.yaml` spec) via the `llmb` CLI; a reconcile loop then polls a granite.build server and advances the job. | The `llmb` CLI; a reachable granite.build server; an auth token in the environment. | `huggingface`, `custom_path` (the local-bash variant is `huggingface`-only). | Offloading builds to a granite.build server — a remote cluster, or a local standalone machine. |
 
 The sections below describe each backend in detail.
@@ -57,7 +57,9 @@ submission. On submit it:
 1. flips the job `pending → running`;
 2. runs the `autotune` search under Ray Tune on a worker thread (so the event
    loop stays free to service the database writes the run drives);
-3. persists trials, results, and log entries **live** as the run progresses;
+3. persists trials, results, log entries, and per-step training metrics
+   **live** as the run progresses (those metric rows are what back
+   `GET /jobs/{id}/metrics` and `GET /jobs/{id}/trials/{trial_id}/metrics`);
 4. drives the job to `completed` on success, or to `error` on any failure —
    sweeping any still-`running` trials to `error` so none is left dangling.
 
@@ -113,6 +115,11 @@ The generated spec is written to `<AUTOTUNEX_JOB_SPEC_DIR>/<job_id>/build.yaml`
 (default `AUTOTUNEX_JOB_SPEC_DIR=tmp`) and is **kept** after submission — even on
 failure — so it can be inspected or replayed by hand.
 
+Cancellation goes through the same CLI: `POST /jobs/{id}/cancel` — and the
+auto-cancel that `DELETE /jobs/{id}` performs on a job with live work — runs
+`llmb build cancel <build_id>`. A job with no recorded build handle never reached
+the cluster, so there the cancel is a no-op.
+
 There are three spec variants, chosen by granite.build's own `GB_ENVIRONMENT`
 variable and, within `standalone`, by `AUTOTUNEX_LSF_CLUSTER`.
 
@@ -137,6 +144,7 @@ Optional in this mode:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `AUTOTUNEX_JOB_TRAINER_REF` | `main` | Branch/tag/commit of the trainer repo to check out. Not part of the fail-fast set. |
+| `AUTOTUNEX_JOB_CALLBACK_URL` | unset | The api-bridge base URL the build reports its logs and metrics to. Emitted into the start command as `--autotunex_server_url` **only when set**. |
 
 ```
 AUTOTUNEX_JOB_BACKEND=llmb
@@ -159,7 +167,9 @@ single machine (for example a laptop or Mac, on MPS/CPU via `mlx`).
 
 > **`GB_ENVIRONMENT` is granite.build's own variable and is read *without* the
 > `AUTOTUNEX_` prefix.** The prefixed `AUTOTUNEX_GB_ENVIRONMENT` is deliberately
-> ignored — set the bare `GB_ENVIRONMENT` that granite.build already uses.
+> ignored — set the bare `GB_ENVIRONMENT` that granite.build already uses. Its
+> value is matched case-insensitively and whitespace-trimmed, so granite.build's
+> own `GB_ENVIRONMENT=STANDALONE` selects it too.
 
 This variant drops the remote-only inputs (`AUTOTUNEX_JOB_RUNTIME_IMAGE`,
 `AUTOTUNEX_JOB_TRAINER_REPO`, `AUTOTUNEX_JOB_OUTPUT_URI_ROOT`) — the bash spec
@@ -172,6 +182,7 @@ polls the local server) plus:
 | `AUTOTUNEX_BASH_FM_TUNE_REF` | unset | Branch/tag/commit of the trainer to check out; unset uses the repo's default branch. Leave unset when `FM_TUNE_ROOT` is a local checkout, since the tree is already at the right commit. |
 | `AUTOTUNEX_BASH_FM_TUNE_EXTRA` | `full,mlx` | The extras to install. |
 | `AUTOTUNEX_BASH_BACKEND` | `mlx` | `mlx` for Apple Silicon, or `torch`. |
+| `AUTOTUNEX_JOB_CALLBACK_URL` | unset (spec emits `http://localhost:8001`) | The api-bridge base URL the build reports its logs and metrics to, injected into the spec's environment as `AUTOTUNEX_SERVER_URL`. Unlike the other two variants the bash spec **always** emits it, falling back to `http://localhost:8001` (the api-bridge's default port) when unset. |
 
 `AUTOTUNEX_BASH_FM_TUNE_ROOT` accepts **either** a repo URL **or** a local checkout path.
 With fm-tune vendored in-tree (`src/fm-tune/`), point it at the local checkout instead of
@@ -230,10 +241,26 @@ Required settings (startup **fails fast** if any is missing):
 discriminator, so leaving it unset does not fail startup — it simply selects the bash
 spec above.
 
+Optional in this mode:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `AUTOTUNEX_JOB_TRAINER_REF` | `main` | Branch/tag/commit of the trainer repo to check out. |
+| `AUTOTUNEX_JOB_CALLBACK_URL` | unset | The api-bridge base URL the build reports its logs and metrics to. Like the `custom_code` spec, emitted as `--autotunex_server_url` **only when set**. |
+
 The remaining `AUTOTUNEX_LSF_*` knobs (accelerators, queue, memory, CPUs and memory
 per node, venv path, CUDA home, poll interval) are optional and documented in
 [configuration.md](configuration.md#execution-job-launch). Like the bash spec, the
 LSF build references its dataset by URI, so it **requires an HF-hosted dataset**.
+
+Unlike the bash variant, settings validation **permits**
+`AUTOTUNEX_DATASET_STORAGE_BACKEND=huggingface` here — this variant runs on a cluster
+a local `file://` locator cannot reach, so `huggingface` is the intended storage. But
+AutoTuneX still cannot **push** the dataset itself in standalone: the HuggingFace
+backend's upload path runs `llmb artifact push`, which granite.build disables under
+`GB_ENVIRONMENT=standalone`, exactly as it does for the bash variant. The dataset must
+therefore already be HF-hosted by other means; hosting one from AutoTuneX in this
+variant remains an open item.
 
 ```
 AUTOTUNEX_JOB_BACKEND=llmb
@@ -265,6 +292,13 @@ merely write it into `.env`:
 export GB_TOKEN=<your granite.build token>
 ```
 
+**Live build logs.** `GET /jobs/{id}/gb-logs` reads a running build's container
+logs through the same integration, so it needs all three of the signals above:
+`AUTOTUNEX_JOB_BACKEND=llmb`, the environment variable named by
+`AUTOTUNEX_GB_TOKEN_ENV` actually present, and the `gbcli` package installed.
+Any other backend — or a missing token variable or package — makes the endpoint
+return `503`.
+
 **Reconcile cadence.** The loop sweeps non-terminal jobs on an interval and
 bounds how many status reads it issues per sweep:
 
@@ -277,6 +311,14 @@ The loop is restart-safe: its whole working set is one query per sweep, so a
 process restart resumes where it left off. Repeated `401`/`403` responses (almost
 always one expired token affecting every read) are logged once per sweep rather
 than once per job.
+
+**On-demand reconcile.** Reconcile is not background-only. An admin can force one
+job to re-sync immediately with `POST /jobs/{id}/reconcile` (admin-only, enforced
+transitively via the endpoint's gbserver-reader dependency); it needs the same
+`AUTOTUNEX_GB_SERVER_URL` as the loop. Because it force-writes the
+gbserver-reported status — bypassing `check_transition`, but bounded by
+`to_run_status`, which never rewinds a job to a pre-run state — it is the way to
+repair a job stuck in a *wrong* terminal state.
 
 **Fail-fast.** Startup refuses to run if a required `llmb` setting — or the token
 environment variable — is missing, so a misconfiguration surfaces at boot rather

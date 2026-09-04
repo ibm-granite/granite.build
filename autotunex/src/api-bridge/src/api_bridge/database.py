@@ -151,6 +151,7 @@ def _build_connect_args(sync_url: str, ssl_context: ssl.SSLContext | None) -> di
 REQUIRED_TABLES = {
     "configurations": ["id", "name", "config_data"],
     "log_entries": ["id", "job_id", "level", "filename", "message", "timestamp"],
+    "training_metrics": ["id", "job_id", "trial_id", "global_step", "split", "created_at"],
     "jobs": [
         "id",
         "seed",
@@ -258,6 +259,34 @@ class Database:
             return True
         except Exception as e:
             logger.error(f"Error inserting logs: {e!s}")
+            return False
+
+    def insert_metrics(self, buffer: list[dict[str, Any]]) -> bool:
+        """Insert a batch of per-step training-metrics rows. Returns success."""
+        if not buffer:
+            return True
+        try:
+            now = datetime.now(UTC)
+            rows = [
+                {
+                    "job_id": entry["job_id"],
+                    "trial_id": entry.get("trial_id"),
+                    "global_step": entry["global_step"],
+                    "epoch": entry.get("epoch"),
+                    "loss": entry.get("loss"),
+                    "grad_norm": entry.get("grad_norm"),
+                    "learning_rate": entry.get("learning_rate"),
+                    "split": entry.get("split", "train"),
+                    "extra": entry.get("extra"),
+                    "created_at": now,
+                }
+                for entry in buffer
+            ]
+            with self._engine.begin() as connection:
+                connection.execute(insert(tables.training_metrics), rows)
+            return True
+        except Exception as e:
+            logger.error(f"Error inserting metrics: {e!s}")
             return False
 
     def update_job_status(self, id: str, status: bridge_models.JobStatus) -> str:

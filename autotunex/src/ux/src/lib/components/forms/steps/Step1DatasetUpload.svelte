@@ -680,6 +680,17 @@
 					/>
 				{/if}
 
+				{#if selectedExistingDataset?.viewer_ready === false}
+					<InlineNotification
+						kind="info"
+						lowContrast
+						hideCloseButton
+						title="Preview not ready"
+						subtitle="The dataset viewer is still preparing this dataset. The preview will appear shortly — reopen this step in a moment."
+						style="margin-top: var(--cds-spacing-03, 0.5rem);"
+					/>
+				{/if}
+
 				<!-- VALIDATION FILE (when split disabled) -->
 				{#if uploadedFile && !existingDatasetId && !isSplitEnabled}
 					<div style="margin-top: 0.75rem;">

@@ -28,6 +28,7 @@ from autotunex.core.exceptions import (
     DomainValidationError,
     EmptyDatasetError,
     InvalidDatasetFormatError,
+    SystemResourceProtectedError,
 )
 from autotunex.core.logging import get_logger
 from autotunex.db.repositories.protocols import DatasetRepository
@@ -39,7 +40,11 @@ from autotunex.models.status import DatasetStatus
 from autotunex.services.dataset_runner import DatasetUploadRunner
 from autotunex.services.datasets_io import ALLOWED_FORMATS, sniff_format, stream_to_staging
 from autotunex.services.mappers import dataset_to_read
-from autotunex.services.scoping import resolve_owner_filter, sees_nothing
+from autotunex.services.scoping import (
+    is_delete_protected,
+    resolve_owner_filter,
+    sees_nothing,
+)
 from autotunex.services.storage.base import StorageBackend
 
 logger = get_logger(__name__)
@@ -128,6 +133,14 @@ class DatasetService:
         dataset". Any backend failure still degrades to ``preview=None`` and is
         logged — a preview never fails the metadata read.
 
+        Reads opt into the shared system tier (``include_shared=True``): a
+        dataset owned by the reserved system user
+        (:data:`~autotunex.core.constants.SYSTEM_USER_ID`) is visible to every
+        caller alongside their own. ``update`` and ``upload`` stay strict, so a
+        non-owner cannot modify one or upload into it, and :meth:`delete` refuses a
+        system-owned row outright — for every caller, admins included (see
+        :func:`~autotunex.services.scoping.is_delete_protected`).
+
         Raises:
             ScopeNotPermittedError: a non-admin requested ``scope=all``.
             DatasetNotFoundError: no such dataset, or it belongs to someone else.
@@ -135,7 +148,7 @@ class DatasetService:
         owner_id = resolve_owner_filter(self._principal, scope)
         if sees_nothing(self._principal, scope):
             raise DatasetNotFoundError(dataset_id)
-        dataset = await self._repository.get(dataset_id, owner_id=owner_id)
+        dataset = await self._repository.get(dataset_id, owner_id=owner_id, include_shared=True)
         if dataset is None:
             raise DatasetNotFoundError(dataset_id)
         preview_result = None
@@ -173,6 +186,9 @@ class DatasetService:
         """Return one page of datasets, newest first — own rows by default.
 
         ``q`` is an optional case-insensitive substring filter on ``name``.
+        Like :meth:`get`, this opts into the shared system tier
+        (``include_shared=True``), so datasets owned by the reserved system
+        user appear in every caller's list alongside their own.
 
         Raises:
             ScopeNotPermittedError: a non-admin requested ``scope=all``.
@@ -181,7 +197,7 @@ class DatasetService:
         if sees_nothing(self._principal, scope):
             return Page[DatasetRead](items=[], total=0, limit=limit, offset=offset)
         datasets, total = await self._repository.list(
-            limit=limit, offset=offset, owner_id=owner_id, q=q
+            limit=limit, offset=offset, owner_id=owner_id, q=q, include_shared=True
         )
         grouped = await self._repository.jobs_for_dataset(
             [dataset.id for dataset in datasets], owner_id=owner_id
@@ -241,17 +257,29 @@ class DatasetService:
     async def delete(self, dataset_id: UUID, *, scope: DataScope = DataScope.OWN) -> None:
         """Delete a dataset and best-effort clean its stored files.
 
+        A shared, system-owned dataset is refused outright, exactly as
+        :meth:`autotunex.services.configurations.ConfigurationService.delete`
+        refuses a system-owned configuration — see
+        :func:`~autotunex.services.scoping.is_delete_protected`. The lookup that
+        already runs here to capture ``artifact_url`` for storage cleanup opts into
+        the shared tier (``include_shared=True``) so the guard can see the row's
+        owner at all; the subsequent repository ``delete`` keeps its strict filter,
+        so a *visible-but-not-owned* row still resolves to a 404 as before.
+
         Raises:
             ScopeNotPermittedError: a non-admin requested ``scope=all``.
+            SystemResourceProtectedError: the dataset belongs to the shared system tier.
             DatasetNotFoundError: no such dataset, or not the caller's.
             DatasetInUseError: a job still references the dataset (raised by the repo).
         """
         owner_id = resolve_owner_filter(self._principal, scope)
         if sees_nothing(self._principal, scope):
             raise DatasetNotFoundError(dataset_id)
-        dataset = await self._repository.get(dataset_id, owner_id=owner_id)
+        dataset = await self._repository.get(dataset_id, owner_id=owner_id, include_shared=True)
         if dataset is None:
             raise DatasetNotFoundError(dataset_id)
+        if is_delete_protected(self._principal, dataset.user_id):
+            raise SystemResourceProtectedError("Dataset", dataset_id)
         name, artifact_url = dataset.name, dataset.artifact_url
         deleted = await self._repository.delete(dataset_id, owner_id=owner_id)
         if not deleted:

@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autotunex.core.constants import SYSTEM_USER_ID
 from autotunex.core.exceptions import DatasetInUseError, DatasetNameConflictError
 from autotunex.db.repositories.sqlalchemy import SqlAlchemyDatasetRepository
 from autotunex.db.tables import ConfigurationTable, JobTable, UserTable
@@ -235,3 +236,71 @@ async def test_jobs_for_dataset_returns_referencing_jobs_scoped_to_owner(
 
     assert {j.experiment_name for j in scoped[dataset.id]} == {"mine"}
     assert {j.experiment_name for j in unscoped[dataset.id]} == {"mine", "theirs"}
+
+
+async def _make_system_user(session: AsyncSession) -> UserTable:
+    user = UserTable(id=SYSTEM_USER_ID, email="system@autotunex.local", role="user")
+    session.add(user)
+    await session.commit()
+    return user
+
+
+async def test_get_includes_a_system_owned_dataset_when_shared(session: AsyncSession) -> None:
+    await _make_system_user(session)
+    owner = await _make_user(session, email="owner@example.com")
+    repository = SqlAlchemyDatasetRepository(session)
+    system_dataset = await repository.create(
+        user_id=str(SYSTEM_USER_ID), name="starter", description="d", data_format="jsonl"
+    )
+
+    found = await repository.get(system_dataset.id, owner_id=owner.id, include_shared=True)
+
+    assert found is not None
+    assert found.id == system_dataset.id
+
+
+async def test_get_excludes_a_system_owned_dataset_by_default(session: AsyncSession) -> None:
+    await _make_system_user(session)
+    owner = await _make_user(session, email="owner@example.com")
+    repository = SqlAlchemyDatasetRepository(session)
+    system_dataset = await repository.create(
+        user_id=str(SYSTEM_USER_ID), name="starter", description="d", data_format="jsonl"
+    )
+
+    found = await repository.get(system_dataset.id, owner_id=owner.id)
+
+    assert found is None
+
+
+async def test_list_includes_own_and_system_datasets_when_shared(session: AsyncSession) -> None:
+    await _make_system_user(session)
+    owner = await _make_user(session, email="owner@example.com")
+    repository = SqlAlchemyDatasetRepository(session)
+    await repository.create(
+        user_id=str(owner.id), name="mine", description="d", data_format="jsonl"
+    )
+    await repository.create(
+        user_id=str(SYSTEM_USER_ID), name="starter", description="d", data_format="jsonl"
+    )
+
+    rows, total = await repository.list(limit=20, offset=0, owner_id=owner.id, include_shared=True)
+
+    assert {row.name for row in rows} == {"mine", "starter"}
+    assert total == 2
+
+
+async def test_list_excludes_system_datasets_by_default(session: AsyncSession) -> None:
+    await _make_system_user(session)
+    owner = await _make_user(session, email="owner@example.com")
+    repository = SqlAlchemyDatasetRepository(session)
+    await repository.create(
+        user_id=str(owner.id), name="mine", description="d", data_format="jsonl"
+    )
+    await repository.create(
+        user_id=str(SYSTEM_USER_ID), name="starter", description="d", data_format="jsonl"
+    )
+
+    rows, total = await repository.list(limit=20, offset=0, owner_id=owner.id)
+
+    assert {row.name for row in rows} == {"mine"}
+    assert total == 1

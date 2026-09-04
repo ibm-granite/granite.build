@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """The persisting ``TrialSink`` and its log handler for the ``local`` runner.
 
-:class:`DbTrialSink` bridges the **worker-thread** calls a Ray callback makes
-(``trial_started`` / ``trial_result`` / ``trial_completed`` / ``trial_error`` /
-``log``) to the async write repositories running on the application's event loop,
-using :func:`asyncio.run_coroutine_threadsafe`. :class:`SinkLogHandler` is a
+:class:`DbTrialSink` bridges the **worker-thread** calls a Ray callback (or the
+captured stdout/stderr stream) makes (``trial_started`` / ``trial_result`` /
+``trial_completed`` / ``trial_error`` / ``log`` / ``training_metric``) to the
+async write repositories running on the application's event loop, using
+:func:`asyncio.run_coroutine_threadsafe`. :class:`SinkLogHandler` is a
 ``logging.Handler`` that buffers captured log lines and flushes them to a
 :class:`~autotunex.services.local.protocols.TrialSink` in batches, so log
 capture does not cost one DB round-trip per line.
@@ -32,10 +33,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from autotunex.db.repositories.sqlalchemy import (
     SqlAlchemyJobRepository,
     SqlAlchemyResultRepository,
+    SqlAlchemyTrainingMetricsRepository,
     SqlAlchemyTrialRepository,
 )
 from autotunex.models.status import RunStatus
-from autotunex.services.local.protocols import LogRecord, TrialSink
+from autotunex.services.local.protocols import LogRecord, TrainingMetricRecord, TrialSink
 
 _MAX_TRIAL_ID_LEN = 16
 """Width of ``trials.id`` / ``results.trial_id`` (``VARCHAR(16)``)."""
@@ -187,6 +189,21 @@ class DbTrialSink:
                 self._job_id, trial_id, metric=metric, metrics=metrics
             )
 
+    async def _insert_metric(self, record: TrainingMetricRecord) -> None:
+        trial_id = self.coerce_trial_id(record.trial_id) if record.trial_id is not None else None
+        async with self._session_factory() as session:
+            await SqlAlchemyTrainingMetricsRepository(session).insert(
+                self._job_id,
+                trial_id=trial_id,
+                global_step=record.global_step,
+                epoch=record.epoch,
+                loss=record.loss,
+                grad_norm=record.grad_norm,
+                learning_rate=record.learning_rate,
+                split=record.split,
+                extra=record.extra,
+            )
+
     async def _append_log(self, record: LogRecord) -> None:
         trial_id = self.coerce_trial_id(record.trial_id) if record.trial_id is not None else None
         async with self._session_factory() as session:
@@ -233,6 +250,10 @@ class DbTrialSink:
     def log(self, record: LogRecord) -> None:
         """Persist one captured log line as a ``log_entries`` row."""
         self._run(self._append_log(record))
+
+    def training_metric(self, record: TrainingMetricRecord) -> None:
+        """Persist one per-step training-metrics row (worker-thread only)."""
+        self._run(self._insert_metric(record))
 
 
 class SinkLogHandler(logging.Handler):
