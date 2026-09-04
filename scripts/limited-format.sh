@@ -4,12 +4,19 @@ MY_LINE_BREAK="---------------------------"
 
 echo 'format start'
 
-# Fail loudly instead of formatting nothing. Without `pipefail` a failure in the
-# `git diff` below is swallowed by the pipe and the loop simply iterates zero
-# times, so the script prints "format start"/"format end" and exits 0 having
-# formatted NOTHING — which is what a missing `mapfile` used to do silently on
-# macOS's bash 3.2 (see below), letting unformatted code reach CI.
-set -o pipefail
+# Fail loudly instead of formatting nothing.
+#
+# `set -o pipefail` was here and did NOTHING: there is no pipe, and a process
+# substitution's exit status is not reflected in $? either, so a failing
+# `git diff` still yielded zero files and the script exited 0 reporting "nothing to
+# format" — precisely the silent no-op the comment claimed to prevent. (Verified:
+# `while ... done < <(false)` gives rc=0.) That matters because a missing `mapfile`
+# used to fail exactly this way on macOS's bash 3.2, letting unformatted code reach
+# CI.
+#
+# So the diff is captured to a temp file and its exit status checked explicitly,
+# which is the only way to tell "no changed files" from "git failed".
+set -u
 
 # Collect the changed files, NUL-delimited so a path containing whitespace stays
 # one entry. Read with a `while` loop rather than `mapfile -d`: mapfile's `-d`
@@ -19,10 +26,18 @@ set -o pipefail
 #
 # The loop body runs in the CURRENT shell (the redirect is on `done`, not a pipe),
 # so `files` survives afterwards.
+difflist="$(mktemp)"
+trap 'rm -f "${difflist}"' EXIT
+if ! git diff main...HEAD --name-only -z --format= > "${difflist}"; then
+    echo "ERROR: 'git diff main...HEAD' failed — cannot determine changed files." >&2
+    echo "       (a shallow clone or a missing 'main' ref will do this)" >&2
+    exit 1
+fi
+
 files=()
 while IFS= read -r -d '' x; do
     files+=("${x}")
-done < <(git diff main...HEAD --name-only -z --format=)
+done < "${difflist}"
 # To format against `dev` instead, change `main...HEAD` above.
 
 if [[ "${#files[@]}" -eq 0 ]]; then
@@ -56,8 +71,16 @@ do
         fi
         echo "${MY_LINE_BREAK}"
         echo -e "\033[0;36m Formatting file: \033[0m\033[0;32m${x}\033[0m"
-        isort --profile black "${x}"
-        black "${x}"
+        # Check both formatters: an unchecked failure here also exits 0 overall,
+        # which is the same silent-success problem one level down.
+        if ! isort --profile black "${x}"; then
+            echo "ERROR: isort failed on ${x}" >&2
+            exit 1
+        fi
+        if ! black "${x}"; then
+            echo "ERROR: black failed on ${x}" >&2
+            exit 1
+        fi
         echo
     else
         echo "skip non-python file: ${x}"

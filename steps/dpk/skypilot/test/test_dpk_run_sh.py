@@ -471,6 +471,44 @@ class TestValidationHook:
         assert transform < validating
 
 
+class TestMarkerValuesTheMonitorCannotCarry:
+    """The marker is space-delimited and its path is interpolated into JSON.
+
+    Both by the CONSUMER (builtins/monitors/skypilot/monitor.yaml), so neither can be
+    escaped away here. binding_id is captured with [^ ]+, so an id containing a space
+    registers only the first word — binding the wrong artifact, silently. A double
+    quote in the path terminates the monitor's JSON string early. Refuse, naming the
+    value, rather than emit a marker that registers something wrong.
+    """
+
+    @pytest.mark.parametrize("bad_id", ["a b", "a\tb", 'a"b'])
+    def test_bad_artifact_id_is_refused_with_no_marker(self, run_script, bad_id):
+        proc = run_script(*_BASE, "--output-path", "out", "--artifact-id", bad_id)
+        assert proc.returncode != 0
+        assert "artifact id contains whitespace or a double quote" in proc.stderr
+        assert _marker(proc.stdout) is None
+
+    def test_bad_output_path_is_refused_with_no_marker(self, run_script):
+        target = run_script.tmp_path / 'out"x'
+        proc = run_script(*_BASE, "--output-path", str(target), "--artifact-id", "ok")
+        assert proc.returncode != 0
+        assert "output path contains a double quote" in proc.stderr
+        assert _marker(proc.stdout) is None
+
+    def test_the_guard_runs_after_the_transform(self, run_script):
+        """It guards REGISTRATION, not execution: the transform still ran, so the
+        failure is about publishing the result, not about doing the work."""
+        proc = run_script(*_BASE, "--output-path", "out", "--artifact-id", "a b")
+        assert _pyargs(proc.stdout), "the transform should still have been invoked"
+
+    @pytest.mark.parametrize("ok_id", ["tokens", "clean-output", "a_b.c", "x:1"])
+    def test_ordinary_ids_still_emit_a_marker(self, run_script, ok_id):
+        """Over-correction guard: only whitespace and a double quote are refused."""
+        proc = run_script(*_BASE, "--output-path", "out", "--artifact-id", ok_id)
+        assert proc.returncode == 0, proc.stderr
+        assert _marker(proc.stdout).startswith(f"GB_ARTIFACT_ID:{ok_id} ")
+
+
 class TestFailurePropagation:
     def test_transform_failure_fails_the_script(self, run_script, tmp_path):
         """set -e: a non-zero transform must fail the step, not emit a marker."""

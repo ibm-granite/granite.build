@@ -167,6 +167,25 @@ environment_configs:
           # prepends `hf download ...` here for any hf:// input binding.
           setup: |
             set -eu
+            {#- ray_enabled does THREE things, and dpk_image silently removes one of
+                them: the install is skipped entirely, so the `ray` pip extra never
+                lands, while `run` still switches to .ray.runtime and passes
+                --run_locally true. That is exactly the half-applied subset the
+                one-flag design exists to prevent, and it surfaces as an import error
+                mid-run on a node. Refuse at bring-up instead, where the message is
+                attached to the phase that would have installed it. An image that
+                genuinely bakes in the ray extra can say so by not setting
+                ray_enabled and naming the module directly. #}
+            {%- if config.dpk_config.dpk_image and config.dpk_config.ray_enabled %}
+            echo "dpk: ERROR ray_enabled cannot be combined with dpk_image." >&2
+            echo "dpk: dpk_image skips the pip install, so the 'ray' extra ray_enabled" >&2
+            echo "dpk: needs would never be installed, while the module would still be" >&2
+            echo "dpk: switched to .ray.runtime — failing later, on the node." >&2
+            echo "dpk: use an image that already provides DPK's ray extra and set" >&2
+            echo "dpk: 'module: dpk_<transform>.ray.runtime' plus" >&2
+            echo "dpk: 'args: {run_locally: true}' explicitly, or drop dpk_image." >&2
+            exit 1
+            {%- endif %}
             {%- if not config.dpk_config.dpk_image %}
             {%- set t = config.dpk_config.transform %}
             {#- The transform's own extra is always derived from its name; ray_enabled

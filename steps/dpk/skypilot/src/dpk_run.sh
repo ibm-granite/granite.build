@@ -132,4 +132,29 @@ fi
 
 # Register the output for the declared artifact id. Must start at the beginning
 # of a line for the skypilot monitor's regex to capture it.
+#
+# The marker is a SPACE-DELIMITED line consumed by a regex, and the path is then
+# interpolated into a JSON string template by the monitor
+# (builtins/monitors/skypilot/monitor.yaml). Two characters therefore cannot be
+# carried, and both fail SILENTLY rather than loudly:
+#   * a space in the artifact id — the monitor captures binding_id with [^ ]+, so
+#     "a b" registers as "a", binding the wrong artifact id;
+#   * a double quote in the path — it terminates the monitor's JSON string early and
+#     corrupts the event.
+# Neither can be escaped away here: the delimiter and the JSON template belong to the
+# consumer. So refuse, naming the value, instead of registering something wrong.
+case $artifact_id in
+  *[[:space:]]*|*'"'*)
+    echo "dpk: ERROR artifact id contains whitespace or a double quote:" \
+         "'${artifact_id}'" >&2
+    echo "dpk: the artifact marker is space-delimited, so the monitor would register" >&2
+    echo "dpk: only the first word. Rename the declared output." >&2
+    exit 1 ;;
+esac
+case $output_path in
+  *'"'*)
+    echo "dpk: ERROR output path contains a double quote: '${output_path}'" >&2
+    echo "dpk: the monitor interpolates the path into JSON, which this would break." >&2
+    exit 1 ;;
+esac
 echo "GB_ARTIFACT_ID:${artifact_id} GB_ARTIFACT_PATH:${output_path}"

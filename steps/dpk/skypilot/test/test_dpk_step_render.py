@@ -36,7 +36,6 @@ they render into:
 import pathlib
 import shutil
 import subprocess
-import tempfile
 
 import pytest
 import yaml
@@ -617,25 +616,27 @@ class TestEveryConfigValueIsEscaped:
         }
         assert _opt(argv, opt[field]) == "a'b"
 
-    @pytest.mark.parametrize("field", ["pip_index_url", "transform", "dpk_version"])
+    @pytest.mark.parametrize("field", ["pip_index_url", "dpk_version"])
     def test_the_setup_block_is_escaped_too(self, launcher, defaults, field, tmp_path):
-        """`setup` had the same gap, in the phase that runs FIRST.
+        """`setup` had the same gap, in the phase that runs FIRST — before the venv.
 
-        `pip_index_url` goes straight into --index-url, and `transform` +
-        `dpk_version` are both folded into the derived requirement specifier. A quote
-        in any of them executed on the node at cluster bring-up, before the venv even
-        existed. Macros are block-scoped in Jinja, so `setup` carries its own copy of
-        the escaping rule — this test is what keeps the two from drifting apart.
+        These two fields cover BOTH interpolations in the block: `pip_index_url` goes
+        straight into --index-url, and `dpk_version` is folded into the derived
+        requirement specifier. Macros are block-scoped in Jinja, so `setup` carries
+        its own copy of the escaping rule; this is what keeps the two from drifting.
+
+        `transform` is deliberately NOT included, though it also reaches this block:
+        it arrives through the SAME q(dpk_req) call as `dpk_version`, so it is the
+        same code path and adds no coverage — verified by reverting that call and
+        confirming the dpk_version case alone goes red. Including it also required a
+        canary path with no underscore ANYWHERE, because `transform` is legitimately
+        rewritten with replace("_", "-") for the pip extra and that rewrite lands
+        inside the payload too, silently retargeting the `touch` so the assertion
+        checks a file the command never wrote. Chasing an underscore-free path is
+        what made this test flaky; `transform`'s escaping is covered by the run-block
+        tests above, which have no such rewrite.
         """
-        # The canary path must contain NO underscore anywhere, pytest's tmp_path
-        # included: `transform` is rewritten with replace("_", "-") on its way into
-        # the pip extra, which rewrites the path inside the payload too and makes the
-        # check silently vacuous — the command still runs, just against a different
-        # filename. (Found exactly that way: this assertion passed against unescaped
-        # code until the canary was renamed.) mkdtemp under /tmp gives a digits-only
-        # suffix, so the whole path stays underscore-free.
-        canary = pathlib.Path(tempfile.mkdtemp(prefix="dpkq", dir="/tmp")) / "cnry"
-        assert "_" not in str(canary), "canary path must survive the extra rewrite"
+        canary = tmp_path / "canary"
         cfg = _transform_cfg(defaults, **{field: f"x'`touch {canary}`'"})
         rendered = _render(launcher["setup"], cfg)
         assert _bash_ok(rendered), f"{field} broke the rendered setup shell"
@@ -693,6 +694,46 @@ class TestArgsKeysMustBeFlagNames:
         )
         assert "not a valid DPK flag name" not in rendered
         assert _passthrough(_script_argv(rendered, "run")) == [f"--{key}", "v"]
+
+
+class TestRayAndImageAreRefusedTogether:
+    """ray_enabled + dpk_image silently delivered 2 of its 3 documented jobs.
+
+    dpk_image skips the install entirely, so the `ray` pip extra never lands — while
+    `run` still switches to .ray.runtime and passes --run_locally true. That is the
+    exact half-applied subset the one-flag design exists to prevent, surfacing as an
+    import error mid-run on a node. Refused at bring-up instead.
+    """
+
+    def test_the_combination_is_refused_in_setup(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, ray_enabled=True, dpk_image="quay.io/o/i:1")
+        rendered = _render(launcher["setup"], cfg)
+        assert "exit 1" in rendered
+        assert "ray_enabled cannot be combined with dpk_image" in rendered
+        assert _bash_ok(rendered)
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"dpk_image": "quay.io/o/i:1"},
+            {"ray_enabled": True},
+            {},
+        ],
+    )
+    def test_each_alone_is_still_allowed(self, launcher, defaults, kw):
+        """Over-correction guard: only the broken COMBINATION is refused."""
+        rendered = _render(launcher["setup"], _transform_cfg(defaults, **kw))
+        assert "exit 1" not in rendered
+        assert _bash_ok(rendered)
+
+    def test_ray_alone_still_installs_the_ray_extra(self, launcher, defaults):
+        argv = _script_argv(
+            _render(launcher["setup"], _transform_cfg(defaults, ray_enabled=True)),
+            "setup",
+        )
+        assert _passthrough(argv) == [
+            "data-prep-toolkit-transforms[tokenization2arrow,ray]==1.1.8"
+        ]
 
 
 class TestIoWiring:

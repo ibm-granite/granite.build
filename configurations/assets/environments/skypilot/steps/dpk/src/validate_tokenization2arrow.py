@@ -94,12 +94,39 @@ def _read_arrow(path: pathlib.Path) -> pa.Table:
             return pa.ipc.open_stream(source).read_all()
 
 
+def _read_text(path: pathlib.Path) -> tuple[str | None, str | None]:
+    """Read a text file, returning (text, error-or-None) instead of raising.
+
+    These files are DPK's output, not this step's, so their ENCODING is an
+    assumption like their types were. A single invalid UTF-8 byte in a sidecar or in
+    metadata.json raised UnicodeDecodeError out of validate() and main() — a
+    traceback with no validation.json written, which is the same failure the
+    metadata.json type guards were added to prevent, one layer earlier. Decode errors
+    are surfaced as ordinary findings so the report is still produced.
+
+    Read as bytes then decoded explicitly: read_text() would apply the platform's
+    locale encoding, so the same corrupt file could pass on one node and fail on
+    another.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return None, f"{path.name}: unreadable: {exc}"
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError as exc:
+        return None, f"{path.name}: not valid UTF-8: {exc}"
+
+
 def _parse_docs_ids(path: pathlib.Path) -> tuple[list[str], list[int], list[str]]:
     """Parse ``meta/<name>.docs.ids`` into (doc_ids, token_counts, errors)."""
     doc_ids: list[str] = []
     counts: list[int] = []
     errors: list[str] = []
-    for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
+    text, err = _read_text(path)
+    if err is not None:
+        return doc_ids, counts, [err]
+    for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line:
             continue
@@ -118,7 +145,10 @@ def _parse_docs_ids(path: pathlib.Path) -> tuple[list[str], list[int], list[str]
 
 def _parse_docs_summary(path: pathlib.Path) -> tuple[int | None, int | None, list[str]]:
     """Parse ``meta/<name>.docs`` into (documents, tokens, errors)."""
-    text = path.read_text().strip()
+    text, err = _read_text(path)
+    if err is not None:
+        return None, None, [err]
+    text = text.strip()
     match = _DOCS_SUMMARY_RE.match(text)
     if not match:
         return None, None, [f"{path.name}: unparseable summary line {text!r}"]
@@ -232,6 +262,12 @@ def check_completeness(
 def validate(src: pathlib.Path) -> tuple[dict, list[str]]:
     """Run every check under ``src``, returning (summary, errors)."""
     errors: list[str] = []
+    # Errors that mean "the transform produced no output". Collected separately
+    # because that is CORRECT for an all-empty corpus, and validate() cannot tell:
+    # it never sees the input. main() decides, then folds these in or withdraws them.
+    # Identity, not string matching — keying the withdrawal on the message text meant
+    # a reworded error silently stopped being withdrawn.
+    no_output: list[str] = []
     summary: dict = {"source": str(src)}
 
     meta_path = src / "metadata.json"
@@ -240,11 +276,23 @@ def validate(src: pathlib.Path) -> tuple[dict, list[str]]:
         errors.append(f"missing metadata.json under {src}")
     else:
         stats: dict = {}
-        try:
-            loaded = json.loads(meta_path.read_text())
-        except json.JSONDecodeError as exc:
-            errors.append(f"metadata.json is not valid JSON: {exc}")
+        # The DECODE happens before the JSON parse and has its own failure mode:
+        # UnicodeDecodeError is not a JSONDecodeError, so invalid UTF-8 escaped this
+        # guard entirely and took main() down before any report was written.
+        meta_text, decode_err = _read_text(meta_path)
+        parsed = False
+        loaded = None
+        if decode_err is not None:
+            errors.append(decode_err)
         else:
+            try:
+                loaded = json.loads(meta_text)
+                parsed = True
+            except json.JSONDecodeError as exc:
+                errors.append(f"metadata.json is not valid JSON: {exc}")
+        # `parsed` rather than `loaded is not None`, so a literal `null` still reaches
+        # the type check below and is reported as "is NoneType, expected an object".
+        if parsed:
             # Valid JSON is not necessarily an OBJECT: `[]`, `null`, `"x"` and `3`
             # all parse. Calling .get() on those raises AttributeError, which would
             # escape main() — no validation.json written, a traceback instead of the
@@ -273,7 +321,12 @@ def validate(src: pathlib.Path) -> tuple[dict, list[str]]:
             if err:
                 errors.append(err)
             elif result_files is not None and result_files < 1:
-                errors.append(f"transform produced no result files: {stats}")
+                # TAGGED as a no-output error (see summary["no_output_errors"]): an
+                # all-empty corpus legitimately produces zero result files, and DPK
+                # publishes exactly "result_files": 0 in that case
+                # (transform_file_processor.py's `case 0`). Only main(), which can see
+                # the input, can tell that apart from a real failure.
+                no_output.append(f"transform produced no result files: {stats}")
             # num_tokens is compared with `!=`, which never raises — so a string
             # "85" would not crash, it would silently report a mismatch against
             # the int 85 and fail a perfectly good run. A wrong diagnosis is worse
@@ -287,12 +340,19 @@ def validate(src: pathlib.Path) -> tuple[dict, list[str]]:
     # sits under a directory named meta (a plausible output_path like
     # /shared/meta/tokens), which reported "no .arrow files found" for output that
     # was in fact fine.
+    # Only the FIRST component is tested, not any component. The sidecar tree DPK
+    # writes is exactly src/meta/..., so a source subdirectory named meta (giving
+    # out/meta/x.arrow, since DPK mirrors the input tree) is real output — and
+    # excluding it made those files invisible to every consistency check while
+    # check_completeness, which applies no such filter, still found them and passed.
+    # A truncated arrow file there would have gone unvalidated on a green target.
     arrow_files = sorted(
-        p for p in src.rglob("*.arrow") if "meta" not in p.relative_to(src).parts
+        p for p in src.rglob("*.arrow") if p.relative_to(src).parts[:1] != ("meta",)
     )
     summary["arrow_files"] = len(arrow_files)
     if not arrow_files:
-        errors.append(f"no .arrow files found under {src}")
+        # Also tagged: same cause, same caveat.
+        no_output.append(f"no .arrow files found under {src}")
 
     total_tokens = 0
     total_documents = 0
@@ -381,13 +441,18 @@ def validate(src: pathlib.Path) -> tuple[dict, list[str]]:
     summary["total_documents"] = total_documents
     summary["total_tokens"] = total_tokens
 
+    summary["no_output_errors"] = no_output
+
     if declared_tokens is not None and declared_tokens != total_tokens:
         errors.append(
             f"metadata.json reports num_tokens={declared_tokens} but the arrow "
             f"files hold {total_tokens} tokens in total"
         )
 
-    return summary, errors
+    # Default is STRICT: no output is a failure unless a caller proves otherwise.
+    # Without --input there is no way to prove it, so validate() alone behaves exactly
+    # as before.
+    return summary, errors + no_output
 
 
 def main(argv: list[str]) -> int:
@@ -428,29 +493,34 @@ def main(argv: list[str]) -> int:
         summary["completeness"] = completeness
         errors = errors + completeness_errors
 
-        # An ALL-EMPTY corpus legitimately produces no .arrow at all: the transform
-        # reports "skipped empty tables" and writes nothing. validate() cannot know
-        # that — it never sees the input — so it appended "no .arrow files found",
-        # failing a target that behaved correctly. Only here, with both results in
-        # hand, is the distinction visible: sources exist, every one is empty, and
-        # so zero outputs were expected.
+        # An ALL-EMPTY corpus legitimately produces no output at all: the transform
+        # reports "skipped empty tables" and writes nothing, and DPK publishes
+        # "result_files": 0 for it. validate() cannot know that — it never sees the
+        # input — so it flagged both, failing a target that behaved correctly. Only
+        # here, with both results in hand, is the distinction visible: sources exist,
+        # every one is empty, so zero outputs were expected.
         #
-        # Deliberately narrow. It withdraws that ONE error, and only when
-        # check_completeness found at least one source file and expects no output,
-        # so a genuinely dropped file still fails (expected_outputs > 0 leaves the
-        # error in place). An empty input DIRECTORY is untouched: check_completeness
-        # reports "no .parquet files found" for that, which is a real fault.
+        # ALL the no-output errors are withdrawn together, by identity. Withdrawing
+        # only "no .arrow files found" by string match left "transform produced no
+        # result files" in place, so the target still failed — and the test missed it
+        # because its hand-written metadata.json omitted result_files, a value real
+        # DPK always writes.
+        #
+        # Still narrow: only when check_completeness found at least one source file
+        # and expects no output, so a genuinely dropped file keeps failing
+        # (expected_outputs > 0 withdraws nothing). An empty input DIRECTORY is
+        # untouched — "no .parquet files found" is a real fault and is not tagged.
+        no_output = summary.get("no_output_errors", [])
         if (
-            completeness.get("source_parquet", 0) > 0
+            no_output
+            and completeness.get("source_parquet", 0) > 0
             and completeness.get("expected_outputs", 0) == 0
         ):
-            withdrawn = f"no .arrow files found under {src}"
-            if withdrawn in errors:
-                errors = [e for e in errors if e != withdrawn]
-                summary["note"] = (
-                    "every source file was empty, so no output was expected; "
-                    "'no .arrow files found' was not counted as a failure"
-                )
+            errors = [e for e in errors if e not in no_output]
+            summary["note"] = (
+                "every source file was empty, so no output was expected; "
+                f"{len(no_output)} no-output error(s) were not counted as failures"
+            )
 
     summary["errors"] = errors
 

@@ -596,7 +596,21 @@ class TestAllEmptyInputIsNotAFailure:
         out = tmp_path / "out"
         out.mkdir()
         (out / "metadata.json").write_text(
-            json.dumps({"job_output_stats": {"skipped empty tables": 2}})
+            # result_files: 0 is what DPK ACTUALLY writes when a transform produces
+            # no output file (transform_file_processor.py's `case 0` publishes it
+            # explicitly). The original version of this test omitted the key, which
+            # made it pass while the real all-empty case still failed on "transform
+            # produced no result files" — the test encoded my assumption instead of
+            # checking the behaviour.
+            json.dumps(
+                {
+                    "job_output_stats": {
+                        "skipped empty tables": 2,
+                        "result_files": 0,
+                        "num_tokens": 0,
+                    }
+                }
+            )
         )
         rc = validator.main(
             [
@@ -665,6 +679,72 @@ class TestAllEmptyInputIsNotAFailure:
         assert rc == 1
         report = json.loads((tmp_path / "rpt4" / "validation.json").read_text())
         assert any("no .parquet files found" in e for e in report["errors"])
+
+
+class TestCorruptEncodingIsReportedNotRaised:
+    """Invalid UTF-8 in DPK's own output files must not kill the report.
+
+    Same class as the metadata.json TYPE guards, one layer earlier: these files are
+    DPK's output, so their encoding is an assumption too. A single bad byte raised
+    UnicodeDecodeError out of validate() and main() — a traceback with no
+    validation.json written, which is the failure the type guards exist to prevent.
+    """
+
+    def test_bad_utf8_in_docs_ids_sidecar(self, good_tree):
+        (good_tree / "meta/lang=en/pq01.docs.ids").write_bytes(b"doc\xff1, 3\n")
+        _, errors = validator.validate(good_tree)
+        assert any("not valid UTF-8" in e for e in errors)
+
+    def test_bad_utf8_in_docs_summary_sidecar(self, good_tree):
+        (good_tree / "meta/lang=en/pq01.docs").write_bytes(
+            b"pq\xff, documents: 1, tokens: 3\n"
+        )
+        _, errors = validator.validate(good_tree)
+        assert any("not valid UTF-8" in e for e in errors)
+
+    def test_bad_utf8_in_metadata_json(self, good_tree):
+        """UnicodeDecodeError is not a JSONDecodeError, so it bypassed that guard."""
+        (good_tree / "metadata.json").write_bytes(b'{"a": "\xff"}')
+        _, errors = validator.validate(good_tree)
+        assert any("not valid UTF-8" in e for e in errors)
+
+    def test_bad_utf8_still_writes_a_report(self, good_tree, tmp_path):
+        (good_tree / "metadata.json").write_bytes(b'{"a": "\xff"}')
+        rpt = tmp_path / "rpt"
+        assert validator.main(["x", str(good_tree), str(rpt)]) == 1
+        assert (rpt / "validation.json").is_file()
+
+    def test_literal_null_metadata_is_still_type_checked(self, good_tree):
+        """Regression fence for the decode refactor: `null` parses, so it must reach
+        the type check rather than being mistaken for a parse failure."""
+        (good_tree / "metadata.json").write_bytes(b"null")
+        _, errors = validator.validate(good_tree)
+        assert any("NoneType, expected an object" in e for e in errors)
+
+
+class TestNestedMetaDirIsNotASidecarTree:
+    """Only a TOP-LEVEL meta/ is DPK's sidecar tree.
+
+    DPK writes sidecars by replacing the output-folder prefix with
+    "<output_folder>meta/" (tokenization2arrow/transform.py:66), so the tree is
+    always at the root. Excluding *any* path component named meta hid real output
+    under a source subdirectory called meta from every consistency check, while
+    check_completeness (which has no such filter) still found it and passed — so a
+    truncated arrow file there would go unvalidated on a green target.
+    """
+
+    def test_nested_meta_output_is_validated(self, tmp_path):
+        out = tmp_path / "out"
+        tree = _build_tree(out, {"lang=en/meta/x": [("d1", 2)]})
+        summary, errors = validator.validate(tree)
+        assert summary["arrow_files"] == 1
+        assert errors == []
+
+    def test_top_level_meta_tree_is_still_excluded(self, good_tree):
+        """A stray .arrow inside the real sidecar tree must stay ignored."""
+        before = validator.validate(good_tree)[0]["arrow_files"]
+        _write_arrow(good_tree / "meta" / "stray.arrow", 5)
+        assert validator.validate(good_tree)[0]["arrow_files"] == before
 
 
 class TestArrowReaderFallback:
