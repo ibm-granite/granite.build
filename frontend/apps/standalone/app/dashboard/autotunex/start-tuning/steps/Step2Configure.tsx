@@ -217,7 +217,16 @@ export function Step2Configure({
     if (!selectedConfig || !editableConfig) return
 
     const tuner_type = editableConfig.tuner_type || selectedConfig.tuner_type
-    const rl_tuner_type = editableConfig.rl_tuner_type || selectedConfig.rl_tuner_type || null
+    // `editableConfig.rl_tuner_type` is authoritative once CreateConfigForm has
+    // mounted, because its effect mirrors the dropdown into the config and writes
+    // null for the "none" selection. A `||` chain cannot tell "explicitly none"
+    // from "never set", so switching an existing DPO config to none fell straight
+    // back to 'dpo' and saved it — the algorithm could be set but never cleared.
+    // Presence of the key is the signal; fall back only when the form never ran.
+    const rl_tuner_type =
+      editableConfig.rl_tuner_type !== undefined
+        ? editableConfig.rl_tuner_type || null
+        : selectedConfig.rl_tuner_type || null
     const configData: ConfigData = {
       tune_config: editableConfig.tune_config,
       tuners_config: editableConfig.tuners_config,

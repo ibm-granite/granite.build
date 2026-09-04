@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import gzip
 
 import httpx
@@ -309,3 +310,68 @@ def test_bodyless_get_is_not_given_chunked_encoding(monkeypatch):
     assert resp.status_code == 200
     assert seen["transfer_encoding"] is None
     assert seen["body"] == b""
+
+
+def _raw_asgi_get(app, raw_path: str):
+    """GET with an UNNORMALIZED path, the way a non-browser client can send one.
+
+    TestClient goes through httpx, which applies RFC 3986 dot-segment removal
+    before the request leaves, so it cannot express this case at all. Uvicorn
+    performs no such normalization, so the app really does see the raw path.
+    """
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": raw_path,
+        "raw_path": raw_path.encode(),
+        "query_string": b"",
+        "headers": [(b"host", b"localhost")],
+        "client": ("203.0.113.9", 55555),
+        "server": ("localhost", 8080),
+        "root_path": "",
+    }
+    messages = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    asyncio.run(app(scope, receive, send))
+    status = next(m["status"] for m in messages if m["type"] == "http.response.start")
+    return status
+
+
+def test_rejects_path_escaping_the_upstream_api_mount(monkeypatch):
+    """A `..` segment must not turn the proxy into an arbitrary-path relay.
+
+    httpx removes dot segments when it parses the URL, so the concatenated
+    f"{AUTOTUNEX_URL}/api/v1/{path}" resolved to a path OUTSIDE /api/v1 —
+    e.g. /api/autotunex/../../internal/admin reached
+    http://upstream/internal/admin. Since this prefix is also exempt from
+    gbserver auth, that was an unauthenticated relay to any path on the
+    upstream host.
+    """
+    reached = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reached.append(str(request.url))
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(proxy_mod, "AUTOTUNEX_URL", "http://autotunex.test")
+    monkeypatch.setattr(proxy_mod, "_client", _client_with_handler(handler))
+
+    app = _make_app()
+    for escaping in (
+        "/api/autotunex/../../internal/admin",
+        "/api/autotunex/a/../../../etc/passwd",
+        "/api/autotunex/..",
+    ):
+        status = _raw_asgi_get(app, escaping)
+        assert status == 400, f"{escaping} must be refused, got {status}"
+
+    assert reached == [], f"nothing may be forwarded upstream, saw {reached}"

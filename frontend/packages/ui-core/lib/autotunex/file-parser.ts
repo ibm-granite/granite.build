@@ -62,14 +62,25 @@ export function parseCsvLine(line: string): string[] {
 // state carried across those lines: splitting the file on '\n' first shears
 // such a record apart and misaligns every following field against the headers.
 //
-// Quote state is just the parity of the quote count, so a doubled ("") escape
-// needs no lookahead — it flips parity twice and lands back inside the field.
-// That also makes the scanner safe to feed arbitrary chunks, where a lookahead
-// could fall off the end of one.
-export type CsvScanState = { inQuotes: boolean; partial: string }
+// Quote state cannot be plain quote parity. A lone unbalanced quote in an
+// UNQUOTED field (`He said "hi`) would then open a quoted region that never
+// closes, swallowing every later newline and merging the rest of the file into
+// one record — turning a one-row defect into a whole-file one. So a quote only
+// opens a field when it appears at a field start (RFC 4180), and `pendingQuote`
+// resolves `""` (a literal quote) against a real closing quote on the FOLLOWING
+// character rather than by lookahead, which keeps the scanner safe to feed
+// arbitrary chunks.
+export type CsvScanState = {
+  inQuotes: boolean
+  /** True when the next character begins a field: record start, or after a comma. */
+  atFieldStart: boolean
+  /** A quote closed inside a quoted field; the next character decides escape vs close. */
+  pendingQuote: boolean
+  partial: string
+}
 
 export function createCsvScanState(): CsvScanState {
-  return { inQuotes: false, partial: '' }
+  return { inQuotes: false, atFieldStart: true, pendingQuote: false, partial: '' }
 }
 
 /**
@@ -87,13 +98,48 @@ export function scanCsvChunk(
   let start = 0
   for (let i = 0; i < chunk.length; i++) {
     const char = chunk[i]
+
+    if (state.pendingQuote) {
+      state.pendingQuote = false
+      if (char === '"') {
+        // `""` inside a quoted field: a literal quote, field still open.
+        state.inQuotes = true
+        continue
+      }
+      // The previous quote really closed the field, so this character is
+      // unquoted — fall through and let the rules below handle it.
+    }
+
+    if (state.inQuotes) {
+      if (char === '"') {
+        state.inQuotes = false
+        state.pendingQuote = true
+      }
+      continue
+    }
+
     if (char === '"') {
-      state.inQuotes = !state.inQuotes
-    } else if (char === '\n' && !state.inQuotes) {
+      // Only a quote at a field start opens a quoted field; a stray quote in the
+      // middle of an unquoted field is literal data.
+      if (state.atFieldStart) state.inQuotes = true
+      state.atFieldStart = false
+      continue
+    }
+
+    if (char === ',') {
+      state.atFieldStart = true
+      continue
+    }
+
+    if (char === '\n') {
       onRecord(state.partial + chunk.slice(start, i))
       state.partial = ''
       start = i + 1
+      state.atFieldStart = true
+      continue
     }
+
+    state.atFieldStart = false
   }
   state.partial += chunk.slice(start)
 }
