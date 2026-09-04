@@ -185,6 +185,24 @@ inputs.<name>  →  $GB_INPUT_<name>
 `env://`, `file://`, `s3://`, `lh://`) are staged by the assetstore before `run`; an
 `hf://` input is downloaded during `setup` automatically.
 
+The name is **sanitized into a shell identifier** first: every character outside
+`[A-Za-z0-9_]` becomes `_`, so an input named `raw-docs` is exported as
+`$GB_INPUT_raw_docs`. Input names are unvalidated dict keys (the framework's own name checks
+are about SQL safety, not shell safety), and `export GB_INPUT_raw-docs=...` is a bash syntax
+error — "not a valid identifier" — which under `set -euo pipefail` aborts the whole run block
+before the transform starts, naming bash rather than the input. Hyphenated binding names are
+in use in-tree (`samples/templates/local_multi_stage/build.yaml` declares `tuning-data` and
+`wait-for-eval`), so this is a real shape, not a hypothetical one.
+
+Because sanitizing is many-to-one, two names that differ only in punctuation (`raw-docs` and
+`raw.docs`) would map to the same variable and the second export would silently win. The
+rendered `run` block detects that and exits non-zero before the transform, rather than reading
+the wrong directory and succeeding. The check is shell rather than a Jinja `raise_error`
+because the launcher config renders with `strict=False`, where that global is not available.
+
+A leading digit needs no handling: the name is a *suffix* of `GB_INPUT_`, so it can never
+start the identifier.
+
 #### Outputs
 
 Declare each output on the target, then make sure the bytes land at the path in its `uri`:

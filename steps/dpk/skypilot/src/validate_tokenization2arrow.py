@@ -76,11 +76,20 @@ _DOCS_SUMMARY_RE = re.compile(
 
 
 def _read_arrow(path: pathlib.Path) -> pa.Table:
-    """Read an Arrow IPC file, trying the file format then the stream format."""
+    """Read an Arrow IPC file, trying the file format then the stream format.
+
+    The fallback catches ``Exception`` rather than only ``ArrowInvalid``: which
+    error ``open_file`` raises on a stream-format file is a pyarrow implementation
+    detail (``ArrowInvalid`` for a bad magic number, but ``OSError`` /
+    ``ArrowIOError`` when it reads a footer that isn't there), and catching only one
+    of them reported "unreadable arrow file" for output pyarrow could in fact read —
+    failing a healthy target. Nothing is swallowed: if the stream attempt also
+    fails, that exception propagates to the caller, which records it per file.
+    """
     with pa.memory_map(str(path), "rb") as source:
         try:
             return pa.ipc.open_file(source).read_all()
-        except pa.ArrowInvalid:
+        except Exception:  # noqa: BLE001 - retry as a stream; see the docstring
             source.seek(0)
             return pa.ipc.open_stream(source).read_all()
 
@@ -418,6 +427,30 @@ def main(argv: list[str]) -> int:
         completeness, completeness_errors = check_completeness(src, input_dir)
         summary["completeness"] = completeness
         errors = errors + completeness_errors
+
+        # An ALL-EMPTY corpus legitimately produces no .arrow at all: the transform
+        # reports "skipped empty tables" and writes nothing. validate() cannot know
+        # that — it never sees the input — so it appended "no .arrow files found",
+        # failing a target that behaved correctly. Only here, with both results in
+        # hand, is the distinction visible: sources exist, every one is empty, and
+        # so zero outputs were expected.
+        #
+        # Deliberately narrow. It withdraws that ONE error, and only when
+        # check_completeness found at least one source file and expects no output,
+        # so a genuinely dropped file still fails (expected_outputs > 0 leaves the
+        # error in place). An empty input DIRECTORY is untouched: check_completeness
+        # reports "no .parquet files found" for that, which is a real fault.
+        if (
+            completeness.get("source_parquet", 0) > 0
+            and completeness.get("expected_outputs", 0) == 0
+        ):
+            withdrawn = f"no .arrow files found under {src}"
+            if withdrawn in errors:
+                errors = [e for e in errors if e != withdrawn]
+                summary["note"] = (
+                    "every source file was empty, so no output was expected; "
+                    "'no .arrow files found' was not counted as a failure"
+                )
 
     summary["errors"] = errors
 

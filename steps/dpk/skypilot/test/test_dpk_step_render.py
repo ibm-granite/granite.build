@@ -36,6 +36,7 @@ they render into:
 import pathlib
 import shutil
 import subprocess
+import tempfile
 
 import pytest
 import yaml
@@ -195,6 +196,21 @@ class TestImageSelection:
     def test_image_renders_docker_ref(self, launcher, defaults):
         cfg = dict(defaults, dpk_image="quay.io/org/img:1.2.3")
         assert _render(launcher["image_id"], cfg) == "docker:quay.io/org/img:1.2.3"
+
+    def test_image_id_is_deliberately_not_shell_escaped(self, launcher, defaults):
+        """The one config value that must NOT get the '"'"' treatment.
+
+        Every other author-supplied value in this step is shell-escaped, so this is
+        the documented exception rather than an oversight: image_id never enters a
+        shell. skypilot.py hands it to sky.Resources(image_id=...) as a python value,
+        so escaping would corrupt a legitimate reference instead of protecting
+        anything. Pinned so a future sweep for "unescaped interpolations" does not
+        helpfully break it.
+        """
+        cfg = dict(defaults, dpk_image="quay.io/org/img@sha256:abc'def")
+        assert _render(launcher["image_id"], cfg) == (
+            "docker:quay.io/org/img@sha256:abc'def"
+        )
 
 
 class TestDerivations:
@@ -467,6 +483,216 @@ class TestArgsIsTheOnlyFlagChannel:
         cfg = _transform_cfg(defaults, args={"tkn_doc_id_column": "run-a1b2c3"})
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _passthrough(argv) == ["--tkn_doc_id_column", "run-a1b2c3"]
+
+
+class TestInputNamesBecomeShellIdentifiers:
+    """A declared input name is an arbitrary dict key; $GB_INPUT_<name> is not.
+
+    Input names are unvalidated (the framework's own name checks are about SQL
+    safety), so `raw-docs` used to render `export GB_INPUT_raw-docs=...` — which
+    bash rejects as "not a valid identifier", aborting the ENTIRE run block under
+    `set -euo pipefail` before the transform starts, with an error that names bash
+    rather than the input. samples/templates/local_multi_stage/build.yaml ships
+    inputs named `tuning-data` and `wait-for-eval`, so this is reachable.
+    """
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("raw-docs", "raw_docs"),
+            ("docs.v2", "docs_v2"),
+            ("a b", "a_b"),
+            ("dôcs", "d_cs"),  # non-ASCII is not a shell identifier either
+            ("2docs", "2docs"),  # a leading digit is fine: it is a SUFFIX
+            ("UPPER_ok", "UPPER_ok"),  # already valid, must pass through untouched
+        ],
+    )
+    def test_name_is_sanitized_in_both_places(self, launcher, defaults, name, expected):
+        """The export and the --input-path reference must agree, or the transform
+        reads an unset variable. One Jinja macro feeds both for that reason."""
+        cfg = _transform_cfg(defaults, input=name)
+        rendered = _render(launcher["run"], cfg, {name: {"binding": {"path": "/p"}}})
+        assert f"export GB_INPUT_{expected}='/p'" in rendered
+        assert _bash_ok(rendered)
+        # The argv assertion is what proves the two agree end to end.
+        assert _opt(_script_argv(rendered, "run"), "--input-path") == "/p"
+
+    def test_colliding_names_fail_loudly_before_the_transform(self, launcher, defaults):
+        """Sanitizing is many-to-one, so a collision must not resolve silently.
+
+        `raw-docs` and `raw.docs` both map to GB_INPUT_raw_docs; the second export
+        would win and the transform would read the WRONG directory while still
+        exiting 0. Since `raise_error` is only on the strict Jinja environment (this
+        renders with strict=False), the guard is shell that exits non-zero.
+        """
+        cfg = _transform_cfg(defaults, input="raw-docs")
+        bindings = {
+            "raw-docs": {"binding": {"path": "/a"}},
+            "raw.docs": {"binding": {"path": "/b"}},
+        }
+        rendered = _render(launcher["run"], cfg, bindings)
+        assert _bash_ok(rendered)
+        assert "exit 1" in rendered
+        assert "map to the same shell variable" in rendered
+        # And it must abort BEFORE the transform is invoked.
+        assert rendered.index("exit 1") < rendered.index("dpk_run.sh")
+
+    def test_the_collision_message_cannot_execute_a_name(
+        self, launcher, defaults, tmp_path
+    ):
+        """The diagnostic must not interpolate raw names into a double-quoted echo.
+
+        An input name is author-controlled text; a backtick or $( ) inside one would
+        run as a command on the node when the guard fired. So the message names only
+        the SANITIZED variable, which is [A-Za-z0-9_] by construction and inert.
+        """
+        canary = tmp_path / "canary"
+        bad = f"d`touch {canary}`"
+        bindings = {
+            f"{bad}-x": {"binding": {"path": "/a"}},
+            f"{bad}.x": {"binding": {"path": "/b"}},
+        }
+        rendered = _render(
+            launcher["run"], _transform_cfg(defaults, input=f"{bad}-x"), bindings
+        )
+        assert "exit 1" in rendered  # the guard did fire
+        assert _bash_ok(rendered)
+        # The raw name must not reach the shell as code. (Backticks DO appear in the
+        # block's explanatory comments, so the test is execution, not their absence.)
+        assert f"touch {canary}" not in rendered
+        subprocess.run(["bash", "-c", rendered], capture_output=True, cwd=_TMPDIR)
+        assert not canary.exists()
+
+    def test_distinct_names_do_not_trip_the_collision_guard(self, launcher, defaults):
+        """Over-correction guard: two names that merely both need sanitizing are
+        fine as long as they stay distinct."""
+        cfg = _transform_cfg(defaults, input="raw-docs")
+        bindings = {
+            "raw-docs": {"binding": {"path": "/a"}},
+            "extra-docs": {"binding": {"path": "/b"}},
+        }
+        rendered = _render(launcher["run"], cfg, bindings)
+        assert "exit 1" not in rendered
+        assert "export GB_INPUT_raw_docs='/a'" in rendered
+        assert "export GB_INPUT_extra_docs='/b'" in rendered
+
+
+class TestEveryConfigValueIsEscaped:
+    """Quoting is applied to ALL author-controlled config, not just paths.
+
+    The review flagged the input/output PATHS. The same hazard applies to `module`,
+    `output` and `transform`: each is interpolated into a single-quoted word, so a
+    quote breaks out of that context and a backtick after it runs on the node. One
+    Jinja macro escapes them all, rather than a per-field judgement about which
+    strings are "trusted".
+    """
+
+    @pytest.mark.parametrize("field", ["transform", "module", "output"])
+    def test_a_quote_and_backtick_cannot_execute(
+        self, launcher, defaults, field, tmp_path
+    ):
+        """The test is EXECUTION, not the absence of a backtick.
+
+        A backtick inside a correctly escaped '"'"' sequence is inert data, so
+        asserting it never appears in the text would be both wrong and untestable.
+        What matters is that running the block does not execute it.
+        """
+        canary = tmp_path / "canary"
+        payload = f"x'`touch {canary}`'"
+        cfg = _transform_cfg(defaults, validate=True, **{field: payload})
+        rendered = _render(launcher["run"], cfg, _BINDINGS)
+        assert _bash_ok(rendered), f"{field} broke the rendered shell"
+        _script_argv(rendered, "run")  # executes the block with the script stubbed
+        assert not canary.exists(), f"{field} executed an embedded command"
+
+    @pytest.mark.parametrize("field", ["transform", "module", "output"])
+    def test_a_plain_quote_survives_as_data(self, launcher, defaults, field):
+        """Escaped, not stripped: the value must still reach the script intact."""
+        cfg = _transform_cfg(defaults, validate=True, **{field: "a'b"})
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        opt = {
+            "transform": "--validate",
+            "module": "--module",
+            "output": "--artifact-id",
+        }
+        assert _opt(argv, opt[field]) == "a'b"
+
+    @pytest.mark.parametrize("field", ["pip_index_url", "transform", "dpk_version"])
+    def test_the_setup_block_is_escaped_too(self, launcher, defaults, field, tmp_path):
+        """`setup` had the same gap, in the phase that runs FIRST.
+
+        `pip_index_url` goes straight into --index-url, and `transform` +
+        `dpk_version` are both folded into the derived requirement specifier. A quote
+        in any of them executed on the node at cluster bring-up, before the venv even
+        existed. Macros are block-scoped in Jinja, so `setup` carries its own copy of
+        the escaping rule — this test is what keeps the two from drifting apart.
+        """
+        # The canary path must contain NO underscore anywhere, pytest's tmp_path
+        # included: `transform` is rewritten with replace("_", "-") on its way into
+        # the pip extra, which rewrites the path inside the payload too and makes the
+        # check silently vacuous — the command still runs, just against a different
+        # filename. (Found exactly that way: this assertion passed against unescaped
+        # code until the canary was renamed.) mkdtemp under /tmp gives a digits-only
+        # suffix, so the whole path stays underscore-free.
+        canary = pathlib.Path(tempfile.mkdtemp(prefix="dpkq", dir="/tmp")) / "cnry"
+        assert "_" not in str(canary), "canary path must survive the extra rewrite"
+        cfg = _transform_cfg(defaults, **{field: f"x'`touch {canary}`'"})
+        rendered = _render(launcher["setup"], cfg)
+        assert _bash_ok(rendered), f"{field} broke the rendered setup shell"
+        _script_argv(rendered, "setup")  # executes it with dpk_setup.sh stubbed
+        assert not canary.exists(), f"setup executed a command from {field}"
+
+    def test_setup_values_survive_as_data(self, launcher, defaults):
+        """Escaped, not mangled: a quoted index URL still arrives verbatim."""
+        cfg = _transform_cfg(defaults, pip_index_url="https://ex.com/a'b/simple")
+        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _opt(argv, "--index-url") == "https://ex.com/a'b/simple"
+
+    def test_the_normal_requirement_specifier_is_unchanged(self, launcher, defaults):
+        """Regression fence: escaping must not perturb the ordinary case.
+
+        The `[extra]` brackets and `==` are why this is passed as real argv in the
+        first place; the escaping filter must leave them untouched.
+        """
+        cfg = _transform_cfg(defaults, transform="pii_redactor", ray_enabled=True)
+        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        assert _passthrough(argv) == [
+            "data-prep-toolkit-transforms[pii-redactor,ray]==1.1.8"
+        ]
+
+
+class TestArgsKeysMustBeFlagNames:
+    """An args KEY renders as a bare `--<key>` word, unquoted — as a flag must.
+
+    So it cannot be quote-escaped like a value: escaping would silently build a
+    wrong flag name and leave DPK to reject it with a confusing argparse error. A
+    real DPK flag name is always [A-Za-z0-9_], so anything else is refused by name
+    before the transform runs.
+    """
+
+    @pytest.mark.parametrize(
+        "key", ["k`touch /tmp/x`", "k;rm -rf /", "k$(id)", "k v", "k-dash", "k'q"]
+    )
+    def test_a_non_identifier_key_is_refused(self, launcher, defaults, key):
+        rendered = _render(
+            launcher["run"], _transform_cfg(defaults, args={key: "v"}), _BINDINGS
+        )
+        assert "exit 1" in rendered
+        assert "not a valid DPK flag name" in rendered
+        # And it must refuse BEFORE the transform is invoked.
+        assert rendered.index("exit 1") < rendered.index("dpk_run.sh")
+        assert _bash_ok(rendered)
+
+    @pytest.mark.parametrize(
+        "key", ["tkn_chunk_size", "runtime_num_workers", "UPPER_2", "a1"]
+    )
+    def test_real_flag_names_pass(self, launcher, defaults, key):
+        """Over-correction guard: legitimate DPK flag names must not be refused."""
+        rendered = _render(
+            launcher["run"], _transform_cfg(defaults, args={key: "v"}), _BINDINGS
+        )
+        assert "not a valid DPK flag name" not in rendered
+        assert _passthrough(_script_argv(rendered, "run")) == [f"--{key}", "v"]
 
 
 class TestIoWiring:

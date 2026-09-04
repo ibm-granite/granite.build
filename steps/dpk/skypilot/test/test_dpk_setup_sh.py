@@ -161,6 +161,53 @@ class TestUvIsTheInstaller:
         assert pip_calls[0]["args"][-1] == "uv"
         assert "--no-cache-dir" in pip_calls[0]["args"]
 
+    def test_bootstrap_asks_for_break_system_packages(self, run_setup):
+        """PEP 668: a plain `pip install` dies on an externally-managed interpreter.
+
+        This is the FIRST command in `setup` under `set -eu`, and it targets the
+        bare node's SYSTEM python with no venv active — so on Debian 12, Ubuntu
+        23.04+ or recent Fedora it failed with `externally-managed-environment` and
+        cluster bring-up never reached the venv. Only this one leaf tool goes to the
+        system interpreter; the DPK dependencies it resolves all land in the venv.
+        """
+        proc, calls = run_setup(*_BASE, "--", "somepkg==1.0")
+        assert proc.returncode == 0, proc.stderr
+        pip_calls = [c for c in calls if c["tool"] == "pip"]
+        assert "--break-system-packages" in pip_calls[0]["args"]
+
+    def test_bootstrap_falls_back_when_the_flag_is_unknown(self, run_setup):
+        """pip < 23.0.1 does not know the flag — and needs no 668 workaround.
+
+        Retrying without it keeps old pip working instead of trading one hard
+        failure for another. The fallback must still install uv.
+        """
+        # A pip that rejects the flag, mimicking pip < 23.0.1.
+        stub = run_setup.tmp_path / "bin" / "pip"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'for a in "$@"; do\n'
+            '  if [ "$a" = "--break-system-packages" ]; then\n'
+            '    echo "no such option" >&2; exit 2\n'
+            "  fi\n"
+            "done\n"
+            '{\n  echo "TOOL:pip"\n'
+            '  for a in "$@"; do echo "ARG:$a"; done\n'
+            '  echo "END"\n} >> "$TRACE"\n'
+        )
+        stub.chmod(0o755)
+
+        proc, calls = run_setup(*_BASE, "--", "somepkg==1.0")
+        assert proc.returncode == 0, proc.stderr
+        pip_calls = [c for c in calls if c["tool"] == "pip"]
+        # Only the successful retry is traced; it must have dropped the flag and
+        # still asked for uv.
+        assert pip_calls, "the fallback pip install never ran"
+        assert "--break-system-packages" not in pip_calls[-1]["args"]
+        assert pip_calls[-1]["args"][-1] == "uv"
+        # And the run continued into the venv + install.
+        assert _call(calls, "uv", "venv") is not None
+        assert _call(calls, "uv", "pip") is not None
+
     def test_uv_does_the_install(self, run_setup):
         proc, calls = run_setup(*_BASE, "--", "somepkg==1.0")
         install = _call(calls, "uv", "pip")

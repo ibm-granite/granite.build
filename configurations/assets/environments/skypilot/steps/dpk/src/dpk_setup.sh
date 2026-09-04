@@ -46,7 +46,21 @@ done
 # heavyweight extra like [pii-redactor] pulls ~125 packages (torch, flair,
 # presidio) and a full copy costs ~6G per venv. uv is not preinstalled on a bare
 # launcher node, so bootstrap it with pip first (same order as the DPK image).
-pip install --quiet --no-cache-dir uv
+#
+# --break-system-packages is required on PEP 668 "externally managed" interpreters
+# (Debian 12+, Ubuntu 23.04+, recent Fedora — increasingly the default), where a
+# plain `pip install` into the system interpreter dies with
+# `error: externally-managed-environment`. This is the FIRST command in `setup`
+# under `set -eu`, so without it cluster bring-up fails before the venv exists.
+# The flag is accepted from pip 23.0.1; older pip does not know it and there is no
+# 668 marker to trip on, so try it first and fall back. --user is not a substitute:
+# it is ignored under an active venv and still blocked on some 668 distros.
+#
+# Installing one leaf tool into the system interpreter is what the flag is for; the
+# DPK dependencies it then resolves all land in the venv below, never system-wide.
+if ! pip install --quiet --no-cache-dir --break-system-packages uv 2>/dev/null; then
+  pip install --quiet --no-cache-dir uv
+fi
 
 # UV_CACHE_DIR must be (a) on the same filesystem as the venv, or uv silently
 # copies instead of hard-linking, and (b) STABLE ACROSS RUNS, or there is nothing

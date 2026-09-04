@@ -573,6 +573,131 @@ class TestCompleteness:
         assert completeness_errors, "completeness must catch the dropped file"
 
 
+class TestAllEmptyInputIsNotAFailure:
+    """An all-empty corpus produces no output, and that is CORRECT.
+
+    The transform skips empty tables ("skipped empty tables"), writing nothing.
+    validate() cannot know that — it never sees the input — so it appended "no
+    .arrow files found" and failed a target that behaved correctly. Only main(),
+    holding both results, can tell "nothing was produced" from "nothing was
+    expected".
+    """
+
+    @pytest.fixture
+    def empty_only_input(self, tmp_path):
+        src = tmp_path / "in_empty"
+        _write_parquet(src / "e1.parquet", 0)
+        _write_parquet(src / "e2.parquet", 0)
+        return src
+
+    def test_all_empty_sources_pass_with_input(
+        self, tmp_path, empty_only_input, capsys
+    ):
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "metadata.json").write_text(
+            json.dumps({"job_output_stats": {"skipped empty tables": 2}})
+        )
+        rc = validator.main(
+            [
+                "validate_tokenization2arrow.py",
+                str(out),
+                str(tmp_path / "rpt"),
+                "--input",
+                str(empty_only_input),
+            ]
+        )
+        assert rc == 0, capsys.readouterr().out
+        report = json.loads((tmp_path / "rpt" / "validation.json").read_text())
+        assert report["errors"] == []
+        assert report["completeness"]["expected_outputs"] == 0
+        assert report["completeness"]["source_parquet"] == 2
+        assert "note" in report
+
+    def test_a_dropped_file_still_fails(self, tmp_path, input_tree):
+        """The narrow part of the fix: only withdraw when NOTHING was expected.
+
+        input_tree has 2 non-empty sources, so expected_outputs == 2 and an empty
+        output directory is a genuine dropped-output failure that must still fail.
+        """
+        out = tmp_path / "out2"
+        out.mkdir()
+        (out / "metadata.json").write_text(
+            json.dumps({"job_output_stats": {"result_files": 0}})
+        )
+        rc = validator.main(
+            [
+                "validate_tokenization2arrow.py",
+                str(out),
+                str(tmp_path / "rpt2"),
+                "--input",
+                str(input_tree),
+            ]
+        )
+        assert rc == 1
+        report = json.loads((tmp_path / "rpt2" / "validation.json").read_text())
+        assert any("no .arrow files found" in e for e in report["errors"])
+
+    def test_without_input_the_error_still_stands(self, tmp_path):
+        """No --input means no way to know output was not expected: stay strict."""
+        out = tmp_path / "out3"
+        out.mkdir()
+        (out / "metadata.json").write_text(json.dumps({"job_output_stats": {}}))
+        _, errors = validator.validate(out)
+        assert any("no .arrow files found" in e for e in errors)
+
+    def test_empty_input_directory_is_still_an_error(self, tmp_path):
+        """An input dir with NO parquet at all is a real fault, not an empty corpus."""
+        src = tmp_path / "in_none"
+        src.mkdir()
+        out = tmp_path / "out4"
+        out.mkdir()
+        (out / "metadata.json").write_text(json.dumps({"job_output_stats": {}}))
+        rc = validator.main(
+            [
+                "validate_tokenization2arrow.py",
+                str(out),
+                str(tmp_path / "rpt4"),
+                "--input",
+                str(src),
+            ]
+        )
+        assert rc == 1
+        report = json.loads((tmp_path / "rpt4" / "validation.json").read_text())
+        assert any("no .parquet files found" in e for e in report["errors"])
+
+
+class TestArrowReaderFallback:
+    """`open_file` failing on a stream-format file must fall through to a retry.
+
+    Which exception it raises is a pyarrow implementation detail — ArrowInvalid for
+    a bad magic number, but OSError/ArrowIOError when it reads a footer that is not
+    there. Catching only ArrowInvalid reported "unreadable arrow file" for output
+    pyarrow could actually read, failing a healthy target.
+    """
+
+    def test_stream_format_file_is_read(self, tmp_path):
+        path = tmp_path / "stream.arrow"
+        table = pa.table({"tokens": pa.array(range(5), type=pa.uint32())})
+        with pa.OSFile(str(path), "wb") as sink:
+            with pa.ipc.new_stream(sink, table.schema) as writer:
+                writer.write_table(table)
+        assert validator._read_arrow(path).num_rows == 5
+
+    def test_a_genuinely_corrupt_file_still_raises(self, tmp_path):
+        """The wider except must not swallow real corruption."""
+        path = tmp_path / "corrupt.arrow"
+        path.write_bytes(b"not an arrow file at all")
+        with pytest.raises(Exception):
+            validator._read_arrow(path)
+
+    def test_a_corrupt_file_is_reported_per_file_not_fatal(self, good_tree):
+        """And the caller still turns it into an ordinary finding."""
+        (good_tree / "lang=en/pq01.arrow").write_bytes(b"garbage")
+        _, errors = validator.validate(good_tree)
+        assert any("unreadable arrow file" in e for e in errors)
+
+
 class TestCompletenessCli:
     def test_input_flag_is_optional(self, good_tree, tmp_path, capsys):
         """Omitting --input keeps the original behaviour (backward compatible)."""

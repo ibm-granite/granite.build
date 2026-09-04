@@ -145,6 +145,12 @@ environment_configs:
         config:
           # Runtime Jinja: an empty image renders to "" (bare launcher node);
           # otherwise the public image is wrapped as SkyPilot `docker:<ref>`.
+          #
+          # The ONE value in this step deliberately NOT shell-escaped: it never enters
+          # a shell. skypilot.py reads it and passes it to sky.Resources(image_id=...)
+          # as a python value, so adding the '"'"' escaping the setup/run blocks use
+          # would corrupt a legitimate image reference rather than protect anything.
+          # The single quotes below are YAML's, not the shell's.
           image_id: '{{ ("docker:" ~ config.dpk_config.dpk_image) if config.dpk_config.dpk_image else "" }}'
           # Cloud-agnostic: the build supplies cpus/memory/accelerators via
           # config.launcher_config.resources.
@@ -181,10 +187,23 @@ environment_configs:
             # Jinja computes only the VALUES: the venv path, the index, and the
             # pip requirements, passed as real argv after `--` so a specifier
             # containing "[extra]" needs no shell re-quoting.
+            #
+            # Both values are escaped for the single quotes they sit inside, the same
+            # way and for the same reason as everything in the `run` block: a quote in
+            # author-supplied config closes its quoting early and a backtick after it
+            # then runs as a command on the node. Every config value is escaped, with
+            # no exceptions — a per-field judgement about which strings are "trusted"
+            # is what left this half-applied in the first place. `dpk_req` carries
+            # both `transform` and `dpk_version`, so escaping it covers both.
+            {#- Macros are block-scoped, so `setup` defines its own copy of the same
+                rule the `run` block uses. #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
             bash ./src/dpk_setup.sh \
               --venv ./venv \
-              --index-url '{{ config.dpk_config.pip_index_url }}' \
-              --{% if dpk_req %} '{{ dpk_req }}'{% endif %}
+              --index-url '{{ q(config.dpk_config.pip_index_url) }}' \
+              --{% if dpk_req %} '{{ q(dpk_req) }}'{% endif %}
             {%- endif %}
           # run starts in the same working directory as setup, so ./venv and
           # ./src are both relative.
@@ -196,13 +215,89 @@ environment_configs:
             # Every declared input is exported as $GB_INPUT_<name> holding its
             # staged local path, so nothing hardcodes or duplicates one.
             #
+            # The name is SANITIZED into a shell identifier first. Input names are
+            # unvalidated dict keys — the framework's own name checks are about SQL
+            # safety, not shell safety — and a perfectly legal name like `raw-docs`
+            # or `docs.v2` renders `export GB_INPUT_raw-docs=...`, which bash
+            # rejects as "not a valid identifier". Under `set -euo pipefail` that
+            # aborts the ENTIRE run block before the transform starts, and the error
+            # names bash, not the input, so the cause is invisible. Not theoretical:
+            # samples/templates/local_multi_stage/build.yaml ships inputs named
+            # `tuning-data` and `wait-for-eval`.
+            #
+            # Every character outside [A-Za-z0-9_] becomes `_`. A leading digit
+            # needs no handling — the name is a SUFFIX of GB_INPUT_, so it can never
+            # start the identifier.
+            #
             # Paths get the same '"'"' escaping as args, for the same reason: an
             # hf:// path is hash-derived and safe, but an env:/// path is the build
             # author's URI text verbatim (EnvURI only checks that it is absolute),
             # so env:///data/o'brien would close this quote early and break the
             # whole run block on a syntax error rather than at the one flag.
+            {#- Shell-quote escaping, defined once for the whole block. EVERY
+                author-controlled value below goes through it — paths, module, output,
+                transform, args values — because a quote in any of them closes its
+                quoting early and a backtick after it then runs on the node. Uniform
+                on purpose: deciding per field which strings are "trusted" is what
+                left this half-applied. #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {#- The sanitize rule, defined ONCE and used in both places a name
+                becomes a variable (here and at --input-path below) so the two can
+                never drift. Stock Jinja only: this renders through
+                fill_template(strict=False), whose environment provides
+                to_yaml/short_hash/json_dumps/path_basename/indent and NO
+                regex_replace, and whose `raise_error` global exists only on the
+                strict environment. So the mapping is a character-by-character
+                rebuild, and the collision check below reports rather than raises. #}
+            {%- set ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" %}
+            {%- macro env_name(n) -%}
+            {%- for ch in n | string %}{{ ch if ch in ALLOWED else "_" }}{% endfor %}
+            {%- endmacro %}
+            {#- Sanitizing is many-to-one, so `raw-docs` and `raw.docs` both become
+                GB_INPUT_raw_docs and the second export would silently win — the
+                transform would read the wrong directory and still exit 0. Emit a
+                guard the SHELL enforces: `raise_error` is unavailable here (strict
+                env only), and a rendered comment nobody reads is not a safeguard.
+                `exit 1` before the transform is the loud failure. #}
+            {%- set names = bindings.keys() | list %}
+            {%- set safe_names = [] %}
+            {%- for n in names %}{% set _ = safe_names.append(env_name(n)) %}{% endfor %}
+            {%- if safe_names | unique | list | length != safe_names | length %}
+            {#- The message names the SANITIZED variables, never the raw input names.
+                A raw name is author-controlled text, and interpolating it into a
+                double-quoted echo would let a backtick or $( ) in a name run as a
+                command on the node. The sanitized form is [A-Za-z0-9_] by
+                construction, so it is inert — and it is also the more useful half,
+                since it is the collision itself. #}
+            echo "dpk: ERROR two or more declared inputs map to the same shell variable" >&2
+            echo "dpk: after sanitizing non-identifier characters to '_':" >&2
+            {%- for s in safe_names | unique | sort %}
+            {%- if safe_names | select("equalto", s) | list | length > 1 %}
+            echo "dpk:   GB_INPUT_{{ s }} <- {{ safe_names | select("equalto", s) | list | length }} inputs" >&2
+            {%- endif %}
+            {%- endfor %}
+            echo "dpk: rename them so they differ by more than punctuation." >&2
+            exit 1
+            {%- endif %}
+            {#- An args KEY becomes a bare `--<key>` word, UNQUOTED, because that is
+                what a flag name is. So it cannot be quote-escaped like a value —
+                escaping would just build a wrong flag name and DPK would reject it
+                with a confusing argparse error. A real DPK flag name is always
+                [A-Za-z0-9_], so anything else is a typo or an injection attempt, and
+                the honest response is to refuse it by name. Checked at the shell for
+                the same reason as the collision guard: raise_error is not available
+                under strict=False rendering. #}
+            {%- for k in config.dpk_config.args.keys() %}
+            {%- if k | string | list | reject("in", ALLOWED) | list | length %}
+            echo "dpk: ERROR args key is not a valid DPK flag name: only letters," >&2
+            echo "dpk: digits and underscore are allowed (offending key #{{ loop.index }})." >&2
+            exit 1
+            {%- endif %}
+            {%- endfor %}
             {%- for name, b in bindings.items() %}
-            export GB_INPUT_{{ name }}='{{ b.binding.path | string | replace("'", "'\"'\"'") }}'
+            export GB_INPUT_{{ env_name(name) }}='{{ q(b.binding.path) }}'
             {%- endfor %}
             {#- Module by rule: dpk_<transform>.runtime, or .ray.runtime when
                 ray_enabled. `module` overrides both (see the config comments). #}
@@ -233,20 +328,34 @@ environment_configs:
             #
             # ray_enabled also emits --run_locally true, BEFORE the args loop.
             # DPK's Ray launcher defaults that flag to false, which makes it
-            # ray.init("ray://localhost:10001") — connect to an EXISTING cluster.
-            # This step provisions no Ray cluster, so without the flag the transform
-            # waits on a cluster nobody started. Emitting it first (argparse takes
-            # the LAST occurrence) keeps `args: {run_locally: false}` working for a
-            # build that really does point at an external cluster.
+            # ray.init("ray://localhost:10001") — connect to an already-running
+            # cluster. This step provisions no Ray cluster, so without the flag the
+            # transform waits on a cluster nobody started.
+            #
+            # Emitted FIRST so a build can still override it (argparse takes the LAST
+            # occurrence). Note what that override can and cannot do: the address in
+            # DPK 1.1.8 is a hardcoded literal with no host/port argument, so
+            # `args: {run_locally: false}` reaches port 10001 on THIS node and
+            # nowhere else. It is not a way to attach to a remote cluster.
+            {#- Every value below goes through q() — see its definition at the top of
+                this block. The review flagged the paths; `module`, `output` and
+                `transform` break out of their quoting exactly the same way, and a
+                backtick after the quote then RUNS on the node (verified). #}
             bash ./src/dpk_run.sh \
-              --module '{{ module }}' \
-              --input-path "$GB_INPUT_{{ config.dpk_config.input }}" \
-              --output-path '{{ (config.dpk_config.output_path if config.dpk_config.output_path else "./output") | string | replace("'", "'\"'\"'") }}' \
-              --artifact-id '{{ config.dpk_config.output }}' \
+              --module '{{ q(module) }}' \
+              --input-path "$GB_INPUT_{{ env_name(config.dpk_config.input) }}" \
+              --output-path '{{ q(config.dpk_config.output_path if config.dpk_config.output_path else "./output") }}' \
+              --artifact-id '{{ q(config.dpk_config.output) }}' \
               {%- if config.dpk_config.validate %}
-              --validate '{{ config.dpk_config.transform }}' \
+              --validate '{{ q(config.dpk_config.transform) }}' \
               {%- endif %}
-              --{% if config.dpk_config.ray_enabled %} --run_locally true{% endif %}{% for k, v in config.dpk_config.args.items() %}{% if v is not none %} --{{ k }} '{{ (v | lower) if (v is sameas true or v is sameas false) else (v | string | replace("'", "'\"'\"'")) }}'{% endif %}{% endfor %}
+              {#- A key that failed the flag-name guard above is OMITTED here rather
+                  than escaped. A flag name is a bare unquoted word, so there is no
+                  quoting that makes a stray `'` safe — it would leave the line
+                  unparseable, and `bash -n` on the block would fail even though the
+                  guard exits first at runtime. Omitting keeps the rendered shell
+                  valid; the guard is what actually stops the run. #}
+              --{% if config.dpk_config.ray_enabled %} --run_locally true{% endif %}{% for k, v in config.dpk_config.args.items() %}{% if v is not none and not (k | string | list | reject("in", ALLOWED) | list | length) %} --{{ k }} '{{ (v | lower) if (v is sameas true or v is sameas false) else q(v) }}'{% endif %}{% endfor %}
     monitors:
       # Standard artifact/status convention from the shipped monitor library.
       skypilot_monitor:

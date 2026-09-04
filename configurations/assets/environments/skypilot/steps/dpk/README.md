@@ -163,8 +163,48 @@ submit time:
    which means "connect to an existing cluster at `ray://localhost:10001`" — and this step
    provisions none, so without the flag the transform waits on a cluster nobody started.
 
-This runs Ray's local runtime on the step's own node; provisioning a multi-node Ray cluster
-is out of scope.
+This runs Ray's local runtime on the step's own node. Provisioning a multi-node Ray cluster is
+SkyPilot's job rather than this step's, but the flags DPK exposes for sizing that local
+runtime are all reachable through `args` — see [Sizing the Ray runtime](#sizing-the-ray-runtime).
+
+### Sizing the Ray runtime
+
+DPK's Ray runtime takes four flags, and they go through `args` like any other transform flag.
+Verified against `data_processing_ray` in DPK 1.1.8 — this is the complete set:
+
+| Flag | Default | What it does |
+|---|---|---|
+| `runtime_num_workers` | `1` | Number of Ray actors. The main throughput knob — the default of **1** means one worker, so a Ray run with no `args` is not parallel. |
+| `runtime_worker_options` | `{'num_cpus': 0.8}` | Per-actor resources, as a python literal (`ast.literal_eval`). Accepts anything Ray's `.options()` takes: `num_cpus`, `num_gpus`, `memory`, `resources`, `scheduling_strategy`, … |
+| `runtime_creation_delay` | `0` | Seconds between actor creations. Useful when a heavyweight transform would otherwise stampede a cold cache. |
+| `run_locally` | set to `true` by `ray_enabled` | Start a local Ray cluster (`true`), or connect to an existing one (`false`) — see the limitation below. |
+
+So a genuinely parallel run asks for workers explicitly:
+
+```yaml
+dpk_config:
+  transform: ededup
+  input: docs
+  output: deduped
+  ray_enabled: true
+  args:
+    runtime_num_workers: 8
+    runtime_worker_options: "{'num_cpus': 2}"
+compute_config:
+  # Size the NODE to fit the actors — 8 workers x 2 CPUs needs 16 available.
+  num_cpus_per_node: 16
+```
+
+`runtime_worker_options` is a quoted python literal, exactly like `pii_redactor`'s entity
+list: the step's `args` quoting delivers it to `ast.literal_eval` intact.
+
+> **`run_locally: false` can only reach a Ray cluster on localhost.** DPK 1.1.8's
+> `RayTransformLauncher` calls `ray.init("ray://localhost:10001")` on that path — a hardcoded
+> address, with no host or port argument anywhere in `data_processing_ray`. So setting
+> `run_locally: false` does not point the transform at a remote cluster; it points it at port
+> 10001 on the node it is already running on, which this step does not start. That is a DPK
+> limitation rather than a step one, and connecting to an external Ray cluster is therefore
+> not something this step can offer today.
 
 > **`ray_enabled` has no cluster test.** It is covered by render tests only — starting a Ray
 > cluster inside the local Docker SLURM container (`RealMemory=1024`) is not something the
