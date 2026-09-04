@@ -205,9 +205,10 @@ function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType 
       case 'spaces':   return 'FILESET'
     }
   }
-  // A bare hf:// reference with no type segment (hf://org/name) is a model.
-  if (/^hf:\/\//.test(uri)) return 'MODEL'
-  return null
+  // A bare reference with no type segment (hf://org/name, or the browser-copied
+  // https://huggingface.co/org/name) is a model. Both prefixes were already
+  // checked above, so reaching here means the URI is on HF either way.
+  return 'MODEL'
 }
 
 function adaptArtifact(raw: Record<string, unknown>): Artifact {

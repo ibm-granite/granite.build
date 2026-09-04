@@ -179,6 +179,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             )}
             <Graph
               ref={graphRef}
+              graphKey={artifact.uuid}
               nodes={nodes}
               links={links}
               allLinks={links}

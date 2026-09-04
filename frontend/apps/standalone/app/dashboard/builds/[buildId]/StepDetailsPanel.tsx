@@ -118,6 +118,21 @@ function cleanStatusMessage(msg: string): string {
 }
 
 /**
+ * Quote one argv element for a POSIX shell.
+ *
+ * An argv array is a list of literal arguments, so a plain `.join(' ')` turns
+ * `["sh", "-c", "echo hi && rm -rf x"]` into a command whose `&&` the shell now
+ * interprets — the Copy button would hand the user something that does not match
+ * what ran. Single-quote anything outside the safe set, escaping embedded single
+ * quotes the usual `'\''` way.
+ */
+function shellQuote(arg: unknown): string {
+  const s = String(arg)
+  if (s.length > 0 && /^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s
+  return "'" + s.replace(/'/g, "'\\''") + "'"
+}
+
+/**
  * The shell script a step runs is the single most useful thing in its config,
  * but it sits several levels down inside an arbitrary JSON blob. The builtin
  * `command` step nests it under `command_config.command`; the docker/runpod/
@@ -150,9 +165,10 @@ function extractCommand(
       return { command: candidate.trim(), sourceKey: key }
     }
     // Some launchers pass an argv array (`["sh", "-c", "…"]`) rather than a
-    // string; join it so it still reads as a command.
+    // string; join it into a command that is safe to paste, since the Copy
+    // button hands this straight to a shell.
     if (Array.isArray(candidate) && candidate.length > 0) {
-      return { command: candidate.map(String).join(' '), sourceKey: key }
+      return { command: candidate.map(shellQuote).join(' '), sourceKey: key }
     }
   }
 
@@ -644,18 +660,32 @@ export function stepDrawerSummary(target: BuildTargetRun | undefined): {
   // start time (adaptTargetRun), so steps[0] is the earliest start — but take the
   // latest finish explicitly, since a step that started earlier may finish later.
   const started = steps[0]?.started_at
+  // A step still running has no finish time, so the latest finish among the
+  // *finished* steps understates the target: a target whose second step has run
+  // for 40m would otherwise report only the 5m its first step took. While any
+  // step is unfinished the target is still elapsing, so measure to now instead.
+  const isRunning = steps.some((s) => !finishedAt(s))
   const finishTimes = steps
     .map((s) => finishedAt(s))
     .filter((t): t is string => Boolean(t) && Number.isFinite(Date.parse(t as string)))
-  const finished = finishTimes.length
+  const lastFinished = finishTimes.length
     ? finishTimes.reduce((latest, t) => (Date.parse(t) > Date.parse(latest) ? t : latest))
     : undefined
-  const duration = formatDurationBetween(started, finished)
+  const finished = isRunning ? undefined : lastFinished
+  const duration = formatDurationBetween(
+    started,
+    isRunning ? new Date().toISOString() : finished,
+  )
   const stamp = formatDateTime(finished ?? started)
   // A failed or cancelled target did not "complete" — say how long it ran instead,
   // or the header reads "Completed in 2m 4s" directly under a red Failed badge.
+  // An in-flight target has not completed either; it is still running.
   const durationLabel =
-    status === 'failed' || status === 'cancelled' ? 'Ran for' : 'Completed in'
+    status === 'failed' || status === 'cancelled'
+      ? 'Ran for'
+      : isRunning
+        ? 'Running for'
+        : 'Completed in'
   const summary = [duration ? `${durationLabel} ${duration}` : undefined, stamp]
     .filter(Boolean)
     .join(' · ')

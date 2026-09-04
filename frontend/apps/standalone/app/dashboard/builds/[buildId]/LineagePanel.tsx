@@ -602,6 +602,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             )}
             <Graph
               ref={graphRef}
+              graphKey={build?.uuid}
               nodes={filteredNodes}
               links={filteredLinks}
               allLinks={allLinks}

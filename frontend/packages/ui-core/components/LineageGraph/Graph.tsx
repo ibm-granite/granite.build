@@ -43,6 +43,12 @@ export interface GraphHandle {
 interface GraphProps {
   nodes: ElkNodeEx[]
   links: ElkExtendedEdge[]
+  /**
+   * Stable identity of the subject being graphed (the build or artifact id).
+   * Changing it earns a fresh auto-fit even if the user had panned the previous
+   * graph; it must NOT change as the same graph grows or is re-filtered.
+   */
+  graphKey?: string
   onClick?: (node: ElkNodeEx) => void
   selectedNode?: ElkNodeEx
   allLinks?: ElkExtendedEdge[]
@@ -239,15 +245,13 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   const hasUserAdjustedRef = React.useRef(false)
 
   // A different graph (new artifact/build) earns a fresh fit even if the user had
-  // panned the previous one. The graph builder emits nodes in a deterministic
-  // order, so joining every id captures identity without a per-render sort, and
-  // is stable across the status poll's fresh-array-same-nodes churn. (Count plus
-  // endpoints alone would collide when two graphs share their first/last node —
-  // e.g. a middle target renamed between fetches — and skip a warranted re-fit.)
-  const graphIdentity = React.useMemo(
-    () => props.nodes.map((n) => n.id).join('|'),
-    [props.nodes]
-  )
+  // panned the previous one. Identity must be stable for the *same* graph as it
+  // changes shape: a live build gaining a node, a node expansion, or a focus/depth
+  // re-filter is still the same graph, and deriving identity from the node set
+  // (or from nodes[0], which the subgraph filter can reorder) would reset the
+  // flag and yank the user's pan/zoom back to a full fit on the next poll.
+  // Callers therefore pass the subject's id explicitly.
+  const graphIdentity = props.graphKey ?? ''
   React.useEffect(() => {
     hasUserAdjustedRef.current = false
   }, [graphIdentity])
@@ -296,6 +300,12 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       (H - FIT_PADDING * 2) / contentH,
       BASE_SCALE,
     )
+    // A viewport narrower than the padding makes the available space negative, so
+    // there is no scale that fits. Clamping to MIN_FIT_K would "fit" by collapsing
+    // the graph to an invisible speck (this happens while the drawer squeezes the
+    // graph pane), so skip the fit instead and keep the current transform — the
+    // resize observer re-fits once the pane is a usable size again.
+    if (scale <= 0) return null
     // scaleExtent is expressed in k, and the rendered scale is BASE_SCALE * k.
     const k = Math.max(scale / BASE_SCALE, MIN_FIT_K)
     const applied = BASE_SCALE * k
@@ -426,9 +436,12 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       if (!pos?.children) return
       const node = pos.children.find((n) => n.id === nodeId)
       if (!node || node.x === undefined || node.y === undefined) return
-      // A one-off centre is not "I've taken over pan/zoom forever" — leave
-      // hasUserAdjustedRef alone so a later container resize can still re-fit.
-      // (Genuine user pans/zooms set it via the start.userintent handler.)
+      // Focusing a node is a deliberate viewport choice, so it must survive the
+      // next relayout — on a live build any status poll re-runs the layout effect,
+      // and without this flag the auto-fit would immediately discard the centring.
+      // (Programmatic transforms fire no sourceEvent, so start.userintent won't
+      // set it for us; "Reset view" clears it again.)
+      hasUserAdjustedRef.current = true
       const { width: W, height: H } = svgRef.current.getBoundingClientRect()
       const cx = (node.x ?? 0) + (node.width ?? 0) / 2
       const cy = (node.y ?? 0) + (node.height ?? 0) / 2
