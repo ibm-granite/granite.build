@@ -76,6 +76,46 @@ describe('parseCsv — newlines inside quoted fields', () => {
   })
 })
 
+describe('parseCsv — an unbalanced quote must not swallow the rest of the file', () => {
+  // Regression guard for the fix to the fix. Tracking quote state as raw parity
+  // meant one stray quote in an UNQUOTED field opened a region that never closed,
+  // collapsing every later record into one: a 6-record file reported 3, and the
+  // scanner accumulated the whole remainder into a single string, defeating the
+  // streaming it exists for. A quote only opens a field at a field start.
+  const STRAY = [
+    'a,b',
+    'x1,ok',
+    'x2,ok',
+    'x3,He said "hi',
+    'x4,ok',
+    'x5,ok',
+    'x6,ok',
+  ].join('\n')
+
+  it('keeps every following record separate', () => {
+    assert.equal(parseCsv(STRAY).length, 6)
+  })
+
+  it('keeps the stray quote in the affected field and does not shift columns', () => {
+    const rows = parseCsv(STRAY)
+    assert.equal(rows[3].a, 'x4', 'record after the stray quote is still its own row')
+    assert.equal(rows[3].b, 'ok')
+    assert.equal(rows[5].a, 'x6')
+  })
+
+  it('counts the same 6 records when streaming', async () => {
+    assert.equal(await countRecordsInBlob(new Blob([STRAY]), 'd.csv'), 6)
+  })
+
+  it('still treats a quote at a field start as opening a quoted field', () => {
+    // The stray-quote rule must not break legitimate quoting.
+    const rows = parseCsv('a,b\nx,"multi\nline"\ny,plain')
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0].b, 'multi\nline')
+    assert.equal(rows[1].a, 'y')
+  })
+})
+
 describe('scanCsvChunk — record boundaries across chunk boundaries', () => {
   // The streaming counter feeds arbitrary chunks, so a quoted newline (or a ""
   // escape) can straddle a chunk edge. Quote state must carry in the state obj.

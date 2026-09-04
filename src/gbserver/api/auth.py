@@ -78,10 +78,12 @@ _PUBLIC_EXACT_PATHS = frozenset(
 # nothing. The exemption is therefore only safe in a localhost-only standalone
 # deployment — the configuration gbserver standalone actually ships (auth_mode
 # apikey with no GBSERVER_API_KEY, where _is_localhost already admits the
-# dashboard). Do NOT expose gbserver on a reachable interface with
-# AUTOTUNEX_API_URL set: anyone who can reach the port could then POST
-# /api/autotunex/jobs (which launches a real build) or DELETE datasets and
-# configurations, bypassing GBSERVER_API_KEY/OIDC entirely.
+# dashboard). This is not conditional on AUTOTUNEX_API_URL being configured:
+# root_api.py mounts the proxy unconditionally and the upstream URL defaults to
+# http://localhost:8000, so the exemption is present on every deployment. Do NOT
+# expose gbserver on a reachable interface: anyone who can reach the port could
+# then POST /api/autotunex/jobs (which launches a real build) or DELETE datasets
+# and configurations, bypassing GBSERVER_API_KEY/OIDC entirely.
 _PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/api/autotunex", "/dashboard", "/_next")
 
 # Every mounted sub-app owns its own Swagger/OpenAPI doc pages directly under

@@ -208,8 +208,17 @@ export function StartTuningWizard() {
         const hasValidation = existingDatasetId !== null || isSplitEnabled || validationFile !== null
         return hasDataset && hasName && allMapped && hasValidation && isDatasetCompatible
       }
-      case 2:
-        return selectedConfigId !== null && !isEditingConfig && !isCreatingConfig
+      case 2: {
+        // A pending config's name now goes straight into the payload
+        // apiCreateConfiguration POSTs, so an empty name has to be caught here.
+        // Otherwise the launch fails in the creating_config phase — after the
+        // dataset has already been created and uploaded.
+        const pendingIsNamed =
+          selectedConfigId !== '__pending__' || (pendingNewConfig?.name ?? '').trim() !== ''
+        return (
+          selectedConfigId !== null && !isEditingConfig && !isCreatingConfig && pendingIsNamed
+        )
+      }
       case 3:
         if (hasRewardStep) {
           // Reward-function validation is gated off in this environment (see
@@ -241,6 +250,7 @@ export function StartTuningWizard() {
     validationFile,
     isDatasetCompatible,
     selectedConfigId,
+    pendingNewConfig,
     isEditingConfig,
     isCreatingConfig,
     hasRewardStep,
