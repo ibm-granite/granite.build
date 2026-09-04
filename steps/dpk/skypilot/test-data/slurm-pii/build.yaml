@@ -1,0 +1,70 @@
+granite.build:
+  name: skypilot-slurm-dpk-pii-redactor
+  # PII redaction on the local Docker SLURM cluster, via the SAME dpk step the
+  # tokenization fixture uses. This fixture exists to prove the step is GENERAL:
+  # switching transform is a build.yaml change and nothing else. Compared to
+  # test-data/slurm/build.yaml, only `transform`, `args`, and the artifact names
+  # differ — steps/dpk/skypilot/step-template.yaml is untouched.
+  #
+  # From `transform: pii_redactor` the step derives:
+  #   module -> python -m dpk_pii_redactor.runtime
+  #   pip    -> data-prep-toolkit-transforms[pii-redactor]==<dpk_version>
+  #
+  # NOTE ON RUNTIME: the [pii-redactor] extra is heavy — 125 packages including
+  # torch, flair, and presidio (numpy is pinned <1.29 by DPK's own constraint) —
+  # and the transform downloads a flair NER model on first use. Measured locally
+  # at several minutes for the install alone, so timeout_minutes is generous.
+  # This is the strongest argument for a prebaked image (dpk_config.dpk_image) later;
+  # it is deliberately not used here so the fixture stays credential-free and
+  # runs on the local cluster, which has no Pyxis.
+  #
+  # Single target: this is a generality proof, not a handoff test — the
+  # tokenization fixture already covers the cross-node env:///shared path. The
+  # redacted output is terminal, so a node-local /tmp path is fine.
+  targets:
+
+    redact:
+      environment_uri: space://environments/skypilot/slurm
+      inputs:
+        docs:
+          # DPK's own pii_redactor test fixture (Apache-2.0), sanitized: the
+          # original named a real person, replaced with Jane Doe /
+          # jane.doe@example.com. Presidio matches EMAIL_ADDRESS/PERSON
+          # structurally, so redaction behaves identically — verified.
+          # NOTE: personal namespace pending an ibm-research move; only this URI
+          # changes when that access lands.
+          uri: hf:///datasets/shalisha-witherspoon/dpk-pii-redactor-sample
+      outputs:
+        clean:
+          # Terminal output — nothing downstream consumes it.
+          uri: "env:///tmp/dpk-pii-output"
+          type: dataset
+      steps:
+        - step_uri: space://steps/dpk
+          config:
+            poll_interval_seconds: 5
+            dpk_config:
+              transform: pii_redactor
+              dpk_version: "1.1.8"
+              input: docs
+              output: clean
+              output_path: /tmp/dpk-pii-output    # matches the `clean` uri above
+              args:
+                # Full flag names as DPK spells them. pii_redactor's prefix
+                # happens to equal its module suffix, unlike tokenization's
+                # `tkn_` — which is exactly why the step does not try to derive
+                # prefixes and passes these through verbatim.
+                #
+                # `entities` is parsed with ast.literal_eval, so the value must be
+                # a PYTHON LIST literal, not a comma-separated string.
+                pii_redactor_entities: "['PERSON','EMAIL_ADDRESS']"
+                pii_redactor_operator: replace
+                # Required by the transform (no usable default at the CLI); names
+                # the column the redacted text is written to.
+                pii_redactor_transformed_contents: new_contents
+                pii_redactor_score_threshold: 0.6
+            compute_config:
+              num_gpus_per_node: 0
+              # Advisory on SLURM (the compute_config memory floor is skipped for
+              # the SLURM/LSF clouds), but torch + flair genuinely want headroom.
+              total_memory_per_node: 8Gi

@@ -1,0 +1,381 @@
+name: dpk
+version: 1.0.0
+type: exec
+config:
+  dpk_config:
+    # ---- which DPK transform to run -------------------------------------------
+    # A DPK transform short name, e.g. "tokenization2arrow", "pii_redactor",
+    # "ededup". Two things are DERIVED from it, so a build never repeats them:
+    #   module -> python -m dpk_<transform>.runtime
+    #   pip    -> data-prep-toolkit-transforms[<transform with _ as ->]==<dpk_version>
+    # Every DPK transform exposes dpk_<name>.runtime (a PythonTransformLauncher),
+    # and data-prep-toolkit-transforms declares one pip extra per transform, so
+    # both rules hold for any transform — including ones added upstream later,
+    # with no change to this step.
+    # REQUIRED: the step runs exactly one DPK transform.
+    transform: ""
+    # DPK release installed for `transform`. Ignored when `dpk_image` is set (the
+    # image already provides DPK).
+    dpk_version: "1.1.8"
+    # Transform flags, rendered in order as `--<key> '<value>'`.
+    # Keys are the FULL flag name as DPK spells it, WITHOUT the leading dashes —
+    # e.g. tkn_tokenizer, pii_redactor_entities. They are NOT derived from
+    # `transform`: DPK's own flag prefix is an arbitrary abbreviation for ~40% of
+    # transforms (dpk_tokenization uses tkn_, gopher_repetition_annotator uses
+    # gra_, doc_quality uses docq_), so the step cannot infer them. See a
+    # transform's DPK docs or `--help` for its flag names.
+    #
+    # Values render as `--<key> '<value>'`, booleans included: DPK declares its
+    # boolean flags as `type=lambda x: bool(str2bool(x))` (33 of them; NO store_true
+    # anywhere), so they REQUIRE a value — a bare `--flag` would make argparse eat
+    # the next token. `true`/`false` therefore render lowercased, which is what
+    # str2bool expects. Only `null` means "do not pass this flag at all"; a `false`
+    # is a real setting and is sent.
+    # `args` is the ONLY way to pass transform flags — deliberately, so there is
+    # one quoting model rather than two. A value that must vary per run is written
+    # with the build.yaml's own Jinja (e.g.
+    # "{{ run_metadata.targetsteprun_id | short_hash }}") or a $${PARAM} build
+    # parameter, both of which resolve at render time and so are visible in the
+    # persisted step config and in lineage.
+    args: {}
+    # Names of a declared target input / output. The step turns these into the
+    # transform's --data_local_config input_folder / output_folder. Both are
+    # required.
+    #   input  -> read as $GB_INPUT_<input>  (the binding's staged path)
+    #   output -> used as the GB_ARTIFACT_ID the step emits
+    input: ""
+    output: ""
+    # Where the transform WRITES. OPTIONAL: empty (the default) means ./output in
+    # the step's working directory, resolved to an absolute path at run time so
+    # the emitted artifact marker is absolute.
+    #
+    # WHEN YOU MUST SET IT EXPLICITLY: when the declared output `uri` names a
+    # path, it must match, because the step cannot derive it — declared output
+    # URIs are not in the runtime render context (they reach static validation
+    # only; see targetstep.py's _get_validation_context vs the runtime context of
+    # bindings + run_metadata + setup_config). So:
+    #   env:///shared/x  -> output_path: /shared/x   (shared FS; slurm/lsf, cross-node safe)
+    #   s3://bucket/x    -> output_path: <local dir> (staged, then pushed by the assetstore)
+    #
+    # The default is safe ONLY for output the same target consumes or that an
+    # assetstore pushes (e.g. s3://). It is NOT safe for a cross-target env://
+    # handoff: the working directory is the per-run workdir
+    # (${shared_workdir}/builds/<build_id>/runs/<targetrun_id>), which is keyed
+    # per TARGET and `rm -rf`'d by teardown_skypilot when that target finishes —
+    # so a downstream target would read a deleted directory. Give such an output
+    # an explicit shared path (see USAGE.md, "Choosing the output URI").
+    output_path: ""
+
+    # Check the transform's output before registering it, when a validator for
+    # this transform is bundled. The step looks for src/validate_<transform>.py —
+    # a RULE, like the module and pip-extra derivations, so adding a validator for
+    # another transform is dropping in a file and needs no change here.
+    #
+    # Only `tokenization2arrow` ships one today. For any other transform this is a
+    # NO-OP: the step says so on stdout and carries on, rather than failing (the
+    # request is general; the coverage is not) and rather than skipping silently
+    # (which would read as "validation passed" on a green build).
+    #
+    # A failing validator fails the target and the output is never registered. The
+    # validator writes validation.json into the output directory, so the record
+    # travels with the data it describes.
+    validate: false
+
+    # Run the transform on DPK's Ray runtime instead of the pure-python one, for
+    # throughput on large corpora. ONE flag does the THREE things Ray needs, which
+    # is the point — any subset of them fails on the node rather than at submit:
+    #   1. installs the `ray` pip extra alongside the transform's own
+    #   2. switches the module to dpk_<transform>.ray.runtime
+    #   3. passes --run_locally true, so DPK starts a local Ray cluster instead of
+    #      trying to connect to one at ray://localhost:10001 (its default) that this
+    #      step never provisions
+    #
+    # Derived by RULE, deliberately without a per-transform exception table: the
+    # module is always dpk_<transform>.ray.runtime. That holds for 32 of the 43
+    # data transforms in DPK 1.1.8; the rest either expose their Ray entrypoint as
+    # ray.transform (code_profiler, doc_chunk, doc_quality, fdedup, hap,
+    # html2parquet, lang_id) or ship no Ray package (bloom, folder2parquet,
+    # web2parquet, similarity). DPK is normalising these onto ray.runtime upstream,
+    # so an exception list here would go stale by design — set `module` explicitly
+    # for one of those until the normalisation lands.
+    #
+    # Provisioning a multi-node Ray cluster is out of scope; this runs Ray's local
+    # runtime on the step's own node.
+    ray_enabled: false
+
+    # ---- overrides -----------------------------------------------------------
+    # Override the derived module entirely (e.g. a transform whose runtime is not
+    # dpk_<name>.runtime). `ray_enabled` already handles the .ray.runtime case, so
+    # this is for anything neither rule covers.
+    module: ""
+    pip_index_url: "https://pypi.org/simple"
+    # Container image to run the transform in, from ANY registry (quay.io,
+    # us.icr.io, a private one). Give the plain reference — the step adds
+    # SkyPilot's `docker:` scheme marker, which tells SkyPilot this is a container
+    # rather than a cloud VM image.
+    #
+    # Setting this SKIPS the venv and pip install entirely: the image is expected
+    # to already provide DPK, which is the fast path for a prebaked image. A base
+    # image WITHOUT DPK is therefore not supported — there is no install to add it.
+    #
+    # Empty (the default) => run on the bare launcher node and install at run time.
+    # That is required on clusters without the Pyxis SPANK plugin, including the
+    # local Docker SLURM cluster from `make slurm-setup`, which is why image mode
+    # has no local cluster test.
+    #
+    # Named `dpk_image` rather than `image` to make clear it is a RUNTIME choice
+    # rendered by Jinja, not an image this step's Makefile builds (this is a
+    # public-image step; it builds none).
+    dpk_image: ""
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: "4Gi"
+
+environment_configs:
+  Skypilot:
+    # No `subtypes:` restriction, so this step resolves on ALL FOUR SkyPilot
+    # endpoints (slurm / kubernetes / aws / lsf) — they share the SkyPilot
+    # launcher and the pure-python DPK runtime needs nothing endpoint-specific.
+    default_launcher: dpk
+    launchers:
+      dpk:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Runtime Jinja: an empty image renders to "" (bare launcher node);
+          # otherwise the public image is wrapped as SkyPilot `docker:<ref>`.
+          #
+          # The ONE value in this step deliberately NOT shell-escaped: it never enters
+          # a shell. skypilot.py reads it and passes it to sky.Resources(image_id=...)
+          # as a python value, so adding the '"'"' escaping the setup/run blocks use
+          # would corrupt a legitimate image reference rather than protect anything.
+          # The single quotes below are YAML's, not the shell's.
+          image_id: '{{ ("docker:" ~ config.dpk_config.dpk_image) if config.dpk_config.dpk_image else "" }}'
+          # Cloud-agnostic: the build supplies cpus/memory/accelerators via
+          # config.launcher_config.resources.
+          resources: {}
+          # Bundled helpers (validate_tokenization2arrow.py) land at ./src, relative to the
+          # step's working directory — the same directory setup and run start in.
+          # A relative file_mounts source resolves against the step's own asset
+          # dir, which is the supported mechanism (the builtin `command` step has
+          # no such dir, which is why a template cannot ship files this way).
+          file_mounts:
+            src: src
+          # setup runs ONCE at cluster bring-up, so the dependency install is
+          # paid once per cluster rather than once per step. The launcher also
+          # prepends `hf download ...` here for any hf:// input binding.
+          setup: |
+            set -eu
+            {#- ray_enabled does THREE things, and dpk_image silently removes one of
+                them: the install is skipped entirely, so the `ray` pip extra never
+                lands, while `run` still switches to .ray.runtime and passes
+                --run_locally true. That is exactly the half-applied subset the
+                one-flag design exists to prevent, and it surfaces as an import error
+                mid-run on a node. Refuse at bring-up instead, where the message is
+                attached to the phase that would have installed it. An image that
+                genuinely bakes in the ray extra can say so by not setting
+                ray_enabled and naming the module directly. #}
+            {%- if config.dpk_config.dpk_image and config.dpk_config.ray_enabled %}
+            echo "dpk: ERROR ray_enabled cannot be combined with dpk_image." >&2
+            echo "dpk: dpk_image skips the pip install, so the 'ray' extra ray_enabled" >&2
+            echo "dpk: needs would never be installed, while the module would still be" >&2
+            echo "dpk: switched to .ray.runtime — failing later, on the node." >&2
+            echo "dpk: use an image that already provides DPK's ray extra and set" >&2
+            echo "dpk: 'module: dpk_<transform>.ray.runtime' plus" >&2
+            echo "dpk: 'args: {run_locally: true}' explicitly, or drop dpk_image." >&2
+            exit 1
+            {%- endif %}
+            {%- if not config.dpk_config.dpk_image %}
+            {%- set t = config.dpk_config.transform %}
+            {#- The transform's own extra is always derived from its name; ray_enabled
+                adds DPK's `ray` extra alongside it (never instead of it — the
+                transform's own extra carries its real dependencies). #}
+            {%- set extras = ([t | replace("_", "-")] if t else [])
+                             + (["ray"] if config.dpk_config.ray_enabled else []) %}
+            {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ extras | join(",") ~ "]==" ~ config.dpk_config.dpk_version)
+                              if extras
+                              else "" %}
+            # The dependency install is delegated to the bundled src/dpk_setup.sh
+            # (file-mounted at ./src). Safe from `setup` because SkyPilot syncs
+            # file mounts first: its stage order is PROVISION -> SYNC_WORKDIR ->
+            # SYNC_FILE_MOUNTS -> SETUP -> PRE_EXEC -> EXEC. See that file's
+            # header for the uv/UV_CACHE_DIR rationale, and dpk_run.sh's for why
+            # the shell lives in scripts rather than inline.
+            #
+            # Jinja computes only the VALUES: the venv path, the index, and the
+            # pip requirements, passed as real argv after `--` so a specifier
+            # containing "[extra]" needs no shell re-quoting.
+            #
+            # Both values are escaped for the single quotes they sit inside, the same
+            # way and for the same reason as everything in the `run` block: a quote in
+            # author-supplied config closes its quoting early and a backtick after it
+            # then runs as a command on the node. Every config value is escaped, with
+            # no exceptions — a per-field judgement about which strings are "trusted"
+            # is what left this half-applied in the first place. `dpk_req` carries
+            # both `transform` and `dpk_version`, so escaping it covers both.
+            {#- Macros are block-scoped, so `setup` defines its own copy of the same
+                rule the `run` block uses. #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            bash ./src/dpk_setup.sh \
+              --venv ./venv \
+              --index-url '{{ q(config.dpk_config.pip_index_url) }}' \
+              --{% if dpk_req %} '{{ q(dpk_req) }}'{% endif %}
+            {%- endif %}
+          # run starts in the same working directory as setup, so ./venv and
+          # ./src are both relative.
+          run: |
+            set -euo pipefail
+            {%- if not config.dpk_config.dpk_image %}
+            . ./venv/bin/activate
+            {%- endif %}
+            # Every declared input is exported as $GB_INPUT_<name> holding its
+            # staged local path, so nothing hardcodes or duplicates one.
+            #
+            # The name is SANITIZED into a shell identifier first. Input names are
+            # unvalidated dict keys — the framework's own name checks are about SQL
+            # safety, not shell safety — and a perfectly legal name like `raw-docs`
+            # or `docs.v2` renders `export GB_INPUT_raw-docs=...`, which bash
+            # rejects as "not a valid identifier". Under `set -euo pipefail` that
+            # aborts the ENTIRE run block before the transform starts, and the error
+            # names bash, not the input, so the cause is invisible. Not theoretical:
+            # samples/templates/local_multi_stage/build.yaml ships inputs named
+            # `tuning-data` and `wait-for-eval`.
+            #
+            # Every character outside [A-Za-z0-9_] becomes `_`. A leading digit
+            # needs no handling — the name is a SUFFIX of GB_INPUT_, so it can never
+            # start the identifier.
+            #
+            # Paths get the same '"'"' escaping as args, for the same reason: an
+            # hf:// path is hash-derived and safe, but an env:/// path is the build
+            # author's URI text verbatim (EnvURI only checks that it is absolute),
+            # so env:///data/o'brien would close this quote early and break the
+            # whole run block on a syntax error rather than at the one flag.
+            {#- Shell-quote escaping, defined once for the whole block. EVERY
+                author-controlled value below goes through it — paths, module, output,
+                transform, args values — because a quote in any of them closes its
+                quoting early and a backtick after it then runs on the node. Uniform
+                on purpose: deciding per field which strings are "trusted" is what
+                left this half-applied. #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {#- The sanitize rule, defined ONCE and used in both places a name
+                becomes a variable (here and at --input-path below) so the two can
+                never drift. Stock Jinja only: this renders through
+                fill_template(strict=False), whose environment provides
+                to_yaml/short_hash/json_dumps/path_basename/indent and NO
+                regex_replace, and whose `raise_error` global exists only on the
+                strict environment. So the mapping is a character-by-character
+                rebuild, and the collision check below reports rather than raises. #}
+            {%- set ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" %}
+            {%- macro env_name(n) -%}
+            {%- for ch in n | string %}{{ ch if ch in ALLOWED else "_" }}{% endfor %}
+            {%- endmacro %}
+            {#- Sanitizing is many-to-one, so `raw-docs` and `raw.docs` both become
+                GB_INPUT_raw_docs and the second export would silently win — the
+                transform would read the wrong directory and still exit 0. Emit a
+                guard the SHELL enforces: `raise_error` is unavailable here (strict
+                env only), and a rendered comment nobody reads is not a safeguard.
+                `exit 1` before the transform is the loud failure. #}
+            {%- set names = bindings.keys() | list %}
+            {%- set safe_names = [] %}
+            {%- for n in names %}{% set _ = safe_names.append(env_name(n)) %}{% endfor %}
+            {%- if safe_names | unique | list | length != safe_names | length %}
+            {#- The message names the SANITIZED variables, never the raw input names.
+                A raw name is author-controlled text, and interpolating it into a
+                double-quoted echo would let a backtick or $( ) in a name run as a
+                command on the node. The sanitized form is [A-Za-z0-9_] by
+                construction, so it is inert — and it is also the more useful half,
+                since it is the collision itself. #}
+            echo "dpk: ERROR two or more declared inputs map to the same shell variable" >&2
+            echo "dpk: after sanitizing non-identifier characters to '_':" >&2
+            {%- for s in safe_names | unique | sort %}
+            {%- if safe_names | select("equalto", s) | list | length > 1 %}
+            echo "dpk:   GB_INPUT_{{ s }} <- {{ safe_names | select("equalto", s) | list | length }} inputs" >&2
+            {%- endif %}
+            {%- endfor %}
+            echo "dpk: rename them so they differ by more than punctuation." >&2
+            exit 1
+            {%- endif %}
+            {#- An args KEY becomes a bare `--<key>` word, UNQUOTED, because that is
+                what a flag name is. So it cannot be quote-escaped like a value —
+                escaping would just build a wrong flag name and DPK would reject it
+                with a confusing argparse error. A real DPK flag name is always
+                [A-Za-z0-9_], so anything else is a typo or an injection attempt, and
+                the honest response is to refuse it by name. Checked at the shell for
+                the same reason as the collision guard: raise_error is not available
+                under strict=False rendering. #}
+            {%- for k in config.dpk_config.args.keys() %}
+            {%- if k | string | list | reject("in", ALLOWED) | list | length %}
+            echo "dpk: ERROR args key is not a valid DPK flag name: only letters," >&2
+            echo "dpk: digits and underscore are allowed (offending key #{{ loop.index }})." >&2
+            exit 1
+            {%- endif %}
+            {%- endfor %}
+            {%- for name, b in bindings.items() %}
+            export GB_INPUT_{{ env_name(name) }}='{{ q(b.binding.path) }}'
+            {%- endfor %}
+            {#- Module by rule: dpk_<transform>.runtime, or .ray.runtime when
+                ray_enabled. `module` overrides both (see the config comments). #}
+            {%- set module = config.dpk_config.module if config.dpk_config.module
+                             else ("dpk_" ~ config.dpk_config.transform
+                                   ~ (".ray.runtime" if config.dpk_config.ray_enabled
+                                      else ".runtime")) %}
+            # The step delegates the shell to the bundled src/dpk_run.sh
+            # (file-mounted at ./src). Jinja's job here is only to compute VALUES;
+            # the script creates and absolutizes the output dir, assembles DPK's
+            # --data_local_config, and emits the artifact marker. See that file's
+            # header for why the shell lives there rather than inline.
+            #
+            # An omitted output_path defaults to ./output in the step's working
+            # directory; the script absolutizes whichever path it is given before
+            # the marker is emitted, since the server consumes it off-node.
+            #
+            # Flags are passed as REAL ARGV after `--`, one Jinja-rendered
+            # single-quoted word each, so the remote shell splits them exactly
+            # once and the script forwards them untouched via "$@". An embedded
+            # single quote is escaped as '"'"' because several DPK transforms take
+            # python-literal values containing quotes (pii_redactor's
+            # --pii_redactor_entities is ast.literal_eval'd, so it needs
+            # "['PERSON','EMAIL_ADDRESS']" to reach python intact).
+            # Booleans render as `--flag 'true'`/`'false'`, not as bare flags: every
+            # DPK boolean is a value-taking str2bool argument, so a bare flag would
+            # consume the following token. Only `null` omits a flag.
+            #
+            # ray_enabled also emits --run_locally true, BEFORE the args loop.
+            # DPK's Ray launcher defaults that flag to false, which makes it
+            # ray.init("ray://localhost:10001") — connect to an already-running
+            # cluster. This step provisions no Ray cluster, so without the flag the
+            # transform waits on a cluster nobody started.
+            #
+            # Emitted FIRST so a build can still override it (argparse takes the LAST
+            # occurrence). Note what that override can and cannot do: the address in
+            # DPK 1.1.8 is a hardcoded literal with no host/port argument, so
+            # `args: {run_locally: false}` reaches port 10001 on THIS node and
+            # nowhere else. It is not a way to attach to a remote cluster.
+            {#- Every value below goes through q() — see its definition at the top of
+                this block. The review flagged the paths; `module`, `output` and
+                `transform` break out of their quoting exactly the same way, and a
+                backtick after the quote then RUNS on the node (verified). #}
+            bash ./src/dpk_run.sh \
+              --module '{{ q(module) }}' \
+              --input-path "$GB_INPUT_{{ env_name(config.dpk_config.input) }}" \
+              --output-path '{{ q(config.dpk_config.output_path if config.dpk_config.output_path else "./output") }}' \
+              --artifact-id '{{ q(config.dpk_config.output) }}' \
+              {%- if config.dpk_config.validate %}
+              --validate '{{ q(config.dpk_config.transform) }}' \
+              {%- endif %}
+              {#- A key that failed the flag-name guard above is OMITTED here rather
+                  than escaped. A flag name is a bare unquoted word, so there is no
+                  quoting that makes a stray `'` safe — it would leave the line
+                  unparseable, and `bash -n` on the block would fail even though the
+                  guard exits first at runtime. Omitting keeps the rendered shell
+                  valid; the guard is what actually stops the run. #}
+              --{% if config.dpk_config.ray_enabled %} --run_locally true{% endif %}{% for k, v in config.dpk_config.args.items() %}{% if v is not none and not (k | string | list | reject("in", ALLOWED) | list | length) %} --{{ k }} '{{ (v | lower) if (v is sameas true or v is sameas false) else q(v) }}'{% endif %}{% endfor %}
+    monitors:
+      # Standard artifact/status convention from the shipped monitor library.
+      skypilot_monitor:
+        ref: space://monitors/skypilot

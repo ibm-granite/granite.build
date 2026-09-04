@@ -1,0 +1,87 @@
+granite.build:
+  name: skypilot-slurm-dpk-tokenize
+  # DPK tokenize WITH VALIDATION, on the local Docker SLURM cluster (via SkyPilot).
+  #
+  # ONE target, because `validate: true` folds the check into the transform's own
+  # step rather than needing a second target to bind its output and run the
+  # validator.
+  #
+  # WHAT REACHING SUCCESS PROVES:
+  #   1. `transform: tokenization2arrow` derives the module
+  #      (dpk_tokenization2arrow.runtime) and the pip extra
+  #      ([tokenization2arrow]) — the build names one DPK detail.
+  #   2. `validate: true` finds src/validate_tokenization2arrow.py by the
+  #      validate_<transform>.py rule and runs it on the node, AFTER the transform
+  #      and BEFORE the artifact marker. A validation failure fails this target and
+  #      registers nothing, so SUCCESS means the transform ran AND its output is
+  #      self-consistent AND complete (every non-empty source parquet produced
+  #      output).
+  #   3. validation.json lands inside the registered output directory, so the
+  #      record ships with the data it describes.
+  #
+  # COVERAGE MOVED, NOT DELETED — read this before "simplifying" further. The
+  # two-target form this replaced was the only CLUSTER-level coverage of:
+  #   * the cross-node env:///shared handoff — two targets on possibly different
+  #     compute nodes, where env:// moves no bytes (EnvURI.pull() is a no-op), so
+  #     the bytes survive only if the producer writes them somewhere the consumer
+  #     can read; on this cluster /tmp is per-node but /shared is mounted on all of
+  #     them; and
+  # The handoff is no longer covered end to end anywhere: test_dpk_run_sh.py executes
+  # the validator hook and the marker contract, but nothing exercises two targets
+  # sharing a filesystem. If a handoff regression is ever suspected, restore the
+  # two-target form from this file's history rather than debugging blind.
+  #
+  # Input is an hf:// dataset: the SkyPilot launcher injects
+  # `hf download <repo> --local-dir <path>` into the step's setup, and the step
+  # exports the staged path as $GB_INPUT_docs. The dataset is public, so no
+  # HF_TOKEN is needed here or in CI.
+  targets:
+
+    tokenize:
+      environment_uri: space://environments/skypilot/slurm
+      inputs:
+        docs:
+          # Public dataset: DPK's own tokenization test fixture (5 parquet, 2
+          # deliberately empty, Apache-2.0) mirrored to the Hub so it stages on
+          # every endpoint with no credentials.
+          # NOTE: personal namespace pending an org move — an ibm-research request
+          # is outstanding. Only this URI changes when it lands.
+          uri: hf:///datasets/shalisha-witherspoon/dpk-tokenization-sample
+      outputs:
+        tokens:
+          # Terminal output: nothing downstream reads it now that validation runs
+          # in-target, so the step's default output_path (./output, in the
+          # per-target workdir) is appropriate and this uri names no path to match.
+          uri: "env:///tokens"
+          type: dataset
+      steps:
+        - step_uri: space://steps/dpk
+          config:
+            # Fast completion detection (the skypilot monitor's own default is
+            # 300s, which would dominate wall-clock for this quick job).
+            poll_interval_seconds: 5
+            dpk_config:
+              transform: tokenization2arrow
+              dpk_version: "1.1.8"
+              input: docs
+              output: tokens
+              # The point of this fixture. One line replaces a whole second target;
+              # the step runs src/validate_tokenization2arrow.py before registering
+              # the output.
+              validate: true
+              args:
+                # Full flag names as DPK spells them — tokenization's prefix is
+                # `tkn_`, which is NOT derivable from the module name, so the step
+                # passes these through verbatim.
+                tkn_tokenizer: hf-internal-testing/llama-tokenizer
+                tkn_doc_id_column: document_id
+                tkn_doc_content_column: contents
+                tkn_text_lang: en
+                tkn_chunk_size: 0
+            compute_config:
+              num_gpus_per_node: 0
+              # The compute_config memory floor is skipped for the SLURM/LSF
+              # clouds (they don't reliably track memory as a consumable), so this
+              # is advisory here and will not leave the job PENDING even though the
+              # local cluster's nodes advertise RealMemory=1024.
+              total_memory_per_node: 4Gi
