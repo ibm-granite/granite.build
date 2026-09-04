@@ -33,6 +33,9 @@ export interface GraphHandle {
   zoomIn(): void
   zoomOut(): void
   resetZoom(): void
+  /** Clear the user-adjusted flag so the next relayout auto-fits (no immediate
+   *  fit against stale positions). For callers that also change the node set. */
+  resetView(): void
   currentZoom(): number
   centerOnNode(nodeId: string): void
 }
@@ -40,6 +43,12 @@ export interface GraphHandle {
 interface GraphProps {
   nodes: ElkNodeEx[]
   links: ElkExtendedEdge[]
+  /**
+   * Stable identity of the subject being graphed (the build or artifact id).
+   * Changing it earns a fresh auto-fit even if the user had panned the previous
+   * graph; it must NOT change as the same graph grows or is re-filtered.
+   */
+  graphKey?: string
   onClick?: (node: ElkNodeEx) => void
   selectedNode?: ElkNodeEx
   allLinks?: ElkExtendedEdge[]
@@ -48,6 +57,12 @@ interface GraphProps {
 
 const elk = new ELK()
 const INITIAL_TRANSFORM = d3.zoomIdentity.translate(48, 32)
+// Breathing room, in px, between the graph's bounding box and the viewport edge.
+const FIT_PADDING = 32
+// Lower bound on zoom. A large graph's ideal "fit everything" scale can be very
+// small, so the floor has to sit below any normal interactive zoom — a higher
+// floor would clamp the fit back up and leave content clipped after auto-fit.
+const MIN_FIT_K = 0.02
 
 function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   const { onClick } = props
@@ -209,17 +224,37 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       })
   }
 
+  // Nodes depend on layout + selection only — NOT on hoverNode, which is used
+  // solely for edge highlighting below. Rebuilding nodeElements on every hover
+  // produced a fresh array that reran the zoom-setup effect (a synchronous
+  // getBoundingClientRect + O(n) bounds scan + zoom listener rebind) on every
+  // mouse-enter/leave; keeping this off hoverNode avoids that thrash.
   React.useEffect(() => {
-    if (positions) {
-      setNodeElements(buildNodes(positions))
-      setLinkElements(buildLinks(positions, hoverNode))
-    }
-  }, [positions, hoverNode, props.selectedNode])
+    if (positions) setNodeElements(buildNodes(positions))
+  }, [positions, props.selectedNode])
+
+  React.useEffect(() => {
+    if (positions) setLinkElements(buildLinks(positions, hoverNode))
+  }, [positions, hoverNode])
 
   const svgRef = React.useRef<SVGSVGElement | null>(null)
   const containerRef = React.useRef<SVGGElement | null>(null)
   const zoomRef = React.useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null)
   const transformRef = React.useRef(INITIAL_TRANSFORM)
+  // Once the user pans or zooms, stop auto-fitting so we never yank their view.
+  const hasUserAdjustedRef = React.useRef(false)
+
+  // A different graph (new artifact/build) earns a fresh fit even if the user had
+  // panned the previous one. Identity must be stable for the *same* graph as it
+  // changes shape: a live build gaining a node, a node expansion, or a focus/depth
+  // re-filter is still the same graph, and deriving identity from the node set
+  // (or from nodes[0], which the subgraph filter can reorder) would reset the
+  // flag and yank the user's pan/zoom back to a full fit on the next poll.
+  // Callers therefore pass the subject's id explicitly.
+  const graphIdentity = props.graphKey ?? ''
+  React.useEffect(() => {
+    hasUserAdjustedRef.current = false
+  }, [graphIdentity])
 
   React.useEffect(() => {
     requestAnimationFrame(() => {
@@ -233,6 +268,55 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
 
   const BASE_SCALE = 0.85
 
+  // Fit the whole laid-out graph — skeleton stubs included — into the viewport.
+  // The container's applied scale is always BASE_SCALE * t.k, so we solve for the
+  // k that makes the content bounds fit and let the zoom behaviour own the rest.
+  const computeFitTransform = React.useCallback((): d3.ZoomTransform | null => {
+    const svg = svgRef.current
+    const pos = positionsRef.current
+    if (!svg || !pos?.children?.length) return null
+
+    const { width: W, height: H } = svg.getBoundingClientRect()
+    if (!W || !H) return null
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const n of pos.children) {
+      const x = n.x ?? 0
+      const y = n.y ?? 0
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x + (n.width ?? 0))
+      maxY = Math.max(maxY, y + (n.height ?? 0))
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null
+
+    const contentW = maxX - minX
+    const contentH = maxY - minY
+    if (contentW <= 0 || contentH <= 0) return null
+
+    // Never zoom past 1:1 — a two-node graph should not balloon to fill the pane.
+    const scale = Math.min(
+      (W - FIT_PADDING * 2) / contentW,
+      (H - FIT_PADDING * 2) / contentH,
+      BASE_SCALE,
+    )
+    // A viewport narrower than the padding makes the available space negative, so
+    // there is no scale that fits. Clamping to MIN_FIT_K would "fit" by collapsing
+    // the graph to an invisible speck (this happens while the drawer squeezes the
+    // graph pane), so skip the fit instead and keep the current transform — the
+    // resize observer re-fits once the pane is a usable size again.
+    if (scale <= 0) return null
+    // scaleExtent is expressed in k, and the rendered scale is BASE_SCALE * k.
+    const k = Math.max(scale / BASE_SCALE, MIN_FIT_K)
+    const applied = BASE_SCALE * k
+
+    // Centre the content bounds in the viewport.
+    const tx = (W - contentW * applied) / 2 - minX * applied
+    const ty = (H - contentH * applied) / 2 - minY * applied
+
+    return d3.zoomIdentity.translate(tx, ty).scale(k)
+  }, [])
+
   React.useEffect(() => {
     if (!svgRef.current || !containerRef.current) return
 
@@ -243,7 +327,10 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       zoomRef.current = d3
         .zoom<SVGSVGElement, unknown>()
         .filter((event) => event.ctrlKey || event.type !== 'wheel')
-        .scaleExtent([0.1, 10])
+        // d3.zoom clamps every applied transform to this extent, so the lower
+        // bound has to be the fit floor — a higher one would clamp a large
+        // graph's computed fit back up and clip it.
+        .scaleExtent([MIN_FIT_K, 10])
     }
 
     zoomRef.current.on('zoom', (event) => {
@@ -253,29 +340,89 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     })
 
     svg.call(zoomRef.current)
+
+    // Fit once per layout, until the user takes over panning/zooming — after that
+    // their viewport is preserved across re-renders (hover, selection, polling).
+    if (!hasUserAdjustedRef.current) {
+      const fit = computeFitTransform()
+      if (fit) transformRef.current = fit
+    }
+
     svg.call(zoomRef.current.transform, transformRef.current)
 
-    return () => { svg.on('.zoom', null) }
-  }, [nodeElements])
+    // Registered after the programmatic transform above so the fit itself does
+    // not count as a user adjustment.
+    zoomRef.current.on('start.userintent', (event) => {
+      if (event.sourceEvent) hasUserAdjustedRef.current = true
+    })
+
+    return () => {
+      svg.on('.zoom', null)
+      zoomRef.current?.on('start.userintent', null)
+    }
+  }, [nodeElements, computeFitTransform])
+
+  // Re-fit on container resize while the user has not taken over the viewport.
+  // Coalesce bursts (a drag-resize fires the observer many times per second)
+  // into one refit per animation frame rather than recomputing + applying a
+  // transform on every single firing.
+  React.useEffect(() => {
+    const svg = svgRef.current
+    if (!svg || typeof ResizeObserver === 'undefined') return
+
+    let rafId = 0
+    const observer = new ResizeObserver(() => {
+      if (rafId) return
+      rafId = requestAnimationFrame(() => {
+        rafId = 0
+        if (hasUserAdjustedRef.current || !zoomRef.current) return
+        const fit = computeFitTransform()
+        if (fit) d3.select(svg).call(zoomRef.current.transform, fit)
+      })
+    })
+    observer.observe(svg)
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId)
+      observer.disconnect()
+    }
+  }, [computeFitTransform])
 
   React.useImperativeHandle(ref, () => ({
     zoomIn: () => {
       if (svgRef.current && zoomRef.current) {
+        // Programmatic scaleBy fires no sourceEvent, so the start.userintent
+        // handler won't flag it — mark it here or a later relayout snaps the
+        // toolbar-set zoom back to auto-fit.
+        hasUserAdjustedRef.current = true
         d3.select(svgRef.current).call(zoomRef.current.scaleBy, 1.1)
       }
     },
     zoomOut: () => {
       if (svgRef.current && zoomRef.current) {
+        hasUserAdjustedRef.current = true
         d3.select(svgRef.current).call(zoomRef.current.scaleBy, 1 / 1.1)
       }
     },
+    // "Reset" means fit the whole graph, which is what the user wants when
+    // something (a skeleton stub, a far-downstream branch) is off-screen. Use
+    // this only when the node set is unchanged (the toolbar's Reset Zoom); it
+    // fits against the *current* layout immediately.
     resetZoom: () => {
-      if (svgRef.current && zoomRef.current) {
-        d3.select(svgRef.current)
-          .transition()
-          .duration(300)
-          .call(zoomRef.current.transform, INITIAL_TRANSFORM)
-      }
+      if (!svgRef.current || !zoomRef.current) return
+      hasUserAdjustedRef.current = false
+      const target = computeFitTransform() ?? INITIAL_TRANSFORM
+      d3.select(svgRef.current)
+        .transition()
+        .duration(300)
+        .call(zoomRef.current.transform, target)
+    },
+    // "Reset view" also expands the node set, which kicks off an async ELK
+    // relayout. Fitting now would fit against the stale (pre-expansion) layout
+    // and then visibly re-snap once the new layout lands. Instead just clear the
+    // user-adjusted flag and let the layout-driven auto-fit do the fitting once —
+    // when the fresh positions arrive.
+    resetView: () => {
+      hasUserAdjustedRef.current = false
     },
     currentZoom: () => {
       if (svgRef.current) {
@@ -289,17 +436,30 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       if (!pos?.children) return
       const node = pos.children.find((n) => n.id === nodeId)
       if (!node || node.x === undefined || node.y === undefined) return
+      // Focusing a node is a deliberate viewport choice, so it must survive the
+      // next relayout — on a live build any status poll re-runs the layout effect,
+      // and without this flag the auto-fit would immediately discard the centring.
+      // (Programmatic transforms fire no sourceEvent, so start.userintent won't
+      // set it for us; "Reset view" clears it again.)
+      hasUserAdjustedRef.current = true
       const { width: W, height: H } = svgRef.current.getBoundingClientRect()
       const cx = (node.x ?? 0) + (node.width ?? 0) / 2
       const cy = (node.y ?? 0) + (node.height ?? 0) / 2
-      const tx = W / 2 - BASE_SCALE * cx
-      const ty = H / 2 - BASE_SCALE * cy
+      // Keep the current zoom if it is already legible, but never leave the node
+      // smaller than 1:1 — "Focus" from a zoomed-way-out view must actually bring
+      // the node up to a readable size, not just recentre it at a tiny scale.
+      // The rendered scale is BASE_SCALE * k, so the translation accounts for k or
+      // the node lands off-centre.
+      const k = Math.max(d3.zoomTransform(svgRef.current).k, 1)
+      const applied = BASE_SCALE * k
+      const tx = W / 2 - applied * cx
+      const ty = H / 2 - applied * cy
       d3.select(svgRef.current)
         .transition()
         .duration(400)
-        .call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty))
+        .call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty).scale(k))
     },
-  }), [])
+  }), [computeFitTransform])
 
   // Compute dimensions from last layout
   const svgWidth = React.useMemo(() => {

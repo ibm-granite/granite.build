@@ -90,9 +90,35 @@ function stepNameFromUri(uri: string): string {
   return uri.split(/[/?#@]/).filter(Boolean).pop() ?? uri
 }
 
+// Best-effort container image for a step, read from the step's own build.yaml
+// config. The image is normally resolved inside each compute environment's
+// launcher at launch time and is never persisted (see
+// src/gbserver/environment/docker.py:_resolve_image), so it is only visible
+// here when the build.yaml named it explicitly. Precedence mirrors that
+// resolver: launcher config first, then the step's docker block, then a
+// bare top-level key. Returns undefined when the build.yaml didn't name one.
+function stepImageFromConfig(config: Record<string, unknown> | undefined): string | undefined {
+  if (!config) return undefined
+  const launcherConfig = (config.launcher_config as Record<string, unknown>) ?? {}
+  const dockerConfig = (config.docker as Record<string, unknown>) ?? {}
+  const candidates = [
+    launcherConfig.image,
+    launcherConfig.image_id,
+    dockerConfig.image,
+    config.image,
+    config.image_id,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate
+  }
+  return undefined
+}
+
 function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
   const json = (raw.json as Record<string, unknown>) ?? {}
   const definitionUri = (raw.definition_uri as string) || ''
+  const config = (raw.config as Record<string, unknown>) ?? undefined
+  const launcher = config?.launcher
   return {
     step_name: (definitionUri ? stepNameFromUri(definitionUri) : undefined) || (raw.uuid as string),
     status: adaptStatus((raw.status as string) || (json.status as string)),
@@ -100,13 +126,43 @@ function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
     started_at: (raw.started_at as string) || (json.started_at as string),
     updated_at: (raw.finished_at as string) || (json.finished_at as string),
     log_path: (raw.log_path as string) || (json.log_path as string) || undefined,
+    uuid: raw.uuid as string | undefined,
+    // Step config is the build.yaml's own runtime parameters. It reaches the
+    // client only via GET /builds/{id}/status, which is gated by
+    // authorize_build_read_access — do NOT copy it onto the lineage/jobstats
+    // path, where it is deliberately redacted because any space member can read.
+    config,
+    image: stepImageFromConfig(config),
+    launcher: typeof launcher === 'string' ? launcher : undefined,
+    status_msg: (raw.status_msg as string) || undefined,
+    finished_at: (raw.finished_at as string) || (json.finished_at as string) || undefined,
+    // Runtime metadata the step pushed at execution time (GB_STEP_METADATA
+    // hook). Serialized in the status row's JSON blob alongside config; safe to
+    // surface here because /builds/{id}/status is already read-gated.
+    metadata: (raw.metadata as Record<string, unknown>) ?? undefined,
   }
 }
 
 function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
-  const steps: BuildStepRun[] = ((raw.steps as unknown[]) ?? []).map(
-    (s) => adaptStepRun(s as Record<string, unknown>)
-  )
+  // The server builds this list with storage.step_storage.get_by_where(), whose
+  // result order is documented as undefined (see Storage.get_by_where). Sort by
+  // start time here, at the single point where steps enter the client, so the
+  // step numbering, the `a → b → c` subtitle and the first-start/last-finish
+  // duration in stepDrawerSummary all agree on one order. Steps that have not
+  // started yet (queued) sort last, keeping the original relative order.
+  const steps: BuildStepRun[] = ((raw.steps as unknown[]) ?? [])
+    .map((s) => adaptStepRun(s as Record<string, unknown>))
+    .map((step, index) => ({ step, index }))
+    .sort((a, b) => {
+      const at = a.step.started_at ? Date.parse(a.step.started_at) : NaN
+      const bt = b.step.started_at ? Date.parse(b.step.started_at) : NaN
+      const aValid = Number.isFinite(at)
+      const bValid = Number.isFinite(bt)
+      if (aValid && bValid && at !== bt) return at - bt
+      if (aValid !== bValid) return aValid ? -1 : 1
+      return a.index - b.index // stable tiebreak for equal/absent timestamps
+    })
+    .map(({ step }) => step)
   const inputArtifacts = (raw.input_artifacts as Record<string, string>) ?? {}
   const outputArtifacts = (raw.output_artifacts as Record<string, unknown[]>) ?? {}
   return {
@@ -122,15 +178,52 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
   }
 }
 
+// Infer an artifact type from its URI when the stored type is empty.
+//
+// Some artifacts are registered (e.g. a raw HF dataset reference) without a
+// `type` ever being set — the backend should classify these at registration
+// (see parse_hf_uri in src/gbcommon/utils/hf_utils.py), but until it does, a
+// blind 'FILESET' fallback mislabels datasets/models/buckets in the UI (e.g.
+// the lineage graph). The URI segment is unambiguous, so we mirror the
+// backend's own rules here: `datasets/` → DATASET, `buckets/` → BUCKET,
+// `spaces/` → FILESET (no dedicated Space type), everything else on HF
+// (including a bare org/name) → MODEL.
+function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType | null {
+  if (!uri) return null
+  // Only HF URIs carry this convention (mirroring the backend's parse_hf_uri,
+  // which requires an hf:// prefix). Without the scope guard a plain
+  // `cos://bucket/datasets/eval.json` would be misread as a DATASET.
+  if (!/^(hf:\/\/|https:\/\/huggingface\.co\/)/.test(uri)) return null
+  // Match the type segment in hf://[domain]/<type>/org/name or
+  // hf:///<type>/org/name and in https://huggingface.co/<type>/org/name.
+  const m = uri.match(/(?:^|\/)(datasets|models|spaces|buckets)\//)
+  if (m) {
+    switch (m[1]) {
+      case 'datasets': return 'DATASET'
+      case 'models':   return 'MODEL'
+      case 'buckets':  return 'BUCKET'
+      case 'spaces':   return 'FILESET'
+    }
+  }
+  // A bare reference with no type segment (hf://org/name, or the browser-copied
+  // https://huggingface.co/org/name) is a model. Both prefixes were already
+  // checked above, so reaching here means the URI is on HF either way.
+  return 'MODEL'
+}
+
 function adaptArtifact(raw: Record<string, unknown>): Artifact {
+  const uri = raw.uri as string
   return {
     uuid: raw.uuid as string,
-    name: (raw.name as string) || (raw.uri as string),
-    artifact_type: ((raw.type as string) || (raw.artifact_type as string) || 'FILESET') as import('../types').ArtifactType,
+    name: (raw.name as string) || uri,
+    artifact_type: ((raw.type as string) ||
+      (raw.artifact_type as string) ||
+      inferArtifactTypeFromUri(uri) ||
+      'FILESET') as import('../types').ArtifactType,
     status: (((raw.status as string) || 'success').toLowerCase()) as import('../types').ArtifactStatus,
     space_name: raw.space_name as string,
     username: raw.username as string,
-    uri: raw.uri as string,
+    uri,
     build_id: raw.created_by_build_id as string | undefined,
     created_time: ((raw.created_at ?? raw.created_time) as string),
     updated_time: ((raw.updated_at ?? raw.updated_time ?? raw.created_at) as string),
