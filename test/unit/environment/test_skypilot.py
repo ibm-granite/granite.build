@@ -1679,8 +1679,30 @@ class TestInlineConfigMaterialization:
             m.assert_called_once()
             args = m.call_args.args
             assert args[0] == "env-inline"  # env name
-            # ssh, cloud_config, aws are all forwarded (non-None)
-            assert args[1] is not None and args[2] == {"lsf": {"q": 1}} and args[3]
+            # SSH is NOT materialized here (merged per-launch); only cloud_config
+            # and aws are forwarded.
+            assert args[1] is None and args[2] == {"lsf": {"q": 1}} and args[3]
+
+    def test_ssh_materialized_per_launch(self):
+        env = self._env(
+            {"cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": "h"}]}}
+        )
+        with patch(
+            "gbserver.environment.skypilot_config.materialize_ssh_for_cloud"
+        ) as m:
+            env._materialize_ssh_for_launch("slurm")
+            m.assert_called_once()
+            args = m.call_args.args
+            assert args[0] == "env-inline"  # env name
+            assert args[3] == "slurm"  # only the launched cloud is merged
+
+    def test_ssh_materialize_noop_without_inline_ssh(self):
+        env = self._env({"default_cloud": "slurm"})
+        with patch(
+            "gbserver.environment.skypilot_config.materialize_ssh_for_cloud"
+        ) as m:
+            env._materialize_ssh_for_launch("slurm")
+            m.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_launch_inner_materializes_before_api_start(self):

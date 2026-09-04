@@ -12,8 +12,10 @@ import functools
 import glob
 import os
 import shlex
+import stat
 import threading
 import time
+import traceback
 import urllib.parse
 from pathlib import Path
 from typing import (
@@ -46,7 +48,10 @@ from gbserver.spaces.hf_push_config import (
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.environmentconfig import EnvironmentConfig
-from gbserver.types.errors import WorkloadFailedException
+from gbserver.types.errors import (
+    ErrSkypilotInteractiveAuthFailed,
+    WorkloadFailedException,
+)
 from gbserver.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -370,6 +375,116 @@ RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
 # off. Compared against the normalized first infra segment (lowercased).
 _SSH_HPC_CLOUDS = ("slurm", "lsf")
 
+
+def _ssh_control_socket_dir() -> Optional[str]:
+    """Return SkyPilot's per-user SSH ControlMaster socket *root* directory.
+
+    SkyPilot multiplexes SSH to a login node through a persistent ControlMaster
+    socket at ``/tmp/skypilot_ssh_<user_hash>/<control_name>/<%C>`` (see
+    ``sky.utils.command_runner._ssh_control_path``). Crucially, ``<control_name>``
+    on disk is not the literal name (e.g. ``__default__``) but its md5 hash
+    truncated to ``_HASH_MAX_LENGTH`` (``SSHCommandRunner.__init__``), so we
+    cannot address it by name without replicating that private hashing. Instead
+    we return the stable per-user *root* ``/tmp/skypilot_ssh_<user_hash>``; the
+    caller globs one level deeper to reach the sockets regardless of how the
+    control name is hashed. The sockets themselves are named by OpenSSH's ``%C``
+    token (a hash of localhost/remote-host/port/user, not the key), which is why
+    a leftover socket lets a re-keyed launch skip authentication.
+
+    The ``/tmp`` prefix is deliberate, not a ``TMPDIR`` oversight: SkyPilot's
+    ``_ssh_control_path`` hardcodes ``/tmp/skypilot_ssh_<user_hash>`` and does
+    *not* honor ``TMPDIR`` (see ``sky.utils.command_runner``), so we mirror that
+    literal exactly to stay in sync — deriving our own base from ``TMPDIR`` would
+    diverge from where SkyPilot actually places the sockets. If a future SkyPilot
+    release relocates the socket root (e.g. starts honoring ``TMPDIR``), this dir
+    stops matching and the caller's glob finds nothing; the caller surfaces that
+    zero-clear in a log rather than passing silently (see
+    ``_clear_skypilot_ssh_control_sockets``).
+
+    :returns: absolute path to the control-socket root directory, or ``None`` if
+        the SkyPilot SDK cannot be imported (gbserver may run without it).
+    """
+    try:
+        from sky.utils import common_utils
+
+        # Mirror SkyPilot's own hardcoded /tmp base (command_runner._ssh_control_path).
+        return f"/tmp/skypilot_ssh_{common_utils.get_user_hash()}"
+    except Exception:  # SDK missing or upstream API drift; caller treats as no-op.
+        return None
+
+
+def _clear_skypilot_ssh_control_sockets() -> None:
+    """Delete SkyPilot's stale SSH ControlMaster sockets for this user.
+
+    SkyPilot keeps SSH connections to a login node alive for ``ControlPersist``
+    (300s by default, or 1d on the interactive-auth retry path that
+    ``SlurmClient`` enables) and reuses them across launches via a fixed control
+    name, so a socket left over from an earlier launch lets a new one skip
+    re-authentication — a changed ``cluster_ssh_configs`` key or host then
+    silently has no effect within that window. Removing the sockets forces the
+    next connection to re-authenticate against the freshly materialized config.
+
+    The sockets live one level below the root returned by
+    ``_ssh_control_socket_dir`` — at ``<root>/<hashed-control-name>/<%C>`` — so
+    we glob ``*/*`` to reach them without depending on SkyPilot's private
+    control-name hashing. Only entries that are actually sockets are removed
+    (verified via ``stat.S_ISSOCK``), so a stray regular file or directory that
+    happens to sit at that depth is left untouched.
+
+    Best-effort: a socket that cannot be stat'd/unlinked is left in place
+    (OpenSSH re-creates sockets as needed). The clear is user-wide (it removes
+    sockets for every cloud/host of this OS user), so it must be used only as a
+    deliberate test action, not on every launch — a concurrent launch's shared
+    socket would otherwise be pulled out from under it.
+
+    This runs only when opted in (guarded at the call site by the
+    ``GBTEST_SKY_SSH_RESET`` env var — see ``is_sky_ssh_reset_enabled``), where
+    the socket root is expected to resolve; if it cannot (SkyPilot SDK missing or
+    its socket-path API drifted) we log a warning rather than silently skipping,
+    since a re-keyed config would then reuse a stale connection. A resolved root
+    that yields zero sockets is also logged (at info) rather than passing
+    silently, so a socket-layout mismatch (e.g. SkyPilot relocating the root) is
+    diagnosable instead of masquerading as a successful no-op reset.
+
+    :returns: ``None``.
+    """
+    control_root = _ssh_control_socket_dir()
+    if not control_root:
+        logger.warning(
+            "SkyPilot SSH control-socket root could not be resolved (SDK "
+            "missing or upstream API drift); skipping socket clear. A re-keyed "
+            "cluster_ssh_config may reuse a stale connection until it expires."
+        )
+        return
+    removed = 0
+    for entry in glob.glob(os.path.join(control_root, "*", "*")):
+        try:
+            if not stat.S_ISSOCK(os.lstat(entry).st_mode):
+                continue  # only ControlMaster sockets, never files/dirs
+            os.unlink(entry)
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        logger.info(
+            "Cleared %d stale SkyPilot SSH control socket(s) under %s.",
+            removed,
+            control_root,
+        )
+    else:
+        # A deliberate reset (GBTEST_SKY_SSH_RESET) that clears nothing is worth
+        # surfacing: either no socket was cached yet (benign — e.g. first launch)
+        # or the root no longer matches SkyPilot's actual socket layout (drift, or
+        # SkyPilot honoring TMPDIR), in which case a re-keyed config would silently
+        # reuse a stale connection. Logging it turns that mismatch from invisible
+        # into diagnosable.
+        logger.info(
+            "SkyPilot SSH control-socket reset found no sockets under %s "
+            "(none cached yet, or SkyPilot's socket layout has moved).",
+            control_root,
+        )
+
+
 # Per-step log-retrieval modes, selected via the ``log_retrieval.mode`` key in
 # the skypilot_monitor config. See _parse_log_retrieval for semantics.
 LOG_RETRIEVAL_ON_COMPLETION = "on_completion"
@@ -511,6 +626,39 @@ def _is_transient_provision_error(exc: BaseException) -> bool:
         if exc_types and isinstance(exc, exc_types):
             return True
     return any(s in text for s in _TRANSIENT_PROVISION_SUBSTRINGS)
+
+
+# Path fragment of SkyPilot's client module that drives interactive SSH auth.
+# A frame from this module in a failure traceback means the interactive-auth
+# fallback fired — see _is_interactive_auth_stdin_failure below.
+_SKY_INTERACTIVE_AUTH_MODULE = "sky/client/interactive_utils.py"
+
+
+def _is_interactive_auth_stdin_failure(exc: BaseException) -> bool:
+    """Return True if ``exc`` is SkyPilot's interactive-auth fallback crashing on
+    a non-interactive stdin, which masks an SSH key rejection.
+
+    SkyPilot's SLURM/LSF provisioners hardcode ``enable_interactive_auth=True``,
+    so a rejected key triggers a client-side interactive password prompt. In a
+    headless context (server/CI/pytest) ``sys.stdin`` has no real fd and
+    ``os.isatty(sys.stdin.fileno())`` raises ``io.UnsupportedOperation``. We
+    detect that by walking the traceback of ``exc`` and any chained
+    cause/context for a frame in SkyPilot's ``interactive_utils`` module — a
+    precise signal, so an unrelated error is never relabeled.
+
+    :param exc: The exception raised by the launch/provision path.
+    :returns: True if the failure is the interactive-auth stdin crash.
+    """
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for frame, _ in traceback.walk_tb(current.__traceback__):
+            filename = frame.f_code.co_filename.replace("\\", "/")
+            if _SKY_INTERACTIVE_AUTH_MODULE in filename:
+                return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 from gbserver.environment._skypilot_ssh import (
@@ -845,14 +993,19 @@ class Skypilot(Environment):
         )
 
     def _ensure_inline_configs_materialized(self: Self) -> None:
-        """Materialize inline SkyPilot config from environment.yaml (once).
+        """Materialize the non-SSH inline SkyPilot config (once per instance).
 
-        Reads ``cluster_ssh_configs`` / ``cloud_config`` / ``aws_credentials``
-        from the environment's free-form ``config`` block and delegates to
-        ``skypilot_config.materialize``, which writes/merges the SSH config
-        files, the per-request ``SKYPILOT_PROJECT_CONFIG`` override, and
-        ``~/.aws/credentials``. No-op when none are present. Idempotent via an
-        instance flag (and the merge itself), so retry relaunches are free.
+        Reads ``cloud_config`` / ``aws_credentials`` from the environment's
+        free-form ``config`` block and delegates to ``skypilot_config.materialize``
+        (with ``ssh=None``), which writes the per-request
+        ``SKYPILOT_PROJECT_CONFIG`` override and ``~/.aws/credentials``. No-op when
+        neither is present. Idempotent via an instance flag, so retry relaunches
+        are free.
+
+        The SSH config is deliberately NOT materialized here: it is merged
+        per-launch by :meth:`_prepare_ssh_for_launch`, which also handles the
+        test-only ControlMaster socket reset for the cloud actually being
+        provisioned.
 
         :raises SkypilotConfigCollisionError: If a section conflicts with config
             already materialized by another environment in this process/host.
@@ -860,25 +1013,64 @@ class Skypilot(Environment):
         if self._inline_configs_done:
             return
         cfg = self.config.config if self.config else {}
-        ssh_raw = cfg.get("cluster_ssh_configs")
         cloud_config = cfg.get("cloud_config")
         aws_raw = cfg.get("aws_credentials")
-        if ssh_raw or cloud_config or aws_raw:
+        if cloud_config or aws_raw:
             from gbserver.environment.skypilot_config import materialize
-            from gbserver.types.environmentconfig import (
-                AwsCredentialProfile,
-                ClusterSshConfigs,
-            )
+            from gbserver.types.environmentconfig import AwsCredentialProfile
 
-            ssh = ClusterSshConfigs.model_validate(ssh_raw) if ssh_raw else None
             aws = (
                 [AwsCredentialProfile.model_validate(p) for p in aws_raw]
                 if aws_raw
                 else None
             )
             name = self.config.name if self.config else "unknown"
-            materialize(name, ssh, cloud_config, aws, self.secrets or {})
+            materialize(name, None, cloud_config, aws, self.secrets or {})
         self._inline_configs_done = True
+
+    def _materialize_ssh_for_launch(self: Self, cloud: str) -> None:
+        """Merge this env's inline SSH config for ``cloud`` into ``~/.<cloud>/config``.
+
+        Idempotent last-writer-wins (see ``merge_ssh_blocks``): an identical block
+        is a no-op, so retry relaunches are free; a differing gbserver-managed
+        block self-heals a re-keyed entry. No-op when the env defines no inline
+        SSH config.
+
+        :param cloud: The HPC cloud being provisioned (``"slurm"``/``"lsf"``).
+        :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash.
+        """
+        cfg = self.config.config if self.config else {}
+        ssh_raw = cfg.get("cluster_ssh_configs")
+        if not ssh_raw:
+            return
+        from gbserver.environment.skypilot_config import materialize_ssh_for_cloud
+        from gbserver.types.environmentconfig import ClusterSshConfigs
+
+        ssh = ClusterSshConfigs.model_validate(ssh_raw)
+        name = self.config.name if self.config else "unknown"
+        materialize_ssh_for_cloud(name, ssh, self.secrets or {}, cloud)
+
+    def _prepare_ssh_for_launch(self: Self, cloud_group: str) -> None:
+        """Materialize SSH config for an HPC launch, optionally resetting sockets.
+
+        No-op for non-HPC clouds (k8s/aws have no shared SSH config file). For a
+        slurm/lsf launch: when ``GBTEST_SKY_SSH_RESET`` is set (manually, during
+        credential-change testing), first clear SkyPilot's cached SSH
+        ControlMaster sockets so the next connection re-authenticates against the
+        freshly materialized config instead of reusing a stale one; then merge
+        this cloud's SSH config into ``~/.<cloud>/config``. Production leaves
+        SkyPilot's socket management untouched.
+
+        :param cloud_group: Normalized target cloud (first infra segment).
+        :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash.
+        """
+        if cloud_group not in _SSH_HPC_CLOUDS:
+            return
+        from gbcommon.types.testing import is_sky_ssh_reset_enabled
+
+        if is_sky_ssh_reset_enabled():
+            _clear_skypilot_ssh_control_sockets()
+        self._materialize_ssh_for_launch(cloud_group)
 
     def _get_cloud(self: Self) -> str:
         """Get default cloud/infra from environment.yaml config."""
@@ -891,6 +1083,74 @@ class Skypilot(Environment):
         if self.config is None:
             return 10
         return self.config.config.get("idle_minutes_to_autostop", 10)
+
+    def _resolve_infra_and_zone(
+        self: Self, cloud: str, override_res: dict, config: dict
+    ) -> tuple[str, str | None]:
+        """Resolve the SkyPilot ``infra`` string and standalone ``zone`` arg.
+
+        Supports the ``cloud/cluster/partition`` infra format. For HPC clouds
+        (``slurm``/``lsf`` — see ``_SSH_HPC_CLOUDS``), ``cluster``/``zone`` (the
+        SLURM partition / LSF queue) fall back through the step/build ``config``
+        and then the environment.yaml ``config`` when not set on the resources
+        override, so the partition/queue can be set at any of those layers
+        (precedence: resources override > step or build ``config`` >
+        environment.yaml ``config``). The partition segment is omitted entirely
+        when no ``zone`` resolves. For non-HPC clouds only the resources
+        override is consulted (behavior unchanged).
+
+        :param cloud: resolved target cloud (e.g. ``"slurm"``, ``"lsf"``).
+        :param override_res: merged step/build launcher ``resources`` dict.
+        :param config: the step/build ``config`` dict.
+        :returns: an ``(infra, zone)`` tuple. For the cluster/zone-composition
+            paths ``zone`` is ``None`` because it was folded into the infra
+            string. For an explicit ``infra`` override any separate ``zone`` is
+            passed through unchanged (see below). ``sky.Resources`` rejects
+            specifying both an ``infra`` that already carries a zone segment and
+            a separate ``zone``.
+        :raises ValueError: when an HPC ``zone``/partition resolves without a
+            ``cluster``. SkyPilot's ``cloud/region/zone`` grammar cannot express
+            a partition without a cluster (it rejects an empty middle segment
+            ``cloud//zone`` and rejects a separate ``zone=`` arg alongside
+            ``infra=``), so folding a bare zone into ``cloud/zone`` would
+            silently land the partition in the cluster slot and provision the
+            wrong target — we fail loud instead.
+        """
+        # An explicit infra string wins outright. A separate ``zone`` (e.g. a
+        # SLURM partition alongside a ``cloud/cluster`` infra) is still passed
+        # through to sky.Resources — folding or dropping it would silently
+        # discard the partition. The caller must not combine a 3-segment infra
+        # (cloud/cluster/zone) with a separate ``zone``; sky.Resources rejects
+        # that. No config/env zone-fallback here: an explicit infra opts out of
+        # the SLURM fallback below, matching the pre-refactor behavior.
+        if override_res.get("infra"):
+            return override_res["infra"], override_res.get("zone")
+
+        cluster = override_res.get("cluster")
+        zone = override_res.get("zone")
+        if cloud in _SSH_HPC_CLOUDS:
+            env_cfg = self.config.config if self.config else {}
+            cluster = cluster or config.get("cluster") or env_cfg.get("cluster")
+            zone = zone or config.get("zone") or env_cfg.get("zone")
+
+        if cluster:
+            infra = f"{cloud}/{cluster}"
+            return (f"{infra}/{zone}", None) if zone else (infra, None)
+        if zone:
+            if cloud in _SSH_HPC_CLOUDS:
+                # SkyPilot cannot express a partition/queue without a cluster
+                # (see :raises: above), so a bare zone here is a misconfig that
+                # would otherwise mislabel the partition as the cluster.
+                raise ValueError(
+                    f"{cloud!r} zone/partition {zone!r} requires a cluster: set "
+                    "`resources.cluster` (or `cluster` in the step/build/"
+                    "environment config). SkyPilot cannot target a partition "
+                    "without a cluster."
+                )
+            # Non-HPC: fold into infra to avoid the "cannot specify both infra
+            # and zone" error in sky.Resources (region/zone share one axis here).
+            return (f"{cloud}/{zone}" if cloud else zone, None)
+        return cloud, None
 
     @staticmethod
     def _cluster_name_for(launch_id: str, attempt: int = 0) -> str:
@@ -1209,26 +1469,9 @@ class Skypilot(Environment):
         ``launch_skypilot`` doesn't have to re-indent the entire block.
         """
         try:
-            # Materialize inline cluster/cloud/AWS config before the API server
-            # starts and before sky.launch builds the per-request config override.
-            self._ensure_inline_configs_materialized()
-            _ensure_skypilot_api_running()
-
-            # Stash kwargs so retry_workload can replay this launch. Include
-            # targetsteprun_asset_dir so a relaunch re-resolves relative
-            # file_mounts sources (it is a named param, so it is replayed via
-            # launch_skypilot(launch_id, **original_kwargs)).
-            self._launch_kwargs[launch_id] = {
-                "targetsteprun_asset_dir": targetsteprun_asset_dir,
-                "launcher_config": kwargs.get("launcher_config"),
-                "config": kwargs.get("config"),
-                "run_metadata": kwargs.get("run_metadata"),
-                "setup_config": kwargs.get("setup_config"),
-                "retry_enabled": kwargs.get("retry_enabled"),
-                "retry_transparently": kwargs.get("retry_transparently"),
-                "bindings": kwargs.get("bindings"),
-            }
-
+            # Resolve the target cloud FIRST (pure computation off kwargs/env — no
+            # side effects), so the SSH config for the cloud actually being
+            # provisioned can be materialized below.
             launcher_config = kwargs.get("launcher_config", {}) or {}
             config = kwargs.get("config", {}) or {}
 
@@ -1251,19 +1494,8 @@ class Skypilot(Environment):
             }
 
             # Build infra string: supports 'cloud/cluster/partition' format
-            # (e.g., 'slurm/mycluster/gpu', 'lsf/bluevela/normal')
-            infra = override_res.get("infra") or cloud
-            zone = override_res.get("zone")
-            if not override_res.get("infra") and override_res.get("cluster"):
-                infra = f"{cloud}/{override_res['cluster']}"
-                if zone:
-                    infra = f"{infra}/{zone}"
-                    zone = None
-            elif not override_res.get("infra") and zone:
-                # zone without cluster — fold into infra to avoid the
-                # "cannot specify both infra and zone" error in sky.Resources
-                infra = f"{infra}/{zone}" if infra else zone
-                zone = None
+            # (e.g., 'slurm/mycluster/gpu', 'lsf/bluevela/normal').
+            infra, zone = self._resolve_infra_and_zone(cloud, override_res, config)
 
             # Normalized target cloud: the first infra segment, lowercased — the
             # single source of truth for cloud-specific resource handling (the
@@ -1272,6 +1504,33 @@ class Skypilot(Environment):
             # `infra: "slurm/..."`, an explicit `resources.cloud`, or non-canonical
             # casing — not just the env's default_cloud.
             cloud_group = (str(infra).split("/", 1)[0] or "").lower()
+
+            # Merge this cloud's SSH config (HPC only; no-op for k8s/aws), and
+            # optionally reset SkyPilot's ControlMaster sockets when the test flag
+            # is set. Done here — before the non-SSH materialize and the API start
+            # below — so the config is in place before sky.launch connects.
+            self._prepare_ssh_for_launch(cloud_group)
+
+            # Materialize non-SSH inline config (cloud_config / AWS creds) before
+            # the API server starts / sky.launch builds the per-request config
+            # override. Idempotent; the SSH merge is handled above.
+            self._ensure_inline_configs_materialized()
+            _ensure_skypilot_api_running()
+
+            # Stash kwargs so retry_workload can replay this launch. Include
+            # targetsteprun_asset_dir so a relaunch re-resolves relative
+            # file_mounts sources (it is a named param, so it is replayed via
+            # launch_skypilot(launch_id, **original_kwargs)).
+            self._launch_kwargs[launch_id] = {
+                "targetsteprun_asset_dir": targetsteprun_asset_dir,
+                "launcher_config": kwargs.get("launcher_config"),
+                "config": kwargs.get("config"),
+                "run_metadata": kwargs.get("run_metadata"),
+                "setup_config": kwargs.get("setup_config"),
+                "retry_enabled": kwargs.get("retry_enabled"),
+                "retry_transparently": kwargs.get("retry_transparently"),
+                "bindings": kwargs.get("bindings"),
+            }
 
             # Build sky.Resources — merge order is precedence (last wins). The
             # step's config.compute_config (num_cpus_per_node/total_memory_per_node)
@@ -1446,6 +1705,10 @@ class Skypilot(Environment):
             # (normalized first infra segment) computed above.
             autostop = None if cloud_group in _SSH_HPC_CLOUDS else idle_minutes
 
+            # (The opt-in SSH-socket clear, if GBTEST_SKY_SSH_RESET is set, ran
+            # earlier via _prepare_ssh_for_launch, before the SSH config was
+            # materialized — see above.)
+
             # Launch and wait for provisioning, retrying transient
             # resource-acquisition failures (e.g. a just-torn-down slurm/lsf
             # allocation not yet released on retry). See _provision_with_retry.
@@ -1517,6 +1780,27 @@ class Skypilot(Environment):
                         )
 
         except Exception as e:
+            if _is_interactive_auth_stdin_failure(e):
+                # cloud_group may be unset if the failure preceded its
+                # assignment; the interactive-auth crash only occurs deep in
+                # provisioning, but fall back defensively.
+                cloud_name = locals().get("cloud_group") or "SLURM/LSF"
+                msg = (
+                    f"SSH authentication to the {cloud_name} login node failed "
+                    f"for launch {launch_id}: SkyPilot fell back to interactive "
+                    "password auth, which cannot run without a terminal. This "
+                    "almost always means the configured SSH key was rejected — "
+                    "verify the environment's cluster_ssh_configs "
+                    "IdentityFile/IdentityKey, and see the latest "
+                    "~/sky_logs/*/provision.log for the raw SSH error."
+                )
+                logger.error(
+                    "Failed to launch SkyPilot cluster for %s: %s", launch_id, msg
+                )
+                # Raise WITHOUT ``from e``: unwrap_errors() follows __cause__ and
+                # would surface the opaque stdin error instead of this message.
+                # Implicit __context__ still preserves the original in the trace.
+                raise ErrSkypilotInteractiveAuthFailed(msg)
             logger.error("Failed to launch SkyPilot cluster for %s: %s", launch_id, e)
             raise
         finally:

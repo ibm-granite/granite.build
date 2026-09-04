@@ -16,11 +16,21 @@
 
 """Materialize inline SkyPilot config from a Skypilot ``environment.yaml``.
 
-Write/merge-only — no refcount, no teardown. Three destinations are supported:
+Write/merge-only. Three destinations are supported:
 
   * ``cluster_ssh_configs`` -> ``~/.<cloud>/config`` (OpenSSH ``Host`` blocks,
-    merged by alias under a cross-process file lock; a foreign or differing
-    entry raises ``SkypilotConfigCollisionError``).
+    merged by alias under a cross-process file lock). A **foreign** (non-gbserver)
+    entry with differing content raises ``SkypilotConfigCollisionError`` —
+    gbserver never clobbers a user's own hosts. A prior **gbserver-managed** block
+    with differing content is overwritten (last-writer-wins), self-healing a
+    re-keyed entry; identical content is a no-op. SkyPilot re-reads the single
+    ``~/.<cloud>/config`` for a cluster's whole lifetime, and it caches SSH
+    ControlMaster sockets keyed on (host, port, user) — NOT the key — so a
+    re-keyed config is masked by a live socket until it expires. Clearing that
+    socket so a credential change actually takes effect is a test-only concern,
+    gated by ``GBTEST_SKY_SSH_RESET`` (see ``gbserver.environment.skypilot``);
+    production leaves SkyPilot's socket management untouched. Single-host by
+    design (the config files are host-local).
   * ``cloud_config`` -> ``~/.sky/config.yaml`` (deep-merged into the global
     SkyPilot config the API server / optimizer reads directly; the env's values
     win, unrelated keys are preserved).
@@ -357,10 +367,11 @@ def _merge_ssh(
 ) -> Dict[str, Tuple[str, str]]:
     """Merge incoming alias blocks into existing; raise only on a real conflict.
 
-    Content-aware refuse-on-conflict: a pre-existing entry (foreign/non-gbserver
-    or a prior gbserver-managed block) for the same alias is a conflict **only if
-    its content differs**. An identical pre-existing entry is a no-op — the env
-    and the on-disk config agree, so nothing is written and nothing is raised.
+    Content-aware: a pre-existing entry for the same alias with identical content
+    is a no-op. A **foreign** (non-gbserver) entry with differing content always
+    conflicts — gbserver never overwrites user-owned entries. A prior
+    **gbserver-managed** block with differing content is overwritten
+    (last-writer-wins), self-healing a stale or re-keyed entry.
 
     :param existing: Current ``{alias: (block, owner)}`` from the managed region.
     :param incoming: New ``{alias: block}`` to merge in.
@@ -368,7 +379,8 @@ def _merge_ssh(
     :param env_name: The contributing environment name.
     :param dest: Destination file path (for messages).
     :returns: The merged ``{alias: (block, owner)}`` (foreign-equivalent aliases omitted).
-    :raises SkypilotConfigCollisionError: On a same-alias, differing-content clash.
+    :raises SkypilotConfigCollisionError: On a foreign clash (differing content in
+        a non-gbserver entry for the same alias).
     """
     merged = dict(existing)
     for alias, block in incoming.items():
@@ -383,18 +395,12 @@ def _merge_ssh(
                 )
             # Identical foreign entry already provides this host — leave it as-is.
             continue
-        if alias in merged:
-            old_block, old_owner = merged[alias]
-            if not _blocks_equivalent(old_block, block):
-                _raise_collision(
-                    "SSH Host",
-                    alias,
-                    env_name,
-                    f"'{old_owner or 'an existing entry'}'",
-                    dest,
-                )
-        else:
-            merged[alias] = (block, env_name)
+        if alias in merged and _blocks_equivalent(merged[alias][0], block):
+            # Identical managed block already present — no-op (avoids a rewrite
+            # and preserves the recorded owner).
+            continue
+        # New alias, or a differing managed block: (over)write it (self-heal).
+        merged[alias] = (block, env_name)
     return merged
 
 
@@ -429,11 +435,17 @@ def merge_ssh_blocks(
 ) -> None:
     """Merge rendered SSH ``Host`` blocks into ``~/.<cloud>/config``.
 
+    Idempotent last-writer-wins: an identical managed block is a no-op; a
+    differing gbserver-managed block is overwritten (self-heals a re-keyed
+    entry); a differing **foreign** (non-gbserver) entry raises. Serialized
+    across threads and processes by the per-cloud file lock.
+
     :param cloud: Cloud name (``slurm``/``lsf``) -> ``~/.<cloud>/config``.
     :param alias_blocks: ``{alias: block}`` to merge.
     :param env_name: The contributing environment name.
     :param home: Home dir override (tests).
-    :raises SkypilotConfigCollisionError: On a true clash.
+    :raises SkypilotConfigCollisionError: On a foreign clash (a non-gbserver
+        entry for the same alias with differing content).
     """
     if not alias_blocks:
         return
@@ -443,7 +455,11 @@ def merge_ssh_blocks(
         text = dest.read_text(encoding="utf-8") if dest.exists() else ""
         foreign, existing = _parse_managed(text)
         merged = _merge_ssh(
-            existing, alias_blocks, _parse_host_blocks(foreign), env_name, str(dest)
+            existing,
+            alias_blocks,
+            _parse_host_blocks(foreign),
+            env_name,
+            str(dest),
         )
         if merged == existing:
             # Nothing new to manage (e.g. every incoming alias already exists as an
@@ -576,6 +592,41 @@ def merge_aws_credentials(
         _write_atomic(dest, buf.getvalue(), mode=0o600)
 
 
+def materialize_ssh_for_cloud(
+    env_name: str,
+    ssh: ClusterSshConfigs,
+    secrets: Dict[str, str],
+    cloud: str,
+    *,
+    home: Optional[Path] = None,
+) -> None:
+    """Merge one cloud's inline SSH ``Host`` blocks into ``~/.<cloud>/config``.
+
+    Extracted from :func:`materialize` so a launch can (re-)merge just the cloud
+    it is provisioning. No-op when the config defines no hosts for ``cloud``.
+
+    :param env_name: The environment name (used in messages).
+    :param ssh: Inline cluster SSH configs.
+    :param secrets: Secret name -> value mapping for field resolution.
+    :param cloud: ``"slurm"`` or ``"lsf"`` — the cloud whose hosts to merge.
+    :param home: Home dir override (tests).
+    :raises SkypilotConfigCollisionError: On a foreign clash (see
+        :func:`merge_ssh_blocks`).
+    """
+    hosts = {"slurm": ssh.slurm, "lsf": ssh.lsf}.get(cloud)
+    if not hosts:
+        return
+    # Resolve any IdentityKey directive to a managed key file + IdentityFile
+    # before rendering (keeps render_ssh_host pure).
+    hosts = _materialize_identity_keys(hosts, cloud, secrets, _home(home))
+    merge_ssh_blocks(
+        cloud,
+        render_ssh_hosts(hosts, secrets),
+        env_name,
+        home=home,
+    )
+
+
 def materialize(
     env_name: str,
     ssh: Optional[ClusterSshConfigs],
@@ -600,14 +651,8 @@ def materialize(
     :param home: Home dir override (tests).
     """
     if ssh:
-        for cloud, hosts in (("slurm", ssh.slurm), ("lsf", ssh.lsf)):
-            if hosts:
-                # Resolve any IdentityKey directive to a managed key file +
-                # IdentityFile before rendering (keeps render_ssh_host pure).
-                hosts = _materialize_identity_keys(hosts, cloud, secrets, _home(home))
-                merge_ssh_blocks(
-                    cloud, render_ssh_hosts(hosts, secrets), env_name, home=home
-                )
+        for cloud in ("slurm", "lsf"):
+            materialize_ssh_for_cloud(env_name, ssh, secrets, cloud, home=home)
     if cloud_config:
         merge_cloud_config(cloud_config, env_name, home=home)
     if aws_credentials:

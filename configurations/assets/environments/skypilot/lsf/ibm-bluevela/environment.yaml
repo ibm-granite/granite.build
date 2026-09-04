@@ -12,27 +12,29 @@ config:
   # step's relative file_mounts destination — remapped under this dir — is
   # visible inside the container at the same relative path.
   shared_workdir: /proj/data-eng/llmb-read-write/builds/
-  # SkyPilot's `zone` is overloaded per-cloud: for the LSF backend it
-  # maps to the LSF queue name (e.g. `normal`, `preemptable`). Recipes
-  # that expose a `QUEUE` build parameter plumb it through `zone`.
+  # SkyPilot's `zone` is overloaded per-cloud: for LSF it maps to the queue name
+  # (e.g. `normal`, `preemptable`); recipes exposing a `QUEUE` param plumb it
+  # through `zone`. Override layers + precedence:
+  # docs/environments/skypilot-lsf.md#zone--lsf-queue.
   #
-  # Note: autostop is intentionally omitted here. The Skypilot environment
-  # forces autostop=None for the lsf cloud (LSF does not support cluster
-  # autostop), so any value set here would have no effect.
+  # Autostop is omitted: gbserver forces autostop=None for the lsf cloud (LSF
+  # does not support cluster autostop), so any value here has no effect.
 
   # Inline LSF cluster SSH reachability. gbserver materializes this into
   # ~/.lsf/config at launch so SkyPilot's LSF provisioner can reach the cluster
   # and enumerate its nodes. Each field is secret-name-or-literal (no matching
   # secret -> literal). If a ~/.lsf/config already exists on the host with a
   # bluevela entry, remove it first — gbserver refuses to overwrite foreign
-  # entries (refuse-on-conflict).
+  # entries (refuse-on-conflict). Testing a changed key? See the
+  # GBTEST_SKY_SSH_RESET re-keying caveat in docs/environments/skypilot-lsf.md.
   cluster_ssh_configs:
     lsf:
       - Host: bluevela
         HostName: login4.bluevela.rmf.ibm.com
         User: granitebuild
+        # Set GBTEST_SKY_SSH_RESET=true (env) when testing modified credentials.
         IdentityFile: ~/.ssh/ibm-bluevela.key
-        # IdentityKey: BV_SSH_PRIVATE_KEY 
+        #IdentityKey: BV_SSH_PRIVATE_KEY
         IdentitiesOnly: "yes"
 
   # Inline LSF behavioral config. gbserver writes this to a per-process file and

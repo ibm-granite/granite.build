@@ -1,0 +1,44 @@
+name: sky-slurm-bluevela
+type: Skypilot
+subtype: slurm
+config:
+  default_cloud: slurm
+  # Autostop is ignored: SLURM does not support cluster autostop (gbserver forces
+  # autostop=None), and a per-step `sky down` releases the node allocation.
+  idle_minutes_to_autostop: 0
+  # infra=slurm/<cluster>/<zone> (here slurm/bluevela/gpu-mid); the SSH `Host`
+  # alias below must match `cluster`, and `zone` is the SLURM partition. Override
+  # layers + precedence: docs/environments/skypilot-slurm.md#cluster--zone.
+  cluster: bluevela
+  zone: gpu-mid
+  # Shared-FS root for per-run build workdirs (exported as GB_BUILD_WORKDIR, and
+  # the CWD of the setup/run scripts). On bluevela this must live on /proj — the
+  # shared FS bind-mounted into the enroot container. Reuses the LSF /proj path.
+  shared_workdir: /proj/data-eng/llmb-read-write/builds/
+  # Inline SLURM SSH reachability, materialized to ~/.slurm/config at launch so
+  # SkyPilot's provisioner can reach the login node. Keys are exact OpenSSH
+  # directive names (mirrors ~/.slurm/config 1:1); each value is
+  # secret-name-or-literal. Reuses the LSF BlueVela credentials/key; only
+  # HostName differs (login1 here vs login4 for LSF). For CI/CD with no key on
+  # the host, use `IdentityKey: BV_SSH_PRIVATE_KEY` (a secret) instead of
+  # IdentityFile. Testing a changed key? See the GBTEST_SKY_SSH_RESET re-keying
+  # caveat in docs/environments/skypilot-slurm.md.
+  cluster_ssh_configs:
+    slurm:
+      - Host: bluevela
+        HostName: login1.bluevela.rmf.ibm.com
+        User: granitebuild
+        # Set GBTEST_SKY_SSH_RESET=true (env) when testing modified credentials.
+        IdentityFile: ~/.ssh/ibm-bluevela.key
+        #IdentityFile: ~/.ssh/cogops_bv.key
+        #IdentityKey: BV_SSH_PRIVATE_KEY
+        IdentitiesOnly: "yes"
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config:
+          cache_path: /tmp/hf_cache
+    push:
+      - mode: default
+        config: {}

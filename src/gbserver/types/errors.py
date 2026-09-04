@@ -108,6 +108,20 @@ class ErrSSHConnectionError(Exception):
         return any(pattern in s_lower for pattern in ERR_SSH_CONNECTION_PATTERNS)
 
 
+class ErrSkypilotInteractiveAuthFailed(Exception):
+    """SkyPilot's interactive SSH-auth fallback fired in a headless context,
+    masking an SSH key rejection.
+
+    SkyPilot's SLURM/LSF provisioners hardcode ``enable_interactive_auth=True``,
+    so when key-based auth is rejected the client is asked to prompt for a
+    password interactively. With no controlling terminal (server/CI/pytest) that
+    prompt crashes on ``sys.stdin.fileno()`` with an opaque ``io`` error that
+    says nothing about authentication. gbserver raises this instead so the
+    surfaced cause points at the rejected key. Fatal — retrying with the same
+    rejected key cannot succeed.
+    """
+
+
 ERR_LSF_CANNOT_OPEN_JOB_FILE = "Cannot open your job file"
 
 

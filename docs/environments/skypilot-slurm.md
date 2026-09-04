@@ -40,11 +40,47 @@ Keys are the **exact OpenSSH directive names**, so the env mirrors `~/.slurm/con
 via a secret — gbserver writes a `0600` file and points `IdentityFile` at it); specifying both is an
 error. The SSH private key and the cluster itself stay out-of-band — gbserver does not provision them.
 
+gbserver merges this block into `~/.slurm/config` with last-writer-wins semantics: a differing
+gbserver-managed block for the same alias is **overwritten** (so a stale or re-keyed entry self-heals
+— no manual `rm ~/.slurm/config`); a *foreign* (non-gbserver) entry for the same alias is refused
+(`SkypilotConfigCollisionError`) — gbserver never clobbers user-owned entries.
+See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_configs--cloud_config--aws_credentials).
+
+> **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.slurm/config` self-heals,
+> SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key
+> — so a changed `IdentityFile`/`IdentityKey` can be masked by a live connection until its
+> `ControlPersist` window expires (300s, or up to 1 day on the interactive-auth path). To validate a
+> credential change against a freshly edited key, set `GBTEST_SKY_SSH_RESET=true` in gbserver's
+> environment: on each HPC launch gbserver then clears the persisted control sockets first, forcing
+> re-authentication with the current key. This is a **test-only** toggle (manually set, unconditional
+> — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
+> user's SkyPilot SSH connections. It is not an environment-config key.
+
 ### `cluster` / `zone`
 
-- `cluster` (env-level) is composed into `infra=slurm/<cluster>` for steps that don't set their own
-  `resources.infra`. A step launcher can also set `resources.cluster`.
-- `zone` maps to the SLURM **partition**.
+- `cluster` is composed into `infra=slurm/<cluster>` for steps that don't set their own
+  `resources.infra`.
+- `zone` maps to the SLURM **partition** (submitted via `--partition`), composed as
+  `infra=slurm/<cluster>/<zone>`. It is **omitted entirely when unset**, letting SLURM pick the
+  cluster's default partition. A `zone` set **without** a `cluster` is rejected with a clear
+  error: SkyPilot's `cloud/region/zone` grammar cannot place a partition without a cluster, so a
+  bare `zone` would otherwise be silently mislabeled as the cluster — set a `cluster` too.
+
+Both are resolved with the following precedence (highest first), so the partition can be set at
+whichever layer is most convenient:
+
+1. `resources.infra` on the step launcher — an explicit full infra string wins outright.
+2. `resources.cluster` / `resources.zone` on the step launcher (from `step.yaml`, or `build.yaml`
+   `config.launcher_config.resources`).
+3. `cluster` / `zone` as plain top-level keys in the step/build `config` (e.g. a `zone:` in
+   `build.yaml`).
+4. `cluster` / `zone` in this `environment.yaml` `config`.
+
+This precedence is implemented in `Skypilot._resolve_infra_and_zone` and applies to the HPC
+clouds (`slurm` and `lsf` — see [skypilot-lsf.md](skypilot-lsf.md); non-HPC clouds consult only
+the step launcher's `resources`). For a real-cluster example, see the
+[`skypilot/slurm/ibm-bluevela`](../../configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml)
+environment (BlueVela's `gpu-mid` partition, reached at `login1`).
 
 ### Autostop is ignored
 

@@ -1,0 +1,34 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_2target.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# Two command-step targets on BlueVela SLURM (Skypilot) with REAL hf:// I/O.
+# `second` binds `first`'s hf output, proving cross-target output -> input
+# binding over live HuggingFace pulls/pushes.
+targets:
+  - first
+  - second
+target_expectations:
+  # Each target uses hf:// for both input and output, so step_count covers the
+  # single `command` step plus the auto-queued HF input-pull and output-push
+  # steps (derived from the k8s hf reference: 1 hf-in + 1 hf-out + 1 step ->
+  # 5 steps, 3 jobstats). Confirm/adjust these against the first live BlueVela
+  # run — the exact hf pull/push step expansion is validated only at runtime.
+  - target_name: first
+    step_count: 3
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+  - target_name: second
+    step_count: 3
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# Resolve space:// URIs (env + the co-located `command` step) from the repo's
+# local space without cloning from GitHub. Relative to this YAML's directory.
+space_uri: ../../../../../../../configurations/spaces/local
+# A happy-path binding test — no simulated failure, and skip the cancellation run.
+simulate_step_failure: false
+tests:
+  - runner
+timeout_minutes: 30

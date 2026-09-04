@@ -7,6 +7,13 @@ config:
   # at launch time (setup-slurm.sh no longer writes it). Keys are the exact
   # OpenSSH directive names, mirroring ~/.slurm/config 1:1. The referenced key is
   # generated on the host by `make slurm-setup`.
+  #
+  # NOTE: SkyPilot reuses a persisted SSH ControlMaster socket keyed on
+  # (host, port, user) — NOT the key — so edits to the IdentityFile/key below can
+  # be masked by a stale connection for the ControlPersist window. To validate a
+  # key change, set GBTEST_SKY_SSH_RESET=true in gbserver's environment (a
+  # test-only, manually-set toggle — not a config key): gbserver then clears
+  # those sockets on each HPC launch so the changed config re-authenticates.
   cluster_ssh_configs:
     slurm:
       - Host: slurm-docker

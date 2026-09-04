@@ -127,22 +127,25 @@ class TestSshMerge:
         text = _read(tmp_path / ".slurm" / "config")
         assert "Host clusterA" in text and "Host clusterB" in text
 
-    def test_collision_same_alias_different_body(self, tmp_path):
+    def test_differing_managed_block_is_overwritten(self, tmp_path):
+        # A differing gbserver-managed block for the same alias is overwritten
+        # (last-writer-wins), self-healing a stale or re-keyed entry left by an
+        # earlier run. No lease, no refusal — foreign entries are the only ones
+        # gbserver refuses to clobber (covered separately below).
         sc.merge_ssh_blocks(
             "slurm",
             sc.render_ssh_hosts([_host("clusterA", HostName="a")], {}),
             "envA",
             home=tmp_path,
         )
-        with pytest.raises(SkypilotConfigCollisionError) as exc:
-            sc.merge_ssh_blocks(
-                "slurm",
-                sc.render_ssh_hosts([_host("clusterA", HostName="DIFFERENT")], {}),
-                "envB",
-                home=tmp_path,
-            )
-        msg = str(exc.value)
-        assert "clusterA" in msg and "envB" in msg and "envA" in msg
+        sc.merge_ssh_blocks(
+            "slurm",
+            sc.render_ssh_hosts([_host("clusterA", HostName="NEW")], {}),
+            "envB",
+            home=tmp_path,
+        )
+        text = _read(tmp_path / ".slurm" / "config")
+        assert "HostName NEW" in text and "HostName a" not in text
 
     def test_foreign_content_preserved_and_differing_alias_conflicts(self, tmp_path):
         dest = tmp_path / ".slurm" / "config"
@@ -337,17 +340,26 @@ class TestIdentityKey:
         )
         assert _read(dest) == first  # stable content-addressed path, no churn
 
-    def test_same_alias_different_key_collides(self, tmp_path):
+    def test_same_alias_different_key_replaces(self, tmp_path):
+        # Re-keying the same alias self-heals (replaces the stale managed block)
+        # instead of colliding. This is the stale-config bug fix — previously this
+        # raised and required a manual file delete.
         self._materialize(
             tmp_path, {"BV_KEY": self._PEM}, HostName="h", IdentityKey="BV_KEY"
         )
-        with pytest.raises(SkypilotConfigCollisionError):
-            self._materialize(
-                tmp_path,
-                {"BV_KEY": "-----DIFFERENT KEY-----"},
-                HostName="h",
-                IdentityKey="BV_KEY",
-            )
+        dest = self._materialize(
+            tmp_path,
+            {"BV_KEY": "-----DIFFERENT KEY-----"},
+            HostName="h",
+            IdentityKey="BV_KEY",
+        )
+        text = _read(dest)
+        new_key = next(
+            k
+            for k in (tmp_path / ".sky" / "keys").glob("*.key")
+            if k.read_text(encoding="utf-8").startswith("-----DIFFERENT")
+        )
+        assert f"IdentityFile {new_key}" in text
 
     def test_both_identityfile_and_identitykey_raises(self, tmp_path):
         with pytest.raises(ValueError):

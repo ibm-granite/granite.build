@@ -94,6 +94,29 @@ def disable_failure_simulation() -> None:
     os.environ.pop(ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO, None)
 
 
+# Triggers a one-shot clear of SkyPilot's cached SSH ControlMaster sockets before
+# an HPC (SLURM/LSF) launch. Those sockets are keyed on (host, port, user) — NOT
+# the key — so a re-keyed cluster_ssh_config is masked by a live socket until it
+# expires. Tests validating an SSH key/credential change set this so SkyPilot
+# re-authenticates against the freshly-materialized config instead of reusing a
+# stale connection. Off (and a no-op) in production, where SkyPilot's own socket
+# management is left untouched. Read at call time so tests can toggle it without
+# patching; forwarded to remote jobs/pods via get_exported_gbtest_env_vars().
+ENV_VAR_GBTEST_SKY_SSH_RESET = f"{_GBTEST_PREFIX}SKY_SSH_RESET"
+
+
+def is_sky_ssh_reset_enabled() -> bool:
+    """Return True if SkyPilot SSH socket reset is enabled (GBTEST_SKY_SSH_RESET=true).
+
+    This is the only ``GBTEST_SKY_SSH_RESET`` accessor the runtime needs: the launch
+    gate reads it (skypilot.py) and the constant is forwarded via the exported set
+    below. Tests toggle the var directly (``monkeypatch.setenv``) or set it manually
+    before a live run, so no enable/disable helper is kept here — that would be
+    test-only API in ``src/`` with no runtime caller.
+    """
+    return os.getenv(ENV_VAR_GBTEST_SKY_SSH_RESET, "").lower() == "true"
+
+
 # Which environment's HF resource group a STANDALONE run pushes to (e.g.
 # gbspace-public-staging). Defaults to EMPTY, meaning the production
 # gbspace-public: a real standalone user must land in the production group. Only
@@ -124,6 +147,7 @@ def standalone_rg_environment() -> str:
 _GBTEST_EXPORTED_ENV_VARS = {
     ENV_VAR_GBTEST_MOCK_HF,
     ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO,
+    ENV_VAR_GBTEST_SKY_SSH_RESET,
     ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT,
 }
 

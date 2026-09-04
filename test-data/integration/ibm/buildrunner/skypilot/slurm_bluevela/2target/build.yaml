@@ -1,0 +1,70 @@
+granite.build:
+  name: skypilot-bluevela-slurm-hf-2target
+  # Two targets on BlueVela SLURM (via Skypilot), both running the generic
+  # `command` step DIRECTLY on the allocated compute node (no container — no
+  # `command_config.image`, so no Pyxis/enroot plugin is required). Unlike the
+  # env_local no-op tests, these targets use hf:// URIs for their inputs and
+  # outputs, so buildrunner auto-queues REAL HuggingFace pull/push steps around
+  # each command: the command must write a real file for its output to be pushed.
+  #
+  # `first` pulls an hf:// dataset input, writes a real output file, and registers
+  # it as artifact `out1` (pushed to an hf:// dataset repo). `second` binds
+  # `first.out1` as an input (buildrunner hf-pulls first's output onto second's
+  # node), reads the bound path, writes its own real file, and registers `out2`.
+  # Exercises cross-target output -> input binding over real HuggingFace I/O.
+  #
+  # Requires HF_TOKEN with write access to the ibm-research output repos.
+  targets:
+    first:
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        # Real hf:// dataset input — buildrunner queues an hfpull step that
+        # downloads it onto the compute node and binds its local path.
+        input_model:
+          uri: hf:///datasets/ibm-research/vira-intents-live
+      outputs:
+        # Real hf:// output — buildrunner queues an hfpush step that uploads the
+        # file the command registers via the GB_ARTIFACT marker below. The repo
+        # name is suffixed so concurrent/repeat runs don't collide.
+        out1:
+          uri: hf://huggingface.co/datasets/ibm-research/slurm-bluevela-hf-2target-out1_{{ binding.path | short_hash }}
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # No `image`: image_id resolves to "" so the command runs directly
+              # on the SLURM compute node (bare host — no Pyxis plugin needed).
+              # Writes a REAL file so the hf push has something to upload.
+              command: >-
+                echo "first target on bluevela gpu-mid partition";
+                echo "hf input path: {{ bindings.input_model.binding.path }}";
+                file=out1.json; echo '{"artifact": "out1", "produced_by": "first"}' > $file;
+                echo "GB_ARTIFACT_ID:out1 GB_ARTIFACT_PATH:$file"
+            # No launcher_config.resources.cluster or zone: the environment's
+            # cluster (bluevela) and zone (gpu-mid) resolve the infra.
+    second:
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        # Cross-target binding: first.out1 is an hf:// artifact, so buildrunner
+        # hf-pulls it onto second's node and binds its local path.
+        from_first:
+          binding: first.out1
+      outputs:
+        out2:
+          uri: hf://huggingface.co/datasets/ibm-research/slurm-bluevela-hf-2target-out2_{{ binding.path | short_hash }}
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Reads the path bound from first.out1 (proving the cross-target
+              # binding flows through), then writes its own REAL file for the hf
+              # push of out2.
+              command: >-
+                echo "second target received first output path: {{ bindings.from_first.binding.path }}";
+                cat {{ bindings.from_first.binding.path }} || echo "first output not readable (ok if pull is a no-op)";
+                file=out2.json; echo '{"artifact": "out2", "produced_by": "second"}' > $file;
+                echo "GB_ARTIFACT_ID:out2 GB_ARTIFACT_PATH:$file"

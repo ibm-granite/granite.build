@@ -40,6 +40,22 @@ config:
                                     # on-host key path. Specifying both is an error.
 ```
 
+gbserver merges this block into `~/.lsf/config` with last-writer-wins semantics: a differing
+gbserver-managed block for the same alias is **overwritten** (a stale or re-keyed entry self-heals —
+no manual `rm ~/.lsf/config`); a *foreign* (non-gbserver) entry for the same alias is refused
+(`SkypilotConfigCollisionError`). An LSF and a SLURM env run concurrently (separate files). See
+[Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_configs--cloud_config--aws_credentials).
+
+> **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.lsf/config` self-heals,
+> SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key
+> — so a changed `IdentityFile`/`IdentityKey` can be masked by a live connection until its
+> `ControlPersist` window expires (300s, or up to 1 day on the interactive-auth path). To validate a
+> credential change against a freshly edited key, set `GBTEST_SKY_SSH_RESET=true` in gbserver's
+> environment: on each HPC launch gbserver then clears the persisted control sockets first, forcing
+> re-authentication with the current key. This is a **test-only** toggle (manually set, unconditional
+> — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
+> user's SkyPilot SSH connections. It is not an environment-config key.
+
 ### `cloud_config.lsf` — behavioral tuning
 
 Structured LSF settings that can't live in the SSH file are deep-merged into `~/.sky/config.yaml`:
@@ -71,6 +87,13 @@ config:
 SkyPilot's `zone` is overloaded per-cloud; for LSF it maps to the **queue** name (e.g. `normal`,
 `preemptable`). Recipes that expose a `QUEUE` build parameter typically plumb it through
 `resources.zone` on the step launcher (`zone: "$${QUEUE}"`).
+
+LSF is an HPC cloud, so `cluster` and `zone` (queue) resolve with the same layered precedence as
+SLURM — resources override > step/build `config` > this `environment.yaml` `config` — so the queue
+can be pinned at env level instead of on every launcher. See
+[skypilot-slurm.md](skypilot-slurm.md#cluster--zone) for the full precedence. As there, a `zone`
+(queue) set **without** a `cluster` is rejected: SkyPilot cannot express a queue without a cluster,
+so set a `cluster` alongside it.
 
 ### Autostop is ignored
 

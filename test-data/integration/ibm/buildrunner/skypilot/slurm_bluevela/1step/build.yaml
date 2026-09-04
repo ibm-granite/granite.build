@@ -1,0 +1,43 @@
+granite.build:
+  name: skypilot-bluevela-slurm-command
+  # Single command-step target on BlueVela SLURM (via Skypilot) that runs the
+  # command DIRECTLY on the allocated compute node (no container). The command
+  # is submitted to the `gpu-mid` partition, which comes from the environment's
+  # `zone: gpu-mid` (composed by gbserver into infra=slurm/bluevela/gpu-mid) —
+  # no partition is set here. This is the SLURM bare-host path; the containerized
+  # (Pyxis/enroot) path is covered by the LSF test_1step_image.py.
+  #
+  # env:// (env_local) I/O is a shared-FS no-op: push/pull do nothing, so the
+  # artifact registration/binding works purely on the GB_ARTIFACT_PATH string
+  # and no real files need to exist on disk. This keeps the test free of HF
+  # credentials and real pushes while still driving the command step end-to-end.
+  targets:
+    slurm-run:
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        # env:// input: a shared-FS path pulled as a no-op. The path need not
+        # exist and its value isn't asserted; it just flows to the command as a
+        # binding.
+        env_input:
+          uri: "env:///tmp/gb-env-input.txt"
+      outputs:
+        # env:// output: registered inline from the GB_ARTIFACT marker the
+        # command emits below. `type` is required for env:// outputs.
+        env_output:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # No `image`: image_id resolves to "" so the command runs directly
+              # on the SLURM compute node (bare host — no Pyxis plugin needed).
+              command: >-
+                echo "slurm-run target on bluevela gpu-mid partition";
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/command-1step-slurm/{{ run_metadata.targetsteprun_id | short_hash }}/out"
+            # No launcher_config.resources.cluster or zone: the environment's
+            # cluster (bluevela) and zone (gpu-mid) resolve the infra. Set
+            # `zone` here (or in the environment) to target a different partition.
