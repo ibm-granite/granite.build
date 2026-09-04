@@ -27,6 +27,12 @@ __pycache__/
 .Python
 develop-eggs/
 dist/
+# Anchored, NOT a bare `build/`: src/gbserver/build/ is a real tracked package
+# (gbserver.build), and a bare rule would silently stop new files there from being
+# tracked. This one path is setuptools' output when building src/gb_ui_backend's own
+# nested pyproject.toml (e.g. `pip install ./src/gb_ui_backend`), which nests
+# recursively on repeat builds because that manifest uses `where = [".."]`.
+/src/gb_ui_backend/build/
 downloads/
 eggs/
 .eggs/

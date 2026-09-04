@@ -17,9 +17,15 @@ import inspect
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
-from mcp import ClientSession
+# Import-time optional: `mcp` ships with the top-level granite.build distribution's
+# [chat] extra, but not with granite-build-analytics, where chat runs on the
+# dashboard tools alone (see tool_loop_backend._gbmcp_available). ClientSession is
+# only referenced in annotations on the two gbmcp-only builders below, and
+# `from __future__ import annotations` means those are never evaluated at runtime.
+if TYPE_CHECKING:
+    from mcp import ClientSession
 
 from gb_ui_backend.config import Config
 from gb_ui_backend.services.chat_agents import dashboard_tools

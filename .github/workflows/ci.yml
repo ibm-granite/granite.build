@@ -53,6 +53,40 @@ jobs:
           mypy --disable-error-code=import-untyped --ignore-missing-imports src/gbcli/
           mypy --disable-error-code=import-untyped --ignore-missing-imports src/gbcommon/
 
+  # The frontend workspace (frontend/packages/ui-core + frontend/apps/standalone) had
+  # no CI coverage, so a change that broke `yarn build` or the standalone tests still
+  # reported green. Matters more now that ui-core is consumed externally as a git
+  # dependency: breakage here propagates to consumers.
+  frontend:
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # No Node version is pinned anywhere in the repo (no .nvmrc/.node-version, no
+      # engines field), so this is a fresh choice: 22 is the active LTS, and 20 went
+      # end-of-life in April 2026.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: yarn install --frozen-lockfile
+
+      # Build before test, not merely conventionally: standalone's `test` script globs
+      # tests/*.test.js, which includes build-output.test.js — it asserts against the
+      # contents of out/ and fails if no build has run.
+      - name: Build
+        working-directory: frontend
+        run: yarn build
+
+      - name: Test
+        working-directory: frontend
+        run: yarn test
+
   test:
     if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest
