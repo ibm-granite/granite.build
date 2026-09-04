@@ -28,30 +28,57 @@ export function parseJsonl(content: string, maxLines?: number): ParseResult {
   return jsonData
 }
 
+/** Whitespace tolerated between a field's start and its opening quote (`a, "b"`). */
+function isCsvPadding(char: string): boolean {
+  return char === ' ' || char === '\t' || char === '\r'
+}
+
 export function parseCsvLine(line: string): string[] {
   const result: string[] = []
   let current = ''
   let inQuotes = false
+  // A quote only opens a quoted field at the START of that field; anywhere else
+  // it is literal text. Toggling on any quote meant one stray quote
+  // (`He said "hi, there`) made every following comma look quoted and merged the
+  // rest of the record into a single field. Mirrors scanCsvChunk's rule, so
+  // record boundaries and field boundaries agree on what is quoted.
+  let atFieldStart = true
   let i = 0
 
   while (i < line.length) {
     const char = line[i]
     if (char === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"'
-        i += 2
-      } else {
-        inQuotes = !inQuotes
+      if (inQuotes) {
+        if (line[i + 1] === '"') {
+          current += '"'
+          i += 2
+          continue
+        }
+        inQuotes = false
         i++
+        continue
       }
-    } else if (char === ',' && !inQuotes) {
-      result.push(current.trim())
-      current = ''
-      i++
-    } else {
+      if (atFieldStart) {
+        inQuotes = true
+        atFieldStart = false
+        i++
+        continue
+      }
       current += char
       i++
+      continue
     }
+    if (char === ',' && !inQuotes) {
+      result.push(current.trim())
+      current = ''
+      atFieldStart = true
+      i++
+      continue
+    }
+    current += char
+    // Padding keeps the field "not yet started", so `a, "b"` still quotes.
+    if (!inQuotes && !isCsvPadding(char)) atFieldStart = false
+    i++
   }
   result.push(current.trim())
   return result
@@ -70,6 +97,12 @@ export function parseCsvLine(line: string): string[] {
 // resolves `""` (a literal quote) against a real closing quote on the FOLLOWING
 // character rather than by lookahead, which keeps the scanner safe to feed
 // arbitrary chunks.
+/**
+ * Guard against a CSV whose quoting is broken (an opening quote with no close).
+ * Generous enough that no legitimate single record reaches it.
+ */
+export const MAX_CSV_RECORD_CHARS = 16 * 1024 * 1024
+
 export type CsvScanState = {
   inQuotes: boolean
   /** True when the next character begins a field: record start, or after a comma. */
@@ -139,9 +172,24 @@ export function scanCsvChunk(
       continue
     }
 
-    state.atFieldStart = false
+    // Padding keeps the field "not yet started", matching parseCsvLine, so a
+    // `a, "multi\nline"` field is recognised as quoted by both.
+    if (!isCsvPadding(char)) state.atFieldStart = false
   }
   state.partial += chunk.slice(start)
+
+  // A quoted field that is never closed would otherwise accumulate the rest of
+  // the file into this one string — unbounded memory, and the streaming counter
+  // exists precisely to avoid that. No real record approaches this size, so
+  // exceeding it means the file's quoting is broken; say so instead of either
+  // OOMing or silently returning one giant record.
+  if (state.partial.length > MAX_CSV_RECORD_CHARS) {
+    throw new Error(
+      'Unterminated quoted field: a single CSV record exceeded ' +
+        `${MAX_CSV_RECORD_CHARS / (1024 * 1024)}MB. ` +
+        'Check the file for an unclosed double quote.'
+    )
+  }
 }
 
 export function splitCsvRecords(content: string): string[] {
