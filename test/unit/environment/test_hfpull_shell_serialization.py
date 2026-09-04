@@ -143,15 +143,14 @@ def _template_strings(node):
 def test_skypilot_hfpull_step_compiles_under_jinja():
     """Every string in the skypilot hfpull step must be a valid Jinja template.
 
-    Unlike the LSF ``command.sh`` (shipped to the worker verbatim), the skypilot
-    step embeds its script inline and is rendered through Jinja at build creation
-    (``fill_objtemplate`` in gbserver.utils.template fills every string field, not
-    only ``run:``). Any construct Jinja reads as markup breaks that render and
-    fails the step "on creation" before it ever launches -- exactly what a bash
-    length expansion (``${#var}``) did, since its ``{#`` reads as a Jinja
-    comment-open with no closing ``#}`` (nightly SkyPilot SLURM regression).
-    Compile the same string surface the renderer does so any such construct fails
-    here, in a fast unit test, instead of only at night.
+    The skypilot step embeds its script inline and is rendered through Jinja at
+    build creation (``fill_objtemplate`` in gbserver.utils.template fills every
+    string field, not only ``run:``). Any construct Jinja reads as markup breaks
+    that render and fails the step "on creation" before it ever launches --
+    exactly what a bash length expansion (``${#var}``) did, since its ``{#``
+    reads as a Jinja comment-open with no closing ``#}`` (nightly SkyPilot SLURM
+    regression). Compile the same string surface the renderer does so any such
+    construct fails here, in a fast unit test, instead of only at night.
     """
     doc = yaml.safe_load(_SKY_HFPULL.read_text())
     env = Environment()
@@ -163,3 +162,19 @@ def test_skypilot_hfpull_step_compiles_under_jinja():
         # Raises jinja2.TemplateSyntaxError if the string contains a stray Jinja
         # token (e.g. the {# from a ${#var} bash length expansion).
         env.from_string(s)
+
+
+def test_lsf_hfpull_command_compiles_under_jinja():
+    """The LSF hfpull ``command.sh`` must be a valid Jinja template.
+
+    ``fill_templates_in_dir`` renders it through Jinja before it ships to the
+    worker, so the same ``${#var}`` hazard as the skypilot copy applies -- a
+    stray ``{#`` (even in a shell comment, which Jinja still parses) fails the
+    step "on creation" with "Missing end of comment tag". This copy had no such
+    test, so a ``${#intpart}`` left in a comment only surfaced in the nightly
+    bluevela run; compile it here to catch that in a fast unit test.
+    """
+    env = Environment()
+    # Raises jinja2.TemplateSyntaxError on any stray Jinja token (e.g. the {#
+    # from a ${#var} bash length expansion, even within a shell comment).
+    env.from_string(_LSF_HFPULL.read_text())
