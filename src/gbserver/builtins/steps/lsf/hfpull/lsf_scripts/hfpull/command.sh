@@ -87,7 +87,7 @@ hf_env_flag() {
 HFPULL_LOCK_TTL_DEFAULT=900
 HFPULL_LOCK_TTL_MAX=31536000
 hfpull_lock_ttl() {
-    local raw="${GB_HFPULL_LOCK_TIMEOUT:-}" intpart secs
+    local raw="${GB_HFPULL_LOCK_TIMEOUT:-}" intpart secs ndigits
     if [[ -z "${raw// }" ]]; then echo "${HFPULL_LOCK_TTL_DEFAULT}"; return; fi
     if [[ "${raw}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         intpart="${raw%%.*}"
@@ -95,8 +95,13 @@ hfpull_lock_ttl() {
         # magnitude (all-zeros -> empty -> 0).
         intpart="${intpart#"${intpart%%[!0]*}"}"; [[ -z "${intpart}" ]] && intpart=0
         # >8 significant digits necessarily exceeds the 1-year cap and would risk
-        # overflowing bash arithmetic, so clamp before computing.
-        if (( ${#intpart} > 8 )); then
+        # overflowing bash arithmetic, so clamp before computing. The digit count
+        # is taken with `wc -c` rather than ${#intpart}: the skypilot copy of this
+        # block is rendered through Jinja, which reads the `{#` in ${#...} as a
+        # comment-open and fails to compile the whole step (nightly regression).
+        # intpart is pure digits here, so a byte count equals the digit count.
+        ndigits="$(printf %s "${intpart}" | wc -c)"
+        if (( ndigits > 8 )); then
             secs="${HFPULL_LOCK_TTL_MAX}"
         else
             secs=$(( 10#${intpart} ))  # base 10 so a leading zero is not octal

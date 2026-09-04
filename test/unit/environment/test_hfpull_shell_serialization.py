@@ -26,6 +26,9 @@ of silently regressing the shared-cache race back to the #320 behavior.
 import re
 from pathlib import Path
 
+import yaml
+from jinja2 import Environment
+
 import gbserver
 
 _STEPS = Path(gbserver.__file__).parent / "builtins" / "steps"
@@ -116,3 +119,47 @@ def test_shell_recoverable_regex_matches_python_source_of_truth():
         "HF_RECOVERABLE_CACHE_ERROR_RE; the shell workers would classify "
         "recoverable errors differently than HfURI.pull"
     )
+
+
+def _template_strings(node):
+    """Yield every string field anywhere in a parsed step.yaml.
+
+    Mirrors the render surface of ``traverse_obj`` / ``fill_objtemplate``, which
+    fills *every* string in the launcher config as a Jinja template -- not just
+    the ``run:`` block. Walking the same surface means a Jinja-hostile bash
+    construct (e.g. ``${#var}``) is caught wherever it lands, not only under
+    ``run:``.
+    """
+    if isinstance(node, dict):
+        for v in node.values():
+            yield from _template_strings(v)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _template_strings(item)
+    elif isinstance(node, str):
+        yield node
+
+
+def test_skypilot_hfpull_step_compiles_under_jinja():
+    """Every string in the skypilot hfpull step must be a valid Jinja template.
+
+    Unlike the LSF ``command.sh`` (shipped to the worker verbatim), the skypilot
+    step embeds its script inline and is rendered through Jinja at build creation
+    (``fill_objtemplate`` in gbserver.utils.template fills every string field, not
+    only ``run:``). Any construct Jinja reads as markup breaks that render and
+    fails the step "on creation" before it ever launches -- exactly what a bash
+    length expansion (``${#var}``) did, since its ``{#`` reads as a Jinja
+    comment-open with no closing ``#}`` (nightly SkyPilot SLURM regression).
+    Compile the same string surface the renderer does so any such construct fails
+    here, in a fast unit test, instead of only at night.
+    """
+    doc = yaml.safe_load(_SKY_HFPULL.read_text())
+    env = Environment()
+    strings = list(_template_strings(doc))
+    assert any(
+        "hfpull start" in s for s in strings
+    ), "expected the hfpull run block among the step's strings"
+    for s in strings:
+        # Raises jinja2.TemplateSyntaxError if the string contains a stray Jinja
+        # token (e.g. the {# from a ${#var} bash length expansion).
+        env.from_string(s)
