@@ -78,3 +78,77 @@ class TestBuildConfig:
         build_config = BuildConfig.from_yaml(build_config_path)
         expected = get_expected_buildconfig(matched_base_key="granite.build")
         assert build_config == expected
+
+
+class TestOutputPublicField:
+    """The generic `public` field on an output.
+
+    `buildconfig` stays store-agnostic: it holds `public` as a plain optional
+    bool and does not interpret it. The three-form fold, the public→private flip,
+    and the HF-only guard all live with the HF push path
+    (`gbserver.spaces.hf_push_config`) and are tested there.
+    """
+
+    def test_public_is_stored_verbatim(self):
+        from gbserver.types.buildconfig import BuildTargetOutputConfig
+
+        o = BuildTargetOutputConfig(uri="hf:///org/repo", public=True)
+        assert o.public is True
+        # No parse-time mutation into store_push: buildconfig doesn't interpret it.
+        assert o.store_push is None
+
+    def test_public_defaults_to_none(self):
+        from gbserver.types.buildconfig import BuildTargetOutputConfig
+
+        assert BuildTargetOutputConfig(uri="hf:///org/repo").public is None
+
+
+class TestOutputPushHfOnlyGuard:
+    """`public` / `store_push.config.hf.*` are HuggingFace-only push options.
+
+    End-to-end through `BuildConfig.my_validate`, which delegates to the HF push
+    path's validator. Fold/flip/conflict semantics are tested in
+    `test/unit/spaces/test_hf_push_config.py`.
+    """
+
+    @staticmethod
+    def _build(uri, output_extra):
+        return BuildConfig.model_validate(
+            {
+                "targets": {
+                    "t1": {
+                        "environment_uri": "space://env/default",
+                        "outputs": {"out": {"uri": uri, **output_extra}},
+                        "steps": [{"step_uri": ""}],
+                    }
+                }
+            }
+        )
+
+    def _push_errors(self, uri, output_extra):
+        errs = self._build(uri, output_extra).my_validate()
+        return [e for e in errs.errors if "HuggingFace push option" in e.error]
+
+    @pytest.mark.parametrize("uri", ["file:///tmp/x", "lh://a/b", "env:///abs/p"])
+    def test_public_on_non_hf_output_errors(self, uri):
+        assert len(self._push_errors(uri, {"public": True})) == 1
+
+    @pytest.mark.parametrize("uri", ["lh://a/b", "cos://bucket/key"])
+    def test_hf_block_on_non_hf_output_errors(self, uri):
+        errs = self._push_errors(
+            uri, {"store_push": {"config": {"hf": {"resource_group_name": "x"}}}}
+        )
+        assert len(errs) == 1
+
+    def test_public_on_templated_hf_output_is_allowed(self):
+        # The uri is a Jinja template at load time — the guard checks the prefix.
+        assert (
+            self._push_errors("hf:///org/repo-{{ binding.path }}", {"public": True})
+            == []
+        )
+
+    def test_public_on_plain_hf_output_is_allowed(self):
+        assert (
+            self._push_errors("hf://huggingface.co/datasets/o/r", {"public": True})
+            == []
+        )

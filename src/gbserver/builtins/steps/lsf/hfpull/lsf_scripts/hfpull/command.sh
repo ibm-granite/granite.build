@@ -58,25 +58,363 @@ echo "LLMB_LSF_TARGET_STEP_RUN_ID ${LLMB_LSF_TARGET_STEP_RUN_ID}"
 echo "LLMB_LSF_TARGET_NAME ${LLMB_LSF_TARGET_NAME}"
 
 # --------------------------------------------------------------------------
+# Cross-process download serialization + corrupt-cache self-healing, mirroring
+# gbcommon.uri.hf (HfURI.pull) for the CLI path. gbcommon is not importable on
+# the LSF compute node, so the logic is reproduced here in shell (needs bash:
+# arrays, ${var,,}, PIPESTATUS).
 
-echo "Pulling HF URI: ${HF_URI} to path ${HF_DEST}"
+# >>> gb-hfpull shared shell: keep lsf/hfpull/command.sh and skypilot/hfpull/step.yaml in sync >>>
+# (the executable lines below are parity-checked by test_hfpull_shell_serialization)
 
-REVISION_FLAG=""
-if [[ -n "${HF_REVISION}" ]]; then
-    REVISION_FLAG="--revision ${HF_REVISION}"
-fi
+# Truthy-env test (matches gbcommon.uri.hf._env_flag).
+hf_env_flag() {
+    local v="${1:-}"; v="${v,,}"
+    # Trim leading/trailing whitespace only (matches Python str.strip); keep
+    # internal spaces so 't rue' stays non-truthy as in _env_flag.
+    v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+    case "$v" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
+}
 
-REPO_TYPE_FLAG=""
-if [[ -n "${HF_TYPE}" ]]; then
-    REPO_TYPE_FLAG="--repo-type ${HF_TYPE}"
-fi
+# No-progress reclaim window in whole seconds (GB_HFPULL_LOCK_TIMEOUT, default
+# 900), mirroring gbcommon.uri.hf._hfpull_lock_ttl. Only plain decimals are
+# accepted -- same grammar as the Python parse, so an operator gets the same
+# window on k8s/CLI and LSF/skypilot; scientific notation (e.g. 1e2), signs,
+# inf/nan all fall back to the default rather than diverging. A positive
+# sub-second value rounds up to 1s (the poll granularity) rather than down to 0;
+# explicit 0 (or 0.0) stays 0 (reclaim any stalled peer immediately). The value
+# is clamped to HFPULL_LOCK_TTL_MAX (1 year) -- both so it matches the Python
+# clamp and so an absurd value can't overflow bash 64-bit arithmetic below.
+HFPULL_LOCK_TTL_DEFAULT=900
+HFPULL_LOCK_TTL_MAX=31536000
+hfpull_lock_ttl() {
+    local raw="${GB_HFPULL_LOCK_TIMEOUT:-}" intpart secs
+    if [[ -z "${raw// }" ]]; then echo "${HFPULL_LOCK_TTL_DEFAULT}"; return; fi
+    if [[ "${raw}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        intpart="${raw%%.*}"
+        # Strip leading zeros so the digit-count guard below is on the true
+        # magnitude (all-zeros -> empty -> 0).
+        intpart="${intpart#"${intpart%%[!0]*}"}"; [[ -z "${intpart}" ]] && intpart=0
+        # >8 significant digits necessarily exceeds the 1-year cap and would risk
+        # overflowing bash arithmetic, so clamp before computing.
+        if (( ${#intpart} > 8 )); then
+            secs="${HFPULL_LOCK_TTL_MAX}"
+        else
+            secs=$(( 10#${intpart} ))  # base 10 so a leading zero is not octal
+            (( secs > HFPULL_LOCK_TTL_MAX )) && secs="${HFPULL_LOCK_TTL_MAX}"
+        fi
+        if (( secs == 0 )) && [[ ! "${raw}" =~ ^0+([.]0+)?$ ]]; then secs=1; fi
+        echo "${secs}"
+    else
+        echo "Invalid GB_HFPULL_LOCK_TIMEOUT='${raw}'; using default ${HFPULL_LOCK_TTL_DEFAULT}s" >&2
+        echo "${HFPULL_LOCK_TTL_DEFAULT}"
+    fi
+}
 
-echo hf download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG} ${REPO_TYPE_FLAG}
-hf download "${HF_REPO}" --local-dir "${HF_DEST}" ${REVISION_FLAG} ${REPO_TYPE_FLAG}
+# Cross-node mkdir lock beside the destination (matches _hfpull_lock_path:
+# <dirname dest>/.gb-hfpull-locks/<basename dest>.lock). A waiter blocks while
+# the holder keeps writing under dest and reclaims the lock only after the ttl
+# with no such writes (a dead holder); it proceeds unlocked only if the lock
+# filesystem is unusable. Mirrors SharedFileSystemLock + HfURI.pull.
+HFPULL_LOCK_DIR=""
+HFPULL_IDENTITY="host:$(hostname)|pid:$$"
+HFPULL_LAST_OUT="$(mktemp)"
+# Distinct return code meaning "we were evicted mid-download" (vs 1 = real
+# failure), so the caller re-waits and retries instead of failing the build.
+HFPULL_EVICTED_RC=75
+# Cap on eviction re-waits; past it, fail cleanly rather than loop forever on a
+# reclaim storm (matches gbcommon.uri.hf.HFPULL_MAX_LOCK_REWAITS).
+HFPULL_MAX_LOCK_REWAITS=5
+HFPULL_REWAITS=0
+
+# True if lock dir $1 currently names us. Retries a few times on an empty/failed
+# read before concluding "not ours": a transient shared-FS glitch (stale handle,
+# attr-cache miss) on a lock we still hold must not read as eviction/foreign --
+# that would misfire the fence (self-stall until ttl) or skip our own release. A
+# real handoff reads a *different*, non-empty owner and returns at once. Mirrors
+# SharedFileSystemLock._owned_by_us.
+hfpull_owned_by_us() {
+    local lockdir="$1" owner i=0
+    while (( i < 4 )); do
+        owner="$(head -n1 "${lockdir}/lock.info" 2>/dev/null || true)"
+        [[ "${owner}" == "${HFPULL_IDENTITY}" ]] && return 0
+        [[ -n "${owner}" ]] && return 1
+        i=$(( i + 1 ))
+        if (( i < 4 )); then sleep 0.2; fi
+    done
+    return 1
+}
+
+# True if we still hold the lock (its info still names us). Mirrors
+# SharedFileSystemLock.still_owned: a long stall can make a live holder look
+# dead and a peer reclaim it, so the holder fences its own work against that.
+hfpull_still_owned() {
+    [[ -n "${HFPULL_LOCK_DIR}" ]] || return 1
+    hfpull_owned_by_us "${HFPULL_LOCK_DIR}"
+}
+
+# Count an eviction re-wait and drop our stale lock handle so the next loop
+# re-acquires. Returns non-zero once past the cap so the caller fails cleanly
+# instead of retrying indefinitely (matches HfURI.pull's re-wait cap).
+hfpull_note_rewait() {
+    HFPULL_REWAITS=$(( HFPULL_REWAITS + 1 ))
+    HFPULL_LOCK_DIR=""
+    if (( HFPULL_REWAITS > HFPULL_MAX_LOCK_REWAITS )); then
+        echo "hfpull: download lock for ${HF_DEST} was reclaimed ${HFPULL_REWAITS} times (exceeds the ${HFPULL_MAX_LOCK_REWAITS} re-wait cap); giving up rather than retrying indefinitely" >&2
+        return 1
+    fi
+    echo "hfpull: download lock was reclaimed; re-waiting and retrying (${HFPULL_REWAITS}/${HFPULL_MAX_LOCK_REWAITS})" >&2
+    return 0
+}
+
+hfpull_release_lock() {
+    [[ -n "${HFPULL_LOCK_DIR}" ]] || return 0
+    # Only remove a lock we still own (matches SharedFileSystemLock._owned_by_us:
+    # a missing/mismatched identity means a peer holds it now -> leave it), and
+    # move it aside atomically before removing (matches _move_aside_and_remove,
+    # so a peer that broke our lock cannot have its fresh dir rmdir'd from under
+    # it).
+    local grave
+    if hfpull_owned_by_us "${HFPULL_LOCK_DIR}"; then
+        grave="${HFPULL_LOCK_DIR}.released.$$.${RANDOM}"
+        if mv "${HFPULL_LOCK_DIR}" "${grave}" 2>/dev/null; then
+            rm -rf "${grave}" 2>/dev/null || true
+        else
+            # Mount cannot rename a directory (mv fails, e.g. ENOTEMPTY on an
+            # object-store/AFM FUSE cache). Ownership is already confirmed, so
+            # delete our own lock directly (matches _remove_without_rename,
+            # verify_ours path).
+            rm -rf "${HFPULL_LOCK_DIR}" 2>/dev/null || true
+        fi
+    fi
+    HFPULL_LOCK_DIR=""
+}
+
+hfpull_cleanup() {
+    hfpull_release_lock
+    rm -f "${HFPULL_LAST_OUT}" 2>/dev/null || true
+}
+trap 'hfpull_cleanup' EXIT
+
+# True if $1 itself or any file under it was modified at/after epoch $2 (the
+# holder's write progress). -print -quit stops at the first match so a live
+# download is cheap to confirm; matches fs_lock._has_recent_activity.
+hfpull_written_since() {
+    local root="$1" cut="$2" hit
+    [[ -e "${root}" ]] || return 1
+    hit="$(find "${root}" -newermt "@${cut}" -print -quit 2>/dev/null)"
+    [[ -n "${hit}" ]]
+}
+
+# Break a stale lock by moving it aside atomically, then removing the moved
+# copy (single winner; matches _move_aside_and_remove). A loser's mv fails and
+# it simply retries mkdir. Where the mount cannot rename a directory (mv fails
+# wholesale, e.g. ENOTEMPTY on object-store/AFM FUSE), fall back to a
+# single-winner delete: exactly one waiter claims the break via an atomic mkdir
+# of a .breaking marker, deletes the stale lock, then drops the claim; losers
+# skip and retry mkdir. An aged claim (older than ttl) is a crashed breaker's
+# and is reaped so it cannot wedge the break. Matches
+# SharedFileSystemLock._remove_without_rename / _reap_if_abandoned.
+hfpull_break_lock() {
+    local lockdir="$1" ttl="$2" grave claim cnow cmtime
+    grave="${lockdir}.stale.$$.${RANDOM}"
+    if mv "${lockdir}" "${grave}" 2>/dev/null; then
+        rm -rf "${grave}" 2>/dev/null || true
+        return
+    fi
+    claim="${lockdir}.breaking"
+    if mkdir "${claim}" 2>/dev/null; then
+        rm -rf "${lockdir}" 2>/dev/null || true
+        rm -rf "${claim}" 2>/dev/null || true
+    else
+        cnow="$(date +%s)"
+        cmtime="$(stat -c %Y "${claim}" 2>/dev/null || echo "${cnow}")"
+        if (( cnow - cmtime > ttl )); then rm -rf "${claim}" 2>/dev/null || true; fi
+    fi
+}
+
+hfpull_acquire_lock() {
+    local dest="$1" container lockdir ttl created now interval last_check scratch have_newermt start
+    container="$(dirname "${dest}")/.gb-hfpull-locks"
+    lockdir="${container}/$(basename "${dest}").lock"
+    # Liveness watches HF's internal scratch dir (where the download's own writes
+    # land), not the whole dest: being HF-internal it is far less likely to be
+    # touched by an unrelated process sharing the model cache, and it is small
+    # (cheap to scan). Matches HfURI.pull's progress_path for repo pulls.
+    scratch="${dest}/.cache/huggingface/download"
+    ttl="$(hfpull_lock_ttl)"
+    # Throttle the staleness check to at most every ${interval}s (clamped 1..30);
+    # the mkdir attempt still runs every poll so a released lock is grabbed at
+    # once, but the dest walk is not repeated every second. Matches
+    # SharedFileSystemLock._stale_check_interval.
+    interval=$(( ttl / 4 )); (( interval < 1 )) && interval=1; (( interval > 30 )) && interval=30
+    # The liveness probe needs find's -newermt (the workers' find supports it;
+    # we already rely on `stat -c`). Probe it once: if it is
+    # unsupported (BSD/busybox find), the probe would silently return "no
+    # activity" and every past-ttl lock would look dead -> peers would break LIVE
+    # holders mid-download and re-induce the corruption this guards against. So
+    # fail SAFE: skip reclamation entirely (wait for the holder) rather than risk
+    # breaking a live download.
+    have_newermt=1
+    if ! find "${HFPULL_LAST_OUT}" -newermt "@0" >/dev/null 2>&1; then
+        have_newermt=0
+        echo "hfpull: this find lacks '-newermt'; will wait for the lock holder without reclaiming stale locks, to avoid breaking a live download" >&2
+    fi
+    if ! mkdir -p "${container}" 2>/dev/null; then
+        echo "hfpull: cannot create lock container ${container}; proceeding without lock" >&2
+        return 0
+    fi
+    # Reap leftover moved-aside lock dirs so they can't accumulate in the
+    # persistent container (matches fs_lock._reap_graveyards).
+    rm -rf "${container}"/*.stale.* "${container}"/*.released.* 2>/dev/null || true
+    last_check=0
+    start="$(date +%s)"
+    while :; do
+        if mkdir "${lockdir}" 2>/dev/null; then
+            if printf '%s\n%s\n' "${HFPULL_IDENTITY}" "$(date +%s)" > "${lockdir}/lock.info" 2>/dev/null; then
+                HFPULL_LOCK_DIR="${lockdir}"
+            else
+                # Cannot record identity -> release() could not tell our lock from
+                # a peer's, so roll back and proceed lock-less (matches acquire()).
+                rmdir "${lockdir}" 2>/dev/null || true
+                echo "hfpull: created ${lockdir} but could not write identity; proceeding without lock" >&2
+            fi
+            return 0
+        fi
+        if [[ ! -d "${lockdir}" ]]; then
+            # mkdir failed yet the dir does not exist -> not contention but an
+            # infra failure (e.g. read-only mount); fall through unlocked
+            # (matches acquire() returning False on OSError).
+            echo "hfpull: cannot create download lock ${lockdir}; proceeding without lock" >&2
+            return 0
+        fi
+        now="$(date +%s)"
+        # Without -newermt support the reclaim branch below is disabled, so a
+        # crashed holder's lock would never be reclaimed and this loop would spin
+        # forever. Bound the wait by the ttl window, then proceed unlocked (HF's
+        # per-file locks + self-heal are the backstop), matching the
+        # infra-failure fall-through above. The Python path reclaims a dead
+        # holder via ttl on every platform; the shell can only approximate that
+        # here by giving up the wait. A live holder legitimately exceeding ttl
+        # on such a worker is the accepted cost of a find without -newermt.
+        if (( ! have_newermt )) && (( now - start >= ttl )); then
+            echo "hfpull: waited ${ttl}s for download lock ${lockdir} with no liveness probe (find -newermt required to reclaim a dead holder); proceeding without lock" >&2
+            return 0
+        fi
+        if (( have_newermt )) && (( now - last_check >= interval )); then
+            last_check="${now}"
+            # A peer holds it. Reclaim only if past the ttl AND the scratch dir
+            # shows no recent writes (a dead holder); otherwise keep waiting for
+            # the live holder. Mirrors SharedFileSystemLock._clear_if_stale (info
+            # line 2 is the holder's start time; fall back to the lock dir mtime).
+            created="$(sed -n 2p "${lockdir}/lock.info" 2>/dev/null || true)"
+            if ! [[ "${created}" =~ ^[0-9]+$ ]]; then created="$(stat -c %Y "${lockdir}" 2>/dev/null || echo 0)"; fi
+            if ! [[ "${created}" =~ ^[0-9]+$ ]]; then created=0; fi
+            if (( now - created > ttl )) && ! hfpull_written_since "${scratch}" "$(( now - ttl ))"; then
+                echo "hfpull: reclaiming stale download lock ${lockdir} (no download progress in ${scratch} for >${ttl}s)" >&2
+                hfpull_break_lock "${lockdir}" "${ttl}"
+                continue
+            fi
+        fi
+        sleep 1
+    done
+}
+
+# One `hf download`, echoing the real invocation (including any --force-download
+# so the log matches what actually ran) and streaming output live while
+# capturing it for classification.
+hf_download_attempt() {
+    local extra="$1"; shift
+    echo "+ hf download $* ${extra}"
+    hf download "$@" ${extra} 2>&1 | tee "${HFPULL_LAST_OUT}"
+    return "${PIPESTATUS[0]}"
+}
+
+# Retry only on the recoverable corrupt-cache states (matches
+# _is_recoverable_hf_cache_error); fail fast on anything else (auth, 404, ...).
+# Anchor .incomplete to the FileNotFoundError signature (its errno text) so an
+# unrelated failure merely naming an .incomplete path is not misread as
+# recoverable; keep the size "Consistency check failed" phrase verbatim.
+HFPULL_RECOVERABLE_RE='(FileNotFoundError|No such file or directory).*\.incomplete|Consistency check failed'
+hfpull_download() {
+    local force=""
+    if hf_env_flag "${GB_HFPULL_FORCE:-}"; then
+        force="--force-download"
+        echo "hfpull: GB_HFPULL_FORCE set; forcing re-download" >&2
+    fi
+    if hf_download_attempt "${force}" "$@"; then return 0; fi
+    if ! grep -Eq "${HFPULL_RECOVERABLE_RE}" "${HFPULL_LAST_OUT}"; then return 1; fi
+    # The self-heal (force re-download, then scratch rm -rf) mutates the shared
+    # dir, so only run it while holding the lock (matches _pull_hf_repo's
+    # lock_held gate). Unlocked, a peer may be writing the tree and recovering
+    # could re-induce #320 -- fail instead.
+    if [[ -z "${HFPULL_LOCK_DIR}" ]]; then
+        echo "hfpull: HF download cache looks corrupt but the download lock was not held (a peer may be writing it); not self-healing" >&2
+        return 1
+    fi
+    # We may have been evicted (a long stall made us look dead and a peer
+    # reclaimed the lock). Before mutating the shared tree, re-check ownership;
+    # if we lost it, abandon to the re-wait loop rather than race the new owner
+    # (matches _pull_hf_repo's _fence_self_heal).
+    if ! hfpull_still_owned; then
+        echo "hfpull: download lock was reclaimed before self-heal; abandoning to re-wait" >&2
+        return "${HFPULL_EVICTED_RC}"
+    fi
+    echo "hfpull: HF download cache looks corrupt; retrying with --force-download" >&2
+    if hf_download_attempt "--force-download" "$@"; then return 0; fi
+    if ! grep -Eq "${HFPULL_RECOVERABLE_RE}" "${HFPULL_LAST_OUT}"; then return 1; fi
+    if ! hfpull_still_owned; then
+        echo "hfpull: download lock was reclaimed before self-heal; abandoning to re-wait" >&2
+        return "${HFPULL_EVICTED_RC}"
+    fi
+    echo "hfpull: force re-download still failed; clearing scratch download cache ${HF_DEST}/.cache/huggingface/download and retrying once more" >&2
+    rm -rf "${HF_DEST}/.cache/huggingface/download"
+    if hf_download_attempt "--force-download" "$@"; then return 0; fi
+    # Unlike the earlier attempts, this final download has no following fence: a
+    # peer that evicted us *during* it surfaces as a raw failure here, so re-check
+    # ownership and abandon to the re-wait rather than fail the build (matches
+    # _pull_hf_repo's final-attempt eviction re-check).
+    if ! hfpull_still_owned; then
+        echo "hfpull: download lock was reclaimed during final self-heal; abandoning to re-wait" >&2
+        return "${HFPULL_EVICTED_RC}"
+    fi
+    return 1
+}
 
 # --------------------------------------------------------------------------
+# The driver below is inside the shared-shell sentinels too: it is the
+# orchestration the PR added (eviction re-wait, success-path fence, exit
+# handling), so keep it byte-identical to the skypilot copy.
+
+mkdir -p "${HF_DEST}"
+echo "Pulling HF URI: ${HF_URI} to path ${HF_DEST}"
+
+HF_ARGS=("${HF_REPO}" --local-dir "${HF_DEST}")
+if [[ -n "${HF_REVISION}" ]]; then HF_ARGS+=(--revision "${HF_REVISION}"); fi
+if [[ -n "${HF_TYPE}" ]]; then HF_ARGS+=(--repo-type "${HF_TYPE}"); fi
+
+# Acquire, download, and fence: if the lock was reclaimed while we downloaded
+# (a long stall made us look dead), discard and re-wait rather than treat our
+# now-unlocked result as authoritative -- the new owner's copy wins and its
+# self-heal cleans up any overlap (matches HfURI.pull's _HfEvicted re-wait).
+while :; do
+    hfpull_acquire_lock "${HF_DEST}"
+    rc=0; hfpull_download "${HF_ARGS[@]}" || rc=$?
+    if (( rc == 0 )); then
+        if [[ -n "${HFPULL_LOCK_DIR}" ]] && ! hfpull_still_owned; then
+            hfpull_note_rewait || exit 1
+            continue
+        fi
+        break
+    fi
+    if (( rc == HFPULL_EVICTED_RC )); then
+        hfpull_note_rewait || exit 1
+        continue
+    fi
+    exit "${rc}"
+done
 
 echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
 
 echo 'hfpull end'
+# <<< gb-hfpull shared shell <<<
 # ===============================================

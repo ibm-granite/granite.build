@@ -39,7 +39,7 @@ from tenacity import (
 
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
-from gbserver.spaces.resource_group import (
+from gbserver.spaces.hf_push_config import (
     apply_hf_step_overlay,
     resolve_hfpush_resource_group_id,
 )

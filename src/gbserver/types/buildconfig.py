@@ -103,8 +103,10 @@ class BuildTargetOutputPushConfig(Config):
     """Push configuration for an output artifact (build.yaml ``store_push`` block).
 
     Attributes:
-        mode: The push mode (e.g. ``"hfstore"``).
-        config: Mode-specific push configuration (e.g. ``{"hf": {"private": false}}``).
+        mode: The push mode. Optional and rarely needed — the store is inferred
+            from the output ``uri`` scheme.
+        config: Store-specific push configuration, keyed by store (e.g. the
+            ``hf`` block for HuggingFace). Interpreted by the store's push path.
     """
 
     mode: Optional[str] = None
@@ -120,6 +122,10 @@ class BuildTargetOutputConfig(Config):
             Applied to the registered artifact when the store pushes inline (no
             push step emits one), e.g. the ``env_local`` store. Defaults to
             ``UNDEFINED`` when omitted.
+        public: Store-specific push visibility flag (currently HuggingFace only:
+            publish the pushed repo). Convenience alias for the store's own
+            ``store_push`` visibility key; interpreted by the store's push path,
+            which also validates it against the ``uri`` scheme.
         event_selectors: Event selector rules for matching artifact events.
         store_push: Optional per-output push configuration from build.yaml.
         space_name: Build space name; set at runtime, not parsed from build.yaml.
@@ -127,6 +133,7 @@ class BuildTargetOutputConfig(Config):
 
     uri: Optional[str] = None
     type: Optional[ArtifactType] = None
+    public: Optional[bool] = None
     event_selectors: List[BuildTargetOutputEventSelectorsConfig] = Field(
         default_factory=list
     )
@@ -376,6 +383,23 @@ class BuildConfig(Config):
                     )
         return errors
 
+    def __validate_output_push(self: Self) -> GBValidationErrors:
+        """Validate each output's push config via the owning store's own rules.
+
+        Store-specific push rules live with the store, not here — this only walks
+        the outputs and collects what each store's validator reports (currently
+        only the HF push guard). Lazily imported to avoid a types→spaces cycle.
+        """
+        from gbserver.spaces.hf_push_config import validate_output_push
+
+        errors = GBValidationErrors()
+        for target_name, target in self.targets.items():
+            for output_name, output in (target.outputs or {}).items():
+                err = validate_output_push(output_name, output)
+                if err:
+                    errors.add(f"Target `{target_name}`: {err}")
+        return errors
+
     def my_validate(self: Self) -> GBValidationErrors:
         """Validate the build config."""
         logger.info("validating the build config")
@@ -386,6 +410,7 @@ class BuildConfig(Config):
         errors.add(self.__validate_step_uris())
         errors.add(self.__validate_target_inputs())
         errors.add(self.__validate_env_uris())
+        errors.add(self.__validate_output_push())
         logger.info("validated the build config and found %d errors", len(errors))
         return errors
 

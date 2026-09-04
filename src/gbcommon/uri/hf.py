@@ -19,13 +19,15 @@
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import urllib.parse
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Any, List, Optional, Self
+from typing import Any, Iterator, List, Optional, Self
 
 from huggingface_hub import (
     HfApi,
@@ -37,6 +39,7 @@ from huggingface_hub import (
 
 from gbcommon.types.testing import is_hf_mocked, standalone_rg_environment
 from gbcommon.uri.uri import URI
+from gbcommon.utils.fs_lock import SharedFileSystemLock
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.constants import GB_ENVIRONMENT
 from gbserver.utils.logger import get_logger
@@ -60,6 +63,397 @@ URLSEGMENT_SPACES = "spaces"
 URLSEGMENT_BUCKETS = "buckets"
 
 DEFAULT_REVISION = "main"
+
+# hfpull download serialization + self-healing (issue #320).
+#
+# huggingface_hub wraps each file's ``.incomplete`` write in its own
+# cross-process ``WeakFileLock`` inside the destination, so concurrent
+# ``snapshot_download`` calls into a shared cache do not corrupt one another's
+# per-file writes -- *within a single node*. The failure in #320 was a
+# ``FileNotFoundError`` on an ``.incomplete`` file, i.e. the download directory
+# was removed out from under a live writer, which no lock can prevent.
+#
+# pull() therefore does two things:
+#   1. Serialization with liveness-aware reclaim: a cross-process lock keyed to
+#      the destination so two of our own pullers do not work the same tree at
+#      once. A waiter blocks for as long as the holder is *alive and making
+#      progress* (so a legitimately long pull is never abandoned mid-write) and
+#      reclaims the lock only once the holder has made no progress for the
+#      reclaim window (a crashed/evicted holder). It falls through *unlocked*
+#      only when the lock filesystem itself is unusable (a read-only mount),
+#      relying then on HF's own per-file locks rather than failing the build.
+#      Because the reclaim is a heuristic (a live holder that stalls past the
+#      window -- e.g. a long HF 429 back-off -- can be misjudged dead), the
+#      holder *fences* its own work: it re-checks ownership before any
+#      destructive self-heal and after its download, and if it has been evicted
+#      it discards the now-unlocked result and re-waits for the lock instead of
+#      mutating a tree the new owner is writing. The new owner's self-heal then
+#      cleans up any brief write overlap -- so a mis-reclaim costs a re-wait and
+#      some owner-side cleanup, and never dueling destructive self-heal. It is
+#      not, however, an absolute guarantee against corruption: the fence runs
+#      *after* ``snapshot_download`` returns, so if a mis-reclaimed-but-live
+#      holder and the new owner both write the same ``.incomplete`` cross-node
+#      (HF's per-file lock is node-local; see below), a byte-corruption that
+#      happens to preserve the expected file size passes HF's size-based
+#      consistency check and is not caught. That residual needs a live holder to
+#      stall past the reclaim window and a size-preserving overlap -- rare, and
+#      the narrow, HF-internal liveness signal below makes it rarer -- but it is
+#      a residual, not an impossibility.
+#   2. Self-healing: if a download hits the "removed dir" or "poisoned
+#      .incomplete" states, retry once with ``force_download=True`` (which
+#      unlinks the bad ``.incomplete``) and, failing that, drop HF's scratch
+#      download dir and retry -- turning a manual ``rm -rf`` into automatic
+#      recovery. This is the primary #320 fix and is filesystem-agnostic. The
+#      self-heal mutates the shared destination, so it only runs while the lock
+#      is held; on the unlocked fall-through a recoverable error propagates
+#      instead (recovering under a concurrent peer could re-induce #320).
+#
+# The lock is a ``SharedFileSystemLock`` (gbcommon.utils.fs_lock), which uses
+# atomic directory creation (``os.mkdir``) rather than ``flock``/``filelock``.
+# Two-node probes showed BSD ``flock(2)`` is node-local on the Blue Vela GPFS
+# mount (two nodes held the same exclusive lock at once), so a flock-based lock
+# provides no cross-node mutual exclusion there; ``mkdir`` atomicity, by
+# contrast, is coherent across nodes on every shared filesystem tested (GPFS and
+# the AFM/COS-backed CSI PVC the K8s hfpull steps mount). Each per-revision
+# lock directory is removed on release; the shared ``.gb-hfpull-locks``
+# container it lives in is intentionally left in place (removing it would race
+# with a peer creating a sibling lock), so at most one empty container dir
+# remains rather than a lock per pull. mkdir has no kernel auto-release on
+# holder death, so the lock runs with a ``ttl`` plus the destination as its
+# ``progress_path``: a held lock is reclaimed only after ``ttl`` seconds with no
+# writes under ``dest`` (see ``GB_HFPULL_LOCK_TIMEOUT``). A live holder keeps
+# writing files, so it is never reclaimed however long its download runs; a dead
+# holder's lock is reclaimed within ``ttl`` of its last write, cluster-wide,
+# rather than persisting until an operator clears it.
+HFPULL_LOCK_TIMEOUT_ENV = "GB_HFPULL_LOCK_TIMEOUT"
+HFPULL_FORCE_ENV = "GB_HFPULL_FORCE"
+# The lock's no-progress reclaim window (``ttl``), in seconds: how long a held
+# lock may show no writes under the destination before a waiter treats the
+# holder as dead and reclaims it. Because a *live* holder is detected by its own
+# writes (never reclaimed while it keeps writing), this need not exceed a whole
+# download -- only the longest plausible gap with no writes for a holder that is
+# still alive. Two things widen that gap: the shared FS's attribute-cache
+# latency (a waiter on another node can see a stale mtime for a file the holder
+# is actively writing, up to tens of seconds on NFS/GPFS) and HF's own stalls
+# (a 429 rate-limit ``Retry-After`` back-off, or a congested/retrying transfer,
+# can write nothing for minutes). 900s sits comfortably above both, so a
+# live-but-stalled holder is very rarely misjudged dead; and if one ever is, the
+# ownership fence (see ``_pull_hf_repo``/``pull``) keeps the outcome correct --
+# the evicted holder abandons and re-waits rather than corrupting the tree. It
+# still bounds the stall behind a genuinely crashed holder to ~15 min rather than
+# the indefinite hang of an unreclaimed lock. Overridable via
+# GB_HFPULL_LOCK_TIMEOUT. (Kept named "TIMEOUT" for operator continuity: it is
+# still "how long before we give up on the current holder.")
+DEFAULT_HFPULL_LOCK_TTL_S = 900.0
+# Upper bound on the reclaim window (1 year). Nobody needs a longer one, and the
+# clamp keeps the Python and shell parses in lockstep: bash 64-bit arithmetic
+# would overflow (wrap to garbage/negative) on an absurd GB_HFPULL_LOCK_TIMEOUT
+# while Python parses arbitrary integers, silently re-diverging the two windows.
+HFPULL_LOCK_TTL_MAX_S = 31_536_000.0
+# Poll interval while waiting for a peer to release the mkdir lock.
+HFPULL_LOCK_POLL_S = 1.0
+# Cap on how many times a pull will re-wait after being evicted mid-download
+# (see the ownership fence in ``pull``). A re-wait is normally rare and the retry
+# a fast no-op, so hitting this many means sustained contention or a node that
+# keeps stalling past the reclaim window -- fail cleanly rather than loop.
+HFPULL_MAX_LOCK_REWAITS = 5
+
+# Subdirectory holding hfpull lock directories. It is a dot-prefixed *sibling*
+# of the repo's ``<revision>`` dirs (it lives at ``<owner>/<repo>/``), chosen so
+# a single container -- not one lock dir per pull -- shares that level, and so
+# individual ``<revision>.lock`` dirs never sit directly beside the revision
+# dirs. A ``<revision>`` is a git ref or commit hash, never dot-prefixed, so
+# ``_hf_repo_id_from_cache_path`` (which strips a trailing hex commit segment)
+# does not mistake this container for one; code enumerating ``<owner>/<repo>/*``
+# should skip dot-prefixed entries as it would any hidden dir.
+HFPULL_LOCK_DIRNAME = ".gb-hfpull-locks"
+
+# huggingface_hub's per-file scratch dir inside a ``local_dir`` snapshot pull.
+_HF_DOWNLOAD_SCRATCH = Path(".cache") / "huggingface" / "download"
+
+
+def _env_flag(name: str) -> bool:
+    """True when environment variable *name* is set to a truthy value."""
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _hfpull_lock_ttl() -> float:
+    """No-progress reclaim window (seconds) for the hfpull download lock.
+
+    A held lock is reclaimed only after this many seconds with no writes under
+    the destination (see ``DEFAULT_HFPULL_LOCK_TTL_S``); a live holder is never
+    reclaimed. Overridable via ``GB_HFPULL_LOCK_TIMEOUT``.
+    """
+    raw = os.getenv(HFPULL_LOCK_TIMEOUT_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_HFPULL_LOCK_TTL_S
+    s = raw.strip()
+    # Accept only plain decimals, in lockstep with the LSF/skypilot shell parse,
+    # so an operator gets the same window on k8s/CLI and LSF/skypilot (issue
+    # #322: divergent parsing silently gave different windows). Scientific
+    # notation (e.g. ``1e2``), signs, and ``inf``/``nan`` all fall back to the
+    # default rather than being honored on one path and rejected on the other.
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", s):
+        logger.warning(
+            "Invalid %s=%r; using default %ss",
+            HFPULL_LOCK_TIMEOUT_ENV,
+            raw,
+            DEFAULT_HFPULL_LOCK_TTL_S,
+        )
+        return DEFAULT_HFPULL_LOCK_TTL_S
+    whole = int(s.split(".", 1)[0])
+    if whole == 0 and not re.fullmatch(r"0+(?:\.0+)?", s):
+        # A positive sub-second value rounds up to the 1s poll granularity rather
+        # than down to 0 (matches the shell), so it does not collapse to "reclaim
+        # any stalled peer immediately".
+        return 1.0
+    # Clamp to the max so an absurd value stays identical to the shell (whose
+    # 64-bit arithmetic would otherwise overflow); see HFPULL_LOCK_TTL_MAX_S.
+    return float(min(whole, int(HFPULL_LOCK_TTL_MAX_S)))
+
+
+def _hfpull_lock_path(dest: Path) -> Path:
+    """Lock directory for a pull into *dest*.
+
+    Placed at ``<dest.parent>/.gb-hfpull-locks/<dest.name>.lock`` -- i.e. under a
+    dot-prefixed container that is a sibling of *dest* on the shared cache
+    filesystem: co-located so peer containers contend on it, but dot-prefixed
+    (and one level down, inside the container) so it is distinguishable from the
+    revision directories it sits beside. Never placed inside *dest*, which can be
+    removed mid-download (the #320 failure mode).
+    """
+    return dest.parent / HFPULL_LOCK_DIRNAME / f"{dest.name}.lock"
+
+
+class _HfEvicted(Exception):
+    """Raised when our download lock was reclaimed by a peer mid-download.
+
+    A long stall (past ``GB_HFPULL_LOCK_TIMEOUT`` with no writes under the
+    progress path) can make a live holder look dead, so a waiter reclaims it.
+    When the
+    (still-alive) original holder notices -- before a destructive self-heal, or
+    after its download returns -- it raises this to abandon the now-unlocked work
+    and re-enter the waiter loop, rather than mutating a tree the new owner is
+    writing or reporting an unlocked download as authoritative. ``pull`` catches
+    it and retries; the new owner's self-heal cleans up any overlap.
+    """
+
+
+@contextmanager
+def _hfpull_download_lock(
+    dest: Path, progress_path: Path
+) -> Iterator[Optional[SharedFileSystemLock]]:
+    """Cross-process lock serializing pulls into *dest*, liveness-aware.
+
+    Uses :class:`SharedFileSystemLock` (atomic ``mkdir``, coherent across nodes
+    on the shared cache filesystems -- unlike BSD ``flock``; see the module
+    comment) with ``timeout=None`` and *progress_path* as its liveness signal. A
+    waiter therefore blocks for as long as the holder keeps writing under
+    *progress_path* (a live, in-progress pull is never abandoned mid-write) and
+    reclaims the lock only after ``GB_HFPULL_LOCK_TIMEOUT`` seconds with no such
+    writes (a crashed/evicted holder). It falls through *unlocked* only when the
+    lock itself cannot be set up (e.g. a read-only mount), relying then on
+    huggingface_hub's own per-file locks rather than failing the build.
+
+    *progress_path* should be a path written **only** by the pull's own workload
+    (the caller passes HF's internal scratch dir for repos): with ``timeout=None``
+    a waiter trusts "recent writes here" to mean "the holder is alive", so an
+    unrelated process writing there would keep a dead holder's lock alive and
+    hang waiters. HF's scratch dir is far less exposed to that than the shared
+    model dir.
+
+    Yields the :class:`SharedFileSystemLock` when this process holds it, or
+    ``None`` when it fell through unlocked. The caller uses that both to gate
+    destructive self-healing (only safe while holding the lock) and to fence its
+    work: ``lock.still_owned()`` detects a peer having reclaimed the lock, so a
+    holder evicted mid-download can abandon and re-wait (see ``_pull_hf_repo``
+    and ``pull``).
+    """
+    lock_dir = _hfpull_lock_path(dest)
+    lock = SharedFileSystemLock(
+        lock_dir,
+        timeout=None,
+        poll_interval=HFPULL_LOCK_POLL_S,
+        ttl=_hfpull_lock_ttl(),
+        progress_path=progress_path,
+    )
+    if lock.acquire():
+        try:
+            yield lock
+        finally:
+            lock.release()
+        return
+
+    # timeout=None only returns False on an infra failure (the lock filesystem
+    # is unusable), never on contention -- a live holder is waited out and a dead
+    # one reclaimed. So this is a broken-mount fall-through, not a busy peer.
+    logger.warning(
+        "hfpull: could not set up download lock %s (lock filesystem unusable); "
+        "proceeding and relying on huggingface_hub's per-file locks",
+        lock_dir,
+    )
+    yield None
+
+
+# The corrupt-cache signatures a force re-download can clear (issue #320),
+# matched on message text so the shell hfpull steps can mirror it exactly and so
+# an HF version that changes the error type still recovers. The LSF/skypilot
+# shell copies keep this identical in ``HFPULL_RECOVERABLE_RE``; the
+# ``test_hfpull_shell_serialization`` guard pins the shell regex equal to this
+# pattern so the three copies cannot drift apart.
+HF_RECOVERABLE_CACHE_ERROR_RE = re.compile(
+    r"(FileNotFoundError|No such file or directory).*\.incomplete"
+    r"|Consistency check failed"
+)
+
+
+def _is_recoverable_hf_cache_error(e: BaseException) -> bool:
+    """True for the corrupt-cache states a force re-download can clear.
+
+    Two hard states (issue #320): a ``FileNotFoundError`` on an ``.incomplete``
+    file (the download dir was removed under a live writer), or
+    huggingface_hub's ``Consistency check failed`` size mismatch (a poisoned
+    ``.incomplete``). ``force_download=True`` unlinks the bad ``.incomplete``
+    before re-downloading, clearing both.
+
+    Classified by the error *message* (see ``HF_RECOVERABLE_CACHE_ERROR_RE``)
+    rather than the exception type, so the shell hfpull steps -- which only see
+    stdout/stderr -- can mirror it verbatim, and so a huggingface_hub version
+    that rewords or retypes the error still triggers recovery instead of
+    silently reverting to the #320 failure.
+    """
+    return bool(HF_RECOVERABLE_CACHE_ERROR_RE.search(str(e)))
+
+
+def _clear_hf_download_scratch(dest: Path) -> None:
+    """Delete huggingface_hub's scratch download dir under *dest*.
+
+    ``<dest>/.cache/huggingface/download`` holds only transient
+    ``.incomplete`` / ``.metadata`` files, so dropping it forces a clean
+    re-download without touching already-materialized model files.
+    """
+    scratch = dest / _HF_DOWNLOAD_SCRATCH
+    shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _pull_hf_repo(
+    *,
+    repo_id: str,
+    repo_type: str,
+    revision: Optional[str],
+    dest: Path,
+    token: Optional[str],
+    endpoint: Optional[str],
+    force: bool,
+    lock: Optional[SharedFileSystemLock] = None,
+) -> None:
+    """snapshot_download into *dest*, self-healing a corrupt HF cache.
+
+    On a recoverable corruption (see ``_is_recoverable_hf_cache_error``) retry
+    once with ``force_download=True``; if that still fails, drop the scratch
+    download dir and retry once more. Non-recoverable errors propagate.
+
+    The self-heal mutates the shared destination -- ``force_download`` re-downloads
+    and unlinks files, and the final step ``rm -rf``s the scratch dir -- so it
+    only runs while we hold the cross-process download lock (*lock* is not None).
+    When the lock was not acquired (best-effort fall-through, ``lock is None``), a
+    peer may be writing the same tree concurrently, and recovering under it could
+    pull files out from a live writer and re-induce the #320 corruption; there a
+    recoverable error propagates instead of self-healing without mutual exclusion.
+
+    We may also have been *evicted* mid-download: a long no-write stall can make a
+    live holder look dead, so a peer reclaims the lock. Before each destructive
+    self-heal step we therefore re-check ``lock.still_owned()``; if we no longer
+    own it we raise :class:`_HfEvicted` rather than mutate a tree the new owner is
+    writing (which would re-induce #320 via dueling repairs). The final download
+    has no following step to re-fence, so a failure there also re-checks ownership
+    and re-waits on eviction instead of surfacing as a build failure. An
+    operator-requested ``force`` on the initial attempt is honored regardless.
+    """
+    lock_held = lock is not None
+
+    def _download(force_download: bool) -> None:
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            revision=revision,
+            local_dir=str(dest),
+            token=token,
+            force_download=force_download,
+            endpoint=endpoint,
+        )
+
+    def _fence_self_heal() -> None:
+        # About to mutate the shared tree (force_download / scratch rm -rf).
+        # Safe only while we still own the lock; if a peer reclaimed it, abandon
+        # to the waiter loop instead of racing the new owner's writes.
+        if lock is not None and not lock.still_owned():
+            logger.warning(
+                "hfpull: download lock for %s was reclaimed before self-heal; "
+                "abandoning to re-wait rather than mutate under the new owner",
+                repo_id,
+            )
+            raise _HfEvicted()
+
+    try:
+        _download(force)
+        return
+    except Exception as first:
+        if not _is_recoverable_hf_cache_error(first):
+            raise
+        if not lock_held:
+            # Best-effort lock not held: a peer may be writing the shared tree,
+            # so self-healing (force_download / scratch rm -rf) could re-induce
+            # #320. Propagate rather than recover without mutual exclusion.
+            logger.warning(
+                "hfpull: HF download cache for %s looks corrupt (%s) but the "
+                "download lock was not held (a peer may be writing it); not "
+                "self-healing -- propagating",
+                repo_id,
+                first,
+            )
+            raise
+        logger.warning(
+            "hfpull: HF download cache for %s looks corrupt (%s); retrying "
+            "with force_download=True",
+            repo_id,
+            first,
+        )
+
+    # Re-fence immediately before each destructive step, so a peer that reclaims
+    # the lock in the window since the last check can't have its tree mutated
+    # (force_download re-downloads/unlinks). If evicted, abandon to the re-wait.
+    _fence_self_heal()
+    try:
+        _download(True)
+        return
+    except Exception as second:
+        if not _is_recoverable_hf_cache_error(second):
+            raise
+        logger.warning(
+            "hfpull: force_download retry for %s still failed (%s); clearing "
+            "scratch download cache %s and retrying once more",
+            repo_id,
+            second,
+            dest / _HF_DOWNLOAD_SCRATCH,
+        )
+
+    # Re-fence immediately before the destructive scratch rm -rf + re-download.
+    _fence_self_heal()
+    _clear_hf_download_scratch(dest)
+    try:
+        _download(True)
+    except Exception:
+        # Unlike the two earlier attempts -- each of which falls through to a
+        # *following* fenced step that would catch an eviction -- this final
+        # download has nothing after it. A peer that reclaims the lock *during*
+        # it surfaces here as a raw download error, which would otherwise fail
+        # the build instead of counting as a re-wait like every other eviction
+        # point. Re-check ownership: if we were evicted, abandon to the re-wait
+        # (raise _HfEvicted); if we still hold the lock the failure is genuine
+        # and propagates.
+        _fence_self_heal()
+        raise
 
 
 class HfType(StrEnum):
@@ -606,6 +1000,19 @@ class HfURI(URI):
         so all repo files land directly in *dest*.  For buckets, uses
         ``HfApi.sync_bucket`` to download bucket contents to *dest*.
 
+        Pulls into the same *dest* are serialized behind a cross-process
+        ``mkdir`` lock (issue #320): a waiter blocks while the holder keeps
+        writing under *dest* and reclaims the lock only after
+        ``GB_HFPULL_LOCK_TIMEOUT`` seconds with no such writes (a dead holder),
+        proceeding unlocked only if the lock filesystem is unusable rather than
+        failing. If this process is *itself* reclaimed mid-download (a long stall
+        made it look dead), it discards its partial, now-unlocked work and
+        re-waits for the lock rather than treating it as authoritative -- up to
+        ``HFPULL_MAX_LOCK_REWAITS`` times, after which it fails cleanly rather
+        than loop. Repo downloads also self-heal a corrupt HF cache by retrying
+        with ``force_download`` and, if needed, clearing the scratch download
+        dir.
+
         Returns ``True`` immediately without network calls when HF mocking is
         enabled via ``GBTEST_MOCK_HF``.
 
@@ -615,7 +1022,8 @@ class HfURI(URI):
 
         Args:
             dest: Local directory to download files into.
-            force: Re-download even if files already exist locally.
+            force: Re-download even if files already exist locally, unlinking any
+                poisoned ``.incomplete`` files (repo pulls only).
 
         Returns:
             True if the download succeeded, False on any error.
@@ -623,21 +1031,13 @@ class HfURI(URI):
         if is_hf_mocked():
             return True
         try:
+            # Normalize so the lock-path derivation below tolerates a str dest,
+            # matching the pre-lock behavior (downloads only ever used str(dest)).
+            dest = Path(dest)
             p = self._parts()
             repo_id = f"{p.owner}/{p.repo}"
             endpoint = f"https://{p.host}" if p.host != HF_HOST else None
             token = self._resolve_token()
-
-            if p.hf_type == HfType.BUCKET:
-                bucket_hf_path = f"hf://buckets/{repo_id}"
-                if p.path_in_repo:
-                    bucket_hf_path += f"/{p.path_in_repo}"
-                logger.info("Downloading HF bucket %s to %s", repo_id, dest)
-                api = HfApi(endpoint=endpoint, token=token)
-                api.sync_bucket(source=bucket_hf_path, dest=str(dest))
-                logger.debug("Completed HF pull of bucket %s to %s", repo_id, dest)
-                return True
-
             hf_type = p.hf_type
             repo_type = (
                 _HF_TYPE_TO_REPO_TYPE.get(hf_type, "model")
@@ -645,30 +1045,92 @@ class HfURI(URI):
                 else "model"
             )
 
-            logger.info(
-                "Downloading HF repo %s (type=%s, rev=%s) to %s",
-                repo_id,
-                repo_type,
-                p.revision,
-                dest,
+            # Serialize concurrent hfpull processes sharing this destination
+            # (issue #320). ``lock`` is None when we fell through unlocked (an
+            # unusable lock filesystem); otherwise it gates the destructive
+            # self-heal and lets us fence our own work. If we are evicted
+            # mid-download (a long stall made us look dead and a peer reclaimed
+            # the lock), ``_HfEvicted`` brings us back here to re-acquire and
+            # retry -- our partial work is discarded and the new owner's copy
+            # becomes authoritative; the already-downloaded files make the retry
+            # a fast no-op. Re-waits are capped (HFPULL_MAX_LOCK_REWAITS) so a
+            # reclaim storm fails cleanly instead of looping forever.
+            #
+            # Liveness (progress_path) watches HF's internal scratch dir for repo
+            # pulls -- that is where the download's own writes land, and being
+            # HF-internal it is far less likely to be touched by an unrelated
+            # process sharing the model cache than the whole dest (also cheaper to
+            # scan). Buckets have no such scratch dir, so they watch dest.
+            progress_path = (
+                dest if p.hf_type == HfType.BUCKET else dest / _HF_DOWNLOAD_SCRATCH
             )
-            snapshot_download(
-                repo_id=repo_id,
-                repo_type=repo_type,
-                revision=p.revision,
-                local_dir=str(dest),
-                token=token,
-                force_download=force,
-                endpoint=endpoint,
-            )
-            logger.debug(
-                "Completed HF pull of %s (type=%s, rev=%s) to %s",
-                repo_id,
-                repo_type,
-                p.revision,
-                dest,
-            )
-            return True
+            rewaits = 0
+            while True:
+                try:
+                    with _hfpull_download_lock(dest, progress_path) as lock:
+                        if p.hf_type == HfType.BUCKET:
+                            bucket_hf_path = f"hf://buckets/{repo_id}"
+                            if p.path_in_repo:
+                                bucket_hf_path += f"/{p.path_in_repo}"
+                            logger.info("Downloading HF bucket %s to %s", repo_id, dest)
+                            api = HfApi(endpoint=endpoint, token=token)
+                            api.sync_bucket(source=bucket_hf_path, dest=str(dest))
+                            logger.debug(
+                                "Completed HF pull of bucket %s to %s", repo_id, dest
+                            )
+                        else:
+                            logger.info(
+                                "Downloading HF repo %s (type=%s, rev=%s) to %s",
+                                repo_id,
+                                repo_type,
+                                p.revision,
+                                dest,
+                            )
+                            _pull_hf_repo(
+                                repo_id=repo_id,
+                                repo_type=repo_type,
+                                revision=p.revision,
+                                dest=dest,
+                                token=token,
+                                endpoint=endpoint,
+                                force=force,
+                                lock=lock,
+                            )
+                            logger.debug(
+                                "Completed HF pull of %s (type=%s, rev=%s) to %s",
+                                repo_id,
+                                repo_type,
+                                p.revision,
+                                dest,
+                            )
+                        # Ownership fence: if we held the lock but lost it while
+                        # downloading, our result was produced (partly) unlocked
+                        # -- discard and re-wait rather than treat a tree the new
+                        # owner is still writing as authoritative.
+                        if lock is not None and not lock.still_owned():
+                            raise _HfEvicted()
+                        return True
+                except _HfEvicted:
+                    rewaits += 1
+                    if rewaits > HFPULL_MAX_LOCK_REWAITS:
+                        logger.error(
+                            "hfpull: download lock for %s was reclaimed %d times "
+                            "(exceeds the %d re-wait cap); giving up rather than "
+                            "retrying indefinitely -- the destination is under "
+                            "sustained contention or this node keeps stalling past "
+                            "the reclaim window",
+                            repo_id,
+                            rewaits,
+                            HFPULL_MAX_LOCK_REWAITS,
+                        )
+                        return False
+                    logger.warning(
+                        "hfpull: download lock for %s was reclaimed mid-download; "
+                        "re-waiting for it and retrying (%d/%d)",
+                        repo_id,
+                        rewaits,
+                        HFPULL_MAX_LOCK_REWAITS,
+                    )
         except Exception as e:
             _log_hf_api_error("pull", str(self), e)
             return False
@@ -736,7 +1198,7 @@ class HfURI(URI):
             return 1
 
     @staticmethod
-    def hfpull_step(uri_str: str, dest: str) -> int:
+    def hfpull_step(uri_str: str, dest: str, force: bool = False) -> int:
         """Parse a HF URI string, pull its contents to dest, and return an exit code.
 
         Intended as the single entry point called from the hfpull builtin step
@@ -745,12 +1207,17 @@ class HfURI(URI):
         Args:
             uri_str: HF URI string to download (e.g. ``hf:///owner/repo``).
             dest: Local filesystem path to download files into.
+            force: Re-download even if files already exist locally, unlinking any
+                poisoned ``.incomplete`` files. Also enabled by setting
+                ``GB_HFPULL_FORCE`` in the step environment, so an operator can
+                force a clean re-pull without editing the launch command.
 
         Returns:
             0 on success, 1 on failure.
         """
+        force = force or _env_flag(HFPULL_FORCE_ENV)
         uri = HfURI.parse(uri_str)
-        return 0 if uri.pull(Path(dest)) else 1
+        return 0 if uri.pull(Path(dest), force=force) else 1
 
     def delete(self: Self) -> bool:
         """Delete the resource referenced by this URI from the HuggingFace Hub.

@@ -34,7 +34,7 @@ from gbserver.api.utils import (
     split_tags,
 )
 from gbserver.lineage.jobstats import get_lineage_store
-from gbserver.spaces.resource_group import resolve_space_resource_group_id
+from gbserver.spaces.hf_push_config import resolve_space_resource_group_id
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,

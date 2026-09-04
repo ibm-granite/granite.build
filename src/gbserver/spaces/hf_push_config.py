@@ -14,7 +14,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Server-side resolution of HuggingFace Enterprise resource group ids.
+"""Server-side resolution of a HuggingFace push's configuration.
+
+The single home for turning the ``public``/``store_push`` config written in
+build.yaml and store.yaml/environment.yaml into the concrete values a push needs:
+
+- the public→private flip (:func:`_private_from_hf_cfg`) — the one boundary
+  between granite.build's surface ``public`` and the HF-API ``private``;
+- the cross-level config merge and the load-time output guard
+  (:func:`validate_output_push`);
+- Enterprise resource group id resolution (below).
+
+## Resource group resolution
 
 HF Enterprise access control keys repository/bucket creation on a resource
 group *id* (an internal HF identifier). There is no non-admin HF API to map a
@@ -44,7 +55,7 @@ id. The table read/write lives here.
 from typing import TYPE_CHECKING, Optional, Tuple
 
 from gbcommon.types.gbenvconfig import parse_boolean
-from gbcommon.uri.hf import HF_HOST, HfURI
+from gbcommon.uri.hf import HF_HOST, HF_URI_SCHEME, HfURI
 from gbcommon.utils.hf_utils import is_enterprise_hf_org
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.utils.logger import get_logger
@@ -60,6 +71,11 @@ logger = get_logger(__name__)
 # resource groups. Consumed here and stripped before the config reaches a
 # worker step template.
 USE_RESOURCE_GROUP_KEY = "use_resource_group"
+
+# The granite.build surface key at both exposed interfaces (build.yaml and
+# store.yaml/environment.yaml). Flipped to the HF-API ``private`` at one place,
+# :func:`_private_from_hf_cfg`; everything below that boundary speaks ``private``.
+PUBLIC_KEY = "public"
 
 
 class HfPushConfigError(ValueError):
@@ -181,6 +197,54 @@ def _merge_hf_levels(levels: Tuple[dict, dict]) -> dict:
     return merged
 
 
+def _extract_hf(config: Optional[dict], top_public: object = None) -> dict:
+    """The ``hf`` block for one config level, with a top-level ``public`` folded in.
+
+    ``public`` may be written two ways: the ergonomic output-level top ``public``,
+    or the store-namespaced ``config.hf.public`` (the only form at the environment
+    level, where there is no output field). ``top_public`` carries the output's
+    top-level field (``None`` at the environment level); it is folded into the
+    returned ``hf`` block so downstream reads one location. Setting both on the
+    same output with conflicting values raises; equal values collapse. A yaml null
+    is "unset" on either form. The retired ``private`` key raises (see
+    :func:`_reject_retired_private`).
+    """
+    config = config or {}
+    hf_cfg = config.get("hf") or {}
+    hf_cfg = dict(hf_cfg) if isinstance(hf_cfg, dict) else {}
+    _reject_retired_private(hf_cfg)
+    hf_public = hf_cfg.get(PUBLIC_KEY)
+    if (
+        hf_public is not None
+        and top_public is not None
+        and _differ(hf_public, top_public)
+    ):
+        raise HfPushConfigError(
+            f"conflicting public settings for one push "
+            f"('config.hf.{PUBLIC_KEY}: {hf_public}' vs "
+            f"'public: {top_public}') — keep one."
+        )
+    if hf_public is None and top_public is not None:
+        hf_cfg[PUBLIC_KEY] = top_public
+    return hf_cfg
+
+
+def _reject_retired_private(hf_cfg: dict) -> None:
+    """Reject the retired ``private`` key with a message pointing to ``public``.
+
+    ``private`` was replaced by ``public`` (inverted, default False). An old
+    ``config.hf.private`` reaching here would otherwise be ignored and silently
+    make the repo private, so fail loudly instead. Raised at load time via
+    :func:`validate_output_push` and defensively at resolve time.
+    """
+    if "private" in hf_cfg:
+        raise HfPushConfigError(
+            "`store_push.config.hf.private` is no longer supported; use `public` "
+            f"(inverted, default False) instead — e.g. `private: false` → "
+            f"`public: true`. Got `private: {hf_cfg['private']}`."
+        )
+
+
 def _hf_push_config_levels(
     storepush_config: Optional["StorePush"] = None,
     output_config: Optional["BuildTargetOutputConfig"] = None,
@@ -189,31 +253,92 @@ def _hf_push_config_levels(
 
     ``(environment_level, output_level)``. Kept distinct from the merged view so
     a per-output setting can be told apart from one inherited from the
-    environment — see the ``use_resource_group`` handling in
+    environment — see ``use_resource_group`` in
     :func:`resolve_hfpush_resource_group_id`.
     """
-
-    def _hf(config: Optional[dict]) -> dict:
-        hf_cfg = (config or {}).get("hf") or {}
-        return hf_cfg if isinstance(hf_cfg, dict) else {}
-
-    env_level = _hf(storepush_config.config) if storepush_config is not None else {}
-    output_level = (
-        _hf(output_config.store_push.config)
-        if output_config is not None and output_config.store_push is not None
-        else {}
+    env_level = (
+        _extract_hf(storepush_config.config) if storepush_config is not None else {}
     )
+    output_level = {}
+    if output_config is not None:
+        push = output_config.store_push
+        output_level = _extract_hf(
+            push.config if push is not None else None,
+            top_public=output_config.public,
+        )
     return env_level, output_level
 
 
-def _private_from_hf_cfg(hf_cfg: dict) -> bool:
-    """Apply the ``private`` default to an already-merged ``hf`` config block.
+def _differ(a: object, b: object) -> bool:
+    """Whether two ``public`` values disagree in meaning (strict, like the flip)."""
+    return _is_public(a) != _is_public(b)
 
-    The single definition of the rule, shared by
-    :func:`resolve_hfpush_resource_group_id` (which has the merged block in hand)
-    and :func:`resolve_hfpush_private` (which merges it first).
+
+def _is_public(value: object) -> bool:
+    """Resolve a surface ``public`` value, failing closed (a typo → private)."""
+    return parse_boolean(value, strict=True)
+
+
+def _private_from_hf_cfg(hf_cfg: dict) -> bool:
+    """Flip the surface ``public`` flag to the internal ``private`` bool.
+
+    THE public→private boundary: the one place granite.build's ``public`` (default
+    False) becomes the HF-API ``private`` (default True) used everywhere below.
+    Fails closed via :func:`_is_public` — an unset/null/typo value stays private,
+    so no ``.get(default)``/``hasKey`` gymnastics are needed (unlike the old
+    ``private`` key, whose safe default was True).
     """
-    return parse_boolean(hf_cfg.get("private"), True)
+    return not _is_public(hf_cfg.get(PUBLIC_KEY))
+
+
+def _uri_scheme(uri: Optional[str]) -> Optional[str]:
+    """Scheme of a (possibly Jinja-templated) URI by prefix, or ``None``.
+
+    An output ``uri`` is a template at load time (``hf:///org/repo-{{ x }}``), so
+    split on ``://`` rather than parsing — both ``hf://`` and ``hf:///`` match.
+    """
+    if not uri or "://" not in uri:
+        return None
+    return uri.split("://", 1)[0].lower() or None
+
+
+def validate_output_push(
+    output_name: str, output_config: "BuildTargetOutputConfig"
+) -> Optional[str]:
+    """Validate an output's HuggingFace push config at load time; else ``None``.
+
+    Fails fast with the output named on:
+
+    - non-``hf://`` guard: ``public`` and any ``store_push.config.hf.*`` key are
+      HuggingFace-only (no other store reads ``store_push``), so on an ``lh://``/
+      ``env://``/``file://``/``cos://`` output they are a misconfiguration that
+      would otherwise be silently ignored.
+    - the retired ``config.hf.private`` key, and a same-level ``public`` conflict:
+      both caught by folding the forms via :func:`_hf_push_config_levels` (the
+      single place those rules live).
+
+    Returns an error string for the generic build validator to collect. Kept here
+    so ``buildconfig`` stays generic.
+    """
+    labels = []
+    if getattr(output_config, PUBLIC_KEY, None) is not None:
+        labels.append(f"`{PUBLIC_KEY}`")
+    push = output_config.store_push
+    cfg = push.config if push is not None else None
+    if isinstance(cfg, dict) and isinstance(cfg.get("hf"), dict) and cfg["hf"]:
+        labels.append("`store_push.config.hf.*`")
+    if not labels:
+        return None
+    if _uri_scheme(output_config.uri) != HF_URI_SCHEME:
+        return (
+            f"Output `{output_name}`: {', '.join(labels)} is a HuggingFace push "
+            f"option, only valid on an hf:// output; got uri '{output_config.uri}'."
+        )
+    try:
+        _hf_push_config_levels(output_config=output_config)
+    except HfPushConfigError as e:
+        return f"Output `{output_name}`: {e}"
+    return None
 
 
 def _level_pin(level: dict) -> Optional[str]:
@@ -225,12 +350,15 @@ def resolve_hfpush_private(
     storepush_config: Optional["StorePush"] = None,
     output_config: Optional["BuildTargetOutputConfig"] = None,
 ) -> bool:
-    """Resolve the ``private`` flag for an HF push from the merged push config.
+    """Resolve the internal ``private`` flag for an HF push from the push config.
 
-    Artifacts are private by default: HuggingFace's own ``create_repo`` default is
-    PUBLIC, so an unset/omitted value must resolve to ``True`` here to keep a user
-    from unintentionally publishing a model. Only an explicit falsy value
-    (``false``/``no``/``off``/``0``, quoted or not) opts into a public repo.
+    Artifacts are private by default. The surface flag is ``public`` (default
+    False); this returns the flipped internal ``private`` via the
+    :func:`_private_from_hf_cfg` boundary, so an unset/omitted ``public`` yields a
+    private repo and only an explicit truthy ``public`` (``true``/``yes``/``1``,
+    quoted or not) opts into a public one. HuggingFace's own ``create_repo``
+    defaults to PUBLIC, which is exactly why the safe granite.build default is
+    ``public: false``.
 
     Split out of :func:`resolve_hfpush_resource_group_id` so a caller that cannot
     classify the org (no ``Hfstore``, hence no Enterprise org list) can still honor
@@ -249,13 +377,20 @@ def resolve_hfpush_private(
     return _private_from_hf_cfg(hf_cfg)
 
 
+_RESOLUTION_ONLY_HF_KEYS = frozenset({USE_RESOURCE_GROUP_KEY, PUBLIC_KEY})
+
+
 def sanitize_hf_step_overlay(hf_cfg: dict) -> dict:
     """Drop keys that must never reach a worker step's ``hfpush_config``.
 
-    ``use_resource_group`` is consumed during resolution (it opts an Enterprise
-    org out of resource groups); leaking it verbatim into the emitted step
-    config would hand the LSF/Helm/SkyPilot templates a key they do not
-    understand.
+    Both keys are consumed during *resolution*, not by the worker template, so
+    leaking them verbatim into the emitted step config would hand the
+    LSF/Helm/SkyPilot templates keys they do not understand:
+
+    - ``use_resource_group`` opts an Enterprise org out of resource groups.
+    - ``public`` is the surface flag flipped to the flat ``private`` step key by
+      :func:`_private_from_hf_cfg`; the templates read ``hfpush_config.private``,
+      never ``hf.public``, so a leftover ``hf.public`` would be dead weight.
 
     Args:
         hf_cfg: An ``hf`` config dict from a push configuration.
@@ -263,7 +398,9 @@ def sanitize_hf_step_overlay(hf_cfg: dict) -> dict:
     Returns:
         A copy without the resolution-only keys.
     """
-    return {k: v for k, v in (hf_cfg or {}).items() if k != USE_RESOURCE_GROUP_KEY}
+    return {
+        k: v for k, v in (hf_cfg or {}).items() if k not in _RESOLUTION_ONLY_HF_KEYS
+    }
 
 
 def apply_hf_step_overlay(
@@ -329,11 +466,9 @@ def resolve_hfpush_resource_group_id(
     hf_cfg = _merge_hf_levels(levels)
     resource_group_id = hf_cfg.get("resource_group_id") or None
     resource_group_name = hf_cfg.get("resource_group_name") or None
-    # parse_boolean, not .get(key, default): a yaml null is a *present* key, so
-    # .get's default would not apply and a None reaching a worker template
-    # stringifies as "None". parse_boolean also folds the quoted forms
-    # ("false"/"no"/"off"/"0") onto False, so `private: "false"` means what it
-    # says instead of being truthy as a non-empty string.
+    # The public→private flip. `private` below is the HF-API vocabulary; the
+    # surface key is `public` (default False → private), so the safe default is
+    # the flag's zero value and no unset/null special-casing is needed here.
     private = _private_from_hf_cfg(hf_cfg)
     use_resource_group = parse_boolean(hf_cfg.get(USE_RESOURCE_GROUP_KEY), True)
 
