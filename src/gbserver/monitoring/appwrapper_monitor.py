@@ -89,6 +89,37 @@ PROBLEMATIC_NORMAL_EVENTS = {
 }
 
 
+def _distill_workload_conditions(
+    workload_status: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Flatten the Kueue Workload ``.status`` list into a compact list of
+    ``{workload_name, conditions: [{type, status, reason}], requeued}`` entries.
+
+    Keeps the payload small and gives the preemption classifier a stable shape
+    to read (the Kueue Workload conditions persist on the object and, unlike K8s
+    Events, do not age out).
+    """
+    distilled: List[Dict[str, Any]] = []
+    for entry in workload_status or []:
+        status = entry.get("workload_status", {}) or {}
+        conditions = [
+            {
+                "type": c.get("type", ""),
+                "status": c.get("status", ""),
+                "reason": c.get("reason", ""),
+            }
+            for c in (status.get("conditions", []) or [])
+        ]
+        distilled.append(
+            {
+                "workload_name": entry.get("workload_name", ""),
+                "conditions": conditions,
+                "requeued": bool(status.get("requeueState")),
+            }
+        )
+    return distilled
+
+
 # ---------------------- Kubernetes AppWrapper monitor ---------------------
 class AppWrapperMonitor(MonitorBase):
     """
@@ -149,6 +180,13 @@ class AppWrapperMonitor(MonitorBase):
         self.failed_pods = {}  # type: ignore[var-annotated]
         self.launched_pods = {}  # type: ignore[var-annotated]
         self._api_failure_start_time: Optional[float] = None
+        # Sticky preemption tracking: set True the first time we ever observe a
+        # preemption/eviction event or a rising resettingCount this launch, so a
+        # later terminal "Failed" is still classifiable as transient even after
+        # the causal K8s events have aged out of the API's ~1h event window.
+        # `max_resets_seen` is the running max of the AppWrapper resettingCount.
+        self._preemption_observed: bool = False
+        self._max_resets_seen: int = 0
         self._run_event = asyncio.Event()
         self._run_event.set()  # running by default; cleared by pause()
 
@@ -185,6 +223,8 @@ class AppWrapperMonitor(MonitorBase):
         self.failed_pods = {}
         self.launched_pods = {}
         self._api_failure_start_time = None
+        self._preemption_observed = False
+        self._max_resets_seen = 0
         self._run_event.set()
 
     def _is_api_failure_timeout(self: Self) -> bool:
@@ -436,7 +476,8 @@ class AppWrapperMonitor(MonitorBase):
                 ),
                 timeout=API_CALL_TIMEOUT,
             )
-            current_resets = response.get("status", {}).get("resettingCount", 0)
+            status_obj = response.get("status", {})
+            current_resets = status_obj.get("resettingCount", 0)
             max_retries = (
                 response.get("metadata", {})
                 .get("annotations", {})
@@ -444,7 +485,25 @@ class AppWrapperMonitor(MonitorBase):
             )
             self.additional_appwrapper_state_info["current_resets"] = current_resets
             self.additional_appwrapper_state_info["max_retries"] = max_retries
-            res_status = response.get("status", {}).get("phase", "Unknown")
+            # Capture the AppWrapper's own conditions/componentStatuses so the
+            # classifier can reason over richer signal than the coarse phase.
+            self.additional_appwrapper_state_info["appwrapper_conditions"] = (
+                status_obj.get("conditions", [])
+            )
+            self.additional_appwrapper_state_info["component_statuses"] = (
+                status_obj.get("componentStatuses", [])
+            )
+            # Track the running max of resettingCount for reporting only. It is
+            # NOT a preemption signal: the controller resets pods in place on any
+            # failure (a crash as much as an eviction), so a rising count must not
+            # imply preemption -- only Preempted/Evicted events and Kueue Workload
+            # conditions do (see the classifier and _get_new_events).
+            try:
+                current_resets_int = int(current_resets)
+            except (TypeError, ValueError):
+                current_resets_int = 0
+            self._max_resets_seen = max(self._max_resets_seen, current_resets_int)
+            res_status = status_obj.get("phase", "Unknown")
             logger.info("Appwrapper %s status is %s", self.name, res_status)
             # Reset failure tracking on successful API call
             self._api_failure_start_time = None
@@ -794,11 +853,20 @@ class AppWrapperMonitor(MonitorBase):
                 )
                 self._seen_event_uids.add(uid)
         self.latest_events = fresh_events
+        # Stickily remember any preemption/eviction event so a later terminal
+        # "Failed" stays classifiable as transient even after these events age
+        # out of the K8s event window.
+        for ev in fresh_events:
+            reason = (ev.get("reason") or "").strip()
+            if reason in ("Preempted", "Evicted"):
+                self._preemption_observed = True
+                break
         return fresh_events
 
     async def _get_state_change(
         self: Self, new_state: str, get_state_for_exception: bool = False
     ) -> str:
+        workload_status = await self._get_workload_status()
         payload: dict[str, Any] = {
             "appwrapper": self.name,
             "state": new_state,
@@ -806,19 +874,34 @@ class AppWrapperMonitor(MonitorBase):
             "current_resets": self.additional_appwrapper_state_info.get(
                 "current_resets", 0
             ),
+            # G6 fix: read the value under the key it is actually stored under
+            # (`max_retries`), so the payload carries the real AppWrapper
+            # retryLimit instead of the constant "unlimited".
             "max_retries": self.additional_appwrapper_state_info.get(
-                "max_resets", "unlimited"
+                "max_retries", "unlimited"
             ),
-            "workload_status": await self._get_workload_status(),
+            "workload_status": workload_status,
+            # Richer, durable signals for the preemption classifier.
+            "appwrapper_conditions": self.additional_appwrapper_state_info.get(
+                "appwrapper_conditions", []
+            ),
+            "workload_conditions": _distill_workload_conditions(workload_status),
+            "max_resets_seen": self._max_resets_seen,
         }
         pods_placement = {
             pod_name: pod.spec.node_name for pod_name, pod in self.launched_pods.items()
         }
         payload["pod_placement"] = pods_placement
         await self._get_appwrapper_failed_pods()
+        # `failed_pods` feeds the classifier's hard-failure check, which only runs
+        # on a terminal `Failed` snapshot -- exactly when get_state_for_exception
+        # is set. Attaching it only here also avoids leaking a once-failed pod
+        # (failed_pods is cumulative) into later non-terminal payloads.
         if get_state_for_exception:
             payload["failed_pods"] = self.failed_pods
         payload["events"] = await self._get_new_events(self.failed_pods.keys())  # type: ignore[arg-type]
+        # `_get_new_events` may flip the sticky flag; snapshot it after that call.
+        payload["preemption_observed"] = self._preemption_observed
         return f"\n```json\n{json.dumps(payload, indent=4)}\n```\n"
 
     async def _publish_state_change(

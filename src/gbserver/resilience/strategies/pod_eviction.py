@@ -24,6 +24,10 @@ scheduler due to resource pressure, higher-priority workloads, or node maintenan
 import json
 from typing import List, Optional, Self, Set
 
+from gbserver.resilience.appwrapper_classifier import (
+    AppWrapperVerdict,
+    classify_appwrapper_failure,
+)
 from gbserver.resilience.retry_handler import RetryStrategy
 from gbserver.types.buildevent import BuildEvent, BuildEventType
 from gbserver.utils.logger import get_logger
@@ -35,10 +39,15 @@ class PodEvictionRetryStrategy(RetryStrategy):
     """
     Retry strategy for pod evictions and preemptions.
 
-    This strategy triggers retries when:
-    - A Kubernetes object (AppWrapper, Job, Deployment, etc.) enters Failed state
-    - Pods were preempted or evicted (reasons: "Preempted", "Evicted")
-    - The workload was running before failure (previous_state: "Running")
+    This strategy triggers a retry when the shared preemption classifier
+    (:func:`classify_appwrapper_failure`) judges a ``Failed`` AppWrapper snapshot
+    to be a transient preemption/eviction/requeue -- i.e. normal Kueue lifecycle
+    churn rather than a workload failure. The classifier draws on durable signals
+    (Kueue Workload ``Evicted``/``Preempted`` conditions and ``requeueState``, and
+    a sticky "preemption observed this launch" flag), so detection no longer
+    depends on the causal K8s events still being present in the terminal snapshot
+    -- they age out of the ~1h event window well before the AppWrapper exhausts
+    its own retryLimit and lands in ``Failed``.
 
     Unlike mount failures, evictions typically don't require node avoidance since
     the eviction is usually due to resource pressure or higher-priority workloads,
@@ -82,6 +91,24 @@ class PodEvictionRetryStrategy(RetryStrategy):
         Analyzes BuildEvents emitted by monitors (e.g., AppWrapperMonitor) which contain
         Kubernetes events from the K8s API server. The monitor embeds K8s event data
         in the BuildEvent payload.
+
+        Note on ``object_types``: this method no longer filters the preemption
+        decision by ``self.object_types``. The old implementation only counted an
+        ``Unhealthy`` event when it was reported on one of the configured wrapper
+        object types (e.g. ``AppWrapper``), which meant a preempted pod wrapped by
+        a different object type was ignored. Preemption/requeue is transient
+        regardless of what wraps the pod, and gb only launches AppWrappers today,
+        so the gate added fragility without value and was dropped. ``object_types``
+        is still honored by :meth:`extract_nodes_to_avoid` (node selection).
+
+        If a future need arises to restrict retries to specific wrapper types
+        (e.g. a mixed environment where a non-AppWrapper ``Failed`` must stay
+        terminal), re-introduce the gate here rather than in the classifier: after
+        parsing ``data``, return ``False`` unless at least one event with
+        ``object_type in self.object_types`` is present (or thread an
+        ``object_types`` argument through ``classify_appwrapper_failure`` so the
+        Kueue-condition/reset signals are likewise scoped). Keeping it out of the
+        pure classifier preserves the classifier's single-responsibility shape.
         """
         # Only process MESSAGE_EVENT types
         if event.type != BuildEventType.MESSAGE_EVENT:
@@ -101,76 +128,42 @@ class PodEvictionRetryStrategy(RetryStrategy):
             else:
                 # Try to parse the whole message as JSON
                 data = json.loads(msg)
-
-            events = data.get("events", [])
-            state = data.get("state", "")
-            previous_state = data.get("previous_state", "")
-
-            # Check for Failed state transition from Running
-            if state != "Failed":
-                return False
-
-            # If it wasn't running before, don't retry
-            # (we only want to retry workloads that were interrupted)
-            if previous_state != "Running":
-                logger.debug(
-                    "Workload failed but was not running (previous_state=%s), not retrying",
-                    previous_state,
-                )
-                return False
-
-            # Check for Unhealthy event (indicates something went wrong)
-            has_unhealthy_event = False
-            has_eviction_or_preemption = False
-
-            for ev in events:
-                object_type = ev.get("object_type", "")
-
-                # Check if this is an event for one of our monitored object types
-                if object_type in self.object_types:
-                    reason = ev.get("reason", "")
-                    message = ev.get("message", "")
-
-                    if reason == "Unhealthy":
-                        has_unhealthy_event = True
-                        logger.info(
-                            "Detected Unhealthy event for %s: %s",
-                            object_type,
-                            message,
-                        )
-
-                # Check for pod eviction/preemption events
-                if object_type == "Pod":
-                    reason = ev.get("reason", "")
-                    if reason in ["Preempted", "Evicted"]:
-                        has_eviction_or_preemption = True
-                        pod_name = ev.get("object_name", "")
-                        message = ev.get("message", "")
-                        logger.info(
-                            "Detected pod %s event for pod %s: %s",
-                            reason,
-                            pod_name,
-                            message,
-                        )
-
-            should_retry = has_unhealthy_event and has_eviction_or_preemption
-
-            if should_retry:
-                logger.info(
-                    "Conditions met for retry: state=%s, previous_state=%s, "
-                    "unhealthy=%s, eviction/preemption=%s, object_types=%s",
-                    state,
-                    previous_state,
-                    has_unhealthy_event,
-                    has_eviction_or_preemption,
-                    self.object_types,
-                )
-
-            return should_retry
-
         except (json.JSONDecodeError, KeyError, AttributeError) as e:
             logger.debug("Could not parse event for retry evaluation: %s", e)
             return False
+
+        if not isinstance(data, dict):
+            return False
+
+        # Only retry workloads that were interrupted mid-run (a workload that
+        # never reached Running failed for a different reason).
+        previous_state = data.get("previous_state", "")
+        if previous_state != "Running":
+            logger.debug(
+                "Workload failed but was not running (previous_state=%s), not retrying",
+                previous_state,
+            )
+            return False
+
+        # Delegate the transient-vs-terminal decision to the shared classifier,
+        # which reads durable preemption signals (Kueue Workload conditions,
+        # requeueState, a sticky preemption flag) rather than requiring the causal
+        # K8s events to still be present in this snapshot.
+        should_retry = (
+            classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION
+        )
+
+        if should_retry:
+            logger.info(
+                "Conditions met for preemption retry: state=%s, previous_state=%s, "
+                "max_resets_seen=%s, object_types=%s",
+                data.get("state"),
+                previous_state,
+                data.get("max_resets_seen"),
+                self.object_types,
+            )
+
+        return should_retry
 
     def extract_nodes_to_avoid(
         self: Self,

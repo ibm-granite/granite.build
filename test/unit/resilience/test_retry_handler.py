@@ -642,6 +642,121 @@ class TestWorkloadStatusTerminalFailure:
         assert handler.environment.retry_called is True
 
 
+def create_preempted_failed_event(**overrides) -> BuildEvent:
+    """A terminal AppWrapper 'Failed' snapshot caused by preemption.
+
+    Carries a durable preemption signal (the sticky preemption_observed flag) but
+    no genuine hard-failure reason -- the shape the classifier must judge transient.
+    """
+    data = {
+        "appwrapper": "gbtest",
+        "state": "Failed",
+        "previous_state": "Running",
+        "preemption_observed": True,
+        "workload_status": [],
+        "events": [],
+        "failed_pods": {},
+    }
+    data.update(overrides)
+    return create_test_event(f"\n```json\n{json.dumps(data, indent=4)}\n```\n")
+
+
+class TestPreemptionReclassification:
+    """A `Failed` AppWrapper caused by normal Kueue preemption/requeue must not
+    be treated as a terminal failure -- even when step retries are disabled."""
+
+    def _handler(
+        self,
+        max_retries: int,
+        strategy: RetryStrategy,
+        max_preemptions: int = 20,
+    ) -> RetryHandler:
+        return RetryHandler(
+            launch_id="test-launch-123",
+            downstream_queue=asyncio.Queue(),
+            environment=MockEnvironment(),
+            max_retries=max_retries,
+            strategies=[strategy],
+            max_preemptions=max_preemptions,
+        )
+
+    def test_preemption_failed_is_not_terminal(self: Self) -> None:
+        handler = self._handler(0, NeverRetryStrategy())
+        assert (
+            handler._is_terminal_failure_event(create_preempted_failed_event()) is False
+        )
+
+    def test_genuine_failed_still_terminal(self: Self) -> None:
+        # A hard failure with no preemption signal stays terminal.
+        handler = self._handler(0, NeverRetryStrategy())
+        event = create_preempted_failed_event(
+            current_resets=0,
+            max_resets_seen=0,
+            preemption_observed=False,
+            failed_pods={"pod-1": {"failure-reason": "OOMKilled", "logs": {}}},
+        )
+        assert handler._is_terminal_failure_event(event) is True
+
+    @pytest.mark.asyncio
+    async def test_preemption_does_not_raise_with_retry_disabled(self: Self) -> None:
+        # The reported bug: retries off (max_retries=0), a preemption-caused
+        # Failed must NOT raise WorkloadFailedException.
+        handler = self._handler(0, NeverRetryStrategy())
+        await handler.get_wrapper_queue().put(create_preempted_failed_event())
+        # Give the processor a moment; it must NOT raise. Stop it cooperatively.
+        processor = asyncio.create_task(handler.process_events())
+        await asyncio.sleep(0.2)
+        handler.stop()
+        await asyncio.wait_for(processor, timeout=5.0)
+        assert handler.environment.retry_called is False
+        # Event is still forwarded downstream (not silently dropped).
+        assert handler.downstream_queue.qsize() == 1
+
+    def test_preemption_within_ceiling_is_not_terminal(self: Self) -> None:
+        # The ceiling counts classifications cumulatively; up to the limit each is
+        # non-terminal.
+        handler = self._handler(0, NeverRetryStrategy(), max_preemptions=3)
+        for _ in range(3):
+            assert (
+                handler._is_terminal_failure_event(create_preempted_failed_event())
+                is False
+            )
+        assert handler.preemption_count == 3
+
+    def test_preemption_over_ceiling_is_terminal(self: Self) -> None:
+        # Past the ceiling the workload fails with a clear reason rather than being
+        # treated as transient forever (no silent hang). Counting classifications
+        # (not resettingCount) means a pure Kueue-requeue loop trips it too.
+        handler = self._handler(0, NeverRetryStrategy(), max_preemptions=3)
+        for _ in range(3):
+            handler._is_terminal_failure_event(create_preempted_failed_event())
+        assert (
+            handler._is_terminal_failure_event(create_preempted_failed_event()) is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_preemption_retries_when_enabled(self: Self) -> None:
+        # With retries enabled, the pod-eviction strategy relaunches instead of
+        # merely not-failing.
+        from gbserver.resilience.strategies import PodEvictionRetryStrategy
+
+        handler = self._handler(3, PodEvictionRetryStrategy())
+        retry_triggered = await handler._evaluate_and_retry(
+            create_preempted_failed_event(
+                events=[
+                    {
+                        "object_type": "Pod",
+                        "object_name": "gbtest-0",
+                        "reason": "Preempted",
+                        "message": "Preempted by a higher priority pod",
+                    }
+                ],
+            )
+        )
+        assert retry_triggered is True
+        assert handler.environment.retry_called is True
+
+
 class TestExhaustedRetriableIsTerminal:
     """A retriable failure with no retries left is itself terminal.
 
