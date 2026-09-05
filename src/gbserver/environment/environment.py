@@ -425,6 +425,18 @@ class Environment(ABC):
             return self.config.config.get("retry", {}).get("max_retries", 3)
         return 3
 
+    def _get_retry_max_preemptions(self: Self) -> int:
+        """Cumulative preemptions tolerated before a repeatedly-preempted
+        workload is failed. Reads ``retry.max_preemptions`` from the environment
+        config, falling back to the RetryHandler default."""
+        from gbserver.resilience.retry_handler import DEFAULT_MAX_PREEMPTIONS
+
+        if self.config is not None:
+            return self.config.config.get("retry", {}).get(
+                "max_preemptions", DEFAULT_MAX_PREEMPTIONS
+            )
+        return DEFAULT_MAX_PREEMPTIONS
+
     def _get_retry_test_scenario(self: Self) -> Optional[str]:
         """Return the scenario name used by _inject_event_to_trigger_retry_when_testing.
 
@@ -451,13 +463,16 @@ class Environment(ABC):
         from gbserver.resilience import RetryHandler  # avoid circular import
 
         max_retries = self._get_retry_max_retries()
+        max_preemptions = self._get_retry_max_preemptions()
         logger.info(
-            "[%s launch_id %s] Creating RetryHandler with %d strategies: %s (max_retries=%d)",
+            "[%s launch_id %s] Creating RetryHandler with %d strategies: %s "
+            "(max_retries=%d, max_preemptions=%d)",
             self.__class__.__name__,
             launch_id,
             len(strategies),
             [s.__class__.__name__ for s in strategies],
             max_retries,
+            max_preemptions,
         )
         return RetryHandler(
             launch_id=launch_id,
@@ -468,6 +483,7 @@ class Environment(ABC):
             node_health_tracker=node_health_tracker,
             build_id=build_id or launch_id,
             entityrun_metadata=entityrun_metadata,
+            max_preemptions=max_preemptions,
         )
 
     def _get_step_retry_config(

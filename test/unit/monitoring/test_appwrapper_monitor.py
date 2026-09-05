@@ -176,3 +176,100 @@ class TestPodLivenessCheck:
         # Call _check_pod_liveness and verify it returns True
         result = await monitor._check_pod_liveness()
         assert result is True
+
+
+class TestPreemptionSignalTracking:
+    """The monitor captures durable preemption signals so a later terminal
+    `Failed` is classifiable as transient."""
+
+    @pytest.mark.asyncio
+    async def test_rising_reset_count_sets_sticky_preemption(self):
+        """A rising resettingCount flips the sticky preemption flag and records
+        the running max."""
+        monitor, _, _ = _make_monitor()
+        monitor.custom_api = MagicMock()
+        monitor.custom_api.get_namespaced_custom_object = AsyncMock(
+            return_value={"status": {"phase": "Running", "resettingCount": 2}}
+        )
+        assert monitor._preemption_observed is False
+        await monitor._get_appwrapper_status()
+        assert monitor._preemption_observed is True
+        assert monitor._max_resets_seen == 2
+
+        # A later poll with a lower/absent count must not lower the running max.
+        monitor.custom_api.get_namespaced_custom_object = AsyncMock(
+            return_value={"status": {"phase": "Failed", "resettingCount": 0}}
+        )
+        await monitor._get_appwrapper_status()
+        assert monitor._max_resets_seen == 2
+
+    @pytest.mark.asyncio
+    async def test_appwrapper_conditions_captured(self):
+        """`.status.conditions` are captured for the classifier."""
+        monitor, _, _ = _make_monitor()
+        monitor.custom_api = MagicMock()
+        conditions = [{"type": "Unhealthy", "status": "True"}]
+        monitor.custom_api.get_namespaced_custom_object = AsyncMock(
+            return_value={"status": {"phase": "Running", "conditions": conditions}}
+        )
+        await monitor._get_appwrapper_status()
+        assert (
+            monitor.additional_appwrapper_state_info["appwrapper_conditions"]
+            == conditions
+        )
+
+    def test_unpause_resets_preemption_tracking(self):
+        """unpause() clears the sticky preemption state for the new attempt."""
+        monitor, _, _ = _make_monitor()
+        monitor._preemption_observed = True
+        monitor._max_resets_seen = 5
+        monitor.unpause()
+        assert monitor._preemption_observed is False
+        assert monitor._max_resets_seen == 0
+
+    @pytest.mark.asyncio
+    async def test_state_change_payload_fixes_max_retries_and_adds_signals(self):
+        """G6 regression: payload `max_retries` is the real retryLimit, not the
+        constant 'unlimited'; and the payload carries the new classifier signals."""
+        monitor, _, _ = _make_monitor()
+        monitor.custom_api = MagicMock()
+        monitor.custom_api.get_namespaced_custom_object = AsyncMock(
+            return_value={
+                "metadata": {
+                    "annotations": {"workload.codeflare.dev.appwrapper/retryLimit": "3"}
+                },
+                "status": {"phase": "Failed", "resettingCount": 1},
+            }
+        )
+        # Populate the state info the payload reads from.
+        await monitor._get_appwrapper_status()
+        # Stub the workload/pod/event fetches used by _get_state_change.
+        monitor._get_workload_status = AsyncMock(
+            return_value=[
+                {
+                    "workload_name": "wl-1",
+                    "workload_status": {
+                        "conditions": [{"type": "Evicted", "status": "True"}],
+                        "requeueState": {"count": 1},
+                    },
+                }
+            ]
+        )
+        monitor._get_appwrapper_failed_pods = AsyncMock(return_value=None)
+        monitor._get_new_events = AsyncMock(return_value=[])
+
+        msg = await monitor._get_state_change("Failed", get_state_for_exception=True)
+        import json
+
+        data = json.loads(msg.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+
+        assert data["max_retries"] == "3"  # G6: real retryLimit, not "unlimited"
+        assert data["max_resets_seen"] == 1
+        assert data["preemption_observed"] is True
+        assert data["workload_conditions"] == [
+            {
+                "workload_name": "wl-1",
+                "conditions": [{"type": "Evicted", "status": "True", "reason": ""}],
+                "requeued": True,
+            }
+        ]

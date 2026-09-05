@@ -39,6 +39,10 @@ import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar, Dict, List, Optional, Self, Set, Type
 
+from gbserver.resilience.appwrapper_classifier import (
+    AppWrapperVerdict,
+    classify_appwrapper_failure,
+)
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventType,
@@ -55,6 +59,12 @@ if TYPE_CHECKING:
     from gbserver.types.buildevent import EntityRunMetadata
 
 logger = get_logger(__name__)
+
+# Cumulative preemptions/requeues (AppWrapper resets) tolerated before a
+# repeatedly-preempted workload is failed with a clear reason rather than
+# treated as transient forever. Generous: preemption is normal, so this only
+# catches a workload that can never hold its capacity.
+DEFAULT_MAX_PREEMPTIONS = 20
 
 
 def build_retry_strategies_from_config(
@@ -313,6 +323,7 @@ class RetryHandler:
         build_id: Optional[str] = None,
         entityrun_metadata: Optional["EntityRunMetadata"] = None,
         sleep_fn=None,
+        max_preemptions: int = DEFAULT_MAX_PREEMPTIONS,
     ) -> None:
         self.launch_id = launch_id
         self.build_id = build_id or launch_id  # Use launch_id as fallback
@@ -321,6 +332,9 @@ class RetryHandler:
         self.environment = environment
         self.max_retries = max_retries
         self.retry_count = 0
+        # A workload preempted/requeued this many times is failed with a clear
+        # reason, so endless preemption surfaces instead of hanging silently.
+        self.max_preemptions = max_preemptions
         self.nodes_to_avoid: Set[str] = set()
 
         # Wrapper queue that monitors will publish to
@@ -729,6 +743,19 @@ class RetryHandler:
             return None
         return data if isinstance(data, dict) else None
 
+    def _observed_preemptions(self: Self, data: dict) -> int:
+        """Cumulative preemptions for this launch: the AppWrapper's own reset
+        count (``max_resets_seen``, running max of ``resettingCount``), which is
+        exactly how many times the controller restarted the pods in place."""
+        for key in ("max_resets_seen", "current_resets"):
+            try:
+                value = int(data.get(key))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if value:
+                return value
+        return 0
+
     def _is_live_nonterminal_state(self: Self, event: BuildEvent) -> bool:
         """
         Report whether the event shows the workload is still live / non-terminal.
@@ -773,6 +800,14 @@ class RetryHandler:
            ``state == "Failed"`` or ``state`` starting with ``"Exception:"`` — the
            K8s AppWrapper terminal shape.
 
+        A ``Failed`` AppWrapper snapshot caused by preemption/eviction/requeue is
+        normal Kueue lifecycle churn, not a workload failure, so it is not treated
+        as terminal -- this is what keeps the normal lifecycle from failing a step
+        even when step retries are disabled (``max_retries == 0``), since this
+        method's verdict is what makes ``process_events`` raise. The exception is
+        a workload preempted more than ``max_preemptions`` times, which is failed
+        with a clear reason so endless preemption cannot hang silently.
+
         Args:
             event: BuildEvent from the monitor
 
@@ -790,6 +825,29 @@ class RetryHandler:
         if data is None:
             return False
         state = data.get("state", "")
+        if (
+            state == "Failed"
+            and classify_appwrapper_failure(data)
+            == AppWrapperVerdict.TRANSIENT_PREEMPTION
+        ):
+            preemptions = self._observed_preemptions(data)
+            if preemptions > self.max_preemptions:
+                logger.error(
+                    "[RetryHandler launch_id %s] Workload preempted %d times "
+                    "(> max_preemptions=%d); failing.",
+                    self.launch_id,
+                    preemptions,
+                    self.max_preemptions,
+                )
+                return True
+            logger.info(
+                "[RetryHandler launch_id %s] AppWrapper Failed classified as "
+                "transient preemption (%d/%d); not terminal.",
+                self.launch_id,
+                preemptions,
+                self.max_preemptions,
+            )
+            return False
         # Terminal states that should stop the build
         return state == "Failed" or state.startswith("Exception:")
 
