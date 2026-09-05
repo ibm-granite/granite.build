@@ -493,17 +493,16 @@ class AppWrapperMonitor(MonitorBase):
             self.additional_appwrapper_state_info["component_statuses"] = (
                 status_obj.get("componentStatuses", [])
             )
-            # A rising resettingCount means the AppWrapper controller restarted
-            # pods in place -- which only happens on interruption/preemption.
-            # Remember it stickily so a later terminal "Failed" is still
-            # classifiable as transient.
+            # Track the running max of resettingCount for reporting only. It is
+            # NOT a preemption signal: the controller resets pods in place on any
+            # failure (a crash as much as an eviction), so a rising count must not
+            # imply preemption -- only Preempted/Evicted events and Kueue Workload
+            # conditions do (see the classifier and _get_new_events).
             try:
                 current_resets_int = int(current_resets)
             except (TypeError, ValueError):
                 current_resets_int = 0
-            if current_resets_int > self._max_resets_seen:
-                self._max_resets_seen = current_resets_int
-                self._preemption_observed = True
+            self._max_resets_seen = max(self._max_resets_seen, current_resets_int)
             res_status = status_obj.get("phase", "Unknown")
             logger.info("Appwrapper %s status is %s", self.name, res_status)
             # Reset failure tracking on successful API call
@@ -894,9 +893,11 @@ class AppWrapperMonitor(MonitorBase):
         }
         payload["pod_placement"] = pods_placement
         await self._get_appwrapper_failed_pods()
-        # `failed_pods` feeds the classifier's genuine-terminal check, so include
-        # it whenever pods have failed, not only on the exception path.
-        if get_state_for_exception or self.failed_pods:
+        # `failed_pods` feeds the classifier's hard-failure check, which only runs
+        # on a terminal `Failed` snapshot -- exactly when get_state_for_exception
+        # is set. Attaching it only here also avoids leaking a once-failed pod
+        # (failed_pods is cumulative) into later non-terminal payloads.
+        if get_state_for_exception:
             payload["failed_pods"] = self.failed_pods
         payload["events"] = await self._get_new_events(self.failed_pods.keys())  # type: ignore[arg-type]
         # `_get_new_events` may flip the sticky flag; snapshot it after that call.

@@ -183,17 +183,16 @@ class TestPreemptionSignalTracking:
     `Failed` is classifiable as transient."""
 
     @pytest.mark.asyncio
-    async def test_rising_reset_count_sets_sticky_preemption(self):
-        """A rising resettingCount flips the sticky preemption flag and records
-        the running max."""
+    async def test_reset_count_tracked_but_not_a_preemption_signal(self):
+        """resettingCount records the running max (for reporting) but does NOT set
+        the sticky preemption flag -- the controller resets on any failure."""
         monitor, _, _ = _make_monitor()
         monitor.custom_api = MagicMock()
         monitor.custom_api.get_namespaced_custom_object = AsyncMock(
             return_value={"status": {"phase": "Running", "resettingCount": 2}}
         )
-        assert monitor._preemption_observed is False
         await monitor._get_appwrapper_status()
-        assert monitor._preemption_observed is True
+        assert monitor._preemption_observed is False
         assert monitor._max_resets_seen == 2
 
         # A later poll with a lower/absent count must not lower the running max.
@@ -202,6 +201,29 @@ class TestPreemptionSignalTracking:
         )
         await monitor._get_appwrapper_status()
         assert monitor._max_resets_seen == 2
+
+    @pytest.mark.asyncio
+    async def test_preemption_event_sets_sticky_flag(self):
+        """A Preempted/Evicted K8s event flips the sticky preemption flag."""
+        monitor, _, _ = _make_monitor()
+        monitor.v1 = MagicMock()
+        event = MagicMock()
+        event.type = "Warning"
+        event.reason = "Preempted"
+        event.message = "Preempted by a higher priority pod"
+        event.involved_object.name = "gbtest-0"
+        event.involved_object.kind = "Pod"
+        event.metadata.uid = "uid-1"
+        event.last_timestamp = None
+        event.event_time = None
+        events_list = MagicMock()
+        events_list.items = [event]
+        monitor.v1.list_namespaced_event = AsyncMock(return_value=events_list)
+        monitor.launched_pods = {"gbtest-0": MagicMock()}
+
+        assert monitor._preemption_observed is False
+        await monitor._get_new_events([])
+        assert monitor._preemption_observed is True
 
     @pytest.mark.asyncio
     async def test_appwrapper_conditions_captured(self):
@@ -265,7 +287,9 @@ class TestPreemptionSignalTracking:
 
         assert data["max_retries"] == "3"  # G6: real retryLimit, not "unlimited"
         assert data["max_resets_seen"] == 1
-        assert data["preemption_observed"] is True
+        # No preemption event was seen, so the sticky flag stays False; the
+        # preemption signal here comes from the Kueue workload_conditions.
+        assert data["preemption_observed"] is False
         assert data["workload_conditions"] == [
             {
                 "workload_name": "wl-1",

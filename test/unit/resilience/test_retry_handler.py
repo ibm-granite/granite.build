@@ -645,15 +645,13 @@ class TestWorkloadStatusTerminalFailure:
 def create_preempted_failed_event(**overrides) -> BuildEvent:
     """A terminal AppWrapper 'Failed' snapshot caused by preemption.
 
-    Carries a durable preemption signal (a rising reset count) but no genuine
-    hard-failure reason -- the shape the classifier must judge transient.
+    Carries a durable preemption signal (the sticky preemption_observed flag) but
+    no genuine hard-failure reason -- the shape the classifier must judge transient.
     """
     data = {
         "appwrapper": "gbtest",
         "state": "Failed",
         "previous_state": "Running",
-        "current_resets": 3,
-        "max_resets_seen": 3,
         "preemption_observed": True,
         "workload_status": [],
         "events": [],
@@ -715,16 +713,26 @@ class TestPreemptionReclassification:
         assert handler.downstream_queue.qsize() == 1
 
     def test_preemption_within_ceiling_is_not_terminal(self: Self) -> None:
-        handler = self._handler(0, NeverRetryStrategy(), max_preemptions=20)
-        event = create_preempted_failed_event(current_resets=20, max_resets_seen=20)
-        assert handler._is_terminal_failure_event(event) is False
+        # The ceiling counts classifications cumulatively; up to the limit each is
+        # non-terminal.
+        handler = self._handler(0, NeverRetryStrategy(), max_preemptions=3)
+        for _ in range(3):
+            assert (
+                handler._is_terminal_failure_event(create_preempted_failed_event())
+                is False
+            )
+        assert handler.preemption_count == 3
 
     def test_preemption_over_ceiling_is_terminal(self: Self) -> None:
-        # A workload preempted past the ceiling fails with a clear reason rather
-        # than being treated as transient forever (no silent hang).
-        handler = self._handler(0, NeverRetryStrategy(), max_preemptions=20)
-        event = create_preempted_failed_event(current_resets=21, max_resets_seen=21)
-        assert handler._is_terminal_failure_event(event) is True
+        # Past the ceiling the workload fails with a clear reason rather than being
+        # treated as transient forever (no silent hang). Counting classifications
+        # (not resettingCount) means a pure Kueue-requeue loop trips it too.
+        handler = self._handler(0, NeverRetryStrategy(), max_preemptions=3)
+        for _ in range(3):
+            handler._is_terminal_failure_event(create_preempted_failed_event())
+        assert (
+            handler._is_terminal_failure_event(create_preempted_failed_event()) is True
+        )
 
     @pytest.mark.asyncio
     async def test_preemption_retries_when_enabled(self: Self) -> None:
