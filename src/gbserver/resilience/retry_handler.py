@@ -49,6 +49,7 @@ from gbserver.types.buildevent import (
     BuildLogLevel,
     create_message_event,
 )
+from gbserver.types.constants import GBSERVER_MAX_PREEMPTIONS
 from gbserver.types.errors import WorkloadFailedException
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
@@ -63,8 +64,9 @@ logger = get_logger(__name__)
 # Cumulative preemptions/requeues (AppWrapper resets) tolerated before a
 # repeatedly-preempted workload is failed with a clear reason rather than
 # treated as transient forever. Generous: preemption is normal, so this only
-# catches a workload that can never hold its capacity.
-DEFAULT_MAX_PREEMPTIONS = 20
+# catches a workload that can never hold its capacity. Overridable via the
+# GBSERVER_MAX_PREEMPTIONS env var, or per-environment via retry.max_preemptions.
+DEFAULT_MAX_PREEMPTIONS = GBSERVER_MAX_PREEMPTIONS
 
 
 def build_retry_strategies_from_config(
@@ -332,9 +334,12 @@ class RetryHandler:
         self.environment = environment
         self.max_retries = max_retries
         self.retry_count = 0
-        # A workload preempted/requeued this many times is failed with a clear
+        # Cumulative preemption/requeue classifications over this launch (survives
+        # relaunches, since the handler outlives the monitor's pause/unpause). A
+        # workload preempted more than max_preemptions times is failed with a clear
         # reason, so endless preemption surfaces instead of hanging silently.
         self.max_preemptions = max_preemptions
+        self.preemption_count = 0
         self.nodes_to_avoid: Set[str] = set()
 
         # Wrapper queue that monitors will publish to
@@ -743,19 +748,6 @@ class RetryHandler:
             return None
         return data if isinstance(data, dict) else None
 
-    def _observed_preemptions(self: Self, data: dict) -> int:
-        """Cumulative preemptions for this launch: the AppWrapper's own reset
-        count (``max_resets_seen``, running max of ``resettingCount``), which is
-        exactly how many times the controller restarted the pods in place."""
-        for key in ("max_resets_seen", "current_resets"):
-            try:
-                value = int(data.get(key))  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                continue
-            if value:
-                return value
-        return 0
-
     def _is_live_nonterminal_state(self: Self, event: BuildEvent) -> bool:
         """
         Report whether the event shows the workload is still live / non-terminal.
@@ -830,13 +822,17 @@ class RetryHandler:
             and classify_appwrapper_failure(data)
             == AppWrapperVerdict.TRANSIENT_PREEMPTION
         ):
-            preemptions = self._observed_preemptions(data)
-            if preemptions > self.max_preemptions:
+            # Count every preemption classification (this method runs once per
+            # event), so the ceiling engages for any preemption signal -- Kueue
+            # requeue included -- not just those that bump the AppWrapper reset
+            # count, and accumulates across relaunches.
+            self.preemption_count += 1
+            if self.preemption_count > self.max_preemptions:
                 logger.error(
                     "[RetryHandler launch_id %s] Workload preempted %d times "
                     "(> max_preemptions=%d); failing.",
                     self.launch_id,
-                    preemptions,
+                    self.preemption_count,
                     self.max_preemptions,
                 )
                 return True
@@ -844,7 +840,7 @@ class RetryHandler:
                 "[RetryHandler launch_id %s] AppWrapper Failed classified as "
                 "transient preemption (%d/%d); not terminal.",
                 self.launch_id,
-                preemptions,
+                self.preemption_count,
                 self.max_preemptions,
             )
             return False

@@ -81,17 +81,17 @@ PREEMPTION_MESSAGE_SUBSTRINGS = ("preempt", "evict")
 # Kueue Workload condition types that indicate an interruption/requeue.
 PREEMPTION_WORKLOAD_CONDITIONS = {"Evicted", "Preempted"}
 
-# Event reasons that indicate a genuine, non-preemption terminal failure that
-# the AppWrapper controller will not (usefully) retry. These win over any
-# preemption signal.
-HARD_FAILURE_EVENT_REASONS = {
-    "CrashLoopBackOff",
-    "ErrImagePull",
-    "ImagePullBackOff",
-    "InvalidImageName",
-    "OOMKilled",
-    "OOMKilling",
-}
+# Reason tokens (lower-cased) that indicate a genuine, non-preemption terminal
+# failure the controller won't usefully retry. Matched as substrings because the
+# monitor records composite reasons like "container failed with exit code 137;
+# reason: OOMKilled".
+HARD_FAILURE_REASON_TOKENS = (
+    "crashloopbackoff",
+    "errimagepull",
+    "imagepullbackoff",
+    "invalidimagename",
+    "oomkill",  # covers OOMKilled / OOMKilling
+)
 
 
 def _event_indicates_preemption(ev: Dict[str, Any]) -> bool:
@@ -136,65 +136,65 @@ def _workload_conditions_have_preemption(
     return False
 
 
+def _reason_is_preemption(reason: str) -> bool:
+    return reason in PREEMPTION_EVENT_REASONS or any(
+        sub in reason.lower() for sub in PREEMPTION_MESSAGE_SUBSTRINGS
+    )
+
+
+def _reason_is_hard_failure(reason: str) -> bool:
+    return any(tok in reason.lower() for tok in HARD_FAILURE_REASON_TOKENS)
+
+
 def _has_hard_terminal_failure(data: Dict[str, Any]) -> bool:
     """True if the snapshot carries evidence of a genuine, non-preemption failure.
 
     Two shapes are checked:
 
-    * a ``failed_pods`` entry whose collected ``failure-reason`` names a hard,
-      non-retriable reason (image pull, OOM, crash-loop) that is *not* itself a
-      preemption; or
-    * an event with a reason in :data:`HARD_FAILURE_EVENT_REASONS` that is not a
-      preemption event.
+    * a ``failed_pods`` entry whose composite ``failure-reason`` contains a hard,
+      non-retriable token (image pull, OOM, crash-loop) and no preemption token; or
+    * an event with such a reason that is not a preemption event.
     """
     for pod_status in (data.get("failed_pods") or {}).values():
         reason = (pod_status.get("failure-reason") or "").strip()
-        if not reason:
-            continue
-        if reason in PREEMPTION_EVENT_REASONS:
-            continue
-        if reason in HARD_FAILURE_EVENT_REASONS:
+        if (
+            reason
+            and _reason_is_hard_failure(reason)
+            and not _reason_is_preemption(reason)
+        ):
             return True
 
     for ev in data.get("events", []) or []:
         reason = (ev.get("reason") or "").strip()
-        if reason in HARD_FAILURE_EVENT_REASONS and not _event_indicates_preemption(ev):
+        if (
+            reason
+            and _reason_is_hard_failure(reason)
+            and not _event_indicates_preemption(ev)
+        ):
             return True
     return False
 
 
 def _has_preemption_signal(data: Dict[str, Any]) -> bool:
-    """True if the snapshot carries any durable or ephemeral preemption signal.
+    """True if the snapshot carries a preemption-specific signal.
 
-    Checked, in rough order of durability:
+    Only signals that are actually preemption-specific count. In particular the
+    AppWrapper ``resettingCount`` is deliberately NOT one: the controller resets
+    pods in place on *any* failure (a crash as much as an eviction), so treating a
+    rising reset count as preemption would mask a repeatedly-crashing workload.
 
     * ``preemption_observed`` -- a sticky flag the monitor sets the first time it
-      *ever* sees a preemption event or a rising reset count this launch, so the
-      signal survives even if the causal K8s events have aged out by the terminal
-      snapshot (the failure mode that motivated this change);
-    * a Kueue Workload ``Evicted``/``Preempted`` condition or ``requeueState``;
-    * ``max_resets_seen`` / ``current_resets`` > 0 -- the AppWrapper controller
-      did in-place resets, which only happens on interruption;
+      sees a Preempted/Evicted event this launch, so the signal survives even if
+      the causal K8s events have aged out by the terminal snapshot;
+    * a Kueue Workload ``Evicted``/``Preempted`` condition or ``requeueState``
+      (persists on the object, doesn't age out);
     * a Preempted/Evicted K8s event in the current snapshot.
     """
-    if data.get("preemption_observed"):
-        return True
-    if _workload_conditions_have_preemption(data.get("workload_status", [])):
-        return True
-    if _int(data.get("max_resets_seen")) > 0 or _int(data.get("current_resets")) > 0:
-        return True
-    if _events_have_preemption(data.get("events", []) or []):
-        return True
-    return False
-
-
-def _int(value: Any) -> int:
-    """Best-effort int coercion; non-numeric/None -> 0 (the payload's
-    ``current_resets`` can be an int, and ``max_retries`` may be a string)."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+    return bool(
+        data.get("preemption_observed")
+        or _workload_conditions_have_preemption(data.get("workload_status", []))
+        or _events_have_preemption(data.get("events", []) or [])
+    )
 
 
 def classify_appwrapper_failure(
@@ -226,11 +226,8 @@ def classify_appwrapper_failure(
     if _has_preemption_signal(data):
         logger.info(
             "AppWrapper %s Failed with a preemption/requeue signal; classifying "
-            "TRANSIENT_PREEMPTION (current_resets=%s, max_resets_seen=%s, "
-            "preemption_observed=%s)",
+            "TRANSIENT_PREEMPTION (preemption_observed=%s)",
             data.get("appwrapper", "<unknown>"),
-            data.get("current_resets"),
-            data.get("max_resets_seen"),
             data.get("preemption_observed"),
         )
         return AppWrapperVerdict.TRANSIENT_PREEMPTION

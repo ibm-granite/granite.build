@@ -43,11 +43,11 @@ class PodEvictionRetryStrategy(RetryStrategy):
     (:func:`classify_appwrapper_failure`) judges a ``Failed`` AppWrapper snapshot
     to be a transient preemption/eviction/requeue -- i.e. normal Kueue lifecycle
     churn rather than a workload failure. The classifier draws on durable signals
-    (Kueue Workload ``Evicted``/``Preempted`` conditions, the AppWrapper
-    ``resettingCount``, and a sticky "preemption observed this launch" flag), so
-    detection no longer depends on the causal K8s events still being present in
-    the terminal snapshot -- they age out of the ~1h event window well before the
-    AppWrapper exhausts its own retryLimit and lands in ``Failed``.
+    (Kueue Workload ``Evicted``/``Preempted`` conditions and ``requeueState``, and
+    a sticky "preemption observed this launch" flag), so detection no longer
+    depends on the causal K8s events still being present in the terminal snapshot
+    -- they age out of the ~1h event window well before the AppWrapper exhausts
+    its own retryLimit and lands in ``Failed``.
 
     Unlike mount failures, evictions typically don't require node avoidance since
     the eviction is usually due to resource pressure or higher-priority workloads,
@@ -132,6 +132,9 @@ class PodEvictionRetryStrategy(RetryStrategy):
             logger.debug("Could not parse event for retry evaluation: %s", e)
             return False
 
+        if not isinstance(data, dict):
+            return False
+
         # Only retry workloads that were interrupted mid-run (a workload that
         # never reached Running failed for a different reason).
         previous_state = data.get("previous_state", "")
@@ -144,8 +147,8 @@ class PodEvictionRetryStrategy(RetryStrategy):
 
         # Delegate the transient-vs-terminal decision to the shared classifier,
         # which reads durable preemption signals (Kueue Workload conditions,
-        # resettingCount, sticky preemption flag) rather than requiring the
-        # causal K8s events to still be present in this snapshot.
+        # requeueState, a sticky preemption flag) rather than requiring the causal
+        # K8s events to still be present in this snapshot.
         should_retry = (
             classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION
         )
@@ -153,10 +156,9 @@ class PodEvictionRetryStrategy(RetryStrategy):
         if should_retry:
             logger.info(
                 "Conditions met for preemption retry: state=%s, previous_state=%s, "
-                "current_resets=%s, max_resets_seen=%s, object_types=%s",
+                "max_resets_seen=%s, object_types=%s",
                 data.get("state"),
                 previous_state,
-                data.get("current_resets"),
                 data.get("max_resets_seen"),
                 self.object_types,
             )
