@@ -81,16 +81,12 @@ class TestClassifyAppWrapperFailure:
             == AppWrapperVerdict.TRANSIENT_PREEMPTION
         )
 
-    def test_resets_seen(self) -> None:
+    def test_reset_count_alone_is_not_preemption(self) -> None:
+        # resettingCount bumps on any failure (crashes included), so it is not a
+        # preemption signal on its own: a bare Failed with only resets is UNKNOWN.
         assert (
-            classify_appwrapper_failure(_failed(max_resets_seen=2))
-            == AppWrapperVerdict.TRANSIENT_PREEMPTION
-        )
-
-    def test_current_resets(self) -> None:
-        assert (
-            classify_appwrapper_failure(_failed(current_resets=1))
-            == AppWrapperVerdict.TRANSIENT_PREEMPTION
+            classify_appwrapper_failure(_failed(max_resets_seen=2, current_resets=2))
+            == AppWrapperVerdict.UNKNOWN
         )
 
     def test_preemption_via_pod_event(self) -> None:
@@ -168,14 +164,26 @@ class TestClassifyAppWrapperFailure:
             classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION
         )
 
-    def test_mixed_reset_count_and_hard_pod_is_transient(self) -> None:
+    def test_reset_count_with_hard_pod_is_terminal(self) -> None:
+        # Resets are not a preemption signal, so a hard pod failure with only
+        # resets (no preemption event/condition) is a genuine crash.
         data = _failed(
             current_resets=2,
             failed_pods={"pod-1": {"failure-reason": "OOMKilled", "logs": {}}},
         )
-        assert (
-            classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION
+        assert classify_appwrapper_failure(data) == AppWrapperVerdict.TERMINAL_FAILURE
+
+    def test_composite_failure_reason_is_terminal(self) -> None:
+        # The monitor records a composite reason; substring matching must catch it.
+        data = _failed(
+            failed_pods={
+                "pod-1": {
+                    "failure-reason": "trainer failed with exit code 137; reason: OOMKilled",
+                    "logs": {},
+                }
+            }
         )
+        assert classify_appwrapper_failure(data) == AppWrapperVerdict.TERMINAL_FAILURE
 
     def test_preemption_failure_reason_on_pod_is_not_hard_terminal(self) -> None:
         # A failed pod whose reason is itself a preemption must not count as a
