@@ -652,6 +652,39 @@ export interface Trial {
   updated_at: string;
 }
 
+// One `training_metrics` row from GET /jobs/{id}/metrics (and its per-trial
+// sibling). Three different kinds of row share this shape, and which fields
+// carry numbers depends on the kind — see `splitMetricRows` in
+// `@/components/trialMetrics`:
+//
+//   train step  split='train', loss/grad_norm/learning_rate set, `extra` empty
+//   eval        split='eval',  those three null, numbers in `extra.eval_loss` etc
+//   summary     split='train', those three null, `extra.train_loss`/`total_flos`
+//
+// So a null `loss` means "this is not a step row", never "the value is missing".
+export interface MetricPoint {
+  id: number;
+  trial_id?: string | null;
+  global_step: number;
+  epoch?: number | null;
+  loss?: number | null;
+  grad_norm?: number | null;
+  learning_rate?: number | null;
+  split: string;
+  extra?: Record<string, number> | null;
+  created_at?: string | null;
+}
+
+// One ascending keyset page of `MetricPoint`s, oldest first. Unlike the
+// offset-paginated list envelopes, paging walks `nextAfterId` forward — which is
+// what makes polling a running job cheap: ask for `after_id = highest id seen`
+// and only new rows come back.
+export interface MetricPage {
+  metrics: MetricPoint[];
+  hasMore: boolean;
+  nextAfterId: number | null;
+}
+
 // One downloadable output file from GET /jobs/{id}/result-report (the AutoTuneX
 // `AssetSummary`, computed on read from the job's artifact source). `path` is
 // the download key — filenames repeat across trial subdirectories, so the

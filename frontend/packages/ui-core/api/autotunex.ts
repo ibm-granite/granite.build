@@ -29,6 +29,8 @@ import type {
   ListParams,
   ListResult,
   LogEntry,
+  MetricPage,
+  MetricPoint,
   ModelSource,
   PendingConfigData,
   PendingConfigUpdate,
@@ -48,6 +50,7 @@ import {
   adaptJob,
   adaptSuggestion,
   adaptTrial,
+  collectKeysetPages,
   collectPages,
   pageQuery,
   toListResult,
@@ -57,7 +60,7 @@ import {
 // keeps working for tests/consumers — the implementations live in
 // `@/api/autotunexAdapters` purely so that leaf module stays free of
 // non-type-only imports (see its header comment for why that matters).
-export { adaptAsset, adaptConfiguration, adaptJob, adaptSuggestion, adaptTrial, collectPages, pageQuery, toListResult }
+export { adaptAsset, adaptConfiguration, adaptJob, adaptSuggestion, adaptTrial, collectKeysetPages, collectPages, pageQuery, toListResult }
 
 const client = axios.create({ baseURL: autotunexApiBase('') })
 
@@ -445,6 +448,60 @@ export async function getTrialLogs(
     hasMore: Boolean(data.has_more),
     nextBeforeId: data.next_before_id ?? null,
   }
+}
+
+// ── Per-step metrics ─────────────────────────────────────────────────────────
+// GET /jobs/{id}/metrics and its per-trial sibling return an *ascending* keyset
+// page (`after_id`), the opposite direction from the log endpoints above, which
+// page backwards from the newest entry (`before_id`). Ascending is what a chart
+// wants — and asking for `after_id = highest id already held` makes polling a
+// running job cost one small page per tick instead of a full refetch.
+//
+// `limit` is server-capped at 2000 (higher returns 422). Row shaping lives in
+// `@/components/trialMetrics`; these functions only reshape the page envelope.
+
+export interface MetricPageOptions {
+  afterId?: number
+  limit?: number
+  scope?: Scope
+}
+
+function adaptMetricPage(data: {
+  metrics?: MetricPoint[]
+  has_more?: boolean
+  next_after_id?: number | null
+}): MetricPage {
+  return {
+    metrics: data.metrics ?? [],
+    hasMore: Boolean(data.has_more),
+    nextAfterId: data.next_after_id ?? null,
+  }
+}
+
+export async function getJobMetrics(jobId: string, opts?: MetricPageOptions): Promise<MetricPage> {
+  const { data } = await client.get(`/jobs/${jobId}/metrics`, {
+    params: {
+      after_id: opts?.afterId ?? 0,
+      limit: opts?.limit ?? 500,
+      scope: opts?.scope ?? 'own',
+    },
+  })
+  return adaptMetricPage(data ?? {})
+}
+
+export async function getTrialMetrics(
+  jobId: string,
+  trialId: string,
+  opts?: MetricPageOptions
+): Promise<MetricPage> {
+  const { data } = await client.get(`/jobs/${jobId}/trials/${trialId}/metrics`, {
+    params: {
+      after_id: opts?.afterId ?? 0,
+      limit: opts?.limit ?? 500,
+      scope: opts?.scope ?? 'own',
+    },
+  })
+  return adaptMetricPage(data ?? {})
 }
 
 // New in v0.3.5 — raw GB build logs for the job's underlying build, not paginated

@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import {
   DataTable,
   Table,
@@ -33,6 +33,9 @@ import { listSpaces } from '../api/gbserver'
 import { TrialLogViewer } from './TrialLogViewer'
 import { TrialCompare } from './TrialCompare'
 import { TrialProgressSummary } from './TrialProgressSummary'
+import { TrialMetricsCharts } from './TrialMetricsCharts'
+import { TrialMetricsPanel } from './TrialMetricsPanel'
+import { bestTrialId, trialColorScale } from './trialMetrics'
 import type { JobDetail, Trial } from '../types'
 
 const HEADERS = [
@@ -132,6 +135,17 @@ export function TrialsTable({ job }: Props) {
     refetchInterval: ACTIVE_STATUSES.has(job.status) ? 15_000 : false,
   })
 
+  // One colour per run, assigned by creation order and keyed by id, so the
+  // charts above and a row's own Metrics tab agree — and so hiding a series in
+  // the chart legend never repaints the others. Built here rather than in either
+  // consumer because both need the identical map.
+  const colorScale = useMemo(() => {
+    const ordered = [...trials]
+      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+      .map((t) => t.id)
+    return trialColorScale(ordered, bestTrialId(trials), theme)
+  }, [trials, theme])
+
   if (isLoading) {
     return <InlineLoading description="Loading trials…" />
   }
@@ -150,9 +164,21 @@ export function TrialsTable({ job }: Props) {
   if (trials.length === 0) {
     // Still show progress here when the job declared a planned total: "12 queued"
     // before any trial row exists is exactly what users were missing.
+    //
+    // The charts still render: a run with no search trials (a plain tuning job,
+    // or an HPO run whose trials have not been written yet) can already be
+    // logging steps, and `derivePhases` attributes those rows to the single
+    // training run — which is exactly what they are.
     return (
       <div>
         <TrialProgressSummary job={job} trials={trials} />
+        <TrialMetricsCharts
+          job={job}
+          trials={trials}
+          trialsLoaded={!isLoading && !isError}
+          colorScale={colorScale}
+          scope={scope}
+        />
         <InlineNotification kind="info" title="No trial data available" hideCloseButton />
       </div>
     )
@@ -214,6 +240,13 @@ export function TrialsTable({ job }: Props) {
   return (
     <div>
       <TrialProgressSummary job={job} trials={trials} />
+      <TrialMetricsCharts
+        job={job}
+        trials={trials}
+        trialsLoaded={!isLoading && !isError}
+        colorScale={colorScale}
+        scope={scope}
+      />
       {canOpenCompare && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '0.5rem' }}>
           <Button size="sm" onClick={() => setShowCompare(true)}>
@@ -291,10 +324,20 @@ export function TrialsTable({ job }: Props) {
                       <TableExpandedRow {...getExpandedRowProps({ row })} colSpan={headers.length + 2}>
                         <Tabs>
                           <TabList aria-label="Trial detail tabs" contained>
+                            <Tab>Metrics</Tab>
                             <Tab>Logs</Tab>
                             <Tab>Configuration</Tab>
                           </TabList>
                           <TabPanels>
+                            <TabPanel>
+                              <TrialMetricsPanel
+                                jobId={jobId}
+                                trialId={trial.id}
+                                status={trial.status}
+                                color={colorScale[trial.id]}
+                                scope={scope}
+                              />
+                            </TabPanel>
                             <TabPanel>
                               <TrialLogViewer jobId={jobId} trialId={trial.id} status={trial.status} />
                             </TabPanel>
