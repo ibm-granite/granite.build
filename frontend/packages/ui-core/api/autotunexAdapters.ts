@@ -74,6 +74,43 @@ export async function collectPages<T>(
   return out
 }
 
+/**
+ * Drains an ascending keyset endpoint (`{metrics, has_more, next_after_id}`) from
+ * `fromId` forward into one array.
+ *
+ * `collectPages` above cannot express this: it walks an offset and trusts a
+ * `total`, whereas here paging follows a cursor the server hands back and there
+ * is no total. Keyset is what makes polling a live job cheap — pass the highest
+ * id already held as `fromId` and only genuinely new rows come back, instead of
+ * refetching the whole run every tick.
+ *
+ * `fetchPage` is injected for the same reason as in `collectPages`: this module
+ * stays free of runtime imports so tests can `require()` it directly.
+ *
+ * Termination, in order:
+ *  1. `has_more` false, or no `next_after_id` — the server says that was the end.
+ *  2. A cursor that fails to advance, which would otherwise spin forever.
+ *  3. `maxPages`, a backstop so a job with pathologically many rows cannot hang
+ *     the tab. Hitting it means the caller renders a truncated (oldest-first)
+ *     view, which is why the cap is generous rather than tight.
+ */
+export async function collectKeysetPages<T>(
+  fetchPage: (afterId: number) => Promise<{ items: T[]; hasMore: boolean; nextAfterId: number | null }>,
+  fromId = 0,
+  maxPages = 20
+): Promise<T[]> {
+  const out: T[] = []
+  let afterId = fromId
+  for (let page = 0; page < maxPages; page++) {
+    const { items, hasMore, nextAfterId } = await fetchPage(afterId)
+    out.push(...items)
+    if (!hasMore || nextAfterId == null) break
+    if (nextAfterId <= afterId) break
+    afterId = nextAfterId
+  }
+  return out
+}
+
 // ── Trials ───────────────────────────────────────────────────────────────────────
 
 export function adaptTrial(raw: Record<string, unknown>): Trial {
