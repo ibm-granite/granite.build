@@ -37,10 +37,9 @@ config:
         #IdentityKey: BV_SSH_PRIVATE_KEY
         IdentitiesOnly: "yes"
 
-  # Inline LSF behavioral config. gbserver writes this to a per-process file and
-  # points SKYPILOT_PROJECT_CONFIG at it, so SkyPilot merges it over the API
-  # server's config as a per-request override at launch (no ~/.sky/config.yaml
-  # needed on the host).
+  # Inline LSF behavioral config. gbserver deep-merges this into the API server's
+  # ~/.sky/config.yaml at launch (see merge_cloud_config): the env's values win
+  # and unrelated keys are preserved.
   cloud_config:
     lsf:
       allowed_clusters:

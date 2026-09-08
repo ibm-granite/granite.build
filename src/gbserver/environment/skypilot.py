@@ -997,10 +997,10 @@ class Skypilot(Environment):
 
         Reads ``cloud_config`` / ``aws_credentials`` from the environment's
         free-form ``config`` block and delegates to ``skypilot_config.materialize``
-        (with ``ssh=None``), which writes the per-request
-        ``SKYPILOT_PROJECT_CONFIG`` override and ``~/.aws/credentials``. No-op when
-        neither is present. Idempotent via an instance flag, so retry relaunches
-        are free.
+        (with ``ssh=None``), which deep-merges ``cloud_config`` into the API
+        server's ``~/.sky/config.yaml`` (env values win) and writes
+        ``~/.aws/credentials``. No-op when neither is present. Idempotent via an
+        instance flag, so retry relaunches are free.
 
         The SSH config is deliberately NOT materialized here: it is merged
         per-launch by :meth:`_prepare_ssh_for_launch`, which also handles the
