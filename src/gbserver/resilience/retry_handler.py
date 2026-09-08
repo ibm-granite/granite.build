@@ -39,17 +39,12 @@ import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar, Dict, List, Optional, Self, Set, Type
 
-from gbserver.resilience.appwrapper_classifier import (
-    AppWrapperVerdict,
-    classify_appwrapper_failure,
-)
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventType,
     BuildLogLevel,
     create_message_event,
 )
-from gbserver.types.constants import GBSERVER_MAX_PREEMPTIONS
 from gbserver.types.errors import WorkloadFailedException
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
@@ -60,13 +55,6 @@ if TYPE_CHECKING:
     from gbserver.types.buildevent import EntityRunMetadata
 
 logger = get_logger(__name__)
-
-# Cumulative preemptions/requeues (AppWrapper resets) tolerated before a
-# repeatedly-preempted workload is failed with a clear reason rather than
-# treated as transient forever. Generous: preemption is normal, so this only
-# catches a workload that can never hold its capacity. Overridable via the
-# GBSERVER_MAX_PREEMPTIONS env var, or per-environment via retry.max_preemptions.
-DEFAULT_MAX_PREEMPTIONS = GBSERVER_MAX_PREEMPTIONS
 
 
 def build_retry_strategies_from_config(
@@ -252,6 +240,29 @@ class RetryStrategy(ABC):
         """
         raise NotImplementedError("Subclasses must implement should_retry()")
 
+    def veto_terminal(
+        self: Self,
+        _event: BuildEvent,
+    ) -> bool:
+        """
+        Report whether this strategy vetoes treating the event as a terminal
+        failure -- i.e. the event looks like a failure to the generic engine but
+        the strategy knows it is a transient interruption that must not fail the
+        build (even when retries are disabled or exhausted).
+
+        This is the environment-agnostic extension point for "don't fail on this":
+        the engine consults it in every terminal path so environment-specific
+        transient-vs-terminal knowledge lives here, not in the core. Default:
+        no veto.
+
+        Args:
+            _event: BuildEvent from the monitor (unused in base implementation)
+
+        Returns:
+            bool: True to suppress the terminal verdict for this event.
+        """
+        return False
+
     def extract_nodes_to_avoid(
         self: Self,
         _event: BuildEvent,
@@ -325,7 +336,6 @@ class RetryHandler:
         build_id: Optional[str] = None,
         entityrun_metadata: Optional["EntityRunMetadata"] = None,
         sleep_fn=None,
-        max_preemptions: int = DEFAULT_MAX_PREEMPTIONS,
     ) -> None:
         self.launch_id = launch_id
         self.build_id = build_id or launch_id  # Use launch_id as fallback
@@ -334,12 +344,6 @@ class RetryHandler:
         self.environment = environment
         self.max_retries = max_retries
         self.retry_count = 0
-        # Cumulative preemption/requeue classifications over this launch (survives
-        # relaunches, since the handler outlives the monitor's pause/unpause). A
-        # workload preempted more than max_preemptions times is failed with a clear
-        # reason, so endless preemption surfaces instead of hanging silently.
-        self.max_preemptions = max_preemptions
-        self.preemption_count = 0
         self.nodes_to_avoid: Set[str] = set()
 
         # Wrapper queue that monitors will publish to
@@ -452,10 +456,16 @@ class RetryHandler:
                 await self.downstream_queue.put(event)
 
                 # If terminal failure (or a retriable failure with no retries
-                # left) and no retry was triggered, raise to stop the build.
+                # left) and no retry was triggered, raise to stop the build --
+                # unless a strategy vetoes the terminal verdict (a transient
+                # interruption, e.g. preemption, that must not fail the build even
+                # with retries disabled/exhausted). The veto is checked on both
+                # terminal paths so the two cannot disagree.
                 if (
-                    is_terminal_failure or retries_exhausted_on_retriable
-                ) and not retry_triggered:
+                    (is_terminal_failure or retries_exhausted_on_retriable)
+                    and not retry_triggered
+                    and not self._terminal_vetoed(event)
+                ):
                     error_message = self._extract_failure_message(event)
                     logger.error(
                         "[RetryHandler launch_id %s] %s detected with no retry possible. Raising exception.",
@@ -792,13 +802,10 @@ class RetryHandler:
            ``state == "Failed"`` or ``state`` starting with ``"Exception:"`` — the
            K8s AppWrapper terminal shape.
 
-        A ``Failed`` AppWrapper snapshot caused by preemption/eviction/requeue is
-        normal Kueue lifecycle churn, not a workload failure, so it is not treated
-        as terminal -- this is what keeps the normal lifecycle from failing a step
-        even when step retries are disabled (``max_retries == 0``), since this
-        method's verdict is what makes ``process_events`` raise. The exception is
-        a workload preempted more than ``max_preemptions`` times, which is failed
-        with a clear reason so endless preemption cannot hang silently.
+        This is the generic, environment-agnostic terminal test. Environment-
+        specific "this failure is actually transient" knowledge (e.g. K8s/Kueue
+        preemption) is expressed by a strategy's ``veto_terminal``, applied by
+        ``process_events``, not here.
 
         Args:
             event: BuildEvent from the monitor
@@ -817,35 +824,18 @@ class RetryHandler:
         if data is None:
             return False
         state = data.get("state", "")
-        if (
-            state == "Failed"
-            and classify_appwrapper_failure(data)
-            == AppWrapperVerdict.TRANSIENT_PREEMPTION
-        ):
-            # Count every preemption classification (this method runs once per
-            # event), so the ceiling engages for any preemption signal -- Kueue
-            # requeue included -- not just those that bump the AppWrapper reset
-            # count, and accumulates across relaunches.
-            self.preemption_count += 1
-            if self.preemption_count > self.max_preemptions:
-                logger.error(
-                    "[RetryHandler launch_id %s] Workload preempted %d times "
-                    "(> max_preemptions=%d); failing.",
-                    self.launch_id,
-                    self.preemption_count,
-                    self.max_preemptions,
-                )
-                return True
-            logger.info(
-                "[RetryHandler launch_id %s] AppWrapper Failed classified as "
-                "transient preemption (%d/%d); not terminal.",
-                self.launch_id,
-                self.preemption_count,
-                self.max_preemptions,
-            )
-            return False
         # Terminal states that should stop the build
         return state == "Failed" or state.startswith("Exception:")
+
+    def _terminal_vetoed(self: Self, event: BuildEvent) -> bool:
+        """Report whether any strategy vetoes the terminal verdict for this event.
+
+        Lets an environment mark a failure-shaped event as a transient
+        interruption that must not fail the build. Checked on every terminal
+        path so the terminal decision has a single owner (the strategies) and the
+        engine's own terminal test cannot contradict it.
+        """
+        return any(strategy.veto_terminal(event) for strategy in self.strategies)
 
     def _extract_failure_message(self: Self, event: BuildEvent) -> str:
         """

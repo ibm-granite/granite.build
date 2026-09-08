@@ -835,10 +835,9 @@ GBSERVER_MONITORING_GRACE_PERIOD = int(
 GBSERVER_API_FAILURE_TIMEOUT = int(
     os.getenv(ENV_VAR_PREFIX + "_API_FAILURE_TIMEOUT", "300"), base=10
 )
-# Cumulative preemptions/requeues (AppWrapper in-place resets) tolerated before a
-# repeatedly-preempted workload is failed rather than treated as transient
-# forever. Used as the RetryHandler default; a build's retry.max_preemptions
-# config overrides it per environment.
+# Cumulative preemptions/requeues tolerated before a repeatedly-preempted
+# workload is allowed to fail rather than vetoed as transient. Default for
+# PodEvictionRetryStrategy.max_preemptions.
 GBSERVER_MAX_PREEMPTIONS = int(
     os.getenv(ENV_VAR_PREFIX + "_MAX_PREEMPTIONS", "20"), base=10
 )
