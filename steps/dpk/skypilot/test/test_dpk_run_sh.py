@@ -199,9 +199,10 @@ class TestDataLocalConfig:
         assert parsed["output_folder"] == str(target.resolve())
 
     def test_module_override_is_honoured(self, run_script):
+        """The script runs whatever module it is handed; the step derives it."""
         proc = run_script(
             "--module",
-            "dpk_x.ray.runtime",
+            "dpk_x.custom.runtime",
             "--input-path",
             "/i",
             "--output-path",
@@ -209,7 +210,7 @@ class TestDataLocalConfig:
             "--artifact-id",
             "a",
         )
-        assert _pyargs(proc.stdout)[:2] == ["-m", "dpk_x.ray.runtime"]
+        assert _pyargs(proc.stdout)[:2] == ["-m", "dpk_x.custom.runtime"]
 
 
 class TestOutputPathHandling:

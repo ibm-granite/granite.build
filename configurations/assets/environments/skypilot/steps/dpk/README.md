@@ -36,11 +36,10 @@ you name it, and the step derives the python module and the pip dependencies.
 | `args` | map | no | Transform flags, rendered in order as `--<key> '<value>'`. Keys are the **full flag name** as DPK spells it, without leading dashes. See [Transform flags](#transform-flags). |
 | `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match, and a path another target reads must be on the shared filesystem. See [When a downstream target reads the output](#when-a-downstream-target-reads-the-output). |
 | `validate` | bool | no | Check the transform's output before registering it. Default `false`. See [Validating output](#validating-output). |
-| `ray_enabled` | bool | no | Run on DPK's Ray runtime instead of pure python. Default `false`. See [Running on Ray](#running-on-ray). |
 | `dpk_version` | string | no | DPK release to install. Default `1.1.8`. Ignored when `dpk_image` is set. |
 | `dpk_image` | string | no | Container image to run in. Default `""` = the bare launcher node. See [Running in a container image](#running-in-a-container-image). |
 | `pip_index_url` | string | no | Index for the pip install. Default `https://pypi.org/simple`. |
-| `module` | string | no | Override the derived python module. An escape hatch — see [Running on Ray](#running-on-ray) for the case that needs it. |
+| `module` | string | no | Override the derived python module. An escape hatch for a transform whose runtime is not `dpk_<name>.runtime`; the derivation holds for every transform in DPK 1.1.8. |
 
 ## Per-transform DPK documentation
 
@@ -140,88 +139,40 @@ The step also auto-injects the launcher's data config, so you never write it:
 --data_local_config "{'input_folder': '<input>', 'output_folder': '<output_path>'}"
 ```
 
-## Running on Ray
+## Parallelism
 
-DPK's Ray runtime is faster than the pure-python one on large corpora. `ray_enabled: true`
-switches to it:
+The step runs DPK's **pure-python runtime**, always. For throughput, that runtime has its own
+multiprocessing pool, asked for through `args` like any other transform flag:
 
 ```yaml
 dpk_config:
   transform: ededup
   input: docs
   output: deduped
-  ray_enabled: true
+  args:
+    runtime_num_processors: 8
+compute_config:
+  # Size the node for the pool you asked for.
+  num_cpus_per_node: 8
 ```
-
-That one flag does the **three** things Ray needs, which is why it is a single flag rather
-than settings you have to keep in step — any subset of them fails on the node rather than at
-submit time:
-
-1. installs the `ray` pip extra *alongside* the transform's own;
-2. points the module at `dpk_<transform>.ray.runtime`;
-3. passes `--run_locally true`, so DPK starts a local Ray cluster. Its default is `false`,
-   which means "connect to an existing cluster at `ray://localhost:10001`" — and this step
-   provisions none, so without the flag the transform waits on a cluster nobody started.
-
-This runs Ray's local runtime on the step's own node. Provisioning a multi-node Ray cluster is
-SkyPilot's job rather than this step's, but the flags DPK exposes for sizing that local
-runtime are all reachable through `args` — see [Sizing the Ray runtime](#sizing-the-ray-runtime).
-
-### Sizing the Ray runtime
-
-DPK's Ray runtime takes four flags, and they go through `args` like any other transform flag.
-Verified against `data_processing_ray` in DPK 1.1.8 — this is the complete set:
 
 | Flag | Default | What it does |
 |---|---|---|
-| `runtime_num_workers` | `1` | Number of Ray actors. The main throughput knob — the default of **1** means one worker, so a Ray run with no `args` is not parallel. |
-| `runtime_worker_options` | `{'num_cpus': 0.8}` | Per-actor resources, as a python literal (`ast.literal_eval`). Accepts anything Ray's `.options()` takes: `num_cpus`, `num_gpus`, `memory`, `resources`, `scheduling_strategy`, … |
-| `runtime_creation_delay` | `0` | Seconds between actor creations. Useful when a heavyweight transform would otherwise stampede a cold cache. |
-| `run_locally` | set to `true` by `ray_enabled` | Start a local Ray cluster (`true`), or connect to an existing one (`false`) — see the limitation below. |
+| `runtime_num_processors` | `0` | Size of the `multiprocessing.Pool`. DPK gates on `> 0`, so **`0` means sequential** — and so does any negative value. There is no "use all cores" sentinel. |
 
-So a genuinely parallel run asks for workers explicitly:
+**The default is sequential, deliberately.** The step does not auto-size the pool, for two
+reasons:
 
-```yaml
-dpk_config:
-  transform: ededup
-  input: docs
-  output: deduped
-  ray_enabled: true
-  args:
-    runtime_num_workers: 8
-    runtime_worker_options: "{'num_cpus': 2}"
-compute_config:
-  # Size the NODE to fit the actors — 8 workers x 2 CPUs needs 16 available.
-  num_cpus_per_node: 16
-```
+* **Peak memory scales with the pool.** Each worker is a process with its own copy of the
+  transform's models — `pii_redactor` loads flair and presidio — so an auto-sized default
+  would turn a working build into an OOM on the same node.
+* **The machine's core count is not your allocation.** Under a scheduler these differ:
+  measured inside a 2-CPU `srun` allocation on the local SLURM cluster,
+  `SLURM_CPUS_ON_NODE=2` while `nproc` reported `6`. Auto-sizing from the machine would
+  oversubscribe 3x and slow everyone down, including you.
 
-`runtime_worker_options` is a quoted python literal, exactly like `pii_redactor`'s entity
-list: the step's `args` quoting delivers it to `ast.literal_eval` intact.
-
-> **`run_locally: false` can only reach a Ray cluster on localhost.** DPK 1.1.8's
-> `RayTransformLauncher` calls `ray.init("ray://localhost:10001")` on that path — a hardcoded
-> address, with no host or port argument anywhere in `data_processing_ray`. So setting
-> `run_locally: false` does not point the transform at a remote cluster; it points it at port
-> 10001 on the node it is already running on, which this step does not start. That is a DPK
-> limitation rather than a step one, and connecting to an external Ray cluster is therefore
-> not something this step can offer today.
-
-> **`ray_enabled` has no cluster test.** It is covered by render tests only — starting a Ray
-> cluster inside the local Docker SLURM container (`RealMemory=1024`) is not something the
-> test cluster can do reliably. Treat the first real Ray run as unproven.
-
-> **Not every transform exposes `ray.runtime` in DPK 1.1.8.** 32 of the 43 data transforms
-> do. The others either name their Ray entrypoint `ray.transform` (`code_profiler`,
-> `doc_chunk`, `doc_quality`, `fdedup`, `hap`, `html2parquet`, `lang_id`) or ship no Ray
-> package at all (`bloom`, `folder2parquet`, `web2parquet`, `similarity`). DPK is
-> normalising these upstream, so the step derives by rule rather than carrying a list that
-> would go stale. For one of those transforms, set `module` explicitly:
->
-> ```yaml
->   transform: lang_id
->   ray_enabled: true
->   module: dpk_lang_id.ray.transform   # until DPK normalises this
-> ```
+So pick a number, and size `compute_config.num_cpus_per_node` to match. Start small for a
+model-heavy transform.
 
 ## Running in a container image
 
@@ -299,6 +250,10 @@ the transform name. Roughly 40% of transforms use an arbitrary abbreviation:
 So the step passes your keys through verbatim rather than guessing. Get the flag names from
 [the transform's DPK documentation](#per-transform-dpk-documentation) or from
 `python -m dpk_<name>.runtime --help`, which is authoritative when the two disagree.
+
+Not every `args` key is transform-specific: DPK's **runtime** flags go through the same
+channel and apply to any transform. `runtime_num_processors` is the one worth knowing — see
+[Parallelism](#parallelism).
 
 Value handling: every value renders as `--flag 'value'`, booleans included —
 `true`/`false` become `--flag 'true'`/`--flag 'false'`. DPK declares its boolean arguments

@@ -246,13 +246,36 @@ class TestDerivations:
         assert "==1.1.7'" in _render(launcher["setup"], cfg)
 
     def test_module_override_wins(self, launcher, defaults):
-        """Needed for the *.ray.runtime variants."""
-        cfg = _transform_cfg(defaults, module="dpk_tokenization2arrow.ray.runtime")
+        """The escape hatch, for a transform DPK has not kept on the rule."""
+        cfg = _transform_cfg(defaults, module="dpk_doc_quality.something_else")
         argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _opt(argv, "--module") == "dpk_tokenization2arrow.ray.runtime"
+        assert _opt(argv, "--module") == "dpk_doc_quality.something_else"
 
-    def test_ray_is_not_installed_by_default(self, launcher, defaults):
-        assert defaults["ray_enabled"] is False
+
+class TestPurePythonIsTheOnlyRuntime:
+    """The step runs DPK's pure-python runtime, always. There is no Ray mode.
+
+    Ray was evaluated and removed: DPK 1.1.8's Ray launcher only ever calls
+    ray.init("ray://localhost:10001") — a hardcoded address with no host/port
+    argument — so it cannot reach a real cluster, and provisioning one per step is
+    out of this step's scope. Throughput comes from the pure-python runtime's own
+    multiprocessing pool instead, reached through `args`.
+
+    These are guards against the mode being reintroduced by halves, which is how it
+    caused trouble before: an extra without a module, or a module without its flag.
+    """
+
+    def test_no_ray_field_remains(self, defaults):
+        assert "ray_enabled" not in defaults
+
+    def test_the_module_is_always_the_pure_python_runtime(self, launcher, defaults):
+        argv = _script_argv(
+            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
+        )
+        assert _opt(argv, "--module") == "dpk_tokenization2arrow.runtime"
+
+    def test_the_ray_extra_is_never_installed(self, launcher, defaults):
+        """The transform's own extra is the whole dependency set."""
         argv = _script_argv(
             _render(launcher["setup"], _transform_cfg(defaults)), "setup"
         )
@@ -260,76 +283,57 @@ class TestDerivations:
             "data-prep-toolkit-transforms[tokenization2arrow]==1.1.8"
         ]
 
-    def test_ray_enabled_adds_the_ray_extra_alongside_the_derived_one(
-        self, launcher, defaults
-    ):
-        """Additive: the transform's own extra carries its real dependencies."""
-        cfg = _transform_cfg(defaults, transform="pii_redactor", ray_enabled=True)
-        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
-        assert _passthrough(argv) == [
-            "data-prep-toolkit-transforms[pii-redactor,ray]==1.1.8"
-        ]
-
-    def test_ray_enabled_also_switches_the_module(self, launcher, defaults):
-        """Ray needs the extra AND the .ray.runtime module — one flag sets both."""
-        cfg = _transform_cfg(defaults, ray_enabled=True)
-        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _opt(argv, "--module") == "dpk_tokenization2arrow.ray.runtime"
-
-    def test_ray_disabled_uses_the_pure_python_runtime(self, launcher, defaults):
-        argv = _script_argv(
-            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
-        )
-        assert _opt(argv, "--module") == "dpk_tokenization2arrow.runtime"
-
-    def test_ray_enabled_also_passes_run_locally_true(self, launcher, defaults):
-        """The THIRD thing Ray needs, and the one easiest to miss.
-
-        DPK's Ray launcher defaults --run_locally to FALSE, which means
-        ray.init("ray://localhost:10001") — connect to an EXISTING cluster. This step
-        provisions none, so without the flag the transform waits on a cluster nobody
-        started. Local is the only mode that can work here.
-        """
-        cfg = _transform_cfg(defaults, ray_enabled=True)
-        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _passthrough(argv) == ["--run_locally", "true"]
-
-    def test_run_locally_is_not_passed_without_ray(self, launcher, defaults):
-        """It is a Ray-launcher flag; the pure-python launcher does not accept it."""
+    def test_run_locally_is_never_injected(self, launcher, defaults):
+        """A Ray-launcher flag the pure-python launcher does not accept."""
         argv = _script_argv(
             _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
         )
         assert "--run_locally" not in argv
 
-    def test_run_locally_precedes_the_user_args(self, launcher, defaults):
-        """Ordering is the contract: argparse takes the LAST occurrence."""
-        cfg = _transform_cfg(defaults, ray_enabled=True, args={"tkn_chunk_size": 0})
+    def test_nothing_renders_a_ray_module(self, launcher, defaults):
+        """No config combination may derive a .ray.runtime module."""
+        for kw in ({}, {"dpk_image": "quay.io/o/i:1"}, {"validate": True}):
+            rendered = _render(
+                launcher["run"], _transform_cfg(defaults, **kw), _BINDINGS
+            )
+            assert ".ray.runtime" not in rendered
+
+
+class TestParallelismIsATransformFlag:
+    """Throughput is `args: {runtime_num_processors: N}`, not a step field.
+
+    DPK's pure-python runtime declares --runtime_num_processors (type=int,
+    default=0) and gates on `num_processors > 0`, using multiprocessing.Pool above
+    that and sequential execution otherwise.
+    """
+
+    def test_no_pool_flag_is_sent_by_default(self, launcher, defaults):
+        """Sequential by default — DPK's own behaviour, nothing injected."""
+        argv = _script_argv(
+            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
+        )
+        assert not any("runtime_num_processors" in a for a in argv)
+
+    def test_the_pool_size_passes_through_args(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, args={"runtime_num_processors": 8})
         flags = _passthrough(
             _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         )
-        assert flags == ["--run_locally", "true", "--tkn_chunk_size", "0"]
+        assert flags == ["--runtime_num_processors", "8"]
 
-    def test_module_override_wins_over_ray_enabled(self, launcher, defaults):
-        """The escape hatch for the transforms DPK has not normalised yet.
-
-        In DPK 1.1.8, 32 of 43 data transforms expose dpk_<t>.ray.runtime; the rest
-        use ray.transform (doc_quality, fdedup, lang_id, ...) or ship no Ray
-        package. The step derives by rule and does not carry an exception table —
-        that list is being normalised upstream, so it would go stale — so those
-        builds set `module` explicitly.
-        """
+    def test_it_is_ordered_with_the_other_flags(self, launcher, defaults):
+        """No special-casing: it renders in `args` order like any other flag."""
         cfg = _transform_cfg(
-            defaults,
-            transform="doc_quality",
-            ray_enabled=True,
-            module="dpk_doc_quality.ray.transform",
+            defaults, args={"runtime_num_processors": 4, "tkn_chunk_size": 0}
         )
-        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _opt(argv, "--module") == "dpk_doc_quality.ray.transform"
-        # The ray EXTRA is still installed — only the module was overridden.
-        setup_argv = _script_argv(_render(launcher["setup"], cfg), "setup")
-        assert _passthrough(setup_argv) == [
-            "data-prep-toolkit-transforms[doc-quality,ray]==1.1.8"
+        flags = _passthrough(
+            _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        )
+        assert flags == [
+            "--runtime_num_processors",
+            "4",
+            "--tkn_chunk_size",
+            "0",
         ]
 
 
@@ -655,10 +659,10 @@ class TestEveryConfigValueIsEscaped:
         The `[extra]` brackets and `==` are why this is passed as real argv in the
         first place; the escaping filter must leave them untouched.
         """
-        cfg = _transform_cfg(defaults, transform="pii_redactor", ray_enabled=True)
+        cfg = _transform_cfg(defaults, transform="pii_redactor")
         argv = _script_argv(_render(launcher["setup"], cfg), "setup")
         assert _passthrough(argv) == [
-            "data-prep-toolkit-transforms[pii-redactor,ray]==1.1.8"
+            "data-prep-toolkit-transforms[pii-redactor]==1.1.8"
         ]
 
 
@@ -694,46 +698,6 @@ class TestArgsKeysMustBeFlagNames:
         )
         assert "not a valid DPK flag name" not in rendered
         assert _passthrough(_script_argv(rendered, "run")) == [f"--{key}", "v"]
-
-
-class TestRayAndImageAreRefusedTogether:
-    """ray_enabled + dpk_image silently delivered 2 of its 3 documented jobs.
-
-    dpk_image skips the install entirely, so the `ray` pip extra never lands — while
-    `run` still switches to .ray.runtime and passes --run_locally true. That is the
-    exact half-applied subset the one-flag design exists to prevent, surfacing as an
-    import error mid-run on a node. Refused at bring-up instead.
-    """
-
-    def test_the_combination_is_refused_in_setup(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, ray_enabled=True, dpk_image="quay.io/o/i:1")
-        rendered = _render(launcher["setup"], cfg)
-        assert "exit 1" in rendered
-        assert "ray_enabled cannot be combined with dpk_image" in rendered
-        assert _bash_ok(rendered)
-
-    @pytest.mark.parametrize(
-        "kw",
-        [
-            {"dpk_image": "quay.io/o/i:1"},
-            {"ray_enabled": True},
-            {},
-        ],
-    )
-    def test_each_alone_is_still_allowed(self, launcher, defaults, kw):
-        """Over-correction guard: only the broken COMBINATION is refused."""
-        rendered = _render(launcher["setup"], _transform_cfg(defaults, **kw))
-        assert "exit 1" not in rendered
-        assert _bash_ok(rendered)
-
-    def test_ray_alone_still_installs_the_ray_extra(self, launcher, defaults):
-        argv = _script_argv(
-            _render(launcher["setup"], _transform_cfg(defaults, ray_enabled=True)),
-            "setup",
-        )
-        assert _passthrough(argv) == [
-            "data-prep-toolkit-transforms[tokenization2arrow,ray]==1.1.8"
-        ]
 
 
 class TestIoWiring:
@@ -880,19 +844,13 @@ class TestRenderedShellIsValid:
             ({"args": {"tkn_chunk_size": 0, "flag": True}}, _BINDINGS),
             ({"args": {"off": False, "unset": None}}, _BINDINGS),
             ({"dpk_image": "quay.io/org/dpk:1"}, _BINDINGS),
-            ({"ray_enabled": True}, _BINDINGS),
+            ({"args": {"runtime_num_processors": 8}}, _BINDINGS),
         ],
     )
     def test_transform_mode_parses(self, launcher, defaults, cfg_kwargs, bindings):
         cfg = _transform_cfg(defaults, **cfg_kwargs)
         assert _bash_ok(_render(launcher["setup"], cfg))
         assert _bash_ok(_render(launcher["run"], cfg, bindings))
-
-    def test_ray_enabled_parses(self, launcher, defaults):
-        """The ray branch changes both blocks, so parse both."""
-        cfg = _transform_cfg(defaults, ray_enabled=True, args={"tkn_chunk_size": 0})
-        assert _bash_ok(_render(launcher["setup"], cfg))
-        assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
 
     def test_image_mode_parses(self, launcher, defaults):
         """dpk_image skips setup's install entirely — the empty block must still parse."""

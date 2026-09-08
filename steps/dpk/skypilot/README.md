@@ -22,7 +22,7 @@ changes three things:
 
 | | byoc | dpk |
 |---|---|---|
-| **Dependencies** | `git clone` + `setup_command` | `transform` (+ `ray_enabled`) → `uv pip install` into `./venv` |
+| **Dependencies** | `git clone` + `setup_command` | `transform` → `uv pip install` into `./venv` |
 | **Invocation** | verbatim `command` only | `transform:` derives the module, flags, and data config; `module:` overrides the derived module |
 | **Dependency set** | whatever the image/repo provides | derived from `transform` via DPK's per-transform pip extras |
 
@@ -34,6 +34,38 @@ carry it, and both hold for any transform DPK ships (verified across all ~30):
   accepting `--data_local_config`.
 - pip extra — `data-prep-toolkit-transforms` declares one extra per transform, so
   `<name>` with `_`→`-` names it.
+
+### Why there is no Ray mode
+
+DPK ships a Ray runtime alongside the pure-python one, and this step deliberately does not
+expose it. The decision, so it is not relitigated from scratch:
+
+- **DPK's Ray launcher cannot reach a cluster you did not start on localhost.** In 1.1.8,
+  `RayTransformLauncher._submit_for_execution` calls `ray.init("ray://localhost:10001")` — a
+  hardcoded literal, with no host or port argument anywhere in `data_processing_ray`. So
+  `run_locally: false` does not attach to a remote cluster; it attaches to port 10001 on the
+  node the job is already running on.
+- **Provisioning a cluster per step is not this step's job.** That is SkyPilot's concern, and
+  a step that stood one up would own its lifecycle, sizing, and teardown.
+- **It was never proven.** Starting a Ray cluster inside the local Docker SLURM container
+  (`RealMemory=1024`) is not reliable, so the mode only ever had render tests — a mode nobody
+  had run end to end.
+- **The pure-python runtime already parallelises.** `--runtime_num_processors` gives a
+  `multiprocessing.Pool`, which is what the SLURM environments this step targets actually
+  need.
+
+`TestPurePythonIsTheOnlyRuntime` guards the removal: no config combination may derive a
+`.ray.runtime` module, install the `ray` extra, or inject `--run_locally`. Those are there
+because the mode previously caused trouble by being *half* applied — an extra without the
+module, or a module without its flag.
+
+Left to a build, not the step: **the pool size**. It defaults to DPK's own `0` (sequential)
+because peak memory scales with the pool (a `pii_redactor` worker loads flair and presidio),
+and because the honest sizing input is the job's allocation rather than the machine —
+measured inside a 2-CPU `srun` allocation on the local cluster, `SLURM_CPUS_ON_NODE=2` while
+`nproc` reported `6`, so auto-sizing from the machine would oversubscribe 3x. Note also that
+DPK gates on `num_processors > 0`, so `0` and any negative value both mean sequential; there
+is no "use all cores" sentinel to pass.
 
 **Flag prefixes are deliberately *not* derived.** DPK's own prefix is an arbitrary
 abbreviation for roughly 40% of transforms (`dpk_tokenization` → `tkn_`,
@@ -110,8 +142,8 @@ run everywhere. They are Mode-1 only (not copied by `publish-step`), the same pl
 - `test_dpk_step_render.py` — pins what the *template* computes: that `transform:` derives
   the right module and pip extra for a range of transforms, that `args` become the right
   argv words in order (with `0`/`true`/`false` handled correctly), that `dpk_image` switches
-  between bare-node and `docker:` mode, that `ray_enabled` moves BOTH the pip extra and the
-  module, and that the rendered shell parses under `bash -n`. Because the blocks now
+  between bare-node and `docker:` mode, that no config combination can derive a Ray module
+  or inject a Ray-only flag, and that the rendered shell parses under `bash -n`. Because the blocks now
   invoke the bundled scripts, most assertions run the rendered block with a stub script on
   `PATH` and check **the argv bash actually built** (`_script_argv`) rather than matching
   rendered text — bash is what splits and unquotes these words on the node, so a quoting
