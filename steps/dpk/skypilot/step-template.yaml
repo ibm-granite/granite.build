@@ -88,23 +88,25 @@ config:
     # argument), so it cannot reach a real cluster, and standing one up per step is
     # not something this step should do.
     #
-    # For throughput, DPK's pure-python runtime has its own multiprocessing pool,
-    # reachable through `args` like any other transform flag:
+    # For throughput, that runtime has its own multiprocessing pool, and the step
+    # sizes it AUTOMATICALLY from the job's CPU allocation — so a build parallelises
+    # without asking. The default is not set here, deliberately: it is resolved in
+    # src/dpk_run.sh, on the NODE. This template renders on the SERVER, so a
+    # render-time core count would be the server's, the wrong machine entirely. See
+    # that script's pool_size block for the SLURM_CPUS_PER_TASK ->
+    # SLURM_CPUS_ON_NODE -> getconf chain and why allocation beats machine count.
+    #
+    # A build overrides it like any other transform flag:
     #
     #   args:
-    #     runtime_num_processors: 8
+    #     runtime_num_processors: 2   # or 0 for sequential
     #
-    # It is left at DPK's own default (0 = sequential) rather than auto-sized here.
-    # Two reasons, both measured:
-    #   * the pool multiplies PEAK MEMORY by its size — a transform like
-    #     pii_redactor loads flair/presidio models per process — so a default that
-    #     scales with the node would turn a working build into an OOM;
-    #   * the honest number is the job's ALLOCATION, not the machine's core count.
-    #     Inside a 2-CPU srun allocation on the local SLURM cluster,
-    #     SLURM_CPUS_ON_NODE=2 while nproc=6, so auto-sizing off the machine would
-    #     oversubscribe 3x.
-    # Note that DPK gates on `num_processors > 0`, so 0 AND any negative value mean
-    # sequential — there is no "use all cores" sentinel to pass.
+    # That wins because dpk_run.sh emits its detected value BEFORE the build's flags
+    # and argparse takes the last occurrence. The reason to reach for it is MEMORY:
+    # each worker is a process holding its own copy of the transform's models (a
+    # pii_redactor worker loads flair and presidio), so peak memory scales with the
+    # pool, and a node with many CPUs but little RAM can OOM on the auto-sized value.
+    # DPK exposes no per-worker memory hint, so the step cannot detect that.
 
     # ---- overrides -----------------------------------------------------------
     # Override the derived module entirely, for a transform whose runtime is not

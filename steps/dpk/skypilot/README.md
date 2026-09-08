@@ -318,18 +318,15 @@ registered artifact.
   removal — no config combination may derive a `.ray.runtime` module, install the `ray`
   extra, or inject `--run_locally` — because the mode previously caused trouble by being
   *half* applied: an extra without the module, or a module without its flag.
-- **The pool size is left to the build.** `runtime_num_processors` defaults to DPK's own `0`
-  (sequential) rather than being auto-sized, for two measured reasons: peak memory scales
-  with the pool, since each worker is a process with its own copy of the transform's models
-  (a `pii_redactor` worker loads flair and presidio), so an auto-sized default would turn a
-  working build into an OOM on the same node; and the honest sizing input is the job's
-  ALLOCATION rather than the machine — inside a 2-CPU `srun` allocation on the local cluster,
-  `SLURM_CPUS_ON_NODE=2` while `nproc` reported `6`, so auto-sizing from the machine would
-  oversubscribe 3x. Two traps worth knowing before "fixing" this: `os.cpu_count()` cannot be
-  a Jinja default because the template renders on the **server** while the pool runs on the
-  **node**, and `-1` is not an "all cores" sentinel — DPK gates on `num_processors > 0`, so
-  `-1` takes the sequential branch silently, and the value reaches
-  `multiprocessing.Pool(processes=size)`, which rejects anything below 1.
+- **A memory-heavy transform may need the pool sized down.** `dpk_run.sh` sizes DPK's
+  multiprocessing pool from the job's CPU allocation, which is right for throughput but says
+  nothing about memory: each worker is a process holding its own copy of the transform's
+  models, and a `pii_redactor` worker loads flair and presidio. On a node allocated many CPUs
+  but little RAM that can OOM, and the step cannot tell — DPK exposes no per-worker memory
+  hint. Such a build sets `args: {runtime_num_processors: N}` (or `0` for sequential), which
+  wins because the script emits its detected value *before* `"$@"` and argparse takes the
+  last occurrence. Sizing from `total_memory_per_node` would need a per-transform footprint
+  table in the step, which is exactly what stops it being general.
 - **Flag prefixes are not derived.** DPK's own prefix is an arbitrary abbreviation for
   roughly 40% of transforms (`dpk_tokenization` → `tkn_`, `gopher_repetition_annotator` →
   `gra_`, `doc_quality` → `docq_`), so `args` keys are the full flag name and the step passes

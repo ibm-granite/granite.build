@@ -141,38 +141,53 @@ The step also auto-injects the launcher's data config, so you never write it:
 
 ## Parallelism
 
-The step runs DPK's **pure-python runtime**, always. For throughput, that runtime has its own
-multiprocessing pool, asked for through `args` like any other transform flag:
+The step runs DPK's **pure-python runtime**, always — and **parallelises by default**. That
+runtime has its own multiprocessing pool, and the step sizes it from the CPUs your job was
+allocated, so a build gets parallelism without asking:
 
 ```yaml
 dpk_config:
   transform: ededup
   input: docs
   output: deduped
-  args:
-    runtime_num_processors: 8
 compute_config:
-  # Size the node for the pool you asked for.
+  # The pool follows this: 8 CPUs allocated -> 8 workers.
   num_cpus_per_node: 8
 ```
 
-| Flag | Default | What it does |
-|---|---|---|
-| `runtime_num_processors` | `0` | Size of the `multiprocessing.Pool`. DPK gates on `> 0`, so **`0` means sequential** — and so does any negative value. There is no "use all cores" sentinel. |
+The size comes from the **allocation**, not the machine, resolved on the node at run time:
 
-**The default is sequential, deliberately.** The step does not auto-size the pool, for two
-reasons:
+| Source | Used when |
+|---|---|
+| `$SLURM_CPUS_PER_TASK` | Under SLURM — what *this task* was allocated |
+| `$SLURM_CPUS_ON_NODE` | Under SLURM, when the first is unset |
+| `getconf _NPROCESSORS_ONLN` | Off-scheduler (aws, kubernetes), where the machine *is* your allocation |
 
-* **Peak memory scales with the pool.** Each worker is a process with its own copy of the
-  transform's models — `pii_redactor` loads flair and presidio — so an auto-sized default
-  would turn a working build into an OOM on the same node.
-* **The machine's core count is not your allocation.** Under a scheduler these differ:
-  measured inside a 2-CPU `srun` allocation on the local SLURM cluster,
-  `SLURM_CPUS_ON_NODE=2` while `nproc` reported `6`. Auto-sizing from the machine would
-  oversubscribe 3x and slow everyone down, including you.
+Those differ, and the distinction matters: inside a 2-CPU `srun` allocation on the local SLURM
+cluster, `SLURM_CPUS_ON_NODE` is `2` while `nproc` reports `6`. Sizing from the machine would
+oversubscribe 3x and slow down every other job on the node.
 
-So pick a number, and size `compute_config.num_cpus_per_node` to match. Start small for a
-model-heavy transform.
+### Overriding it
+
+Set `runtime_num_processors` in `args` and your value wins:
+
+```yaml
+dpk_config:
+  transform: pii_redactor
+  input: docs
+  output: clean
+  args:
+    runtime_num_processors: 2   # or 0 to force sequential
+```
+
+**When to reach for this: memory.** Each worker is a process holding its own copy of the
+transform's models — `pii_redactor` loads flair and presidio — so peak memory scales with the
+pool. A node with many CPUs but little RAM can OOM on the auto-sized default, and the step
+cannot detect that. If a build dies for memory rather than logic, set a smaller number.
+
+Note that `0` and any negative value both mean **sequential**: DPK gates on
+`num_processors > 0`, so there is no "use all cores" sentinel to pass — that is what the
+default already does for you.
 
 ## Running in a container image
 

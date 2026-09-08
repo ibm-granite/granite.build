@@ -295,15 +295,17 @@ class TestPurePythonIsTheOnlyRuntime:
 
 
 class TestParallelismIsATransformFlag:
-    """Throughput is `args: {runtime_num_processors: N}`, not a step field.
+    """Overriding the pool size is `args: {runtime_num_processors: N}`.
 
-    DPK's pure-python runtime declares --runtime_num_processors (type=int,
-    default=0) and gates on `num_processors > 0`, using multiprocessing.Pool above
-    that and sequential execution otherwise.
+    The DEFAULT is not set here. dpk_run.sh sizes the pool from the job's CPU
+    allocation at run time, because this template renders on the server while the
+    pool runs on the node — see test_dpk_run_sh.py's TestPoolSizing. So the template
+    injects nothing, and an `args` value simply lands after the script's own flag,
+    where argparse's last-occurrence rule makes it win.
     """
 
-    def test_no_pool_flag_is_sent_by_default(self, launcher, defaults):
-        """Sequential by default — DPK's own behaviour, nothing injected."""
+    def test_the_template_injects_no_pool_flag(self, launcher, defaults):
+        """The default belongs to the script, not the template: nothing here."""
         argv = _script_argv(
             _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
         )
