@@ -168,22 +168,30 @@ class TestPriorityClassName:
     """Guards for the optional ``k8s.priority_class_name`` pod PriorityClass.
 
     Set per step via build.yaml ``config.k8s.priority_class_name`` (a free-form
-    passthrough into ``.Values.k8s``), it must land on both the Master and the
-    Worker pod ``spec`` as ``priorityClassName``. Both pods include one shared
-    ``gbstepbase.pyjobpod`` define, so a single guarded line there covers both.
+    passthrough into ``.Values.k8s``), it must land on the step pod ``spec`` as
+    ``priorityClassName``. The guarded line lives in the shared
+    ``gbstepbase.pyjobpod`` define, which every pod path includes (PyTorchJob
+    Master and Worker, and the single-pod Job), so one line covers them all.
     Asserted against the template source, matching the umask/permission guards
     above; a full ``helm template`` render is a separate manual/CI step.
     """
 
     HELPERS = CHART_DIR / "charts/gbstepbase/templates/_helpers.tpl"
 
-    @staticmethod
-    def _pyjobpod_body(text: str) -> str:
+    # Go-template block openers (``end``-terminated). ``else``/``else if`` continue
+    # the current block -- they neither open nor close one -- so they are excluded.
+    _OPENER = re.compile(r"\{\{-?\s*(?:if|range|with|define|block)\b")
+    _END = re.compile(r"\{\{-?\s*end\s*-?\}\}")
+
+    @classmethod
+    def _pyjobpod_body(cls, text: str) -> str:
         """Return the body of the shared ``gbstepbase.pyjobpod`` define.
 
         The define nests ``if`` blocks, so the matching ``end`` is found by
         balancing block openers against ``end`` -- taking the first ``end`` would
-        stop at an inner ``if`` and truncate the body.
+        stop at an inner ``if`` and truncate the body. Openers and ``end``s are
+        counted per line (not one-per-line), so an inline ``{{ if }}...{{ end }}``
+        or several actions on one line still balance correctly.
         """
         lines = text.splitlines()
         starts = [
@@ -195,21 +203,19 @@ class TestPriorityClassName:
         i = starts[0]
         depth = 1  # the define itself
         for n in range(i + 1, len(lines)):
-            s = lines[n].strip()
-            if re.match(r"\{\{-?\s*(if|range|with|define|block)\b", s):
-                depth += 1
-            if re.search(r"\{\{-?\s*end\s*-?\}\}", s):
-                depth -= 1
-                if depth == 0:
-                    return "\n".join(lines[i + 1 : n])
+            depth += len(cls._OPENER.findall(lines[n]))
+            depth -= len(cls._END.findall(lines[n]))
+            if depth <= 0:
+                return "\n".join(lines[i + 1 : n])
         raise AssertionError("unterminated gbstepbase.pyjobpod define")
 
     def test_priority_class_name_rendered_in_shared_pod_spec(self):
-        """The guarded line lives in the shared pod spec, so it covers both roles.
+        """The guarded line lives in the shared pod spec, so it covers every path.
 
-        Master and Worker each include ``gbstepbase.pyjobpod``; putting the line
-        there (rather than in the per-role metadata defines) is what makes one
-        change apply to both without duplication.
+        The PyTorchJob Master and Worker and the single-pod Job all include
+        ``gbstepbase.pyjobpod``; putting the line there (rather than in a
+        per-path template) is what makes one change apply to all without
+        duplication.
         """
         body = self._pyjobpod_body(self.HELPERS.read_text(encoding="utf-8"))
         assert "priorityClassName:" in body, "priorityClassName not in pyjobpod spec"

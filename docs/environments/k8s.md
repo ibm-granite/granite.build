@@ -233,8 +233,9 @@ config:
       retryLimit: 2
     affinity:                         # Kubernetes affinity rules, merged into Helm values.
       nodeAffinity: {}
-    priority_class_name: high-priority  # Optional. Sets spec.priorityClassName on the
-                                        # Master and Worker pods; must reference an existing
+    priority_class_name: high-priority  # Optional. Sets spec.priorityClassName on the step's
+                                        # pods (the PyTorchJob Master and Worker, and the
+                                        # single-pod Job path); must reference an existing
                                         # PriorityClass in the cluster. Unset = cluster default.
 ```
 
