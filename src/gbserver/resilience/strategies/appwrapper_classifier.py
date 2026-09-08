@@ -74,9 +74,12 @@ class AppWrapperVerdict(Enum):
 # Pod-event reasons that indicate a preemption/eviction interruption.
 PREEMPTION_EVENT_REASONS = {"Preempted", "Evicted"}
 
-# Substrings (lower-cased) that indicate preemption/eviction when the event
-# reason string drifts (Kueue/scheduler wording varies across versions).
-PREEMPTION_MESSAGE_SUBSTRINGS = ("preempt", "evict")
+# Substrings (lower-cased) that indicate preemption/eviction when the reason
+# string drifts (Kueue/scheduler wording varies across versions). Matched against
+# the controlled ``reason`` field, not the free-form message: the standard
+# FailedScheduling message "... No preemption victims found for incoming pod"
+# contains "preempt" but is the opposite of a preemption.
+PREEMPTION_REASON_SUBSTRINGS = ("preempt", "evict")
 
 # Kueue Workload condition types that indicate an interruption/requeue.
 PREEMPTION_WORKLOAD_CONDITIONS = {"Evicted", "Preempted"}
@@ -94,52 +97,60 @@ HARD_FAILURE_REASON_TOKENS = (
 )
 
 
+def _reason_str_is_preemption(reason: str) -> bool:
+    reason = reason.strip()
+    return reason in PREEMPTION_EVENT_REASONS or any(
+        sub in reason.lower() for sub in PREEMPTION_REASON_SUBSTRINGS
+    )
+
+
 def _event_indicates_preemption(ev: Dict[str, Any]) -> bool:
-    """True if a single K8s event dict describes a preemption/eviction."""
-    reason = (ev.get("reason") or "").strip()
-    if reason in PREEMPTION_EVENT_REASONS:
-        return True
-    message = (ev.get("message") or "").lower()
-    return any(sub in message for sub in PREEMPTION_MESSAGE_SUBSTRINGS)
+    """True if a single K8s event dict describes a preemption/eviction, judged
+    from the controlled ``reason`` field only (not the free-form message)."""
+    return _reason_str_is_preemption(ev.get("reason") or "")
 
 
 def _events_have_preemption(events: List[Dict[str, Any]]) -> bool:
     return any(_event_indicates_preemption(ev) for ev in events)
 
 
-def _workload_conditions_have_preemption(
-    workload_status: List[Dict[str, Any]],
-) -> bool:
-    """Scan the Kueue Workload statuses for an Evicted/Preempted condition or a
-    requeue marker.
+def _workload_conditions_have_preemption(data: Dict[str, Any]) -> bool:
+    """Scan the Kueue Workload conditions for an Evicted/Preempted condition or a
+    requeue marker. These live on the Workload object and, unlike K8s Events, do
+    not age out -- so they survive the ~1h event window that made the old
+    event-only detection fragile.
 
-    ``workload_status`` is the list the monitor collects via
-    ``_get_workload_status``: ``[{"workload_name": ..., "workload_status": {...}}]``
-    where the inner dict is the Kueue Workload ``.status`` (carrying ``conditions``
-    and, on recent Kueue, ``requeueState``). These live on the object and, unlike
-    K8s Events, do not age out -- so they survive the ~1h event window that made
-    the old event-only detection fragile.
+    Prefers the monitor's distilled ``workload_conditions`` -- a list of
+    ``{workload_name, conditions: [{type, status, reason}], requeued}`` -- and
+    falls back to the raw ``workload_status`` (the Kueue Workload ``.status``
+    dicts) when the distilled field is absent.
     """
-    for entry in workload_status or []:
+    distilled = data.get("workload_conditions")
+    if distilled:
+        for entry in distilled:
+            if entry.get("requeued"):
+                return True
+            for cond in entry.get("conditions", []) or []:
+                if _condition_is_preemption(cond):
+                    return True
+        return False
+
+    for entry in data.get("workload_status", []) or []:
         status = entry.get("workload_status", {}) or {}
         for cond in status.get("conditions", []) or []:
-            ctype = cond.get("type", "")
-            cstatus = str(cond.get("status", "")).lower()
-            if ctype in PREEMPTION_WORKLOAD_CONDITIONS and cstatus == "true":
+            if _condition_is_preemption(cond):
                 return True
-            reason = (cond.get("reason") or "").lower()
-            if any(sub in reason for sub in PREEMPTION_MESSAGE_SUBSTRINGS):
-                return True
-        # A present requeueState means Kueue evicted and re-queued the workload.
         if status.get("requeueState"):
             return True
     return False
 
 
-def _reason_is_preemption(reason: str) -> bool:
-    return reason in PREEMPTION_EVENT_REASONS or any(
-        sub in reason.lower() for sub in PREEMPTION_MESSAGE_SUBSTRINGS
-    )
+def _condition_is_preemption(cond: Dict[str, Any]) -> bool:
+    ctype = cond.get("type", "")
+    cstatus = str(cond.get("status", "")).lower()
+    if ctype in PREEMPTION_WORKLOAD_CONDITIONS and cstatus == "true":
+        return True
+    return _reason_str_is_preemption(cond.get("reason") or "")
 
 
 def _reason_is_hard_failure(reason: str) -> bool:
@@ -160,7 +171,7 @@ def _has_hard_terminal_failure(data: Dict[str, Any]) -> bool:
         if (
             reason
             and _reason_is_hard_failure(reason)
-            and not _reason_is_preemption(reason)
+            and not _reason_str_is_preemption(reason)
         ):
             return True
 
@@ -175,25 +186,16 @@ def _has_hard_terminal_failure(data: Dict[str, Any]) -> bool:
     return False
 
 
-def _has_preemption_signal(data: Dict[str, Any]) -> bool:
-    """True if the snapshot carries a preemption-specific signal.
+def _has_fresh_preemption_signal(data: Dict[str, Any]) -> bool:
+    """A preemption signal present in THIS snapshot (not the sticky flag).
 
-    Only signals that are actually preemption-specific count. In particular the
-    AppWrapper ``resettingCount`` is deliberately NOT one: the controller resets
-    pods in place on *any* failure (a crash as much as an eviction), so treating a
-    rising reset count as preemption would mask a repeatedly-crashing workload.
-
-    * ``preemption_observed`` -- a sticky flag the monitor sets the first time it
-      sees a Preempted/Evicted event this launch, so the signal survives even if
-      the causal K8s events have aged out by the terminal snapshot;
-    * a Kueue Workload ``Evicted``/``Preempted`` condition or ``requeueState``
-      (persists on the object, doesn't age out);
-    * a Preempted/Evicted K8s event in the current snapshot.
+    Only preemption-specific signals count; the AppWrapper ``resettingCount`` is
+    deliberately excluded because the controller resets pods in place on *any*
+    failure. These are a Kueue Workload ``Evicted``/``Preempted`` condition or
+    ``requeueState``, or a Preempted/Evicted K8s event in the current snapshot.
     """
-    return bool(
-        data.get("preemption_observed")
-        or _workload_conditions_have_preemption(data.get("workload_status", []))
-        or _events_have_preemption(data.get("events", []) or [])
+    return _workload_conditions_have_preemption(data) or _events_have_preemption(
+        data.get("events", []) or []
     )
 
 
@@ -220,25 +222,27 @@ def classify_appwrapper_failure(
     if state != "Failed":
         return AppWrapperVerdict.UNKNOWN
 
-    # Preemption wins on a mixed snapshot: a preempted pod is often OOM/hard-
-    # killed as a side effect of eviction, so a hard-failure reason alongside a
-    # preemption signal is still a preemption. Check the preemption signal first.
-    if _has_preemption_signal(data):
-        logger.info(
-            "AppWrapper %s Failed with a preemption/requeue signal; classifying "
-            "TRANSIENT_PREEMPTION (preemption_observed=%s)",
-            data.get("appwrapper", "<unknown>"),
-            data.get("preemption_observed"),
-        )
+    aw = data.get("appwrapper", "<unknown>")
+    fresh_preemption = _has_fresh_preemption_signal(data)
+    hard_failure = _has_hard_terminal_failure(data)
+
+    # A preemption signal in THIS snapshot wins over a co-occurring hard failure:
+    # a preempted pod is often OOM/hard-killed as a side effect of the eviction.
+    if fresh_preemption:
+        logger.info("AppWrapper %s Failed with a preemption signal; TRANSIENT", aw)
         return AppWrapperVerdict.TRANSIENT_PREEMPTION
 
-    # No preemption signal at all: a hard-failure reason means a genuine crash.
-    if _has_hard_terminal_failure(data):
-        logger.info(
-            "AppWrapper %s Failed with a hard terminal reason and no preemption "
-            "signal; classifying TERMINAL_FAILURE",
-            data.get("appwrapper", "<unknown>"),
-        )
+    # A genuine hard failure in this snapshot beats the *sticky* flag alone -- an
+    # earlier preemption must not mask a later real crash into a non-terminal
+    # verdict (which, with no further events, would hang instead of failing).
+    if hard_failure:
+        logger.info("AppWrapper %s Failed with a hard terminal reason; TERMINAL", aw)
         return AppWrapperVerdict.TERMINAL_FAILURE
+
+    # Otherwise the sticky "preemption seen this launch" flag makes it transient:
+    # the causal events have aged out but the failure is still preemption-shaped.
+    if data.get("preemption_observed"):
+        logger.info("AppWrapper %s Failed after a prior preemption; TRANSIENT", aw)
+        return AppWrapperVerdict.TRANSIENT_PREEMPTION
 
     return AppWrapperVerdict.UNKNOWN
