@@ -137,29 +137,27 @@ def configure_logging(
     global __LOGGER_CONFIGURED
     if skip_if_already_configured and __LOGGER_CONFIGURED:
         return
-    if format is None:
-        handler: logging.Handler = _ConsoleStreamHandler()
-        if log_file is not None:
-            handler = logging.FileHandler(filename=log_file, encoding="utf-8", mode="w")
-        handler.setFormatter(CustomFormatter())
-        logging.basicConfig(
-            handlers=[handler],
-            level=get_log_level(level),
-            datefmt="%Y-%m-%d %H:%M:%S",
-            force=True,
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    # Always build the handler ourselves so no code path lets basicConfig
+    # construct a bare StreamHandler, which snapshots sys.stderr and reintroduces
+    # the issue #315 flake. The console handler resolves sys.stderr at emit time.
+    if log_file is not None:
+        handler: logging.Handler = logging.FileHandler(
+            filename=log_file, encoding="utf-8", mode="w"
         )
     else:
-        # NOTE: this explicit-format branch lets basicConfig build its own bare
-        # StreamHandler, which still snapshots sys.stderr (the issue #315 hazard).
-        # It is left as-is because no caller passes `format`; the CLI paths that
-        # reconfigure logging under CliRunner all take the `format is None` branch.
-        logging.basicConfig(
-            format=format,
-            level=get_log_level(level),
-            datefmt="%Y-%m-%d %H:%M:%S",
-            filename=log_file,
-            filemode="w",
-        )
+        handler = _ConsoleStreamHandler()
+    handler.setFormatter(
+        logging.Formatter(format, datefmt=datefmt)
+        if format is not None
+        else CustomFormatter()
+    )
+    logging.basicConfig(
+        handlers=[handler],
+        level=get_log_level(level),
+        datefmt=datefmt,
+        force=True,
+    )
     __LOGGER_CONFIGURED = True
     logger = logging.getLogger(__name__)
     logger.info("logging level set to %s", level)

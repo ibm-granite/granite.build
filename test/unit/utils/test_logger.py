@@ -30,9 +30,27 @@ import logging
 import sys
 
 import click
+import pytest
 from click.testing import CliRunner
 
 from gbserver.utils import logger as logger_mod
+
+
+@pytest.fixture(autouse=True)
+def _reset_root_logging():
+    """Restore a clean root-logger baseline after each test.
+
+    ``configure_logging`` runs ``basicConfig(force=True)``, which closes and
+    detaches the root logger's existing handlers. Snapshotting the handler
+    objects and reinstating them in teardown (the previous approach) therefore
+    re-attached *closed* handlers to the next test in the same worker -- the
+    exact cross-test stream corruption issue #315 is about. Restore only the
+    level and reconfigure a fresh, live handler instead.
+    """
+    saved_level = logging.getLogger().level
+    yield
+    logger_mod.configure_logging(skip_if_already_configured=False)
+    logging.getLogger().setLevel(saved_level)
 
 
 def _console_handler() -> logging.StreamHandler:
@@ -55,28 +73,21 @@ def test_console_handler_does_not_retain_clirunner_captured_stream():
     isolation exits and the buffer is abandoned. The fix makes the handler track
     the live ``sys.stderr``.
     """
-    root = logging.getLogger()
-    saved_handlers = root.handlers[:]
-    saved_level = root.level
-    try:
-        runner = CliRunner()
-        with runner.isolation():
-            # Mimic the gbserver root group calling configure_logging() while
-            # CliRunner has swapped sys.stderr for its in-memory buffer.
-            logger_mod.configure_logging(skip_if_already_configured=False)
-            captured_stream = sys.stderr
-            handler = _console_handler()
-            # While inside the isolation the handler should target the live
-            # (captured) stream so log output is still capturable.
-            assert handler.stream is captured_stream
+    runner = CliRunner()
+    with runner.isolation():
+        # Mimic the gbserver root group calling configure_logging() while
+        # CliRunner has swapped sys.stderr for its in-memory buffer.
+        logger_mod.configure_logging(skip_if_already_configured=False)
+        captured_stream = sys.stderr
+        handler = _console_handler()
+        # While inside the isolation the handler should target the live
+        # (captured) stream so log output is still capturable.
+        assert handler.stream is captured_stream
 
-        # After the isolation exits, CliRunner has restored sys.stderr and will
-        # close/GC its buffer. The handler must no longer reference it.
-        assert handler.stream is not captured_stream
-        assert handler.stream is sys.stderr
-    finally:
-        root.handlers[:] = saved_handlers
-        root.setLevel(saved_level)
+    # After the isolation exits, CliRunner has restored sys.stderr and will
+    # close/GC its buffer. The handler must no longer reference it.
+    assert handler.stream is not captured_stream
+    assert handler.stream is sys.stderr
 
 
 def test_log_output_is_captured_during_clirunner_invoke():
@@ -86,21 +97,14 @@ def test_log_output_is_captured_during_clirunner_invoke():
     that would stop the flaky-close failure but silently break log capture,
     since CliRunner only redirects ``sys.stdout``/``sys.stderr``.
     """
-    root = logging.getLogger()
-    saved_handlers = root.handlers[:]
-    saved_level = root.level
-    try:
-        logger_mod.configure_logging(level="INFO", skip_if_already_configured=False)
-        log = logging.getLogger("gbserver.test.capture")
+    logger_mod.configure_logging(level="INFO", skip_if_already_configured=False)
+    log = logging.getLogger("gbserver.test.capture")
 
-        @click.command()
-        def emit():
-            log.warning("captured-during-invoke")
+    @click.command()
+    def emit():
+        log.warning("captured-during-invoke")
 
-        result = CliRunner().invoke(emit, [])
+    result = CliRunner().invoke(emit, [])
 
-        assert result.exit_code == 0, result.output
-        assert "captured-during-invoke" in result.output
-    finally:
-        root.handlers[:] = saved_handlers
-        root.setLevel(saved_level)
+    assert result.exit_code == 0, result.output
+    assert "captured-during-invoke" in result.output
