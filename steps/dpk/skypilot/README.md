@@ -35,44 +35,6 @@ carry it, and both hold for any transform DPK ships (verified across all ~30):
 - pip extra — `data-prep-toolkit-transforms` declares one extra per transform, so
   `<name>` with `_`→`-` names it.
 
-### Why there is no Ray mode
-
-DPK ships a Ray runtime alongside the pure-python one, and this step deliberately does not
-expose it. The decision, so it is not relitigated from scratch:
-
-- **DPK's Ray launcher cannot reach a cluster you did not start on localhost.** In 1.1.8,
-  `RayTransformLauncher._submit_for_execution` calls `ray.init("ray://localhost:10001")` — a
-  hardcoded literal, with no host or port argument anywhere in `data_processing_ray`. So
-  `run_locally: false` does not attach to a remote cluster; it attaches to port 10001 on the
-  node the job is already running on.
-- **Provisioning a cluster per step is not this step's job.** That is SkyPilot's concern, and
-  a step that stood one up would own its lifecycle, sizing, and teardown.
-- **It was never proven.** Starting a Ray cluster inside the local Docker SLURM container
-  (`RealMemory=1024`) is not reliable, so the mode only ever had render tests — a mode nobody
-  had run end to end.
-- **The pure-python runtime already parallelises.** `--runtime_num_processors` gives a
-  `multiprocessing.Pool`, which is what the SLURM environments this step targets actually
-  need.
-
-`TestPurePythonIsTheOnlyRuntime` guards the removal: no config combination may derive a
-`.ray.runtime` module, install the `ray` extra, or inject `--run_locally`. Those are there
-because the mode previously caused trouble by being *half* applied — an extra without the
-module, or a module without its flag.
-
-Left to a build, not the step: **the pool size**. It defaults to DPK's own `0` (sequential)
-because peak memory scales with the pool (a `pii_redactor` worker loads flair and presidio),
-and because the honest sizing input is the job's allocation rather than the machine —
-measured inside a 2-CPU `srun` allocation on the local cluster, `SLURM_CPUS_ON_NODE=2` while
-`nproc` reported `6`, so auto-sizing from the machine would oversubscribe 3x. Note also that
-DPK gates on `num_processors > 0`, so `0` and any negative value both mean sequential; there
-is no "use all cores" sentinel to pass.
-
-**Flag prefixes are deliberately *not* derived.** DPK's own prefix is an arbitrary
-abbreviation for roughly 40% of transforms (`dpk_tokenization` → `tkn_`,
-`gopher_repetition_annotator` → `gra_`, `doc_quality` → `docq_`), so `args` keys are the
-full flag name and the step passes them through verbatim. Anything else would need a
-per-transform table in the step — exactly what stops it being general.
-
 ## Generating and deploying the step
 
 `dpk` has no `Dockerfile`, so the `image`/`publish-image` targets are no-ops; only
@@ -343,6 +305,36 @@ registered artifact.
 
 ## Known gaps
 
+- **There is no Ray mode, deliberately.** DPK ships a Ray runtime alongside the pure-python
+  one and this step does not expose it. Recorded so it is not relitigated from scratch:
+  DPK's Ray launcher cannot reach a cluster it did not start on localhost — in 1.1.8,
+  `RayTransformLauncher._submit_for_execution` calls `ray.init("ray://localhost:10001")`, a
+  hardcoded literal with no host or port argument anywhere in `data_processing_ray`, so
+  `run_locally: false` attaches to port 10001 on the node the job is already running on
+  rather than to a remote cluster; provisioning a cluster per step is SkyPilot's concern, and
+  a step that stood one up would own its lifecycle, sizing and teardown; and the pure-python
+  runtime already parallelises via `--runtime_num_processors`, which is what the SLURM
+  environments this step targets actually need. `TestPurePythonIsTheOnlyRuntime` guards the
+  removal — no config combination may derive a `.ray.runtime` module, install the `ray`
+  extra, or inject `--run_locally` — because the mode previously caused trouble by being
+  *half* applied: an extra without the module, or a module without its flag.
+- **The pool size is left to the build.** `runtime_num_processors` defaults to DPK's own `0`
+  (sequential) rather than being auto-sized, for two measured reasons: peak memory scales
+  with the pool, since each worker is a process with its own copy of the transform's models
+  (a `pii_redactor` worker loads flair and presidio), so an auto-sized default would turn a
+  working build into an OOM on the same node; and the honest sizing input is the job's
+  ALLOCATION rather than the machine — inside a 2-CPU `srun` allocation on the local cluster,
+  `SLURM_CPUS_ON_NODE=2` while `nproc` reported `6`, so auto-sizing from the machine would
+  oversubscribe 3x. Two traps worth knowing before "fixing" this: `os.cpu_count()` cannot be
+  a Jinja default because the template renders on the **server** while the pool runs on the
+  **node**, and `-1` is not an "all cores" sentinel — DPK gates on `num_processors > 0`, so
+  `-1` takes the sequential branch silently, and the value reaches
+  `multiprocessing.Pool(processes=size)`, which rejects anything below 1.
+- **Flag prefixes are not derived.** DPK's own prefix is an arbitrary abbreviation for
+  roughly 40% of transforms (`dpk_tokenization` → `tkn_`, `gopher_repetition_annotator` →
+  `gra_`, `doc_quality` → `docq_`), so `args` keys are the full flag name and the step passes
+  them through verbatim. Deriving them would need a per-transform table in the step — exactly
+  what stops it being general.
 - **`output_path` is unchecked against the output's `uri`.** `output_path` is optional and
   defaults to `./output` in the step's working directory, but when the declared output `uri`
   names a path the build still supplies both and nothing validates that they agree; a

@@ -261,42 +261,37 @@ class TestPurePythonIsTheOnlyRuntime:
     out of this step's scope. Throughput comes from the pure-python runtime's own
     multiprocessing pool instead, reached through `args`.
 
-    These are guards against the mode being reintroduced by halves, which is how it
-    caused trouble before: an extra without a module, or a module without its flag.
+    Deliberately only TWO tests. Ray needed three coupled changes (the module, the
+    pip extra, and --run_locally), and the bug it caused was applying a subset of
+    them — so what is worth guarding is each leg, once. Asserting the module and the
+    extra again here would only restate
+    TestDerivations::test_module_and_extra_derive_from_transform, which already pins
+    both across five transforms and therefore fails first; a third test asserting
+    `"ray_enabled" not in defaults` would only catch someone re-adding the field on
+    purpose. Five guards that are really two reads as more coverage than it is.
     """
 
-    def test_no_ray_field_remains(self, defaults):
-        assert "ray_enabled" not in defaults
-
-    def test_the_module_is_always_the_pure_python_runtime(self, launcher, defaults):
-        argv = _script_argv(
-            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
-        )
-        assert _opt(argv, "--module") == "dpk_tokenization2arrow.runtime"
-
-    def test_the_ray_extra_is_never_installed(self, launcher, defaults):
-        """The transform's own extra is the whole dependency set."""
-        argv = _script_argv(
-            _render(launcher["setup"], _transform_cfg(defaults)), "setup"
-        )
-        assert _passthrough(argv) == [
-            "data-prep-toolkit-transforms[tokenization2arrow]==1.1.8"
-        ]
-
-    def test_run_locally_is_never_injected(self, launcher, defaults):
-        """A Ray-launcher flag the pure-python launcher does not accept."""
-        argv = _script_argv(
-            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
-        )
-        assert "--run_locally" not in argv
-
     def test_nothing_renders_a_ray_module(self, launcher, defaults):
-        """No config combination may derive a .ray.runtime module."""
+        """Leg 1, wider than the derivation test: greps the WHOLE rendered block
+        across several config shapes, not just the --module argv on the default
+        path."""
         for kw in ({}, {"dpk_image": "quay.io/o/i:1"}, {"validate": True}):
             rendered = _render(
                 launcher["run"], _transform_cfg(defaults, **kw), _BINDINGS
             )
             assert ".ray.runtime" not in rendered
+
+    def test_run_locally_is_never_injected(self, launcher, defaults):
+        """Leg 3, and the only test that covers it.
+
+        The template injected --run_locally independently of the module, which is
+        precisely how the half-application happened: module switched, extra missing.
+        A Ray-launcher flag the pure-python launcher does not accept.
+        """
+        argv = _script_argv(
+            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS), "run"
+        )
+        assert "--run_locally" not in argv
 
 
 class TestParallelismIsATransformFlag:
