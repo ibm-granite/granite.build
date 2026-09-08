@@ -25,7 +25,7 @@ spec:
   automountServiceAccountToken: {{ .Values.k8s.automount_service_account_token }}
   {{- end }}
   {{- if .Values.k8s.priority_class_name }}
-  priorityClassName: {{ .Values.k8s.priority_class_name }}
+  priorityClassName: {{ .Values.k8s.priority_class_name | quote }}
   {{- end }}
   restartPolicy: Never
   {{- include "gbstepbase.tplNodeSelector" . }}

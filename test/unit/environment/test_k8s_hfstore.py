@@ -178,60 +178,42 @@ class TestPriorityClassName:
 
     HELPERS = CHART_DIR / "charts/gbstepbase/templates/_helpers.tpl"
 
-    # Go-template block openers (``end``-terminated). ``else``/``else if`` continue
-    # the current block -- they neither open nor close one -- so they are excluded.
-    _OPENER = re.compile(r"\{\{-?\s*(?:if|range|with|define|block)\b")
-    _END = re.compile(r"\{\{-?\s*end\s*-?\}\}")
+    # ``.Values.k8s.priority_class_name`` is unique to this feature in the chart,
+    # so whole-file substring checks are unambiguous -- no need to carve out the
+    # enclosing define. The line lives in the shared ``gbstepbase.pyjobpod`` define
+    # (the only pod spec), so it reaches every pod path: PyTorchJob Master/Worker
+    # and the single-pod Job.
 
-    @classmethod
-    def _pyjobpod_body(cls, text: str) -> str:
-        """Return the body of the shared ``gbstepbase.pyjobpod`` define.
-
-        The define nests ``if`` blocks, so the matching ``end`` is found by
-        balancing block openers against ``end`` -- taking the first ``end`` would
-        stop at an inner ``if`` and truncate the body. Openers and ``end``s are
-        counted per line (not one-per-line), so an inline ``{{ if }}...{{ end }}``
-        or several actions on one line still balance correctly.
-        """
-        lines = text.splitlines()
-        starts = [
-            i
-            for i, ln in enumerate(lines)
-            if ln.strip() == '{{- define "gbstepbase.pyjobpod" }}'
-        ]
-        assert len(starts) == 1, "expected exactly one gbstepbase.pyjobpod define"
-        i = starts[0]
-        depth = 1  # the define itself
-        for n in range(i + 1, len(lines)):
-            depth += len(cls._OPENER.findall(lines[n]))
-            depth -= len(cls._END.findall(lines[n]))
-            if depth <= 0:
-                return "\n".join(lines[i + 1 : n])
-        raise AssertionError("unterminated gbstepbase.pyjobpod define")
-
-    def test_priority_class_name_rendered_in_shared_pod_spec(self):
-        """The guarded line lives in the shared pod spec, so it covers every path.
-
-        The PyTorchJob Master and Worker and the single-pod Job all include
-        ``gbstepbase.pyjobpod``; putting the line there (rather than in a
-        per-path template) is what makes one change apply to all without
-        duplication.
-        """
-        body = self._pyjobpod_body(self.HELPERS.read_text(encoding="utf-8"))
-        assert "priorityClassName:" in body, "priorityClassName not in pyjobpod spec"
+    def test_priority_class_name_emitted_from_config(self):
+        """The pod spec sets ``priorityClassName`` from ``k8s.priority_class_name``."""
+        text = self.HELPERS.read_text(encoding="utf-8")
+        assert "priorityClassName:" in text, "priorityClassName not emitted"
         assert (
-            "{{ .Values.k8s.priority_class_name }}" in body
+            ".Values.k8s.priority_class_name" in text
         ), "priorityClassName not driven by k8s.priority_class_name"
+
+    def test_priority_class_name_is_quoted(self):
+        """The value must be ``| quote``d.
+
+        PriorityClass names are DNS subdomains, so a leading-digit name (e.g.
+        ``123-high``) is legal; unquoted it renders as an int and the API server
+        rejects the pod, and YAML-1.1 words (``on``/``no``/``y``) would coerce to
+        bools. Pin the quote so the fix cannot silently regress.
+        """
+        text = self.HELPERS.read_text(encoding="utf-8")
+        assert (
+            "priorityClassName: {{ .Values.k8s.priority_class_name | quote }}" in text
+        ), "priorityClassName value is not `| quote`d"
 
     def test_priority_class_name_is_guarded(self):
         """Unset must render nothing -- no empty ``priorityClassName:`` line.
 
-        An empty value on a PyTorchJob pod spec is invalid, so the block must be
-        gated on the value being truthy.
+        An empty value on a pod spec is invalid, so the block is gated on the
+        value being truthy (``{{- if .Values.k8s.priority_class_name }}``).
         """
-        body = self._pyjobpod_body(self.HELPERS.read_text(encoding="utf-8"))
+        text = self.HELPERS.read_text(encoding="utf-8")
         assert (
-            "{{- if .Values.k8s.priority_class_name }}" in body
+            "if .Values.k8s.priority_class_name" in text
         ), "priorityClassName is not guarded by an `if`"
 
     def test_priority_class_name_default_is_unset(self):

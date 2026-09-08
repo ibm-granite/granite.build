@@ -57,7 +57,7 @@ k8s:
   kueue_queue_name: default-queue
   service_account_name: gdr
   # Optional pod PriorityClass for the step's pods (PyTorchJob Master/Worker and the
-  # single-pod Job path). Unset = cluster default. Set via build.yaml
+  # single-pod Job path; not Ray steps). Unset = cluster default. Set via build.yaml
   # `config.k8s.priority_class_name`; must reference an existing PriorityClass in the cluster.
   # priority_class_name: high-priority
   # https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/images/creating-images#use-uid_create-images
