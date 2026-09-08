@@ -26,7 +26,7 @@ from typing import Any, Dict
 
 import pytest
 
-from gbserver.resilience.appwrapper_classifier import (
+from gbserver.resilience.strategies.appwrapper_classifier import (
     AppWrapperVerdict,
     classify_appwrapper_failure,
 )
@@ -97,16 +97,30 @@ class TestClassifyAppWrapperFailure:
             classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION
         )
 
-    def test_preemption_via_event_message_substring(self) -> None:
-        # Reason string drift: reason unknown but message says evicted.
+    def test_preemption_via_reason_substring(self) -> None:
+        # Reason-string drift: a reason variant containing "evict" is preemption.
         data = _failed(
             events=[
-                {"object_type": "Pod", "reason": "Weird", "message": "pod was evicted"}
+                {"object_type": "Pod", "reason": "EvictionByManager", "message": ""}
             ]
         )
         assert (
             classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION
         )
+
+    def test_no_preemption_victims_message_is_not_preemption(self) -> None:
+        # The FailedScheduling message contains "preempt" but is the opposite of a
+        # preemption; matching only the reason field avoids this false positive.
+        data = _failed(
+            events=[
+                {
+                    "object_type": "Pod",
+                    "reason": "FailedScheduling",
+                    "message": "0/9 nodes are available: No preemption victims found for incoming pod.",
+                }
+            ]
+        )
+        assert classify_appwrapper_failure(data) == AppWrapperVerdict.UNKNOWN
 
     def test_preemption_via_kueue_workload_condition(self) -> None:
         # Events aged out (empty) but the Kueue Workload condition persists.
@@ -191,6 +205,39 @@ class TestClassifyAppWrapperFailure:
         data = _failed(
             failed_pods={"pod-1": {"failure-reason": "Evicted", "logs": {}}},
             events=[{"object_type": "Pod", "reason": "Evicted", "message": "evicted"}],
+        )
+        assert (
+            classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION
+        )
+
+    # ---- sticky flag vs. a later real crash (finding d) ----
+
+    def test_sticky_flag_alone_is_transient(self) -> None:
+        # Earlier preemption, causal events aged out: still transient.
+        assert (
+            classify_appwrapper_failure(_failed(preemption_observed=True))
+            == AppWrapperVerdict.TRANSIENT_PREEMPTION
+        )
+
+    def test_hard_failure_beats_sticky_flag(self) -> None:
+        # An early preemption set the sticky flag, but this terminal snapshot
+        # carries a genuine crash and no fresh preemption signal -> terminal, so a
+        # later real crash isn't masked (and can't hang waiting for more events).
+        data = _failed(
+            preemption_observed=True,
+            failed_pods={"pod-1": {"failure-reason": "OOMKilled", "logs": {}}},
+        )
+        assert classify_appwrapper_failure(data) == AppWrapperVerdict.TERMINAL_FAILURE
+
+    def test_fresh_preemption_beats_hard_failure_even_with_sticky(self) -> None:
+        # A fresh preemption signal co-occurring with a hard failure is still a
+        # preemption side effect.
+        data = _failed(
+            preemption_observed=True,
+            events=[
+                {"object_type": "Pod", "reason": "Preempted", "message": ""},
+                {"object_type": "Pod", "reason": "OOMKilled", "message": ""},
+            ],
         )
         assert (
             classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION

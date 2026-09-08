@@ -24,12 +24,13 @@ scheduler due to resource pressure, higher-priority workloads, or node maintenan
 import json
 from typing import List, Optional, Self, Set
 
-from gbserver.resilience.appwrapper_classifier import (
+from gbserver.resilience.retry_handler import RetryStrategy
+from gbserver.resilience.strategies.appwrapper_classifier import (
     AppWrapperVerdict,
     classify_appwrapper_failure,
 )
-from gbserver.resilience.retry_handler import RetryStrategy
 from gbserver.types.buildevent import BuildEvent, BuildEventType
+from gbserver.types.constants import GBSERVER_MAX_PREEMPTIONS
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,15 +40,19 @@ class PodEvictionRetryStrategy(RetryStrategy):
     """
     Retry strategy for pod evictions and preemptions.
 
-    This strategy triggers a retry when the shared preemption classifier
-    (:func:`classify_appwrapper_failure`) judges a ``Failed`` AppWrapper snapshot
-    to be a transient preemption/eviction/requeue -- i.e. normal Kueue lifecycle
-    churn rather than a workload failure. The classifier draws on durable signals
-    (Kueue Workload ``Evicted``/``Preempted`` conditions and ``requeueState``, and
-    a sticky "preemption observed this launch" flag), so detection no longer
-    depends on the causal K8s events still being present in the terminal snapshot
-    -- they age out of the ~1h event window well before the AppWrapper exhausts
-    its own retryLimit and lands in ``Failed``.
+    This strategy owns the K8s preemption verdict end to end, so the transient-
+    vs-terminal decision lives in one place rather than being split with the
+    generic engine. It uses the classifier (:func:`classify_appwrapper_failure`)
+    to judge a ``Failed`` AppWrapper snapshot, from durable signals (Kueue Workload
+    ``Evicted``/``Preempted`` conditions and ``requeueState``, and a sticky
+    "preemption observed this launch" flag) that survive the ~1h K8s event window:
+
+    * :meth:`should_retry` -- relaunch a transient preemption when retries remain;
+    * :meth:`veto_terminal` -- tell the engine NOT to fail a transient preemption
+      even when retries are disabled/exhausted, until the workload has been
+      preempted more than ``max_preemptions`` times (the ceiling that keeps
+      endless preemption from hanging silently). The count is cumulative over the
+      strategy's lifetime, which spans relaunches.
 
     Unlike mount failures, evictions typically don't require node avoidance since
     the eviction is usually due to resource pressure or higher-priority workloads,
@@ -62,12 +67,16 @@ class PodEvictionRetryStrategy(RetryStrategy):
     avoid_eviction_nodes : bool
         If True, avoid nodes where evictions occurred. If False (default), don't
         avoid any nodes, as evictions are typically cluster-wide resource issues.
+    max_preemptions : int
+        Cumulative preemptions tolerated before a repeatedly-preempted workload is
+        failed rather than vetoed as transient. Defaults to GBSERVER_MAX_PREEMPTIONS.
     """
 
     def __init__(
         self: Self,
         object_types: Optional[List[str]] = None,
         avoid_eviction_nodes: bool = False,
+        max_preemptions: int = GBSERVER_MAX_PREEMPTIONS,
     ) -> None:
         """
         Initialize the retry strategy.
@@ -76,94 +85,111 @@ class PodEvictionRetryStrategy(RetryStrategy):
             object_types: List of K8s object types to monitor. If None, monitors all types.
                          Default: ["AppWrapper"] for backward compatibility.
             avoid_eviction_nodes: Whether to avoid nodes where evictions occurred.
+            max_preemptions: Cumulative preemption ceiling; see class docstring.
         """
         # Default to AppWrapper for backward compatibility
         self.object_types = object_types if object_types is not None else ["AppWrapper"]
         self.avoid_eviction_nodes = avoid_eviction_nodes
+        # Coerce: strategy config comes from YAML, where the value may be a string.
+        self.max_preemptions = int(max_preemptions)
+        # Cumulative preemption classifications over this strategy's lifetime,
+        # which spans relaunches (the handler and its strategies outlive the
+        # monitor's pause/unpause).
+        self.preemption_count = 0
+
+    @staticmethod
+    def _parse(event: BuildEvent) -> Optional[dict]:
+        """Parse the ```json``` block the AppWrapper monitor embeds in the event
+        msg. Returns the dict, or None when absent/unparseable/not an object."""
+        if event.type != BuildEventType.MESSAGE_EVENT:
+            return None
+        try:
+            msg = event.payload.msg  # type: ignore[union-attr]
+            if "```json" in msg:
+                json_start = msg.find("```json") + 7
+                json_end = msg.find("```", json_start)
+                data = json.loads(msg[json_start:json_end].strip())
+            else:
+                data = json.loads(msg)
+        except (json.JSONDecodeError, KeyError, AttributeError) as e:
+            logger.debug("Could not parse event for retry evaluation: %s", e)
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _is_transient_preemption(self: Self, event: BuildEvent) -> bool:
+        """True if this event is a ``Failed`` snapshot of a running workload that
+        the classifier judges a transient preemption/eviction/requeue.
+
+        Note on ``object_types``: this does not filter on ``self.object_types``.
+        The old implementation only counted an ``Unhealthy`` event reported on a
+        configured wrapper type, so a preempted pod wrapped by a different type was
+        ignored. Preemption is transient regardless of what wraps the pod, and gb
+        only launches AppWrappers today, so the gate added fragility without value.
+        ``object_types`` is still honored by :meth:`extract_nodes_to_avoid`. To
+        restrict to specific wrapper types later, gate here (return False unless an
+        event with ``object_type in self.object_types`` is present) rather than in
+        the pure classifier.
+        """
+        data = self._parse(event)
+        if data is None:
+            return False
+        # Only workloads interrupted mid-run: one that never reached Running
+        # failed for a different reason.
+        if data.get("previous_state", "") != "Running":
+            return False
+        return (
+            classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION
+        )
 
     def should_retry(
         self: Self,
         event: BuildEvent,
     ) -> bool:
+        """Retry a transient preemption/eviction/requeue when retries remain.
+
+        Delegates the transient-vs-terminal decision to the shared classifier via
+        :meth:`_is_transient_preemption` (which reads durable preemption signals
+        rather than requiring the causal K8s events to still be present).
         """
-        Check for Failed state with pod eviction/preemption.
-
-        Analyzes BuildEvents emitted by monitors (e.g., AppWrapperMonitor) which contain
-        Kubernetes events from the K8s API server. The monitor embeds K8s event data
-        in the BuildEvent payload.
-
-        Note on ``object_types``: this method no longer filters the preemption
-        decision by ``self.object_types``. The old implementation only counted an
-        ``Unhealthy`` event when it was reported on one of the configured wrapper
-        object types (e.g. ``AppWrapper``), which meant a preempted pod wrapped by
-        a different object type was ignored. Preemption/requeue is transient
-        regardless of what wraps the pod, and gb only launches AppWrappers today,
-        so the gate added fragility without value and was dropped. ``object_types``
-        is still honored by :meth:`extract_nodes_to_avoid` (node selection).
-
-        If a future need arises to restrict retries to specific wrapper types
-        (e.g. a mixed environment where a non-AppWrapper ``Failed`` must stay
-        terminal), re-introduce the gate here rather than in the classifier: after
-        parsing ``data``, return ``False`` unless at least one event with
-        ``object_type in self.object_types`` is present (or thread an
-        ``object_types`` argument through ``classify_appwrapper_failure`` so the
-        Kueue-condition/reset signals are likewise scoped). Keeping it out of the
-        pure classifier preserves the classifier's single-responsibility shape.
-        """
-        # Only process MESSAGE_EVENT types
-        if event.type != BuildEventType.MESSAGE_EVENT:
-            return False
-
-        # Extract the message payload from the BuildEvent
-        # The monitor embeds K8s events and state info in this payload
-        try:
-            msg = event.payload.msg  # type: ignore[union-attr]
-            # The message contains JSON with K8s object state info from the monitor
-            # Try to extract it from markdown code block
-            if "```json" in msg:
-                json_start = msg.find("```json") + 7
-                json_end = msg.find("```", json_start)
-                json_str = msg[json_start:json_end].strip()
-                data = json.loads(json_str)
-            else:
-                # Try to parse the whole message as JSON
-                data = json.loads(msg)
-        except (json.JSONDecodeError, KeyError, AttributeError) as e:
-            logger.debug("Could not parse event for retry evaluation: %s", e)
-            return False
-
-        if not isinstance(data, dict):
-            return False
-
-        # Only retry workloads that were interrupted mid-run (a workload that
-        # never reached Running failed for a different reason).
-        previous_state = data.get("previous_state", "")
-        if previous_state != "Running":
-            logger.debug(
-                "Workload failed but was not running (previous_state=%s), not retrying",
-                previous_state,
-            )
-            return False
-
-        # Delegate the transient-vs-terminal decision to the shared classifier,
-        # which reads durable preemption signals (Kueue Workload conditions,
-        # requeueState, a sticky preemption flag) rather than requiring the causal
-        # K8s events to still be present in this snapshot.
-        should_retry = (
-            classify_appwrapper_failure(data) == AppWrapperVerdict.TRANSIENT_PREEMPTION
-        )
-
+        should_retry = self._is_transient_preemption(event)
         if should_retry:
             logger.info(
-                "Conditions met for preemption retry: state=%s, previous_state=%s, "
-                "max_resets_seen=%s, object_types=%s",
-                data.get("state"),
-                previous_state,
-                data.get("max_resets_seen"),
+                "Conditions met for preemption retry (object_types=%s)",
                 self.object_types,
             )
-
         return should_retry
+
+    def veto_terminal(
+        self: Self,
+        event: BuildEvent,
+    ) -> bool:
+        """Veto the engine's terminal verdict for a transient preemption so it does
+        not fail the build even when retries are disabled/exhausted -- until the
+        cumulative preemption count exceeds ``max_preemptions``, at which point the
+        workload is allowed to fail so endless preemption can't hang silently.
+
+        Counting here (once per event, on the single terminal path) means the
+        ceiling engages for any preemption signal -- Kueue requeue included -- not
+        just those that bump the AppWrapper reset count, and accumulates across
+        relaunches.
+        """
+        if not self._is_transient_preemption(event):
+            return False
+        self.preemption_count += 1
+        if self.preemption_count > self.max_preemptions:
+            logger.error(
+                "Workload preempted %d times (> max_preemptions=%d); "
+                "allowing terminal failure.",
+                self.preemption_count,
+                self.max_preemptions,
+            )
+            return False
+        logger.info(
+            "Vetoing terminal failure for transient preemption (%d/%d).",
+            self.preemption_count,
+            self.max_preemptions,
+        )
+        return True
 
     def extract_nodes_to_avoid(
         self: Self,
