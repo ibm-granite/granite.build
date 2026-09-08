@@ -127,11 +127,10 @@ class TestSshMerge:
         text = _read(tmp_path / ".slurm" / "config")
         assert "Host clusterA" in text and "Host clusterB" in text
 
-    def test_differing_managed_block_is_overwritten(self, tmp_path):
-        # A differing gbserver-managed block for the same alias is overwritten
+    def test_same_env_rekey_self_heals(self, tmp_path):
+        # A differing managed block owned by the SAME environment is overwritten
         # (last-writer-wins), self-healing a stale or re-keyed entry left by an
-        # earlier run. No lease, no refusal — foreign entries are the only ones
-        # gbserver refuses to clobber (covered separately below).
+        # earlier run of that env. No lease, no refusal.
         sc.merge_ssh_blocks(
             "slurm",
             sc.render_ssh_hosts([_host("clusterA", HostName="a")], {}),
@@ -141,11 +140,32 @@ class TestSshMerge:
         sc.merge_ssh_blocks(
             "slurm",
             sc.render_ssh_hosts([_host("clusterA", HostName="NEW")], {}),
-            "envB",
+            "envA",  # same environment re-keying its own alias
             home=tmp_path,
         )
         text = _read(tmp_path / ".slurm" / "config")
         assert "HostName NEW" in text and "HostName a" not in text
+
+    def test_cross_env_alias_collision_raises(self, tmp_path):
+        # A differing managed block owned by a DIFFERENT environment is a
+        # cross-environment clash, not a re-key: gbserver refuses and names both
+        # environments rather than silently clobbering the other's host.
+        sc.merge_ssh_blocks(
+            "slurm",
+            sc.render_ssh_hosts([_host("clusterA", HostName="a")], {}),
+            "envA",
+            home=tmp_path,
+        )
+        with pytest.raises(SkypilotConfigCollisionError, match="envA"):
+            sc.merge_ssh_blocks(
+                "slurm",
+                sc.render_ssh_hosts([_host("clusterA", HostName="NEW")], {}),
+                "envB",
+                home=tmp_path,
+            )
+        # The first environment's entry is left intact (no partial overwrite).
+        text = _read(tmp_path / ".slurm" / "config")
+        assert "HostName a" in text and "HostName NEW" not in text
 
     def test_foreign_content_preserved_and_differing_alias_conflicts(self, tmp_path):
         dest = tmp_path / ".slurm" / "config"

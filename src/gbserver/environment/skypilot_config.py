@@ -22,8 +22,10 @@ Write/merge-only. Three destinations are supported:
     merged by alias under a cross-process file lock). A **foreign** (non-gbserver)
     entry with differing content raises ``SkypilotConfigCollisionError`` —
     gbserver never clobbers a user's own hosts. A prior **gbserver-managed** block
-    with differing content is overwritten (last-writer-wins), self-healing a
-    re-keyed entry; identical content is a no-op. SkyPilot re-reads the single
+    owned by the *same* environment with differing content is overwritten,
+    self-healing a re-keyed entry; identical content is a no-op; a differing block
+    owned by a *different* environment raises (a cross-environment alias clash is
+    surfaced, not silently overwritten — the owner is recorded per alias). SkyPilot re-reads the single
     ``~/.<cloud>/config`` for a cluster's whole lifetime, and it caches SSH
     ControlMaster sockets keyed on (host, port, user) — NOT the key — so a
     re-keyed config is masked by a live socket until it expires. Clearing that
@@ -367,11 +369,16 @@ def _merge_ssh(
 ) -> Dict[str, Tuple[str, str]]:
     """Merge incoming alias blocks into existing; raise only on a real conflict.
 
-    Content-aware: a pre-existing entry for the same alias with identical content
-    is a no-op. A **foreign** (non-gbserver) entry with differing content always
-    conflicts — gbserver never overwrites user-owned entries. A prior
-    **gbserver-managed** block with differing content is overwritten
-    (last-writer-wins), self-healing a stale or re-keyed entry.
+    Content-aware and owner-aware: a pre-existing entry for the same alias with
+    identical content is a no-op. A **foreign** (non-gbserver) entry with differing
+    content always conflicts — gbserver never overwrites user-owned entries. A prior
+    **gbserver-managed** block with differing content is overwritten only when it is
+    owned by *this* environment (self-healing a stale or re-keyed entry); a block
+    owned by a *different* environment raises a collision naming both owners, so two
+    environments on the same cloud that declare the same ``Host`` alias with
+    conflicting content are surfaced rather than silently clobbering each other. A
+    managed block with no recorded owner (e.g. written before owner tracking) is
+    treated as self-healable rather than raising an unattributable collision.
 
     :param existing: Current ``{alias: (block, owner)}`` from the managed region.
     :param incoming: New ``{alias: block}`` to merge in.
@@ -379,8 +386,8 @@ def _merge_ssh(
     :param env_name: The contributing environment name.
     :param dest: Destination file path (for messages).
     :returns: The merged ``{alias: (block, owner)}`` (foreign-equivalent aliases omitted).
-    :raises SkypilotConfigCollisionError: On a foreign clash (differing content in
-        a non-gbserver entry for the same alias).
+    :raises SkypilotConfigCollisionError: On a foreign clash, or a differing block
+        owned by another gbserver environment.
     """
     merged = dict(existing)
     for alias, block in incoming.items():
@@ -395,11 +402,21 @@ def _merge_ssh(
                 )
             # Identical foreign entry already provides this host — leave it as-is.
             continue
-        if alias in merged and _blocks_equivalent(merged[alias][0], block):
-            # Identical managed block already present — no-op (avoids a rewrite
-            # and preserves the recorded owner).
-            continue
-        # New alias, or a differing managed block: (over)write it (self-heal).
+        if alias in merged:
+            prev_block, prev_owner = merged[alias]
+            if _blocks_equivalent(prev_block, block):
+                # Identical managed block already present — no-op (avoids a
+                # rewrite and preserves the recorded owner).
+                continue
+            if prev_owner and prev_owner != env_name:
+                # A *different* environment already manages this alias with
+                # differing content: a cross-environment clash, not a re-key of
+                # our own entry. Refuse and name both owners.
+                _raise_collision(
+                    "SSH Host", alias, env_name, f"environment '{prev_owner}'", dest
+                )
+        # New alias, our own re-key, or an unowned managed block: (over)write it
+        # (self-heal).
         merged[alias] = (block, env_name)
     return merged
 
@@ -435,17 +452,18 @@ def merge_ssh_blocks(
 ) -> None:
     """Merge rendered SSH ``Host`` blocks into ``~/.<cloud>/config``.
 
-    Idempotent last-writer-wins: an identical managed block is a no-op; a
-    differing gbserver-managed block is overwritten (self-heals a re-keyed
-    entry); a differing **foreign** (non-gbserver) entry raises. Serialized
-    across threads and processes by the per-cloud file lock.
+    Idempotent, owner-aware last-writer-wins: an identical managed block is a
+    no-op; a differing block owned by the *same* environment is overwritten
+    (self-heals a re-keyed entry); a differing block owned by a *different*
+    environment, or a differing **foreign** (non-gbserver) entry, raises.
+    Serialized across threads and processes by the per-cloud file lock.
 
     :param cloud: Cloud name (``slurm``/``lsf``) -> ``~/.<cloud>/config``.
     :param alias_blocks: ``{alias: block}`` to merge.
     :param env_name: The contributing environment name.
     :param home: Home dir override (tests).
-    :raises SkypilotConfigCollisionError: On a foreign clash (a non-gbserver
-        entry for the same alias with differing content).
+    :raises SkypilotConfigCollisionError: On a foreign clash, or a differing block
+        for the same alias owned by another gbserver environment.
     """
     if not alias_blocks:
         return

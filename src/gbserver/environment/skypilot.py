@@ -1031,13 +1031,14 @@ class Skypilot(Environment):
     def _materialize_ssh_for_launch(self: Self, cloud: str) -> None:
         """Merge this env's inline SSH config for ``cloud`` into ``~/.<cloud>/config``.
 
-        Idempotent last-writer-wins (see ``merge_ssh_blocks``): an identical block
-        is a no-op, so retry relaunches are free; a differing gbserver-managed
-        block self-heals a re-keyed entry. No-op when the env defines no inline
-        SSH config.
+        Idempotent, owner-aware last-writer-wins (see ``merge_ssh_blocks``): an
+        identical block is a no-op, so retry relaunches are free; a differing block
+        owned by this same environment self-heals a re-keyed entry. No-op when the
+        env defines no inline SSH config.
 
         :param cloud: The HPC cloud being provisioned (``"slurm"``/``"lsf"``).
-        :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash.
+        :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash, or
+            a differing block for the same alias owned by another environment.
         """
         cfg = self.config.config if self.config else {}
         ssh_raw = cfg.get("cluster_ssh_configs")
