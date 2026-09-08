@@ -84,7 +84,7 @@ interface Props {
 }
 
 /**
- * Per-step training curves for a tuning job, above the trials table.
+ * Per-step training curves for a tuning job, below the trials table.
  *
  * The job's two phases are drawn as separate blocks and never share a y-scale.
  * The HPO search trials each saw a fraction of the data for a few epochs; the
@@ -219,7 +219,7 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
   const sharedSpec = { theme, colorScale, xTitle, height: '260px' } as const
 
   return (
-    <div style={{ marginBottom: '2rem' }}>
+    <div style={{ marginTop: '2rem' }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'flex-end', marginBottom: '0.5rem' }}>
         <div style={{ minWidth: '11rem' }}>
           <FormLabel style={{ marginBottom: '0.375rem' }}>X axis</FormLabel>

@@ -172,6 +172,7 @@ export function TrialsTable({ job }: Props) {
     return (
       <div>
         <TrialProgressSummary job={job} trials={trials} />
+        <InlineNotification kind="info" title="No trial data available" hideCloseButton />
         <TrialMetricsCharts
           job={job}
           trials={trials}
@@ -179,7 +180,6 @@ export function TrialsTable({ job }: Props) {
           colorScale={colorScale}
           scope={scope}
         />
-        <InlineNotification kind="info" title="No trial data available" hideCloseButton />
       </div>
     )
   }
@@ -195,7 +195,17 @@ export function TrialsTable({ job }: Props) {
           kind="ghost"
           size="sm"
           renderIcon={ArrowLeft}
-          onClick={() => setShowCompare(false)}
+          // Clear the mirror on the way back, not just the compare flag.
+          // Carbon's DataTable keeps its own checkbox state and `selectedIds`
+          // only mirrors it through the onSelect handlers below. Entering this
+          // view unmounts the table, so going back mounts a fresh one whose
+          // internal selection is empty — leaving `selectedIds` populated would
+          // strand the Compare button and the radar on screen with every
+          // checkbox visibly unticked.
+          onClick={() => {
+            setShowCompare(false)
+            setSelectedIds([])
+          }}
           style={{ marginBottom: '1rem' }}
         >
           Back to Hyperparameters
@@ -240,13 +250,6 @@ export function TrialsTable({ job }: Props) {
   return (
     <div>
       <TrialProgressSummary job={job} trials={trials} />
-      <TrialMetricsCharts
-        job={job}
-        trials={trials}
-        trialsLoaded={!isLoading && !isError}
-        colorScale={colorScale}
-        scope={scope}
-      />
       {canOpenCompare && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '0.5rem' }}>
           <Button size="sm" onClick={() => setShowCompare(true)}>
@@ -254,6 +257,13 @@ export function TrialsTable({ job }: Props) {
           </Button>
         </div>
       )}
+      {/* Table left, radar right once a comparison is selectable. `flexWrap` drops
+          the radar under the table when the viewport can't seat both, and
+          `minWidth: 0` lets the table column actually shrink — without it a flex
+          item refuses to go below its content width and overflows the row. With
+          no radar the table is the only child and takes the full width. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'flex-start' }}>
+        <div style={{ flex: '1 1 32rem', minWidth: 0, overflowX: 'auto' }}>
       <DataTable rows={rows} headers={HEADERS} isSortable>
         {({ rows: tableRows, headers, getTableProps, getHeaderProps, getRowProps, getExpandedRowProps, getSelectionProps }) => (
           <Table {...getTableProps()} size="sm">
@@ -357,21 +367,31 @@ export function TrialsTable({ job }: Props) {
           </Table>
         )}
       </DataTable>
-
-      {canShowRadar && (
-        <div style={{ height: '420px', marginTop: '1.5rem' }}>
-          <RadarChart
-            data={radarData}
-            options={{
-              title: 'Trial comparison',
-              radar: { axes: { angle: 'feature', value: 'score' } },
-              data: { groupMapsTo: 'product' },
-              theme,
-              height: '420px',
-            }}
-          />
         </div>
-      )}
+
+        {canShowRadar && (
+          <div style={{ flex: '0 0 26rem', maxWidth: '100%', height: '420px' }}>
+            <RadarChart
+              data={radarData}
+              options={{
+                title: 'Trial comparison',
+                radar: { axes: { angle: 'feature', value: 'score' } },
+                data: { groupMapsTo: 'product' },
+                theme,
+                height: '420px',
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      <TrialMetricsCharts
+        job={job}
+        trials={trials}
+        trialsLoaded={!isLoading && !isError}
+        colorScale={colorScale}
+        scope={scope}
+      />
     </div>
   )
 }
