@@ -11,9 +11,7 @@ targets:
 target_expectations:
   # Each target uses hf:// for both input and output, so step_count covers the
   # single `command` step plus the auto-queued HF input-pull and output-push
-  # steps (derived from the k8s hf reference: 1 hf-in + 1 hf-out + 1 step ->
-  # 5 steps, 3 jobstats). Confirm/adjust these against the first live BlueVela
-  # run — the exact hf pull/push step expansion is validated only at runtime.
+  # steps (1 hf-in + command + 1 hf-out ->  3 steps, 1 jobstats). 
   - target_name: first
     step_count: 3
     input_artifact_count: 1
