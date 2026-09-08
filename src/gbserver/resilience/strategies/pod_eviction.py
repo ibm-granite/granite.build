@@ -40,24 +40,19 @@ class PodEvictionRetryStrategy(RetryStrategy):
     """
     Retry strategy for pod evictions and preemptions.
 
-    This strategy owns the K8s preemption verdict end to end, so the transient-
-    vs-terminal decision lives in one place rather than being split with the
-    generic engine. It uses the classifier (:func:`classify_appwrapper_failure`)
-    to judge a ``Failed`` AppWrapper snapshot, from durable signals (Kueue Workload
-    ``Evicted``/``Preempted`` conditions and ``requeueState``, and a sticky
-    "preemption observed this launch" flag) that survive the ~1h K8s event window:
+    The classifier (:func:`classify_appwrapper_failure`) judges a ``Failed``
+    AppWrapper snapshot from durable signals -- Kueue Workload ``Evicted``/
+    ``Preempted`` conditions and ``requeueState``, plus a sticky "preemption
+    observed this launch" flag -- that survive the ~1h K8s event window.
+    :meth:`should_retry` marks a transient preemption retriable (so the engine
+    relaunches it while retries remain); :meth:`is_exhausted` tolerates it on a
+    separate ``max_preemptions`` budget rather than the shared retry budget, so a
+    preemption does not fail the build even with step retries disabled, until it
+    has occurred more than ``max_preemptions`` times.
 
-    * :meth:`should_retry` -- relaunch a transient preemption when retries remain;
-    * :meth:`veto_terminal` -- tell the engine NOT to fail a transient preemption
-      even when retries are disabled/exhausted, until the workload has been
-      preempted more than ``max_preemptions`` times (the ceiling that keeps
-      endless preemption from hanging silently). The count is cumulative over the
-      strategy's lifetime, which spans relaunches.
-
-    Unlike mount failures, evictions typically don't require node avoidance since
-    the eviction is usually due to resource pressure or higher-priority workloads,
-    not node-specific issues. However, if the same node keeps evicting pods, we
-    may want to avoid it.
+    Evictions typically don't require node avoidance since they are cluster-wide
+    resource pressure, not node-specific -- but the same node repeatedly evicting
+    can be avoided via ``avoid_eviction_nodes``.
 
     Parameters
     ----------
@@ -92,9 +87,7 @@ class PodEvictionRetryStrategy(RetryStrategy):
         self.avoid_eviction_nodes = avoid_eviction_nodes
         # Coerce: strategy config comes from YAML, where the value may be a string.
         self.max_preemptions = int(max_preemptions)
-        # Cumulative preemption classifications over this strategy's lifetime,
-        # which spans relaunches (the handler and its strategies outlive the
-        # monitor's pause/unpause).
+        # Preemptions seen this launch (spans relaunches); see is_exhausted.
         self.preemption_count = 0
 
     @staticmethod
@@ -145,51 +138,43 @@ class PodEvictionRetryStrategy(RetryStrategy):
         self: Self,
         event: BuildEvent,
     ) -> bool:
-        """Retry a transient preemption/eviction/requeue when retries remain.
+        """True for a transient preemption/eviction/requeue. Pure: the classifier
+        reads durable preemption signals rather than requiring the causal K8s
+        events to still be present. The ceiling is enforced by :meth:`is_exhausted`,
+        not here, so exceeding it makes the event terminal rather than merely
+        un-retriable."""
+        return self._is_transient_preemption(event)
 
-        Delegates the transient-vs-terminal decision to the shared classifier via
-        :meth:`_is_transient_preemption` (which reads durable preemption signals
-        rather than requiring the causal K8s events to still be present).
-        """
-        should_retry = self._is_transient_preemption(event)
-        if should_retry:
-            logger.info(
-                "Conditions met for preemption retry (object_types=%s)",
-                self.object_types,
-            )
-        return should_retry
-
-    def veto_terminal(
+    def is_exhausted(
         self: Self,
         event: BuildEvent,
+        _retry_count: int,
+        _max_retries: int,
     ) -> bool:
-        """Veto the engine's terminal verdict for a transient preemption so it does
-        not fail the build even when retries are disabled/exhausted -- until the
-        cumulative preemption count exceeds ``max_preemptions``, at which point the
-        workload is allowed to fail so endless preemption can't hang silently.
+        """A preemption is tolerated -- ignoring the shared retry budget -- until
+        it has occurred more than ``max_preemptions`` times, so the engine keeps
+        the build alive across preemptions (even with step retries disabled) but
+        still fails one preempted endlessly instead of hanging.
 
-        Counting here (once per event, on the single terminal path) means the
-        ceiling engages for any preemption signal -- Kueue requeue included -- not
-        just those that bump the AppWrapper reset count, and accumulates across
-        relaunches.
+        The engine calls this once per retriable event, so it doubles as the
+        occurrence counter; the count accumulates across relaunches and covers any
+        preemption signal (Kueue requeue included), not just AppWrapper resets.
         """
-        if not self._is_transient_preemption(event):
-            return False
         self.preemption_count += 1
-        if self.preemption_count > self.max_preemptions:
+        exhausted = self.preemption_count > self.max_preemptions
+        if exhausted:
             logger.error(
-                "Workload preempted %d times (> max_preemptions=%d); "
-                "allowing terminal failure.",
+                "Workload preempted %d times (> max_preemptions=%d); failing.",
                 self.preemption_count,
                 self.max_preemptions,
             )
-            return False
-        logger.info(
-            "Vetoing terminal failure for transient preemption (%d/%d).",
-            self.preemption_count,
-            self.max_preemptions,
-        )
-        return True
+        else:
+            logger.info(
+                "Tolerating transient preemption (%d/%d).",
+                self.preemption_count,
+                self.max_preemptions,
+            )
+        return exhausted
 
     def extract_nodes_to_avoid(
         self: Self,
