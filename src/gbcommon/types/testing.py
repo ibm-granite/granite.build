@@ -94,7 +94,7 @@ def disable_failure_simulation() -> None:
     os.environ.pop(ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO, None)
 
 
-# Triggers a one-shot clear of SkyPilot's cached SSH ControlMaster sockets before
+# Triggers a clear of SkyPilot's cached SSH ControlMaster sockets before
 # an HPC (SLURM/LSF) launch. Those sockets are keyed on (host, port, user) — NOT
 # the key — so a re-keyed cluster_ssh_config is masked by a live socket until it
 # expires. Tests validating an SSH key/credential change set this so SkyPilot
