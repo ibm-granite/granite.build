@@ -91,9 +91,12 @@ class CustomFormatter(logging.Formatter):
         logging.CRITICAL: DO_CRITICAL_COLOR + DEFAULT_LOG_FORMAT + DO_RESET,
     }
 
+    def __init__(self, datefmt: Optional[str] = None):
+        super().__init__(datefmt=datefmt)
+
     def format(self, record):
         log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt)
+        formatter = logging.Formatter(log_fmt, datefmt=self.datefmt)
         return formatter.format(record)
 
 
@@ -150,12 +153,11 @@ def configure_logging(
     handler.setFormatter(
         logging.Formatter(format, datefmt=datefmt)
         if format is not None
-        else CustomFormatter()
+        else CustomFormatter(datefmt=datefmt)
     )
     logging.basicConfig(
         handlers=[handler],
         level=get_log_level(level),
-        datefmt=datefmt,
         force=True,
     )
     __LOGGER_CONFIGURED = True
