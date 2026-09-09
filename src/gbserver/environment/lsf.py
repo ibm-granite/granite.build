@@ -620,14 +620,16 @@ class Lsf(Environment):
         return (final_asset_dir, jobsub_path, final_jobsub_path, jobsub_data)
 
     @staticmethod
-    def _declared_secret_mappings(
+    def _parse_declared_secrets(
         config: Optional[Dict],
     ) -> List[EnvironmentVariableConfig]:
         """Parse ``config.lsf.secrets`` into the shared declarative mapping list.
 
         Reads ``config.lsf.secrets`` and validates it into the cross-environment
         :class:`StepSecretsConfig`, returning its allow-list of secret->env-var
-        mappings (empty when the section is absent).
+        mappings (empty when the section is absent). Shared by the
+        :meth:`_declared_secret_mappings` composer hook and the redaction-key
+        helper :meth:`_get_secret_env_keys`.
 
         :param config: the step config dict (source of the LSF secret mappings).
         :returns: the list of declared ``EnvironmentVariableConfig`` mappings.
@@ -637,30 +639,29 @@ class Lsf(Environment):
             lsf_secrets
         ).secret_names_to_use_as_env_variable
 
-    @staticmethod
-    def _merge_secret_env_vars(
-        env: Dict[str, str],
-        config: Optional[Dict],
-        setup_config: Optional[Dict],
-    ) -> None:
-        """Resolve LSF secret->env-var mappings into ``env`` (in place).
+    def _declared_secret_mappings(
+        self: Self, **kwargs: Any
+    ) -> List[EnvironmentVariableConfig]:
+        """Declared LSF secret mappings for the shared launch-env composer.
 
-        Delegates to :meth:`Environment._resolve_declared_secret_env_vars` (the
-        shared least-privilege resolver used by every environment): reads the
-        declared allow-list from ``config.lsf.secrets`` and looks each secret up
-        in ``setup_config.space_secrets``, setting ``env[env_name]`` to its value.
+        Overrides :meth:`Environment._declared_secret_mappings` so
+        :meth:`Environment.get_launch_env_vars` injects the step's declared
+        secrets (``config.lsf.secrets``, resolved against ``self.secrets`` — the
+        same space-secret bag once threaded via ``setup_config.space_secrets``)
+        as its lowest layer. Only declared secrets are exposed (least-privilege,
+        matching SkyPilot/K8s).
 
-        :param env: the env dict to populate (mutated in place).
-        :param config: the step config dict (source of the secret mappings).
-        :param setup_config: the setup config dict (source of ``space_secrets``).
-        :raises ValueError: if a mapping omits ``env_name`` or a declared secret
-            is absent from ``space_secrets`` (secret values never in the message).
+        A user may name a secret with the legacy ``LLMB_`` prefix; the base's
+        unconditional aliasing then mints a ``GB_`` twin holding that value, and
+        :meth:`_get_secret_env_keys` mirrors the transform so the twin is masked
+        in the redacted command (see ``_build_cmd_to_run_with_ssh``). The local
+        (non-SSH) bsub path ignores env entirely (a pre-existing limitation of
+        ``_get_local_bsub_command``).
+
+        :param kwargs: the launch context; only ``config`` is read.
+        :returns: the declared ``EnvironmentVariableConfig`` mappings.
         """
-        mappings = Lsf._declared_secret_mappings(config)
-        space_secrets = (setup_config or {}).get("space_secrets", {})
-        env.update(
-            Environment._resolve_declared_secret_env_vars(mappings, space_secrets)
-        )
+        return self._parse_declared_secrets(kwargs.get("config"))
 
     @staticmethod
     def _get_secret_env_keys(config: Optional[Dict]) -> set[str]:
@@ -677,39 +678,8 @@ class Lsf(Environment):
         :returns: the set of env-var names (declared + GB_ twins) to redact.
         """
         return Environment._declared_secret_env_key_names(
-            Lsf._declared_secret_mappings(config)
+            Lsf._parse_declared_secrets(config)
         )
-
-    def get_launch_env_vars(
-        self: Self,
-        run_metadata: Optional[Dict[str, Any]] = None,
-        config: Optional[Dict] = None,
-        setup_config: Optional[Dict] = None,
-        **kwargs: Any,
-    ) -> Dict[str, str]:
-        """Build the full env dict injected into an LSF job (SSH path only).
-
-        Precedence (lowest->highest): secret-derived vars
-        (``config.lsf.secrets``) < the standard cross-environment set from
-        ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID), which is
-        authoritative. Note the local (non-SSH) bsub path ignores env entirely
-        (a pre-existing limitation of ``_get_local_bsub_command``).
-
-        :param run_metadata: launch run_metadata, forwarded to ``super()``.
-        :param config: the step config dict (source of the LSF secret mappings).
-        :param setup_config: the setup config dict (source of ``space_secrets``).
-        :returns: the complete ``{name: value}`` env dict for the LSF job.
-        """
-        env: Dict[str, str] = {}
-        self._merge_secret_env_vars(env, config, setup_config)
-        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        # Uniform with the other environments; a no-op for LSF *launcher* vars
-        # since those are derived in the jobsub shell script, not this dict. But
-        # NOT a no-op in general: a user may name a space secret with the legacy
-        # LLMB_ prefix, and aliasing then mints a GB_ twin holding that secret
-        # value. _get_secret_env_keys mirrors this so the twin is masked in
-        # redaction (see _build_cmd_to_run_with_ssh).
-        return self._add_gb_aliases(env)
 
     async def launch_bsub(
         self: Self,
@@ -756,7 +726,6 @@ class Lsf(Environment):
         env_vars = self.get_launch_env_vars(
             run_metadata=kwargs.get("run_metadata", {}),
             config=kwargs.get("config", {}),
-            setup_config=kwargs.get("setup_config", {}),
         )
         # Names of env vars holding injected space secrets (plus the GB_ twins
         # that aliasing mints for LLMB_-prefixed names) — their values must be

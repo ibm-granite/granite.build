@@ -78,57 +78,47 @@ class Bash(Environment):
             )  # Decode escaped sequences safely
             self._env[key_str] = value_str
 
-    def get_launch_env_vars(
-        self: Self,
-        run_metadata: Optional[Dict[str, Any]] = None,
-        launcher_config: Optional[Dict] = None,
-        bash_config_env: Optional[Dict] = None,
-        launch_id: str = "",
-        targetsteprun_asset_dir: Optional[Path] = None,
-        final_asset_output_dir: Optional[Path] = None,
-        **kwargs: Any,
-    ) -> Dict[str, str]:
-        """Build the full env dict for a bash step launch.
+    def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
+        """Bash env layers for the shared launch-env composer.
 
-        Precedence (lowest->highest): ``self._env`` (space secrets +
-        environment.yaml ``env``) < launcher ``env`` < ``config.bash.env`` <
-        the built-in ``LLMB_BASH_*`` vars < the standard cross-environment set
-        from ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID). The
-        child does NOT inherit ``os.environ`` — so these GBTEST_ vars are how
-        HF-op mocking reaches the step — and it needs ``LLMB_BASH_PYTHON_DIR``
-        to find a python.
+        Overrides :meth:`Environment._launch_env_layers`, folding Bash into the
+        single launch-env strategy. Bash's bulk-loaded ``self._env`` (space
+        secrets + environment.yaml ``env``, populated in ``setup_nohup``) is
+        simply its lowest layer here. Ordered lowest->highest above the empty
+        declared-secret layer and below the standard set: ``self._env`` <
+        launcher ``env`` < ``config.bash.env`` < the built-in ``LLMB_BASH_*``
+        vars.
 
-        The built-in launcher vars are standardized on the ``GB_`` prefix
-        (``GB_BASH_*``): ``_add_gb_aliases`` mirrors each ``LLMB_BASH_*`` onto a
-        ``GB_BASH_*`` twin as the final step, keeping the ``LLMB_BASH_*`` names
-        for backwards compatibility.
+        The child does NOT inherit ``os.environ`` — so the standard set's
+        GBTEST_ vars are how HF-op mocking reaches the step — and it needs
+        ``LLMB_BASH_PYTHON_DIR`` to find a python. The built-in launcher vars are
+        standardized on the ``GB_`` prefix (``GB_BASH_*``): the composer's
+        unconditional aliasing mirrors each ``LLMB_BASH_*`` onto a ``GB_BASH_*``
+        twin, keeping the legacy ``LLMB_BASH_*`` names for compatibility.
 
-        :param run_metadata: launch run_metadata, forwarded to ``super()`` for
-            the standard vars.
-        :param launcher_config: the step.yaml launcher config (its ``env``).
-        :param bash_config_env: ``config.bash.env`` per-build overrides.
-        :param launch_id: unique id for this launch (LLMB_BASH_LAUNCH_ID).
-        :param targetsteprun_asset_dir: asset dir (LLMB_BASH_ASSET_DIR).
-        :param final_asset_output_dir: output dir from ``_copy_assets``; when
-            provided, exported as LLMB_BASH_OUTPUT_DIR (a late/async value, so
-            it is passed in rather than recomputed here).
-        :returns: the complete ``{name: value}`` env dict for the subprocess.
+        :param kwargs: the launch context; reads ``launcher_config`` (its
+            ``env``), ``bash_config_env`` (``config.bash.env``), ``launch_id``
+            (LLMB_BASH_LAUNCH_ID), ``targetsteprun_asset_dir``
+            (LLMB_BASH_ASSET_DIR), and ``final_asset_output_dir`` (a late/async
+            value exported as LLMB_BASH_OUTPUT_DIR when provided).
+        :returns: the ordered env layers to compose.
         """
-        launcher_config = launcher_config or {}
-        env: Dict[str, str] = {
-            **self._env,
-            **launcher_config.get("env", {}),
-            **{str(k): str(v) for k, v in (bash_config_env or {}).items()},
+        launcher_config = kwargs.get("launcher_config") or {}
+        bash_config_env = kwargs.get("bash_config_env") or {}
+        builtins: Dict[str, str] = {
+            "LLMB_BASH_LAUNCH_ID": kwargs.get("launch_id", ""),
+            "LLMB_BASH_ASSET_DIR": str(kwargs.get("targetsteprun_asset_dir")),
+            "LLMB_BASH_PYTHON_DIR": os.path.dirname(sys.executable),
         }
-        env["LLMB_BASH_LAUNCH_ID"] = launch_id
-        env["LLMB_BASH_ASSET_DIR"] = str(targetsteprun_asset_dir)
-        env["LLMB_BASH_PYTHON_DIR"] = os.path.dirname(sys.executable)
+        final_asset_output_dir = kwargs.get("final_asset_output_dir")
         if final_asset_output_dir is not None:
-            env["LLMB_BASH_OUTPUT_DIR"] = str(final_asset_output_dir)
-        # Standard cross-environment vars (e.g. GB_BUILD_ID) win over config.
-        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        # Mirror LLMB_BASH_* onto GB_BASH_* twins (GB_ is the standard prefix).
-        return self._add_gb_aliases(env)
+            builtins["LLMB_BASH_OUTPUT_DIR"] = str(final_asset_output_dir)
+        return [
+            self._env,
+            launcher_config.get("env", {}),
+            {str(k): str(v) for k, v in bash_config_env.items()},
+            builtins,
+        ]
 
     async def launch_nohup(
         self: Self,

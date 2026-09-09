@@ -393,45 +393,46 @@ class Docker(Environment):
             else:
                 env[k] = str(v)
 
-    def get_launch_env_vars(
-        self: Self,
-        run_metadata: Optional[Dict[str, Any]] = None,
-        launcher_config: Optional[Dict] = None,
-        docker_config: Optional[Dict] = None,
-        launch_id: str = "",
-        container_name: str = "",
-        **kwargs: Any,
-    ) -> Dict[str, str]:
-        """Build the full env dict for a docker step launch.
+    def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
+        """Docker env layers for the shared launch-env composer.
 
-        Precedence (lowest->highest): environment.yaml defaults ``env`` <
-        ``config.docker.env`` < launcher ``env`` < built-in ``LLMB_DOCKER_*``
-        vars < the standard cross-environment set from ``super()`` (GBTEST_
-        test-control vars + e.g. GB_BUILD_ID), which is authoritative.
+        Overrides :meth:`Environment._launch_env_layers` (Docker injects no
+        declared space secrets, so it leaves :meth:`_declared_secret_mappings`
+        at its empty default). Ordered lowest->highest above the empty secret
+        layer and below the standard set: environment.yaml defaults ``env`` <
+        ``config.docker.env`` < launcher ``env`` < the built-in
+        ``LLMB_DOCKER_*`` vars.
+
+        The two config env sections are pre-merged with :meth:`_merge_env_section`
+        (which unwraps the ``{"value": ...}`` form and ignores a non-dict
+        section) into a single lowest layer.
 
         The built-in launcher vars are standardized on the ``GB_`` prefix
-        (``GB_DOCKER_*``): ``_add_gb_aliases`` mirrors each ``LLMB_DOCKER_*``
-        onto a ``GB_DOCKER_*`` twin as the final step, keeping the
+        (``GB_DOCKER_*``): the composer's unconditional aliasing mirrors each
+        ``LLMB_DOCKER_*`` onto a ``GB_DOCKER_*`` twin, keeping the legacy
         ``LLMB_DOCKER_*`` names for backwards compatibility.
 
-        :param run_metadata: launch run_metadata, forwarded to ``super()``.
-        :param launcher_config: the step.yaml launcher config (its ``env``).
-        :param docker_config: ``config.docker`` (its ``env``).
-        :param launch_id: unique id for this launch (LLMB_DOCKER_LAUNCH_ID).
-        :param container_name: container name (LLMB_DOCKER_CONTAINER_NAME).
-        :returns: the complete ``{name: value}`` env dict for the container.
+        :param kwargs: the launch context; reads ``docker_config``
+            (``config.docker`` env), ``launcher_config`` (its ``env``),
+            ``launch_id`` (LLMB_DOCKER_LAUNCH_ID), and ``container_name``
+            (LLMB_DOCKER_CONTAINER_NAME).
+        :returns: the ordered env layers to compose.
         """
-        env: Dict[str, str] = {}
-        self._merge_env_section(env, (self._get_defaults() or {}).get("env"))
-        self._merge_env_section(env, (docker_config or {}).get("env"))
-        launcher_env = (launcher_config or {}).get("env")
-        if isinstance(launcher_env, dict):
-            env.update(launcher_env)
-        env["LLMB_DOCKER_LAUNCH_ID"] = launch_id
-        env["LLMB_DOCKER_CONTAINER_NAME"] = container_name
-        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        # Mirror LLMB_DOCKER_* onto GB_DOCKER_* twins (GB_ is the standard prefix).
-        return self._add_gb_aliases(env)
+        config_env: Dict[str, str] = {}
+        self._merge_env_section(config_env, (self._get_defaults() or {}).get("env"))
+        self._merge_env_section(
+            config_env, (kwargs.get("docker_config") or {}).get("env")
+        )
+        launcher_env = (kwargs.get("launcher_config") or {}).get("env")
+        builtins: Dict[str, str] = {
+            "LLMB_DOCKER_LAUNCH_ID": kwargs.get("launch_id", ""),
+            "LLMB_DOCKER_CONTAINER_NAME": kwargs.get("container_name", ""),
+        }
+        return [
+            config_env,
+            launcher_env if isinstance(launcher_env, dict) else {},
+            builtins,
+        ]
 
     async def launch_docker(
         self: Self,

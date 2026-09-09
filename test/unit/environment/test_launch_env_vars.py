@@ -42,12 +42,17 @@ from gbserver.environment.environment import Environment
 
 
 def _base_env_vars(run_metadata):
-    """Invoke the BASE implementation regardless of any subclass override.
+    """Invoke the BASE implementation with both composer hooks empty.
 
-    The base method does not use ``self``, so a bare object suffices as the
-    bound instance.
+    A bare ``Environment`` (no launcher subclass) inherits the default
+    :meth:`_declared_secret_mappings` and :meth:`_launch_env_layers` hooks, both
+    of which return nothing — so the result is exactly the standard set.
+    ``object.__new__`` skips the heavy ``__init__``; ``self.secrets`` is never
+    read because no secret mapping is declared.
     """
-    return Environment.get_launch_env_vars(object(), run_metadata=run_metadata)
+    return Environment.get_launch_env_vars(
+        object.__new__(Environment), run_metadata=run_metadata
+    )
 
 
 class TestBaseStandardEnv:
@@ -98,6 +103,84 @@ class TestBaseGbtestForwarding:
             "GBTEST_MOCK_HF": "true",
             "GB_BUILD_ID": "b1",
         }
+
+
+class _ComposerProbe(Environment):
+    """Minimal ``Environment`` exercising the two composition hooks directly.
+
+    Instead of a real launcher, its :meth:`_declared_secret_mappings` and
+    :meth:`_launch_env_layers` hooks return whatever a test stored on the
+    instance, so the base :meth:`Environment.get_launch_env_vars` — the single
+    launch-env strategy — can be tested in isolation. Built via
+    ``object.__new__`` to skip the heavy ``__init__``.
+    """
+
+    def _declared_secret_mappings(self, **kwargs):
+        """Return the test-supplied declared-secret mappings (composer hook)."""
+        return self._probe_mappings
+
+    def _launch_env_layers(self, **kwargs):
+        """Return the test-supplied env layers (composer hook)."""
+        return self._probe_layers
+
+
+class TestBaseComposition:
+    """Direct tests for the base composer: declared-secret resolution (lowest,
+    from :meth:`_declared_secret_mappings`), layer ordering (mid, from
+    :meth:`_launch_env_layers`), the standard set (highest), and the
+    unconditional ``LLMB_``->``GB_`` aliasing. This is the single place every
+    environment now layers its launch env."""
+
+    @pytest.fixture(autouse=True)
+    def _no_gbtest(self, monkeypatch):
+        monkeypatch.setattr(
+            environment_module, "get_exported_gbtest_env_vars", lambda: {}
+        )
+
+    def _probe(self, secrets=None, mappings=None, layers=None):
+        inst = object.__new__(_ComposerProbe)
+        inst.secrets = secrets
+        inst._probe_mappings = mappings or []
+        inst._probe_layers = layers or []
+        return inst
+
+    def test_layers_lowest_to_highest(self):
+        # secret (lowest) < layers (in order) < standard set (highest).
+        env = self._probe(
+            secrets={"tok": "sv"},
+            mappings=_mappings(("MY_TOKEN", "tok")),
+            layers=[{"A": "1", "MY_TOKEN": "layer"}, {"A": "2"}],
+        ).get_launch_env_vars(run_metadata={"build_id": "b1"})
+        assert env["MY_TOKEN"] == "layer"  # a layer overrides the secret
+        assert env["A"] == "2"  # a later layer overrides an earlier one
+        assert env["GB_BUILD_ID"] == "b1"  # standard set is present
+
+    def test_standard_set_overrides_layers(self):
+        env = self._probe(
+            layers=[{"GB_BUILD_ID": "from-layer"}]
+        ).get_launch_env_vars(run_metadata={"build_id": "real"})
+        assert env["GB_BUILD_ID"] == "real"
+
+    def test_no_secret_mappings_never_touches_bag(self):
+        # A None secret bag is fine when nothing is declared (K8s/Bash path).
+        env = self._probe(secrets=None).get_launch_env_vars(
+            run_metadata={"build_id": "b"}
+        )
+        assert env == {"GB_BUILD_ID": "b"}
+
+    def test_aliasing_always_mirrors_llmb(self):
+        # Aliasing is now unconditional; an LLMB_ layer var gains a GB_ twin.
+        env = self._probe(layers=[{"LLMB_FOO": "v"}]).get_launch_env_vars(
+            run_metadata={}
+        )
+        assert env["LLMB_FOO"] == "v" and env["GB_FOO"] == "v"
+
+    def test_aliasing_is_noop_without_llmb(self):
+        # No LLMB_ var -> aliasing adds nothing (the K8s path stays clean).
+        env = self._probe(layers=[{"PLAIN": "v"}]).get_launch_env_vars(
+            run_metadata={}
+        )
+        assert env == {"PLAIN": "v"}
 
 
 # ---------------------------------------------------------------------------
@@ -384,10 +467,15 @@ class TestSkypilotManagedOverride:
 
 
 class TestLsfOverride:
-    def _lsf(self):
+    def _lsf(self, secrets=None):
+        # LSF now resolves declared secrets against ``self.secrets`` (the same
+        # space-secret bag once threaded via setup_config.space_secrets), so
+        # tests provide the bag on the instance rather than through setup_config.
         from gbserver.environment.lsf import Lsf
 
-        return object.__new__(Lsf)
+        env = object.__new__(Lsf)
+        env.secrets = secrets
+        return env
 
     def test_secret_derived_vars_and_authority(self):
         config = {
@@ -399,9 +487,8 @@ class TestLsfOverride:
                 }
             }
         }
-        setup_config = {"space_secrets": {"tok": "secret-val"}}
-        env = self._lsf().get_launch_env_vars(
-            run_metadata=RUN_META, config=config, setup_config=setup_config
+        env = self._lsf(secrets={"tok": "secret-val"}).get_launch_env_vars(
+            run_metadata=RUN_META, config=config
         )
         assert env["MY_TOKEN"] == "secret-val"
         # LSF gains GB_BUILD_ID (SSH path), authoritative
@@ -451,9 +538,8 @@ class TestLsfOverride:
                 }
             }
         }
-        setup_config = {"space_secrets": {"tok": "secret-val"}}
-        env = self._lsf().get_launch_env_vars(
-            run_metadata=RUN_META, config=config, setup_config=setup_config
+        env = self._lsf(secrets={"tok": "secret-val"}).get_launch_env_vars(
+            run_metadata=RUN_META, config=config
         )
         # The twin exists (aliasing still runs last) ...
         assert env["GB_MYVAL"] == "secret-val"
