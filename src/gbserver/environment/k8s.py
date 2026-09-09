@@ -301,23 +301,26 @@ class K8s(Environment):
         :returns: ``(helm_key, value)`` tuples to append to the ``--set``
             overrides. A missing declared ``secret_name`` defaults the data-key
             to the env-var name (verbatim and lowercased forms).
-        :raises ValueError: if any env var is declared but ``space_secret`` is
-            unset (secret values never appear in the message).
+        :raises ValueError: if a declared entry omits ``env_name`` (shared
+            fail-fast validation, consistent with LSF/SkyPilot), or if any env
+            var is declared but ``space_secret`` is unset. Secret values never
+            appear in the message.
         """
         values: List[Tuple[str, str]] = []
         seen_names: Set[str] = set()
         for env_var in environment_variables:
-            if not env_var.env_name:
-                continue
+            # Same fail-fast validation as LSF/SkyPilot: a malformed entry
+            # (missing env_name) raises rather than being silently dropped.
+            env_name = Environment._require_declared_env_name(env_var.env_name)
             if not space_secret:
                 raise ValueError("setup_config['space']['secret'] is missing")
             # (pod env-var name, Secret data-key): verbatim (portable) first,
             # then the DEPRECATED lowercase alias kept for back-compat.
             for name, key in (
-                (env_var.env_name, env_var.secret_name or env_var.env_name),
+                (env_name, env_var.secret_name or env_name),
                 (
-                    env_var.env_name.lower(),
-                    env_var.secret_name or env_var.env_name.lower(),
+                    env_name.lower(),
+                    env_var.secret_name or env_name.lower(),
                 ),
             ):
                 if name in seen_names:  # env_name already lowercase -> one entry

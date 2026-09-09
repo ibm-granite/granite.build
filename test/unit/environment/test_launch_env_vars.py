@@ -537,8 +537,11 @@ class TestK8sSecretEnvHelmValues:
         # No declared env vars -> nothing emitted and no space-secret needed.
         assert self._values([], space_secret=None) == []
 
-    def test_mapping_without_env_name_is_skipped(self):
-        assert self._values(_mappings((None, "tok"))) == []
+    def test_mapping_without_env_name_raises(self):
+        # A malformed entry fails fast, matching the shared LSF/SkyPilot path,
+        # rather than being silently dropped.
+        with pytest.raises(ValueError, match="missing 'env_name'"):
+            self._values(_mappings((None, "tok")))
 
 
 class TestAddGbAliases:

@@ -986,6 +986,26 @@ class Environment(ABC):
         return env
 
     @staticmethod
+    def _require_declared_env_name(env_name: Optional[str]) -> str:
+        """Validate a declared secret mapping carries an ``env_name``; return it.
+
+        The single validation point shared by every environment's secret
+        handling, so a malformed ``secret_names_to_use_as_env_variable`` entry
+        fails identically on all backends (LSF/SkyPilot resolution and K8s
+        ``secretKeyRef`` generation) rather than diverging.
+
+        :param env_name: the mapping's ``env_name`` field (may be ``None``).
+        :returns: the validated, non-empty ``env_name``.
+        :raises ValueError: if ``env_name`` is missing/empty (a config error
+            surfaced at launch time; no secret values are involved).
+        """
+        if not env_name:
+            raise ValueError(
+                "secret_names_to_use_as_env_variable entry is missing 'env_name'"
+            )
+        return env_name
+
+    @staticmethod
     def _resolve_declared_secret_env_vars(
         mappings: List[EnvironmentVariableConfig],
         secrets: Optional[Dict[str, str]],
@@ -1009,11 +1029,7 @@ class Environment(ABC):
         secrets = secrets or {}
         resolved: Dict[str, str] = {}
         for mapping in mappings:
-            env_name = mapping.env_name
-            if not env_name:
-                raise ValueError(
-                    "secret_names_to_use_as_env_variable entry is missing 'env_name'"
-                )
+            env_name = Environment._require_declared_env_name(mapping.env_name)
             secret_name = mapping.secret_name or env_name
             if secret_name not in secrets:
                 raise ValueError(
