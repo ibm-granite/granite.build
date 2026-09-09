@@ -18,6 +18,13 @@ granite.build:
   # it is deliberately not used here so the fixture stays credential-free and
   # runs on the local cluster, which has no Pyxis.
   #
+  # SEQUENTIAL BY DESIGN — do not add runtime_num_processors here. No pool flag means
+  # DPK's own default of 0, so this fixture covers the SEQUENTIAL path while
+  # test-data/slurm covers the parallel one; between them one `make test` exercises
+  # both. It also stays sequential for a concrete reason: each worker would hold its
+  # own copy of the flair and presidio models, and the local cluster's nodes advertise
+  # RealMemory=1024, so forking here trades a passing fixture for an OOM.
+  #
   # Single target: this is a generality proof, not a handoff test — the
   # tokenization fixture already covers the cross-node env:///shared path. The
   # redacted output is terminal, so a node-local /tmp path is fine.

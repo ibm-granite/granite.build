@@ -18,6 +18,22 @@ granite.build:
   #      output).
   #   3. validation.json lands inside the registered output directory, so the
   #      record ships with the data it describes.
+  #   4. `args: {runtime_num_processors: 2}` drives DPK's multiprocessing pool. This
+  #      is the ONLY cluster coverage of the parallel path — slurm-pii omits it and
+  #      covers the sequential one, so a single `make test` exercises both. The step
+  #      injects no default (see the parallelism note in step-template.yaml for why
+  #      auto-sizing was tried and reverted), so a pool only ever appears because a
+  #      build asked for one, which is exactly what this asserts.
+  #   5. `module` and `pip_index_url` are plumbed. Both are set to the values the
+  #      step would use anyway — the derived module and the default index — so they
+  #      prove the fields are READ, not that a different value works. Deliberately
+  #      weak: a divergent value would fail for unrelated reasons.
+  #
+  # FIELD COVERAGE. Between this fixture and slurm-pii, 9 of the step's 10
+  # dpk_config fields are exercised on a real cluster. The exception is `dpk_image`,
+  # which needs the Pyxis SPANK plugin that `make slurm-setup` does not install — a
+  # pre-existing gap recorded in README.md's Known gaps, not something a fixture can
+  # close here.
   #
   # COVERAGE MOVED, NOT DELETED — read this before "simplifying" further. The
   # two-target form this replaced was the only CLUSTER-level coverage of:
@@ -69,6 +85,14 @@ granite.build:
               # the step runs src/validate_tokenization2arrow.py before registering
               # the output.
               validate: true
+              # Exercised so the field is not merely documented: this is the value
+              # the step's own rule already derives, so it asserts the OVERRIDE PATH
+              # is wired, not a different runtime. (Weak coverage on purpose — a
+              # divergent value would fail for reasons unrelated to the field.)
+              module: dpk_tokenization2arrow.runtime
+              # The default, stated explicitly, to prove it is plumbed through to
+              # `uv pip install --index-url` rather than silently ignored.
+              pip_index_url: "https://pypi.org/simple"
               args:
                 # Full flag names as DPK spells them — tokenization's prefix is
                 # `tkn_`, which is NOT derivable from the module name, so the step
@@ -78,7 +102,22 @@ granite.build:
                 tkn_doc_content_column: contents
                 tkn_text_lang: en
                 tkn_chunk_size: 0
+                # PARALLEL BRANCH. The step injects nothing, so DPK's own default of
+                # 0 means sequential; a build turns the pool on here. This fixture is
+                # the only cluster coverage of the multiprocessing path — slurm-pii
+                # deliberately omits it and covers the sequential one, so one
+                # `make test` exercises both.
+                #
+                # 2, matching num_cpus_per_node below, because the local cluster's
+                # nodes advertise exactly 2 CPUs (`sinfo -o "%n %c"`) — 3 fails with
+                # "Requested node configuration is not available". Tokenization is
+                # light enough to fork: this is NOT on slurm-pii, whose flair and
+                # presidio models would be loaded per worker on a 1GB node.
+                runtime_num_processors: 2
             compute_config:
+              # Asking for CPUs is what makes SLURM export SLURM_CPUS_PER_TASK, and
+              # it keeps the pool from oversubscribing: 2 workers, 2 cores.
+              num_cpus_per_node: 2
               num_gpus_per_node: 0
               # The compute_config memory floor is skipped for the SLURM/LSF
               # clouds (they don't reliably track memory as a consumable), so this

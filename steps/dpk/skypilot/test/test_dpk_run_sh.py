@@ -31,7 +31,6 @@ Cluster-agnostic, so this sits at the root of the step's ``test/`` dir (Mode 1
 only) and is not copied by ``make publish-step``.
 """
 
-import argparse
 import ast
 import pathlib
 import re
@@ -71,9 +70,8 @@ def run_script(tmp_path):
         cwd: pathlib.Path | None = None,
         env_extra: dict[str, str] | None = None,
     ):
-        # A CLEAN env, not os.environ: the pool sizing reads SLURM_* variables, so a
-        # real SLURM_CPUS_PER_TASK in the developer's shell would silently change what
-        # these tests measure.
+        # A CLEAN env, not os.environ: the script's behaviour must not depend on
+        # whatever happens to be exported in the developer's shell.
         env = {"PATH": f"{stub_dir}:/usr/bin:/bin", "HOME": str(tmp_path)}
         env.update(env_extra or {})
         return subprocess.run(
@@ -144,138 +142,6 @@ class TestRequiredOptions:
         assert proc.returncode != 0
         assert missing in proc.stderr
         assert not _pyargs(proc.stdout)
-
-
-class TestPoolSizing:
-    """The pool is sized from the job's CPU ALLOCATION, here rather than in Jinja.
-
-    The step template renders on the SERVER (gbserver's targetstep.py) while the pool
-    runs on the NODE, so a render-time os.cpu_count() would be the server's core
-    count — the wrong machine. Resolving it in the script is what makes an auto
-    default possible at all.
-
-    Allocation rather than machine: under a scheduler these differ. Measured inside a
-    2-CPU srun allocation on the local SLURM cluster, SLURM_CPUS_PER_TASK=2 and
-    SLURM_CPUS_ON_NODE=2 while nproc and getconf both reported 6 — sizing from the
-    machine would oversubscribe 3x.
-    """
-
-    def _pool_size(self, proc) -> str | None:
-        args = _pyargs(proc.stdout)
-        return (
-            args[args.index("--runtime_num_processors") + 1]
-            if "--runtime_num_processors" in args
-            else None
-        )
-
-    def test_slurm_cpus_per_task_is_preferred(self, run_script):
-        """The most specific signal: what THIS task was allocated."""
-        proc = run_script(
-            *_BASE,
-            "--output-path",
-            "out",
-            "--artifact-id",
-            "a",
-            env_extra={"SLURM_CPUS_PER_TASK": "2", "SLURM_CPUS_ON_NODE": "9"},
-        )
-        assert proc.returncode == 0, proc.stderr
-        assert self._pool_size(proc) == "2"
-
-    def test_slurm_cpus_on_node_is_the_fallback(self, run_script):
-        proc = run_script(
-            *_BASE,
-            "--output-path",
-            "out",
-            "--artifact-id",
-            "a",
-            env_extra={"SLURM_CPUS_ON_NODE": "4"},
-        )
-        assert self._pool_size(proc) == "4"
-
-    def test_off_scheduler_falls_back_to_the_machine(self, run_script):
-        """No SLURM_* (aws, kubernetes): there the machine IS the allocation.
-
-        getconf rather than nproc — getconf is POSIX and present everywhere, while
-        nproc is coreutils and absent on macOS, where these tests run.
-        """
-        proc = run_script(*_BASE, "--output-path", "out", "--artifact-id", "a")
-        size = self._pool_size(proc)
-        assert size is not None and int(size) >= 1
-
-    @pytest.mark.parametrize("bad", ["abc", "0", "-1", "2x"])
-    def test_a_nonsense_allocation_falls_back_to_one(self, run_script, bad):
-        """Never emit a value multiprocessing.Pool would reject.
-
-        DPK gates on `num_processors > 0` and passes the value to
-        Pool(processes=...), which raises ValueError below 1 — so 0, negatives and
-        non-numerics all become 1 rather than reaching python.
-        """
-        proc = run_script(
-            *_BASE,
-            "--output-path",
-            "out",
-            "--artifact-id",
-            "a",
-            env_extra={"SLURM_CPUS_PER_TASK": bad},
-        )
-        assert proc.returncode == 0, proc.stderr
-        assert self._pool_size(proc) == "1"
-
-    def test_an_empty_allocation_var_falls_through_to_the_next_signal(self, run_script):
-        """Empty means "no information", not "one CPU".
-
-        SLURM exports SLURM_CPUS_PER_TASK as an empty string in some configurations,
-        and `${VAR:-next}` treats empty exactly like unset — which is what we want
-        here: clamping to 1 would serialise a job that does have cores. So an empty
-        first signal must reach SLURM_CPUS_ON_NODE.
-
-        (This case is what corrected the test rather than the script: it was
-        originally grouped with the nonsense values above, asserting 1.)
-        """
-        proc = run_script(
-            *_BASE,
-            "--output-path",
-            "out",
-            "--artifact-id",
-            "a",
-            env_extra={"SLURM_CPUS_PER_TASK": "", "SLURM_CPUS_ON_NODE": "5"},
-        )
-        assert self._pool_size(proc) == "5"
-
-    def test_a_build_arg_overrides_the_detected_size(self, run_script):
-        """The override path, and why the flag is emitted BEFORE "$@".
-
-        argparse takes the LAST occurrence, so a build's own
-        `args: {runtime_num_processors: N}` wins — verified against real argparse in
-        addition to this ordering check. That is how a memory-heavy transform asks
-        for a smaller pool, or 0 to force sequential.
-        """
-        proc = run_script(
-            *_BASE,
-            "--output-path",
-            "out",
-            "--artifact-id",
-            "a",
-            "--",
-            "--runtime_num_processors",
-            "2",
-            env_extra={"SLURM_CPUS_PER_TASK": "8"},
-        )
-        args = _pyargs(proc.stdout)
-        first = args.index("--runtime_num_processors")
-        last = len(args) - 1 - args[::-1].index("--runtime_num_processors")
-        assert first != last, "the build's value must be a SEPARATE later occurrence"
-        assert args[first + 1] == "8"  # detected
-        assert args[last + 1] == "2"  # the build's, which argparse takes
-
-    def test_argparse_really_takes_the_last_occurrence(self):
-        """Pins the assumption the override rests on, in real argparse."""
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--runtime_num_processors", type=int, default=0)
-        parsed = parser.parse_args(
-            ["--runtime_num_processors", "8", "--runtime_num_processors", "2"]
-        )
-        assert parsed.runtime_num_processors == 2
 
 
 class TestDataLocalConfig:
@@ -454,19 +320,15 @@ class TestFlagPassthrough:
         assert _pyargs(proc.stdout)[-2:] == ["--tkn_chunk_size", "0"]
 
     def test_no_flags_is_valid(self, run_script):
-        """No transform flags is fine: the invocation is still well formed.
+        """No transform flags: the data config is the LAST word python receives.
 
-        Asserted by CONTENT rather than by position: the script now appends its own
-        auto-detected --runtime_num_processors after the data config, so the config
-        literal is no longer the last word.
+        Also pins that the script injects nothing of its own after it — an
+        auto-detected --runtime_num_processors used to sit here and was reverted,
+        because a node-side CPU count is not a safe default on every endpoint.
         """
         proc = run_script(*_BASE, "--output-path", "o", "--artifact-id", "a", "--")
         assert proc.returncode == 0, proc.stderr
-        args = _pyargs(proc.stdout)
-        assert args[2] == "--data_local_config"
-        assert args[3].startswith("{'input_folder'")
-        # The pool flag is the step's own, not a transform flag the caller passed.
-        assert args[4:6][0] == "--runtime_num_processors"
+        assert _pyargs(proc.stdout)[-1].startswith("{'input_folder'")
 
     def test_separator_is_optional_when_flags_come_last(self, run_script):
         proc = run_script(

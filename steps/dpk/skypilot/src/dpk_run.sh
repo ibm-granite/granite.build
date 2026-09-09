@@ -106,41 +106,12 @@ output_path="$(cd "$output_path" && pwd)"
 esc_input=$(printf '%s' "$input_path" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
 esc_output=$(printf '%s' "$output_path" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
 
-# Size DPK's multiprocessing pool from the job's CPU ALLOCATION, resolved here
-# rather than by the step template, because the template renders on the SERVER
-# (gbserver's targetstep.py) while the pool runs on this NODE — a render-time
-# os.cpu_count() would be the server's core count, the wrong machine entirely.
-#
-# The allocation, not the machine: under a scheduler these differ, and taking the
-# machine's count oversubscribes. Measured inside a 2-CPU srun allocation on the
-# local SLURM cluster: SLURM_CPUS_PER_TASK=2 and SLURM_CPUS_ON_NODE=2 while nproc
-# and getconf both reported 6 — a 3x oversubscription if sized from the machine.
-# Off-scheduler (aws, kubernetes) no SLURM_* is set and the machine's count IS the
-# allocation, so the last fallback is right there.
-#
-# getconf rather than nproc: getconf is POSIX and present everywhere, while nproc
-# is coreutils and missing on some minimal images (and on macOS, where these
-# scripts are developed and unit-tested).
-#
-# Emitted BEFORE "$@" so a build's own `args: {runtime_num_processors: N}` wins:
-# argparse takes the LAST occurrence, and "$@" carries the build's flags. That is
-# the override path — pick a smaller number for a memory-heavy transform, whose
-# workers each hold their own copy of the models (a pii_redactor worker loads
-# flair and presidio), or 0 to force sequential.
-#
-# Guarded to a positive integer: DPK gates on `num_processors > 0` and hands the
-# value to multiprocessing.Pool(processes=...), which raises on anything below 1.
-# A non-numeric or absent value therefore falls back to 1 rather than passing
-# something Pool would reject.
-pool_size=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)}}
-case $pool_size in
-  ''|*[!0-9]*) pool_size=1 ;;
-  0)           pool_size=1 ;;
-esac
-
+# No --runtime_num_processors is injected: DPK's own default of 0 (sequential) stands
+# unless a build asks for a pool through `args`. Auto-sizing was tried and reverted —
+# see the parallelism notes in step-template.yaml and README.md's Known gaps for why
+# a node-side CPU count is not a safe default across all four SkyPilot endpoints.
 python -m "$module" \
   --data_local_config "{'input_folder': '$esc_input', 'output_folder': '$esc_output'}" \
-  --runtime_num_processors "$pool_size" \
   "$@"
 
 # Validate before registering, so a failure fails the target rather than

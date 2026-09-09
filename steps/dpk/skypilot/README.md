@@ -318,15 +318,22 @@ registered artifact.
   removal — no config combination may derive a `.ray.runtime` module, install the `ray`
   extra, or inject `--run_locally` — because the mode previously caused trouble by being
   *half* applied: an extra without the module, or a module without its flag.
-- **A memory-heavy transform may need the pool sized down.** `dpk_run.sh` sizes DPK's
-  multiprocessing pool from the job's CPU allocation, which is right for throughput but says
-  nothing about memory: each worker is a process holding its own copy of the transform's
-  models, and a `pii_redactor` worker loads flair and presidio. On a node allocated many CPUs
-  but little RAM that can OOM, and the step cannot tell — DPK exposes no per-worker memory
-  hint. Such a build sets `args: {runtime_num_processors: N}` (or `0` for sequential), which
-  wins because the script emits its detected value *before* `"$@"` and argparse takes the
-  last occurrence. Sizing from `total_memory_per_node` would need a per-transform footprint
-  table in the step, which is exactly what stops it being general.
+- **The pool size is left to the build, and auto-sizing was tried and reverted.**
+  `runtime_num_processors` stays at DPK's own default of `0` (sequential); a build turns the
+  pool on through `args`. Auto-sizing it on the node from
+  `${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-$(getconf _NPROCESSORS_ONLN)}}` was
+  implemented, tested and backed out, because it is only correct on one of the four
+  endpoints this step serves: the allocation-aware signals are SLURM's, and off SLURM the
+  fallback is the machine's core count, which inside a cgroup-limited container reports the
+  **host** — measured, a `--cpus=1` container reports `6`. On Kubernetes that forks 6 workers
+  into a 1-CPU cgroup: throttling, context-switching, and 6x the memory for no throughput. A
+  default that helps on SLURM and harms on Kubernetes is worse than no default. Peak memory
+  is the second reason: each worker holds its own copy of the transform's models (a
+  `pii_redactor` worker loads flair and presidio), so pool size is really a memory decision
+  and only the build knows the node's RAM. Two traps if this is revisited: `os.cpu_count()`
+  cannot be a Jinja default (the template renders on the **server**, the pool runs on the
+  **node**), and `-1` is not an "all cores" sentinel — DPK gates on `num_processors > 0`, so
+  `-1` silently means sequential and `multiprocessing.Pool` rejects anything below 1.
 - **Flag prefixes are not derived.** DPK's own prefix is an arbitrary abbreviation for
   roughly 40% of transforms (`dpk_tokenization` → `tkn_`, `gopher_repetition_annotator` →
   `gra_`, `doc_quality` → `docq_`), so `args` keys are the full flag name and the step passes
