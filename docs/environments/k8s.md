@@ -240,6 +240,22 @@ config:
                                         # Unset = cluster default.
 ```
 
+The implicit input-pull and output-push steps a target injects (e.g. `hfpull`, `hfpush`,
+`lhpull`, `s3push`) are synthesized by the server and do not carry a step `config`, so they
+do not read `priority_class_name` directly. Instead they inherit the target's *effective*
+priority: the minimum across the target's explicit steps, where `default-priority` (also the
+value when a step leaves it unset) ranks below `high-priority`. So a pull/push pod is given
+`high-priority` only when **every** explicit step in the target is `high-priority`; if any
+step is `default-priority` or unset, the pull/push pods stay at the cluster default — an
+artifact transfer never outranks the workload it serves.
+
+Only `default-priority` and `high-priority` are ordered; any other name is treated as the
+floor. This is a deliberate design choice: rather than query the cluster's `PriorityClass`
+objects to resolve arbitrary names to their numeric `value`, the ranking hard-codes just
+these two. In practice those are the only classes these builds use, so the simpler,
+dependency-free comparison suffices and avoids a cluster API call, caching, and a
+fallback path. Extend the ranking here if a third class is ever needed.
+
 `compute_config.num_gpus_per_node` / `total_memory_per_node` are translated into pod resource specs by
 the Helm chart values.
 
