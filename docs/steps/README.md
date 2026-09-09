@@ -132,6 +132,29 @@ Three approaches for running custom code:
 | [Custom code steps](custom-code-steps.md) | You want inline commands without a separate step definition. |
 | [Bring Your Own Image (BYOI)](bring-your-own-image.md) | You have a pre-built container image. |
 
+## Secrets as environment variables
+
+A step declares which space secrets to expose to its workload as environment variables via the
+`secrets.secret_names_to_use_as_env_variable` allow-list under the matching per-environment `config`
+key (`config.k8s`, `config.lsf`, or `config.skypilot`):
+
+```yaml
+config:
+  <k8s|lsf|skypilot>:
+    secrets:
+      secret_names_to_use_as_env_variable:
+        - env_name: HF_TOKEN        # Environment variable exposed to the workload.
+          secret_name: huggingface_token  # Space secret to read. Optional (see below).
+```
+
+The block is the **same** across environments and injects **only** the secrets the step declares
+(least-privilege). Delivery differs by backend — LSF/SkyPilot resolve the value into the task env
+var, while K8s hands the secret *name* to the kubelet via `secretKeyRef` and exposes each secret
+under its verbatim `env_name` plus a deprecated lowercased alias. See
+[Custom code steps → Secrets as environment variables](custom-code-steps.md#secrets-as-environment-variables)
+for a worked example and [Environments → Secrets as environment variables](../environments/README.md#secrets-as-environment-variables)
+for the full cross-environment reference.
+
 ## See also
 
 - [Step Implementation Framework](../../steps/README.md) — how step implementations are authored, rendered, and published from the `steps/` source tree (for step *developers*, complementing this user-facing guide)

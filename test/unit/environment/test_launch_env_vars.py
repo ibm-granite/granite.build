@@ -489,6 +489,58 @@ class TestK8sOverride:
         assert env["GBTEST_MOCK_HF"] == "true"
 
 
+@requires_k8s
+class TestK8sSecretEnvHelmValues:
+    """Direct tests for ``K8s._secret_env_helm_values`` — the secretKeyRef
+    Helm-arg builder that exposes each declared secret under its verbatim
+    ``env_name`` plus a DEPRECATED lowercase alias for back-compat."""
+
+    def _values(self, mappings, space_secret="sp"):
+        from gbserver.environment.k8s import K8s
+
+        return K8s._secret_env_helm_values(mappings, space_secret)
+
+    def test_uppercase_name_emits_verbatim_and_lower_alias(self):
+        # No secret_name: exposed under both MY_TOKEN (verbatim, portable) and
+        # my_token (deprecated lowercase alias), each keyed to its own case.
+        assert self._values(_mappings(("MY_TOKEN", None))) == [
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "MY_TOKEN"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "my_token"),
+        ]
+
+    def test_already_lowercase_name_emits_single_entry(self):
+        # verbatim == lowercase -> the alias is deduped away.
+        assert self._values(_mappings(("hf_token", None))) == [
+            ("k8s.env.hf_token.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.hf_token.valueFrom.secretKeyRef.key", "hf_token"),
+        ]
+
+    def test_explicit_secret_name_shared_by_both_aliases(self):
+        # An explicit (often hyphenated) secret_name is the data-key for both
+        # the verbatim and the deprecated lowercase env-var names.
+        assert self._values(_mappings(("MY_TOKEN", "huggingface-token"))) == [
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "huggingface-token"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "huggingface-token"),
+        ]
+
+    def test_missing_space_secret_raises(self):
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError, match="space"):
+            self._values(_mappings(("MY_TOKEN", None)), space_secret=None)
+
+    def test_empty_mappings_yield_empty_even_without_space_secret(self):
+        # No declared env vars -> nothing emitted and no space-secret needed.
+        assert self._values([], space_secret=None) == []
+
+    def test_mapping_without_env_name_is_skipped(self):
+        assert self._values(_mappings((None, "tok"))) == []
+
+
 class TestAddGbAliases:
     """Direct tests for the shared ``Environment._add_gb_aliases`` helper."""
 

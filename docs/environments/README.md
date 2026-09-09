@@ -272,6 +272,41 @@ config:
     output_dir: ""
 ```
 
+### Secrets as environment variables
+
+Every environment that supports secret injection reads the **same** declarative allow-list, so the
+block is portable across compute backends — place it under the matching per-cloud key (`config.k8s`,
+`config.lsf`, or `config.skypilot`):
+
+```yaml
+config:
+  <k8s|lsf|skypilot>:               # The per-environment key for the target's environment type.
+    secrets:
+      secret_names_to_use_as_env_variable:
+        - env_name: HF_TOKEN        # Environment variable exposed to the workload.
+          secret_name: huggingface_token  # Space secret to read. Optional — see the default below.
+```
+
+Only the secrets a step **declares** here are injected — **least-privilege**; the full secret bag is
+never dumped. A declared secret that is absent from the resolved secret bag **fails the launch fast**
+with a `ValueError` (the secret *value* is never included in the message).
+
+**Delivery differs by environment:**
+
+- **LSF and SkyPilot** resolve the value in the build server and inject it as a task/job environment
+  variable. When `secret_name` is omitted it defaults to `env_name` **verbatim**.
+- **K8s** never materializes the value in the build server: it passes the secret *name* to Helm as a
+  `valueFrom.secretKeyRef` and the kubelet mounts the value into the pod at runtime. For portability
+  it exposes each declared secret under the **verbatim** `env_name` **plus** a **deprecated**
+  lowercased alias (a declared `MY_TOKEN` appears in the pod as both `MY_TOKEN` and `my_token`);
+  prefer the verbatim name. When `secret_name` is omitted the data-key defaults to those same
+  (verbatim + lowercased) forms.
+
+K8s additionally supports `secret_names_to_use_as_pull_secret` (image pull secrets), which has no
+analogue on the other backends. See [k8s.md](k8s.md), [lsf.md](lsf.md), and [skypilot.md](skypilot.md)
+for the per-environment specifics, and [Custom code steps](../steps/custom-code-steps.md#secrets-as-environment-variables)
+for a worked example.
+
 ## See also
 
 - [Setup guides](setup/) — provisioning the backends (SkyPilot Kubernetes/SLURM, RunPod) and build-time secret scripts
