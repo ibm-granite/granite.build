@@ -28,9 +28,22 @@ import pytest
 
 from gbserver.build.targetrun import (
     HIGH_PRIORITY_CLASS_NAME,
+    TargetRun,
     effective_target_priority_class_name,
 )
 from gbserver.types.buildconfig import BuildTargetConfig, BuildTargetStepConfig
+
+
+def _apply(targetstepconfig, target_config):
+    """Call the injector without a TargetRun instance.
+
+    ``_apply_implicit_step_priority_class_name`` reads only its arguments (never
+    ``self``), so binding ``self=None`` exercises it directly, no fixture needed.
+    """
+    return TargetRun._apply_implicit_step_priority_class_name(
+        None, targetstepconfig, target_config  # type: ignore[arg-type]
+    )
+
 
 HIGH = HIGH_PRIORITY_CLASS_NAME  # "high-priority"
 
@@ -118,3 +131,68 @@ class TestEffectiveTargetPriorityClassName:
     )
     def test_unranked_name_treated_as_floor(self, steps):
         assert effective_target_priority_class_name(_target(*steps)) is None
+
+    def test_empty_string_treated_as_floor(self):
+        """An empty priority_class_name is the floor, not high-priority."""
+        assert effective_target_priority_class_name(_target(_step(""))) is None
+        cfg = _target(_step("high-priority"), _step(""))
+        assert effective_target_priority_class_name(cfg) is None
+
+
+class TestApplyImplicitStepPriorityClassName:
+    """The injector holds the load-bearing guarantees: inject only when the target
+    minimum is high-priority, deep-copy rather than mutate the queued config, don't
+    clobber a value already set, and handle None target/config."""
+
+    def test_injects_high_when_all_steps_high(self):
+        step = _step(no_config=True)  # implicit step: no config of its own
+        target = _target(_step("high-priority"), _step("high-priority"))
+        result = _apply(step, target)
+        assert result.config["k8s"]["priority_class_name"] == HIGH
+
+    def test_leaves_config_none_when_floor(self):
+        """Floor target minimum -> return the config untouched (no key added)."""
+        step = _step(no_config=True)
+        target = _target(_step("high-priority"), _step("default-priority"))
+        result = _apply(step, target)
+        assert result is step  # unchanged, same object
+        assert result.config is None
+
+    def test_does_not_mutate_original_when_injecting(self):
+        """The injected key lands on a copy; the queued config is never mutated."""
+        step = _step(no_config=True)
+        target = _target(_step("high-priority"))
+        result = _apply(step, target)
+        assert result is not step
+        assert step.config is None  # original untouched
+        assert result.config["k8s"]["priority_class_name"] == HIGH
+
+    def test_initializes_none_config_on_copy(self):
+        step = _step(no_config=True)
+        result = _apply(step, _target(_step("high-priority")))
+        assert result.config == {"k8s": {"priority_class_name": HIGH}}
+
+    def test_does_not_clobber_existing_priority(self):
+        """A value already set on the implicit step wins over the target minimum."""
+        step = BuildTargetStepConfig(
+            step_uri="space://steps/hfpull",
+            config={"k8s": {"priority_class_name": "preset"}},
+        )
+        target = _target(_step("high-priority"))
+        result = _apply(step, target)
+        assert result is step
+        assert result.config["k8s"]["priority_class_name"] == "preset"
+
+    def test_preserves_other_config_keys_when_injecting(self):
+        """Injecting k8s must not drop the step's own store config."""
+        step = BuildTargetStepConfig(
+            step_uri="space://steps/hfpull", config={"hfpull_config": {"uri": "x"}}
+        )
+        result = _apply(step, _target(_step("high-priority")))
+        assert result.config["hfpull_config"] == {"uri": "x"}
+        assert result.config["k8s"]["priority_class_name"] == HIGH
+
+    def test_none_target_config_returns_unchanged(self):
+        step = _step(no_config=True)
+        result = _apply(step, None)
+        assert result is step

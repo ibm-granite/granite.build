@@ -56,7 +56,8 @@ def effective_target_priority_class_name(
     Feeds the implicit pull/push steps (see
     ``_apply_implicit_step_priority_class_name``) so a transfer never outranks the
     workload it serves. Only ``high-priority`` is ranked above the floor;
-    ``default-priority``, unset/empty, or any other name is the floor. Returns
+    ``default-priority``, unset, an empty string, or any other name is the floor
+    (the comparison is exact equality against ``high-priority``). Returns
     ``"high-priority"`` only when there is at least one step and every step is
     ``high-priority``; else ``None`` (leave unset -> cluster default).
 
@@ -333,7 +334,7 @@ class TargetRun(Run):
         logger.info(
             "Injecting priority_class_name=%s onto implicit step %s (target minimum)",
             priority,
-            targetstepconfig.step_uri,
+            new_config.step_uri,
         )
         return new_config
 
@@ -346,7 +347,9 @@ class TargetRun(Run):
         self_entity = self.entity
         assert isinstance(self_entity, Target)
         targetstepconfig = self._apply_implicit_step_priority_class_name(
-            targetstepconfig, self_entity.config  # type: ignore[arg-type]
+            # self_entity.config is a BuildTargetConfig (Target's concrete config type).
+            targetstepconfig,
+            self_entity.config,  # type: ignore[arg-type]
         )
         targetstep = TargetStep(
             self.build_id,
