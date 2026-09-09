@@ -69,6 +69,7 @@ if HAS_SKYPILOT:
 else:
     sky = None  # type: ignore[assignment]
 
+
 def _get_step_skypilot_config(config: Optional[Dict]) -> StepSkypilotConfig:
     """Parse the step's ``config.skypilot`` section into a typed model.
 
