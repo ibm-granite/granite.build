@@ -80,7 +80,10 @@ from gbserver.types.constants import (
     FULL_CONFIG_RUN_METADATA_KEY,
     GBSERVER_ENABLE_STEP_RETRY,
 )
-from gbserver.types.environment.environment import StepConfigSection
+from gbserver.types.environment.environment import (
+    EnvironmentVariableConfig,
+    StepConfigSection,
+)
 from gbserver.types.environmentconfig import (
     ENVIRONMENT_FILENAME,
     AssetStoreEnvironmentConfig,
@@ -981,6 +984,66 @@ class Environment(ABC):
             if name.startswith("LLMB_"):
                 env.setdefault("GB_" + name[len("LLMB_") :], value)
         return env
+
+    @staticmethod
+    def _resolve_declared_secret_env_vars(
+        mappings: List[EnvironmentVariableConfig],
+        secrets: Optional[Dict[str, str]],
+    ) -> Dict[str, str]:
+        """Resolve declared secret->env-var mappings against a secret bag.
+
+        The shared, least-privilege path every environment uses to hand a step
+        *only* the secrets it explicitly declares (its
+        ``secret_names_to_use_as_env_variable``), rather than exposing the whole
+        secret bag. Each mapping names the env var to expose (``env_name``) and
+        the secret to read (``secret_name``, defaulting to ``env_name`` for the
+        common case where they match).
+
+        :param mappings: the step's declared secret-to-env-var mappings.
+        :param secrets: the resolved secret bag (merged space + user secrets).
+        :returns: a ``{env_name: secret_value}`` dict for the declared mappings.
+        :raises ValueError: if a mapping omits ``env_name`` or a declared secret
+            is absent from ``secrets`` (a config error surfaced at launch time;
+            secret *values* are never included in the message).
+        """
+        secrets = secrets or {}
+        resolved: Dict[str, str] = {}
+        for mapping in mappings:
+            env_name = mapping.env_name
+            if not env_name:
+                raise ValueError(
+                    "secret_names_to_use_as_env_variable entry is missing 'env_name'"
+                )
+            secret_name = mapping.secret_name or env_name
+            if secret_name not in secrets:
+                raise ValueError(
+                    f"declared secret '{secret_name}' for env var '{env_name}' "
+                    f"was not found among the {len(secrets)} available secret(s)"
+                )
+            resolved[env_name] = secrets[secret_name]
+        return resolved
+
+    @staticmethod
+    def _declared_secret_env_key_names(
+        mappings: List[EnvironmentVariableConfig],
+    ) -> Set[str]:
+        """Env-var names to mask in redacted logs for declared secret mappings.
+
+        Includes every declared ``env_name`` plus, for any declared with the
+        legacy ``LLMB_`` prefix, the ``GB_``-prefixed twin ``_add_gb_aliases``
+        mints — so the twin's value is masked by name too. Keep this transform
+        in sync with ``_add_gb_aliases``.
+
+        :param mappings: the step's declared secret-to-env-var mappings.
+        :returns: the set of env-var names (declared + ``GB_`` twins) to redact.
+        """
+        declared = {m.env_name for m in mappings if m.env_name}
+        twins = {
+            "GB_" + name[len("LLMB_") :]
+            for name in declared
+            if name.startswith("LLMB_")
+        }
+        return declared | twins
 
     def launch(
         self: Self,

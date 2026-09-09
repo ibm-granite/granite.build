@@ -61,6 +61,7 @@ from gbserver.environment._skypilot_ssh import (
 from gbserver.environment.skypilot import (
     _abort_shielded_request,
     _build_skypilot_mounts,
+    _get_step_skypilot_config,
     _run_sky_verb_off_loop,
     _sky_submit_to_thread,
 )
@@ -103,29 +104,40 @@ class Skypilot_managed(Environment):
         self: Self,
         run_metadata: Optional[Dict[str, Any]] = None,
         launcher_config: Optional[Dict] = None,
+        config: Optional[Dict] = None,
         launch_id: str = "",
         job_name: str = "",
         **kwargs: Any,
     ) -> Dict[str, str]:
         """Build the full env dict for a skypilot managed-job launch.
 
-        Precedence (lowest->highest): secrets < launcher ``envs`` < the
-        built-in ``GB_SKYPILOT_*`` vars < the standard cross-environment set
+        Precedence (lowest->highest): declared secrets < launcher ``envs`` <
+        the built-in ``GB_SKYPILOT_*`` vars < the standard cross-environment set
         from ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID), which
         is authoritative.
+
+        Only secrets declared in the step's ``config.skypilot.secrets``
+        allow-list are injected (least-privilege, matching the unmanaged
+        launcher and LSF/K8s); the full secret bag is never dumped.
 
         :param run_metadata: launch run_metadata; forwarded to ``super()`` and
             the source of GB_TARGETRUN_ID.
         :param launcher_config: step.yaml launcher config (its ``envs``).
+        :param config: the full step config dict; its ``skypilot.secrets``
+            section declares which secrets to expose as env vars.
         :param launch_id: unique id for this launch (GB_SKYPILOT_LAUNCH_ID).
         :param job_name: the managed job name (GB_SKYPILOT_JOB_NAME).
         :returns: the complete ``{name: value}`` env dict for the sky.Task.
+        :raises ValueError: if a declared secret is missing from the secret bag
+            or a mapping omits ``env_name`` (secret values never in the message).
         """
         launcher_config = launcher_config or {}
         run_metadata = run_metadata or {}
         env: Dict[str, str] = {}
-        if self.secrets:
-            env.update(self.secrets)
+        declared = _get_step_skypilot_config(
+            config
+        ).secrets.secret_names_to_use_as_env_variable
+        env.update(self._resolve_declared_secret_env_vars(declared, self.secrets))
         env.update(launcher_config.get("envs", {}))
         env["GB_SKYPILOT_LAUNCH_ID"] = launch_id
         env["GB_SKYPILOT_JOB_NAME"] = job_name
@@ -194,6 +206,7 @@ class Skypilot_managed(Environment):
             env_vars = self.get_launch_env_vars(
                 run_metadata=run_metadata,
                 launcher_config=launcher_config,
+                config=config,
                 launch_id=launch_id,
                 job_name=job_name,
             )

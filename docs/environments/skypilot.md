@@ -150,7 +150,7 @@ environment_configs:
             pip install foo bar
           run: |                  # Required. The actual job each launch. CWD is the per-run workdir
             echo "GB_ARTIFACT_ID:my_out GB_ARTIFACT_PATH:/tmp/out.json"   # (or $HOME).
-          envs:                   # Optional. Extra env vars. Merged AFTER env-level secrets and
+          envs:                   # Optional. Extra env vars. Merged AFTER declared secrets and
             FOO: bar              # BEFORE config.launcher_config.envs. GB_* vars are auto-injected.
           file_mounts:            # Optional. Two forms (see "file_mounts" below):
             /remote/path: /local/path          # String → local-to-remote copy (set_file_mounts).
@@ -296,11 +296,34 @@ relative destinations fall back to SkyPilot's default (`~/sky_workdir/…`).
 
 #### `envs`, `post_launch_task`, `idle_minutes_to_autostop`
 
-- `envs` — extra environment variables for the job, merged after env-level secrets and before
+- `envs` — extra environment variables for the job, merged after declared secrets and before
   `config.launcher_config.envs`; the auto-injected `GB_*` vars (below) always win.
 - `post_launch_task.run` — commands run on the host over SSH *after* the job starts (e.g. launching an
   evaluator sidecar). A failure is logged and emitted as a `MESSAGE_EVENT` but does not fail the step.
 - `idle_minutes_to_autostop` — per-step override of the env-level autostop; ignored on `slurm`/`lsf`.
+
+### Step `config` blocks read by SkyPilot
+
+Mirroring `config.lsf` / `config.k8s`, a step declares its SkyPilot secrets under `config.skypilot`:
+
+```yaml
+config:
+  skypilot:
+    secrets:
+      secret_names_to_use_as_env_variable:
+        - env_name: MY_TOKEN        # Env var injected into the launched task.
+          secret_name: my_secret    # Space/user secret to read; falls back to env_name.
+```
+
+Only the secrets listed here are injected as task env vars — **least-privilege**, matching LSF and
+K8s. The full space/user secret bag is **not** dumped into the task (an earlier behavior). A declared
+secret that is absent from the resolved secret bag fails the launch fast with a `ValueError` (the
+secret *value* is never included in the message). This applies to both the unmanaged `Skypilot`
+launcher and `Skypilot_managed`.
+
+> **Migration note:** custom SkyPilot steps that implicitly relied on an undeclared secret being
+> present as an env var must now declare it here. Built-in asset steps are unaffected — they receive
+> their tokens via explicit launcher `envs` (e.g. `HF_TOKEN`), not the secret bag.
 
 ### Auto-injected environment variables
 
@@ -313,7 +336,7 @@ Added on top of (and overriding) anything in `envs`:
 | `GB_TARGETRUN_ID` | The enclosing target run id, when present. |
 | `GB_BUILD_ID` | The build id, when present. |
 | `GB_SHARED_WORKDIR` | The env-level `shared_workdir` path, when set. |
-| `<env secrets>` | All secrets resolved from the env's `secret_refs`, merged before launcher `envs`. |
+| `<declared secrets>` | Only the secrets a step declares in `config.skypilot.secrets.secret_names_to_use_as_env_variable` (see below), merged before launcher `envs`. |
 
 ### `skypilot_monitor` config
 

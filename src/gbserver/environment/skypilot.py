@@ -47,6 +47,7 @@ from gbserver.spaces.hf_push_config import (
 )
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
+from gbserver.types.environment.skypilot import StepSkypilotConfig
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import (
     ErrSkypilotInteractiveAuthFailed,
@@ -67,6 +68,25 @@ if HAS_SKYPILOT:
     import sky.exceptions
 else:
     sky = None  # type: ignore[assignment]
+
+def _get_step_skypilot_config(config: Optional[Dict]) -> StepSkypilotConfig:
+    """Parse the step's ``config.skypilot`` section into a typed model.
+
+    Mirrors ``K8s._get_step_env_config``: reads the per-cloud step-config
+    section (``config.skypilot`` / ``config.Skypilot``) so declared secrets and
+    other skypilot-specific step settings are validated. Extra keys are ignored,
+    and a missing section yields an empty default. Module-level so both the
+    unmanaged ``Skypilot`` launcher and the ``Skypilot_managed`` job launcher can
+    share it.
+
+    :param config: the full step config dict (may be None).
+    :returns: the parsed ``StepSkypilotConfig`` (empty default if absent).
+    """
+    sky_dict = (config.get("skypilot") or config.get("Skypilot")) if config else None
+    if not sky_dict:
+        return StepSkypilotConfig()
+    return StepSkypilotConfig(**sky_dict)
+
 
 _DEFAULT_POLL_INTERVAL_SECONDS = 300
 
@@ -1373,29 +1393,40 @@ class Skypilot(Environment):
     ) -> Dict[str, str]:
         """Build the full env dict for a skypilot step launch.
 
-        Precedence (lowest->highest): secrets < launcher ``envs`` <
+        Precedence (lowest->highest): declared secrets (the step's
+        ``config.skypilot.secrets.secret_names_to_use_as_env_variable``, resolved
+        via ``_resolve_declared_secret_env_vars``) < launcher ``envs`` <
         ``config.launcher_config.envs`` < the built-in
         ``GB_SKYPILOT_*``/workdir/HF_TOKEN vars < the standard cross-environment
         set from ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID),
         which is authoritative.
 
+        Only secrets the step *declares* are injected — never the whole secret
+        bag — so a space's unrelated (and possibly non-identifier-named) secrets
+        never reach the task. Built-in asset steps deliver their tokens
+        explicitly through launcher ``envs`` (HF_TOKEN / AWS keys), so they need
+        no declaration.
+
         :param run_metadata: launch run_metadata; forwarded to ``super()`` and
             the source of GB_TARGETRUN_ID.
         :param launcher_config: step.yaml launcher config (its ``envs``).
-        :param config: full step config (``config.launcher_config.envs`` is
-            picked up for auto-queued steps).
+        :param config: full step config (``config.skypilot.secrets`` and
+            ``config.launcher_config.envs`` are picked up).
         :param launch_id: unique id for this launch (GB_SKYPILOT_LAUNCH_ID).
         :param cluster_name: the sky cluster name (GB_SKYPILOT_CLUSTER_NAME).
         :param build_workdir: per-run workdir (GB_BUILD_WORKDIR) if provisioned.
         :param bindings: launch bindings; scanned for an inline HF_TOKEN.
         :returns: the complete ``{name: value}`` env dict for the sky.Task.
+        :raises ValueError: if a declared secret is missing from the secret bag.
         """
         launcher_config = launcher_config or {}
         config = config or {}
         run_metadata = run_metadata or {}
         env: Dict[str, str] = {}
-        if self.secrets:
-            env.update(self.secrets)
+        declared = _get_step_skypilot_config(
+            config
+        ).secrets.secret_names_to_use_as_env_variable
+        env.update(self._resolve_declared_secret_env_vars(declared, self.secrets))
         env.update(launcher_config.get("envs", {}))
         env.update(config.get("launcher_config", {}).get("envs", {}))
         env["GB_SKYPILOT_LAUNCH_ID"] = launch_id

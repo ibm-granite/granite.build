@@ -101,6 +101,82 @@ class TestBaseGbtestForwarding:
 
 
 # ---------------------------------------------------------------------------
+# Shared declared-secret resolver (used by every environment)
+# ---------------------------------------------------------------------------
+
+
+def _mappings(*pairs):
+    """Build a list of EnvironmentVariableConfig from (env_name, secret_name).
+
+    A ``secret_name`` of None exercises the "defaults to env_name" path.
+    """
+    from gbserver.types.environment.environment import EnvironmentVariableConfig
+
+    return [
+        EnvironmentVariableConfig(env_name=env_name, secret_name=secret_name)
+        for env_name, secret_name in pairs
+    ]
+
+
+class TestDeclaredSecretResolver:
+    """Direct tests for ``Environment._resolve_declared_secret_env_vars`` and
+    ``Environment._declared_secret_env_key_names`` — the shared least-privilege
+    path every environment funnels declared secrets through."""
+
+    def test_resolves_declared_mapping(self):
+        resolved = Environment._resolve_declared_secret_env_vars(
+            _mappings(("MY_TOKEN", "tok")), {"tok": "secret-val", "other": "nope"}
+        )
+        # Only the declared secret is exposed; unrelated bag entries are not.
+        assert resolved == {"MY_TOKEN": "secret-val"}
+
+    def test_secret_name_defaults_to_env_name(self):
+        resolved = Environment._resolve_declared_secret_env_vars(
+            _mappings(("MY_TOKEN", None)), {"MY_TOKEN": "secret-val"}
+        )
+        assert resolved == {"MY_TOKEN": "secret-val"}
+
+    def test_empty_mappings_yield_empty(self):
+        assert Environment._resolve_declared_secret_env_vars([], {"tok": "v"}) == {}
+
+    def test_missing_secret_raises_without_leaking_value(self):
+        with pytest.raises(ValueError) as exc:
+            Environment._resolve_declared_secret_env_vars(
+                _mappings(("MY_TOKEN", "absent")), {"tok": "super-secret-value"}
+            )
+        # The config error names the missing secret and env var but never the
+        # secret VALUES that were available.
+        assert "absent" in str(exc.value)
+        assert "MY_TOKEN" in str(exc.value)
+        assert "super-secret-value" not in str(exc.value)
+
+    def test_missing_env_name_raises(self):
+        with pytest.raises(ValueError, match="missing 'env_name'"):
+            Environment._resolve_declared_secret_env_vars(
+                _mappings((None, "tok")), {"tok": "v"}
+            )
+
+    def test_none_secret_bag_treated_as_empty(self):
+        with pytest.raises(ValueError):
+            Environment._resolve_declared_secret_env_vars(
+                _mappings(("MY_TOKEN", "tok")), None
+            )
+
+    def test_key_names_include_llmb_twin(self):
+        assert Environment._declared_secret_env_key_names(
+            _mappings(("LLMB_MYVAL", "tok"))
+        ) == {"LLMB_MYVAL", "GB_MYVAL"}
+
+    def test_key_names_non_llmb_has_no_twin(self):
+        assert Environment._declared_secret_env_key_names(
+            _mappings(("MY_TOKEN", "tok"))
+        ) == {"MY_TOKEN"}
+
+    def test_key_names_empty_mappings(self):
+        assert Environment._declared_secret_env_key_names([]) == set()
+
+
+# ---------------------------------------------------------------------------
 # Per-subclass overrides
 # ---------------------------------------------------------------------------
 
@@ -205,11 +281,26 @@ class TestRunpodOverride:
         assert env["GB_BUILD_ID"] == "real-build"
 
 
+# A step declaring one secret (config.skypilot.secrets allow-list); the secret
+# bag also holds an undeclared, hyphen-named entry that must NOT be injected
+# (hyphenated keys are the invalid-envs crash that motivated declared-only).
+_SKY_SECRET_CONFIG = {
+    "skypilot": {
+        "secrets": {
+            "secret_names_to_use_as_env_variable": [
+                {"env_name": "MY_TOKEN", "secret_name": "tok"}
+            ]
+        }
+    }
+}
+_SKY_SECRET_BAG = {"tok": "secret-val", "rits-access": "hyphen-named"}
+
+
 class TestSkypilotOverride:
-    def _skypilot(self):
+    def _skypilot(self, secrets=None):
         from gbserver.environment.skypilot import Skypilot
 
-        return Skypilot(event_q=asyncio.Queue())
+        return Skypilot(event_q=asyncio.Queue(), secrets=secrets)
 
     def test_inline_vars_and_authority(self):
         env = self._skypilot().get_launch_env_vars(
@@ -224,12 +315,46 @@ class TestSkypilotOverride:
         assert env["GB_TARGETRUN_ID"] == "tr-1"
         assert env["GB_BUILD_ID"] == "real-build"
 
+    def test_only_declared_secret_injected(self):
+        # The declared secret is injected; the undeclared, hyphen-named bag entry
+        # is NOT (least-privilege; and hyphenated keys would break sky's envs).
+        env = self._skypilot(secrets=_SKY_SECRET_BAG).get_launch_env_vars(
+            run_metadata=RUN_META, config=_SKY_SECRET_CONFIG, launch_id="lid"
+        )
+        assert env["MY_TOKEN"] == "secret-val"
+        assert "rits-access" not in env
+        assert "hyphen-named" not in env.values()
+
+    def test_no_declared_secrets_injects_nothing(self):
+        # With no config.skypilot.secrets allow-list, the whole bag stays out.
+        env = self._skypilot(secrets=_SKY_SECRET_BAG).get_launch_env_vars(
+            run_metadata=RUN_META, launch_id="lid"
+        )
+        assert "tok" not in env and "rits-access" not in env
+        assert "secret-val" not in env.values()
+
+    def test_missing_declared_secret_raises(self):
+        with pytest.raises(ValueError, match="tok"):
+            self._skypilot(secrets={"other": "v"}).get_launch_env_vars(
+                run_metadata=RUN_META, config=_SKY_SECRET_CONFIG, launch_id="lid"
+            )
+
+    def test_launcher_env_wins_over_declared_secret(self):
+        # Precedence: launcher envs override declared-secret vars of the same name.
+        env = self._skypilot(secrets=_SKY_SECRET_BAG).get_launch_env_vars(
+            run_metadata=RUN_META,
+            config=_SKY_SECRET_CONFIG,
+            launcher_config={"envs": {"MY_TOKEN": "from-launcher"}},
+            launch_id="lid",
+        )
+        assert env["MY_TOKEN"] == "from-launcher"
+
 
 class TestSkypilotManagedOverride:
-    def _managed(self):
+    def _managed(self, secrets=None):
         from gbserver.environment.skypilot_managed import Skypilot_managed
 
-        return Skypilot_managed(event_q=asyncio.Queue())
+        return Skypilot_managed(event_q=asyncio.Queue(), secrets=secrets)
 
     def test_inline_vars_and_authority(self):
         env = self._managed().get_launch_env_vars(
@@ -242,6 +367,20 @@ class TestSkypilotManagedOverride:
         assert env["GB_SKYPILOT_JOB_NAME"] == "job"
         assert env["GB_TARGETRUN_ID"] == "tr-1"
         assert env["GB_BUILD_ID"] == "real-build"
+
+    def test_only_declared_secret_injected(self):
+        env = self._managed(secrets=_SKY_SECRET_BAG).get_launch_env_vars(
+            run_metadata=RUN_META, config=_SKY_SECRET_CONFIG, launch_id="lid"
+        )
+        assert env["MY_TOKEN"] == "secret-val"
+        assert "rits-access" not in env
+        assert "hyphen-named" not in env.values()
+
+    def test_missing_declared_secret_raises(self):
+        with pytest.raises(ValueError, match="tok"):
+            self._managed(secrets={"other": "v"}).get_launch_env_vars(
+                run_metadata=RUN_META, config=_SKY_SECRET_CONFIG, launch_id="lid"
+            )
 
 
 class TestLsfOverride:
