@@ -485,6 +485,102 @@ class TestArgsIsTheOnlyFlagChannel:
         assert _passthrough(argv) == ["--tkn_doc_id_column", "run-a1b2c3"]
 
 
+class TestRequiredConfigIsGuarded:
+    """Empty or mistyped required config must name the FIELD, not bash.
+
+    The step guarded its derived values (name collisions, flag keys) but not the config
+    those derivations read, which left an asymmetry a reviewer caught: an empty or
+    misspelled `output` reaches dpk_run.sh and gets "--artifact-id is required", while
+    an empty or misspelled `input` rendered $GB_INPUT_ / $GB_INPUT_<typo> and died at
+    `set -u` with "GB_INPUT_dcos: unbound variable" — before the script, naming bash
+    rather than the mistake. `transform` was the same one level on: empty derived the
+    module "dpk_.runtime" and failed with "No module named dpk_".
+    """
+
+    def _run(self, rendered):
+        """Execute the rendered block with the script stubbed; return (rc, dpk: lines)."""
+        if shutil.which("bash") is None:  # pragma: no cover
+            pytest.skip("bash not available")
+        harness = "\n".join(
+            [
+                "mkdir -p ./venv/bin ./src && : > ./venv/bin/activate",
+                "printf '#!/bin/sh\\ntrue\\n' > ./src/dpk_run.sh",
+                "chmod +x ./src/dpk_run.sh",
+                rendered,
+            ]
+        )
+        proc = subprocess.run(
+            ["bash", "-c", harness], capture_output=True, text=True, cwd=_TMPDIR
+        )
+        return proc.returncode, [
+            l for l in proc.stderr.splitlines() if l.startswith("dpk:")
+        ]
+
+    def test_empty_transform_is_named(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, transform="")
+        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
+        assert rc == 1
+        assert any("dpk_config.transform is required" in m for m in msgs)
+
+    def test_an_explicit_module_makes_transform_optional(self, launcher, defaults):
+        """`module` overrides the derivation, so it is the one case that needs no
+        transform — the guard must not block it."""
+        cfg = _transform_cfg(defaults, transform="", module="dpk_x.runtime")
+        rc, _ = self._run(_render(launcher["run"], cfg, _BINDINGS))
+        assert rc == 0
+
+    def test_empty_input_is_named(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, input="")
+        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
+        assert rc == 1
+        assert any("dpk_config.input is required" in m for m in msgs)
+
+    def test_a_mistyped_input_is_named_and_the_valid_ones_listed(
+        self, launcher, defaults
+    ):
+        """The whole point: say what is wrong AND what the choices are."""
+        cfg = _transform_cfg(defaults, input="dcos")
+        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
+        assert rc == 1
+        assert any("names no declared input" in m for m in msgs)
+        assert any(m.strip().endswith("docs") for m in msgs)
+
+    def test_the_listing_shows_the_name_the_author_wrote(self, launcher, defaults):
+        """Not the sanitized one. A build sets `input: raw-docs`, so reporting
+        "raw_docs" would send them chasing a name they never typed."""
+        cfg = _transform_cfg(defaults, input="")
+        bindings = {"raw-docs": {"binding": {"path": "/a"}}}
+        rc, msgs = self._run(_render(launcher["run"], cfg, bindings))
+        assert rc == 1
+        assert any(m.strip().endswith("raw-docs") for m in msgs)
+
+    def test_a_target_with_no_inputs_says_so(self, launcher, defaults):
+        rc, msgs = self._run(_render(launcher["run"], _transform_cfg(defaults), {}))
+        assert rc == 1
+        assert any("declares NO inputs at all" in m for m in msgs)
+
+    def test_the_listing_cannot_execute_a_name(self, launcher, defaults, tmp_path):
+        """A raw input name is author text: single-quoted so a backtick is inert.
+
+        The collision guard reports only SANITIZED names for this reason; this guard
+        has to show raw ones to be useful, so it quotes them instead.
+        """
+        canary = tmp_path / "canary"
+        cfg = _transform_cfg(defaults, input="")
+        bindings = {f"d`touch {canary}`": {"binding": {"path": "/a"}}}
+        rendered = _render(launcher["run"], cfg, bindings)
+        assert _bash_ok(rendered)
+        self._run(rendered)
+        assert not canary.exists()
+
+    def test_the_happy_path_trips_no_guard(self, launcher, defaults):
+        rc, msgs = self._run(
+            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
+        )
+        assert rc == 0
+        assert msgs == []
+
+
 class TestInputNamesBecomeShellIdentifiers:
     """A declared input name is an arbitrary dict key; $GB_INPUT_<name> is not.
 

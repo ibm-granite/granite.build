@@ -58,6 +58,21 @@ done
 #
 # Installing one leaf tool into the system interpreter is what the flag is for; the
 # DPK dependencies it then resolves all land in the venv below, never system-wide.
+#
+# ON ASSUMING A BARE `pip`. Both lines below call `pip`, not `pip3` or
+# `python3 -m pip`, and on a minimal image that has only the latter they would fail
+# with 127 under `set -eu` — before the venv exists, and reporting
+# "pip: command not found" rather than anything actionable. That is a real shape, and
+# the reason it is accepted rather than worked around is that the guarantee comes from
+# SKYPILOT, not from the image: SkyPilot provisions its own Python environment on the
+# node and runs `setup` inside it, which is where `pip` comes from. Measured on the
+# local Docker SLURM cluster, whose containers have NEITHER `pip` nor `pip3` in a
+# plain login shell — yet every fixture installs DPK fine, because setup does not run
+# in a plain login shell.
+#
+# So the dependency is on SkyPilot's environment contract. If a future endpoint ever
+# breaks it, the fix is `python3 -m pip` (which cannot be assumed either — a
+# python-less image has no bootstrap at all) or a preinstalled uv via `dpk_image`.
 if ! pip install --quiet --no-cache-dir --break-system-packages uv 2>/dev/null; then
   pip install --quiet --no-cache-dir uv
 fi

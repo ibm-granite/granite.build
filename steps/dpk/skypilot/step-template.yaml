@@ -268,6 +268,51 @@ environment_configs:
                 guard the SHELL enforces: `raise_error` is unavailable here (strict
                 env only), and a rendered comment nobody reads is not a safeguard.
                 `exit 1` before the transform is the loud failure. #}
+            {#- REQUIRED-CONFIG GUARDS, first, because the failures they replace are
+                the least legible in the whole step.
+
+                The step already guards its DERIVED values (name collisions, flag
+                keys) but not the config those derivations read, which left an
+                asymmetry: an empty or misspelled `output` reaches dpk_run.sh and gets
+                "--artifact-id is required", while an empty or misspelled `input`
+                renders $GB_INPUT_ or $GB_INPUT_<typo> and dies at `set -u` with
+                "GB_INPUT_dcos: unbound variable" — before the script is reached, and
+                naming bash rather than the mistake. A typo in an input name is an
+                ordinary authoring slip and deserves an ordinary message.
+
+                `transform` is the same shape one level further on: empty derives the
+                module "dpk_.runtime", installs nothing, and fails with "No module
+                named dpk_", which points at neither the field nor the fix. #}
+            {%- if not config.dpk_config.transform and not config.dpk_config.module %}
+            echo "dpk: ERROR dpk_config.transform is required." >&2
+            echo "dpk: it names the DPK transform to run, e.g. tokenization2arrow —" >&2
+            echo "dpk: the step derives the python module and the pip extra from it." >&2
+            echo "dpk: (set 'module' explicitly only to override that derivation.)" >&2
+            exit 1
+            {%- endif %}
+            {%- if not config.dpk_config.input %}
+            echo "dpk: ERROR dpk_config.input is required." >&2
+            echo "dpk: it must name one of this target's declared inputs:" >&2
+            {#- The name the AUTHOR wrote, not env_name(n): they set `input: raw-docs`,
+                so telling them "raw_docs" sends them chasing a name they never typed.
+                SINGLE-quoted, because a raw name is author text and a backtick inside a
+                double-quoted echo would run — the same care the collision guard takes,
+                which reports only sanitized names for exactly that reason. #}
+            {%- for n in bindings.keys() | sort %}
+            echo 'dpk:   {{ n | string | replace("'", "'\"'\"'") }}' >&2
+            {%- endfor %}
+            exit 1
+            {%- elif config.dpk_config.input | string not in bindings.keys() | list %}
+            echo "dpk: ERROR dpk_config.input names no declared input of this target." >&2
+            echo "dpk: it must be one of:" >&2
+            {%- for n in bindings.keys() | sort %}
+            echo 'dpk:   {{ n | string | replace("'", "'\"'\"'") }}' >&2
+            {%- endfor %}
+            {%- if not bindings %}
+            echo "dpk:   (this target declares NO inputs at all)" >&2
+            {%- endif %}
+            exit 1
+            {%- endif %}
             {%- set names = bindings.keys() | list %}
             {%- set safe_names = [] %}
             {%- for n in names %}{% set _ = safe_names.append(env_name(n)) %}{% endfor %}
