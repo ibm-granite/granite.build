@@ -416,18 +416,18 @@ def test_other_api_paths_still_require_auth():
     assert _is_public_path("/api/autotunexxx") is False
 
 
-def test_autotunex_proxy_bypasses_auth_for_non_get_methods():
-    """From loopback the exemption must be method-agnostic, so gbserver does not
-    gate POST (or any other verb) before forwarding to the proxy.
+def test_autotunex_proxy_allows_any_method_from_loopback_without_a_key():
+    """The deployment gbserver actually ships must keep working, for every verb.
 
-    TestClient's peer is "testclient", which counts as loopback, so this covers
-    the standalone/all-in-one case where the exemption applies. The off-loopback
-    case is covered by test_autotunex_proxy_requires_auth_off_loopback.
-    Regression guard for the GET/HEAD-only bypass in dispatch: without the
-    `_is_autotunex_proxy` carve-out this POST would 401. Control:
-    POST /api/v1/thing (a non-public route) must still 401, proving auth is
-    otherwise enforced and it's specifically the autotunex prefix that's
-    exempt."""
+    standalone (and the all-in-one image, whose co-located Caddy dials 127.0.0.1)
+    runs auth_mode=apikey with no GBSERVER_API_KEY. In that configuration
+    _dispatch_apikey admits any loopback caller on any method, so the proxy needs
+    no prefix-specific exemption to work -- which is why the old
+    `_is_autotunex_proxy` carve-out could be removed rather than narrowed. Asserted
+    alongside a non-public /api/v1 route to show both go through the same door.
+
+    TestClient's peer is "testclient", which counts as loopback.
+    """
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
 
@@ -442,19 +442,18 @@ def test_autotunex_proxy_bypasses_auth_for_non_get_methods():
 
     env = {
         "GBSERVER_AUTH_MODE": "apikey",
-        "GBSERVER_API_KEY": "secret",
+        "GBSERVER_API_KEY": "",
         # Fixed explicitly so this machine's local .env GBSERVER_API_USER
         # can't leak in and change the outcome.
         "GBSERVER_API_USER": "test-user",
     }
     with patch.dict(os.environ, env, clear=False):
         client = TestClient(app)
-        # No Authorization header on either request.
         proxy_response = client.post("/api/autotunex/jobs")
         other_response = client.post("/api/v1/thing")
 
     assert proxy_response.status_code == 200
-    assert other_response.status_code == 401
+    assert other_response.status_code == 200
 
 
 def test_autotunex_proxy_requires_auth_off_loopback():
@@ -493,12 +492,16 @@ def test_autotunex_proxy_requires_auth_off_loopback():
     assert get_response.status_code == 401
 
 
-def test_autotunex_proxy_still_exempt_from_loopback_with_api_key_set():
-    """The loopback gate must not break the deployment the exemption serves.
+def test_autotunex_proxy_requires_the_api_key_like_any_other_path():
+    """With a key configured the prefix authenticates like /api/v1, even on loopback.
 
-    standalone ships auth_mode=apikey; the all-in-one image additionally fronts
-    gbserver with a co-located Caddy that dials 127.0.0.1, so the peer is always
-    loopback. Both must keep working even when an API key is configured.
+    This inverts the behaviour a previous pass pinned. The old carve-out skipped
+    auth for any method on loopback, and the all-in-one image's Caddy strips
+    X-Forwarded-* and dials 127.0.0.1, so every remote request reaches gbserver
+    looking like loopback -- making the condition always true and the exemption
+    unconditional in the one topology that ships it. An operator who set
+    GBSERVER_API_KEY got 401s on /api/v1 while POST /api/autotunex/jobs still
+    launched real builds and DELETE still destroyed datasets.
     """
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
@@ -514,6 +517,31 @@ def test_autotunex_proxy_still_exempt_from_loopback_with_api_key_set():
     }
     with patch.dict(os.environ, env, clear=False):
         client = TestClient(app, client=("127.0.0.1", 44444))
+        unauthenticated = client.post("/api/autotunex/jobs")
+        authenticated = client.post(
+            "/api/autotunex/jobs", headers={"Authorization": "Bearer secret"}
+        )
+
+    assert unauthenticated.status_code == 401
+    assert authenticated.status_code == 200
+
+
+def test_autotunex_proxy_is_not_exempt_from_oidc_on_loopback():
+    """Under an OIDC auth mode the prefix is authenticated too.
+
+    The old carve-out ran before the auth-mode branch, so it bypassed github /
+    ibmid / multi as well -- not just the apikey path it was justified by.
+    """
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+
+    @app.post("/api/autotunex/{path:path}")
+    async def autotunex_post(path: str):
+        return JSONResponse(content={"path": path})
+
+    env = {"GBSERVER_AUTH_MODE": "github", "GBSERVER_API_KEY": ""}
+    with patch.dict(os.environ, env, clear=False):
+        client = TestClient(app, client=("127.0.0.1", 44444))
         response = client.post("/api/autotunex/jobs")
 
-    assert response.status_code == 200
+    assert response.status_code == 401

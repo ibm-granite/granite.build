@@ -21,18 +21,18 @@ forwards them server-side to the AutoTuneX FastAPI server's ``/api/v1/*``
 routes, so browser cookies flow with no CORS. Mirrors the ``next dev`` rewrite in
 frontend/next.config.ts.
 
-gbserver exempts ``/api/autotunex/*`` from auth for every method, but only when
-the request's TCP peer is loopback. That exemption is a dedicated check in
-``auth.AuthMiddleware.dispatch``, *not* ``auth._PUBLIC_PATH_PREFIXES`` — that
-allow-list deliberately does not match this prefix, and
-``test_autotunex_proxy_prefix_is_not_unconditionally_public`` asserts so.
+gbserver gives this prefix no auth exemption: it authenticates exactly like
+``/api/v1/*``. Nothing extra is needed for the deployments that ship it —
+standalone runs auth_mode apikey with no ``GBSERVER_API_KEY``, where any loopback
+caller is already admitted on any method, and the all-in-one image's co-located
+Caddy dials 127.0.0.1 so its callers are loopback too. Set ``GBSERVER_API_KEY``
+or an OIDC mode and this prefix requires credentials like everything else.
 
 Note that the upstream does not necessarily authenticate what is forwarded:
-AutoTuneX defaults to ``auth_providers=["disabled"]``, which enforces nothing.
-The loopback condition is also not a boundary behind a reverse proxy that dials
-loopback and strips ``X-Forwarded-*`` — the all-in-one image does exactly that
-(autotunex/docker/aio/Caddyfile) — so this proxy is only safe where the edge is
-already access-controlled. See the warning in api/auth.py.
+AutoTuneX defaults to ``auth_providers=["disabled"]``, which enforces nothing. So
+whoever gbserver admits here reaches an unauthenticated API — see the warning in
+api/auth.py, and note that the browser sends gbserver no credential of its own,
+which is why the all-in-one image expects access control at its edge.
 """
 
 import os
