@@ -349,7 +349,7 @@ export function TrialsTable({ job }: Props) {
                               />
                             </TabPanel>
                             <TabPanel>
-                              <TrialLogViewer jobId={jobId} trialId={trial.id} status={trial.status} />
+                              <TrialLogViewer jobId={jobId} trialId={trial.id} status={trial.status} scope={scope} />
                             </TabPanel>
                             <TabPanel>
                               <CodeSnippet type="multi" wrapText>

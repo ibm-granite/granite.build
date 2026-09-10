@@ -568,7 +568,21 @@ export function Step1DatasetUpload({
                     <span>Split dataset</span>
                     <InfoTooltip label="Automatically splits your uploaded file into training and validation sets. Disable this to upload separate files for each." />
                   </div>
-                  <Toggle id="split-toggle" labelText="" hideLabel toggled={isSplitEnabled} onToggle={setIsSplitEnabled} size="sm" />
+                  <Toggle
+                    id="split-toggle"
+                    labelText=""
+                    hideLabel
+                    toggled={isSplitEnabled}
+                    // Turning split back on discards any separate validation file
+                    // picked while it was off. Keeping it meant the record counts
+                    // shown here described a split the launch would then skip in
+                    // favour of the stale file.
+                    onToggle={(checked) => {
+                      setIsSplitEnabled(checked)
+                      if (checked) setValidationFile(null)
+                    }}
+                    size="sm"
+                  />
                 </div>
               </>
             )}

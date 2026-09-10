@@ -48,7 +48,7 @@ export function AutoTuneXPanel({ buildId }: AutoTuneXPanelProps) {
   })
   const isAdmin = spaces.some((s) => s.is_admin)
 
-  const { data: job, isLoading } = useQuery({
+  const { data: job, isLoading, isError } = useQuery({
     queryKey: ['autotunex-job-by-build', buildId, isAdmin],
     queryFn: () => getJobByBuildId(buildId, isAdmin ? 'all' : 'own'),
   })
@@ -69,6 +69,17 @@ export function AutoTuneXPanel({ buildId }: AutoTuneXPanelProps) {
         <h5 style={{ marginBottom: '1rem' }}>Model Customization</h5>
         <SkeletonText paragraph lineCount={5} />
       </div>
+    )
+  }
+
+  // A failed lookup also leaves job undefined, and returning null below would
+  // make the panel silently vanish as though the build had no tuning job. Say so
+  // instead, as a field so the two-column grid keeps its shape.
+  if (isError) {
+    return (
+      <DetailField label="Model Customization" column={2} row={1}>
+        <span>Couldn&apos;t load the linked tuning job.</span>
+      </DetailField>
     )
   }
 

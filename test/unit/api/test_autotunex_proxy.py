@@ -375,3 +375,69 @@ def test_rejects_path_escaping_the_upstream_api_mount(monkeypatch):
         assert status == 400, f"{escaping} must be refused, got {status}"
 
     assert reached == [], f"nothing may be forwarded upstream, saw {reached}"
+
+
+def test_forwards_non_latin1_response_header(monkeypatch):
+    """A non-latin-1 header value must survive instead of 500ing the proxy.
+
+    AutoTuneX serves result files with the filename in Content-Disposition, so a
+    dataset or artifact whose name is not latin-1 reaches this code. Decoding
+    each value to str and re-encoding it as latin-1 raised UnicodeEncodeError,
+    and because that happened after StreamingResponse had already adopted
+    BackgroundTask(upstream.aclose) but before the response was returned, the
+    pooled upstream connection leaked on every such request.
+
+    Driven at the ASGI level rather than through TestClient: TestClient rebuilds
+    the response by utf-8-decoding every raw header and handing the str to httpx,
+    which re-encodes as ascii (starlette.testclient, "raw_kwargs[headers]"), so it
+    cannot represent the bytes this test is about.
+    """
+    disposition = 'attachment; filename="\u30c7\u30fc\u30bf.csv"'
+    raw_value = disposition.encode("utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers=[("content-disposition", raw_value)],
+            content=b"col\n1\n",
+        )
+
+    monkeypatch.setattr(proxy_mod, "AUTOTUNEX_URL", "http://autotunex.test")
+    monkeypatch.setattr(proxy_mod, "_client", _client_with_handler(handler))
+
+    path = "/api/autotunex/jobs/j1/result-report/file"
+    scope = {
+        "type": "http",
+        # spec_version >= 2.4 makes StreamingResponse await its body directly
+        # instead of racing a disconnect listener against receive() (which would
+        # never yield http.disconnect here), and it runs the BackgroundTask
+        # afterwards -- the very upstream close this bug used to skip.
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 1234),
+        "server": ("testserver", 80),
+    }
+    messages: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        messages.append(message)
+
+    asyncio.run(_make_app()(scope, receive, send))
+
+    start = next(m for m in messages if m["type"] == "http.response.start")
+    assert start["status"] == 200
+    assert (b"content-disposition", raw_value) in start["headers"]
+    body = b"".join(
+        m.get("body", b"") for m in messages if m["type"] == "http.response.body"
+    )
+    assert body == b"col\n1\n"

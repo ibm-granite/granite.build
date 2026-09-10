@@ -76,7 +76,11 @@ function formatTime(seconds: number): string {
 
 function totalTimeSecondsFor(job: TuningJob): number {
   const start = new Date(job.created_at).getTime()
-  const end = job.status === 'running' ? Date.now() : new Date(job.updated_at).getTime()
+  // finished_at is when the run actually stopped; updated_at is only a fallback
+  // for a server that doesn't report it, because any later write to the job row
+  // (e.g. a reconcile) bumps updated_at and inflates the elapsed time.
+  const end =
+    job.status === 'running' ? Date.now() : new Date(job.finished_at ?? job.updated_at).getTime()
   return Math.floor((end - start) / 1000)
 }
 

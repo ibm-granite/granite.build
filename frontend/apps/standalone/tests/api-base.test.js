@@ -35,11 +35,18 @@ describe('same-origin API base in standalone', () => {
     assert.equal(autotunexApiBase('/job/x'), '/api/autotunex/job/x')
   })
 
-  it('autotunexApiBase targets the baked URL when set', () => {
+  it('autotunexApiBase stays relative even when AUTOTUNEX_API_URL is set', () => {
+    // A baked absolute URL sent the browser cross-origin to the AutoTuneX API.
+    // That needs credentialed CORS (cors_allow_origins) plus
+    // session_cookie_same_site="none" configured on AutoTuneX, which nothing in
+    // this repo sets -- and next.config.ts's `env:` block inlines the value into
+    // the client bundle, so `AUTOTUNEX_API_URL=... make build-frontend` shipped a
+    // silently broken app. The gbserver proxy exists precisely to avoid this, so
+    // the browser always goes same-origin through it.
     save('NODE_ENV'); save('AUTOTUNEX_API_URL')
     process.env.NODE_ENV = 'production'
     process.env.AUTOTUNEX_API_URL = 'http://example:8000'
-    assert.equal(autotunexApiBase('/job/x'), 'http://example:8000/api/v1/job/x')
+    assert.equal(autotunexApiBase('/job/x'), '/api/autotunex/job/x')
   })
 
   it('apiBase is relative in production when GBSERVER_API_URL unset', () => {
