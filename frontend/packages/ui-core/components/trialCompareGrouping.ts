@@ -16,6 +16,23 @@ const HIDDEN_KEYS = [
   'training_rl_config.reward_function_path',
 ]
 
+// Display overrides for keys whose bare name reads wrong in the UI. The backend
+// emits `loss` alongside `train_loss` and sets metric="loss", so the unqualified
+// key really is the *evaluation* loss — labelling it "Loss" next to "Train loss"
+// read as though one of the two were unqualified.
+const KEY_LABELS: Record<string, string> = {
+  loss: 'Eval loss',
+}
+
+/** Section-row label for a flattened compare key. */
+export function labelForCompareKey(key: string): string {
+  const override = KEY_LABELS[key]
+  if (override) return override
+  const text = key.replaceAll('_', ' ').trim()
+  if (!text) return ''
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
 export interface CompareKeyGroups {
   /** Outcome metrics that differ across the selected trials. */
   resultKeys: string[]
@@ -32,12 +49,32 @@ export function isEmptyValue(value: unknown): boolean {
   return false
 }
 
+// Every key any row carries, in first-seen order.
+//
+// The union, not rows[0]'s keys: each row is built independently from its own
+// trial's config and metrics (see toCompareRow), so field sets genuinely differ
+// between trials — TrialsTable's radar code notes the same about `loss`. Reading
+// only the first row made anything it lacked invisible in all three sections and
+// absent from the counts the headings claim are exhaustive. Which trial is first
+// is decided by the loss sort, so the visible set even moved with the ranking.
+function keyUniverse(rows: Record<string, any>[]): string[] {
+  const keys: string[] = []
+  const seen = new Set<string>()
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      if (seen.has(key)) continue
+      seen.add(key)
+      keys.push(key)
+    }
+  }
+  return keys
+}
+
 // Keys whose value is not identical across every row.
 export function findDifferingKeys(rows: Record<string, any>[]): Set<string> {
   const differing = new Set<string>()
   if (rows.length === 0) return differing
-  for (const key in rows[0]) {
-    if (!Object.prototype.hasOwnProperty.call(rows[0], key)) continue
+  for (const key of keyUniverse(rows)) {
     const values = rows.map((r) => r[key])
     // Compare by stringified value so arrays/objects don't count as always-differing.
     const first = JSON.stringify(values[0])
@@ -81,11 +118,22 @@ export function getOddOnesOut(
 //
 // A metric identical across every trial lands in `sameKeys` rather than
 // `resultKeys` — matching the original behaviour of this view.
-export function groupCompareKeys(rows: Record<string, any>[]): CompareKeyGroups {
+//
+// `metricKeys` carries the trials' own primary-metric names (`trial.metric`),
+// which are dynamic. RESULT_KEYS alone is a fixed list, so a job reporting e.g.
+// eval_loss sorted by it correctly — lossOf() honours trial.metric — and then
+// filed that number under "What differs" as if it were a hyperparameter, while
+// Results showed no loss at all. It is the same number TrialsTable prints in its
+// Loss column, which is what made the two views disagree.
+export function groupCompareKeys(
+  rows: Record<string, any>[],
+  metricKeys: string[] = []
+): CompareKeyGroups {
   if (rows.length === 0) return { resultKeys: [], differingKeys: [], sameKeys: [] }
 
+  const isResultKey = (key: string) => RESULT_KEYS.includes(key) || metricKeys.includes(key)
   const differing = findDifferingKeys(rows)
-  const visible = Object.keys(rows[0]).filter(
+  const visible = keyUniverse(rows).filter(
     (key) =>
       !HIDDEN_KEYS.includes(key) &&
       !IGNORE_KEYS.includes(key) &&
@@ -93,8 +141,8 @@ export function groupCompareKeys(rows: Record<string, any>[]): CompareKeyGroups 
   )
 
   return {
-    resultKeys: visible.filter((key) => RESULT_KEYS.includes(key) && differing.has(key)),
-    differingKeys: visible.filter((key) => !RESULT_KEYS.includes(key) && differing.has(key)),
+    resultKeys: visible.filter((key) => isResultKey(key) && differing.has(key)),
+    differingKeys: visible.filter((key) => !isResultKey(key) && differing.has(key)),
     sameKeys: visible.filter((key) => !differing.has(key)),
   }
 }
