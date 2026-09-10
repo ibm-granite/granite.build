@@ -305,12 +305,20 @@ class K8s(Environment):
             to the lowercased ``env_name``, shared by both the verbatim and the
             lowercased env-var-name entries.
         :raises ValueError: if a declared entry omits ``env_name`` (shared
-            fail-fast validation, consistent with LSF/SkyPilot), or if any env
-            var is declared but ``space_secret`` is unset. Secret values never
-            appear in the message.
+            fail-fast validation, consistent with LSF/SkyPilot); if any env var
+            is declared but ``space_secret`` is unset; or if two declarations
+            resolve the **same** pod env-var name to **different** data-keys
+            (e.g. ``MY_TOKEN`` with no ``secret_name`` and ``my_token`` with an
+            explicit one both claim ``my_token``) — surfaced rather than
+            silently dropping the later mapping. Secret values never appear in
+            the message.
         """
         values: List[Tuple[str, str]] = []
-        seen_names: Set[str] = set()
+        # Pod env-var name -> resolved Secret data-key. Dedups the verbatim /
+        # lowercase pair within one mapping and catches a genuine cross-mapping
+        # collision (the same env-var name resolved to a *different* key), which
+        # would otherwise silently drop the later, explicit mapping.
+        emitted_keys: Dict[str, str] = {}
         for env_var in environment_variables:
             # Same fail-fast validation as LSF/SkyPilot: a malformed entry
             # (missing env_name) raises rather than being silently dropped.
@@ -327,9 +335,20 @@ class K8s(Environment):
             # Pod env-var names: verbatim (portable) first, then the deprecated
             # lowercase alias kept for back-compat.
             for name in (env_name, env_name.lower()):
-                if name in seen_names:  # env_name already lowercase -> one entry
-                    continue
-                seen_names.add(name)
+                prior = emitted_keys.get(name)
+                if prior is not None:
+                    # Same name -> same key: an idempotent duplicate (the
+                    # verbatim==lowercase pair, or a repeated declaration).
+                    if prior == secret_key:
+                        continue
+                    # Same name -> different key: two declarations fight over
+                    # one pod env var. Fail fast instead of silently dropping
+                    # the later one (only key names appear, never values).
+                    raise ValueError(
+                        f"conflicting secret data-keys for env var {name!r}: "
+                        f"{prior!r} and {secret_key!r}"
+                    )
+                emitted_keys[name] = secret_key
                 base = f"k8s.env.{name}.valueFrom.secretKeyRef"
                 values.append((f"{base}.name", space_secret))
                 values.append((f"{base}.key", secret_key))

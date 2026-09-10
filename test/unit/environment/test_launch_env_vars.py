@@ -631,6 +631,24 @@ class TestK8sSecretEnvHelmValues:
         with pytest.raises(ValueError, match="missing 'env_name'"):
             self._values(_mappings((None, "tok")))
 
+    def test_conflicting_data_keys_for_same_name_raises(self):
+        # MY_TOKEN (no secret_name) resolves my_token -> my_token; a second
+        # my_token mapping with an explicit secret_name wants my_token ->
+        # real_key. Both claim the pod env var my_token with different keys, so
+        # the later mapping must not be silently dropped -- it raises.
+        with pytest.raises(ValueError, match="conflicting secret data-keys"):
+            self._values(_mappings(("MY_TOKEN", None), ("my_token", "real_key")))
+
+    def test_idempotent_duplicate_mapping_is_deduped(self):
+        # The same mapping declared twice resolves each name to the same key,
+        # so it is deduped rather than treated as a conflict.
+        assert self._values(_mappings(("MY_TOKEN", None), ("MY_TOKEN", None))) == [
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "my_token"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "my_token"),
+        ]
+
 
 class TestAddGbAliases:
     """Direct tests for the shared ``Environment._add_gb_aliases`` helper."""
