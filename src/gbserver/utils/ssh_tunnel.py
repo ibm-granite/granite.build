@@ -101,6 +101,9 @@ class SshTunnel:
         self._inflight = 0
         self._idle = asyncio.Event()
         self._idle.set()
+        # Set once retirement/close begins, so use() fails fast instead of
+        # running against a connection about to drop.
+        self._closing = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -158,6 +161,8 @@ class SshTunnel:
         A True result doesn't guarantee the next command succeeds; callers must
         still handle a command failing and re-establish.
         """
+        if self._closing:
+            return False
         conn = self._conn
         if conn is None:
             return False
@@ -180,7 +185,15 @@ class SshTunnel:
         A tunnel with in-flight uses won't be closed by ``close_when_idle`` (see
         the retire path in the LSF environment), so a rebuild elsewhere can't tear
         down the connection or port forward mid-transfer.
+
+        Raises ``SshTunnelError`` if the tunnel is already closing/closed, so a
+        caller that raced the retire path fails fast and re-establishes rather
+        than running against a dead connection.
         """
+        if self._closing or self._conn is None:
+            raise SshTunnelError(
+                f"[SshTunnel] Cannot use tunnel to {self.host}: it is closing or closed"
+            )
         self._inflight += 1
         self._idle.clear()
         try:
@@ -193,11 +206,14 @@ class SshTunnel:
 
     async def close_when_idle(self) -> None:
         """Wait for in-flight uses to drain, then close. Used to retire a tunnel."""
+        # Block new use() entrants immediately so the refcount can reach zero.
+        self._closing = True
         await self._idle.wait()
         await self.close()
 
     async def close(self) -> None:
         """Close all port-forward listeners and the SSH connection."""
+        self._closing = True
         for listener in self._listeners:
             listener.close()
             await listener.wait_closed()

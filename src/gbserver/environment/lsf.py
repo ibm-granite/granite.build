@@ -27,7 +27,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Self, Tuple, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Self, Tuple, Union
 
 from pydantic import BaseModel
 
@@ -219,20 +219,30 @@ class Lsf(Environment):
         # Superseded tunnels being closed once their in-flight uses drain; kept
         # referenced so the GC tasks aren't collected mid-close.
         self._retired_tunnel_tasks: set[asyncio.Task] = set()
-        self.ssh_connect_budget_s = int(
-            authentication.get(
-                "ssh_connect_budget_s", GBSERVER_LSF_SSH_CONNECT_BUDGET_S
-            )
+        # Floored against operator misconfig via authentication: a negative
+        # budget would raise on the first failure; a negative max backoff would
+        # feed a negative delay into asyncio.sleep (which raises). Base is
+        # floored to >=1 at use so a zero base can't busy-loop.
+        self.ssh_connect_budget_s = max(
+            0,
+            int(
+                authentication.get(
+                    "ssh_connect_budget_s", GBSERVER_LSF_SSH_CONNECT_BUDGET_S
+                )
+            ),
         )
         self.ssh_connect_base_backoff_s = int(
             authentication.get(
                 "ssh_connect_base_backoff_s", GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S
             )
         )
-        self.ssh_connect_max_backoff_s = int(
-            authentication.get(
-                "ssh_connect_max_backoff_s", GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S
-            )
+        self.ssh_connect_max_backoff_s = max(
+            1,
+            int(
+                authentication.get(
+                    "ssh_connect_max_backoff_s", GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S
+                )
+            ),
         )
         if self.use_ssh:
             assert (
@@ -586,11 +596,10 @@ class Lsf(Environment):
                 **kwargs,
             )
             logger.info("using ssh, copying the asset into the env")
-            ssh_tunnel = await self._ensure_ssh_tunnel()
             logger.info("copying %s to %s", asset_dir, final_asset_dir)
             # Hold the tunnel in-use for the whole copy so a rebuild elsewhere
             # can't retire it out from under the transfer.
-            async with ssh_tunnel.use():
+            async with self.ensure_and_use() as ssh_tunnel:
                 logger.info("creating remote directory %s via tunnel", final_asset_dir)
                 await ssh_tunnel.run_remote_with_retries(
                     f"mkdir -p {final_asset_dir} || true"
@@ -808,13 +817,12 @@ class Lsf(Environment):
         secret_env_keys = self._get_secret_env_keys(kwargs.get("config", {}))
         try:
             if self.use_ssh:
-                ssh_tunnel = await self._ensure_ssh_tunnel()
                 remote_cmd, redacted_cmd = self._build_cmd_to_run_with_ssh(
                     final_jobsub_path, env_vars, secret_env_keys
                 )
                 msg = f"⚡ Launching LSF job with command:\n```\n{redacted_cmd}\n```"
                 self._send_message(msg=msg, **kwargs)
-                async with ssh_tunnel.use():
+                async with self.ensure_and_use() as ssh_tunnel:
                     _, stdout, stderr = await ssh_tunnel.run_remote_with_retries(
                         command=remote_cmd, redacted_command=redacted_cmd
                     )
@@ -921,6 +929,22 @@ class Lsf(Environment):
         self._retired_tunnel_tasks.add(task)
         task.add_done_callback(self._retired_tunnel_tasks.discard)
 
+    @contextlib.asynccontextmanager
+    async def ensure_and_use(
+        self: Self, setup_id: str = "runtime"
+    ) -> AsyncIterator[SshTunnel]:
+        """Ensure a healthy tunnel and hold it in-use for the enclosed block.
+
+        Atomic against the retire path: the returned tunnel is marked in-use
+        (``use()``) before ``_ensure_ssh_tunnel``'s lock is released, closing the
+        window where a concurrent rebuild could retire it between ensure and use.
+        Runtime SSH callers should prefer this over calling ``_ensure_ssh_tunnel``
+        then ``tunnel.use()`` as separate statements.
+        """
+        tunnel = await self._ensure_ssh_tunnel(setup_id=setup_id)
+        async with tunnel.use():
+            yield tunnel
+
     async def _ensure_ssh_tunnel(self: Self, setup_id: str = "runtime") -> SshTunnel:
         """Return a healthy persistent SshTunnel, (re)establishing it if needed.
 
@@ -930,11 +954,21 @@ class Lsf(Environment):
         backoff+jitter for up to ``ssh_connect_budget_s`` before raising
         ``SshTunnelError``. ``_tunnel_lock`` serializes rebuilds so concurrent
         callers don't each open a tunnel.
+
+        Callers that immediately transfer over the tunnel should use
+        :meth:`ensure_and_use` instead, which holds the tunnel in-use before
+        releasing the lock and so is atomic against the retire path.
         """
         assert (
             self._key_file_path
         ), "SSH key file must be set up before opening a tunnel"
+        # Fast path: a healthy tunnel needs no rebuild, so skip the lock — a burst
+        # of concurrent transfers shouldn't serialize on it when it's already up.
+        existing = self._ssh_tunnel
+        if existing is not None and existing.is_healthy():
+            return existing
         async with self._tunnel_lock:
+            # Re-check under the lock: another coroutine may have just rebuilt.
             existing = self._ssh_tunnel
             if existing is not None and existing.is_healthy():
                 return existing
@@ -955,7 +989,12 @@ class Lsf(Environment):
             last_err: Optional[Exception] = None
             while True:
                 attempt += 1
-                # Fresh view each sweep so a recovered node gets retried.
+                # Fresh view each sweep so a recovered node gets retried. Note:
+                # this list is otherwise guarded by node_search_lock, not
+                # _tunnel_lock — the two aren't mutually excluded, so a concurrent
+                # node search could observe a mid-clear list. Harmless in CPython
+                # (no corruption; worst case a node is re-probed), but a latent
+                # hazard if either lock's scope changes.
                 self.unreachable_ssh_nodes.clear()
                 tunnel: Optional[SshTunnel] = None
                 try:
@@ -1041,6 +1080,10 @@ class Lsf(Environment):
 
         ssh_tunnel = self._ssh_tunnel
         if ssh_tunnel is not None:
+            # Force-close (not close_when_idle): teardown runs after the build
+            # is done or cancelled, so draining in-flight transfers is pointless
+            # and would risk hanging teardown behind a stuck operation. The key
+            # file is deleted just below regardless, so the tunnel is unusable.
             await ssh_tunnel.close()
             self._ssh_tunnel = None
         key_file_path = self._key_file_path
@@ -1920,8 +1963,9 @@ class Lsf(Environment):
             src: Source directory path.
             dest: Destination directory path on the remote host.
             add_slashes: Whether to ensure trailing slashes on src/dest.
-            ssh_tunnel: Tunnel to build the command against; the caller passes the
-                one it holds in-use so we don't fetch (and race) a different one.
+            ssh_tunnel: Tunnel to build the command against; required when
+                use_ssh is set. The caller passes the one it holds in-use so we
+                don't fetch (and race) a different one.
 
         Returns:
             List of command tokens for the SCP invocation.
@@ -1932,8 +1976,9 @@ class Lsf(Environment):
         scp_cmd.extend(["-i", key_file_path])
         scp_cmd.extend(self.ssh_no_verification_flags())
         if self.use_ssh:
-            if ssh_tunnel is None:
-                ssh_tunnel = await self._ensure_ssh_tunnel()
+            # Caller must pass the tunnel it holds in-use; re-ensuring here could
+            # build the command against a different tunnel than the caller holds.
+            assert ssh_tunnel is not None, "ssh_tunnel is required when use_ssh is set"
             ssh_dest = self.__get_ssh_destination(node="localhost")
             local_port = ssh_tunnel.get_local_port(ssh_tunnel.host, self.ssh_port)
             assert (
@@ -1969,8 +2014,9 @@ class Lsf(Environment):
         ssh_t2 = cmd_safe_join(ssh_t1)
         rsync_ssh = f"ssh -i {key_file_path} {ssh_t2}"
         if self.use_ssh:
-            if ssh_tunnel is None:
-                ssh_tunnel = await self._ensure_ssh_tunnel()
+            # Caller must pass the tunnel it holds in-use; re-ensuring here could
+            # build the command against a different tunnel than the caller holds.
+            assert ssh_tunnel is not None, "ssh_tunnel is required when use_ssh is set"
             ssh_dest = self.__get_ssh_destination(
                 node="localhost"
             )  # localhost because of the port forwarding

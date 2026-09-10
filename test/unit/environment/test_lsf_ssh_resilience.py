@@ -223,6 +223,97 @@ class TestEnsureSshTunnel:
 
         assert lsf._ssh_tunnel is good
 
+    @pytest.mark.asyncio
+    async def test_healthy_fast_path_skips_lock(self: Self) -> None:
+        """A healthy tunnel is returned without ever taking _tunnel_lock."""
+        lsf = _make_lsf(["a"])
+        existing = _healthy_tunnel("a")
+        lsf._ssh_tunnel = existing
+        # A held lock would deadlock if the fast path tried to acquire it.
+        await lsf._tunnel_lock.acquire()
+        try:
+            result = await asyncio.wait_for(lsf._ensure_ssh_tunnel(), timeout=1)
+        finally:
+            lsf._tunnel_lock.release()
+        assert result is existing
+
+
+class TestEnsureSshTunnelConcurrency:
+    """The crux of the PR: rebuilds serialize and retire is transfer-safe."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_rebuild_once(self: Self) -> None:
+        """Under contention, exactly one rebuild happens; all callers share it."""
+        lsf = _make_lsf(["a", "b"])
+        fresh = _healthy_tunnel("a")
+        builds = 0
+
+        def _build(*_args: object, **_kwargs: object) -> MagicMock:
+            nonlocal builds
+            builds += 1
+            return fresh
+
+        async def _slow_node() -> str:
+            await asyncio.sleep(0)  # yield so callers pile up on the lock
+            return "a"
+
+        with (
+            patch("gbserver.environment.lsf.SshTunnel", side_effect=_build),
+            patch.object(
+                lsf, "_get_reachable_ssh_node", new=AsyncMock(wraps=_slow_node)
+            ),
+        ):
+            results = await asyncio.gather(
+                *(lsf._ensure_ssh_tunnel() for _ in range(5))
+            )
+
+        assert builds == 1  # lock serialized; re-check under lock reused the build
+        assert all(r is fresh for r in results)
+
+    @pytest.mark.asyncio
+    async def test_ensure_and_use_holds_tunnel_across_retire(self: Self) -> None:
+        """A concurrent rebuild retires the old tunnel but can't close it while a
+        caller holds it via ensure_and_use (the retire-window fix)."""
+        lsf = _make_lsf(["a", "b"])
+        # Real SshTunnel so use()/close_when_idle refcounting is exercised.
+        first = SshTunnel(host="a", username="u", key_file="/tmp/k")
+        first._conn = MagicMock()
+        first._conn.is_closed.return_value = False
+        first.close = AsyncMock()  # type: ignore[method-assign]
+        lsf._ssh_tunnel = first
+
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _hold() -> None:
+            async with lsf.ensure_and_use():
+                entered.set()
+                await release.wait()
+
+        holder = asyncio.create_task(_hold())
+        await entered.wait()  # caller now holds `first` in-use
+
+        # Force a rebuild: mark first unhealthy, then ensure again.
+        first._conn.is_closed.return_value = True
+        second = _healthy_tunnel("b")
+        with (
+            patch("gbserver.environment.lsf.SshTunnel", return_value=second),
+            patch.object(
+                lsf, "_get_reachable_ssh_node", new=AsyncMock(return_value="b")
+            ),
+        ):
+            rebuilt = await lsf._ensure_ssh_tunnel()
+            await asyncio.sleep(0)  # let the retire GC task run
+
+        assert rebuilt is second
+        # first is retired but NOT yet closed — the holder still has it in-use.
+        first.close.assert_not_awaited()
+
+        release.set()
+        await holder
+        await asyncio.sleep(0)  # let close_when_idle drain and close
+        first.close.assert_awaited()  # closed once the in-flight use drained
+
 
 class TestSshTunnelIsHealthy:
     """The cheap, non-throwing liveness predicate."""
@@ -270,6 +361,7 @@ class TestSshTunnelRefcount:
     @pytest.mark.asyncio
     async def test_close_when_idle_waits_for_inflight_use(self: Self) -> None:
         t = SshTunnel(host="h", username="u", key_file="/tmp/k")
+        t._conn = MagicMock()  # opened tunnel, so use() is valid
         t.close = AsyncMock()  # type: ignore[method-assign]
 
         release = asyncio.Event()
@@ -290,3 +382,30 @@ class TestSshTunnelRefcount:
         await holder
         await gc
         t.close.assert_awaited_once()  # closed once the use drained
+
+    @pytest.mark.asyncio
+    async def test_use_rejects_closing_tunnel(self: Self) -> None:
+        """use() on a tunnel already being retired fails fast (retire window)."""
+        t = SshTunnel(host="h", username="u", key_file="/tmp/k")
+        t._conn = MagicMock()  # otherwise use() rejects on conn is None
+        t._closing = True
+        with pytest.raises(SshTunnelError):
+            async with t.use():
+                pass  # pragma: no cover
+
+    @pytest.mark.asyncio
+    async def test_use_rejects_unopened_tunnel(self: Self) -> None:
+        """use() before open() (no connection) fails fast rather than silently."""
+        t = SshTunnel(host="h", username="u", key_file="/tmp/k")
+        with pytest.raises(SshTunnelError):
+            async with t.use():
+                pass  # pragma: no cover
+
+    def test_is_healthy_false_while_closing(self: Self) -> None:
+        """A tunnel being retired must not be reused as healthy."""
+        t = SshTunnel(host="h", username="u", key_file="/tmp/k")
+        conn = MagicMock()
+        conn.is_closed.return_value = False
+        t._conn = conn
+        t._closing = True
+        assert t.is_healthy() is False
