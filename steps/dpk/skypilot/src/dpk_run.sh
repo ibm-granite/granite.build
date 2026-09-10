@@ -85,12 +85,49 @@ done
 : "${output_path:?--output-path is required}"
 : "${artifact_id:?--artifact-id is required}"
 
+# MARKER-VALUE GUARDS, here rather than beside the marker they protect.
+#
+# The artifact marker is a SPACE-DELIMITED line consumed by a regex, and the path is
+# then interpolated into a JSON string template by the skypilot monitor
+# (builtins/monitors/skypilot/monitor.yaml). Two characters cannot be carried, and
+# both fail SILENTLY:
+#   * whitespace in the artifact id — the monitor captures binding_id with [^ ]+, so
+#     "a b" registers as "a", binding the wrong artifact;
+#   * a double quote in the path — it ends the monitor's JSON string early and
+#     corrupts the event.
+# Neither can be escaped here: the delimiter and the JSON template belong to the
+# consumer, so the only honest response is to refuse and name the value.
+#
+# WHY UP HERE. These ran just before the marker, which meant a build with a space in
+# its output name paid for the ENTIRE transform — minutes to hours on a real corpus —
+# and the validator, and was only then rejected, registering nothing. Nothing about
+# either value depends on the work, so both are checked before any is done. The
+# output_path half still has to wait for the absolutize below, which is where its
+# final value comes from.
+case $artifact_id in
+  *[[:space:]]*|*'"'*)
+    echo "dpk: ERROR artifact id contains whitespace or a double quote:" \
+         "'${artifact_id}'" >&2
+    echo "dpk: the artifact marker is space-delimited, so the monitor would register" >&2
+    echo "dpk: only the first word. Rename the declared output." >&2
+    exit 1 ;;
+esac
+
 # Create the output directory, then resolve it to an ABSOLUTE path: the artifact
 # marker below is consumed by the server off-node, so a relative path would be
 # meaningless there. mkdir must come first (cd needs the directory to exist), and
 # the cd runs in a subshell so this script's own working directory is unchanged.
 mkdir -p "$output_path"
 output_path="$(cd "$output_path" && pwd)"
+
+# Checked on the ABSOLUTE path, since that is what the marker carries: an absolute
+# path can pick up a quote from a parent directory the build never named.
+case $output_path in
+  *'"'*)
+    echo "dpk: ERROR output path contains a double quote: '${output_path}'" >&2
+    echo "dpk: the monitor interpolates the path into JSON, which this would break." >&2
+    exit 1 ;;
+esac
 
 # DPK's launchers take input and output as a single python-literal argument
 # rather than as two flags: --data_local_config is declared `type=ast.literal_eval`
@@ -135,30 +172,6 @@ if [ -n "$validate" ]; then
 fi
 
 # Register the output for the declared artifact id. Must start at the beginning
-# of a line for the skypilot monitor's regex to capture it.
-#
-# The marker is a SPACE-DELIMITED line consumed by a regex, and the path is then
-# interpolated into a JSON string template by the monitor
-# (builtins/monitors/skypilot/monitor.yaml). Two characters therefore cannot be
-# carried, and both fail SILENTLY rather than loudly:
-#   * a space in the artifact id — the monitor captures binding_id with [^ ]+, so
-#     "a b" registers as "a", binding the wrong artifact id;
-#   * a double quote in the path — it terminates the monitor's JSON string early and
-#     corrupts the event.
-# Neither can be escaped away here: the delimiter and the JSON template belong to the
-# consumer. So refuse, naming the value, instead of registering something wrong.
-case $artifact_id in
-  *[[:space:]]*|*'"'*)
-    echo "dpk: ERROR artifact id contains whitespace or a double quote:" \
-         "'${artifact_id}'" >&2
-    echo "dpk: the artifact marker is space-delimited, so the monitor would register" >&2
-    echo "dpk: only the first word. Rename the declared output." >&2
-    exit 1 ;;
-esac
-case $output_path in
-  *'"'*)
-    echo "dpk: ERROR output path contains a double quote: '${output_path}'" >&2
-    echo "dpk: the monitor interpolates the path into JSON, which this would break." >&2
-    exit 1 ;;
-esac
+# of a line for the skypilot monitor's regex to capture it. Both values were
+# validated near the top of this script, before any work was done.
 echo "GB_ARTIFACT_ID:${artifact_id} GB_ARTIFACT_PATH:${output_path}"

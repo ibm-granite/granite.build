@@ -282,12 +282,28 @@ environment_configs:
 
                 `transform` is the same shape one level further on: empty derives the
                 module "dpk_.runtime", installs nothing, and fails with "No module
-                named dpk_", which points at neither the field nor the fix. #}
-            {%- if not config.dpk_config.transform and not config.dpk_config.module %}
+                named dpk_", which points at neither the field nor the fix.
+
+                The condition is `not transform and not dpk_image` — NOT
+                `transform or module`, which was the first version and was unsound.
+                `transform` drives TWO things and `module` only replaces one of them:
+                the module name. The pip extra still comes from `transform` alone
+                (`dpk_req` is "" when it is empty), so `module: dpk_custom.runtime`
+                with no transform passed that guard and then built a venv with NO DPK
+                in it — dying on the node with "No module named dpk_custom", exactly
+                the illegible failure this guard exists to prevent.
+
+                `dpk_image` is the real exemption: it skips the install entirely
+                because the image already provides DPK, so an image build genuinely
+                needs no transform — only a `module` to run. Hence image, not module. #}
+            {%- if not config.dpk_config.transform and not config.dpk_config.dpk_image %}
             echo "dpk: ERROR dpk_config.transform is required." >&2
             echo "dpk: it names the DPK transform to run, e.g. tokenization2arrow —" >&2
-            echo "dpk: the step derives the python module and the pip extra from it." >&2
-            echo "dpk: (set 'module' explicitly only to override that derivation.)" >&2
+            echo "dpk: the step derives BOTH the python module and the pip extra from" >&2
+            echo "dpk: it, so it is what makes the install know what to install." >&2
+            echo "dpk: 'module' alone is not enough: it overrides only the module name," >&2
+            echo "dpk: leaving the venv empty. Set 'transform' as well, or use" >&2
+            echo "dpk: 'dpk_image' with an image that already provides DPK." >&2
             exit 1
             {%- endif %}
             {%- if not config.dpk_config.input %}

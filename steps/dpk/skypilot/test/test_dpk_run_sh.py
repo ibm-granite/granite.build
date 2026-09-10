@@ -509,11 +509,43 @@ class TestMarkerValuesTheMonitorCannotCarry:
         assert "output path contains a double quote" in proc.stderr
         assert _marker(proc.stdout) is None
 
-    def test_the_guard_runs_after_the_transform(self, run_script):
-        """It guards REGISTRATION, not execution: the transform still ran, so the
-        failure is about publishing the result, not about doing the work."""
+    def test_the_guard_runs_BEFORE_the_transform(self, run_script):
+        """No work is done for a build that cannot be registered.
+
+        This test previously asserted the OPPOSITE — that the transform still ran —
+        and described the waste as intentional ("it guards REGISTRATION, not
+        execution"). A reviewer pointed out what that costs: neither value depends on
+        the work, so a build with a space in its output name paid for the entire
+        transform, minutes to hours on a real corpus, plus the validator, and was only
+        then rejected, registering nothing. The guards moved up to just after argument
+        parsing; this pins that they stay there.
+        """
         proc = run_script(*_BASE, "--output-path", "out", "--artifact-id", "a b")
-        assert _pyargs(proc.stdout), "the transform should still have been invoked"
+        assert proc.returncode != 0
+        assert not _pyargs(proc.stdout), "the transform must NOT have been invoked"
+
+    def test_the_output_path_guard_also_precedes_the_transform(self, run_script):
+        """Same for the path half, which is checked after the absolutize it needs."""
+        target = run_script.tmp_path / 'q"dir'
+        proc = run_script(*_BASE, "--output-path", str(target), "--artifact-id", "ok")
+        assert proc.returncode != 0
+        assert not _pyargs(proc.stdout), "the transform must NOT have been invoked"
+
+    def test_the_path_guard_sees_the_absolutized_path(self, run_script):
+        """A RELATIVE output_path can still resolve under a quoted parent.
+
+        The guard has to run after the `cd && pwd`, because that is where the value
+        the marker carries comes from — a clean relative path under a parent
+        directory containing a quote is only detectable once absolutized.
+        """
+        parent = run_script.tmp_path / 'has"quote'
+        parent.mkdir()
+        proc = run_script(
+            *_BASE, "--output-path", "sub", "--artifact-id", "ok", cwd=parent
+        )
+        assert proc.returncode != 0
+        assert "output path contains a double quote" in proc.stderr
+        assert not _pyargs(proc.stdout)
 
     @pytest.mark.parametrize("ok_id", ["tokens", "clean-output", "a_b.c", "x:1"])
     def test_ordinary_ids_still_emit_a_marker(self, run_script, ok_id):

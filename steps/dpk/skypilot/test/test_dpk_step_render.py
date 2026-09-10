@@ -522,12 +522,54 @@ class TestRequiredConfigIsGuarded:
         assert rc == 1
         assert any("dpk_config.transform is required" in m for m in msgs)
 
-    def test_an_explicit_module_makes_transform_optional(self, launcher, defaults):
-        """`module` overrides the derivation, so it is the one case that needs no
-        transform — the guard must not block it."""
-        cfg = _transform_cfg(defaults, transform="", module="dpk_x.runtime")
-        rc, _ = self._run(_render(launcher["run"], cfg, _BINDINGS))
-        assert rc == 0
+    def test_module_alone_does_not_satisfy_the_transform_requirement(
+        self, launcher, defaults
+    ):
+        """`module` replaces only ONE of the two things `transform` drives.
+
+        This test previously asserted the opposite — that `module` made `transform`
+        optional — which is what let the bug through. `transform` drives the module
+        name AND the pip extra; `module` overrides only the former, so `dpk_req` is
+        still "" and the bare-node venv is built with NO DPK in it. The run then dies
+        with "No module named dpk_custom", the exact illegible failure this guard
+        exists to prevent.
+        """
+        cfg = _transform_cfg(defaults, transform="", module="dpk_custom.runtime")
+        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
+        assert rc == 1
+        assert any("dpk_config.transform is required" in m for m in msgs)
+        assert any("'module' alone is not enough" in m for m in msgs)
+
+    def test_the_setup_block_confirms_module_alone_installs_nothing(
+        self, launcher, defaults
+    ):
+        """The reason the guard above must fire, asserted at its source."""
+        cfg = _transform_cfg(defaults, transform="", module="dpk_custom.runtime")
+        rendered = _render(launcher["setup"], cfg)
+        assert "data-prep-toolkit-transforms" not in rendered
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"transform": "", "dpk_image": "quay.io/o/i:1"},
+            {
+                "transform": "",
+                "module": "dpk_custom.runtime",
+                "dpk_image": "quay.io/o/i:1",
+            },
+        ],
+    )
+    def test_dpk_image_is_the_real_exemption(self, launcher, defaults, kw):
+        """An image needs no transform: it skips the install because it HAS DPK.
+
+        That is why the guard is `not transform and not dpk_image` rather than
+        `transform or module` — the exemption belongs to the thing that removes the
+        install, not to the thing that renames the module.
+        """
+        rc, msgs = self._run(
+            _render(launcher["run"], _transform_cfg(defaults, **kw), _BINDINGS)
+        )
+        assert rc == 0, msgs
 
     def test_empty_input_is_named(self, launcher, defaults):
         cfg = _transform_cfg(defaults, input="")
