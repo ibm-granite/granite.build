@@ -409,3 +409,26 @@ class TestSshTunnelRefcount:
         t._conn = conn
         t._closing = True
         assert t.is_healthy() is False
+
+    @pytest.mark.asyncio
+    async def test_close_when_idle_timeout_closes_anyway(self: Self) -> None:
+        """A stuck in-flight use can't wedge close_when_idle past its timeout."""
+        t = SshTunnel(host="h", username="u", key_file="/tmp/k")
+        t._conn = MagicMock()  # opened tunnel, so use() is valid
+        t.close = AsyncMock()  # type: ignore[method-assign]
+
+        never = asyncio.Event()  # holder never releases
+
+        async def _hold() -> None:
+            async with t.use():
+                await never.wait()
+
+        holder = asyncio.create_task(_hold())
+        await asyncio.sleep(0)  # enter the use() block
+
+        # timeout=0 elapses immediately; close happens despite the in-flight use.
+        await t.close_when_idle(timeout=0)
+        t.close.assert_awaited_once()
+
+        never.set()
+        await holder

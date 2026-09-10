@@ -92,6 +92,9 @@ JOB_LOG_STDERR_FILENAME = "job_log.err"
 LSF_SCRIPTS = "lsf_scripts"
 JOB_SUB_SH = "llmb_lsf_jobsub.sh"
 REPLACE_THIS_PREFIX = "LLMB_LSF_REPLACE_THIS_"
+# Bounded drain at teardown: wait this long for an in-flight transfer to
+# release the tunnel before closing anyway.
+SSH_TEARDOWN_DRAIN_S = 30.0
 
 # Builtin step names auto-injected by this module's pullasset/pushasset
 # handlers.  Each resolves via SpaceURI to the LSF env-keyed copy under
@@ -1080,11 +1083,12 @@ class Lsf(Environment):
 
         ssh_tunnel = self._ssh_tunnel
         if ssh_tunnel is not None:
-            # Force-close (not close_when_idle): teardown runs after the build
-            # is done or cancelled, so draining in-flight transfers is pointless
-            # and would risk hanging teardown behind a stuck operation. The key
-            # file is deleted just below regardless, so the tunnel is unusable.
-            await ssh_tunnel.close()
+            # Drain briefly so we don't tear the tunnel out from under an
+            # in-flight asset copy / job launch on cancellation, but bounded so
+            # a stuck operation can't wedge teardown. The key file is deleted
+            # just below regardless, so the tunnel is unusable afterwards.
+            with contextlib.suppress(Exception):
+                await ssh_tunnel.close_when_idle(timeout=SSH_TEARDOWN_DRAIN_S)
             self._ssh_tunnel = None
         key_file_path = self._key_file_path
         self._key_file_path = None

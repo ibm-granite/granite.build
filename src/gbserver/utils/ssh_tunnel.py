@@ -204,11 +204,22 @@ class SshTunnel:
                 self._inflight = 0
                 self._idle.set()
 
-    async def close_when_idle(self) -> None:
-        """Wait for in-flight uses to drain, then close. Used to retire a tunnel."""
+    async def close_when_idle(self, timeout: Optional[float] = None) -> None:
+        """Wait for in-flight uses to drain, then close. Used to retire a tunnel.
+
+        With ``timeout`` (seconds), close anyway once it elapses so a stuck
+        operation can't wedge the caller (e.g. teardown) indefinitely.
+        """
         # Block new use() entrants immediately so the refcount can reach zero.
         self._closing = True
-        await self._idle.wait()
+        try:
+            await asyncio.wait_for(self._idle.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[SshTunnel] %s still in use after %.0fs; closing anyway",
+                self.host,
+                timeout,
+            )
         await self.close()
 
     async def close(self) -> None:
