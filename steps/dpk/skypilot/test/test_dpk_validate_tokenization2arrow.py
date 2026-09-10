@@ -747,6 +747,42 @@ class TestNestedMetaDirIsNotASidecarTree:
         assert validator.validate(good_tree)[0]["arrow_files"] == before
 
 
+class TestDocumentIdsMayContainCommas:
+    """The sidecar line is `<document_id>, <count>`, and the id can contain commas.
+
+    DPK writes it as f"{document_id}, {token_count}" (tokenization2arrow/transform.py),
+    where document_id is the verbatim value of whatever column --tkn_doc_id_column
+    names. So a URL with a query string, or a CSV-derived key, puts commas inside the
+    id — which is why the parser uses rpartition (split on the LAST comma) rather than
+    partition.
+
+    That decision had no coverage at all: every other fixture id here is comma-free, so
+    swapping rpartition for partition left all 241 tests passing. Confirmed against real
+    DPK 1.1.8, which writes `https://x.com/a?b=1,c=2, 5` for such an id.
+    """
+
+    def test_a_comma_bearing_id_parses_on_the_last_comma(self, tmp_path):
+        doc_id = "https://x.com/a?b=1,c=2"
+        tree = _build_tree(tmp_path / "out", {"pq01": [(doc_id, 5)]})
+        summary, errors = validator.validate(tree)
+        assert errors == []
+        assert summary["total_documents"] == 1
+        assert summary["total_tokens"] == 5
+
+    def test_several_commas_in_one_id_are_still_one_document(self, tmp_path):
+        """partition would read the count as everything after the FIRST comma."""
+        tree = _build_tree(tmp_path / "out", {"pq01": [("a,b,c,d", 3)]})
+        summary, errors = validator.validate(tree)
+        assert errors == []
+        assert summary["total_documents"] == 1
+
+    def test_duplicate_detection_still_works_with_commas(self, tmp_path):
+        """The id must be recovered intact, not just counted."""
+        tree = _build_tree(tmp_path / "out", {"pq01": [("x,1", 2), ("x,1", 3)]})
+        _, errors = validator.validate(tree)
+        assert any("duplicate document ids" in e for e in errors)
+
+
 class TestArrowReaderFallback:
     """`open_file` failing on a stream-format file must fall through to a retry.
 

@@ -37,8 +37,9 @@ strongest argument for supporting a prebaked ``dpk_config.dpk_image`` later; an 
 is deliberately not used here so the fixture stays credential-free and runs on the
 local cluster, which has no Pyxis.
 
-Single target — a generality proof, not a handoff test; the tokenization fixture
-already covers the cross-node ``env:///shared`` path.
+Single target — a generality proof, not a handoff test. Nor does any other fixture
+test the handoff: this docstring used to say the tokenization one did, which is false
+(see the note in ``test-data/slurm/build.yaml`` and README.md's Known gaps).
 
 Real-infra test, gated on a reachable Docker SLURM cluster, so it auto-skips in CI
 and on machines without one (``make test-setup``). Extended suite only.

@@ -63,7 +63,14 @@ def launcher(template) -> dict:
 
 
 def _render(source: str, dpk_config: dict, bindings: dict | None = None) -> str:
-    """Render one of the launcher's shell blocks the way gbserver would."""
+    """Render one of the launcher's shell blocks the way gbserver would.
+
+    BOTH blocks need `bindings` now, not just `run`: the required-config guards are
+    duplicated into `setup` so an invalid build is refused before the install, and the
+    input guard reads the declared inputs. A setup render without them refuses with
+    "declares NO inputs at all" — which is correct behaviour, and was the cause when
+    eleven pre-existing tests went red on that duplication.
+    """
     return jinja2.Template(source, undefined=jinja2.StrictUndefined).render(
         config={"dpk_config": dpk_config}, bindings=bindings or {}
     )
@@ -236,14 +243,14 @@ class TestDerivations:
         cfg = _transform_cfg(defaults, transform=transform)
         run_argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _opt(run_argv, "--module") == module
-        setup_argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        setup_argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
         assert _passthrough(setup_argv) == [
             f"data-prep-toolkit-transforms[{extra}]==1.1.8"
         ]
 
     def test_dpk_version_is_honored(self, launcher, defaults):
         cfg = _transform_cfg(defaults, dpk_version="1.1.7")
-        assert "==1.1.7'" in _render(launcher["setup"], cfg)
+        assert "==1.1.7'" in _render(launcher["setup"], cfg, _BINDINGS)
 
     def test_module_override_wins(self, launcher, defaults):
         """The escape hatch, for a transform DPK has not kept on the rule."""
@@ -485,6 +492,80 @@ class TestArgsIsTheOnlyFlagChannel:
         assert _passthrough(argv) == ["--tkn_doc_id_column", "run-a1b2c3"]
 
 
+class TestSetupAndRunGuardsCannotDrift:
+    """The required-config guards are duplicated into `setup`, so pin them identical.
+
+    They live in both blocks because `setup` runs FIRST and is the expensive phase: the
+    launcher prepends `hf download` for every hf:// input into it, then dpk_setup.sh
+    bootstraps uv and installs the transform's extra (125 packages for pii_redactor).
+    Guarding only in `run` meant an invalid build paid all of that before being refused.
+
+    Jinja macros are block-scoped, so this is duplicated TEXT rather than a shared
+    definition — the same constraint that makes q() appear twice. Duplicated text can
+    drift, and two blocks disagreeing about what is valid is worse than either rule
+    alone, so this asserts they stay byte-identical.
+    """
+
+    def test_the_guard_text_is_identical_in_both_blocks(self, template):
+        """Compare the template SOURCE, not a rendered config.
+
+        Rendering cannot show this: the guards are conditional Jinja, so a valid config
+        renders none of their text and an invalid one renders only the guard that fired.
+        The drift that matters is in the template, so the two regions are compared
+        directly — from the REQUIRED-CONFIG GUARDS marker to the end of the args-key
+        loop, which is the span that was copied.
+        """
+        launcher_cfg = template["environment_configs"]["Skypilot"]["launchers"]["dpk"][
+            "config"
+        ]
+
+        def guard_region(block: str) -> str:
+            text = launcher_cfg[block]
+            start = text.index("{#- REQUIRED-CONFIG GUARDS")
+            end = text.index("not a valid DPK flag name")
+            return text[start:end]
+
+        assert guard_region("setup") == guard_region("run")
+
+    @pytest.mark.parametrize(
+        "kw,expect",
+        [
+            ({"transform": ""}, "dpk_config.transform is required"),
+            ({"input": ""}, "dpk_config.input is required"),
+            ({"input": "dcos"}, "names no declared input"),
+            ({"output": ""}, "dpk_config.output is required"),
+            ({"args": {"my-flag": "v"}}, "not a valid DPK flag name"),
+            ({"args": {"": "v"}}, "not a valid DPK flag name"),
+        ],
+    )
+    def test_setup_refuses_the_same_configs_run_does(
+        self, launcher, defaults, kw, expect
+    ):
+        """Both blocks must reach the same verdict on the same config."""
+        cfg = _transform_cfg(defaults, **kw)
+        for block in ("setup", "run"):
+            rendered = _render(launcher[block], cfg, _BINDINGS)
+            assert "exit 1" in rendered, f"the {block} block did not refuse {kw}"
+            assert expect in rendered
+
+    def test_setup_refuses_before_it_installs_anything(self, launcher, defaults):
+        """The point of duplicating them: no install work precedes the refusal.
+
+        Asserted by ORDER in the rendered text, since the install is delegated to
+        dpk_setup.sh — the `exit 1` must come before that call, so the expensive phase
+        is never reached.
+        """
+        rendered = _render(
+            launcher["setup"], _transform_cfg(defaults, input="dcos"), _BINDINGS
+        )
+        assert rendered.index("exit 1") < rendered.index("dpk_setup.sh")
+
+    def test_a_valid_config_trips_no_guard_in_either_block(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, args={"tkn_chunk_size": 0})
+        for block in ("setup", "run"):
+            assert "exit 1" not in _render(launcher[block], cfg, _BINDINGS)
+
+
 class TestRequiredConfigIsGuarded:
     """Empty or mistyped required config must name the FIELD, not bash.
 
@@ -522,54 +603,73 @@ class TestRequiredConfigIsGuarded:
         assert rc == 1
         assert any("dpk_config.transform is required" in m for m in msgs)
 
-    def test_module_alone_does_not_satisfy_the_transform_requirement(
-        self, launcher, defaults
-    ):
-        """`module` replaces only ONE of the two things `transform` drives.
-
-        This test previously asserted the opposite — that `module` made `transform`
-        optional — which is what let the bug through. `transform` drives the module
-        name AND the pip extra; `module` overrides only the former, so `dpk_req` is
-        still "" and the bare-node venv is built with NO DPK in it. The run then dies
-        with "No module named dpk_custom", the exact illegible failure this guard
-        exists to prevent.
-        """
-        cfg = _transform_cfg(defaults, transform="", module="dpk_custom.runtime")
-        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
-        assert rc == 1
-        assert any("dpk_config.transform is required" in m for m in msgs)
-        assert any("'module' alone is not enough" in m for m in msgs)
-
     def test_the_setup_block_confirms_module_alone_installs_nothing(
         self, launcher, defaults
     ):
         """The reason the guard above must fire, asserted at its source."""
         cfg = _transform_cfg(defaults, transform="", module="dpk_custom.runtime")
-        rendered = _render(launcher["setup"], cfg)
+        rendered = _render(launcher["setup"], cfg, _BINDINGS)
         assert "data-prep-toolkit-transforms" not in rendered
 
     @pytest.mark.parametrize(
         "kw",
         [
+            # An image with no module: skips the install but leaves the module as
+            # the derived "dpk_.runtime". This case ASSERTED rc == 0 and thereby
+            # defended a live hole — see the refusal test below.
             {"transform": "", "dpk_image": "quay.io/o/i:1"},
-            {
-                "transform": "",
-                "module": "dpk_custom.runtime",
-                "dpk_image": "quay.io/o/i:1",
-            },
+            # A module with no image: supplies the module but installs nothing.
+            {"transform": "", "module": "dpk_custom.runtime"},
         ],
     )
-    def test_dpk_image_is_the_real_exemption(self, launcher, defaults, kw):
-        """An image needs no transform: it skips the install because it HAS DPK.
+    def test_one_override_alone_never_exempts_transform(self, launcher, defaults, kw):
+        """Each override supplies half of what `transform` does, so neither exempts.
 
-        That is why the guard is `not transform and not dpk_image` rather than
-        `transform or module` — the exemption belongs to the thing that removes the
-        install, not to the thing that renames the module.
+        `module` gives a module name and no dependencies; `dpk_image` removes the
+        install and gives no module name. Both configurations previously PASSED this
+        guard in turn, and both then died on the node with a bare ModuleNotFoundError
+        — the exact failure the guard exists to prevent, reached through it.
         """
         rc, msgs = self._run(
             _render(launcher["run"], _transform_cfg(defaults, **kw), _BINDINGS)
         )
+        assert rc == 1, msgs
+        assert any("dpk_config.transform is required" in m for m in msgs)
+
+    def test_image_and_module_together_do_exempt_transform(self, launcher, defaults):
+        """The conjunction is the only exemption: install skipped AND module supplied."""
+        cfg = _transform_cfg(
+            defaults,
+            transform="",
+            dpk_image="quay.io/o/i:1",
+            module="dpk_custom.runtime",
+        )
+        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
         assert rc == 0, msgs
+
+    def test_an_image_without_a_module_renders_the_broken_module(
+        self, launcher, defaults
+    ):
+        """Why the image-alone case must be refused, asserted at its source.
+
+        Verified against the real interpreter: `python -m dpk_.runtime` raises
+        ModuleNotFoundError: No module named 'dpk_'.
+        """
+        cfg = _transform_cfg(defaults, transform="", dpk_image="quay.io/o/i:1")
+        rendered = _render(launcher["run"], cfg, _BINDINGS)
+        assert "--module 'dpk_.runtime'" in rendered
+
+    def test_empty_output_is_named(self, launcher, defaults):
+        """The last required field to get a guard.
+
+        Only emptiness is checkable at render time: `bindings` holds inputs, so a
+        MISTYPED output cannot be caught here — it emits GB_ARTIFACT_ID:<typo>, which
+        buildrun.py logs and ignores, leaving a green target that registered nothing.
+        """
+        cfg = _transform_cfg(defaults, output="")
+        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
+        assert rc == 1, msgs
+        assert any("dpk_config.output is required" in m for m in msgs)
 
     def test_empty_input_is_named(self, launcher, defaults):
         cfg = _transform_cfg(defaults, input="")
@@ -777,7 +877,7 @@ class TestEveryConfigValueIsEscaped:
         """
         canary = tmp_path / "canary"
         cfg = _transform_cfg(defaults, **{field: f"x'`touch {canary}`'"})
-        rendered = _render(launcher["setup"], cfg)
+        rendered = _render(launcher["setup"], cfg, _BINDINGS)
         assert _bash_ok(rendered), f"{field} broke the rendered setup shell"
         _script_argv(rendered, "setup")  # executes it with dpk_setup.sh stubbed
         assert not canary.exists(), f"setup executed a command from {field}"
@@ -785,7 +885,7 @@ class TestEveryConfigValueIsEscaped:
     def test_setup_values_survive_as_data(self, launcher, defaults):
         """Escaped, not mangled: a quoted index URL still arrives verbatim."""
         cfg = _transform_cfg(defaults, pip_index_url="https://ex.com/a'b/simple")
-        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
         assert _opt(argv, "--index-url") == "https://ex.com/a'b/simple"
 
     def test_the_normal_requirement_specifier_is_unchanged(self, launcher, defaults):
@@ -795,7 +895,7 @@ class TestEveryConfigValueIsEscaped:
         first place; the escaping filter must leave them untouched.
         """
         cfg = _transform_cfg(defaults, transform="pii_redactor")
-        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
         assert _passthrough(argv) == [
             "data-prep-toolkit-transforms[pii-redactor]==1.1.8"
         ]
@@ -937,7 +1037,7 @@ class TestVenvHandling:
     def test_bare_node_builds_a_venv(self, launcher, defaults):
         """setup delegates the venv to dpk_setup.sh; run activates it."""
         cfg = _transform_cfg(defaults)
-        argv = _script_argv(_render(launcher["setup"], cfg), "setup")
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
         assert _opt(argv, "--venv") == "./venv"
         assert ". ./venv/bin/activate" in _render(launcher["run"], cfg, _BINDINGS)
 
@@ -950,7 +1050,7 @@ class TestVenvHandling:
         contract, covered by test_dpk_setup_sh.py.
         """
         argv = _script_argv(
-            _render(launcher["setup"], _transform_cfg(defaults)), "setup"
+            _render(launcher["setup"], _transform_cfg(defaults), _BINDINGS), "setup"
         )
         assert _passthrough(argv) == [
             "data-prep-toolkit-transforms[tokenization2arrow]==1.1.8"
@@ -960,7 +1060,7 @@ class TestVenvHandling:
     def test_image_mode_skips_venv_and_pip(self, launcher, defaults):
         """An image already provides DPK, so nothing is installed at run time."""
         cfg = _transform_cfg(defaults, dpk_image="quay.io/org/dpk:1")
-        setup = _render(launcher["setup"], cfg)
+        setup = _render(launcher["setup"], cfg, _BINDINGS)
         run = _render(launcher["run"], cfg, _BINDINGS)
         assert "dpk_setup.sh" not in setup
         assert "venv" not in setup
@@ -993,28 +1093,38 @@ class TestRenderedShellIsValid:
         assert _bash_ok(_render(launcher["setup"], cfg))
         assert _bash_ok(_render(launcher["run"], cfg, _BINDINGS))
 
-    def test_no_trailing_continuation_swallows_what_follows(self, launcher, defaults):
-        """Regression guard, retargeted to the new seam.
+    def test_no_continuation_swallows_what_follows(self, launcher, defaults):
+        """Regression guard for the bug class that cost this step a cluster run.
 
-        An earlier draft emitted args as backslash-continued lines, so the final
-        flag's trailing "\\" spliced the next line into the python invocation. The
-        args now render on ONE line as argv to dpk_run.sh, so the equivalent risk
-        is that line ending in a stray "\\" and swallowing whatever follows.
+        An earlier draft emitted args as backslash-continued lines, so a stray
+        trailing "\\" spliced the following line into the invocation and swallowed the
+        artifact marker.
 
-        The marker itself moved into dpk_run.sh (see test_dpk_run_sh.py, which
-        asserts it is emitted as its own command).
+        Asserted on the ARGV BASH BUILT, not on the text. The previous version scanned
+        forward to the last non-empty line and checked only that one, so an INTERIOR
+        stray continuation passed it — proved by patching one into the `--` separator
+        line, which the old assertion missed and this one catches. Comparing argv is
+        strictly stronger: any splice changes the words the script receives.
         """
         cfg = _transform_cfg(defaults, args={"tkn_chunk_size": 0})
-        run = _render(launcher["run"], cfg, _BINDINGS)
+        rendered = _render(launcher["run"], cfg, _BINDINGS)
+        argv = _script_argv(rendered, "run")
+        assert argv == [
+            "--module",
+            "dpk_tokenization2arrow.runtime",
+            "--input-path",
+            "/staged/docs",
+            "--output-path",
+            "/shared/tokens",
+            "--artifact-id",
+            "tokens",
+            "--",
+            "--tkn_chunk_size",
+            "0",
+        ]
         invocation = next(
             line
-            for line in run.splitlines()
+            for line in rendered.splitlines()
             if "dpk_run.sh" in line and not line.lstrip().startswith("#")
         )
-        # The invocation spans continuations by design; the LAST line of it (the
-        # argv line) must not continue into anything.
-        argv_line = next(line for line in run.splitlines() if "--artifact-id" in line)
-        tail_idx = run.splitlines().index(argv_line)
-        last = [l for l in run.splitlines()[tail_idx:] if l.strip()][-1]
-        assert not last.rstrip().endswith("\\")
         assert invocation.strip().startswith("bash ./src/dpk_run.sh")

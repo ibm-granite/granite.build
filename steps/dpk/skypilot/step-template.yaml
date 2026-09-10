@@ -175,6 +175,153 @@ environment_configs:
           # prepends `hf download ...` here for any hf:// input binding.
           setup: |
             set -eu
+            {#- The SAME four required-config guards the run block applies, duplicated
+                here because setup runs FIRST and is the expensive phase. Without them an
+                invalid build paid for the whole install before `run` refused it: the
+                launcher prepends `hf download` for every hf:// input into this block,
+                then dpk_setup.sh bootstraps uv, creates the venv and installs the
+                transform's extra — 125 packages including torch/flair/presidio for
+                pii_redactor, minutes of it — and only then did the run block say
+                "dpk_config.input is required".
+
+                Duplicated text rather than a shared definition, because Jinja macros are
+                block-scoped: the same constraint that makes q() appear in both blocks. A
+                test asserts the two copies stay byte-identical, so they cannot drift into
+                disagreeing about what is valid. #}
+            {%- set ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" %}
+            {%- macro env_name(n) -%}
+            {%- for ch in n | string %}{{ ch if ch in ALLOWED else "_" }}{% endfor %}
+            {%- endmacro %}
+            {#- Sanitizing is many-to-one, so `raw-docs` and `raw.docs` both become
+                GB_INPUT_raw_docs and the second export would silently win — the
+            {#- REQUIRED-CONFIG GUARDS, first, because the failures they replace are
+                the least legible in the whole step.
+
+                The step already guards its DERIVED values (name collisions, flag
+                keys) but not the config those derivations read, which left an
+                asymmetry: an empty or misspelled `output` reaches dpk_run.sh and gets
+                "--artifact-id is required", while an empty or misspelled `input`
+                renders $GB_INPUT_ or $GB_INPUT_<typo> and dies at `set -u` with
+                "GB_INPUT_dcos: unbound variable" — before the script is reached, and
+                naming bash rather than the mistake. A typo in an input name is an
+                ordinary authoring slip and deserves an ordinary message.
+
+                `transform` is the same shape one level further on: empty derives the
+                module "dpk_.runtime", installs nothing, and fails with "No module
+                named dpk_", which points at neither the field nor the fix.
+
+                `transform` supplies TWO things — a module name AND a pip extra — so
+                whatever exempts a build from setting it must supply BOTH. Neither
+                override does alone, and this guard has now been wrong in both
+                directions:
+
+                  `transform or module` — unsound. `module` gives the module name but
+                    not the extra (`dpk_req` is "" without a transform), so
+                    `module: dpk_custom.runtime` alone passed and built a venv with NO
+                    DPK, dying with "No module named dpk_custom".
+                  `transform or dpk_image` — unsound the other way. `dpk_image` removes
+                    the INSTALL but supplies no module, so an image with no transform
+                    and no module passed and rendered `--module 'dpk_.runtime'`, dying
+                    with "No module named dpk_".
+
+                Both are verbatim the illegible failure this guard exists to prevent,
+                reached THROUGH the guard. So the exemption is the conjunction: an image
+                to skip the install AND a module to run. #}
+            {%- if not config.dpk_config.transform
+                   and not (config.dpk_config.dpk_image and config.dpk_config.module) %}
+            echo "dpk: ERROR dpk_config.transform is required." >&2
+            echo "dpk: it names the DPK transform to run, e.g. tokenization2arrow —" >&2
+            echo "dpk: the step derives BOTH the python module and the pip extra from" >&2
+            echo "dpk: it, so it is what makes the install know what to install." >&2
+            echo "dpk: neither override replaces it alone: 'module' supplies a module" >&2
+            echo "dpk: but no dependencies (empty venv), and 'dpk_image' skips the" >&2
+            echo "dpk: install but supplies no module (leaving 'dpk_.runtime'). Set" >&2
+            echo "dpk: 'transform', or set BOTH 'dpk_image' and 'module'." >&2
+            exit 1
+            {%- endif %}
+            {#- `output` was the last required field with no guard, leaving half of the
+                asymmetry this block exists to close: an empty one reaches dpk_run.sh
+                and gets "--artifact-id is required", naming the script rather than the
+                field.
+
+                Only EMPTINESS is checkable here. A mistyped name is not: `bindings`
+                holds the target's INPUTS at render time, and declared outputs reach
+                static validation only (targetstep.py's _get_validation_context vs the
+                runtime context). Worth knowing what that leaves open — a mistyped
+                `output` emits GB_ARTIFACT_ID:<typo>, buildrun.py logs "failed to find
+                output binding ... Ignoring" and continues, so the target goes GREEN
+                having registered nothing and a downstream target fails pointing
+                elsewhere. Recorded in README.md's Known gaps. #}
+            {%- if not config.dpk_config.output %}
+            echo "dpk: ERROR dpk_config.output is required." >&2
+            echo "dpk: it must name one of this target's declared outputs, and becomes" >&2
+            echo "dpk: the artifact id the step registers." >&2
+            exit 1
+            {%- endif %}
+            {%- if not config.dpk_config.input %}
+            echo "dpk: ERROR dpk_config.input is required." >&2
+            echo "dpk: it must name one of this target's declared inputs:" >&2
+            {#- The name the AUTHOR wrote, not env_name(n): they set `input: raw-docs`,
+                so telling them "raw_docs" sends them chasing a name they never typed.
+                SINGLE-quoted, because a raw name is author text and a backtick inside a
+                double-quoted echo would run — the same care the collision guard takes,
+                which reports only sanitized names for exactly that reason. #}
+            {%- for n in bindings.keys() | sort %}
+            echo 'dpk:   {{ n | string | replace("'", "'\"'\"'") }}' >&2
+            {%- endfor %}
+            exit 1
+            {%- elif config.dpk_config.input | string not in bindings.keys() | list %}
+            echo "dpk: ERROR dpk_config.input names no declared input of this target." >&2
+            echo "dpk: it must be one of:" >&2
+            {%- for n in bindings.keys() | sort %}
+            echo 'dpk:   {{ n | string | replace("'", "'\"'\"'") }}' >&2
+            {%- endfor %}
+            {%- if not bindings %}
+            echo "dpk:   (this target declares NO inputs at all)" >&2
+            {%- endif %}
+            exit 1
+            {%- endif %}
+            {%- set names = bindings.keys() | list %}
+            {%- set safe_names = [] %}
+            {%- for n in names %}{% set _ = safe_names.append(env_name(n)) %}{% endfor %}
+            {%- if safe_names | unique | list | length != safe_names | length %}
+            {#- The message names the SANITIZED variables, never the raw input names.
+                A raw name is author-controlled text, and interpolating it into a
+                double-quoted echo would let a backtick or $( ) in a name run as a
+                command on the node. The sanitized form is [A-Za-z0-9_] by
+                construction, so it is inert — and it is also the more useful half,
+                since it is the collision itself. #}
+            echo "dpk: ERROR two or more declared inputs map to the same shell variable" >&2
+            echo "dpk: after sanitizing non-identifier characters to '_':" >&2
+            {%- for s in safe_names | unique | sort %}
+            {%- if safe_names | select("equalto", s) | list | length > 1 %}
+            echo "dpk:   GB_INPUT_{{ s }} <- {{ safe_names | select("equalto", s) | list | length }} inputs" >&2
+            {%- endif %}
+            {%- endfor %}
+            echo "dpk: rename them so they differ by more than punctuation." >&2
+            exit 1
+            {%- endif %}
+            {#- An args KEY becomes a bare `--<key>` word, UNQUOTED, because that is
+                what a flag name is. So it cannot be quote-escaped like a value —
+                escaping would just build a wrong flag name and DPK would reject it
+                with a confusing argparse error. A real DPK flag name is always
+                [A-Za-z0-9_], so anything else is a typo or an injection attempt, and
+                the honest response is to refuse it by name. Checked at the shell for
+                the same reason as the collision guard: raise_error is not available
+                under strict=False rendering. #}
+            {#- `not (k | string)` catches the EMPTY key, which the character test
+                cannot: "" holds no disallowed character, so it passed and rendered a
+                bare `--`, giving `dpk_run.sh ... -- -- 'v'`. The stray `--` and its
+                value reach python as argv, and DPK's launcher uses parse_args() rather
+                than parse_known_args(), so it dies with "unrecognized arguments: -- v"
+                — after the install, naming argparse rather than the key. #}
+            {%- for k in config.dpk_config.args.keys() %}
+            {%- if not (k | string) or (k | string | list | reject("in", ALLOWED) | list | length) %}
+            echo "dpk: ERROR args key is not a valid DPK flag name: only letters," >&2
+            echo "dpk: digits and underscore are allowed (offending key #{{ loop.index }})." >&2
+            exit 1
+            {%- endif %}
+            {%- endfor %}
             {%- if not config.dpk_config.dpk_image %}
             {%- set t = config.dpk_config.transform %}
             {#- The transform's own pip extra, derived from its name. That extra is
@@ -284,26 +431,52 @@ environment_configs:
                 module "dpk_.runtime", installs nothing, and fails with "No module
                 named dpk_", which points at neither the field nor the fix.
 
-                The condition is `not transform and not dpk_image` — NOT
-                `transform or module`, which was the first version and was unsound.
-                `transform` drives TWO things and `module` only replaces one of them:
-                the module name. The pip extra still comes from `transform` alone
-                (`dpk_req` is "" when it is empty), so `module: dpk_custom.runtime`
-                with no transform passed that guard and then built a venv with NO DPK
-                in it — dying on the node with "No module named dpk_custom", exactly
-                the illegible failure this guard exists to prevent.
+                `transform` supplies TWO things — a module name AND a pip extra — so
+                whatever exempts a build from setting it must supply BOTH. Neither
+                override does alone, and this guard has now been wrong in both
+                directions:
 
-                `dpk_image` is the real exemption: it skips the install entirely
-                because the image already provides DPK, so an image build genuinely
-                needs no transform — only a `module` to run. Hence image, not module. #}
-            {%- if not config.dpk_config.transform and not config.dpk_config.dpk_image %}
+                  `transform or module` — unsound. `module` gives the module name but
+                    not the extra (`dpk_req` is "" without a transform), so
+                    `module: dpk_custom.runtime` alone passed and built a venv with NO
+                    DPK, dying with "No module named dpk_custom".
+                  `transform or dpk_image` — unsound the other way. `dpk_image` removes
+                    the INSTALL but supplies no module, so an image with no transform
+                    and no module passed and rendered `--module 'dpk_.runtime'`, dying
+                    with "No module named dpk_".
+
+                Both are verbatim the illegible failure this guard exists to prevent,
+                reached THROUGH the guard. So the exemption is the conjunction: an image
+                to skip the install AND a module to run. #}
+            {%- if not config.dpk_config.transform
+                   and not (config.dpk_config.dpk_image and config.dpk_config.module) %}
             echo "dpk: ERROR dpk_config.transform is required." >&2
             echo "dpk: it names the DPK transform to run, e.g. tokenization2arrow —" >&2
             echo "dpk: the step derives BOTH the python module and the pip extra from" >&2
             echo "dpk: it, so it is what makes the install know what to install." >&2
-            echo "dpk: 'module' alone is not enough: it overrides only the module name," >&2
-            echo "dpk: leaving the venv empty. Set 'transform' as well, or use" >&2
-            echo "dpk: 'dpk_image' with an image that already provides DPK." >&2
+            echo "dpk: neither override replaces it alone: 'module' supplies a module" >&2
+            echo "dpk: but no dependencies (empty venv), and 'dpk_image' skips the" >&2
+            echo "dpk: install but supplies no module (leaving 'dpk_.runtime'). Set" >&2
+            echo "dpk: 'transform', or set BOTH 'dpk_image' and 'module'." >&2
+            exit 1
+            {%- endif %}
+            {#- `output` was the last required field with no guard, leaving half of the
+                asymmetry this block exists to close: an empty one reaches dpk_run.sh
+                and gets "--artifact-id is required", naming the script rather than the
+                field.
+
+                Only EMPTINESS is checkable here. A mistyped name is not: `bindings`
+                holds the target's INPUTS at render time, and declared outputs reach
+                static validation only (targetstep.py's _get_validation_context vs the
+                runtime context). Worth knowing what that leaves open — a mistyped
+                `output` emits GB_ARTIFACT_ID:<typo>, buildrun.py logs "failed to find
+                output binding ... Ignoring" and continues, so the target goes GREEN
+                having registered nothing and a downstream target fails pointing
+                elsewhere. Recorded in README.md's Known gaps. #}
+            {%- if not config.dpk_config.output %}
+            echo "dpk: ERROR dpk_config.output is required." >&2
+            echo "dpk: it must name one of this target's declared outputs, and becomes" >&2
+            echo "dpk: the artifact id the step registers." >&2
             exit 1
             {%- endif %}
             {%- if not config.dpk_config.input %}
@@ -357,8 +530,14 @@ environment_configs:
                 the honest response is to refuse it by name. Checked at the shell for
                 the same reason as the collision guard: raise_error is not available
                 under strict=False rendering. #}
+            {#- `not (k | string)` catches the EMPTY key, which the character test
+                cannot: "" holds no disallowed character, so it passed and rendered a
+                bare `--`, giving `dpk_run.sh ... -- -- 'v'`. The stray `--` and its
+                value reach python as argv, and DPK's launcher uses parse_args() rather
+                than parse_known_args(), so it dies with "unrecognized arguments: -- v"
+                — after the install, naming argparse rather than the key. #}
             {%- for k in config.dpk_config.args.keys() %}
-            {%- if k | string | list | reject("in", ALLOWED) | list | length %}
+            {%- if not (k | string) or (k | string | list | reject("in", ALLOWED) | list | length) %}
             echo "dpk: ERROR args key is not a valid DPK flag name: only letters," >&2
             echo "dpk: digits and underscore are allowed (offending key #{{ loop.index }})." >&2
             exit 1
@@ -416,7 +595,7 @@ environment_configs:
                   unparseable, and `bash -n` on the block would fail even though the
                   guard exits first at runtime. Omitting keeps the rendered shell
                   valid; the guard is what actually stops the run. #}
-              --{% for k, v in config.dpk_config.args.items() %}{% if v is not none and not (k | string | list | reject("in", ALLOWED) | list | length) %} --{{ k }} '{{ (v | lower) if (v is sameas true or v is sameas false) else q(v) }}'{% endif %}{% endfor %}
+              --{% for k, v in config.dpk_config.args.items() %}{% if v is not none and (k | string) and not (k | string | list | reject("in", ALLOWED) | list | length) %} --{{ k }} '{{ (v | lower) if (v is sameas true or v is sameas false) else q(v) }}'{% endif %}{% endfor %}
     monitors:
       # Standard artifact/status convention from the shipped monitor library.
       skypilot_monitor:

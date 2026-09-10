@@ -25,9 +25,15 @@ granite.build:
   # own copy of the flair and presidio models, and the local cluster's nodes advertise
   # RealMemory=1024, so forking here trades a passing fixture for an OOM.
   #
-  # Single target: this is a generality proof, not a handoff test — the
-  # tokenization fixture already covers the cross-node env:///shared path. The
-  # redacted output is terminal, so a node-local /tmp path is fine.
+  # Single target: this is a generality proof, not a handoff test. The redacted output
+  # is terminal, so a node-local /tmp path is fine.
+  #
+  # NOT a handoff test, and nothing else is either — this comment used to claim "the
+  # tokenization fixture already covers the cross-node env:///shared path", which is
+  # false: that fixture's own header says the handoff "is no longer covered end to end
+  # anywhere", and README.md's Known gaps agrees. The stale claim pointed away from a
+  # real gap, so if you need that coverage, restore the two-target form from
+  # test-data/slurm/build.yaml's history rather than assuming it exists.
   targets:
 
     redact:
