@@ -22,6 +22,7 @@ const {
   groupCompareKeys,
   findDifferingKeys,
   getOddOnesOut,
+  labelForCompareKey,
 } = require('../../../packages/ui-core/components/trialCompareGrouping.ts')
 
 // Three flattened compare rows, shaped like toCompareRow() output: id +
@@ -140,5 +141,85 @@ describe('getOddOnesOut', () => {
   it('finds no odd ones among two trials, where no value can be in the minority', () => {
     const oddOnes = getOddOnesOut(THREE_TRIALS.slice(0, 2), ['training_config.r'])
     assert.deepEqual(Object.keys(oddOnes), [])
+  })
+})
+
+
+// Rows are built per-trial (toCompareRow spreads that trial's own config and
+// metrics), so two trials in one comparison can genuinely carry different field
+// sets — TrialsTable's radar code notes the same thing about `loss`. Both
+// functions used to take their field list from rows[0] alone, so anything the
+// first row lacked was invisible: not in Results, not in What differs, not in
+// Same for all, and absent from the counts the section headings assert are
+// exhaustive.
+describe('rows with differing field sets', () => {
+  it('includes a key that only later rows carry', () => {
+    const rows = [
+      { id: 't1', learning_rate: 0.001 },
+      { id: 't2', learning_rate: 0.002, total_time: '4m' },
+    ]
+    const { resultKeys, differingKeys, sameKeys } = groupCompareKeys(rows)
+    const all = [...resultKeys, ...differingKeys, ...sameKeys]
+    assert.ok(all.includes('total_time'), `total_time missing from ${JSON.stringify(all)}`)
+  })
+
+  it('reports a differing key that the first row lacks', () => {
+    const rows = [
+      { id: 't1' },
+      { id: 't2', weight_decay: 0.01 },
+      { id: 't3', weight_decay: 0.05 },
+    ]
+    assert.ok(findDifferingKeys(rows).has('weight_decay'))
+  })
+
+  it('still partitions every visible key exactly once across the union', () => {
+    const rows = [
+      { id: 't1', a: 1 },
+      { id: 't2', a: 2, b: 'x' },
+      { id: 't3', c: true },
+    ]
+    const { resultKeys, differingKeys, sameKeys } = groupCompareKeys(rows)
+    const all = [...resultKeys, ...differingKeys, ...sameKeys]
+    assert.equal(new Set(all).size, all.length, 'a key landed in two sections')
+    assert.deepEqual([...all].sort(), ['a', 'b', 'c'])
+  })
+})
+
+// A trial names its primary metric dynamically (`trial.metric`). lossOf() honours
+// that when sorting, but RESULT_KEYS is a fixed list — so a job reporting e.g.
+// eval_loss sorted correctly and then filed that number under "What differs" as
+// though it were a hyperparameter, while Results showed no loss at all. That is
+// the same number TrialsTable prints in its Loss column.
+describe('dynamic primary metric', () => {
+  it('treats the trials own metric key as a result, not a hyperparameter', () => {
+    const rows = [
+      { id: 't1', eval_loss: 0.4, learning_rate: 0.001 },
+      { id: 't2', eval_loss: 0.6, learning_rate: 0.002 },
+    ]
+    const { resultKeys, differingKeys } = groupCompareKeys(rows, ['eval_loss'])
+    assert.deepEqual(resultKeys, ['eval_loss'])
+    assert.deepEqual(differingKeys, ['learning_rate'])
+  })
+
+  it('leaves the fixed result keys working when no metric name is given', () => {
+    const rows = [
+      { id: 't1', loss: 0.4 },
+      { id: 't2', loss: 0.6 },
+    ]
+    assert.deepEqual(groupCompareKeys(rows).resultKeys, ['loss'])
+  })
+})
+
+describe('labelForCompareKey', () => {
+  it('names the loss metric Eval loss, to distinguish it from Train loss', () => {
+    // The backend emits `loss` alongside `train_loss` and sets metric="loss", so
+    // the bare key really is the evaluation loss; "Loss" next to "Train loss" read
+    // as though one of them were unqualified.
+    assert.equal(labelForCompareKey('loss'), 'Eval loss')
+  })
+
+  it('falls back to humanising any other key', () => {
+    assert.equal(labelForCompareKey('learning_rate'), 'Learning rate')
+    assert.equal(labelForCompareKey('eval_loss'), 'Eval loss')
   })
 })

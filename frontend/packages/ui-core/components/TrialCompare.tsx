@@ -13,7 +13,7 @@ import {
 } from '@carbon/react'
 import { ChevronDown, ChevronRight } from '@carbon/icons-react'
 import type { Trial } from '../types'
-import { getOddOnesOut, groupCompareKeys } from './trialCompareGrouping'
+import { getOddOnesOut, groupCompareKeys, labelForCompareKey } from './trialCompareGrouping'
 
 // ── Reference-parity helpers (ported from AutoTuneX Compare.svelte / Utils) ────
 
@@ -25,12 +25,6 @@ const STRIP_TRAINING_KEYS = [
   'validation_file',
   'resource_name',
 ]
-
-function toUpperCase(text: string): string {
-  if (!text) return ''
-  const t = text.replaceAll('_', ' ').trim()
-  return t.charAt(0).toUpperCase() + t.slice(1)
-}
 
 function formatTime(seconds: number): string {
   if (seconds <= 0) return '0 s'
@@ -182,7 +176,10 @@ export function TrialCompare({ trials }: Props) {
   const rows = sortedTrials.map(toCompareRow)
   if (rows.length === 0) return null
 
-  const { resultKeys, differingKeys, sameKeys } = groupCompareKeys(rows)
+  // The trials' own primary-metric names, which are dynamic — without these the
+  // Results section only recognises the fixed RESULT_KEYS list.
+  const metricKeys = [...new Set(sortedTrials.map((t) => t.metric).filter(Boolean))] as string[]
+  const { resultKeys, differingKeys, sameKeys } = groupCompareKeys(rows, metricKeys)
   const oddOnes = getOddOnesOut(rows, differingKeys)
   // The bold "differs from most trials" convention only appears when some key has
   // a minority value — never in a two-trial comparison, where every differing key
@@ -218,7 +215,7 @@ export function TrialCompare({ trials }: Props) {
         {keys.map((key) => (
           <StructuredListRow key={key}>
             <StructuredListCell style={labelCellStyle}>
-              <strong>{toUpperCase(key)}</strong>
+              <strong>{labelForCompareKey(key)}</strong>
             </StructuredListCell>
             {rows.map((row) => (
               <StructuredListCell key={row.id} style={dataCellStyle}>
