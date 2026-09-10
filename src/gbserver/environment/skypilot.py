@@ -1200,8 +1200,10 @@ class Skypilot(Environment):
         the full ``build_id`` (dashes kept) so it matches the identifier gbcli
         users reference. Empty components are omitted, so with no metadata the
         result is exactly ``gb-<launch_id[:12]>`` (unchanged legacy behavior).
-        The target slug is budgeted so the whole name (including any
-        ``-r<attempt>`` suffix) stays within ``_MAX_CLUSTER_NAME_LEN``. Parts
+        Both the build and target components are budgeted so the whole name
+        (including any ``-r<attempt>`` suffix) stays within
+        ``_MAX_CLUSTER_NAME_LEN`` unconditionally — a real uuid4 ``build_id``
+        (<=36 chars) is well under its budget and so is emitted verbatim. Parts
         join with single dashes (empties skipped, so no triple dashes) and the
         result is ``rstrip``-ed of separators, so it always starts (``gb``) and
         ends on an alphanumeric — satisfying SkyPilot's naming rule.
@@ -1209,7 +1211,8 @@ class Skypilot(Environment):
         :param launch_id: The launch identifier the cluster belongs to.
         :param attempt: Relaunch attempt; ``> 0`` appends ``-r<attempt>``.
         :param target_name: Human-readable target name; slugified + budgeted.
-        :param build_id: Build UUID; used verbatim as the fallback build tag.
+        :param build_id: Build UUID; the fallback build tag (verbatim for a
+            UUID-length id, clamped only if it would overflow the ceiling).
         :param build_name: build.yaml name; slugified and preferred over
             ``build_id`` when non-empty.
         :returns: The deterministic cluster name for this launch + attempt.
@@ -1217,10 +1220,16 @@ class Skypilot(Environment):
         launch = launch_id[:12]
         retry = f"-r{attempt}" if attempt > 0 else ""
         # `build` is the slug of the build.yaml name, else the full build_id
-        # (kept verbatim so it matches the id gbcli users reference). Only the
-        # target slug is length-budgeted below; the <=_MAX_CLUSTER_NAME_LEN
-        # guarantee therefore assumes build_id is UUID-length (<=36).
+        # (kept verbatim so it matches the id gbcli users reference). Clamp it
+        # to the room left under the ceiling after the never-truncated gb-
+        # prefix, launch tail, and retry suffix, so the <=_MAX_CLUSTER_NAME_LEN
+        # guarantee holds unconditionally; a uuid4 build_id (<=36) fits well
+        # within this budget and so is emitted unchanged.
         build = Skypilot._slugify(build_name) or build_id
+        build_budget = (
+            Skypilot._MAX_CLUSTER_NAME_LEN - len("gb-") - 1 - len(launch) - len(retry)
+        )
+        build = build[: max(0, build_budget)].rstrip("-_.")
         fixed = ["gb"]
         if build:
             fixed.append(build)

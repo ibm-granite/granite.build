@@ -418,6 +418,27 @@ class TestSkypilotClusterNaming:
             if attempt:
                 assert name.endswith(f"-r{attempt}")
 
+    def test_cluster_name_clamps_oversized_build_id(self):
+        # A (hypothetical) non-UUID build_id far longer than 36 chars must not
+        # push the name past the k8s label ceiling: the build component is
+        # clamped so the <=_MAX_CLUSTER_NAME_LEN guarantee holds unconditionally,
+        # not just for UUID-length build_ids.
+        from gbserver.environment.skypilot import Skypilot
+
+        for attempt in (0, 2, 99):
+            name = Skypilot._cluster_name_for(
+                "3168aa02-1234-5678-9abc-def012345678",
+                attempt,
+                target_name="y" * 50,
+                build_id="b" * 100,
+            )
+            assert (
+                len(name) <= Skypilot._MAX_CLUSTER_NAME_LEN
+            ), f"{name!r} is {len(name)} chars"
+            assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]", name)
+            if attempt:
+                assert name.endswith(f"-r{attempt}")
+
 
 class TestLaunchSkypilot:
     @pytest.fixture
