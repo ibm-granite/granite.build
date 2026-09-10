@@ -105,7 +105,11 @@ export function Step2Configure({
   const [newConfigForm, setNewConfigForm] = useState<ConfigForm | null>(null)
   const [newConfigName, setNewConfigName] = useState('')
   const [saveError, setSaveError] = useState('')
+  // `configTemplateLoaded` gates the create-form render (i.e. "the form is
+  // populated"); `configTemplateRef` holds the pristine template so each open can
+  // reseed from it instead of inheriting the last form's state.
   const [configTemplateLoaded, setConfigTemplateLoaded] = useState(false)
+  const configTemplateRef = useRef<ConfigForm | null>(null)
   const [isLoadingCreateConfig, setIsLoadingCreateConfig] = useState(false)
 
   // Config editing state
@@ -300,19 +304,50 @@ export function Step2Configure({
     if (isEditingConfig) cancelEditMode()
     setIsCreatingConfig(true)
     setSaveError('')
-    setNewConfigName(selectedConfigId === '__pending__' && selectedConfig ? selectedConfig.name : '')
 
-    if (!configTemplateLoaded) {
-      setIsLoadingCreateConfig(true)
-      try {
-        const template = await getConfigurationTemplate()
-        setNewConfigForm(template)
-        setConfigTemplateLoaded(true)
-      } catch {
-        setSaveError('Failed to load configuration template.')
-      } finally {
-        setIsLoadingCreateConfig(false)
-      }
+    // Re-opening a pending config must show that config. Seeding only its name and
+    // leaving the form body alone meant confirmNewConfig rebuilt config_data from
+    // whatever was in the form -- the bare template on the first re-open, and the
+    // previous create-form's leftovers after that -- so the launch POSTed the
+    // pending config's name with someone else's body, and nothing in the UI said so.
+    const pending = selectedConfigId === '__pending__' ? selectedConfig : null
+    setNewConfigName(pending ? pending.name : '')
+    // A pending config always carries config_data (it was built from a complete
+    // form), but the type allows it to be absent — the list endpoint nulls it — and
+    // spreading that would leave every section optional. If it ever is, the
+    // template below is the right fallback.
+    const pendingData = pending?.config_data
+    if (pending && pendingData) {
+      setNewConfigForm({
+        name: pending.name,
+        tuner_type: pending.tuner_type,
+        rl_tuner_type: pending.rl_tuner_type,
+        ...pendingData,
+      })
+      setConfigTemplateLoaded(true)
+      return
+    }
+
+    // A fresh create starts from the pristine template every time. The template is
+    // cached in a ref so this still costs one fetch per session, but the *form* is
+    // reseeded on each open -- reusing the previous form's state was how a second
+    // "Create" inherited the first one's edits.
+    if (configTemplateRef.current) {
+      setNewConfigForm(configTemplateRef.current)
+      setConfigTemplateLoaded(true)
+      return
+    }
+
+    setIsLoadingCreateConfig(true)
+    try {
+      const template = await getConfigurationTemplate()
+      configTemplateRef.current = template
+      setNewConfigForm(template)
+      setConfigTemplateLoaded(true)
+    } catch {
+      setSaveError('Failed to load configuration template.')
+    } finally {
+      setIsLoadingCreateConfig(false)
     }
   }
 

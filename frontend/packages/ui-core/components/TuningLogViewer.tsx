@@ -18,7 +18,7 @@ interface Props {
 
 export function TuningLogViewer({ jobId, status, maxHeight, scope }: Props) {
   const isActive = ACTIVE_STATUSES.has(status)
-  const { logs, isLoading, isLoadingMore, handleScroll } = useScrollingLogs({
+  const { logs, isLoading, isLoadingMore, isError, handleScroll } = useScrollingLogs({
     // scope is part of the key so 'own' vs 'all' fetches don't collide in the RQ cache.
     queryKey: ['autotunex-job-logs', jobId, scope ?? 'own'],
     fetchLogs: (opts) => getJobLogs(jobId, { ...opts, scope }),
@@ -30,6 +30,7 @@ export function TuningLogViewer({ jobId, status, maxHeight, scope }: Props) {
       logs={logs}
       isLoading={isLoading}
       isLoadingMore={isLoadingMore}
+      isError={isError}
       onScroll={handleScroll}
       maxHeight={maxHeight}
     />

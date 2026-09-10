@@ -21,12 +21,18 @@ forwards them server-side to the AutoTuneX FastAPI server's ``/api/v1/*``
 routes, so browser cookies flow with no CORS. Mirrors the ``next dev`` rewrite in
 frontend/next.config.ts.
 
-gbserver treats ``/api/autotunex/*`` as public for every method (see
-auth._PUBLIC_PATH_PREFIXES). Note that the upstream does not necessarily
-authenticate what is forwarded: AutoTuneX defaults to
-``auth_providers=["disabled"]``, which enforces nothing. This proxy is therefore
-only safe in a localhost-only standalone deployment — see the warning in
-api/auth.py before exposing gbserver on a reachable interface.
+gbserver exempts ``/api/autotunex/*`` from auth for every method, but only when
+the request's TCP peer is loopback. That exemption is a dedicated check in
+``auth.AuthMiddleware.dispatch``, *not* ``auth._PUBLIC_PATH_PREFIXES`` — that
+allow-list deliberately does not match this prefix, and
+``test_autotunex_proxy_prefix_is_not_unconditionally_public`` asserts so.
+
+Note that the upstream does not necessarily authenticate what is forwarded:
+AutoTuneX defaults to ``auth_providers=["disabled"]``, which enforces nothing.
+The loopback condition is also not a boundary behind a reverse proxy that dials
+loopback and strips ``X-Forwarded-*`` — the all-in-one image does exactly that
+(autotunex/docker/aio/Caddyfile) — so this proxy is only safe where the edge is
+already access-controlled. See the warning in api/auth.py.
 """
 
 import os
@@ -175,10 +181,24 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
             status_code=502,
         )
 
+    # Built from the upstream's raw bytes, and built *before* the response object
+    # exists. Decoding each value to str and re-encoding it as latin-1 raised
+    # UnicodeEncodeError for any non-latin-1 value (a UTF-8 Content-Disposition
+    # filename), and raising after BackgroundTask(upstream.aclose) was attached
+    # but before the response was returned leaked the pooled upstream connection.
+    # Location still needs the rewrite; latin-1 is byte-exact in both directions,
+    # so decoding just that one value and re-encoding it cannot lose anything.
     resp_headers = [
-        (k, _rewrite_location(v) if k.lower() == "location" else v)
-        for k, v in upstream.headers.multi_items()
-        if k.lower() not in _DROP_RESPONSE_HEADERS
+        (
+            k,
+            (
+                _rewrite_location(v.decode("latin-1")).encode("latin-1")
+                if k.decode("latin-1").lower() == "location"
+                else v
+            ),
+        )
+        for k, v in upstream.headers.raw
+        if k.decode("latin-1").lower() not in _DROP_RESPONSE_HEADERS
     ]
     response = StreamingResponse(
         upstream.aiter_bytes(),
@@ -187,7 +207,5 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
     )
     # Assign raw_headers directly to preserve duplicates (e.g. multiple
     # Set-Cookie headers from the AutoTuneX login flow), which a dict would drop.
-    response.raw_headers = [
-        (k.encode("latin-1"), v.encode("latin-1")) for k, v in resp_headers
-    ]
+    response.raw_headers = resp_headers
     return response

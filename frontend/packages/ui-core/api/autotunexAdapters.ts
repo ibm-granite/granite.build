@@ -144,6 +144,7 @@ export function adaptJob(raw: Record<string, unknown>): TuningJob {
     user: (raw.user as string) ?? '',
     created_at: raw.created_at as string,
     updated_at: raw.updated_at as string,
+    finished_at: raw.finished_at as string | undefined,
   }
 }
 

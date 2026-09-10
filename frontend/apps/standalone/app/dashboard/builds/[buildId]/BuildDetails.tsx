@@ -135,11 +135,16 @@ export function BuildDetails({
                 statusError={statusError}
               />
             </TabPanel>
+            {/* Carbon mounts every TabPanel's children regardless of which tab is
+                active (see the same note in TrialsTable), and `display: none` only
+                hides them — so without the isAutotunex gate both panels fire their
+                linked-job query on every build page, tagged or not. Matches how
+                AutoTuneXPanel is gated in the Details panel above. */}
             <TabPanel style={{ display: autotunexHide, overflowY: 'auto', height: '100%' }}>
-              <AutoTuneXTrialsPanel buildId={buildId} />
+              {isAutotunex && <AutoTuneXTrialsPanel buildId={buildId} />}
             </TabPanel>
             <TabPanel style={{ display: autotunexHide, overflowY: 'auto', height: '100%' }}>
-              <AutoTuneXLogsPanel buildId={buildId} />
+              {isAutotunex && <AutoTuneXLogsPanel buildId={buildId} />}
             </TabPanel>
           </TabPanels>
         </TabsVertical>

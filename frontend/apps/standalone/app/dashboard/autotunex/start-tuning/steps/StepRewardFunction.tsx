@@ -222,14 +222,25 @@ async function buildTestCasesFromRows(allRows: ParsedDataRow[]): Promise<TestCas
   const positiveRows = rows.slice(0, positiveCount)
   const negativeRows = rows.slice(positiveCount, positiveCount + negativeCount)
 
-  let llmSolutions: string[] = []
+  // Keyed by the row's index in positiveRows, not by position in the response.
+  // The request only carries rows that have a usable prompt, so a compacted list
+  // shifts every later solution onto the wrong row -- and each row's ground truth
+  // comes from the row, so the generated case then asserts a mismatched pair and
+  // the reward function reports "wrong" for a correct answer.
+  const solutionByRow = new Map<number, string>()
   try {
-    const prompts = positiveRows
-      .map((row) => row.prompt)
-      .filter((p): p is any[] => Array.isArray(p) && p.length > 0)
-    if (prompts.length > 0) {
-      const result = await generateTestSolutions(prompts)
-      llmSolutions = result && 'solutions' in result ? result.solutions : []
+    const promptedRows = positiveRows
+      .map((row, index) => ({ index, prompt: row.prompt }))
+      .filter((entry): entry is { index: number; prompt: any[] } =>
+        Array.isArray(entry.prompt) && entry.prompt.length > 0
+      )
+    if (promptedRows.length > 0) {
+      const result = await generateTestSolutions(promptedRows.map((entry) => entry.prompt))
+      const solutions = result && 'solutions' in result ? result.solutions : []
+      promptedRows.forEach((entry, position) => {
+        const solution = solutions[position]
+        if (solution) solutionByRow.set(entry.index, solution)
+      })
     }
   } catch {
     // LLM failed — will fall back to placeholders below
@@ -240,7 +251,7 @@ async function buildTestCasesFromRows(allRows: ParsedDataRow[]): Promise<TestCas
   positiveRows.forEach((row, i) => {
     const dataSource = row.data_source || ''
     const groundTruth = row.reward_model?.ground_truth != null ? String(row.reward_model.ground_truth) : ''
-    const solutionStr = llmSolutions[i] || (groundTruth ? `The answer is #### ${groundTruth}` : '')
+    const solutionStr = solutionByRow.get(i) || (groundTruth ? `The answer is #### ${groundTruth}` : '')
     const extraInfo = row.extra_info || {}
     cases.push(makeTestCase(i + 1, dataSource, solutionStr, groundTruth, { extra_info: extraInfo }))
   })

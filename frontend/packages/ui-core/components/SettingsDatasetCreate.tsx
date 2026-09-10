@@ -63,9 +63,15 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
   const [datasetStatus, setDatasetStatus] = useState<DatasetStatus | null>(null)
   const [error, setError] = useState('')
   const [createdId, setCreatedId] = useState<string | null>(null)
-  // Guards against touching state after the modal is closed mid upload/poll
-  // (the component stays mounted — only its `open` prop toggles).
-  const cancelledRef = useRef(false)
+  // Identifies the current submit so an abandoned one can never touch state again
+  // (the component stays mounted — only its `open` prop toggles). A single
+  // "cancelled" boolean could not express this: handleSubmit had to clear it to
+  // start, which un-cancelled any earlier run still sitting in an await. That run
+  // then resumed, called resetAndClose(true) on success, and closed the modal over
+  // the upload the user had just started — leaving that dataset half-created with
+  // neither a success nor an error shown. Every run captures the id it started
+  // with and compares; bumping the counter abandons all prior runs for good.
+  const runIdRef = useRef(0)
 
   const { data: datasetTypes = {} } = useQuery({
     queryKey: ['autotunex', 'datasetTypes'],
@@ -135,12 +141,12 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
 
   // Polls GET /datasets/{id} every ~3s until the server-side processing
   // triggered by the multipart upload settles into 'ready' or 'error'.
-  async function pollUntilReady(datasetId: string): Promise<void> {
+  async function pollUntilReady(datasetId: string, runId: number): Promise<void> {
     setPolling(true)
     const deadline = Date.now() + POLL_TIMEOUT_MS
-    while (!cancelledRef.current) {
+    while (runId === runIdRef.current) {
       const ds = await getDataset(datasetId)
-      if (cancelledRef.current) return
+      if (runId !== runIdRef.current) return
       setDatasetStatus(ds.status)
       if (ds.status === 'ready') return
       if (ds.status === 'error') {
@@ -158,7 +164,7 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
     setError('')
     setProgress(0)
     setDatasetStatus(null)
-    cancelledRef.current = false
+    const runId = ++runIdRef.current
     try {
       let datasetId = createdId
       if (!datasetId) {
@@ -174,25 +180,26 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
           validationPercentage: split ? 100 - trainPercentage : null,
           columnMapping: Object.keys(columnMapping).length > 0 ? columnMapping : null,
         },
-        (p) => { if (!cancelledRef.current) setProgress(p) }
+        (p) => { if (runId === runIdRef.current) setProgress(p) }
       )
-      if (cancelledRef.current) return
+      if (runId !== runIdRef.current) return
       setProgress(100)
-      await pollUntilReady(datasetId)
-      if (cancelledRef.current) return
+      await pollUntilReady(datasetId, runId)
+      if (runId !== runIdRef.current) return
       queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
       resetAndClose(true)
     } catch (err) {
-      if (cancelledRef.current) return
+      if (runId !== runIdRef.current) return
       setProgress(null)
       setError(err instanceof Error && err.message ? err.message : 'Upload failed. You can retry — the dataset was created and will be reused.')
     } finally {
-      if (!cancelledRef.current) setPolling(false)
+      if (runId === runIdRef.current) setPolling(false)
     }
   }
 
   function resetAndClose(created: boolean) {
-    cancelledRef.current = true
+    // Abandons whatever run is in flight; its captured runId can never match again.
+    runIdRef.current += 1
     setName(''); setDescription(''); setAlgorithm('lora')
     setTrainFile(null); setValidationFile(null); setSplit(true); setTrainPercentage(80)
     setDetectedColumns([]); setSampleRows([]); setColumnMapping({})

@@ -30,12 +30,36 @@ export function useScrollingLogs({
   pollIntervalMs = DEFAULT_POLL_MS,
 }: UseScrollingLogsOptions) {
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [hasMore, setHasMore] = useState(true)
+  // Two flags, not one. `pollHasMore` is what the *newest* page reports, which is
+  // "entries exist before this page" and therefore stays true for any job with
+  // history — so it cannot be the whole answer: once loadMore has walked back to
+  // the real beginning, the next poll would otherwise flip pagination back on and
+  // re-serve pages already held. `olderExhausted` is loadMore's own verdict and
+  // wins over the poll.
+  const [pollHasMore, setPollHasMore] = useState(true)
+  const [olderExhausted, setOlderExhausted] = useState(false)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false)
+
+  // Reset when the caller switches subject. TuningDetailPageClient navigates from
+  // one tuning to another *without* remounting (both are the same Next route), so
+  // without this the previous job's lines stay merged into the next job's panel.
+  // Done during render rather than in an effect so no frame ever paints job A's
+  // logs under job B's heading.
+  const subject = JSON.stringify(queryKey)
+  const [prevSubject, setPrevSubject] = useState(subject)
+  if (subject !== prevSubject) {
+    setPrevSubject(subject)
+    setLogs([])
+    setPollHasMore(true)
+    setOlderExhausted(false)
+    setIsLoadingMore(false)
+    setLoadMoreFailed(false)
+  }
 
   // Polls the newest page and merges it in; does not affect older pages
   // already appended via scroll.
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey,
     queryFn: () => fetchLogs({ beforeId: 0, limit: pageSize }),
     refetchInterval: isActive ? pollIntervalMs : false,
@@ -44,8 +68,10 @@ export function useScrollingLogs({
   useEffect(() => {
     if (!data) return
     setLogs((prev) => mergeLogs(prev, data.logs))
-    setHasMore(data.hasMore)
+    setPollHasMore(data.hasMore)
   }, [data])
+
+  const hasMore = pollHasMore && !olderExhausted && !loadMoreFailed
 
   async function loadMore() {
     if (isLoadingMore || !hasMore || logs.length === 0) return
@@ -54,7 +80,12 @@ export function useScrollingLogs({
       const oldestId = logs[logs.length - 1].id
       const next = await fetchLogs({ beforeId: oldestId, limit: pageSize })
       setLogs((prev) => mergeLogs(prev, next.logs))
-      setHasMore(next.hasMore)
+      if (!next.hasMore) setOlderExhausted(true)
+    } catch {
+      // Stop paginating instead of retrying on every scroll event: handleScroll
+      // fires near the bottom, so an endpoint that 403s would otherwise be re-hit
+      // for as long as the user keeps scrolling, one unhandled rejection each.
+      setLoadMoreFailed(true)
     } finally {
       setIsLoadingMore(false)
     }
@@ -67,5 +98,5 @@ export function useScrollingLogs({
     }
   }
 
-  return { logs, isLoading, isLoadingMore, handleScroll }
+  return { logs, isLoading, isLoadingMore, isError: isError || loadMoreFailed, handleScroll }
 }

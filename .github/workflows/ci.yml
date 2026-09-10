@@ -108,6 +108,36 @@ jobs:
       - name: Run quick tests
         run: make quick-tests
 
+  frontend:
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # >= 22.18 is required, not merely preferred: the tests `require()` the
+      # workspace's .ts sources directly and rely on Node's built-in type
+      # stripping, which is only on by default from 22.18. On an older Node every
+      # test that imports a .ts module fails to load.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22.18'
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: yarn install --frozen-lockfile
+
+      # Before the tests, not after: build-output.test.js asserts against the
+      # emitted bundle, so it can only pass once out/ exists.
+      - name: Build
+        working-directory: frontend
+        run: yarn build
+
+      - name: Test
+        working-directory: frontend
+        run: yarn test
+
   demo-cpu:
     if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest

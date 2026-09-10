@@ -608,6 +608,10 @@ export interface JobSummary {
   user: string;
   created_at: string;
   updated_at: string;
+  /** Latest task updated_at, i.e. when the run actually stopped. Absent while
+   *  the job has no finished task yet. Prefer it over `updated_at` for
+   *  elapsed-time display: any later write to the job row bumps `updated_at`. */
+  finished_at?: string;
 }
 
 export type TuningJob = JobSummary;

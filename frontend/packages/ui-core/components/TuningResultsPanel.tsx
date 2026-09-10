@@ -127,13 +127,22 @@ export function TuningResultsPanel({ jobId, jobStatus }: Props) {
           </StructuredListRow>
         </StructuredListHead>
         <StructuredListBody>
-          {assets.map((asset) => {
-            // `path` keys the download; filenames repeat across trial dirs.
-            const key = asset.path ?? asset.filename
+          {assets.map((asset, index) => {
+            // `path` keys the download and is the only thing that makes a row
+            // unique -- filenames repeat across trial dirs. It is nullable (see
+            // TuningAsset), and two path-less assets sharing a filename used to
+            // collide on both the React key and the download URL, so each rendered
+            // a link to the same wrong target. Fall back to the index for the key,
+            // and drop the link entirely when there is no path to build it from.
+            const downloadPath = asset.path
             return (
-              <StructuredListRow key={key}>
+              <StructuredListRow key={downloadPath ?? `${index}:${asset.filename}`}>
                 <StructuredListCell>
-                  <CarbonLink href={resultFileUrl(jobId, key, scope)}>{asset.filename}</CarbonLink>
+                  {downloadPath ? (
+                    <CarbonLink href={resultFileUrl(jobId, downloadPath, scope)}>{asset.filename}</CarbonLink>
+                  ) : (
+                    asset.filename
+                  )}
                 </StructuredListCell>
                 <StructuredListCell>{formatBytes(asset.size)}</StructuredListCell>
                 <StructuredListCell>{formatModified(asset.modified)}</StructuredListCell>

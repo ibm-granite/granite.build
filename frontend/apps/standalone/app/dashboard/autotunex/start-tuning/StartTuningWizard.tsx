@@ -455,9 +455,13 @@ export function StartTuningWizard() {
         await uploadDataset(
           finalDatasetId!,
           {
+            // Keyed off the toggle, the way SettingsDatasetCreate does it. Reading
+            // intent off `validationFile` instead let a stale file silently win
+            // over an enabled split. Step 1's Next gate requires isSplitEnabled or
+            // a file, so "neither" cannot reach here.
             trainFile: uploadedFile,
-            validationFile: validationFile ?? null,
-            validationPercentage: validationFile ? null : 100 - splitRatio,
+            validationFile: isSplitEnabled ? null : validationFile,
+            validationPercentage: isSplitEnabled ? 100 - splitRatio : null,
             columnMapping,
           },
           setUploadProgress
