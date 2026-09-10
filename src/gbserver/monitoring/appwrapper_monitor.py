@@ -50,9 +50,9 @@ logger = get_logger(__name__)
 API_CALL_TIMEOUT = 30
 
 # Transient apiserver HTTP statuses fed to the grace-period machinery rather
-# than failing the build. Mirrors the set handled in _get_appwrapper_status;
-# the transport-retry layer already retries these, so reaching here means its
-# budget was exhausted.
+# than failing the build. Mirrors the set handled in _get_appwrapper_status.
+# The transport-retry layer retries the 429/5xx subset before we see it (403/408
+# it leaves alone), so these arrive here either post-retry or on first failure.
 TRANSIENT_API_STATUS_CODES = frozenset({403, 408, 429, 500, 502, 503, 504})
 
 

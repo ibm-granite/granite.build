@@ -259,8 +259,15 @@ def _retry_after_seconds(exc: BaseException) -> Optional[float]:
     return None
 
 
+# pylint: disable-next=too-few-public-methods
 class _WaitRetryAfterOrExponential(wait_base):
     """Honor a ``Retry-After`` hint (capped at MAX_DELAY), else exponential backoff."""
+
+    def __init__(self) -> None:
+        self._fallback = wait_random_exponential(
+            multiplier=TRANSPORT_RETRY_BASE_DELAY,
+            max=TRANSPORT_RETRY_MAX_DELAY,
+        )
 
     def __call__(self, retry_state: "RetryCallState") -> float:
         exc = retry_state.outcome.exception() if retry_state.outcome else None
@@ -268,11 +275,7 @@ class _WaitRetryAfterOrExponential(wait_base):
             hinted = _retry_after_seconds(exc)
             if hinted is not None:
                 return max(0.0, min(hinted, TRANSPORT_RETRY_MAX_DELAY))
-        fallback = wait_random_exponential(
-            multiplier=TRANSPORT_RETRY_BASE_DELAY,
-            max=TRANSPORT_RETRY_MAX_DELAY,
-        )
-        return fallback(retry_state)
+        return self._fallback(retry_state)
 
 
 def _install_k8s_request_retry() -> None:

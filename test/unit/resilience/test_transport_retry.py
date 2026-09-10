@@ -45,12 +45,12 @@ from libgbtest.constants import HAS_K8S, requires_k8s
 import gbserver.resilience.transport_retry as tr
 from gbserver.resilience.transport_retry import (
     _WRAPPED_MARKER,
-    _WaitRetryAfterOrExponential,
     _is_retryable_api_status,
     _is_retryable_connector_error,
     _is_retryable_dns_error,
     _make_retrying,
     _retry_after_seconds,
+    _WaitRetryAfterOrExponential,
     install_transport_retries,
 )
 
