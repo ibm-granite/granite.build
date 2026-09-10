@@ -22,9 +22,12 @@ const nextConfig: NextConfig = {
   // Next only compiles first-party code by default, so opt this workspace package in too.
   transpilePackages: ['@granite-build/ui-core'],
   // Expose the API URLs to the client bundle without a NEXT_PUBLIC_ prefix.
+  // AUTOTUNEX_API_URL is deliberately absent: the client always calls the
+  // same-origin /api/autotunex/* proxy (see autotunexApiBase), so inlining it
+  // would only let a build-time value ship a cross-origin bundle that cannot
+  // work. It is still read above for the dev rewrite, which is server-side.
   env: {
     GBSERVER_API_URL: gbserverApiUrl ?? '',
-    AUTOTUNEX_API_URL: autotunexApiUrl ?? '',
     MONACO_VS_PATH: monacoVsPath ?? '',
   },
   // Dev mode: proxy /api/* to gbserver and /api/autotunex/* to the AutoTuneX

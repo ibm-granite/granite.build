@@ -41,11 +41,17 @@ function DetailsPanel({ job }: { job: JobRead }) {
   const { data: configuration, isError: isConfigError } = useQuery({
     queryKey: ['autotunex-config', job.config_id, isAdmin],
     queryFn: () => getConfiguration(job.config_id, isAdmin ? 'all' : 'own'),
-    enabled: configOpen,
+    // Same guard as AutoTuneXPanel: without it a job with no config_id fetches
+    // /configurations/undefined, so the modal shows an error for what is really
+    // just an absent id.
+    enabled: configOpen && !!job.config_id,
   })
 
+  // finished_at is when the run actually stopped; updated_at is only a fallback
+  // for a server that doesn't report it, because any later write to the job row
+  // (e.g. a reconcile) bumps updated_at and inflates the elapsed time.
   const totalTimeSeconds = Math.floor(
-    ((job.status === 'running' ? Date.now() : new Date(job.updated_at).getTime()) - new Date(job.created_at).getTime()) / 1000
+    ((job.status === 'running' ? Date.now() : new Date(job.finished_at ?? job.updated_at).getTime()) - new Date(job.created_at).getTime()) / 1000
   )
 
   const fields: { label: string; value: React.ReactNode }[] = [

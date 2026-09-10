@@ -127,6 +127,25 @@ describe('adaptJob + toListResult (getJobs reshaping)', () => {
     assert.equal(result.items[0].status, 'running')
     assert.equal(result.items[0].experiment_name, 'exp-1')
   })
+
+  it('carries finished_at through', () => {
+    // The server added finished_at (latest gb_tasks.updated_at for the job) so
+    // the UI can render Total time as finished_at - created_at. Dropping it made
+    // both Total time renderers fall back to the job row's own updated_at, which
+    // any later write bumps -- a job that ran 1h reports 5h after a reconcile.
+    const job = adaptJob({
+      id: 'j1',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T05:00:00Z',
+      finished_at: '2026-01-01T01:00:00Z',
+    })
+    assert.equal(job.finished_at, '2026-01-01T01:00:00Z')
+  })
+
+  it('leaves finished_at undefined when the server omits it', () => {
+    const job = adaptJob({ id: 'j1', created_at: 'x', updated_at: 'y' })
+    assert.equal(job.finished_at, undefined)
+  })
 })
 
 describe('adaptConfiguration', () => {

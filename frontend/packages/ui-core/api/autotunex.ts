@@ -2,10 +2,11 @@
  * API client for the AutoTuneX backend (FastAPI service, proxied via
  * /api/autotunex/* — see `autotunexApiBase` in `@/api/client`).
  *
- * Dev mode: calls go through the Next.js dev proxy. Standalone builds target
- * AUTOTUNEX_API_URL directly when it's baked in at build time. `getHFModels`/
- * `getHFModelCard` are the two exceptions — they call the public HuggingFace
- * API directly via bare `axios`, not through this backend.
+ * Dev mode: calls go through the Next.js dev proxy. Standalone builds go through
+ * gbserver's same-origin proxy — never at AUTOTUNEX_API_URL directly, which the
+ * browser cannot reach without CORS. `getHFModels`/`getHFModelCard` are the two
+ * exceptions — they call the public HuggingFace API directly via bare `axios`,
+ * not through this backend.
  *
  * Targets AutoTuneX API v0.3.5 (`/api/v1/*`, offset-paginated list envelopes
  * `{items,total,limit,offset}`). `pageQuery`/`toListResult` and the `adaptX()`
