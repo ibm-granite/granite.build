@@ -122,6 +122,12 @@ def _script_argv(rendered: str, which: str) -> list[str]:
             "mkdir -p ./venv/bin && : > ./venv/bin/activate",
             # Stand in for the real script: emit argv, one per line, NUL-free.
             "mkdir -p ./src",
+            # Both blocks now call src/dpk_guard.sh before the script under test, so
+            # stub it as a no-op: it must neither refuse nor emit ARG: lines that would
+            # be mistaken for the argv being measured. Its own behaviour is covered by
+            # test_dpk_guard_sh.py, which executes the real script.
+            "printf '#!/usr/bin/env bash\\ntrue\\n' > ./src/dpk_guard.sh",
+            "chmod +x ./src/dpk_guard.sh",
             f'printf "%s\\n" \'#!/usr/bin/env bash\' \'for a in "$@"; do echo "ARG:$a"; done\''
             f" > ./src/{script}",
             f"chmod +x ./src/{script}",
@@ -492,235 +498,61 @@ class TestArgsIsTheOnlyFlagChannel:
         assert _passthrough(argv) == ["--tkn_doc_id_column", "run-a1b2c3"]
 
 
-class TestSetupAndRunGuardsCannotDrift:
-    """The required-config guards are duplicated into `setup`, so pin them identical.
+class TestBothBlocksCallTheGuard:
+    """The template's remaining responsibility: WIRING, not the guard logic itself.
 
-    They live in both blocks because `setup` runs FIRST and is the expensive phase: the
-    launcher prepends `hf download` for every hf:// input into it, then dpk_setup.sh
-    bootstraps uv and installs the transform's extra (125 packages for pii_redactor).
-    Guarding only in `run` meant an invalid build paid all of that before being refused.
+    The four config guards now live in src/dpk_guard.sh, executed directly by
+    test_dpk_guard_sh.py. What only the template can get wrong is calling it — in both
+    phases, with every value it needs, and before any expensive work. `setup` is the
+    expensive phase: it carries the launcher's `hf download` and the whole dependency
+    install, so a guard that ran only in `run` cost a full install per invalid build.
 
-    Jinja macros are block-scoped, so this is duplicated TEXT rather than a shared
-    definition — the same constraint that makes q() appear twice. Duplicated text can
-    drift, and two blocks disagreeing about what is valid is worse than either rule
-    alone, so this asserts they stay byte-identical.
+    (This replaces a class that compared the two blocks' duplicated guard TEXT for
+    drift. There is one script now, called twice, so there is nothing to drift.)
     """
 
-    def test_the_guard_text_is_identical_in_both_blocks(self, template):
-        """Compare the template SOURCE, not a rendered config.
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_the_block_calls_the_guard(self, launcher, defaults, block):
+        rendered = _render(launcher[block], _transform_cfg(defaults), _BINDINGS)
+        assert "bash ./src/dpk_guard.sh" in rendered
 
-        Rendering cannot show this: the guards are conditional Jinja, so a valid config
-        renders none of their text and an invalid one renders only the guard that fired.
-        The drift that matters is in the template, so the two regions are compared
-        directly — from the REQUIRED-CONFIG GUARDS marker to the end of the args-key
-        loop, which is the span that was copied.
-        """
-        launcher_cfg = template["environment_configs"]["Skypilot"]["launchers"]["dpk"][
-            "config"
-        ]
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_the_guard_precedes_all_the_work(self, launcher, defaults, block):
+        """Refusing after the install is what this arrangement exists to avoid."""
+        rendered = _render(launcher[block], _transform_cfg(defaults), _BINDINGS)
+        work = "dpk_setup.sh" if block == "setup" else "dpk_run.sh"
+        assert rendered.index("dpk_guard.sh") < rendered.index(work)
 
-        def guard_region(block: str) -> str:
-            text = launcher_cfg[block]
-            start = text.index("{#- REQUIRED-CONFIG GUARDS")
-            end = text.index("not a valid DPK flag name")
-            return text[start:end]
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_every_value_the_guard_checks_is_passed(self, launcher, defaults, block):
+        """A missing option would shift argv and could make a bad config look valid."""
+        cfg = _transform_cfg(defaults, module="dpk_x.runtime", dpk_image="q.io/i:1")
+        rendered = _render(launcher[block], cfg, _BINDINGS)
+        for opt in ("--transform", "--module", "--dpk-image", "--input", "--output"):
+            assert opt in rendered, f"{opt} not passed in the {block} block"
 
-        assert guard_region("setup") == guard_region("run")
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_the_declared_input_names_are_passed(self, launcher, defaults, block):
+        """The script cannot enumerate bindings, so the names arrive as argv."""
+        bindings = {
+            "docs": {"binding": {"path": "/a"}},
+            "extra": {"binding": {"path": "/b"}},
+        }
+        rendered = _render(launcher[block], _transform_cfg(defaults), bindings)
+        assert any(
+            "'docs'" in line and "'extra'" in line
+            for line in rendered.splitlines()
+            if line.strip().startswith("--")
+        )
 
-    @pytest.mark.parametrize(
-        "kw,expect",
-        [
-            ({"transform": ""}, "dpk_config.transform is required"),
-            ({"input": ""}, "dpk_config.input is required"),
-            ({"input": "dcos"}, "names no declared input"),
-            ({"output": ""}, "dpk_config.output is required"),
-            ({"args": {"my-flag": "v"}}, "not a valid DPK flag name"),
-            ({"args": {"": "v"}}, "not a valid DPK flag name"),
-        ],
-    )
-    def test_setup_refuses_the_same_configs_run_does(
-        self, launcher, defaults, kw, expect
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_a_quote_in_a_declared_name_cannot_break_the_call(
+        self, launcher, defaults, block
     ):
-        """Both blocks must reach the same verdict on the same config."""
-        cfg = _transform_cfg(defaults, **kw)
-        for block in ("setup", "run"):
-            rendered = _render(launcher[block], cfg, _BINDINGS)
-            assert "exit 1" in rendered, f"the {block} block did not refuse {kw}"
-            assert expect in rendered
-
-    def test_setup_refuses_before_it_installs_anything(self, launcher, defaults):
-        """The point of duplicating them: no install work precedes the refusal.
-
-        Asserted by ORDER in the rendered text, since the install is delegated to
-        dpk_setup.sh — the `exit 1` must come before that call, so the expensive phase
-        is never reached.
-        """
-        rendered = _render(
-            launcher["setup"], _transform_cfg(defaults, input="dcos"), _BINDINGS
-        )
-        assert rendered.index("exit 1") < rendered.index("dpk_setup.sh")
-
-    def test_a_valid_config_trips_no_guard_in_either_block(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, args={"tkn_chunk_size": 0})
-        for block in ("setup", "run"):
-            assert "exit 1" not in _render(launcher[block], cfg, _BINDINGS)
-
-
-class TestRequiredConfigIsGuarded:
-    """Empty or mistyped required config must name the FIELD, not bash.
-
-    The step guarded its derived values (name collisions, flag keys) but not the config
-    those derivations read, which left an asymmetry a reviewer caught: an empty or
-    misspelled `output` reaches dpk_run.sh and gets "--artifact-id is required", while
-    an empty or misspelled `input` rendered $GB_INPUT_ / $GB_INPUT_<typo> and died at
-    `set -u` with "GB_INPUT_dcos: unbound variable" — before the script, naming bash
-    rather than the mistake. `transform` was the same one level on: empty derived the
-    module "dpk_.runtime" and failed with "No module named dpk_".
-    """
-
-    def _run(self, rendered):
-        """Execute the rendered block with the script stubbed; return (rc, dpk: lines)."""
-        if shutil.which("bash") is None:  # pragma: no cover
-            pytest.skip("bash not available")
-        harness = "\n".join(
-            [
-                "mkdir -p ./venv/bin ./src && : > ./venv/bin/activate",
-                "printf '#!/bin/sh\\ntrue\\n' > ./src/dpk_run.sh",
-                "chmod +x ./src/dpk_run.sh",
-                rendered,
-            ]
-        )
-        proc = subprocess.run(
-            ["bash", "-c", harness], capture_output=True, text=True, cwd=_TMPDIR
-        )
-        return proc.returncode, [
-            l for l in proc.stderr.splitlines() if l.startswith("dpk:")
-        ]
-
-    def test_empty_transform_is_named(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, transform="")
-        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
-        assert rc == 1
-        assert any("dpk_config.transform is required" in m for m in msgs)
-
-    def test_the_setup_block_confirms_module_alone_installs_nothing(
-        self, launcher, defaults
-    ):
-        """The reason the guard above must fire, asserted at its source."""
-        cfg = _transform_cfg(defaults, transform="", module="dpk_custom.runtime")
-        rendered = _render(launcher["setup"], cfg, _BINDINGS)
-        assert "data-prep-toolkit-transforms" not in rendered
-
-    @pytest.mark.parametrize(
-        "kw",
-        [
-            # An image with no module: skips the install but leaves the module as
-            # the derived "dpk_.runtime". This case ASSERTED rc == 0 and thereby
-            # defended a live hole — see the refusal test below.
-            {"transform": "", "dpk_image": "quay.io/o/i:1"},
-            # A module with no image: supplies the module but installs nothing.
-            {"transform": "", "module": "dpk_custom.runtime"},
-        ],
-    )
-    def test_one_override_alone_never_exempts_transform(self, launcher, defaults, kw):
-        """Each override supplies half of what `transform` does, so neither exempts.
-
-        `module` gives a module name and no dependencies; `dpk_image` removes the
-        install and gives no module name. Both configurations previously PASSED this
-        guard in turn, and both then died on the node with a bare ModuleNotFoundError
-        — the exact failure the guard exists to prevent, reached through it.
-        """
-        rc, msgs = self._run(
-            _render(launcher["run"], _transform_cfg(defaults, **kw), _BINDINGS)
-        )
-        assert rc == 1, msgs
-        assert any("dpk_config.transform is required" in m for m in msgs)
-
-    def test_image_and_module_together_do_exempt_transform(self, launcher, defaults):
-        """The conjunction is the only exemption: install skipped AND module supplied."""
-        cfg = _transform_cfg(
-            defaults,
-            transform="",
-            dpk_image="quay.io/o/i:1",
-            module="dpk_custom.runtime",
-        )
-        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
-        assert rc == 0, msgs
-
-    def test_an_image_without_a_module_renders_the_broken_module(
-        self, launcher, defaults
-    ):
-        """Why the image-alone case must be refused, asserted at its source.
-
-        Verified against the real interpreter: `python -m dpk_.runtime` raises
-        ModuleNotFoundError: No module named 'dpk_'.
-        """
-        cfg = _transform_cfg(defaults, transform="", dpk_image="quay.io/o/i:1")
-        rendered = _render(launcher["run"], cfg, _BINDINGS)
-        assert "--module 'dpk_.runtime'" in rendered
-
-    def test_empty_output_is_named(self, launcher, defaults):
-        """The last required field to get a guard.
-
-        Only emptiness is checkable at render time: `bindings` holds inputs, so a
-        MISTYPED output cannot be caught here — it emits GB_ARTIFACT_ID:<typo>, which
-        buildrun.py logs and ignores, leaving a green target that registered nothing.
-        """
-        cfg = _transform_cfg(defaults, output="")
-        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
-        assert rc == 1, msgs
-        assert any("dpk_config.output is required" in m for m in msgs)
-
-    def test_empty_input_is_named(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, input="")
-        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
-        assert rc == 1
-        assert any("dpk_config.input is required" in m for m in msgs)
-
-    def test_a_mistyped_input_is_named_and_the_valid_ones_listed(
-        self, launcher, defaults
-    ):
-        """The whole point: say what is wrong AND what the choices are."""
-        cfg = _transform_cfg(defaults, input="dcos")
-        rc, msgs = self._run(_render(launcher["run"], cfg, _BINDINGS))
-        assert rc == 1
-        assert any("names no declared input" in m for m in msgs)
-        assert any(m.strip().endswith("docs") for m in msgs)
-
-    def test_the_listing_shows_the_name_the_author_wrote(self, launcher, defaults):
-        """Not the sanitized one. A build sets `input: raw-docs`, so reporting
-        "raw_docs" would send them chasing a name they never typed."""
-        cfg = _transform_cfg(defaults, input="")
-        bindings = {"raw-docs": {"binding": {"path": "/a"}}}
-        rc, msgs = self._run(_render(launcher["run"], cfg, bindings))
-        assert rc == 1
-        assert any(m.strip().endswith("raw-docs") for m in msgs)
-
-    def test_a_target_with_no_inputs_says_so(self, launcher, defaults):
-        rc, msgs = self._run(_render(launcher["run"], _transform_cfg(defaults), {}))
-        assert rc == 1
-        assert any("declares NO inputs at all" in m for m in msgs)
-
-    def test_the_listing_cannot_execute_a_name(self, launcher, defaults, tmp_path):
-        """A raw input name is author text: single-quoted so a backtick is inert.
-
-        The collision guard reports only SANITIZED names for this reason; this guard
-        has to show raw ones to be useful, so it quotes them instead.
-        """
-        canary = tmp_path / "canary"
-        cfg = _transform_cfg(defaults, input="")
-        bindings = {f"d`touch {canary}`": {"binding": {"path": "/a"}}}
-        rendered = _render(launcher["run"], cfg, bindings)
-        assert _bash_ok(rendered)
-        self._run(rendered)
-        assert not canary.exists()
-
-    def test_the_happy_path_trips_no_guard(self, launcher, defaults):
-        rc, msgs = self._run(
-            _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
-        )
-        assert rc == 0
-        assert msgs == []
+        """Names are author text interpolated into the call, so q() applies here too."""
+        bindings = {"o'brien": {"binding": {"path": "/a"}}}
+        cfg = _transform_cfg(defaults, input="o'brien")
+        assert _bash_ok(_render(launcher[block], cfg, bindings))
 
 
 class TestInputNamesBecomeShellIdentifiers:
@@ -795,9 +627,10 @@ class TestInputNamesBecomeShellIdentifiers:
         )
         assert "exit 1" in rendered  # the guard did fire
         assert _bash_ok(rendered)
-        # The raw name must not reach the shell as code. (Backticks DO appear in the
-        # block's explanatory comments, so the test is execution, not their absence.)
-        assert f"touch {canary}" not in rendered
+        # The name now legitimately APPEARS in the rendered text — q()-escaped, as an
+        # argument to dpk_guard.sh — so its absence is no longer the property to check
+        # (and never was the right one: backticks also appear in the block's comments).
+        # Execution is: run the block and confirm nothing ran.
         subprocess.run(["bash", "-c", rendered], capture_output=True, cwd=_TMPDIR)
         assert not canary.exists()
 

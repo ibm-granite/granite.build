@@ -175,6 +175,12 @@ environment_configs:
           # prepends `hf download ...` here for any hf:// input binding.
           setup: |
             set -eu
+            {#- Shell-quote escaping, hoisted to the top of the block because the guard
+                call below uses it. Jinja macros are block-scoped, so `run` carries its
+                own identical copy. #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
             {#- The SAME four required-config guards the run block applies, duplicated
                 here because setup runs FIRST and is the expensive phase. Without them an
                 invalid build paid for the whole install before `run` refused it: the
@@ -194,93 +200,22 @@ environment_configs:
             {%- endmacro %}
             {#- Sanitizing is many-to-one, so `raw-docs` and `raw.docs` both become
                 GB_INPUT_raw_docs and the second export would silently win — the
-            {#- REQUIRED-CONFIG GUARDS, first, because the failures they replace are
-                the least legible in the whole step.
-
-                The step already guards its DERIVED values (name collisions, flag
-                keys) but not the config those derivations read, which left an
-                asymmetry: an empty or misspelled `output` reaches dpk_run.sh and gets
-                "--artifact-id is required", while an empty or misspelled `input`
-                renders $GB_INPUT_ or $GB_INPUT_<typo> and dies at `set -u` with
-                "GB_INPUT_dcos: unbound variable" — before the script is reached, and
-                naming bash rather than the mistake. A typo in an input name is an
-                ordinary authoring slip and deserves an ordinary message.
-
-                `transform` is the same shape one level further on: empty derives the
-                module "dpk_.runtime", installs nothing, and fails with "No module
-                named dpk_", which points at neither the field nor the fix.
-
-                `transform` supplies TWO things — a module name AND a pip extra — so
-                whatever exempts a build from setting it must supply BOTH. Neither
-                override does alone, and this guard has now been wrong in both
-                directions:
-
-                  `transform or module` — unsound. `module` gives the module name but
-                    not the extra (`dpk_req` is "" without a transform), so
-                    `module: dpk_custom.runtime` alone passed and built a venv with NO
-                    DPK, dying with "No module named dpk_custom".
-                  `transform or dpk_image` — unsound the other way. `dpk_image` removes
-                    the INSTALL but supplies no module, so an image with no transform
-                    and no module passed and rendered `--module 'dpk_.runtime'`, dying
-                    with "No module named dpk_".
-
-                Both are verbatim the illegible failure this guard exists to prevent,
-                reached THROUGH the guard. So the exemption is the conjunction: an image
-                to skip the install AND a module to run. #}
-            {%- if not config.dpk_config.transform
-                   and not (config.dpk_config.dpk_image and config.dpk_config.module) %}
-            echo "dpk: ERROR dpk_config.transform is required." >&2
-            echo "dpk: it names the DPK transform to run, e.g. tokenization2arrow —" >&2
-            echo "dpk: the step derives BOTH the python module and the pip extra from" >&2
-            echo "dpk: it, so it is what makes the install know what to install." >&2
-            echo "dpk: neither override replaces it alone: 'module' supplies a module" >&2
-            echo "dpk: but no dependencies (empty venv), and 'dpk_image' skips the" >&2
-            echo "dpk: install but supplies no module (leaving 'dpk_.runtime'). Set" >&2
-            echo "dpk: 'transform', or set BOTH 'dpk_image' and 'module'." >&2
-            exit 1
-            {%- endif %}
-            {#- `output` was the last required field with no guard, leaving half of the
-                asymmetry this block exists to close: an empty one reaches dpk_run.sh
-                and gets "--artifact-id is required", naming the script rather than the
-                field.
-
-                Only EMPTINESS is checkable here. A mistyped name is not: `bindings`
-                holds the target's INPUTS at render time, and declared outputs reach
-                static validation only (targetstep.py's _get_validation_context vs the
-                runtime context). Worth knowing what that leaves open — a mistyped
-                `output` emits GB_ARTIFACT_ID:<typo>, buildrun.py logs "failed to find
-                output binding ... Ignoring" and continues, so the target goes GREEN
-                having registered nothing and a downstream target fails pointing
-                elsewhere. Recorded in README.md's Known gaps. #}
-            {%- if not config.dpk_config.output %}
-            echo "dpk: ERROR dpk_config.output is required." >&2
-            echo "dpk: it must name one of this target's declared outputs, and becomes" >&2
-            echo "dpk: the artifact id the step registers." >&2
-            exit 1
-            {%- endif %}
-            {%- if not config.dpk_config.input %}
-            echo "dpk: ERROR dpk_config.input is required." >&2
-            echo "dpk: it must name one of this target's declared inputs:" >&2
-            {#- The name the AUTHOR wrote, not env_name(n): they set `input: raw-docs`,
-                so telling them "raw_docs" sends them chasing a name they never typed.
-                SINGLE-quoted, because a raw name is author text and a backtick inside a
-                double-quoted echo would run — the same care the collision guard takes,
-                which reports only sanitized names for exactly that reason. #}
-            {%- for n in bindings.keys() | sort %}
-            echo 'dpk:   {{ n | string | replace("'", "'\"'\"'") }}' >&2
-            {%- endfor %}
-            exit 1
-            {%- elif config.dpk_config.input | string not in bindings.keys() | list %}
-            echo "dpk: ERROR dpk_config.input names no declared input of this target." >&2
-            echo "dpk: it must be one of:" >&2
-            {%- for n in bindings.keys() | sort %}
-            echo 'dpk:   {{ n | string | replace("'", "'\"'\"'") }}' >&2
-            {%- endfor %}
-            {%- if not bindings %}
-            echo "dpk:   (this target declares NO inputs at all)" >&2
-            {%- endif %}
-            exit 1
-            {%- endif %}
+            {#- Required-config guards. The four that depend only on config (and on the
+                declared input NAMES, passed as argv) live in src/dpk_guard.sh, so they
+                are shellcheck'd, bash -n'd and unit tested rather than being ~130 lines
+                of Jinja duplicated across both blocks. Run in BOTH phases because setup
+                is the expensive one — it carries the hf download and the install — and
+                run can be reached on a warm cluster without a fresh setup.
+                The collision and args-key guards stay in Jinja below: they need the RAW
+                declared names and the RAW args keys, neither of which survives rendering
+                (see that script's header). #}
+            bash ./src/dpk_guard.sh \
+              --transform '{{ q(config.dpk_config.transform) }}' \
+              --module '{{ q(config.dpk_config.module) }}' \
+              --dpk-image '{{ q(config.dpk_config.dpk_image) }}' \
+              --input '{{ q(config.dpk_config.input) }}' \
+              --output '{{ q(config.dpk_config.output) }}' \
+              --{% for n in bindings.keys() | sort %} '{{ q(n) }}'{% endfor %}
             {%- set names = bindings.keys() | list %}
             {%- set safe_names = [] %}
             {%- for n in names %}{% set _ = safe_names.append(env_name(n)) %}{% endfor %}
@@ -349,11 +284,6 @@ environment_configs:
             # no exceptions — a per-field judgement about which strings are "trusted"
             # is what left this half-applied in the first place. `dpk_req` carries
             # both `transform` and `dpk_version`, so escaping it covers both.
-            {#- Macros are block-scoped, so `setup` defines its own copy of the same
-                rule the `run` block uses. #}
-            {%- macro q(v) -%}
-            {{ v | string | replace("'", "'\"'\"'") }}
-            {%- endmacro %}
             bash ./src/dpk_setup.sh \
               --venv ./venv \
               --index-url '{{ q(config.dpk_config.pip_index_url) }}' \
@@ -415,93 +345,22 @@ environment_configs:
                 guard the SHELL enforces: `raise_error` is unavailable here (strict
                 env only), and a rendered comment nobody reads is not a safeguard.
                 `exit 1` before the transform is the loud failure. #}
-            {#- REQUIRED-CONFIG GUARDS, first, because the failures they replace are
-                the least legible in the whole step.
-
-                The step already guards its DERIVED values (name collisions, flag
-                keys) but not the config those derivations read, which left an
-                asymmetry: an empty or misspelled `output` reaches dpk_run.sh and gets
-                "--artifact-id is required", while an empty or misspelled `input`
-                renders $GB_INPUT_ or $GB_INPUT_<typo> and dies at `set -u` with
-                "GB_INPUT_dcos: unbound variable" — before the script is reached, and
-                naming bash rather than the mistake. A typo in an input name is an
-                ordinary authoring slip and deserves an ordinary message.
-
-                `transform` is the same shape one level further on: empty derives the
-                module "dpk_.runtime", installs nothing, and fails with "No module
-                named dpk_", which points at neither the field nor the fix.
-
-                `transform` supplies TWO things — a module name AND a pip extra — so
-                whatever exempts a build from setting it must supply BOTH. Neither
-                override does alone, and this guard has now been wrong in both
-                directions:
-
-                  `transform or module` — unsound. `module` gives the module name but
-                    not the extra (`dpk_req` is "" without a transform), so
-                    `module: dpk_custom.runtime` alone passed and built a venv with NO
-                    DPK, dying with "No module named dpk_custom".
-                  `transform or dpk_image` — unsound the other way. `dpk_image` removes
-                    the INSTALL but supplies no module, so an image with no transform
-                    and no module passed and rendered `--module 'dpk_.runtime'`, dying
-                    with "No module named dpk_".
-
-                Both are verbatim the illegible failure this guard exists to prevent,
-                reached THROUGH the guard. So the exemption is the conjunction: an image
-                to skip the install AND a module to run. #}
-            {%- if not config.dpk_config.transform
-                   and not (config.dpk_config.dpk_image and config.dpk_config.module) %}
-            echo "dpk: ERROR dpk_config.transform is required." >&2
-            echo "dpk: it names the DPK transform to run, e.g. tokenization2arrow —" >&2
-            echo "dpk: the step derives BOTH the python module and the pip extra from" >&2
-            echo "dpk: it, so it is what makes the install know what to install." >&2
-            echo "dpk: neither override replaces it alone: 'module' supplies a module" >&2
-            echo "dpk: but no dependencies (empty venv), and 'dpk_image' skips the" >&2
-            echo "dpk: install but supplies no module (leaving 'dpk_.runtime'). Set" >&2
-            echo "dpk: 'transform', or set BOTH 'dpk_image' and 'module'." >&2
-            exit 1
-            {%- endif %}
-            {#- `output` was the last required field with no guard, leaving half of the
-                asymmetry this block exists to close: an empty one reaches dpk_run.sh
-                and gets "--artifact-id is required", naming the script rather than the
-                field.
-
-                Only EMPTINESS is checkable here. A mistyped name is not: `bindings`
-                holds the target's INPUTS at render time, and declared outputs reach
-                static validation only (targetstep.py's _get_validation_context vs the
-                runtime context). Worth knowing what that leaves open — a mistyped
-                `output` emits GB_ARTIFACT_ID:<typo>, buildrun.py logs "failed to find
-                output binding ... Ignoring" and continues, so the target goes GREEN
-                having registered nothing and a downstream target fails pointing
-                elsewhere. Recorded in README.md's Known gaps. #}
-            {%- if not config.dpk_config.output %}
-            echo "dpk: ERROR dpk_config.output is required." >&2
-            echo "dpk: it must name one of this target's declared outputs, and becomes" >&2
-            echo "dpk: the artifact id the step registers." >&2
-            exit 1
-            {%- endif %}
-            {%- if not config.dpk_config.input %}
-            echo "dpk: ERROR dpk_config.input is required." >&2
-            echo "dpk: it must name one of this target's declared inputs:" >&2
-            {#- The name the AUTHOR wrote, not env_name(n): they set `input: raw-docs`,
-                so telling them "raw_docs" sends them chasing a name they never typed.
-                SINGLE-quoted, because a raw name is author text and a backtick inside a
-                double-quoted echo would run — the same care the collision guard takes,
-                which reports only sanitized names for exactly that reason. #}
-            {%- for n in bindings.keys() | sort %}
-            echo 'dpk:   {{ n | string | replace("'", "'\"'\"'") }}' >&2
-            {%- endfor %}
-            exit 1
-            {%- elif config.dpk_config.input | string not in bindings.keys() | list %}
-            echo "dpk: ERROR dpk_config.input names no declared input of this target." >&2
-            echo "dpk: it must be one of:" >&2
-            {%- for n in bindings.keys() | sort %}
-            echo 'dpk:   {{ n | string | replace("'", "'\"'\"'") }}' >&2
-            {%- endfor %}
-            {%- if not bindings %}
-            echo "dpk:   (this target declares NO inputs at all)" >&2
-            {%- endif %}
-            exit 1
-            {%- endif %}
+            {#- Required-config guards. The four that depend only on config (and on the
+                declared input NAMES, passed as argv) live in src/dpk_guard.sh, so they
+                are shellcheck'd, bash -n'd and unit tested rather than being ~130 lines
+                of Jinja duplicated across both blocks. Run in BOTH phases because setup
+                is the expensive one — it carries the hf download and the install — and
+                run can be reached on a warm cluster without a fresh setup.
+                The collision and args-key guards stay in Jinja below: they need the RAW
+                declared names and the RAW args keys, neither of which survives rendering
+                (see that script's header). #}
+            bash ./src/dpk_guard.sh \
+              --transform '{{ q(config.dpk_config.transform) }}' \
+              --module '{{ q(config.dpk_config.module) }}' \
+              --dpk-image '{{ q(config.dpk_config.dpk_image) }}' \
+              --input '{{ q(config.dpk_config.input) }}' \
+              --output '{{ q(config.dpk_config.output) }}' \
+              --{% for n in bindings.keys() | sort %} '{{ q(n) }}'{% endfor %}
             {%- set names = bindings.keys() | list %}
             {%- set safe_names = [] %}
             {%- for n in names %}{% set _ = safe_names.append(env_name(n)) %}{% endfor %}
