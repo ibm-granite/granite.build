@@ -22,6 +22,21 @@ export interface BuildStepRun {
   started_at?: string
   updated_at?: string
   log_path?: string
+  // Step metadata, all optional — populated from the StoredStepRun
+  // rows returned by GET /builds/{id}/status. `config` holds the step's
+  // build.yaml runtime parameters; `image` is best-effort (see
+  // stepImageFromConfig in api/gbserver.ts — the image is usually resolved at
+  // launch time and never persisted, so it is often absent).
+  uuid?: string
+  config?: Record<string, unknown>
+  image?: string
+  launcher?: string
+  status_msg?: string
+  finished_at?: string
+  // Runtime key/values the step pushed via the GB_STEP_METADATA hook (e.g. a
+  // resolved git `commit_hash`), persisted in StoredStepRun.metadata and kept
+  // separate from `config` (the declared build.yaml input). Free-form keys.
+  metadata?: Record<string, unknown>
 }
 
 export interface BuildTargetRun {
@@ -79,7 +94,7 @@ export interface BuildStatusDetail {
 
 // ── Artifacts ────────────────────────────────────────────────────────────────
 
-export type ArtifactType = 'MODEL' | 'DATASET' | 'FILESET' | 'TABLE'
+export type ArtifactType = 'MODEL' | 'DATASET' | 'FILESET' | 'TABLE' | 'BUCKET'
 
 // Mirrors gbserver's ArtifactRegistrationStatus enum
 // (src/gbserver/storage/artifact_registration.py).

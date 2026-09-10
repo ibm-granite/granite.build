@@ -49,6 +49,7 @@ const ARTIFACT_TYPES = [
   { id: "DATASET", label: "Dataset" },
   { id: "FILESET", label: "Fileset" },
   { id: "TABLE", label: "Table" },
+  { id: "BUCKET", label: "Bucket" },
 ];
 
 // Mirrors gbserver's ArtifactRegistrationStatus enum
@@ -60,13 +61,6 @@ const STATUS_OPTIONS = [
   { id: "failed", label: "Failed" },
   { id: "cancelled", label: "Cancelled" },
 ];
-
-const TYPE_COLORS: Record<string, "blue" | "green" | "teal" | "purple"> = {
-  MODEL: "purple",
-  DATASET: "teal",
-  FILESET: "blue",
-  TABLE: "green",
-};
 
 const HEADERS = [
   { key: "name", header: "Name" },

@@ -2,6 +2,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  position: relative;
 }
 
 .toolbar {
@@ -34,8 +35,19 @@
   flex-shrink: 0;
 }
 
+/* Graph + drawer live side by side; opening the drawer shrinks .graphArea,
+   which fires the graph's ResizeObserver so the view refits rather than letting
+   a right-edge node hide behind the drawer. */
+.graphRow {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .graphArea {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   position: relative;
 }
@@ -76,8 +88,317 @@
   z-index: 10;
 }
 
+/* Three buttons share the footer; let each take an equal share of the full
+   width so labels ("View artifact page", "Open on HuggingFace") sit on one line
+   instead of wrapping in a cramped column. */
 .navModalActions {
+  button {
+    flex: 1 1 0;
+    max-width: none;
+    align-items: flex-start;
+    white-space: nowrap;
+  }
+}
+
+/* ── Step details side panel ─────────────────────────────────────────────── */
+
+.stepSidePanel {
+  /* A flex sibling of .graphArea (not an overlay) so it shrinks the graph when
+     it opens. 33rem ≈ 528px, inside the 480–560px target. */
+  flex: 0 0 33rem;
+  max-width: 90%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--cds-layer-01);
+  border-left: 1px solid var(--cds-border-subtle-01);
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  animation: stepSidePanelSlideIn 150ms ease-out;
+}
+
+@keyframes stepSidePanelSlideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.stepSidePanelHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1rem 1rem 1.5rem;
+  border-bottom: 1px solid var(--cds-border-subtle-01);
+  flex-shrink: 0;
+}
+
+.stepSidePanelIdentity {
+  min-width: 0;
+}
+
+.stepSidePanelHeading {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.stepSidePanelSubtitle {
+  margin-top: 0.125rem;
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* The one prominent status in the drawer — per-step badges only appear when a
+   target has more than one step. */
+.stepSidePanelStatus {
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.stepSidePanelSummary {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary);
+}
+
+.stepSidePanelBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+/* ── Step details panel ──────────────────────────────────────────────────── */
+
+.stepPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.stepList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  margin: 0;
+  padding: 0;
+}
+
+/* Cards are borderless now — sections carry the hierarchy, so a box around
+   each step would be a second competing frame. */
+.stepCard {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  // Lets the <pre> children actually shrink to the drawer and scroll,
+  // instead of forcing the card wider than it.
+  min-width: 0;
+}
+
+.stepCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+/* ── Sections ────────────────────────────────────────────────────────────── */
+
+.stepSection {
+  min-width: 0;
+}
+
+.stepSectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.stepSectionTitle {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cds-text-secondary);
+}
+
+/* A block nested inside a section. Indented with a rule on the left so it reads
+   as subordinate to the uppercase section label above it. */
+/* Styled as a peer of the "Advanced / Raw parameters" disclosure at the foot of
+   the card: a top rule and a plain secondary-text summary, no indent. */
+.stepSubsection {
   margin-top: 1rem;
-  gap: 1px;
-  padding-left:25%;
+  border-top: 1px solid var(--cds-border-subtle-01);
+  padding-top: 0.75rem;
+}
+
+.stepSubsectionLabel {
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary);
+}
+
+/* The clickable variant, for the <summary> of an expandable subsection. */
+.stepSubsectionSummary {
+  composes: stepSubsectionLabel;
+  cursor: pointer;
+  list-style: revert;
+
+  &:hover {
+    color: var(--cds-text-primary);
+  }
+}
+
+/* ── Execution summary ───────────────────────────────────────────────────── */
+
+/* Two bordered cells side by side. Duration is intentionally not here — the
+   drawer header already states it. */
+.stepExecution {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.stepExecutionCell {
+  min-width: 0;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--cds-border-subtle-01);
+  background: var(--cds-layer-02);
+}
+
+.stepExecutionLabel {
+  font-size: 0.6875rem;
+  color: var(--cds-text-secondary);
+}
+
+.stepExecutionValue {
+  margin: 0.125rem 0 0;
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  /* A container image ref (registry/org/name:tag) has no natural break
+     opportunities, so let it break anywhere rather than overflow the cell. */
+  overflow-wrap: anywhere;
+}
+
+/* ── Command block ───────────────────────────────────────────────────────── */
+
+/* Commands are multi-line shell scripts. Wrap rather than scroll horizontally
+   so the whole script is readable without dragging. */
+.stepCommand {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  max-height: 20rem;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  background: var(--cds-layer-02);
+  border-left: 2px solid var(--cds-border-strong-01);
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+/* Copy trails the command block, right-aligned. */
+.stepCommandActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.375rem;
+}
+
+/* ── Configuration subgroups ─────────────────────────────────────────────── */
+
+.stepConfigGroup {
+  &:not(:first-child) {
+    margin-top: 0.875rem;
+  }
+}
+
+.stepConfigGroupLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+/* ── Advanced / raw parameters ───────────────────────────────────────────── */
+
+/* The Command subsection is styled to match; both share these rules so the two
+   disclosures cannot drift apart. */
+
+.stepCardName {
+  font-size: 0.875rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.stepField {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.34;
+  padding: 0.125rem 0;
+}
+
+.stepFieldLabel {
+  flex: 0 0 9rem;
+  color: var(--cds-text-secondary);
+}
+
+.stepFieldValue {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Status messages arrive as multi-line markdown; keep their line breaks. */
+.stepMessage {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.stepMuted {
+  color: var(--cds-text-secondary);
+  font-style: italic;
+}
+
+.stepCode {
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+/* Params can be arbitrarily wide/deep — scroll inside the card so the modal
+   itself never scrolls horizontally. */
+.stepParams {
+  margin: 0.25rem 0 0;
+  padding: 0.5rem;
+  max-height: 14rem;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  background: var(--cds-layer-02);
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.75rem;
+  line-height: 1.34;
+  white-space: pre;
+}
+
+.stepEmpty {
+  font-size: 0.875rem;
+  color: var(--cds-text-secondary);
 }
