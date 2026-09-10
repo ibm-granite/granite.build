@@ -25,6 +25,7 @@ import random
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Tuple, Union
 
@@ -59,6 +60,9 @@ from gbserver.types.constants import (
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENABLE_SSH_HOST_KEY_VERIFICATION,
     GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
+    GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S,
+    GBSERVER_LSF_SSH_CONNECT_BUDGET_S,
+    GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S,
     LSF_USE_ASPERA,
     STEP_FILE_NAME,
 )
@@ -78,7 +82,7 @@ from gbserver.utils.launch import (
 from gbserver.utils.logger import get_logger
 from gbserver.utils.redaction import REDACTED, SENSITIVE_KEY_RE, scrub_url_credentials
 from gbserver.utils.ssh_keys import write_private_key_file
-from gbserver.utils.ssh_tunnel import SshTunnel
+from gbserver.utils.ssh_tunnel import SshTunnel, SshTunnelError
 from gbserver.utils.utils import cmd_safe_join, get_uuid, short_alphanumeric_lower_hash
 
 logger = get_logger(__name__)
@@ -210,6 +214,26 @@ class Lsf(Environment):
         self.ssh_timeout = int(authentication.get("ssh_timeout", "5"))
         self.node_search_lock = asyncio.Lock()
         self.unreachable_ssh_nodes = []  # type: ignore[var-annotated]
+        # Resilient SSH-tunnel establishment (see _ensure_ssh_tunnel).
+        self._tunnel_lock = asyncio.Lock()
+        # Superseded tunnels being closed once their in-flight uses drain; kept
+        # referenced so the GC tasks aren't collected mid-close.
+        self._retired_tunnel_tasks: set[asyncio.Task] = set()
+        self.ssh_connect_budget_s = int(
+            authentication.get(
+                "ssh_connect_budget_s", GBSERVER_LSF_SSH_CONNECT_BUDGET_S
+            )
+        )
+        self.ssh_connect_base_backoff_s = int(
+            authentication.get(
+                "ssh_connect_base_backoff_s", GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S
+            )
+        )
+        self.ssh_connect_max_backoff_s = int(
+            authentication.get(
+                "ssh_connect_max_backoff_s", GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S
+            )
+        )
         if self.use_ssh:
             assert (
                 self.ssh_key_secret_name
@@ -562,32 +586,35 @@ class Lsf(Environment):
                 **kwargs,
             )
             logger.info("using ssh, copying the asset into the env")
-            ssh_tunnel = self._ssh_tunnel
-            assert ssh_tunnel
+            ssh_tunnel = await self._ensure_ssh_tunnel()
             logger.info("copying %s to %s", asset_dir, final_asset_dir)
-            # Create remote destination directory via tunnel
-            logger.info("creating remote directory %s via tunnel", final_asset_dir)
-            await ssh_tunnel.run_remote_with_retries(
-                f"mkdir -p {final_asset_dir} || true"
-            )
-            # Copy assets to remote host (local-to-remote transfer)
-            if self.copy_method == "rsync":
-                copy_cmd = await self._create_rsync_cmd(
-                    launch_id=launch_id,
-                    src=str(asset_dir),
-                    dest=str(final_asset_dir),
+            # Hold the tunnel in-use for the whole copy so a rebuild elsewhere
+            # can't retire it out from under the transfer.
+            async with ssh_tunnel.use():
+                logger.info("creating remote directory %s via tunnel", final_asset_dir)
+                await ssh_tunnel.run_remote_with_retries(
+                    f"mkdir -p {final_asset_dir} || true"
                 )
-            else:
-                copy_cmd = await self._create_scp_cmd(
+                # Copy assets to remote host (local-to-remote transfer)
+                if self.copy_method == "rsync":
+                    copy_cmd = await self._create_rsync_cmd(
+                        launch_id=launch_id,
+                        src=str(asset_dir),
+                        dest=str(final_asset_dir),
+                        ssh_tunnel=ssh_tunnel,
+                    )
+                else:
+                    copy_cmd = await self._create_scp_cmd(
+                        launch_id=launch_id,
+                        src=str(asset_dir),
+                        dest=str(final_asset_dir),
+                        ssh_tunnel=ssh_tunnel,
+                    )
+                logger.info("copy command (%s): %s", self.copy_method, copy_cmd)
+                returncode, stdout, stderr = await ssh_tunnel.run_local_with_retries(
+                    command=copy_cmd,
                     launch_id=launch_id,
-                    src=str(asset_dir),
-                    dest=str(final_asset_dir),
                 )
-            logger.info("copy command (%s): %s", self.copy_method, copy_cmd)
-            returncode, stdout, stderr = await ssh_tunnel.run_local_with_retries(
-                command=copy_cmd,
-                launch_id=launch_id,
-            )
             logger.info(
                 "copy command returncode %s stdout %s stderr %s",
                 returncode,
@@ -781,16 +808,16 @@ class Lsf(Environment):
         secret_env_keys = self._get_secret_env_keys(kwargs.get("config", {}))
         try:
             if self.use_ssh:
-                ssh_tunnel = self._ssh_tunnel
-                assert ssh_tunnel
+                ssh_tunnel = await self._ensure_ssh_tunnel()
                 remote_cmd, redacted_cmd = self._build_cmd_to_run_with_ssh(
                     final_jobsub_path, env_vars, secret_env_keys
                 )
                 msg = f"⚡ Launching LSF job with command:\n```\n{redacted_cmd}\n```"
                 self._send_message(msg=msg, **kwargs)
-                _, stdout, stderr = await ssh_tunnel.run_remote_with_retries(
-                    command=remote_cmd, redacted_command=redacted_cmd
-                )
+                async with ssh_tunnel.use():
+                    _, stdout, stderr = await ssh_tunnel.run_remote_with_retries(
+                        command=remote_cmd, redacted_command=redacted_cmd
+                    )
             else:
                 command, redacted_command_str = self._get_local_bsub_command(
                     launch_id=launch_id,
@@ -877,21 +904,113 @@ class Lsf(Environment):
         self: Self,
         setup_id: str,
     ) -> None:
+        """Open the persistent SshTunnel during target setup.
+
+        Thin wrapper around the resilient :meth:`_ensure_ssh_tunnel`.
         """
-        Resolve the SSH key from space_secrets, write it to a temp file,
-        and open a persistent SshTunnel.  Returns the key file path.
+        await self._ensure_ssh_tunnel(setup_id=setup_id)
+
+    def _retire_tunnel(self: Self, tunnel: SshTunnel) -> None:
+        """Close a superseded tunnel once its in-flight uses drain (background)."""
+
+        async def _gc() -> None:
+            with contextlib.suppress(Exception):
+                await tunnel.close_when_idle()
+
+        task = asyncio.create_task(_gc())
+        self._retired_tunnel_tasks.add(task)
+        task.add_done_callback(self._retired_tunnel_tasks.discard)
+
+    async def _ensure_ssh_tunnel(self: Self, setup_id: str = "runtime") -> SshTunnel:
+        """Return a healthy persistent SshTunnel, (re)establishing it if needed.
+
+        The single entry point for both target setup and every runtime SSH
+        command, so a login node that dies mid-build is transparently replaced.
+        Reuses a live tunnel; otherwise sweeps the login nodes with failover and
+        backoff+jitter for up to ``ssh_connect_budget_s`` before raising
+        ``SshTunnelError``. ``_tunnel_lock`` serializes rebuilds so concurrent
+        callers don't each open a tunnel.
         """
-        login_node = await self._get_reachable_ssh_node()
-        self._ssh_tunnel = SshTunnel(
-            host=login_node,
-            username=self.username,
-            key_file=self._key_file_path,
-            host_key_verification=self.ssh_host_key_verification,
-            port_forwards=[(0, login_node, self.ssh_port)],
-            max_sessions=self.ssh_max_sessions,
-        )
-        await self._ssh_tunnel.open()
-        logger.info("setup_id: %s SSH tunnel opened to %s", setup_id, login_node)
+        assert (
+            self._key_file_path
+        ), "SSH key file must be set up before opening a tunnel"
+        async with self._tunnel_lock:
+            existing = self._ssh_tunnel
+            if existing is not None and existing.is_healthy():
+                return existing
+            # Retire a stale / half-open tunnel before rebuilding. Don't force
+            # close it — another coroutine may be mid scp/rsync on it; retire it
+            # so it closes once its in-flight uses drain.
+            if existing is not None:
+                logger.warning(
+                    "setup_id: %s existing SSH tunnel to %s is unhealthy; rebuilding",
+                    setup_id,
+                    existing.host,
+                )
+                self._retire_tunnel(existing)
+                self._ssh_tunnel = None
+
+            deadline = time.monotonic() + self.ssh_connect_budget_s
+            attempt = 0
+            last_err: Optional[Exception] = None
+            while True:
+                attempt += 1
+                # Fresh view each sweep so a recovered node gets retried.
+                self.unreachable_ssh_nodes.clear()
+                tunnel: Optional[SshTunnel] = None
+                try:
+                    login_node = await self._get_reachable_ssh_node()
+                    tunnel = SshTunnel(
+                        host=login_node,
+                        username=self.username,
+                        key_file=self._key_file_path,
+                        host_key_verification=self.ssh_host_key_verification,
+                        port_forwards=[(0, login_node, self.ssh_port)],
+                        max_sessions=self.ssh_max_sessions,
+                    )
+                    await tunnel.open()
+                    # A node can open a connection yet not execute commands; prove
+                    # it works before committing, so that mode fails over too.
+                    await tunnel.run_remote("echo tunnel-ready")
+                    self._ssh_tunnel = tunnel
+                    logger.info(
+                        "setup_id: %s SSH tunnel opened to %s (attempt %d)",
+                        setup_id,
+                        login_node,
+                        attempt,
+                    )
+                    return tunnel
+                except Exception as e:  # noqa: BLE001 — any failure => try next node
+                    last_err = e
+                    if tunnel is not None:
+                        with contextlib.suppress(Exception):
+                            await tunnel.close()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise SshTunnelError(
+                            f"Could not establish an SSH tunnel to any login node "
+                            f"{self.login_nodes} after {attempt} sweeps over "
+                            f"{self.ssh_connect_budget_s}s"
+                        ) from last_err
+                    # Floor at 1s so a misconfigured base backoff of 0 can't spin.
+                    base = max(1, self.ssh_connect_base_backoff_s)
+                    delay = min(
+                        self.ssh_connect_max_backoff_s,
+                        base * (2 ** min(attempt - 1, 6)),
+                    )
+                    delay += random.uniform(0, delay * 0.25)  # jitter
+                    delay = min(delay, remaining)
+                    logger.warning(
+                        "setup_id: %s SSH tunnel establish attempt %d failed (%s); "
+                        "retrying in %.0fs (%.0fs of %ds budget left)",
+                        setup_id,
+                        attempt,
+                        e,
+                        delay,
+                        remaining,
+                        self.ssh_connect_budget_s,
+                    )
+                    await asyncio.sleep(delay)
 
     async def _cleanup_asset_dirs(self) -> None:
         # Delete all launch dirs now that all pipeline steps are done.
@@ -1787,7 +1906,12 @@ class Lsf(Environment):
         return ssh_cmd
 
     async def _create_scp_cmd(
-        self: Self, launch_id: str, src: str, dest: str, add_slashes: bool = True
+        self: Self,
+        launch_id: str,
+        src: str,
+        dest: str,
+        add_slashes: bool = True,
+        ssh_tunnel: Optional[SshTunnel] = None,
     ) -> List[str]:
         """Create an SCP command for copying assets to the remote LSF node.
 
@@ -1796,6 +1920,8 @@ class Lsf(Environment):
             src: Source directory path.
             dest: Destination directory path on the remote host.
             add_slashes: Whether to ensure trailing slashes on src/dest.
+            ssh_tunnel: Tunnel to build the command against; the caller passes the
+                one it holds in-use so we don't fetch (and race) a different one.
 
         Returns:
             List of command tokens for the SCP invocation.
@@ -1806,8 +1932,8 @@ class Lsf(Environment):
         scp_cmd.extend(["-i", key_file_path])
         scp_cmd.extend(self.ssh_no_verification_flags())
         if self.use_ssh:
-            ssh_tunnel = self._ssh_tunnel
-            assert ssh_tunnel
+            if ssh_tunnel is None:
+                ssh_tunnel = await self._ensure_ssh_tunnel()
             ssh_dest = self.__get_ssh_destination(node="localhost")
             local_port = ssh_tunnel.get_local_port(ssh_tunnel.host, self.ssh_port)
             assert (
@@ -1826,7 +1952,12 @@ class Lsf(Environment):
         return scp_cmd
 
     async def _create_rsync_cmd(
-        self: Self, launch_id: str, src: str, dest: str, add_slashes: bool = True
+        self: Self,
+        launch_id: str,
+        src: str,
+        dest: str,
+        add_slashes: bool = True,
+        ssh_tunnel: Optional[SshTunnel] = None,
     ) -> List[str]:
         scp_cmd = [
             "rsync",
@@ -1838,8 +1969,8 @@ class Lsf(Environment):
         ssh_t2 = cmd_safe_join(ssh_t1)
         rsync_ssh = f"ssh -i {key_file_path} {ssh_t2}"
         if self.use_ssh:
-            ssh_tunnel = self._ssh_tunnel
-            assert ssh_tunnel
+            if ssh_tunnel is None:
+                ssh_tunnel = await self._ensure_ssh_tunnel()
             ssh_dest = self.__get_ssh_destination(
                 node="localhost"
             )  # localhost because of the port forwarding
@@ -2018,32 +2149,45 @@ class Lsf(Environment):
 
         try:
             if self.use_ssh:
+                # Best-effort: reuse a live tunnel but don't trigger the multi-hour
+                # reconnect just to bkill — if it's gone, so is the job's session.
                 ssh_tunnel = self._ssh_tunnel
-                assert ssh_tunnel
+                if ssh_tunnel is None or not ssh_tunnel.is_healthy():
+                    logger.warning(
+                        "no healthy SSH tunnel for bkill of job %s; skipping remote kill",
+                        job_id,
+                    )
+                    return
                 logger.info("running cleanup command via tunnel: bkill %s", job_id)
                 max_attempts = 3
-                for attempt in range(1, max_attempts + 1):
-                    try:
-                        rc, stdout, stderr = await ssh_tunnel.run_remote(
-                            f"bkill {job_id}", raise_on_error=False
-                        )
-                        break
-                    except TimeoutError:
-                        if attempt < max_attempts:
-                            logger.warning(
-                                "bkill %s timed out (attempt %d/%d), retrying",
-                                job_id,
-                                attempt,
-                                max_attempts,
-                            )
-                            await asyncio.sleep(attempt * 2)
-                        else:
-                            logger.error(
-                                "bkill %s timed out after %d attempts",
-                                job_id,
-                                max_attempts,
-                            )
-                            raise
+                try:
+                    async with ssh_tunnel.use():
+                        for attempt in range(1, max_attempts + 1):
+                            try:
+                                rc, stdout, stderr = await ssh_tunnel.run_remote(
+                                    f"bkill {job_id}", raise_on_error=False
+                                )
+                                break
+                            except TimeoutError:
+                                if attempt < max_attempts:
+                                    logger.warning(
+                                        "bkill %s timed out (attempt %d/%d), retrying",
+                                        job_id,
+                                        attempt,
+                                        max_attempts,
+                                    )
+                                    await asyncio.sleep(attempt * 2)
+                                else:
+                                    raise
+                except Exception as e:  # noqa: BLE001 — cleanup is best-effort
+                    # Tunnel dropped between the health check and the kill (or the
+                    # kill kept timing out); skip rather than fail teardown.
+                    logger.warning(
+                        "best-effort bkill of job %s via tunnel failed, skipping: %s",
+                        job_id,
+                        e,
+                    )
+                    return
             else:
                 command = ["bkill", job_id]
                 logger.info("running cleanup command: %s", cmd_safe_join(command))

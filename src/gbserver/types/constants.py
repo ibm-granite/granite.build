@@ -812,6 +812,20 @@ GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT = int(
     ),
     base=10,
 )
+# Time budget (seconds) for establishing an SSH tunnel to an LSF login node,
+# sweeping all nodes with backoff before failing the build. Login nodes can be
+# unreachable for hours. Governs both setup and mid-build reconnect. Default 4h.
+GBSERVER_LSF_SSH_CONNECT_BUDGET_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_CONNECT_BUDGET_S", "14400"), base=10
+)
+# Base delay (seconds) for the backoff between SSH-establish sweeps.
+GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_CONNECT_BASE_BACKOFF_S", "2"), base=10
+)
+# Cap (seconds) on the per-sweep backoff so a long outage keeps a steady cadence.
+GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_CONNECT_MAX_BACKOFF_S", "60"), base=10
+)
 # Used by the build framework monitoring to allow the consumption of all the events
 GBSERVER_MONITORING_GRACE_PERIOD = int(
     os.getenv(ENV_VAR_PREFIX + "_MONITORING_GRACE_PERIOD", "30"), base=10

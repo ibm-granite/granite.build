@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import asyncio
+import contextlib
 from typing import Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +23,19 @@ import pytest
 
 from gbserver.environment.lsf import Lsf
 from gbserver.types.errors import WorkloadFailedException
+
+
+def _mock_tunnel() -> AsyncMock:
+    """A mock SshTunnel whose is_healthy() is truthy and use() is an async CM."""
+    tunnel = AsyncMock()
+    tunnel.is_healthy = MagicMock(return_value=True)
+
+    @contextlib.asynccontextmanager
+    async def _use():
+        yield tunnel
+
+    tunnel.use = _use
+    return tunnel
 
 
 def _make_lsf(use_ssh: bool = True) -> Lsf:
@@ -32,7 +46,7 @@ def _make_lsf(use_ssh: bool = True) -> Lsf:
     lsf.use_ssh = use_ssh
     lsf._launched_jobs = {}
     lsf._existing_jobids = {}
-    lsf._ssh_tunnel = AsyncMock() if use_ssh else None
+    lsf._ssh_tunnel = _mock_tunnel() if use_ssh else None
     lsf._send_message = MagicMock()
     lsf._dispatch_event = MagicMock()
     return lsf
@@ -126,21 +140,26 @@ class TestCleanupBsub:
         assert "Killed LSF job 12345" in msg
 
     @pytest.mark.asyncio
-    async def test_timeout_exhausts_retries(self: Self) -> None:
-        """After 3 timeout failures, should raise TimeoutError."""
+    async def test_timeout_exhausts_retries_is_best_effort(self: Self) -> None:
+        """After 3 timeout failures, bkill is skipped (best-effort), not raised.
+
+        Failing teardown on a flaky tunnel is worse than a leaked bkill, so the
+        exhausted-retry case now logs-and-returns rather than raising RuntimeError.
+        """
         lsf = _make_lsf(use_ssh=True)
         lsf._launched_jobs["launch-1"] = "12345"
         lsf._ssh_tunnel.run_remote = AsyncMock(
             side_effect=TimeoutError("ssh timed out")
         )
 
-        with pytest.raises(RuntimeError):
-            await lsf.cleanup_bsub(
-                launch_id="launch-1",
-                run_metadata={"build_id": "b1"},
-            )
+        # No exception propagates.
+        await lsf.cleanup_bsub(
+            launch_id="launch-1",
+            run_metadata={"build_id": "b1"},
+        )
 
         assert lsf._ssh_tunnel.run_remote.call_count == 3
+        lsf._send_message.assert_not_called()
 
 
 class TestRetryPendingAfterMonitor:
