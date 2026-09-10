@@ -128,7 +128,7 @@ class EntityRunMetadata:
     """Metadata about a run."""
 
     build_id: Optional[str] = field(default="")
-    build_name: Optional[str] = field(default="")
+    build_config_name: Optional[str] = field(default="")
     username: Optional[str] = field(default="")
     type: Optional[str] = field(default="")
     target_name: Optional[str] = field(default="")
@@ -143,7 +143,7 @@ class EntityRunMetadata:
         """Factory method to construct from a dict."""
         return cls(
             build_id=xs.get("build_id", ""),
-            build_name=xs.get("build_name", ""),
+            build_config_name=xs.get("build_config_name", ""),
             username=xs.get("username", ""),
             type=xs.get("type", ""),
             target_name=xs.get("target_name", ""),

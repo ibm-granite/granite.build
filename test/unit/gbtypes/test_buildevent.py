@@ -20,19 +20,21 @@ from gbserver.types.buildevent import EntityRunMetadata
 
 
 class TestEntityRunMetadata:
-    def test_from_dict_reads_build_name(self):
-        meta = EntityRunMetadata.from_dict({"build_id": "abc", "build_name": "foo"})
-        assert meta.build_name == "foo"
+    def test_from_dict_reads_build_config_name(self):
+        meta = EntityRunMetadata.from_dict(
+            {"build_id": "abc", "build_config_name": "foo"}
+        )
+        assert meta.build_config_name == "foo"
 
-    def test_from_dict_defaults_build_name_empty(self):
+    def test_from_dict_defaults_build_config_name_empty(self):
         meta = EntityRunMetadata.from_dict({"build_id": "abc"})
-        assert meta.build_name == ""
+        assert meta.build_config_name == ""
 
-    def test_to_dict_includes_build_name(self):
-        meta = EntityRunMetadata(build_id="abc", build_name="foo")
+    def test_to_dict_includes_build_config_name(self):
+        meta = EntityRunMetadata(build_id="abc", build_config_name="foo")
         d = meta.to_dict()
-        assert d["build_name"] == "foo"
+        assert d["build_config_name"] == "foo"
 
-    def test_round_trip_preserves_build_name(self):
-        meta = EntityRunMetadata(build_id="abc", build_name="foo")
-        assert EntityRunMetadata.from_dict(meta.to_dict()).build_name == "foo"
+    def test_round_trip_preserves_build_config_name(self):
+        meta = EntityRunMetadata(build_id="abc", build_config_name="foo")
+        assert EntityRunMetadata.from_dict(meta.to_dict()).build_config_name == "foo"

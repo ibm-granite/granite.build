@@ -970,7 +970,7 @@ class Skypilot(Environment):
         # uniquely-named cluster instead of reusing the draining original.
         self._relaunch_attempts: Dict[str, int] = {}
         self._setup_workdirs: Dict[str, str] = {}  # setup_id -> per-run workdir
-        # setup_id -> {"target_name","build_id","build_name"} so teardown can
+        # setup_id -> {"target_name","build_id","build_config_name"} so teardown can
         # name its cleanup cluster the same human-identifiable way as launch.
         self._setup_run_meta: Dict[str, Dict[str, str]] = {}
         # launch_id -> kwargs replayed by retry_workload
@@ -1188,7 +1188,7 @@ class Skypilot(Environment):
         *,
         target_name: str = "",
         build_id: str = "",
-        build_name: str = "",
+        build_config_name: str = "",
     ) -> str:
         """Generate a unique, human-identifiable cluster name.
 
@@ -1213,7 +1213,7 @@ class Skypilot(Environment):
         :param target_name: Human-readable target name; slugified + budgeted.
         :param build_id: Build UUID; the fallback build tag (verbatim for a
             UUID-length id, clamped only if it would overflow the ceiling).
-        :param build_name: build.yaml name; slugified and preferred over
+        :param build_config_name: build.yaml name; slugified and preferred over
             ``build_id`` when non-empty.
         :returns: The deterministic cluster name for this launch + attempt.
         """
@@ -1225,7 +1225,7 @@ class Skypilot(Environment):
         # prefix, launch tail, and retry suffix, so the <=_MAX_CLUSTER_NAME_LEN
         # guarantee holds unconditionally; a uuid4 build_id (<=36) fits well
         # within this budget and so is emitted unchanged.
-        build = Skypilot._slugify(build_name) or build_id
+        build = Skypilot._slugify(build_config_name) or build_id
         build_budget = (
             Skypilot._MAX_CLUSTER_NAME_LEN - len("gb-") - 1 - len(launch) - len(retry)
         )
@@ -1286,7 +1286,7 @@ class Skypilot(Environment):
         self._setup_run_meta[setup_id] = {
             "target_name": runmetadata.target_name or "",
             "build_id": runmetadata.build_id or "",
-            "build_name": runmetadata.build_name or "",
+            "build_config_name": runmetadata.build_config_name or "",
         }
         logger.info(
             "setup_skypilot: per-run workdir for setup_id=%s -> %s",
@@ -1315,7 +1315,7 @@ class Skypilot(Environment):
             f"td-{setup_id}",
             target_name=run_meta.get("target_name", ""),
             build_id=run_meta.get("build_id", ""),
-            build_name=run_meta.get("build_name", ""),
+            build_config_name=run_meta.get("build_config_name", ""),
         )
         logger.info(
             "teardown_skypilot: removing per-run workdir %s (setup_id=%s)",
@@ -1579,7 +1579,7 @@ class Skypilot(Environment):
                 attempt,
                 target_name=run_metadata.get("target_name", "") or "",
                 build_id=run_metadata.get("build_id", "") or "",
-                build_name=run_metadata.get("build_name", "") or "",
+                build_config_name=run_metadata.get("build_config_name", "") or "",
             )
             cloud = (
                 launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
@@ -2283,7 +2283,7 @@ class Skypilot(Environment):
             # The teardown runs in a DIFFERENT Skypilot instance (one per target),
             # so we match on the process-global set of torn-down cluster names.
             # cluster_name here may carry optional gb-[<build>-][<target>-]
-            # prefixes (build = slug(build_name) or full build_id) but still
+            # prefixes (build = slug(build_config_name) or full build_id) but still
             # ends with launch_id[:12], which is the same name
             # the teardown/monitor computes from the replayed metadata. Exit
             # cleanly before any FAILED event or raise so the step is marked
@@ -2784,7 +2784,7 @@ class Skypilot(Environment):
             # different Skypilot instance and may be mid-poll -- treats the
             # cluster going away as success, not a WorkloadFailedException. Keyed
             # by cluster name (may carry optional gb-[<build>-][<target>-]
-            # prefixes, build = slug(build_name) or full build_id, but still
+            # prefixes, build = slug(build_config_name) or full build_id, but still
             # ends with launch_id[:12]), the name the monitor
             # sees.
             Skypilot._intentionally_torn_down_clusters.add(name)

@@ -126,7 +126,7 @@ class TestSkypilotTeardown:
         assert env._setup_run_meta[setup_id] == {
             "target_name": "train",
             "build_id": "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
-            "build_name": "",
+            "build_config_name": "",
         }
 
         mock_sky = MagicMock()

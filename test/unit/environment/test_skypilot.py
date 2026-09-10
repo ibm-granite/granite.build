@@ -365,14 +365,14 @@ class TestSkypilotClusterNaming:
         retry = Skypilot._cluster_name_for(launch_id, 2, **kwargs)
         assert retry == f"{base}-r2"
 
-    def test_cluster_name_prefers_build_name_over_build_id(self):
+    def test_cluster_name_prefers_build_config_name_over_build_id(self):
         from gbserver.environment.skypilot import Skypilot
 
         name = Skypilot._cluster_name_for(
             "3168aa02-1234-5678-9abc-def012345678",
             target_name="train",
             build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
-            build_name="Helloworld Job",
+            build_config_name="Helloworld Job",
         )
         assert name == "gb-helloworld-job-train-3168aa02-123"
 
@@ -384,13 +384,13 @@ class TestSkypilotClusterNaming:
             "3168aa02-1234-5678-9abc-def012345678",
             target_name="train",
             build_id=bid,
-            build_name="",
+            build_config_name="",
         )
         # full build id (dashes kept) present verbatim
         assert bid in name
         assert name.startswith(f"gb-{bid}-train-")
 
-    def test_cluster_name_build_name_slugifies_empty_uses_build_id(self):
+    def test_cluster_name_build_config_name_slugifies_empty_uses_build_id(self):
         from gbserver.environment.skypilot import Skypilot
 
         bid = "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff"
@@ -398,7 +398,7 @@ class TestSkypilotClusterNaming:
             "3168aa02-1234-5678-9abc-def012345678",
             target_name="train",
             build_id=bid,
-            build_name="!!!",  # slugifies to "" -> falls back to build_id
+            build_config_name="!!!",  # slugifies to "" -> falls back to build_id
         )
         assert name == f"gb-{bid}-train-3168aa02-123"
 

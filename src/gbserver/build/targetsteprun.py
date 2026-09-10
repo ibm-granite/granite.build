@@ -724,7 +724,7 @@ class TargetStepRun(Run):
         assert isinstance(self_entity, TargetStep)
         return EntityRunMetadata(
             build_id=self.build_id,
-            build_name=getattr(self.target, "build_name", ""),
+            build_config_name=getattr(self.target, "build_config_name", ""),
             username=self_entity.username,
             type=type(self_entity).__name__,
             target_name=self_entity.target_name,
