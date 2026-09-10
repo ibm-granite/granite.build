@@ -588,10 +588,12 @@ class TestK8sSecretEnvHelmValues:
 
     def test_uppercase_name_emits_verbatim_and_lower_alias(self):
         # No secret_name: exposed under both MY_TOKEN (verbatim, portable) and
-        # my_token (deprecated lowercase alias), each keyed to its own case.
+        # my_token (deprecated lowercase alias). Both reference the SAME data-key
+        # (the historical lowercase default) — the Secret stores the value under
+        # one key, so a verbatim-cased key would dangle and fail the pod.
         assert self._values(_mappings(("MY_TOKEN", None))) == [
             ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
-            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "MY_TOKEN"),
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "my_token"),
             ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
             ("k8s.env.my_token.valueFrom.secretKeyRef.key", "my_token"),
         ]

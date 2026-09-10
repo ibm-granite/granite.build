@@ -284,12 +284,14 @@ class K8s(Environment):
         mounts the value into the pod at runtime.
 
         The ``secret_names_to_use_as_env_variable`` allow-list is shared with
-        LSF/SkyPilot, but those resolve the secret bag under the ``env_name``
-        *verbatim* whereas K8s historically lowercased the default data-key. To
-        keep the block portable **and** preserve the legacy lowercase behavior,
-        each mapping is exposed under **both** cases when they differ: the
-        verbatim ``env_name`` -> verbatim key (the portable, cross-cloud form),
-        and the lowercased name -> lowercased key. The lowercased alias is
+        LSF/SkyPilot. To keep the block portable **and** preserve the legacy
+        lowercase behavior, each mapping is exposed under **both** the verbatim
+        ``env_name`` (the portable, cross-cloud form) and its lowercased alias
+        when they differ. Both env-var names reference the **same** Secret
+        data-key — the declared ``secret_name``, otherwise the historical
+        lowercased ``env_name`` — because the space Secret stores each value
+        under exactly one key, so a verbatim-cased key on a mixed-case
+        ``env_name`` would dangle and fail the pod. The lowercased alias is
         **deprecated** — retained only so existing pods that read the lowercased
         env var keep working; new steps should rely on the verbatim name. When
         the two cases are identical (``env_name`` already lowercase) a single
@@ -300,7 +302,8 @@ class K8s(Environment):
             ``secretKeyRef.name``); required when any env var is declared.
         :returns: ``(helm_key, value)`` tuples to append to the ``--set``
             overrides. A missing declared ``secret_name`` defaults the data-key
-            to the env-var name (verbatim and lowercased forms).
+            to the lowercased ``env_name``, shared by both the verbatim and the
+            lowercased env-var-name entries.
         :raises ValueError: if a declared entry omits ``env_name`` (shared
             fail-fast validation, consistent with LSF/SkyPilot), or if any env
             var is declared but ``space_secret`` is unset. Secret values never
@@ -314,21 +317,22 @@ class K8s(Environment):
             env_name = Environment._require_declared_env_name(env_var.env_name)
             if not space_secret:
                 raise ValueError("setup_config['space']['secret'] is missing")
-            # (pod env-var name, Secret data-key): verbatim (portable) first,
-            # then the DEPRECATED lowercase alias kept for back-compat.
-            for name, key in (
-                (env_name, env_var.secret_name or env_name),
-                (
-                    env_name.lower(),
-                    env_var.secret_name or env_name.lower(),
-                ),
-            ):
+            # The space Secret stores each value under exactly ONE data-key --
+            # the declared ``secret_name`` or the historical lowercase default.
+            # Both the verbatim and the DEPRECATED lowercase env-var names must
+            # reference that same key; emitting a verbatim-cased key for a
+            # mixed-case env_name would dangle (the Secret has no such key) and
+            # the kubelet would fail the pod with CreateContainerConfigError.
+            secret_key = env_var.secret_name or env_name.lower()
+            # Pod env-var names: verbatim (portable) first, then the deprecated
+            # lowercase alias kept for back-compat.
+            for name in (env_name, env_name.lower()):
                 if name in seen_names:  # env_name already lowercase -> one entry
                     continue
                 seen_names.add(name)
                 base = f"k8s.env.{name}.valueFrom.secretKeyRef"
                 values.append((f"{base}.name", space_secret))
-                values.append((f"{base}.key", key))
+                values.append((f"{base}.key", secret_key))
         return values
 
     def _get_k8s_labels_and_annotations(self: Self, kwargs: Dict) -> Tuple[Dict, Dict]:
