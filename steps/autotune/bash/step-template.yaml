@@ -1,0 +1,41 @@
+name: autotune
+version: v1
+type: custom
+config:
+  bash:
+    # The step emits its own LLMB_ARTIFACT_ID marker; don't auto-scan the output dir.
+    skip_finding_output_artifacts: true
+
+# I/O schema — permissive so AutoTuneX generator variants don't break validation.
+inputs:
+  allow_unknown: true
+  required:
+    model:
+      type: model
+      accept: [uri, binding]
+    dataset_files:
+      type: dataset
+      accept: [uri, binding]
+  optional:
+    # Fallback when no inline config.autotune-config block is present.
+    hpo_config:
+      type: fileset
+      accept: [uri, binding]
+outputs:
+  allow_unknown: true
+  optional:
+    custom:
+      type: model
+
+environment_configs:
+  Bash:
+    launchers:
+      autotune:
+        # No script_path -> runs bash_scripts/autotune/command.sh, which builds a
+        # venv and execs run.py.
+        type: nohup
+        monitors:
+          - log_monitor
+    monitors:
+      log_monitor:
+        ref: space://monitors/bash
