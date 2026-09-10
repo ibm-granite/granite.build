@@ -216,26 +216,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # mutating endpoint accidentally registered under an otherwise-public
         # prefix (e.g. POST /dashboard/something).
         path = request.url.path
-        # The AutoTuneX reverse proxy (api/autotunex_proxy.py) is exempt for ANY
-        # method — GET and mutating verbs alike — so gbserver does not block it
-        # before forwarding. The exemption is confined to loopback callers, which
-        # is the only deployment it was ever safe in and the one standalone
-        # actually ships: auth_mode apikey with no GBSERVER_API_KEY, where
-        # _dispatch_apikey would admit these requests anyway. Off loopback the
-        # proxy now authenticates exactly like /api/v1/builds, so a deployment
-        # with GBSERVER_API_KEY or OIDC set no longer leaves this one prefix open.
+        # The AutoTuneX reverse proxy (api/autotunex_proxy.py) has NO exemption
+        # here, and needs none. In the deployment standalone ships — auth_mode
+        # apikey with no GBSERVER_API_KEY — _dispatch_apikey already admits any
+        # loopback caller on any method, which covers the all-in-one image too
+        # (its co-located Caddy dials 127.0.0.1, so the peer is loopback).
         #
-        # The all-in-one image keeps working: it fronts gbserver with a
-        # co-located Caddy that dials 127.0.0.1 and strips X-Forwarded-*, so the
-        # peer gbserver sees is loopback (autotunex/docker/aio/Caddyfile).
-        _is_autotunex_proxy = (
-            path == "/api/autotunex" or path.startswith("/api/autotunex/")
-        ) and _is_localhost(request)
-        # Other public prefixes stay GET/HEAD-only so a stray mutating endpoint
-        # registered under one still requires auth.
-        if _is_autotunex_proxy or (
-            request.method in ("GET", "HEAD") and _is_public_path(path)
-        ):
+        # A prefix-specific carve-out gated on loopback used to sit here. It could
+        # not work as a boundary: that same Caddy strips X-Forwarded-*, so every
+        # remote request arrives looking like loopback and the condition was always
+        # true. An operator who set GBSERVER_API_KEY therefore got 401s on
+        # /api/v1/* while POST /api/autotunex/jobs still launched real builds and
+        # DELETE still destroyed datasets — and because the check ran before the
+        # auth-mode branch, it bypassed the OIDC modes as well. Removing it makes
+        # this prefix authenticate exactly like every other, and costs the shipped
+        # deployments nothing.
+        if request.method in ("GET", "HEAD") and _is_public_path(path):
             response = await call_next(request)
             return response
 
