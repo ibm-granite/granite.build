@@ -38,12 +38,30 @@ config:
     # parameter, both of which resolve at render time and so are visible in the
     # persisted step config and in lineage.
     args: {}
-    # Names of a declared target input / output. The step turns these into the
-    # transform's --data_local_config input_folder / output_folder. Both are
-    # required.
-    #   input  -> read as $GB_INPUT_<input>  (the binding's staged path)
-    #   output -> used as the GB_ARTIFACT_ID the step emits
-    input: ""
+    # The directory the transform READS, as a PATH — not the name of a binding.
+    # REQUIRED.
+    #
+    # The build resolves it from its own declared inputs, which is the byoc pattern
+    # (see steps/byoc/skypilot/USAGE.md): the build author declared the bindings, so
+    # the build author writes the Jinja that reads them.
+    #
+    #   dpk_config:
+    #     input_path: "{{ bindings.docs.binding.path }}"
+    #
+    # This step used to take `input: docs` — a NAME — and resolve it itself, which is
+    # what made it export $GB_INPUT_<name> for every declared input and then read
+    # exactly one of them back. Nothing else ever read those variables (no bundled
+    # script, no other step, and a build cannot: this step runs one DPK module rather
+    # than arbitrary code). They existed only to carry a path from Jinja to a shell
+    # line a few lines below it, and that indirection cost a name sanitizer, a
+    # collision guard for the sanitizer being many-to-one, two guards validating the
+    # name against the bindings, and a `set -u` abort of the whole run block when a
+    # name was mistyped. Taking the path directly deletes all of it.
+    #
+    # A step that never learns binding NAMES also cannot be wrong about them.
+    input_path: ""
+    # Name of a declared target output, used as the GB_ARTIFACT_ID the step emits.
+    # REQUIRED. This one stays a name because the marker needs the id, not a path.
     output: ""
     # Where the transform WRITES. OPTIONAL: empty (the default) means ./output in
     # the step's working directory, resolved to an absolute path at run time so
@@ -195,47 +213,20 @@ environment_configs:
                 test asserts the two copies stay byte-identical, so they cannot drift into
                 disagreeing about what is valid. #}
             {%- set ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" %}
-            {%- macro env_name(n) -%}
-            {%- for ch in n | string %}{{ ch if ch in ALLOWED else "_" }}{% endfor %}
-            {%- endmacro %}
-            {#- Sanitizing is many-to-one, so `raw-docs` and `raw.docs` both become
-                GB_INPUT_raw_docs and the second export would silently win — the
-            {#- Required-config guards. The four that depend only on config (and on the
-                declared input NAMES, passed as argv) live in src/dpk_guard.sh, so they
-                are shellcheck'd, bash -n'd and unit tested rather than being ~130 lines
-                of Jinja duplicated across both blocks. Run in BOTH phases because setup
-                is the expensive one — it carries the hf download and the install — and
-                run can be reached on a warm cluster without a fresh setup.
-                The collision and args-key guards stay in Jinja below: they need the RAW
-                declared names and the RAW args keys, neither of which survives rendering
-                (see that script's header). #}
+            {#- Required-config guards, in src/dpk_guard.sh so they are shellcheck'd,
+                bash -n'd and unit tested rather than Jinja. Run in BOTH phases: setup is
+                the expensive one — it carries the hf download and the dependency install
+                — and run can be reached on a warm cluster without a fresh setup.
+                Only the args-key guard stays in Jinja below, because args keys arrive as
+                already-rendered argv words and so cannot be checked by a script. The
+                input-name collision guard that used to live here is gone along with the
+                names themselves: the step takes a path now. #}
             bash ./src/dpk_guard.sh \
               --transform '{{ q(config.dpk_config.transform) }}' \
               --module '{{ q(config.dpk_config.module) }}' \
               --dpk-image '{{ q(config.dpk_config.dpk_image) }}' \
-              --input '{{ q(config.dpk_config.input) }}' \
               --output '{{ q(config.dpk_config.output) }}' \
-              --{% for n in bindings.keys() | sort %} '{{ q(n) }}'{% endfor %}
-            {%- set names = bindings.keys() | list %}
-            {%- set safe_names = [] %}
-            {%- for n in names %}{% set _ = safe_names.append(env_name(n)) %}{% endfor %}
-            {%- if safe_names | unique | list | length != safe_names | length %}
-            {#- The message names the SANITIZED variables, never the raw input names.
-                A raw name is author-controlled text, and interpolating it into a
-                double-quoted echo would let a backtick or $( ) in a name run as a
-                command on the node. The sanitized form is [A-Za-z0-9_] by
-                construction, so it is inert — and it is also the more useful half,
-                since it is the collision itself. #}
-            echo "dpk: ERROR two or more declared inputs map to the same shell variable" >&2
-            echo "dpk: after sanitizing non-identifier characters to '_':" >&2
-            {%- for s in safe_names | unique | sort %}
-            {%- if safe_names | select("equalto", s) | list | length > 1 %}
-            echo "dpk:   GB_INPUT_{{ s }} <- {{ safe_names | select("equalto", s) | list | length }} inputs" >&2
-            {%- endif %}
-            {%- endfor %}
-            echo "dpk: rename them so they differ by more than punctuation." >&2
-            exit 1
-            {%- endif %}
+              --input-path '{{ q(config.dpk_config.input_path) }}'
             {#- An args KEY becomes a bare `--<key>` word, UNQUOTED, because that is
                 what a flag name is. So it cannot be quote-escaped like a value —
                 escaping would just build a wrong flag name and DPK would reject it
@@ -293,117 +284,43 @@ environment_configs:
           # ./src are both relative.
           run: |
             set -euo pipefail
-            {%- if not config.dpk_config.dpk_image %}
-            . ./venv/bin/activate
-            {%- endif %}
-            # Every declared input is exported as $GB_INPUT_<name> holding its
-            # staged local path, so nothing hardcodes or duplicates one.
-            #
-            # The name is SANITIZED into a shell identifier first. Input names are
-            # unvalidated dict keys — the framework's own name checks are about SQL
-            # safety, not shell safety — and a perfectly legal name like `raw-docs`
-            # or `docs.v2` renders `export GB_INPUT_raw-docs=...`, which bash
-            # rejects as "not a valid identifier". Under `set -euo pipefail` that
-            # aborts the ENTIRE run block before the transform starts, and the error
-            # names bash, not the input, so the cause is invisible. Not theoretical:
-            # samples/templates/local_multi_stage/build.yaml ships inputs named
-            # `tuning-data` and `wait-for-eval`.
-            #
-            # Every character outside [A-Za-z0-9_] becomes `_`. A leading digit
-            # needs no handling — the name is a SUFFIX of GB_INPUT_, so it can never
-            # start the identifier.
-            #
-            # Paths get the same '"'"' escaping as args, for the same reason: an
-            # hf:// path is hash-derived and safe, but an env:/// path is the build
-            # author's URI text verbatim (EnvURI only checks that it is absolute),
-            # so env:///data/o'brien would close this quote early and break the
-            # whole run block on a syntax error rather than at the one flag.
-            {#- Shell-quote escaping, defined once for the whole block. EVERY
-                author-controlled value below goes through it — paths, module, output,
-                transform, args values — because a quote in any of them closes its
-                quoting early and a backtick after it then runs on the node. Uniform
-                on purpose: deciding per field which strings are "trusted" is what
-                left this half-applied. #}
+            {#- Shell-quote escaping and the flag-name charset, hoisted to the top of
+                the block because the guard call below uses them. Jinja macros are
+                block-scoped, so `setup` carries its own identical copy. #}
+            {%- set ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" %}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {#- The sanitize rule, defined ONCE and used in both places a name
-                becomes a variable (here and at --input-path below) so the two can
-                never drift. Stock Jinja only: this renders through
-                fill_template(strict=False), whose environment provides
-                to_yaml/short_hash/json_dumps/path_basename/indent and NO
-                regex_replace, and whose `raise_error` global exists only on the
-                strict environment. So the mapping is a character-by-character
-                rebuild, and the collision check below reports rather than raises. #}
-            {%- set ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" %}
-            {%- macro env_name(n) -%}
-            {%- for ch in n | string %}{{ ch if ch in ALLOWED else "_" }}{% endfor %}
-            {%- endmacro %}
-            {#- Sanitizing is many-to-one, so `raw-docs` and `raw.docs` both become
-                GB_INPUT_raw_docs and the second export would silently win — the
-                transform would read the wrong directory and still exit 0. Emit a
-                guard the SHELL enforces: `raise_error` is unavailable here (strict
-                env only), and a rendered comment nobody reads is not a safeguard.
-                `exit 1` before the transform is the loud failure. #}
-            {#- Required-config guards. The four that depend only on config (and on the
-                declared input NAMES, passed as argv) live in src/dpk_guard.sh, so they
-                are shellcheck'd, bash -n'd and unit tested rather than being ~130 lines
-                of Jinja duplicated across both blocks. Run in BOTH phases because setup
-                is the expensive one — it carries the hf download and the install — and
-                run can be reached on a warm cluster without a fresh setup.
-                The collision and args-key guards stay in Jinja below: they need the RAW
-                declared names and the RAW args keys, neither of which survives rendering
-                (see that script's header). #}
+            {%- if not config.dpk_config.dpk_image %}
+            . ./venv/bin/activate
+            {%- endif %}
+            {#- Required-config guards, in src/dpk_guard.sh so they are shellcheck'd,
+                bash -n'd and unit tested rather than Jinja. Run in BOTH phases: setup is
+                the expensive one — it carries the hf download and the dependency install
+                — and run can be reached on a warm cluster without a fresh setup. #}
             bash ./src/dpk_guard.sh \
               --transform '{{ q(config.dpk_config.transform) }}' \
               --module '{{ q(config.dpk_config.module) }}' \
               --dpk-image '{{ q(config.dpk_config.dpk_image) }}' \
-              --input '{{ q(config.dpk_config.input) }}' \
               --output '{{ q(config.dpk_config.output) }}' \
-              --{% for n in bindings.keys() | sort %} '{{ q(n) }}'{% endfor %}
-            {%- set names = bindings.keys() | list %}
-            {%- set safe_names = [] %}
-            {%- for n in names %}{% set _ = safe_names.append(env_name(n)) %}{% endfor %}
-            {%- if safe_names | unique | list | length != safe_names | length %}
-            {#- The message names the SANITIZED variables, never the raw input names.
-                A raw name is author-controlled text, and interpolating it into a
-                double-quoted echo would let a backtick or $( ) in a name run as a
-                command on the node. The sanitized form is [A-Za-z0-9_] by
-                construction, so it is inert — and it is also the more useful half,
-                since it is the collision itself. #}
-            echo "dpk: ERROR two or more declared inputs map to the same shell variable" >&2
-            echo "dpk: after sanitizing non-identifier characters to '_':" >&2
-            {%- for s in safe_names | unique | sort %}
-            {%- if safe_names | select("equalto", s) | list | length > 1 %}
-            echo "dpk:   GB_INPUT_{{ s }} <- {{ safe_names | select("equalto", s) | list | length }} inputs" >&2
-            {%- endif %}
-            {%- endfor %}
-            echo "dpk: rename them so they differ by more than punctuation." >&2
-            exit 1
-            {%- endif %}
-            {#- An args KEY becomes a bare `--<key>` word, UNQUOTED, because that is
-                what a flag name is. So it cannot be quote-escaped like a value —
-                escaping would just build a wrong flag name and DPK would reject it
-                with a confusing argparse error. A real DPK flag name is always
-                [A-Za-z0-9_], so anything else is a typo or an injection attempt, and
-                the honest response is to refuse it by name. Checked at the shell for
-                the same reason as the collision guard: raise_error is not available
-                under strict=False rendering. #}
-            {#- `not (k | string)` catches the EMPTY key, which the character test
+              --input-path '{{ q(config.dpk_config.input_path) }}'
+            {#- An args KEY becomes a bare `--<key>` word, UNQUOTED, because that is what
+                a flag name is, so it cannot be quote-escaped like a value. A real DPK
+                flag name is always [A-Za-z0-9_], so anything else is a typo or an
+                injection attempt and is refused by name. This is the ONE guard that
+                stays in Jinja rather than moving to dpk_guard.sh: keys reach any script
+                as already-rendered argv words, so by then a valid `--tkn_chunk_size` and
+                a typo'd `--tkn-chunk-size` are indistinguishable.
+                `not (k | string)` catches the EMPTY key, which the character test
                 cannot: "" holds no disallowed character, so it passed and rendered a
-                bare `--`, giving `dpk_run.sh ... -- -- 'v'`. The stray `--` and its
-                value reach python as argv, and DPK's launcher uses parse_args() rather
-                than parse_known_args(), so it dies with "unrecognized arguments: -- v"
-                — after the install, naming argparse rather than the key. #}
+                bare `--`, giving `dpk_run.sh ... -- -- 'v'` — reaching python as argv
+                and dying in argparse after the install. #}
             {%- for k in config.dpk_config.args.keys() %}
             {%- if not (k | string) or (k | string | list | reject("in", ALLOWED) | list | length) %}
             echo "dpk: ERROR args key is not a valid DPK flag name: only letters," >&2
             echo "dpk: digits and underscore are allowed (offending key #{{ loop.index }})." >&2
             exit 1
             {%- endif %}
-            {%- endfor %}
-            {%- for name, b in bindings.items() %}
-            export GB_INPUT_{{ env_name(name) }}='{{ q(b.binding.path) }}'
             {%- endfor %}
             {#- Module by rule: dpk_<transform>.runtime, DPK's pure-python
                 PythonTransformLauncher. `module` overrides it (see the config
@@ -442,7 +359,7 @@ environment_configs:
                 backtick after the quote then RUNS on the node (verified). #}
             bash ./src/dpk_run.sh \
               --module '{{ q(module) }}' \
-              --input-path "$GB_INPUT_{{ env_name(config.dpk_config.input) }}" \
+              --input-path '{{ q(config.dpk_config.input_path) }}' \
               --output-path '{{ q(config.dpk_config.output_path if config.dpk_config.output_path else "./output") }}' \
               --artifact-id '{{ q(config.dpk_config.output) }}' \
               {%- if config.dpk_config.validate %}

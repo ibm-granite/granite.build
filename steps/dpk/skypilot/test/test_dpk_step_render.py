@@ -87,7 +87,7 @@ def _transform_cfg(defaults: dict, **over) -> dict:
     base = dict(
         defaults,
         transform="tokenization2arrow",
-        input="docs",
+        input_path="/staged/docs",
         output="tokens",
         output_path="/shared/tokens",
     )
@@ -95,6 +95,9 @@ def _transform_cfg(defaults: dict, **over) -> dict:
     return base
 
 
+# The template no longer reads `bindings` at all: a build resolves its own input path
+# and passes it as `input_path`, the byoc pattern. This is kept only because the render
+# signature still accepts it, and passing it proves the template ignores it.
 _BINDINGS = {"docs": {"binding": {"path": "/staged/docs"}}}
 
 # The rendered blocks now invoke the bundled scripts rather than inlining the
@@ -528,22 +531,21 @@ class TestBothBlocksCallTheGuard:
         """A missing option would shift argv and could make a bad config look valid."""
         cfg = _transform_cfg(defaults, module="dpk_x.runtime", dpk_image="q.io/i:1")
         rendered = _render(launcher[block], cfg, _BINDINGS)
-        for opt in ("--transform", "--module", "--dpk-image", "--input", "--output"):
+        for opt in (
+            "--transform",
+            "--module",
+            "--dpk-image",
+            "--output",
+            "--input-path",
+        ):
             assert opt in rendered, f"{opt} not passed in the {block} block"
 
     @pytest.mark.parametrize("block", ["setup", "run"])
-    def test_the_declared_input_names_are_passed(self, launcher, defaults, block):
-        """The script cannot enumerate bindings, so the names arrive as argv."""
-        bindings = {
-            "docs": {"binding": {"path": "/a"}},
-            "extra": {"binding": {"path": "/b"}},
-        }
-        rendered = _render(launcher[block], _transform_cfg(defaults), bindings)
-        assert any(
-            "'docs'" in line and "'extra'" in line
-            for line in rendered.splitlines()
-            if line.strip().startswith("--")
-        )
+    def test_the_resolved_input_path_is_passed(self, launcher, defaults, block):
+        """The guard checks the PATH now, not a name against a list of bindings."""
+        cfg = _transform_cfg(defaults, input_path="/staged/elsewhere")
+        rendered = _render(launcher[block], cfg, _BINDINGS)
+        assert "--input-path '/staged/elsewhere'" in rendered
 
     @pytest.mark.parametrize("block", ["setup", "run"])
     def test_a_quote_in_a_declared_name_cannot_break_the_call(
@@ -555,97 +557,50 @@ class TestBothBlocksCallTheGuard:
         assert _bash_ok(_render(launcher[block], cfg, bindings))
 
 
-class TestInputNamesBecomeShellIdentifiers:
-    """A declared input name is an arbitrary dict key; $GB_INPUT_<name> is not.
+class TestTheStepNeverLearnsBindingNames:
+    """Regression fence for the byoc switch: the template must not read `bindings`.
 
-    Input names are unvalidated (the framework's own name checks are about SQL
-    safety), so `raw-docs` used to render `export GB_INPUT_raw-docs=...` — which
-    bash rejects as "not a valid identifier", aborting the ENTIRE run block under
-    `set -euo pipefail` before the transform starts, with an error that names bash
-    rather than the input. samples/templates/local_multi_stage/build.yaml ships
-    inputs named `tuning-data` and `wait-for-eval`, so this is reachable.
+    It used to take `input: <name>` and resolve the name itself, which required exporting
+    $GB_INPUT_<name> for every declared input and reading exactly one of them back —
+    variables no bundled script, no other step, and no build ever read. That indirection
+    cost a name sanitizer, a collision guard for the sanitizer being many-to-one, two
+    guards validating the name against the bindings, and a `set -u` abort of the whole
+    run block when a name was mistyped. All of it is deleted, so these assert it stays
+    deleted rather than being reintroduced by a well-meaning "the step should resolve
+    this" change.
     """
 
-    @pytest.mark.parametrize(
-        "name,expected",
-        [
-            ("raw-docs", "raw_docs"),
-            ("docs.v2", "docs_v2"),
-            ("a b", "a_b"),
-            ("dôcs", "d_cs"),  # non-ASCII is not a shell identifier either
-            ("2docs", "2docs"),  # a leading digit is fine: it is a SUFFIX
-            ("UPPER_ok", "UPPER_ok"),  # already valid, must pass through untouched
-        ],
-    )
-    def test_name_is_sanitized_in_both_places(self, launcher, defaults, name, expected):
-        """The export and the --input-path reference must agree, or the transform
-        reads an unset variable. One Jinja macro feeds both for that reason."""
-        cfg = _transform_cfg(defaults, input=name)
-        rendered = _render(launcher["run"], cfg, {name: {"binding": {"path": "/p"}}})
-        assert f"export GB_INPUT_{expected}='/p'" in rendered
-        assert _bash_ok(rendered)
-        # The argv assertion is what proves the two agree end to end.
-        assert _opt(_script_argv(rendered, "run"), "--input-path") == "/p"
+    def test_no_gb_input_variable_is_exported(self, launcher, defaults):
+        for block in ("setup", "run"):
+            rendered = _render(launcher[block], _transform_cfg(defaults), _BINDINGS)
+            assert "GB_INPUT_" not in rendered
 
-    def test_colliding_names_fail_loudly_before_the_transform(self, launcher, defaults):
-        """Sanitizing is many-to-one, so a collision must not resolve silently.
-
-        `raw-docs` and `raw.docs` both map to GB_INPUT_raw_docs; the second export
-        would win and the transform would read the WRONG directory while still
-        exiting 0. Since `raise_error` is only on the strict Jinja environment (this
-        renders with strict=False), the guard is shell that exits non-zero.
-        """
-        cfg = _transform_cfg(defaults, input="raw-docs")
-        bindings = {
-            "raw-docs": {"binding": {"path": "/a"}},
-            "raw.docs": {"binding": {"path": "/b"}},
-        }
-        rendered = _render(launcher["run"], cfg, bindings)
-        assert _bash_ok(rendered)
-        assert "exit 1" in rendered
-        assert "map to the same shell variable" in rendered
-        # And it must abort BEFORE the transform is invoked.
-        assert rendered.index("exit 1") < rendered.index("dpk_run.sh")
-
-    def test_the_collision_message_cannot_execute_a_name(
-        self, launcher, defaults, tmp_path
+    def test_the_blocks_render_identically_with_no_bindings_at_all(
+        self, launcher, defaults
     ):
-        """The diagnostic must not interpolate raw names into a double-quoted echo.
+        """The sharpest form: bindings are not an input to rendering any more."""
+        cfg = _transform_cfg(defaults)
+        for block in ("setup", "run"):
+            assert _render(launcher[block], cfg, {}) == _render(
+                launcher[block], cfg, _BINDINGS
+            )
 
-        An input name is author-controlled text; a backtick or $( ) inside one would
-        run as a command on the node when the guard fired. So the message names only
-        the SANITIZED variable, which is [A-Za-z0-9_] by construction and inert.
-        """
-        canary = tmp_path / "canary"
-        bad = f"d`touch {canary}`"
-        bindings = {
-            f"{bad}-x": {"binding": {"path": "/a"}},
-            f"{bad}.x": {"binding": {"path": "/b"}},
-        }
-        rendered = _render(
-            launcher["run"], _transform_cfg(defaults, input=f"{bad}-x"), bindings
-        )
-        assert "exit 1" in rendered  # the guard did fire
+    def test_the_input_path_reaches_the_script_verbatim(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, input_path="/staged/some where/docs")
+        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
+        assert _opt(argv, "--input-path") == "/staged/some where/docs"
+
+    @pytest.mark.parametrize(
+        "path", ["/staged/o'brien", "/staged/it's/docs", "/staged/a'b'c"]
+    )
+    def test_a_quote_in_the_path_survives_and_cannot_break_the_block(
+        self, launcher, defaults, path
+    ):
+        """A path is author-controlled config text, so q() still applies to it."""
+        cfg = _transform_cfg(defaults, input_path=path)
+        rendered = _render(launcher["run"], cfg, _BINDINGS)
         assert _bash_ok(rendered)
-        # The name now legitimately APPEARS in the rendered text — q()-escaped, as an
-        # argument to dpk_guard.sh — so its absence is no longer the property to check
-        # (and never was the right one: backticks also appear in the block's comments).
-        # Execution is: run the block and confirm nothing ran.
-        subprocess.run(["bash", "-c", rendered], capture_output=True, cwd=_TMPDIR)
-        assert not canary.exists()
-
-    def test_distinct_names_do_not_trip_the_collision_guard(self, launcher, defaults):
-        """Over-correction guard: two names that merely both need sanitizing are
-        fine as long as they stay distinct."""
-        cfg = _transform_cfg(defaults, input="raw-docs")
-        bindings = {
-            "raw-docs": {"binding": {"path": "/a"}},
-            "extra-docs": {"binding": {"path": "/b"}},
-        }
-        rendered = _render(launcher["run"], cfg, bindings)
-        assert "exit 1" not in rendered
-        assert "export GB_INPUT_raw_docs='/a'" in rendered
-        assert "export GB_INPUT_extra_docs='/b'" in rendered
+        assert _opt(_script_argv(rendered, "run"), "--input-path") == path
 
 
 class TestEveryConfigValueIsEscaped:
@@ -769,55 +724,15 @@ class TestArgsKeysMustBeFlagNames:
 
 
 class TestIoWiring:
-    def test_each_binding_is_exported(self, launcher, defaults):
-        cfg = _transform_cfg(defaults)
-        bindings = {
-            "docs": {"binding": {"path": "/staged/docs"}},
-            "extra": {"binding": {"path": "/staged/extra"}},
-        }
-        run = _render(launcher["run"], cfg, bindings)
-        assert "export GB_INPUT_docs='/staged/docs'" in run
-        assert "export GB_INPUT_extra='/staged/extra'" in run
+    """What the step passes to dpk_run.sh for input and output.
 
-    @pytest.mark.parametrize(
-        "path", ["/staged/o'brien", "/staged/it's/docs", "/staged/a'b'c"]
-    )
-    def test_a_quote_in_a_binding_path_does_not_break_the_run_block(
-        self, launcher, defaults, path
-    ):
-        """Regression: the GB_INPUT_ export interpolated a path unescaped.
+    The input half used to be indirect: exports of $GB_INPUT_<name> for every declared
+    input, then one read back. A build now resolves the path itself and passes it as
+    `input_path`, so there is nothing between config and argv — which is what
+    TestTheStepNeverLearnsBindingNames fences.
+    """
 
-        `export GB_INPUT_docs='/staged/o'brien'` closes the quote early, which is a
-        SYNTAX error — it takes down the whole run block, not just this one line, so
-        the transform never runs and the failure names no cause. args already got
-        this escaping; paths did not.
-
-        Reachable: an hf:// path is hash-derived, but an env:/// path is the build
-        author's verbatim URI text and EnvURI only checks that it is absolute.
-
-        The value is asserted through the argv the script receives, so this pins
-        that the path arrives INTACT rather than merely that bash accepted it.
-        """
-        cfg = _transform_cfg(defaults)
-        bindings = {"docs": {"binding": {"path": path}}}
-        argv = _script_argv(_render(launcher["run"], cfg, bindings), "run")
-        assert _opt(argv, "--input-path") == path
-
-    @pytest.mark.parametrize("out", ["/shared/o'ut", "/shared/it's/tokens"])
-    def test_a_quote_in_output_path_does_not_break_the_run_block(
-        self, launcher, defaults, out
-    ):
-        """Same hazard on output_path, which is author-supplied config directly."""
-        cfg = _transform_cfg(defaults, output_path=out)
-        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _opt(argv, "--output-path") == out
-
-    def test_input_is_passed_as_the_bindings_staged_path(self, launcher, defaults):
-        """--input-path resolves through $GB_INPUT_<input>, not a hardcoded path.
-
-        Assembling DPK's --data_local_config from it is dpk_run.sh's job, covered
-        by test_dpk_run_sh.py.
-        """
+    def test_the_input_path_is_passed_straight_through(self, launcher, defaults):
         rendered = _render(launcher["run"], _transform_cfg(defaults), _BINDINGS)
         argv = _script_argv(rendered, "run")
         assert _opt(argv, "--input-path") == "/staged/docs"

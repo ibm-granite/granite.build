@@ -48,12 +48,12 @@ _OK = {
     "transform": "tokenization2arrow",
     "module": "",
     "dpk_image": "",
-    "input": "docs",
     "output": "tokens",
+    "input_path": "/staged/docs",
 }
 
 
-def _run(declared=("docs",), **over):
+def _run(**over):
     """Run dpk_guard.sh with _OK overridden, returning (rc, dpk: lines)."""
     cfg = dict(_OK, **over)
     argv = [
@@ -63,12 +63,10 @@ def _run(declared=("docs",), **over):
         cfg["module"],
         "--dpk-image",
         cfg["dpk_image"],
-        "--input",
-        cfg["input"],
         "--output",
         cfg["output"],
-        "--",
-        *declared,
+        "--input-path",
+        cfg["input_path"],
     ]
     proc = subprocess.run(
         ["bash", str(_SCRIPT), *argv],
@@ -111,9 +109,14 @@ class TestValidConfigPasses:
         rc, msgs = _run(transform="", dpk_image="quay.io/o/i:1", module="dpk_x.runtime")
         assert (rc, msgs) == (0, [])
 
-    def test_several_declared_inputs(self):
-        rc, msgs = _run(declared=("docs", "extra", "third"), input="extra")
-        assert (rc, msgs) == (0, [])
+    def test_a_path_containing_a_quote_is_accepted(self):
+        """A path is data, not an identifier: nothing about its shape is constrained.
+
+        This is the whole point of taking a path rather than a name — `raw-docs` needed
+        sanitizing to become a shell variable, and two names that sanitized alike needed
+        a collision guard. A path needs neither.
+        """
+        assert _run(input_path="/staged/o'brien") == (0, [])
 
 
 class TestTransformExemption:
@@ -170,64 +173,65 @@ class TestOutputGuard:
         assert _run(output="tokns") == (0, [])
 
 
-class TestInputGuard:
-    def test_empty_input_is_refused_by_name(self):
-        rc, msgs = _run(input="")
+class TestInputPathGuard:
+    """The step takes a PATH resolved by the build, not the NAME of a binding.
+
+    That is the byoc pattern (steps/byoc/skypilot/USAGE.md): the build author declared
+    the bindings, so the build author writes `{{ bindings.<name>.binding.path }}`. It
+    removes a whole family of failures — the sanitizer that made a name a valid shell
+    variable, the collision guard for two names sanitizing alike, and the `set -u` abort
+    when a name was mistyped — because the step never learns names at all.
+
+    It introduces exactly one new failure, and it is quiet. See below.
+    """
+
+    def test_empty_path_is_refused_by_name(self):
+        rc, msgs = _run(input_path="")
         assert rc == 1
-        assert any("dpk_config.input is required" in m for m in msgs)
+        assert any("dpk_config.input_path is required" in m for m in msgs)
 
-    def test_a_mistyped_input_is_refused_and_the_valid_names_listed(self):
-        """The point of the guard: say what is wrong AND what the choices are.
-
-        Unguarded this rendered $GB_INPUT_dcos and died at `set -u` with
-        "GB_INPUT_dcos: unbound variable" — naming bash rather than the mistake.
-        """
-        rc, msgs = _run(declared=("docs", "extra"), input="dcos")
-        assert rc == 1
-        assert any("names no declared input" in m for m in msgs)
-        assert any(m.strip().endswith("docs") for m in msgs)
-        assert any(m.strip().endswith("extra") for m in msgs)
-
-    def test_a_target_with_no_declared_inputs_says_so(self):
-        rc, msgs = _run(declared=())
-        assert rc == 1
-        assert any("declares NO inputs at all" in m for m in msgs)
-
-    def test_the_listing_shows_the_name_the_author_wrote(self):
-        """Not the sanitized $GB_INPUT_ form.
-
-        A build sets `input: raw-docs`, so reporting "raw_docs" would send them chasing
-        a name they never typed.
-        """
-        rc, msgs = _run(declared=("raw-docs",), input="")
-        assert rc == 1
-        assert any(m.strip().endswith("raw-docs") for m in msgs)
-
-    def test_a_name_matching_only_after_sanitizing_is_still_a_typo(self):
-        """`raw_docs` is not `raw-docs`: the comparison is on the raw names.
-
-        Accepting the sanitized form would let a build name a variable rather than an
-        input, and then read a path the step never staged under that name.
-        """
-        rc, _ = _run(declared=("raw-docs",), input="raw_docs")
-        assert rc == 1
+    def test_the_message_shows_the_binding_form_to_use(self):
+        """The field is not obvious from its name alone: it wants Jinja, not a literal."""
+        _, msgs = _run(input_path="")
+        assert any("bindings." in m and "binding.path" in m for m in msgs)
 
     @pytest.mark.parametrize(
-        "name", ["d`touch /tmp/dpk_guard_pwn`", "d$(touch /tmp/dpk_guard_pwn)"]
+        "bad",
+        [
+            "{{ dcos.binding.path }}",
+            "{{ bindings.dcos.binding.path }}",
+            "/staged/{{ x }}",
+            "{% if x %}/a{% endif %}",
+        ],
     )
-    def test_a_declared_name_cannot_execute(self, name, tmp_path):
-        """Raw names are author text and are printed, so printf, never echo "...".
+    def test_an_unrendered_jinja_expression_is_refused(self, bad):
+        """A mistyped binding name does NOT fail at render time — this is the catch.
 
-        The template's collision guard reports only SANITIZED names for this reason;
-        this one has to show raw ones to be useful, so it prints them as data.
+        Step config renders with strict=False and PreserveUndefined, so
+        `{{ bindings.dcos.binding.path }}` comes through as the LITERAL text
+        "{{ dcos.binding.path }}" rather than raising. Verified downstream: it reaches
+        DPK as --data_local_config {'input_folder': '{{ dcos.binding.path }}'} and fails
+        on the node AFTER the install, complaining about a path nobody wrote.
+
+        So this guard is the first point at which a misspelled binding can be caught.
         """
-        canary = pathlib.Path("/tmp/dpk_guard_pwn")
-        canary.unlink(missing_ok=True)
-        rc, msgs = _run(declared=(name,), input="")
+        rc, msgs = _run(input_path=bad)
         assert rc == 1
-        assert not canary.exists()
-        # The name still reaches the operator verbatim, which is the useful part.
-        assert any(name in m for m in msgs)
+        assert any("unrendered Jinja" in m for m in msgs)
+        assert any(bad in m for m in msgs), "the offending value must be shown"
+
+    @pytest.mark.parametrize(
+        "ok",
+        [
+            "/staged/docs",
+            "/shared/hf_cache/org/repo/main",
+            "/staged/o'brien",
+            "/staged/a{b",  # a lone brace is not a template
+        ],
+    )
+    def test_a_real_path_is_not_mistaken_for_a_template(self, ok):
+        """Over-correction guard: only `{{` and `{%` are refused, not any brace."""
+        assert _run(input_path=ok) == (0, [])
 
 
 class TestOptionParsing:
@@ -247,7 +251,7 @@ class TestOptionParsing:
         assert proc.returncode == 1
         assert "dpk_config.output is required" in proc.stderr
 
-    def test_the_separator_is_what_ends_option_parsing(self):
-        """Declared names come after `--`, so a name that looks like an option is safe."""
-        rc, msgs = _run(declared=("--transform",), input="--transform")
+    def test_a_path_that_looks_like_an_option_is_still_a_path(self):
+        """--input-path takes the NEXT word unconditionally, so no value is reserved."""
+        rc, msgs = _run(input_path="--transform")
         assert (rc, msgs) == (0, [])

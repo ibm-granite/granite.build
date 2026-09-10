@@ -168,34 +168,42 @@ derived, and what the bundled scripts do — are implementation detail.
 #### Inputs
 
 Declare each input on the **target** (a direct `uri:`, or a `binding:` to an upstream
-target's output). The step exports every declared input as an environment variable holding
-its staged local path:
+target's output), then resolve one of them into `input_path` in the build:
 
+```yaml
+dpk_config:
+  input_path: "{{ bindings.docs.binding.path }}"
 ```
-inputs.<name>  →  $GB_INPUT_<name>
-```
 
-`input: <name>` selects which one feeds the transform. Filesystem-backed schemes (`hf://`,
-`env://`, `file://`, `s3://`, `lh://`) are staged by the assetstore before `run`; an
-`hf://` input is downloaded during `setup` automatically.
+The step takes a **path**, not a binding name — the
+[byoc](../../byoc/skypilot/USAGE.md) pattern, and byoc's `step-template.yaml` references
+`bindings` zero times for the same reason. Filesystem-backed schemes (`hf://`, `env://`,
+`file://`, `s3://`, `lh://`) are staged by the assetstore before `run`; an `hf://` input is
+downloaded during `setup` automatically.
 
-The name is **sanitized into a shell identifier** first: every character outside
-`[A-Za-z0-9_]` becomes `_`, so an input named `raw-docs` is exported as
-`$GB_INPUT_raw_docs`. Input names are unvalidated dict keys (the framework's own name checks
-are about SQL safety, not shell safety), and `export GB_INPUT_raw-docs=...` is a bash syntax
-error — "not a valid identifier" — which under `set -euo pipefail` aborts the whole run block
-before the transform starts, naming bash rather than the input. Hyphenated binding names are
-in use in-tree (`samples/templates/local_multi_stage/build.yaml` declares `tuning-data` and
-`wait-for-eval`), so this is a real shape, not a hypothetical one.
+**Why a path and not a name.** The step used to take `input: <name>` and resolve it itself,
+which meant exporting `$GB_INPUT_<name>` for every declared input and reading exactly one of
+them back a few lines later. Nothing else ever read those variables — no bundled script, no
+other step, and a build cannot, since this step runs one DPK module rather than arbitrary
+code. They existed only to move a path from Jinja to a shell line below it, and that
+indirection cost:
 
-Because sanitizing is many-to-one, two names that differ only in punctuation (`raw-docs` and
-`raw.docs`) would map to the same variable and the second export would silently win. The
-rendered `run` block detects that and exits non-zero before the transform, rather than reading
-the wrong directory and succeeding. The check is shell rather than a Jinja `raise_error`
-because the launcher config renders with `strict=False`, where that global is not available.
+- a sanitizer, because `export GB_INPUT_raw-docs=` is a bash syntax error (and hyphenated
+  binding names are in use in-tree — `samples/templates/local_multi_stage/build.yaml`
+  declares `tuning-data` and `wait-for-eval`);
+- a collision guard, because sanitizing is many-to-one and `raw-docs` / `raw.docs` mapped to
+  the same variable, the second export silently winning;
+- two guards validating the name against the declared bindings;
+- a `set -u` abort of the whole run block when a name was mistyped, naming bash rather than
+  the mistake.
 
-A leading digit needs no handling: the name is a *suffix* of `GB_INPUT_`, so it can never
-start the identifier.
+All of it is gone. A step that never learns binding names cannot be wrong about them.
+
+**What the path form costs instead**, and it is one thing: a misspelled binding name does not
+fail at render. Step config renders with `strict=False` and `PreserveUndefined`
+(`utils/template.py`), so `{{ bindings.dcos.binding.path }}` arrives as that literal text
+rather than raising. `src/dpk_guard.sh` refuses an `input_path` still containing `{{` or `{%`,
+before the install — but it cannot list the valid names, because it no longer knows them.
 
 #### Outputs
 
@@ -231,12 +239,13 @@ Set it explicitly in either of these cases:
    directory, so give the output an explicit shared path instead — see
    [Choosing the output URI per endpoint](#choosing-the-output-uri-per-endpoint).
 
-> **Why is there no `input_path`?** Because inputs and outputs reach the step differently, and
-> this is the asymmetry the default only partly hides. An input is **staged before `run`** and
-> its resolved path is handed to the step as `$GB_INPUT_<name>`, so there is nothing to
-> specify. A declared **output does not exist yet** at render time: the runtime context is
-> `bindings` + `run_metadata` + `setup_config` only, and declared output URIs reach *static
-> validation* alone. Plumbing them into the runtime context would let the step derive
+> **Why does `input_path` come from the build but `output_path` cannot?** Because inputs and
+> outputs reach the step differently. An input is **staged before `run`**, so its resolved
+> path is already in the runtime context as `bindings.<name>.binding.path` and the build can
+> hand it over. A declared **output does not exist yet** at render time: the runtime context
+> is `bindings` + `run_metadata` + `setup_config` only, and declared output URIs reach
+> *static validation* alone — so a build cannot resolve one the same way, and the step
+> cannot derive it. Plumbing them into the runtime context would let the step derive
 > `output_path` and drop the field — a gbserver change, tracked separately.
 
 #### Choosing the output URI per endpoint

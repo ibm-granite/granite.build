@@ -31,7 +31,7 @@ you name it, and the step derives the python module and the pip dependencies.
 | Field | Type | Required | Purpose |
 |---|---|---|---|
 | `transform` | string | **yes** | DPK transform short name, e.g. `tokenization2arrow`, `pii_redactor`, `ededup`. See [What `transform` derives](#what-transform-derives). |
-| `input` | string | **yes** | Name of a declared target `inputs:` entry. Becomes the transform's `input_folder`. |
+| `input_path` | string | **yes** | Directory the transform reads, as a **path**. Resolve it from one of your declared inputs: `input_path: "{{ bindings.<name>.binding.path }}"`. Becomes the transform's `input_folder`. See [Inputs](#inputs). |
 | `output` | string | **yes** | Name of a declared target `outputs:` entry. Used as the registered artifact's ID. |
 | `args` | map | no | Transform flags, rendered in order as `--<key> '<value>'`. Keys are the **full flag name** as DPK spells it, without leading dashes. See [Transform flags](#transform-flags). |
 | `output_path` | string | no | Path the transform writes to. Defaults to `./output` in the step's working directory. **Set it explicitly when the output's `uri` names a path** — it must match, and a path another target reads must be on the shared filesystem. See [When a downstream target reads the output](#when-a-downstream-target-reads-the-output). |
@@ -40,6 +40,40 @@ you name it, and the step derives the python module and the pip dependencies.
 | `dpk_image` | string | no | Container image to run in. Default `""` = the bare launcher node. See [Running in a container image](#running-in-a-container-image). |
 | `pip_index_url` | string | no | Index for the pip install. Default `https://pypi.org/simple`. |
 | `module` | string | no | Override the derived python module. An escape hatch for a transform whose runtime is not `dpk_<name>.runtime`; the derivation holds for every transform in DPK 1.1.8. |
+
+## Inputs
+
+`input_path` is a **path**, not the name of a binding. Your build declares the inputs, so
+your build resolves one of them:
+
+```yaml
+targets:
+  tokenize:
+    inputs:
+      docs:
+        uri: hf:///datasets/org/corpus
+    steps:
+      - step_uri: space://steps/dpk
+        config:
+          dpk_config:
+            transform: tokenization2arrow
+            input_path: "{{ bindings.docs.binding.path }}"
+            output: tokens
+```
+
+`bindings.<name>.binding.path` is the staged local path of a declared input, filled in
+before the step's config is rendered. This is the same pattern
+[byoc](https://github.com/ibm-granite/granite.build/blob/main/steps/byoc/skypilot/USAGE.md)
+uses, and it means the step never has to know your binding names.
+
+**A misspelled binding name is caught on the node, not at render time.** Undefined Jinja
+is *preserved* rather than raised, so `{{ bindings.dcos.binding.path }}` arrives as that
+literal text. The step refuses it with a message naming the value, before installing
+anything — but it cannot tell you which names were valid, because it does not know them.
+If you get that error, check the name against your target's `inputs:`.
+
+Filesystem-backed schemes (`hf://`, `env://`, `file://`, `s3://`, `lh://`) are staged by
+the assetstore before `run`; an `hf://` input is downloaded during `setup` automatically.
 
 ## Per-transform DPK documentation
 
@@ -148,7 +182,7 @@ multiprocessing pool you can turn on per build:
 ```yaml
 dpk_config:
   transform: ededup
-  input: docs
+  input_path: "{{ bindings.docs.binding.path }}"
   output: deduped
   args:
     runtime_num_processors: 8
@@ -211,7 +245,7 @@ target and nothing downstream ever sees bad data.
 ```yaml
 dpk_config:
   transform: tokenization2arrow
-  input: docs
+  input_path: "{{ bindings.docs.binding.path }}"
   output: tokens
   validate: true
 ```
@@ -292,7 +326,7 @@ DOC_COLUMN: "contents"
 # build.yaml
 dpk_config:
   transform: tokenization2arrow
-  input: docs
+  input_path: "{{ bindings.docs.binding.path }}"
   output: tokens
   args:
     tkn_tokenizer: "$${TOKENIZER}"
@@ -345,7 +379,7 @@ granite.build:
             poll_interval_seconds: 30
             dpk_config:
               transform: tokenization2arrow
-              input: docs
+              input_path: "{{ bindings.docs.binding.path }}"
               output: tokens
               validate: true            # runs the bundled tokenization validator
               args:
@@ -372,7 +406,7 @@ Switching transform touches only `dpk_config`. This one is also a single termina
           config:
             dpk_config:
               transform: pii_redactor   # -> dpk_pii_redactor.runtime + [pii-redactor]
-              input: docs
+              input_path: "{{ bindings.docs.binding.path }}"
               output: clean
               args:
                 # literal_eval'd by the transform, so a python list literal
@@ -397,7 +431,7 @@ the default lands in the per-target workdir that is removed when the target fini
           config:
             dpk_config:
               transform: tokenization2arrow
-              input: docs
+              input_path: "{{ bindings.docs.binding.path }}"
               output: tokens
               output_path: /shared/dpk/tokens    # must match the uri above
 ```

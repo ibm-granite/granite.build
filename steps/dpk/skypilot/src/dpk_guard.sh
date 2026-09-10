@@ -21,46 +21,39 @@
 # `run` guards too because it can be reached on a warm cluster without a fresh setup.
 #
 # WHAT IS NOT HERE, AND WHY IT CANNOT BE
-# Two guards stay in the template because they need information that does not survive
-# rendering — the script cannot see it at all:
+# One guard stays in the template: the `args` KEY check. Keys arrive as
+# already-rendered argv words, so a valid `--tkn_chunk_size` and a typo'd
+# `--tkn-chunk-size` are indistinguishable by the time any script runs.
 #
-#   * the input-name COLLISION check. Two declared inputs `raw-docs` and `raw.docs`
-#     both sanitize to $GB_INPUT_raw_docs, so by the time this script runs exactly one
-#     variable exists. The collision is unobservable here; that it is invisible is the
-#     whole bug it catches.
-#   * the `args` KEY check. Keys arrive as already-rendered argv words, so a valid
-#     `--tkn_chunk_size` and a typo'd `--tkn-chunk-size` are indistinguishable by then.
+# There used to be a second — an input-name COLLISION check, for two declared inputs
+# whose names sanitized to the same $GB_INPUT_ variable. It is gone along with the
+# names: the step takes `input_path` as a PATH resolved by the build (the byoc
+# pattern), so it never learns binding names and cannot be wrong about them.
 #
 # CONTRACT
 #   dpk_guard.sh --transform <t> --module <m> --dpk-image <i> \
-#                --input <name> --output <name> [--] [declared input names...]
+#                --output <name> --input-path <dir>
 #
-#   Every option is REQUIRED but may be EMPTY — that is what is being checked. The
-#   declared input names after `--` are the target's inputs, passed as argv because the
-#   script cannot enumerate bindings itself; zero of them is a real case (a target that
-#   declares none) and is reported as such.
+#   Every option is REQUIRED but may be EMPTY — that is what is being checked.
 set -euo pipefail
 
 transform=""
 module=""
 dpk_image=""
-input=""
 output=""
+input_path=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --transform)  transform="$2"; shift 2 ;;
     --module)     module="$2";    shift 2 ;;
     --dpk-image)  dpk_image="$2"; shift 2 ;;
-    --input)      input="$2";     shift 2 ;;
     --output)     output="$2";    shift 2 ;;
+    --input-path) input_path="$2"; shift 2 ;;
     --)           shift; break ;;
     *)            break ;;
   esac
 done
-
-# Remaining argv is the declared input names.
-declared=("$@")
 
 # --- transform ------------------------------------------------------------------
 # `transform` supplies TWO things — a module name AND a pip extra — so whatever exempts
@@ -102,45 +95,37 @@ if [ -z "$output" ]; then
   exit 1
 fi
 
-# --- input ----------------------------------------------------------------------
-# Unguarded, an empty or mistyped `input` renders $GB_INPUT_ or $GB_INPUT_<typo> and
-# dies at `set -u` with "GB_INPUT_dcos: unbound variable" — before this script's own
-# transform runs, and naming bash rather than the mistake. A typo in an input name is
-# an ordinary authoring slip and deserves an ordinary message, with the valid names.
+# --- input_path -----------------------------------------------------------------
+# The step takes a PATH, resolved by the build from its own declared inputs (the byoc
+# pattern), rather than the NAME of a binding it would have to resolve itself. So the
+# name-shaped failures are gone: no sanitizing, no collision between two names that
+# sanitize alike, and no `set -u` abort from a mistyped variable name.
 #
-# The listing prints the names the AUTHOR wrote (the declared names as passed), not the
-# sanitized $GB_INPUT_ forms: a build sets `input: raw-docs`, so reporting "raw_docs"
-# sends them chasing a name they never typed. Printed with printf '%s' rather than
-# interpolated into a double-quoted echo, so a backtick or $( ) inside an author's name
-# cannot run — the template's collision guard reports only sanitized names for exactly
-# that reason, and this one has to show raw ones to be useful.
-_list_declared() {
-  if [ "${#declared[@]}" -eq 0 ]; then
-    echo "dpk:   (this target declares NO inputs at all)" >&2
-    return
-  fi
-  for n in "${declared[@]}"; do
-    printf 'dpk:   %s\n' "$n" >&2
-  done
-}
-
-if [ -z "$input" ]; then
-  echo "dpk: ERROR dpk_config.input is required." >&2
-  echo "dpk: it must name one of this target's declared inputs:" >&2
-  _list_declared
+# What replaces them is one failure the PATH form introduces, and it is quiet.
+if [ -z "$input_path" ]; then
+  echo "dpk: ERROR dpk_config.input_path is required." >&2
+  echo "dpk: it is the directory the transform reads, resolved by the build from one" >&2
+  echo "dpk: of its declared inputs:" >&2
+  echo "dpk:   input_path: \"{{ bindings.<name>.binding.path }}\"" >&2
   exit 1
 fi
 
-found=""
-for n in "${declared[@]+"${declared[@]}"}"; do
-  if [ "$n" = "$input" ]; then
-    found="yes"
-    break
-  fi
-done
-if [ -z "$found" ]; then
-  echo "dpk: ERROR dpk_config.input names no declared input of this target." >&2
-  echo "dpk: it must be one of:" >&2
-  _list_declared
-  exit 1
-fi
+# A MISTYPED binding name does not fail at render time. Step config is rendered with
+# strict=False and PreserveUndefined (utils/template.py), so
+# `{{ bindings.dcos.binding.path }}` comes through as the LITERAL text
+# "{{ dcos.binding.path }}" rather than raising. Verified: it then reaches DPK as
+# --data_local_config {'input_folder': '{{ dcos.binding.path }}'} and fails on the node,
+# after the install, complaining about a path nobody wrote.
+#
+# So refuse anything that still looks like a template. `{{` cannot appear in a real
+# staged path — those are assetstore-built (hf cache dirs, shared workdirs) — so this
+# costs no legitimate input.
+case $input_path in
+  *'{{'*|*'{%'*)
+    echo "dpk: ERROR dpk_config.input_path still contains an unrendered Jinja" >&2
+    echo "dpk: expression: '${input_path}'" >&2
+    echo "dpk: the binding name is probably misspelled — it must match one of the" >&2
+    echo "dpk: target's declared inputs. Undefined names are preserved rather than" >&2
+    echo "dpk: raised, so this is the first point it can be caught." >&2
+    exit 1 ;;
+esac

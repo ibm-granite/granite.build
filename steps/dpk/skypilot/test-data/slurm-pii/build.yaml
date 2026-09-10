@@ -59,7 +59,10 @@ granite.build:
             dpk_config:
               transform: pii_redactor
               dpk_version: "1.1.8"
-              input: docs
+              # A PATH, resolved here from this target's own declared input — the
+              # byoc pattern (steps/byoc/skypilot/USAGE.md). The step never learns
+              # binding NAMES, so it cannot be wrong about them.
+              input_path: "{{ bindings.docs.binding.path }}"
               output: clean
               output_path: /tmp/dpk-pii-output    # matches the `clean` uri above
               args:
