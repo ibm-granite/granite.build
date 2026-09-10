@@ -20,6 +20,30 @@
 # Guarding only in `run` meant an invalid build paid all of that before being refused.
 # `run` guards too because it can be reached on a warm cluster without a fresh setup.
 #
+# WHY THE TEMPLATE CALLS THIS, AND NOT dpk_setup.sh / dpk_run.sh
+# Asked in review, and the answer is that neither work script can do it. Two reasons:
+#
+#   1. There is no single script both phases pass through. `setup` and `run` are separate
+#      SkyPilot lifecycle phases with separate entrypoints (dpk_setup.sh, dpk_run.sh), so
+#      the guard needs two call sites either way; only the template sits above both.
+#   2. Neither script is told what the transform rule needs. dpk_run.sh receives the
+#      DERIVED module, not `transform`/`dpk_image` — and the derived value cannot
+#      distinguish the valid config from the invalid one:
+#
+#        module: dpk_x.runtime, no image  ->  --module 'dpk_x.runtime'   INVALID (empty venv)
+#        module: dpk_x.runtime + image    ->  --module 'dpk_x.runtime'   VALID
+#
+#      Same value, opposite verdicts; the difference is whether an install happened, which
+#      dpk_run.sh is not told. It would catch the `dpk_.runtime` cases and miss exactly the
+#      `module`-alone hole that a review round found. dpk_setup.sh is worse: it is not
+#      invoked at all in image mode, so it can never see the image-set cases.
+#
+# Moving the call would therefore mean passing `transform`, `dpk_image` and `output` into
+# dpk_run.sh — options it has no other use for — and all five into dpk_setup.sh. The Jinja
+# does not shrink, it relocates, and guard ordering stops being visible at the call site,
+# which is the bug this step already had once (marker guards after the transform, not
+# before). Left in the template deliberately.
+#
 # WHAT IS NOT HERE, AND WHY IT CANNOT BE
 # One guard stays in the template: the `args` KEY check. Keys arrive as
 # already-rendered argv words, so a valid `--tkn_chunk_size` and a typo'd
