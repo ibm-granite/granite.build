@@ -49,6 +49,22 @@ logger = get_logger(__name__)
 # Timeout for Kubernetes API calls (in seconds)
 API_CALL_TIMEOUT = 30
 
+# Transient apiserver HTTP statuses fed to the grace-period machinery rather
+# than failing the build. Mirrors the set handled in _get_appwrapper_status;
+# the transport-retry layer already retries these, so reaching here means its
+# budget was exhausted.
+TRANSIENT_API_STATUS_CODES = frozenset({403, 408, 429, 500, 502, 503, 504})
+
+
+def _is_transient_api_exception(exc: Exception) -> bool:
+    """True for a k8s ApiException / aiohttp error worth tolerating transiently."""
+    if isinstance(exc, aiohttp.ClientError):
+        return True
+    if isinstance(exc, client.ApiException):
+        return exc.status in TRANSIENT_API_STATUS_CODES
+    return "Cannot connect to host" in str(exc)
+
+
 # "Normal" events that actually indicate problems
 PROBLEMATIC_NORMAL_EVENTS = {
     # Pod lifecycle issues
@@ -523,29 +539,50 @@ class AppWrapperMonitor(MonitorBase):
         return result
 
     async def _get_workload_status(self: Self) -> List:
-        """Return the status of the Workloads owned by this AppWrapper."""
-        appwrapper_workload_list = await self._workloads_for_appwrapper_by_ownerref(
-            self.name, self.ns
-        )
-        if not appwrapper_workload_list:
-            return []
-        workload_status_list = []
-        for workload in appwrapper_workload_list:
-            assert self.custom_api is not None, "CustomObjectsApi not initialized"
-            workload_status = await self.custom_api.get_namespaced_custom_object_status(
-                group="kueue.x-k8s.io",
-                version=os.getenv("K8S_WORKLOAD_VERSION", "v1beta1"),
-                namespace=self.ns,
-                plural="workloads",
-                name=workload,
+        """Return the status of the Workloads owned by this AppWrapper.
+
+        Runs while assembling a state-change payload, outside the monitor loop's
+        transient handling, so a transient apiserver error (e.g. a 429 that
+        outlived the transport-retry budget) is recorded and reported as empty
+        status for this poll rather than crashing the build. Others propagate.
+        """
+        try:
+            appwrapper_workload_list = await self._workloads_for_appwrapper_by_ownerref(
+                self.name, self.ns
             )
-            workload_status_list.append(
-                {
-                    "workload_name": workload,
-                    "workload_status": workload_status.get("status", {}),
-                }
-            )
-        return workload_status_list
+            if not appwrapper_workload_list:
+                return []
+            workload_status_list = []
+            for workload in appwrapper_workload_list:
+                assert self.custom_api is not None, "CustomObjectsApi not initialized"
+                workload_status = (
+                    await self.custom_api.get_namespaced_custom_object_status(
+                        group="kueue.x-k8s.io",
+                        version=os.getenv("K8S_WORKLOAD_VERSION", "v1beta1"),
+                        namespace=self.ns,
+                        plural="workloads",
+                        name=workload,
+                    )
+                )
+                workload_status_list.append(
+                    {
+                        "workload_name": workload,
+                        "workload_status": workload_status.get("status", {}),
+                    }
+                )
+            return workload_status_list
+        except Exception as e:
+            if _is_transient_api_exception(e):
+                logger.warning(
+                    "[AWMonitor launch_id %s] transient error fetching workload "
+                    "status for AppWrapper %s; reporting empty status this poll: %s",
+                    self.launch_id,
+                    self.name,
+                    e,
+                )
+                self._record_api_failure(e)
+                return []
+            raise
 
     async def _get_appwrapper_failed_pods(self: Self) -> None:
         """Update the dictionary of failed pods owned by this AppWrapper with their status and logs."""

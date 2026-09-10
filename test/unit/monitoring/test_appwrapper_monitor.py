@@ -7,6 +7,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from kubernetes_asyncio import client
 
 from gbserver.monitoring.appwrapper_monitor import AppWrapperMonitor
 from gbserver.types.buildevent import BuildEventType, EntityRunMetadata
@@ -176,3 +177,67 @@ class TestPodLivenessCheck:
         # Call _check_pod_liveness and verify it returns True
         result = await monitor._check_pod_liveness()
         assert result is True
+
+
+class TestWorkloadStatusTransientErrors:
+    """_get_workload_status tolerates transient apiserver errors.
+
+    This runs while assembling a state-change payload, outside the monitor
+    loop's transient handling. A 429/5xx that outlived the transport-retry
+    budget must not crash the build: it is recorded as an API failure and
+    reported as empty status for that poll, rather than propagating.
+    """
+
+    @pytest.mark.asyncio
+    async def test_transient_429_returns_empty_and_records_failure(self):
+        """A 429 on the workload list is tolerated, not raised."""
+        monitor, _, _ = _make_monitor()
+        monitor.custom_api = MagicMock()
+        monitor.custom_api.list_namespaced_custom_object = AsyncMock(
+            side_effect=client.ApiException(status=429, reason="Too Many Requests")
+        )
+        result = await monitor._get_workload_status()
+        assert result == []
+        assert monitor._api_failure_start_time is not None
+
+    @pytest.mark.asyncio
+    async def test_transient_503_on_status_call_is_tolerated(self):
+        """A 503 while fetching per-workload status is tolerated too."""
+        monitor, _, _ = _make_monitor()
+        monitor.custom_api = MagicMock()
+        # List succeeds and returns one owned workload...
+        monitor.custom_api.list_namespaced_custom_object = AsyncMock(
+            return_value={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "wl-1",
+                            "ownerReferences": [
+                                {
+                                    "apiVersion": "workload.codeflare.dev/v1beta2",
+                                    "name": monitor.name,
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        )
+        # ...but the per-workload status call is throttled.
+        monitor.custom_api.get_namespaced_custom_object_status = AsyncMock(
+            side_effect=client.ApiException(status=503, reason="Service Unavailable")
+        )
+        result = await monitor._get_workload_status()
+        assert result == []
+        assert monitor._api_failure_start_time is not None
+
+    @pytest.mark.asyncio
+    async def test_non_transient_error_propagates(self):
+        """A non-transient ApiException (e.g. 401) still propagates."""
+        monitor, _, _ = _make_monitor()
+        monitor.custom_api = MagicMock()
+        monitor.custom_api.list_namespaced_custom_object = AsyncMock(
+            side_effect=client.ApiException(status=401, reason="Unauthorized")
+        )
+        with pytest.raises(client.ApiException):
+            await monitor._get_workload_status()

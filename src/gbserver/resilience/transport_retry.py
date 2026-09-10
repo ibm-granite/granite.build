@@ -47,7 +47,8 @@ subcommand.
 
 import asyncio
 import functools
-from typing import Callable
+import json
+from typing import Callable, Optional
 
 from tenacity import (
     AsyncRetrying,
@@ -56,6 +57,7 @@ from tenacity import (
     stop_after_attempt,
     wait_random_exponential,
 )
+from tenacity.wait import wait_base
 
 from gbserver.types.constants import (
     TRANSPORT_RETRY_BASE_DELAY,
@@ -65,6 +67,13 @@ from gbserver.types.constants import (
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Kubernetes apiserver HTTP status codes that are transient and worth retrying:
+# 429 (throttled / "storage is (re)initializing"), and the 5xx family that
+# surfaces during apiserver rollouts, etcd blips, or LB failovers. Non-transient
+# statuses (401, 403, 404, 409, 422, ...) are deliberately excluded so real API
+# errors still surface promptly with their decoded body.
+RETRYABLE_K8S_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 # Marker attribute stamped on wrapped methods so re-installation is a no-op.
 _WRAPPED_MARKER = "_gbserver_transport_retry_wrapped"
@@ -98,20 +107,27 @@ def _make_before_sleep(label: str) -> Callable[["RetryCallState"], None]:
 
 
 def _make_retrying(
-    predicate: Callable[[BaseException], bool], label: str
+    predicate: Callable[[BaseException], bool],
+    label: str,
+    wait: Optional[wait_base] = None,
 ) -> AsyncRetrying:
     """Build an AsyncRetrying with the shared transport retry policy.
 
     Mirrors the tenacity structure used elsewhere (see ``utils/git_retry.py``):
     capped exponential backoff with jitter, retrying only when ``predicate``
     returns True, and re-raising the original exception once attempts are
-    exhausted. ``label`` names the seam in the retry logs.
+    exhausted. ``label`` names the seam in the retry logs. ``wait`` overrides the
+    default backoff (used by the k8s seam to honor ``Retry-After``).
     """
     return AsyncRetrying(
         stop=stop_after_attempt(TRANSPORT_RETRY_MAX_ATTEMPTS),
-        wait=wait_random_exponential(
-            multiplier=TRANSPORT_RETRY_BASE_DELAY,
-            max=TRANSPORT_RETRY_MAX_DELAY,
+        wait=(
+            wait
+            if wait is not None
+            else wait_random_exponential(
+                multiplier=TRANSPORT_RETRY_BASE_DELAY,
+                max=TRANSPORT_RETRY_MAX_DELAY,
+            )
         ),
         retry=retry_if_exception(predicate),
         before_sleep=_make_before_sleep(label),
@@ -197,6 +213,68 @@ def _is_retryable_connector_error(exc: BaseException) -> bool:
     return isinstance(exc, ClientConnectorError)
 
 
+def _is_retryable_api_status(exc: BaseException) -> bool:
+    """Retry transient apiserver HTTP errors (429 / 5xx); let the rest propagate.
+
+    The connector seam only retries connection-level failures and lets every
+    ``ApiException`` through, so an HTTP throttle (429 "storage is
+    (re)initializing") or a transient 5xx was never retried and would fail an
+    otherwise-healthy build. ``kubernetes_asyncio`` is in the optional ``ibm``
+    extra, so its exception type is imported lazily.
+    """
+    try:
+        # pylint: disable-next=import-outside-toplevel
+        from kubernetes_asyncio.client.exceptions import ApiException
+    except ImportError:
+        return False
+    return isinstance(exc, ApiException) and exc.status in RETRYABLE_K8S_STATUS_CODES
+
+
+def _retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """Server-advised retry delay for an ApiException, else None.
+
+    Prefers the ``Retry-After`` header, then the Status body's
+    ``details.retryAfterSeconds``; ignores a malformed value.
+    """
+    headers = getattr(exc, "headers", None)
+    if headers is not None:
+        try:
+            retry_after = headers.get("Retry-After") or headers.get("retry-after")
+        except AttributeError:
+            retry_after = None
+        if retry_after:
+            try:
+                return float(retry_after)
+            except (TypeError, ValueError):
+                pass
+    body = getattr(exc, "body", None)
+    if body:
+        try:
+            details = json.loads(body).get("details", {}) or {}
+            seconds = details.get("retryAfterSeconds")
+            if seconds is not None:
+                return float(seconds)
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return None
+
+
+class _WaitRetryAfterOrExponential(wait_base):
+    """Honor a ``Retry-After`` hint (capped at MAX_DELAY), else exponential backoff."""
+
+    def __call__(self, retry_state: "RetryCallState") -> float:
+        exc = retry_state.outcome.exception() if retry_state.outcome else None
+        if exc is not None:
+            hinted = _retry_after_seconds(exc)
+            if hinted is not None:
+                return max(0.0, min(hinted, TRANSPORT_RETRY_MAX_DELAY))
+        fallback = wait_random_exponential(
+            multiplier=TRANSPORT_RETRY_BASE_DELAY,
+            max=TRANSPORT_RETRY_MAX_DELAY,
+        )
+        return fallback(retry_state)
+
+
 def _install_k8s_request_retry() -> None:
     """Wrap ``ApiClient.request`` with the transport retry policy."""
     # pylint: disable-next=import-outside-toplevel
@@ -206,10 +284,16 @@ def _install_k8s_request_retry() -> None:
     if getattr(original, _WRAPPED_MARKER, False):
         return
 
+    def _is_retryable_k8s_error(exc: BaseException) -> bool:
+        # Connection-level failures OR transient apiserver HTTP statuses.
+        return _is_retryable_connector_error(exc) or _is_retryable_api_status(exc)
+
     @functools.wraps(original)
     async def _request_with_retry(self, *args, **kwargs):
         async for attempt in _make_retrying(
-            _is_retryable_connector_error, "kubernetes_asyncio request"
+            _is_retryable_k8s_error,
+            "kubernetes_asyncio request",
+            wait=_WaitRetryAfterOrExponential(),
         ):
             with attempt:
                 # Upstream ApiClient.request is a sync def that returns a
