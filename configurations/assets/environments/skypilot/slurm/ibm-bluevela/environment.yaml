@@ -12,8 +12,16 @@ config:
   cluster: bluevela
   zone: gpu-mid
   # Shared-FS root for per-run build workdirs (exported as GB_BUILD_WORKDIR, and
-  # the CWD of the setup/run scripts). On bluevela this must live on /proj — the
-  # shared FS bind-mounted into the enroot container. Reuses the LSF /proj path.
+  # the CWD of the setup/run scripts). gbserver derives
+  # ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/ from this and cd's
+  # every step into it. On bluevela this must live on /proj AND stay UNDER the
+  # SkyPilot `workdir` set in cloud_config below — that workdir is what actually
+  # bind-mounts this tree into the enroot container. Unlike the LSF backend
+  # (which mounts all of /proj), the SkyPilot SLURM backend only mounts home +
+  # ccache + `workdir`; without the workdir mount a containerized step's
+  # `cd $GB_BUILD_WORKDIR` lands in the container's ephemeral overlay and its
+  # output never reaches the separate (bare) hfpush step. See
+  # docs/environments/skypilot-slurm.md#workdir-containerized-steps.
   shared_workdir: /proj/data-eng/llmb-read-write/builds/
   # Inline SLURM SSH reachability, materialized to ~/.slurm/config at launch so
   # SkyPilot's provisioner can reach the login node. Keys are exact OpenSSH
@@ -33,6 +41,19 @@ config:
         #IdentityFile: ~/.ssh/cogops_bv.key
         #IdentityKey: BV_SSH_PRIVATE_KEY
         IdentitiesOnly: "yes"
+  # Inline SkyPilot behavioral config, deep-merged into ~/.sky/config.yaml at
+  # launch (see merge_cloud_config). `workdir` is the SkyPilot SLURM cluster
+  # base dir AND — critically — the one path the enroot container bind-mounts
+  # (--container-mounts = home + ccache + workdir). It is set to an ancestor of
+  # `shared_workdir` above so the per-run $GB_BUILD_WORKDIR falls inside the
+  # mount and a containerized command's relative output lands on the real shared
+  # FS that the separate (bare) hfpush step reads. Lookup key path is
+  # slurm/cluster_configs/<cluster>/workdir (cluster = `bluevela`).
+  cloud_config:
+    slurm:
+      cluster_configs:
+        bluevela:
+          workdir: /proj/data-eng/llmb-read-write/builds
 assetstores:
   - store_uri: space://assetstores/hf
     pull:
