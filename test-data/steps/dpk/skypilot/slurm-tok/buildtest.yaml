@@ -1,4 +1,4 @@
-# YAML-driven spec for test_skypilot_slurm_dpk.py (located by the test/ <-> test-data/
+# YAML-driven spec for test_skypilot_slurm_dpk_tok.py (located by the test/ <-> test-data/
 # helper, so this pairing holds in both test modes; see steps/README.md).
 #
 # ONE target on the local Docker SLURM cluster: tokenization with `validate: true`,

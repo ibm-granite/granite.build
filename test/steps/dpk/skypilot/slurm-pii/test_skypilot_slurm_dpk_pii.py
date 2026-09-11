@@ -15,7 +15,7 @@
 """PII redaction on skypilot/slurm, through the same `dpk` step as tokenization.
 
 **This test exists to prove the step is general.** The sibling
-``test/slurm/test_skypilot_slurm_dpk.py`` already shows tokenization working; this
+``test/slurm-tok/test_skypilot_slurm_dpk_tok.py`` already shows tokenization working; this
 one runs an unrelated DPK transform — ``pii_redactor``, which shares no code, no
 flags, and no dependencies with tokenization — and the only things that differ are
 in the build.yaml: ``transform``, ``args``, and the artifact names.
@@ -39,7 +39,7 @@ local cluster, which has no Pyxis.
 
 Single target — a generality proof, not a handoff test. Nor does any other fixture
 test the handoff: this docstring used to say the tokenization one did, which is false
-(see the note in ``test-data/slurm/build.yaml`` and README.md's Known gaps).
+(see the note in ``test-data/slurm-tok/build.yaml`` and README.md's Known gaps).
 
 Real-infra test, gated on a reachable Docker SLURM cluster, so it auto-skips in CI
 and on machines without one (``make test-setup``). Extended suite only.

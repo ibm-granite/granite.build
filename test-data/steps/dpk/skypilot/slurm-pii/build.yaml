@@ -3,7 +3,7 @@ granite.build:
   # PII redaction on the local Docker SLURM cluster, via the SAME dpk step the
   # tokenization fixture uses. This fixture exists to prove the step is GENERAL:
   # switching transform is a build.yaml change and nothing else. Compared to
-  # test-data/slurm/build.yaml, only `transform`, `args`, and the artifact names
+  # test-data/slurm-tok/build.yaml, only `transform`, `args`, and the artifact names
   # differ — steps/dpk/skypilot/step-template.yaml is untouched.
   #
   # From `transform: pii_redactor` the step derives:
@@ -20,7 +20,7 @@ granite.build:
   #
   # SEQUENTIAL BY DESIGN — do not add runtime_num_processors here. No pool flag means
   # DPK's own default of 0, so this fixture covers the SEQUENTIAL path while
-  # test-data/slurm covers the parallel one; between them one `make test` exercises
+  # test-data/slurm-tok covers the parallel one; between them one `make test` exercises
   # both. It also stays sequential for a concrete reason: each worker would hold its
   # own copy of the flair and presidio models, and the local cluster's nodes advertise
   # RealMemory=1024, so forking here trades a passing fixture for an OOM.
@@ -33,7 +33,7 @@ granite.build:
   # false: that fixture's own header says the handoff "is no longer covered end to end
   # anywhere", and README.md's Known gaps agrees. The stale claim pointed away from a
   # real gap, so if you need that coverage, restore the two-target form from
-  # test-data/slurm/build.yaml's history rather than assuming it exists.
+  # test-data/slurm-tok/build.yaml's history rather than assuming it exists.
   targets:
 
     redact:
