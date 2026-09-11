@@ -316,7 +316,20 @@ export function TrialsTable({ job }: Props) {
                     {...getSelectionProps()}
                     onSelect={(e) => {
                       getSelectionProps().onSelect(e)
-                      setSelectedIds((e.target as HTMLInputElement).checked ? tableRows.map((r) => r.id) : [])
+                      // Mirror Carbon's own scope, which is the *filtered* rows:
+                      // getUpdatedSelectionState (DataTable.js:276-279) only touches
+                      // rows matching an active search, so select-all must add just
+                      // the visible ids and deselect-all must remove just those.
+                      // Replacing the whole mirror instead would strand a row that
+                      // the search has hidden: Carbon keeps it selected while the
+                      // mirror forgets it, leaving a ticked checkbox that Compare
+                      // and the radar ignore and that Cancel is not shown to clear.
+                      const { checked } = e.target as HTMLInputElement
+                      setSelectedIds((prev) =>
+                        checked
+                          ? [...new Set([...prev, ...tableRows.map((r) => r.id)])]
+                          : prev.filter((id) => !tableRows.some((r) => r.id === id))
+                      )
                     }}
                   />
                   {(() => {
