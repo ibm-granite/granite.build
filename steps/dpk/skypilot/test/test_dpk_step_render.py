@@ -108,7 +108,9 @@ _BINDINGS = {"docs": {"binding": {"path": "/staged/docs"}}}
 _SCRIPTS = {"run": "dpk_run.sh", "setup": "dpk_setup.sh"}
 
 
-def _guard_argv(source: str, dpk_config: dict, bindings: dict | None = None) -> list[str]:
+def _guard_argv(
+    source: str, dpk_config: dict, bindings: dict | None = None
+) -> list[str]:
     """Return the argv the rendered block passes to src/dpk_guard.sh.
 
     The mirror of `_script_argv`, for the other side of the call. The guard's own
@@ -833,9 +835,11 @@ class TestArgsKeysReachTheGuardAsData:
                 _BINDINGS,
             )
             assert "--arg-key " in rendered, f"{block} block passes no args keys"
-            assert "--arg-keys-empty " in rendered, f"{block} block omits the empty signal"
+            assert (
+                "--arg-keys-empty " in rendered
+            ), f"{block} block omits the empty signal"
 
-    @pytest.mark.parametrize("key", ["k\'q", "k;rm -rf /", "k v", "k-dash"])
+    @pytest.mark.parametrize("key", ["k'q", "k;rm -rf /", "k v", "k-dash"])
     def test_a_bad_key_still_renders_parseable_bash(self, launcher, defaults, key):
         """Why the render loop keeps skipping bad keys, now that the guard rejects them.
 
@@ -854,7 +858,9 @@ class TestArgsKeysReachTheGuardAsData:
         """The point of the move: exactly one place does this checking, and it is not here."""
         for block in ("setup", "run"):
             rendered = _render(
-                launcher[block], _transform_cfg(defaults, args={"bad-key": 1}), _BINDINGS
+                launcher[block],
+                _transform_cfg(defaults, args={"bad-key": 1}),
+                _BINDINGS,
             )
             assert "not a valid DPK flag name" not in rendered
             assert "exit 1" not in rendered
