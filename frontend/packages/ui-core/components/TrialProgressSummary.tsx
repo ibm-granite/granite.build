@@ -42,7 +42,17 @@ export function TrialProgressSummary({ job, trials }: Props) {
   if (progress.running > 0) parts.push(`${progress.running} running`)
   if (progress.queued > 0) parts.push(`${progress.queued} queued`)
   if (progress.failed > 0) parts.push(`${progress.failed} failed`)
-  parts.push(`${formatDuration(progress.elapsedSeconds)} elapsed`)
+  // With a trustworthy phase split, say where the time went instead of quoting one
+  // aggregate. The final run owns no trial row, so on an autotune job the plain
+  // "elapsed" figure sat under "Trial N of N complete" next to rows that summed to
+  // half of it, reading as if the trials had taken the whole time.
+  if (progress.searchSeconds !== null && progress.finalRunSeconds !== null) {
+    parts.push(`Search ${formatDuration(progress.searchSeconds)}`)
+    parts.push(`Final run ${formatDuration(progress.finalRunSeconds)}`)
+    parts.push(`${formatDuration(progress.elapsedSeconds)} total`)
+  } else {
+    parts.push(`${formatDuration(progress.elapsedSeconds)} elapsed`)
+  }
   // Labelled as an estimate because trials differ in batch size and epoch count,
   // so a median-based projection can be well off.
   if (progress.etaSeconds !== null) {

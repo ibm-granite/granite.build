@@ -35,6 +35,20 @@ export interface TrialProgress {
   elapsedSeconds: number
   /** Rough projection, or null whenever it cannot be justified. */
   etaSeconds: number | null
+  /**
+   * Job start to the last trial's end — the search phase, setup included.
+   * Null unless the phase split is trustworthy; see `phaseSplit` below.
+   */
+  searchSeconds: number | null
+  /**
+   * The last trial's end to the run stopping. For an autotune job this is the
+   * final full-dataset run on the winning config, which owns no trial row and is
+   * otherwise invisible — it was half the wall clock on the job that prompted
+   * this. Inferred as the trailing remainder, so it also carries the model save
+   * and cluster teardown (seconds, against a phase measured in minutes).
+   * Null unless the phase split is trustworthy.
+   */
+  finalRunSeconds: number | null
 }
 
 const FAILED_STATUSES: TuningStatus[] = ['error', 'terminated']
@@ -80,6 +94,34 @@ export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
   const elapsedEndMs = ACTIVE_JOB_STATUSES.includes(jobStatus) ? now : stoppedMs
   const elapsedSeconds = Math.max(0, Math.floor((elapsedEndMs - Date.parse(jobCreatedAt)) / 1000))
 
+  // Phase split. Reported only for a cleanly completed job: while the run is live
+  // the trailing phase has no end yet, and on an error/terminated job the trials
+  // can lack durations, which would silently understate the last trial's end and
+  // charge the difference to the final run.
+  //
+  // A trial's end is its start plus its own reported duration rather than its
+  // `updated_at`, for the same reason the job uses `finished_at` — any later
+  // write to the row moves `updated_at`.
+  let searchSeconds: number | null = null
+  let finalRunSeconds: number | null = null
+  if (jobStatus === 'completed' && trials.length > 0) {
+    const startMs = Date.parse(jobCreatedAt)
+    const trialEnds = trials.map(
+      (t) => Date.parse(t.created_at) + (t.metrics?.total_time ?? 0) * 1000
+    )
+    const lastEndMs = Math.max(...trialEnds)
+    const searchMs = lastEndMs - startMs
+    const finalMs = stoppedMs - lastEndMs
+    // Every timestamp has to parse and the phases have to be ordered, or the
+    // split is nonsense and one aggregate is the honest thing to show. The
+    // one-minute floor keeps a job with no real final phase from reporting a
+    // "final run" that is really just teardown.
+    if (Number.isFinite(searchMs) && Number.isFinite(finalMs) && searchMs > 0 && finalMs >= 60_000) {
+      searchSeconds = Math.floor(searchMs / 1000)
+      finalRunSeconds = Math.floor(finalMs / 1000)
+    }
+  }
+
   // Only project when the run is live, the total is known, work remains, and at
   // least one finished trial gives a duration to extrapolate from.
   let etaSeconds: number | null = null
@@ -103,5 +145,7 @@ export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
     percent: planned !== null ? Math.min(100, Math.round((completed / planned) * 100)) : null,
     elapsedSeconds,
     etaSeconds,
+    searchSeconds,
+    finalRunSeconds,
   }
 }

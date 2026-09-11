@@ -89,6 +89,89 @@ describe('computeTrialProgress planned total', () => {
   })
 })
 
+// The final full-dataset run on the winning config owns no trial row, so it is
+// absent from GET /jobs/{id}/trials and invisible in the table. On the job that
+// prompted this it was 40m of an 83m run — half the wall clock, sitting under a
+// "Trial 4 of 4 complete" heading beside rows that summed to 41m. The split is
+// inferred from timestamps (job start -> last trial end -> run stopped) so the
+// parts add up to the total exactly, and is withheld whenever that inference
+// cannot be trusted.
+describe('computeTrialProgress phase split', () => {
+  // Job starts at T0. One trial starts 1 minute in and runs 5 minutes, so the
+  // search phase ends at T0+6m. The run stops at T0+30m, leaving 24m after it.
+  const late = (mins) => new Date(T0 + mins * 60_000).toISOString()
+  const searchTrial = trial('completed', 300, { created_at: late(1) })
+
+  function finished(trials, finishedAt, jobStatus = 'completed') {
+    return computeTrialProgress({
+      trials,
+      numTrials: trials.length,
+      jobStatus,
+      jobCreatedAt: new Date(T0).toISOString(),
+      jobUpdatedAt: new Date(NOW).toISOString(),
+      jobFinishedAt: finishedAt,
+      now: NOW,
+    })
+  }
+
+  it('splits the run into search and final-run phases', () => {
+    const p = finished([searchTrial], late(30))
+    assert.equal(p.searchSeconds, 360)
+    assert.equal(p.finalRunSeconds, 1440)
+  })
+
+  it('makes the parts sum to the total exactly', () => {
+    const p = finished([searchTrial], late(30))
+    assert.equal(p.searchSeconds + p.finalRunSeconds, p.elapsedSeconds)
+  })
+
+  it('measures the search phase from job start, so setup is not lost', () => {
+    // The trial itself ran 300s but started a minute after the job did; charging
+    // that minute to neither phase is what stopped the parts adding up.
+    const p = finished([searchTrial], late(30))
+    assert.equal(p.searchSeconds, 360)
+  })
+
+  it('withholds the split while the run is still active', () => {
+    const p = finished([searchTrial], undefined, 'running')
+    assert.equal(p.searchSeconds, null)
+    assert.equal(p.finalRunSeconds, null)
+  })
+
+  it('withholds the split for an error or terminated run', () => {
+    // Trials there can lack durations, which would understate the last trial's
+    // end and charge the difference to a "final run" that never happened.
+    for (const status of ['error', 'terminated']) {
+      const p = finished([searchTrial], late(30), status)
+      assert.equal(p.finalRunSeconds, null, `${status} should not report a phase split`)
+    }
+  })
+
+  it('withholds the split when nothing follows the last trial', () => {
+    // A search-only run: stopping 10s after the last trial is teardown, not a
+    // final run worth naming.
+    const p = finished([searchTrial], new Date(T0 + 6 * 60_000 + 10_000).toISOString())
+    assert.equal(p.searchSeconds, null)
+    assert.equal(p.finalRunSeconds, null)
+  })
+
+  it('withholds the split with no trials at all', () => {
+    const p = finished([], late(30))
+    assert.equal(p.searchSeconds, null)
+    assert.equal(p.finalRunSeconds, null)
+  })
+
+  it('takes the last end across trials, not the last one listed', () => {
+    // Trials arrive sorted by loss, not by time, so the newest end can sit
+    // anywhere in the array.
+    const early = trial('completed', 60, { created_at: late(1) })
+    const latest = trial('completed', 300, { created_at: late(5) })
+    const p = finished([latest, early], late(30))
+    assert.equal(p.searchSeconds, 600) // last end is T0+10m
+    assert.equal(p.finalRunSeconds, 1200)
+  })
+})
+
 describe('computeTrialProgress elapsed', () => {
   it('measures elapsed against now while the run is active', () => {
     const p = run([trial('running', null)], 4, 'running')
