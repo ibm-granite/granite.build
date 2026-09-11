@@ -86,7 +86,7 @@ function DetailsPanel({ job }: { job: JobRead }) {
       </div>
 
       <h5 style={{ marginBottom: '0.5rem' }}>Logs</h5>
-      <TuningLogViewer jobId={job.id} status={job.status} />
+      <TuningLogViewer jobId={job.id} status={job.status} scope={isAdmin ? 'all' : 'own'} />
 
       <Modal
         open={configOpen}
