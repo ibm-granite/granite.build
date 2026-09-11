@@ -50,11 +50,17 @@ _OK = {
     "dpk_image": "",
     "output": "tokens",
     "input_path": "/staged/docs",
+    "arg_keys": [],
+    "arg_keys_empty": "",
 }
 
 
-def _run(**over):
-    """Run dpk_guard.sh with _OK overridden, returning (rc, dpk: lines)."""
+def _run(env=None, **over):
+    """Run dpk_guard.sh with _OK overridden, returning (rc, dpk: lines).
+
+    `env` adds to the deliberately-minimal environment — used to prove the verdict
+    does not depend on the caller's locale.
+    """
     cfg = dict(_OK, **over)
     argv = [
         "--transform",
@@ -67,13 +73,17 @@ def _run(**over):
         cfg["output"],
         "--input-path",
         cfg["input_path"],
+        "--arg-keys-empty",
+        cfg["arg_keys_empty"],
     ]
+    for key in cfg["arg_keys"]:
+        argv += ["--arg-key", key]
     proc = subprocess.run(
         ["bash", str(_SCRIPT), *argv],
         capture_output=True,
         text=True,
         # A clean env: the script's verdict must not depend on the caller's shell.
-        env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
+        env={"PATH": "/usr/bin:/bin", "HOME": "/tmp", **(env or {})},
     )
     return proc.returncode, [
         l for l in proc.stderr.splitlines() if l.startswith("dpk:")
@@ -255,3 +265,90 @@ class TestOptionParsing:
         """--input-path takes the NEXT word unconditionally, so no value is reserved."""
         rc, msgs = _run(input_path="--transform")
         assert (rc, msgs) == (0, [])
+
+
+class TestArgsKeys:
+    """The args-key check, moved here from Jinja in the step template.
+
+    It had been the one guard left in step.yaml, on the reasoning that keys arrive as
+    already-rendered flag words where a typo and a real flag look alike. Review pushed
+    on that and the reasoning was wrong: the template can pass the keys as data. The
+    tests below pin the three shapes the old Jinja rejected, plus the two ways the
+    move nearly broke it.
+    """
+
+    def test_real_flag_names_are_accepted(self):
+        rc, lines = _run(arg_keys=["tkn_chunk_size", "tkn_text_lang", "UPPER_2", "a1"])
+        assert rc == 0, lines
+
+    def test_no_args_at_all_is_fine(self):
+        assert _run(arg_keys=[])[0] == 0
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "tkn-chunk-size",  # the common typo: DPK's flags are all underscored
+            "k;rm -rf /",
+            "k$(id)",
+            "k`touch /tmp/x`",
+            "k'q",
+            "k.dot",
+        ],
+    )
+    def test_a_non_identifier_key_is_refused(self, key):
+        rc, lines = _run(arg_keys=[key])
+        assert rc == 1
+        assert any("not a valid DPK flag name" in l for l in lines)
+        # The message must name the offending key: that is the whole point of
+        # refusing here rather than letting argparse fail after the install.
+        assert any(key in l for l in lines)
+
+    def test_a_key_containing_a_space_is_refused(self):
+        """The regression the first version of this check let through.
+
+        Keys were passed space-separated in one option, so the shell split `tkn size`
+        into `tkn` and `size` — both individually legal — and the bad key passed. The
+        Jinja this replaced rejected it, so it would have been a silent regression.
+        One `--arg-key` per key is what makes the key stay one word.
+        """
+        rc, lines = _run(arg_keys=["tkn size"])
+        assert rc == 1
+        assert any("tkn size" in l for l in lines)
+
+    def test_an_empty_key_is_refused(self):
+        """Signalled by --arg-keys-empty, since an empty key renders no word to see."""
+        rc, lines = _run(arg_keys=[], arg_keys_empty="x")
+        assert rc == 1
+        assert any("empty key" in l for l in lines)
+
+    def test_a_good_key_alongside_the_empty_signal_still_fails(self):
+        rc, lines = _run(arg_keys=["tkn_text_lang"], arg_keys_empty="x")
+        assert rc == 1
+        assert any("empty key" in l for l in lines)
+
+    def test_the_offending_key_is_numbered(self):
+        rc, lines = _run(arg_keys=["ok_one", "ok_two", "bad-three"])
+        assert rc == 1
+        assert any("key number 3" in l for l in lines)
+
+    @pytest.mark.parametrize("locale", ["C", "en_US.UTF-8", "C.UTF-8"])
+    def test_the_verdict_does_not_depend_on_the_callers_locale(self, locale):
+        """The second regression the move nearly introduced.
+
+        bash's bracket expressions are locale-aware, so [!A-Za-z0-9_] does not match
+        an accented letter under a UTF-8 locale: `tkn_sizé` was ACCEPTED under
+        en_US.UTF-8 and refused under C. The Jinja it replaced tested membership in a
+        literal ASCII string and had no such dependency. Left alone it would have
+        passed CI and let the key through on a UTF-8 node, so the script pins LC_ALL.
+        """
+        assert _run(arg_keys=["tkn_sizé"], env={"LC_ALL": locale})[0] == 1
+        assert _run(arg_keys=["tkn_size"], env={"LC_ALL": locale})[0] == 0
+
+    def test_a_value_shaped_like_a_flag_is_never_a_key_here(self):
+        """This script only ever sees keys, so a `--`-leading value cannot reach it.
+
+        The template passes keys as data precisely so that a legitimate value like
+        `--not-a-flag` is not mistaken for a flag name. Pinned from this side too: if
+        someone later passes the rendered words instead, this fails.
+        """
+        assert _run(arg_keys=["tkn_text_lang"])[0] == 0

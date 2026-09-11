@@ -108,6 +108,48 @@ _BINDINGS = {"docs": {"binding": {"path": "/staged/docs"}}}
 _SCRIPTS = {"run": "dpk_run.sh", "setup": "dpk_setup.sh"}
 
 
+def _guard_argv(source: str, dpk_config: dict, bindings: dict | None = None) -> list[str]:
+    """Return the argv the rendered block passes to src/dpk_guard.sh.
+
+    The mirror of `_script_argv`, for the other side of the call. The guard's own
+    verdicts are covered by test_dpk_guard_sh.py, which runs the real script; what
+    only the template can get wrong is WHAT it hands over — in particular the args
+    keys, which move as data (`--arg-key` once per key) rather than as the rendered
+    flag words, so that a key and a `--`-leading value stay distinguishable.
+    """
+    if shutil.which("bash") is None:  # pragma: no cover - bash is present in CI
+        pytest.skip("bash not available")
+    rendered = _render(source, dpk_config, bindings)
+    harness = "\n".join(
+        [
+            "set -e",
+            "mkdir -p ./venv/bin && : > ./venv/bin/activate",
+            "mkdir -p ./src",
+            # Here the GUARD is the instrument and both work scripts are no-ops.
+            f'printf "%s\\n" \'#!/usr/bin/env bash\' \'for a in "$@"; do echo "ARG:$a"; done\''
+            " > ./src/dpk_guard.sh",
+            "chmod +x ./src/dpk_guard.sh",
+            "for s in dpk_setup.sh dpk_run.sh; do"
+            " printf '#!/usr/bin/env bash\\ntrue\\n' > ./src/$s; chmod +x ./src/$s; done",
+            rendered,
+        ]
+    )
+    proc = subprocess.run(
+        ["bash", "-c", harness], capture_output=True, text=True, cwd=_TMPDIR
+    )
+    assert proc.returncode == 0, f"rendered block failed: {proc.stderr}"
+    return [
+        line[len("ARG:") :]
+        for line in proc.stdout.splitlines()
+        if line.startswith("ARG:")
+    ]
+
+
+def _guard_opt(argv: list[str], name: str) -> list[str]:
+    """Every value given for a repeatable guard option."""
+    return [argv[i + 1] for i, a in enumerate(argv) if a == name and i + 1 < len(argv)]
+
+
 def _script_argv(rendered: str, which: str) -> list[str]:
     """Return the argv the rendered block passes to the bundled script.
 
@@ -689,27 +731,32 @@ class TestEveryConfigValueIsEscaped:
         ]
 
 
-class TestArgsKeysMustBeFlagNames:
-    """An args KEY renders as a bare `--<key>` word, unquoted — as a flag must.
+class TestArgsKeysReachTheGuardAsData:
+    """The args keys are checked in dpk_guard.sh; the template's job is to hand them over.
 
-    So it cannot be quote-escaped like a value: escaping would silently build a
-    wrong flag name and leave DPK to reject it with a confusing argparse error. A
-    real DPK flag name is always [A-Za-z0-9_], so anything else is refused by name
-    before the transform runs.
+    This used to be a Jinja loop that emitted `echo ... exit 1` into both blocks —
+    two places doing guarding, and the harder place to maintain. Review asked why it
+    was still there, and the answer turned out to be that my reason was wrong: I had
+    said keys arrive as already-rendered argv words, where `--tkn_chunk_size` and a
+    typo'd `--tkn-chunk-size` are indistinguishable. True of the rendered words, but
+    the template can simply pass the keys THEMSELVES, which it does now.
+
+    One `--arg-key` per key, not one separated list, because a key may contain a
+    space: passing `tkn_chunk_size tkn size` as a single option let the shell split it
+    into individually-legal words and the bad key through. Verified as a regression
+    against the Jinja before relying on the current form.
     """
 
     @pytest.mark.parametrize(
         "key", ["k`touch /tmp/x`", "k;rm -rf /", "k$(id)", "k v", "k-dash", "k'q"]
     )
-    def test_a_non_identifier_key_is_refused(self, launcher, defaults, key):
-        rendered = _render(
-            launcher["run"], _transform_cfg(defaults, args={key: "v"}), _BINDINGS
-        )
-        assert "exit 1" in rendered
-        assert "not a valid DPK flag name" in rendered
-        # And it must refuse BEFORE the transform is invoked.
-        assert rendered.index("exit 1") < rendered.index("dpk_run.sh")
-        assert _bash_ok(rendered)
+    def test_a_bad_key_reaches_the_guard_intact(self, launcher, defaults, key):
+        """The template must not mangle it: the guard reports the key it was given."""
+        for block in ("setup", "run"):
+            argv = _guard_argv(
+                launcher[block], _transform_cfg(defaults, args={key: "v"}), _BINDINGS
+            )
+            assert _guard_opt(argv, "--arg-key") == [key]
 
     @pytest.mark.parametrize(
         "key", ["tkn_chunk_size", "runtime_num_workers", "UPPER_2", "a1"]
@@ -721,6 +768,96 @@ class TestArgsKeysMustBeFlagNames:
         )
         assert "not a valid DPK flag name" not in rendered
         assert _passthrough(_script_argv(rendered, "run")) == [f"--{key}", "v"]
+
+    def test_every_key_is_passed_once_in_order(self, launcher, defaults):
+        args = {"tkn_chunk_size": 0, "tkn_text_lang": "en", "bad-key": 1}
+        for block in ("setup", "run"):
+            argv = _guard_argv(
+                launcher[block], _transform_cfg(defaults, args=args), _BINDINGS
+            )
+            assert _guard_opt(argv, "--arg-key") == list(args)
+
+    def test_a_value_beginning_with_dashes_is_not_taken_for_a_key(
+        self, launcher, defaults
+    ):
+        """The whole reason keys travel as data rather than as rendered flag words.
+
+        A build may legitimately pass a value that starts with `--`. Read back out of
+        the rendered command line it is indistinguishable from a flag name, and would
+        be refused; passed as data, only the real key is checked.
+        """
+        cfg = _transform_cfg(defaults, args={"tkn_text_lang": "--not-a-flag"})
+        argv = _guard_argv(launcher["run"], cfg, _BINDINGS)
+        assert _guard_opt(argv, "--arg-key") == ["tkn_text_lang"]
+        assert "--not-a-flag" not in _guard_opt(argv, "--arg-key")
+        # and it still reaches DPK as the value it is
+        rendered = _render(launcher["run"], cfg, _BINDINGS)
+        assert _passthrough(_script_argv(rendered, "run")) == [
+            "--tkn_text_lang",
+            "--not-a-flag",
+        ]
+
+    def test_an_empty_key_is_signalled_separately(self, launcher, defaults):
+        """An empty key renders no --arg-key word, so it needs its own signal.
+
+        Without --arg-keys-empty it would be silently unguarded: the emptiness is only
+        visible where the keys are still a list, which is the template.
+        """
+        for block in ("setup", "run"):
+            argv = _guard_argv(
+                launcher[block], _transform_cfg(defaults, args={"": 1}), _BINDINGS
+            )
+            assert _guard_opt(argv, "--arg-keys-empty") == ["x"]
+
+    def test_no_empty_key_leaves_the_signal_empty(self, launcher, defaults):
+        for block in ("setup", "run"):
+            argv = _guard_argv(
+                launcher[block],
+                _transform_cfg(defaults, args={"tkn_text_lang": "en"}),
+                _BINDINGS,
+            )
+            assert _guard_opt(argv, "--arg-keys-empty") == [""]
+
+    def test_the_keys_are_actually_handed_over(self, launcher, defaults):
+        """The wiring itself, asserted from the absence side.
+
+        Every other test here names a key and checks it arrives, which cannot tell
+        "the template passed no keys" from "the config had none" — deleting the
+        `--arg-key` loop outright left the whole suite green. This step has twice lost
+        guard wiring to an over-wide removal span, so the loop is pinned directly.
+        """
+        for block in ("setup", "run"):
+            rendered = _render(
+                launcher[block],
+                _transform_cfg(defaults, args={"tkn_text_lang": "en"}),
+                _BINDINGS,
+            )
+            assert "--arg-key " in rendered, f"{block} block passes no args keys"
+            assert "--arg-keys-empty " in rendered, f"{block} block omits the empty signal"
+
+    @pytest.mark.parametrize("key", ["k\'q", "k;rm -rf /", "k v", "k-dash"])
+    def test_a_bad_key_still_renders_parseable_bash(self, launcher, defaults, key):
+        """Why the render loop keeps skipping bad keys, now that the guard rejects them.
+
+        The guard exits before the flag line runs, so the skip decides nothing at
+        runtime — but the block must still be PARSEABLE bash, or it dies in the shell
+        instead of at the guard's message. `k\'q` is the case that proves it: without
+        the skip it renders an unbalanced quote and `bash -n` fails on the whole block.
+        """
+        for block in ("setup", "run"):
+            rendered = _render(
+                launcher[block], _transform_cfg(defaults, args={key: "v"}), _BINDINGS
+            )
+            assert _bash_ok(rendered), f"{block} block is not parseable for key {key!r}"
+
+    def test_the_template_no_longer_guards_keys_itself(self, launcher, defaults):
+        """The point of the move: exactly one place does this checking, and it is not here."""
+        for block in ("setup", "run"):
+            rendered = _render(
+                launcher[block], _transform_cfg(defaults, args={"bad-key": 1}), _BINDINGS
+            )
+            assert "not a valid DPK flag name" not in rendered
+            assert "exit 1" not in rendered
 
 
 class TestIoWiring:

@@ -44,28 +44,47 @@
 # which is the bug this step already had once (marker guards after the transform, not
 # before). Left in the template deliberately.
 #
-# WHAT IS NOT HERE, AND WHY IT CANNOT BE
-# One guard stays in the template: the `args` KEY check. Keys arrive as
-# already-rendered argv words, so a valid `--tkn_chunk_size` and a typo'd
-# `--tkn-chunk-size` are indistinguishable by the time any script runs.
+# WHAT IS NOT HERE
+# Nothing, now. Every config guard this step has is in this file, which is the point:
+# review asked why the `args` KEY check was still in the template, and the honest
+# answer was that my reason for leaving it there was wrong. I had claimed keys arrive
+# as already-rendered argv words, where a valid `--tkn_chunk_size` and a typo'd
+# `--tkn-chunk-size` are indistinguishable. That is true of the rendered words but not
+# a constraint: the template can pass the keys THEMSELVES, which it now does, one
+# `--arg-key` per key. See "THE ARGS KEYS" below.
 #
-# There used to be a second — an input-name COLLISION check, for two declared inputs
+# There used to be another — an input-name COLLISION check, for two declared inputs
 # whose names sanitized to the same $GB_INPUT_ variable. It is gone along with the
 # names: the step takes `input_path` as a PATH resolved by the build (the byoc
 # pattern), so it never learns binding names and cannot be wrong about them.
 #
 # CONTRACT
 #   dpk_guard.sh --transform <t> --module <m> --dpk-image <i> \
-#                --output <name> --input-path <dir>
+#                --output <name> --input-path <dir> \
+#                [--arg-key <key> ...] --arg-keys-empty <flag>
 #
 #   Every option is REQUIRED but may be EMPTY — that is what is being checked.
+#
+#   --arg-key is repeated once per key of dpk_config.args, carrying the RAW key before
+#   it is rendered into a flag word. See "THE ARGS KEYS" below for why the keys are
+#   passed as data, and one per option rather than as one separated list.
+#
+#   --arg-keys-empty is non-empty when at least one key was the empty string. It needs
+#   its own option because an empty key renders no --arg-key word to be seen.
 set -euo pipefail
+
+# Pattern matching below must be ASCII-exact: see the args-keys section for why a
+# UTF-8 locale silently widens [A-Za-z0-9_] to accept accented letters. Exported so
+# it holds for the whole script rather than one command.
+export LC_ALL=C
 
 transform=""
 module=""
 dpk_image=""
 output=""
 input_path=""
+arg_keys=()
+arg_keys_empty=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -74,6 +93,8 @@ while [ "$#" -gt 0 ]; do
     --dpk-image)  dpk_image="$2"; shift 2 ;;
     --output)     output="$2";    shift 2 ;;
     --input-path) input_path="$2"; shift 2 ;;
+    --arg-key)    arg_keys+=("$2"); shift 2 ;;
+    --arg-keys-empty) arg_keys_empty="$2"; shift 2 ;;
     --)           shift; break ;;
     *)            break ;;
   esac
@@ -153,3 +174,62 @@ case $input_path in
     echo "dpk: raised, so this is the first point it can be caught." >&2
     exit 1 ;;
 esac
+
+# --- args keys ------------------------------------------------------------------
+# Each key of dpk_config.args becomes a flag word `--<key>`, so a key that is not a
+# legal flag name produces an argv word DPK's launcher cannot parse. It uses
+# parse_args() rather than parse_known_args(), so it exits on the FIRST unknown flag
+# with "unrecognized arguments" — after the install, naming argparse rather than the
+# key. Three shapes reach that failure:
+#
+#   tkn-chunk-size: 4     -> `--tkn-chunk-size 4`   no such flag; DPK's are all
+#                                                   underscored (checked: 221 flags
+#                                                   across 45 modules, 0 hyphenated)
+#   tkn chunk size: 4     -> `--tkn chunk size 4`   one key becomes three argv words
+#   "": 4                 -> `-- 4`                 a bare `--`, which python takes
+#                                                   as an argv separator, then chokes
+#                                                   on the orphaned value
+#
+# THE ARGS KEYS, and why each arrives as its own option
+#
+# The keys are checked from repeated `--arg-key <key>` options rather than from the
+# rendered `-- --flag val` words, for two reasons:
+#
+#   1. In the rendered form a flag name and a value are not distinguishable. A value
+#      that itself begins with `--` is a legal thing for a build to pass, and reading
+#      argv back would reject it.
+#   2. One key per option means the shell never splits the list, so a key containing a
+#      space stays ONE word and is caught. Passing them space-separated in a single
+#      option looked simpler and was wrong: `tkn size` split into `tkn` and `size`,
+#      both individually legal, and the bad key passed. The Jinja this replaced caught
+#      it, so that would have been a regression.
+#
+# An empty key survives neither form — it renders no word at all — so it is signalled
+# separately by --arg-keys-empty, computed where the keys are still a list.
+# The LC_ALL=C set at the top of this script is load-bearing here, not hygiene. Bash's
+# bracket expressions are locale-aware,
+# so [!A-Za-z0-9_] does NOT match an accented letter under a UTF-8 locale: `tkn_sizé`
+# was accepted under en_US.UTF-8 and rejected under C. The Jinja this replaced tested
+# membership in a literal ASCII string, which has no such dependency, so without this
+# the check would pass on a C-locale CI runner and let the key through on a UTF-8 node.
+# argparse would then reject the flag, which is the failure this guard exists to pre-empt.
+key_index=0
+for key in ${arg_keys[@]+"${arg_keys[@]}"}; do
+  key_index=$((key_index + 1))
+  case $key in
+    ""|*[!A-Za-z0-9_]*)
+      echo "dpk: ERROR dpk_config.args key is not a valid DPK flag name: '$key'" >&2
+      echo "dpk: (key number $key_index). Only letters, digits and underscore are" >&2
+      echo "dpk: allowed. DPK's flags are underscored, e.g. tkn_chunk_size — a" >&2
+      echo "dpk: hyphenated spelling is the usual cause." >&2
+      exit 1 ;;
+  esac
+done
+
+if [ -n "$arg_keys_empty" ]; then
+  echo "dpk: ERROR dpk_config.args has an empty key." >&2
+  echo "dpk: an empty key renders a bare '--', which python reads as an argv" >&2
+  echo "dpk: separator, so the failure that follows is about the value rather" >&2
+  echo "dpk: than the missing flag name." >&2
+  exit 1
+fi

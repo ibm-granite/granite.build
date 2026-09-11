@@ -212,42 +212,32 @@ environment_configs:
                 block-scoped: the same constraint that makes q() appear in both blocks. A
                 test asserts the two copies stay byte-identical, so they cannot drift into
                 disagreeing about what is valid. #}
-            {%- set ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" %}
             {#- Required-config guards, in src/dpk_guard.sh so they are shellcheck'd,
                 bash -n'd and unit tested rather than Jinja. Run in BOTH phases: setup is
                 the expensive one — it carries the hf download and the dependency install
                 — and run can be reached on a warm cluster without a fresh setup.
-                Only the args-key guard stays in Jinja below, because args keys arrive as
-                already-rendered argv words and so cannot be checked by a script. The
-                input-name collision guard that used to live here is gone along with the
-                names themselves: the step takes a path now. #}
+                The args keys go with them, as --arg-key. The input-name collision
+                guard that used to live here is gone along with the names themselves:
+                the step takes a path now. #}
             bash ./src/dpk_guard.sh \
               --transform '{{ q(config.dpk_config.transform) }}' \
               --module '{{ q(config.dpk_config.module) }}' \
               --dpk-image '{{ q(config.dpk_config.dpk_image) }}' \
               --output '{{ q(config.dpk_config.output) }}' \
-              --input-path '{{ q(config.dpk_config.input_path) }}'
-            {#- An args KEY becomes a bare `--<key>` word, UNQUOTED, because that is
-                what a flag name is. So it cannot be quote-escaped like a value —
-                escaping would just build a wrong flag name and DPK would reject it
-                with a confusing argparse error. A real DPK flag name is always
-                [A-Za-z0-9_], so anything else is a typo or an injection attempt, and
-                the honest response is to refuse it by name. Checked at the shell for
-                the same reason as the collision guard: raise_error is not available
-                under strict=False rendering. #}
-            {#- `not (k | string)` catches the EMPTY key, which the character test
-                cannot: "" holds no disallowed character, so it passed and rendered a
-                bare `--`, giving `dpk_run.sh ... -- -- 'v'`. The stray `--` and its
-                value reach python as argv, and DPK's launcher uses parse_args() rather
-                than parse_known_args(), so it dies with "unrecognized arguments: -- v"
-                — after the install, naming argparse rather than the key. #}
-            {%- for k in config.dpk_config.args.keys() %}
-            {%- if not (k | string) or (k | string | list | reject("in", ALLOWED) | list | length) %}
-            echo "dpk: ERROR args key is not a valid DPK flag name: only letters," >&2
-            echo "dpk: digits and underscore are allowed (offending key #{{ loop.index }})." >&2
-            exit 1
-            {%- endif %}
-            {%- endfor %}
+              --input-path '{{ q(config.dpk_config.input_path) }}' \
+              {%- for k in config.dpk_config.args.keys() %}
+              --arg-key '{{ q(k) }}' \
+              {%- endfor %}
+              --arg-keys-empty '{% for k in config.dpk_config.args.keys()
+                %}{{ "x" if not (k | string) else "" }}{% endfor %}'
+            {#- The args KEYS are checked in dpk_guard.sh, from the --arg-key options
+                above. They are passed as DATA rather than read back out of the rendered
+                flag words, because in rendered form a flag name and a value beginning
+                with `--` are indistinguishable. One option per key, not one separated
+                list, so that a key containing a space stays a single word: passing them
+                space-separated let the shell split `tkn size` into two legal halves and
+                the bad key through. --arg-keys-empty carries what no word can — that a
+                key was the empty string. See that script's "THE ARGS KEYS" section. #}
             {%- if not config.dpk_config.dpk_image %}
             {%- set t = config.dpk_config.transform %}
             {#- The transform's own pip extra, derived from its name. That extra is
@@ -287,6 +277,14 @@ environment_configs:
             {#- Shell-quote escaping and the flag-name charset, hoisted to the top of
                 the block because the guard call below uses them. Jinja macros are
                 block-scoped, so `setup` carries its own identical copy. #}
+            {#- ALLOWED is NOT a second guard, and is not what refuses a bad key —
+                dpk_guard.sh does that, and exits before the flag line below is ever
+                reached. This is a RENDER-time necessity: the flag line has to be
+                parseable bash even when the config is invalid, and a key like `k'q`
+                renders an unbalanced quote that makes the whole block a syntax error.
+                Verified by removing it: `bash -n` then fails on the rendered block, so
+                the block would die in bash rather than at the guard's message. It skips
+                keys the guard is about to reject; it never decides anything. #}
             {%- set ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" %}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
@@ -303,25 +301,20 @@ environment_configs:
               --module '{{ q(config.dpk_config.module) }}' \
               --dpk-image '{{ q(config.dpk_config.dpk_image) }}' \
               --output '{{ q(config.dpk_config.output) }}' \
-              --input-path '{{ q(config.dpk_config.input_path) }}'
-            {#- An args KEY becomes a bare `--<key>` word, UNQUOTED, because that is what
-                a flag name is, so it cannot be quote-escaped like a value. A real DPK
-                flag name is always [A-Za-z0-9_], so anything else is a typo or an
-                injection attempt and is refused by name. This is the ONE guard that
-                stays in Jinja rather than moving to dpk_guard.sh: keys reach any script
-                as already-rendered argv words, so by then a valid `--tkn_chunk_size` and
-                a typo'd `--tkn-chunk-size` are indistinguishable.
-                `not (k | string)` catches the EMPTY key, which the character test
-                cannot: "" holds no disallowed character, so it passed and rendered a
-                bare `--`, giving `dpk_run.sh ... -- -- 'v'` — reaching python as argv
-                and dying in argparse after the install. #}
-            {%- for k in config.dpk_config.args.keys() %}
-            {%- if not (k | string) or (k | string | list | reject("in", ALLOWED) | list | length) %}
-            echo "dpk: ERROR args key is not a valid DPK flag name: only letters," >&2
-            echo "dpk: digits and underscore are allowed (offending key #{{ loop.index }})." >&2
-            exit 1
-            {%- endif %}
-            {%- endfor %}
+              --input-path '{{ q(config.dpk_config.input_path) }}' \
+              {%- for k in config.dpk_config.args.keys() %}
+              --arg-key '{{ q(k) }}' \
+              {%- endfor %}
+              --arg-keys-empty '{% for k in config.dpk_config.args.keys()
+                %}{{ "x" if not (k | string) else "" }}{% endfor %}'
+            {#- The args KEYS are checked in dpk_guard.sh, from the --arg-key options
+                above. They are passed as DATA rather than read back out of the rendered
+                flag words, because in rendered form a flag name and a value beginning
+                with `--` are indistinguishable. One option per key, not one separated
+                list, so that a key containing a space stays a single word: passing them
+                space-separated let the shell split `tkn size` into two legal halves and
+                the bad key through. --arg-keys-empty carries what no word can — that a
+                key was the empty string. See that script's "THE ARGS KEYS" section. #}
             {#- Module by rule: dpk_<transform>.runtime, DPK's pure-python
                 PythonTransformLauncher. `module` overrides it (see the config
                 comments). There is no Ray variant — this step has no Ray mode. #}
