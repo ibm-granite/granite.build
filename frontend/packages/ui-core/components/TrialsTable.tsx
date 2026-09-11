@@ -28,7 +28,7 @@ import {
   InlineNotification,
   InlineLoading,
 } from '@carbon/react'
-import { ArrowLeft } from '@carbon/icons-react'
+import { ArrowLeft, Compare } from '@carbon/icons-react'
 import { RadarChart } from '@carbon/charts-react'
 import { useQuery } from '@tanstack/react-query'
 import { useChartsTheme } from '../hooks/useTheme'
@@ -248,13 +248,6 @@ export function TrialsTable({ job }: Props) {
   return (
     <div>
       <TrialProgressSummary job={job} trials={trials} />
-      {canOpenCompare && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '0.5rem' }}>
-          <Button size="sm" onClick={() => setShowCompare(true)}>
-            Compare {comparableTrials.length} trials
-          </Button>
-        </div>
-      )}
       {/* Table left, radar right once a comparison is selectable. `flexWrap` drops
           the radar under the table when the viewport can't seat both, and
           `minWidth: 0` lets the table column actually shrink — without it a flex
@@ -281,7 +274,7 @@ export function TrialsTable({ job }: Props) {
           )
         }}
       >
-        {({ rows: tableRows, headers, getTableProps, getHeaderProps, getRowProps, getExpandedRowProps, getSelectionProps, onInputChange }) => (
+        {({ rows: tableRows, headers, getTableProps, getHeaderProps, getRowProps, getExpandedRowProps, getSelectionProps, onInputChange, selectRow }) => (
           <TableContainer>
             <TableToolbar>
               <TableToolbarContent>
@@ -291,6 +284,28 @@ export function TrialsTable({ job }: Props) {
                   onChange={onInputChange}
                   aria-label="Search trials"
                 />
+                {selectedIds.length > 0 && (
+                  <Button
+                    kind="ghost"
+                    // Clears the whole selection regardless of what the search is
+                    // showing. Carbon's own onCancel skips rows outside the active
+                    // filter, which would leave this button visible with nothing
+                    // left for it to do; selectRow toggles rowsById directly and
+                    // ignores the filter. Every id in selectedIds is selected by
+                    // definition, so each call deselects exactly one row.
+                    onClick={() => {
+                      selectedIds.forEach((id) => selectRow(id))
+                      setSelectedIds([])
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                )}
+                {canOpenCompare && (
+                  <Button renderIcon={Compare} onClick={() => setShowCompare(true)}>
+                    Compare
+                  </Button>
+                )}
               </TableToolbarContent>
             </TableToolbar>
             <Table {...getTableProps()} size="sm">
