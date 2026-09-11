@@ -30,6 +30,7 @@ export function TrialProgressSummary({ job, trials }: Props) {
     jobStatus: job.status,
     jobCreatedAt: job.created_at,
     jobUpdatedAt: job.updated_at,
+    jobFinishedAt: job.finished_at,
     now: Date.now(),
   })
 
