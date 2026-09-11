@@ -2,8 +2,9 @@
  * Tests for the trial-comparison grouping logic behind the labelled sections in
  * the Hyperparameters → Compare view.
  *
- * The compare view splits rows into three labelled blocks — Results, What
- * differs, and Same for all — and the section headings show a count for each.
+ * The compare view splits rows into three labelled blocks — Results,
+ * Differences, and Similarities — and the section headings show a count for
+ * each.
  * Those counts are only meaningful if the partition is exhaustive and
  * non-overlapping, so the split lives in a pure module rather than inline JSX
  * (the frontend test harness has no jsdom and cannot render Carbon components).
@@ -149,8 +150,8 @@ describe('getOddOnesOut', () => {
 // metrics), so two trials in one comparison can genuinely carry different field
 // sets — TrialsTable's radar code notes the same thing about `loss`. Both
 // functions used to take their field list from rows[0] alone, so anything the
-// first row lacked was invisible: not in Results, not in What differs, not in
-// Same for all, and absent from the counts the section headings assert are
+// first row lacked was invisible: not in Results, not in Differences, not in
+// Similarities, and absent from the counts the section headings assert are
 // exhaustive.
 describe('rows with differing field sets', () => {
   it('includes a key that only later rows carry', () => {
@@ -187,7 +188,7 @@ describe('rows with differing field sets', () => {
 
 // A trial names its primary metric dynamically (`trial.metric`). lossOf() honours
 // that when sorting, but RESULT_KEYS is a fixed list — so a job reporting e.g.
-// eval_loss sorted correctly and then filed that number under "What differs" as
+// eval_loss sorted correctly and then filed that number under "Differences" as
 // though it were a hyperparameter, while Results showed no loss at all. That is
 // the same number TrialsTable prints in its Loss column.
 describe('dynamic primary metric', () => {
