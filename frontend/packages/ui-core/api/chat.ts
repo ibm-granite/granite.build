@@ -28,7 +28,67 @@ export interface ChatEvent {
   confirmation_id?: string
 }
 
+/**
+ * Extra request headers to attach to every chat call, supplied by the host app.
+ *
+ * Chat is the one API client here that a host cannot reach with its own axios
+ * interceptor. Deployments whose per-user identity does not come from gbserver's
+ * AuthMiddleware identify the caller with request headers instead (gb-ui's
+ * sidecar, for one, sends an Authorization bearer token plus X-User-Email) and
+ * normally attach them by interceptor on their own axios instance. This module
+ * uses neither that instance nor, for streaming, axios at all: /chat/status,
+ * /chat/stop and /chat/confirm go through the module-private `statusClient`
+ * below, and /chat/stream uses native fetch because axios does not stream
+ * cleanly in-browser.
+ *
+ * So without a hook here, every chat request arrives unidentified no matter what
+ * the host configures, and the backend's resolve_identity() falls back to one
+ * shared "standalone" identity for everybody — collapsing the per-identity rate
+ * limit into a single bucket and, more seriously, collapsing the session scoping
+ * that stops one user resolving another user's pending confirm_action.
+ *
+ * Call setChatHeaderProvider once during app startup; pass null to clear it. The
+ * provider runs per request rather than once, so it always sees current
+ * credentials, and it may be async for hosts that refresh a token first.
+ */
+export type ChatHeaderProvider = () =>
+  | Record<string, string>
+  | Promise<Record<string, string>>
+
+let chatHeaderProvider: ChatHeaderProvider | null = null
+
+export function setChatHeaderProvider(provider: ChatHeaderProvider | null): void {
+  chatHeaderProvider = provider
+}
+
+/**
+ * Resolves the host-supplied headers for a single request.
+ *
+ * A provider that throws or rejects contributes no headers rather than failing
+ * the call: that degrades chat to exactly the unidentified behaviour it has when
+ * no provider is installed, whereas propagating the error would take the whole
+ * widget down over something like a transient token read.
+ */
+async function resolveChatHeaders(): Promise<Record<string, string>> {
+  if (!chatHeaderProvider) return {}
+  try {
+    return (await chatHeaderProvider()) ?? {}
+  } catch {
+    return {}
+  }
+}
+
 const statusClient = axios.create({ baseURL: apiBase('/api/analytics') })
+
+// One interceptor covers /chat/status, /chat/stop and /chat/confirm. axios awaits
+// async request interceptors, so a provider that refreshes a token still works.
+statusClient.interceptors.request.use(async (config) => {
+  const extra = await resolveChatHeaders()
+  for (const [name, value] of Object.entries(extra)) {
+    config.headers.set(name, value)
+  }
+  return config
+})
 
 export interface ChatStatus {
   enabled: boolean
@@ -118,7 +178,12 @@ export async function* streamChat(
 ): AsyncGenerator<ChatEvent> {
   const res = await fetch(apiBase('/api/analytics/chat/stream'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      ...(await resolveChatHeaders()),
+      // Set last on purpose: the body below is always JSON, so a host provider
+      // must not be able to change how the server reads it.
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({
       session_id: sessionId,
       message,
