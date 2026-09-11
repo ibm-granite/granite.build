@@ -36,6 +36,7 @@ import { TrialProgressSummary } from './TrialProgressSummary'
 import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
 import { bestTrialId, trialColorScale } from './trialMetrics'
+import { formatCell } from './trialsTableFormat'
 import type { JobDetail, Trial } from '../types'
 
 const HEADERS = [
@@ -50,13 +51,6 @@ const HEADERS = [
 // TuningDetailPageClient polls the job itself, so the table and the page header
 // advance together.
 const ACTIVE_STATUSES = new Set(['running', 'pending'])
-
-function formatTime(seconds: number): string {
-  if (seconds <= 0) return '0 s'
-  const mins = Math.floor(seconds / 60)
-  const secs = Math.floor(seconds % 60)
-  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
-}
 
 function toFeatureLabel(name: string): string {
   return name.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())
@@ -319,15 +313,7 @@ export function TrialsTable({ job }: Props) {
                         }}
                       />
                       {row.cells.map((cell) => (
-                        <TableCell key={cell.id}>
-                          {cell.info.header === 'created_at'
-                            ? new Date(cell.value as string).toLocaleString()
-                            : cell.info.header === 'loss' && typeof cell.value === 'number'
-                            ? cell.value.toFixed(4)
-                            : cell.info.header === 'total_time' && typeof cell.value === 'number'
-                            ? formatTime(cell.value)
-                            : (cell.value as React.ReactNode) ?? '—'}
-                        </TableCell>
+                        <TableCell key={cell.id}>{formatCell(cell.info.header, cell.value)}</TableCell>
                       ))}
                     </TableExpandRow>
                     {row.isExpanded && trial && (
