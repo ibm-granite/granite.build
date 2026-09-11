@@ -31,11 +31,13 @@ request time.
 """
 
 import asyncio
+import contextlib
 import os
 import random
 import shlex
 import stat
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator, Dict, List, Optional
@@ -43,7 +45,14 @@ from typing import AsyncIterator, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from gbserver.environment.environment import Environment
-from gbserver.types.constants import ENABLE_SSH_HOST_KEY_VERIFICATION
+from gbserver.types.constants import (
+    ENABLE_SSH_HOST_KEY_VERIFICATION,
+    GBSERVER_LSF_FILE_API_SSH_BUDGET_S,
+    GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S,
+    GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
+    GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
+    GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
+)
 from gbserver.utils.logger import get_logger
 from gbserver.utils.ssh_tunnel import SshTunnel, SshTunnelError
 
@@ -227,12 +236,38 @@ async def open_lsf_tunnel(
     try:
         key_file_path = _write_key_file(key_material)
         last_err: Optional[Exception] = None
+        # Overall wall-time cap across all candidate nodes. This is a synchronous,
+        # interactively-called API (unlike the batch build runner), so we bound the
+        # whole sweep — not just each node — and return a fast, clean 503 rather
+        # than letting per-node login_timeouts stack up past the caller's timeout.
+        deadline = time.monotonic() + GBSERVER_LSF_FILE_API_SSH_BUDGET_S
         for node in candidates:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                last_err = last_err or TimeoutError(
+                    f"file-API SSH budget of {GBSERVER_LSF_FILE_API_SSH_BUDGET_S}s "
+                    "exhausted before a reachable node was found"
+                )
+                logger.warning(
+                    "[build-files] SSH budget exhausted after %ds; "
+                    "not trying remaining nodes",
+                    GBSERVER_LSF_FILE_API_SSH_BUDGET_S,
+                )
+                break
             attempt = SshTunnel(
                 host=node,
                 username=username,
                 key_file=key_file_path,
                 host_key_verification=ENABLE_SSH_HOST_KEY_VERIFICATION,
+                # Bound the banner/login phase and detect a wedged session so a
+                # slow bluevela login node fails over here instead of hanging
+                # open() unbounded (same symptom as the build runner's tunnel).
+                # login_timeout is the per-node bound; the deadline above caps the
+                # total across nodes, so a node is given at most whichever is less.
+                connect_timeout=GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S,
+                login_timeout=GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
+                keepalive_interval=GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
+                keepalive_count_max=GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
             )
             logger.info(
                 "[build-files] opening tunnel: space=%s node=%s key_file=%s",
@@ -241,11 +276,18 @@ async def open_lsf_tunnel(
                 key_file_path,
             )
             try:
-                await attempt.open()
-            except SshTunnelError as e:
+                # Cap this node's open() at the budget still remaining so one slow
+                # node can't consume the whole budget and starve the others.
+                await asyncio.wait_for(attempt.open(), timeout=remaining)
+            except (SshTunnelError, asyncio.TimeoutError) as e:
                 # SshTunnel.open() already calls close() on partial failure
-                # (ssh_tunnel.py:140-145), so no half-open state to clean up.
+                # (SshTunnelError path); on a wait_for timeout the attempt may be
+                # half-open, so close it explicitly. Never let cleanup mask the
+                # original error.
                 last_err = e
+                if isinstance(e, asyncio.TimeoutError):
+                    with contextlib.suppress(Exception):
+                        await attempt.close()
                 logger.warning(
                     "[build-files] tunnel open failed on node %s: %s", node, e
                 )

@@ -52,6 +52,13 @@ def _make_lsf(login_nodes: List[str]) -> Lsf:
     lsf.ssh_connect_budget_s = 3600
     lsf.ssh_connect_base_backoff_s = 1
     lsf.ssh_connect_max_backoff_s = 4
+    # Per-attempt banner/login bounds threaded into the tunnel + probe.
+    lsf.ssh_connect_timeout_s = 20
+    lsf.ssh_login_timeout_s = 90
+    lsf.ssh_keepalive_interval_s = 10
+    lsf.ssh_keepalive_count_max = 3
+    lsf.ssh_probe_server_alive_interval = 10
+    lsf.ssh_probe_server_alive_count_max = 9
     return lsf
 
 
@@ -224,6 +231,53 @@ class TestEnsureSshTunnel:
         assert lsf._ssh_tunnel is good
 
     @pytest.mark.asyncio
+    async def test_builds_tunnel_with_banner_login_bounds(self: Self) -> None:
+        """The tunnel is constructed with the connect/login/keepalive bounds so a
+        slow-banner or wedged login node fails over instead of hanging."""
+        lsf = _make_lsf(["a"])
+        good = _healthy_tunnel("a")
+
+        with (
+            patch("gbserver.environment.lsf.SshTunnel", return_value=good) as cls,
+            patch.object(
+                lsf, "_get_reachable_ssh_node", new=AsyncMock(return_value="a")
+            ),
+        ):
+            await lsf._ensure_ssh_tunnel()
+
+        _, kwargs = cls.call_args
+        assert kwargs["connect_timeout"] == lsf.ssh_connect_timeout_s
+        assert kwargs["login_timeout"] == lsf.ssh_login_timeout_s
+        assert kwargs["keepalive_interval"] == lsf.ssh_keepalive_interval_s
+        assert kwargs["keepalive_count_max"] == lsf.ssh_keepalive_count_max
+
+    @pytest.mark.asyncio
+    async def test_aborts_when_key_file_removed_by_teardown(self: Self) -> None:
+        """A teardown mid-sweep (key file nulled) aborts promptly, rather than
+        continuing to probe dead nodes for the rest of the budget."""
+        lsf = _make_lsf(["a", "b"])
+        lsf.ssh_connect_budget_s = 14400  # long budget; teardown must still win
+
+        async def _node_then_teardown() -> str:
+            # Simulate teardown_bsub racing in: the key file is removed while the
+            # sweep is between attempts.
+            lsf._key_file_path = None
+            raise RuntimeError("no reachable node")
+
+        get_node = AsyncMock(wraps=_node_then_teardown)
+        with (
+            patch("gbserver.environment.lsf.SshTunnel"),
+            patch.object(lsf, "_get_reachable_ssh_node", new=get_node),
+            patch("gbserver.environment.lsf.asyncio.sleep", new=AsyncMock()) as sleep,
+        ):
+            with pytest.raises(SshTunnelError, match="torn down / build"):
+                await lsf._ensure_ssh_tunnel()
+            # Second sweep's top-of-loop check bails before another node search.
+            assert get_node.await_count == 1
+            # No long budget wait — we aborted, not slept out 4h.
+            sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_healthy_fast_path_skips_lock(self: Self) -> None:
         """A healthy tunnel is returned without ever taking _tunnel_lock."""
         lsf = _make_lsf(["a"])
@@ -313,6 +367,33 @@ class TestEnsureSshTunnelConcurrency:
         await holder
         await asyncio.sleep(0)  # let close_when_idle drain and close
         first.close.assert_awaited()  # closed once the in-flight use drained
+
+
+class TestReachabilityProbeBannerBound:
+    """The pre-tunnel `ssh` probe must bound the banner phase, not just TCP."""
+
+    @pytest.mark.asyncio
+    async def test_probe_command_includes_server_alive_flags(self: Self) -> None:
+        lsf = _make_lsf(["a"])
+        captured: dict = {}
+
+        async def _capture(command_list, launch_id):  # noqa: ANN001
+            captured["cmd"] = command_list
+            return MagicMock(), "", ""
+
+        with patch(
+            "gbserver.environment.lsf.launch_command_and_raise_errors",
+            new=AsyncMock(side_effect=_capture),
+        ):
+            ok = await lsf._Lsf__is_ssh_node_reachable(node="a", launch_id="lid")
+
+        assert ok is True
+        cmd = captured["cmd"]
+        # ConnectTimeout (TCP) is still present, and ServerAlive* now bounds the
+        # banner/post-TCP phase with the configured values.
+        assert f"ConnectTimeout={lsf.ssh_timeout}" in cmd
+        assert f"ServerAliveInterval={lsf.ssh_probe_server_alive_interval}" in cmd
+        assert f"ServerAliveCountMax={lsf.ssh_probe_server_alive_count_max}" in cmd
 
 
 class TestSshTunnelIsHealthy:

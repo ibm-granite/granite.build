@@ -80,6 +80,10 @@ class SshTunnel:
         host_key_verification: bool = True,
         port_forwards: Optional[List[Tuple[int, str, int]]] = None,
         max_sessions: int = 10,  # 10 is the default MaxSessions value for sshd
+        connect_timeout: Optional[float] = None,
+        login_timeout: Optional[float] = None,
+        keepalive_interval: Optional[float] = None,
+        keepalive_count_max: Optional[int] = None,
     ) -> None:
         if not HAS_ASYNCSSH:
             raise ImportError(
@@ -91,6 +95,17 @@ class SshTunnel:
         self.key_file = key_file
         self.host_key_verification = host_key_verification
         self.port_forwards: List[Tuple[int, str, int]] = port_forwards or []
+        # Bound the connect/login phase and detect a wedged post-connect session.
+        # A host can leave the connection TCP-open yet withhold its SSH banner (or
+        # accept the connection then stop responding); without these, open() and
+        # subsequent commands can hang indefinitely. login_timeout bounds the
+        # banner+auth phase; keepalive_* catches a session that goes silent after
+        # auth. Callers pass explicit values (see the LSF environment); the None
+        # defaults leave asyncssh's own behavior unchanged for other callers.
+        self.connect_timeout = connect_timeout
+        self.login_timeout = login_timeout
+        self.keepalive_interval = keepalive_interval
+        self.keepalive_count_max = keepalive_count_max
 
         self._conn: Optional[asyncssh.SSHClientConnection] = None
         self._listeners: List[asyncssh.SSHListener] = []
@@ -118,6 +133,16 @@ class SshTunnel:
             connect_kwargs["client_keys"] = [self.key_file]
         if not self.host_key_verification:
             connect_kwargs["known_hosts"] = None
+        # Only pass a timeout/keepalive when set, so unset values fall back to
+        # asyncssh's defaults rather than overriding them with None.
+        if self.connect_timeout is not None:
+            connect_kwargs["connect_timeout"] = self.connect_timeout
+        if self.login_timeout is not None:
+            connect_kwargs["login_timeout"] = self.login_timeout
+        if self.keepalive_interval is not None:
+            connect_kwargs["keepalive_interval"] = self.keepalive_interval
+        if self.keepalive_count_max is not None:
+            connect_kwargs["keepalive_count_max"] = self.keepalive_count_max
 
         logger.info("[SshTunnel] Connecting to %s", self.host)
         try:
