@@ -22,6 +22,8 @@ and the retry predicates that decide which transport errors are transient.
 """
 
 import asyncio
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from typing import Self
 
 import pytest
@@ -184,7 +186,8 @@ class TestApiStatusPredicate:
     """The apiserver-status predicate retries transient HTTP codes only."""
 
     @requires_k8s
-    def test_retries_transient_statuses(self: Self) -> None:
+    def test_retries_transient_statuses_when_verb_unknown(self: Self) -> None:
+        # method=None permits the full transient set (classification without a verb).
         for status in (429, 500, 502, 503, 504):
             assert _is_retryable_api_status(ApiException(status=status)) is True
 
@@ -192,6 +195,26 @@ class TestApiStatusPredicate:
     def test_does_not_retry_non_transient_statuses(self: Self) -> None:
         for status in (400, 401, 403, 404, 409, 422):
             assert _is_retryable_api_status(ApiException(status=status)) is False
+
+    @requires_k8s
+    def test_429_retries_for_any_verb(self: Self) -> None:
+        for method in ("GET", "POST", "PATCH", "DELETE"):
+            assert _is_retryable_api_status(ApiException(status=429), method) is True
+
+    @requires_k8s
+    def test_5xx_retries_only_for_read_verbs(self: Self) -> None:
+        # 5xx on a write may have mutated state before the response was lost, so
+        # only idempotent reads are retried.
+        for status in (500, 502, 503, 504):
+            for read in ("GET", "HEAD", "OPTIONS", "get"):
+                assert (
+                    _is_retryable_api_status(ApiException(status=status), read) is True
+                )
+            for write in ("POST", "PUT", "PATCH", "DELETE"):
+                assert (
+                    _is_retryable_api_status(ApiException(status=status), write)
+                    is False
+                )
 
     def test_non_api_exception_is_not_retryable(self: Self) -> None:
         # Non-ApiException (and the missing-library case) must not match.
@@ -217,6 +240,18 @@ class TestRetryAfterWait:
     def test_malformed_header_ignored(self: Self) -> None:
         exc = _FakeApiExc(status=429, headers={"Retry-After": "soon"})
         assert _retry_after_seconds(exc) is None
+
+    def test_retry_after_http_date_future(self: Self) -> None:
+        # RFC 7231 allows an HTTP-date; parse it to a positive delay.
+        future = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=30))
+        exc = _FakeApiExc(status=429, headers={"Retry-After": future})
+        delay = _retry_after_seconds(exc)
+        assert delay is not None and 20.0 <= delay <= 31.0
+
+    def test_retry_after_http_date_past_clamps_to_zero(self: Self) -> None:
+        past = format_datetime(datetime.now(timezone.utc) - timedelta(seconds=30))
+        exc = _FakeApiExc(status=429, headers={"Retry-After": past})
+        assert _retry_after_seconds(exc) == 0.0
 
     def test_wait_honors_hint_capped(
         self: Self, monkeypatch: pytest.MonkeyPatch
@@ -356,32 +391,31 @@ class TestRetryDriver:
 class TestK8sSeamRetries:
     """The installed ApiClient.request wrapper retries transient HTTP statuses."""
 
+    @staticmethod
+    def _install_fake_base(monkeypatch: pytest.MonkeyPatch, fake_request) -> None:
+        # fresh_install already wrapped ApiClient.request. Swap the *original*
+        # base for our fake (marker-less, so re-install wraps it) and re-install.
+        monkeypatch.setattr(ApiClient, "request", fake_request, raising=True)
+        tr._INSTALLED = False
+        install_transport_retries()
+
     @requires_k8s
     @pytest.mark.asyncio
     async def test_installed_wrapper_retries_429_then_succeeds(
         self: Self, fresh_install, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # fresh_install already wrapped ApiClient.request with fast (no-wait)
-        # retries. Replace the *original* underlying request so the wrapper
-        # drives it: fail twice with 429, then succeed.
         calls = {"n": 0}
 
-        async def flaky_request(self, *args, **kwargs):
+        async def flaky_request(self, method, *args, **kwargs):
             calls["n"] += 1
             if calls["n"] < 3:
                 raise ApiException(status=429, reason="Too Many Requests")
             return "ok"
 
-        # Point the wrapped method's captured `original` at our fake by patching
-        # at the class level beneath the wrapper via the closure is not directly
-        # reachable; instead re-install over a patched base.
-        monkeypatch.setattr(ApiClient, "request", flaky_request, raising=True)
-        tr._INSTALLED = False
-        # Clear the wrap marker so re-install wraps our fake base.
-        install_transport_retries()
-
+        self._install_fake_base(monkeypatch, flaky_request)
         client_obj = ApiClient.__new__(ApiClient)
-        result = await ApiClient.request(client_obj)
+        # 429 retries even on a write verb.
+        result = await ApiClient.request(client_obj, "POST")
         assert result == "ok"
         assert calls["n"] == 3
 
@@ -392,15 +426,49 @@ class TestK8sSeamRetries:
     ) -> None:
         calls = {"n": 0}
 
-        async def not_found_request(self, *args, **kwargs):
+        async def not_found_request(self, method, *args, **kwargs):
             calls["n"] += 1
             raise ApiException(status=404, reason="Not Found")
 
-        monkeypatch.setattr(ApiClient, "request", not_found_request, raising=True)
-        tr._INSTALLED = False
-        install_transport_retries()
-
+        self._install_fake_base(monkeypatch, not_found_request)
         client_obj = ApiClient.__new__(ApiClient)
         with pytest.raises(ApiException):
-            await ApiClient.request(client_obj)
+            await ApiClient.request(client_obj, "GET")
+        assert calls["n"] == 1
+
+    @requires_k8s
+    @pytest.mark.asyncio
+    async def test_installed_wrapper_retries_5xx_on_read_verb(
+        self: Self, fresh_install, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = {"n": 0}
+
+        async def flaky_request(self, method, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise ApiException(status=503, reason="Service Unavailable")
+            return "ok"
+
+        self._install_fake_base(monkeypatch, flaky_request)
+        client_obj = ApiClient.__new__(ApiClient)
+        result = await ApiClient.request(client_obj, "GET")
+        assert result == "ok"
+        assert calls["n"] == 3
+
+    @requires_k8s
+    @pytest.mark.asyncio
+    async def test_installed_wrapper_does_not_retry_5xx_on_write_verb(
+        self: Self, fresh_install, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A 5xx on a write may have mutated state; must not be blindly retried.
+        calls = {"n": 0}
+
+        async def failing_write(self, method, *args, **kwargs):
+            calls["n"] += 1
+            raise ApiException(status=503, reason="Service Unavailable")
+
+        self._install_fake_base(monkeypatch, failing_write)
+        client_obj = ApiClient.__new__(ApiClient)
+        with pytest.raises(ApiException):
+            await ApiClient.request(client_obj, "POST")
         assert calls["n"] == 1

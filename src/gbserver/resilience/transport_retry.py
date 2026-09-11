@@ -48,6 +48,8 @@ subcommand.
 import asyncio
 import functools
 import json
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Callable, Optional
 
 from tenacity import (
@@ -68,12 +70,20 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Kubernetes apiserver HTTP status codes that are transient and worth retrying:
-# 429 (throttled / "storage is (re)initializing"), and the 5xx family that
-# surfaces during apiserver rollouts, etcd blips, or LB failovers. Non-transient
-# statuses (401, 403, 404, 409, 422, ...) are deliberately excluded so real API
-# errors still surface promptly with their decoded body.
-RETRYABLE_K8S_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+# Transient apiserver HTTP statuses worth retrying. 429 (throttled / "storage
+# is (re)initializing") is safe to retry for any verb. The 5xx family (apiserver
+# rollouts, etcd blips, LB failovers) is only retried for idempotent read verbs:
+# a 5xx on a write may mean the request reached etcd and mutated state before the
+# response was lost, so a blind retry could duplicate a create or re-apply a
+# patch. Non-transient statuses (401, 403, 404, 409, 422, ...) are excluded so
+# real API errors surface promptly with their decoded body.
+RETRYABLE_ANY_VERB_STATUS_CODES = frozenset({429})
+RETRYABLE_READ_VERB_STATUS_CODES = frozenset({500, 502, 503, 504})
+RETRYABLE_K8S_STATUS_CODES = (
+    RETRYABLE_ANY_VERB_STATUS_CODES | RETRYABLE_READ_VERB_STATUS_CODES
+)
+# HTTP verbs safe to retry on a 5xx (no state mutation on the server).
+IDEMPOTENT_READ_VERBS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # Marker attribute stamped on wrapped methods so re-installation is a no-op.
 _WRAPPED_MARKER = "_gbserver_transport_retry_wrapped"
@@ -213,28 +223,64 @@ def _is_retryable_connector_error(exc: BaseException) -> bool:
     return isinstance(exc, ClientConnectorError)
 
 
-def _is_retryable_api_status(exc: BaseException) -> bool:
-    """Retry transient apiserver HTTP errors (429 / 5xx); let the rest propagate.
+def _is_retryable_api_status(exc: BaseException, method: Optional[str] = None) -> bool:
+    """Retry transient apiserver HTTP errors; let the rest propagate.
 
     The connector seam only retries connection-level failures and lets every
     ``ApiException`` through, so an HTTP throttle (429 "storage is
     (re)initializing") or a transient 5xx was never retried and would fail an
-    otherwise-healthy build. ``kubernetes_asyncio`` is in the optional ``ibm``
-    extra, so its exception type is imported lazily.
+    otherwise-healthy build.
+
+    429 is retried for any verb. 5xx is retried only for idempotent read verbs
+    (``method`` in :data:`IDEMPOTENT_READ_VERBS`), since a 5xx on a write may
+    have already mutated state. ``method=None`` means "verb unknown" and permits
+    the full transient set — the install site always passes the real verb, so
+    write-gating holds there; None is for classification without a request.
+
+    ``kubernetes_asyncio`` is in the optional ``ibm`` extra, so its exception
+    type is imported lazily.
     """
     try:
         # pylint: disable-next=import-outside-toplevel
         from kubernetes_asyncio.client.exceptions import ApiException
     except ImportError:
         return False
-    return isinstance(exc, ApiException) and exc.status in RETRYABLE_K8S_STATUS_CODES
+    if not isinstance(exc, ApiException):
+        return False
+    if exc.status in RETRYABLE_ANY_VERB_STATUS_CODES:
+        return True
+    if exc.status in RETRYABLE_READ_VERB_STATUS_CODES:
+        return method is None or method.upper() in IDEMPOTENT_READ_VERBS
+    return False
+
+
+def _parse_retry_after(value: str) -> Optional[float]:
+    """Parse a ``Retry-After`` value (RFC 7231): delay-seconds or HTTP-date.
+
+    Returns non-negative seconds, or None if unparseable. The k8s apiserver only
+    emits delay-seconds, but a proxy in front of it could send the date form, so
+    we handle both rather than silently backing off.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
 def _retry_after_seconds(exc: BaseException) -> Optional[float]:
     """Server-advised retry delay for an ApiException, else None.
 
-    Prefers the ``Retry-After`` header, then the Status body's
-    ``details.retryAfterSeconds``; ignores a malformed value.
+    Prefers the ``Retry-After`` header (delay-seconds or HTTP-date), then the
+    Status body's ``details.retryAfterSeconds``; ignores a malformed value.
     """
     headers = getattr(exc, "headers", None)
     if headers is not None:
@@ -243,10 +289,9 @@ def _retry_after_seconds(exc: BaseException) -> Optional[float]:
         except AttributeError:
             retry_after = None
         if retry_after:
-            try:
-                return float(retry_after)
-            except (TypeError, ValueError):
-                pass
+            parsed = _parse_retry_after(retry_after)
+            if parsed is not None:
+                return parsed
     body = getattr(exc, "body", None)
     if body:
         try:
@@ -287,14 +332,17 @@ def _install_k8s_request_retry() -> None:
     if getattr(original, _WRAPPED_MARKER, False):
         return
 
-    def _is_retryable_k8s_error(exc: BaseException) -> bool:
-        # Connection-level failures OR transient apiserver HTTP statuses.
-        return _is_retryable_connector_error(exc) or _is_retryable_api_status(exc)
-
     @functools.wraps(original)
-    async def _request_with_retry(self, *args, **kwargs):
+    async def _request_with_retry(self, method, *args, **kwargs):
+        # request(self, method, url, ...): retry connection errors for any verb,
+        # 429 for any verb, and 5xx only for idempotent reads (see predicate).
+        def _predicate(exc: BaseException) -> bool:
+            return _is_retryable_connector_error(exc) or _is_retryable_api_status(
+                exc, method
+            )
+
         async for attempt in _make_retrying(
-            _is_retryable_k8s_error,
+            _predicate,
             "kubernetes_asyncio request",
             wait=_WaitRetryAfterOrExponential(),
         ):
@@ -302,7 +350,7 @@ def _install_k8s_request_retry() -> None:
                 # Upstream ApiClient.request is a sync def that returns a
                 # coroutine (it dispatches to async RESTClient methods), so the
                 # original call must be awaited.
-                return await original(self, *args, **kwargs)
+                return await original(self, method, *args, **kwargs)
         # Unreachable: tenacity either returns a value or re-raises.
         raise RuntimeError("transport k8s request retry exhausted without result")
 
