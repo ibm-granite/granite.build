@@ -17,6 +17,9 @@ export interface TrialProgressInput {
   jobStatus: TuningStatus
   jobCreatedAt: string
   jobUpdatedAt: string
+  /** When the run actually stopped (`job.finished_at`). Preferred over
+   *  `jobUpdatedAt` for elapsed time; absent until a task has finished. */
+  jobFinishedAt?: string
   now: number
 }
 
@@ -54,7 +57,7 @@ function trialDuration(trial: ProgressTrial): number | null {
 }
 
 export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
-  const { trials, numTrials, jobStatus, jobCreatedAt, jobUpdatedAt, now } = input
+  const { trials, numTrials, jobStatus, jobCreatedAt, jobUpdatedAt, jobFinishedAt, now } = input
 
   const planned = typeof numTrials === 'number' && numTrials > 0 ? numTrials : null
   const completedTrials = trials.filter((t) => t.status === 'completed')
@@ -67,7 +70,14 @@ export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
   // the job reports how many it plans to run long before it creates their rows.
   const notYetCreated = planned !== null ? Math.max(0, planned - trials.length) : 0
 
-  const elapsedEndMs = ACTIVE_JOB_STATUSES.includes(jobStatus) ? now : Date.parse(jobUpdatedAt)
+  // `finished_at` is when the run actually stopped; `updated_at` only stands in
+  // for it, because any later write to the job row bumps `updated_at` and would
+  // inflate this figure permanently. TuningsTable and TuningDetailTabs already
+  // prefer it the same way, so all three agree on one job's duration. An absent
+  // or unparseable value falls back instead of poisoning the result with NaN.
+  const finishedMs = jobFinishedAt ? Date.parse(jobFinishedAt) : NaN
+  const stoppedMs = Number.isFinite(finishedMs) ? finishedMs : Date.parse(jobUpdatedAt)
+  const elapsedEndMs = ACTIVE_JOB_STATUSES.includes(jobStatus) ? now : stoppedMs
   const elapsedSeconds = Math.max(0, Math.floor((elapsedEndMs - Date.parse(jobCreatedAt)) / 1000))
 
   // Only project when the run is live, the total is known, work remains, and at

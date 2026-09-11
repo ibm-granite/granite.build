@@ -32,13 +32,14 @@ function trial(status, seconds, overrides = {}) {
   }
 }
 
-function run(trials, numTrials, jobStatus = 'running', now = NOW) {
+function run(trials, numTrials, jobStatus = 'running', now = NOW, jobFinishedAt = undefined) {
   return computeTrialProgress({
     trials,
     numTrials,
     jobStatus,
     jobCreatedAt: new Date(T0).toISOString(),
     jobUpdatedAt: new Date(NOW).toISOString(),
+    jobFinishedAt,
     now,
   })
 }
@@ -97,6 +98,39 @@ describe('computeTrialProgress elapsed', () => {
   it('freezes elapsed at the last update once the run has finished', () => {
     const p = run([trial('completed', 60)], 1, 'completed', NOW + 3_600_000)
     assert.equal(p.elapsedSeconds, 600)
+  })
+
+  // `updated_at` is any write to the job row, not the moment the run stopped, so
+  // tagging or touching a finished job used to stretch its elapsed time forever.
+  // TuningsTable and TuningDetailTabs already read `finished_at` first; these pin
+  // the third display to the same source so one job cannot report two durations.
+  it('measures elapsed to finished_at, not to a later updated_at', () => {
+    // finished_at 5 minutes in; updated_at (NOW) is 10 minutes in.
+    const finishedAt = new Date(T0 + 5 * 60_000).toISOString()
+    const p = run([trial('completed', 60)], 1, 'completed', NOW, finishedAt)
+    assert.equal(p.elapsedSeconds, 300)
+  })
+
+  it('ignores finished_at while the run is still active', () => {
+    // A stale or early finished_at must not cut short a live run's clock; the
+    // active branch measures to `now` regardless.
+    const finishedAt = new Date(T0 + 5 * 60_000).toISOString()
+    const p = run([trial('running', null)], 4, 'running', NOW, finishedAt)
+    assert.equal(p.elapsedSeconds, 600)
+  })
+
+  it('falls back to updated_at when finished_at is absent', () => {
+    const p = run([trial('completed', 60)], 1, 'completed', NOW + 3_600_000, undefined)
+    assert.equal(p.elapsedSeconds, 600)
+  })
+
+  it('falls back to updated_at when finished_at is unparseable', () => {
+    // The adapter types finished_at as `string | undefined`, so an empty string
+    // can reach here; Date.parse gives NaN and must not become the answer.
+    for (const bad of ['', 'not-a-date']) {
+      const p = run([trial('completed', 60)], 1, 'completed', NOW + 3_600_000, bad)
+      assert.equal(p.elapsedSeconds, 600, `finished_at ${JSON.stringify(bad)} should fall back`)
+    }
   })
 })
 
