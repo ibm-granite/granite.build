@@ -26,10 +26,37 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _hides_traceback(exc: BaseException) -> bool:
+    """Whether ``exc`` (or something it wraps) asked to keep the stack out of the PR.
+
+    Walks the ``__cause__`` chain because Python may re-raise a scrubbed
+    exception via ``raise X from denial`` — the marker travels with the original
+    even if a later frame decorates it.
+    """
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if getattr(exc, "hide_traceback_from_pr", False):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__  # type: ignore[assignment]
+    return False
+
+
 def get_readable_error_message(e: Exception, err_stack: str) -> str:
-    """Get a readable error message to post to the pull request."""
+    """Get a readable error message to post to the pull request.
+
+    Some exceptions carry a user-facing message that is deliberately scrubbed of
+    implementation detail — the frames would leak exactly what the message hides.
+    Such an exception opts out of the traceback by setting
+    ``hide_traceback_from_pr = True`` (see ``BvProjectAccessDenied``); we detect
+    that and drop the ``<details>`` block. ``err_stack`` is still logged upstream
+    for operators, just not surfaced into the PR comment.
+    """
     logger.debug("get_readable_error_message start")
     readable_error = unwrap_errors(e)
+    if _hides_traceback(e):
+        logger.debug("get_readable_error_message end (traceback suppressed)")
+        return f"\nThe run failed due to exception(s):\n{readable_error}\n"
     body = f"""
 The run failed due to exception(s):
 {readable_error}
