@@ -36,7 +36,7 @@ import {
   createConfiguration as apiCreateConfiguration,
   uploadDataset,
 } from '@granite-build/ui-core/api/autotunex'
-import { getRequiredColumns, isModelSelectionValid, normalizeTokenizerListFields, overlayColumnMapping } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
+import { getRequiredColumnsFromTypes, isModelSelectionValid, normalizeTokenizerListFields, overlayColumnMapping } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { normalizeVerlRows } from '@granite-build/ui-core/lib/autotunex/verlNormalize'
 import { DATASET_READY_TIMEOUT_MS } from '@granite-build/ui-core/lib/autotunex/datasetReady'
 import { ALGORITHM_DETAILS, ALGORITHM_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
@@ -133,7 +133,7 @@ export function StartTuningWizard() {
   // components consume via useQuery, so this just primes the cache.
   useQuery({ queryKey: ['autotunex', 'datasets'], queryFn: () => getDatasets({ page: 1, pageSize: 100 }) })
   useQuery({ queryKey: ['autotunex', 'configurations'], queryFn: () => getConfigurations({ page: 1, pageSize: 100 }) })
-  useQuery({ queryKey: ['autotunex', 'datasetTypes'], queryFn: getAutotuneDatasetTypes })
+  const { data: datasetTypes } = useQuery({ queryKey: ['autotunex', 'datasetTypes'], queryFn: getAutotuneDatasetTypes })
   const { data: prefetchedModels } = useQuery({
     queryKey: ['autotunex', 'hfModels', 'ibm-granite/granite-4.0-h-micro', 20],
     queryFn: () => getHFModels('ibm-granite/granite-4.0-h-micro', 20),
@@ -197,7 +197,7 @@ export function StartTuningWizard() {
       case 1: {
         const hasDataset = existingDatasetId !== null || parsedData.length > 0
         const hasName = datasetForm.name.trim() !== ''
-        const requiredCols = getRequiredColumns(selectedAlgorithm)
+        const requiredCols = getRequiredColumnsFromTypes(selectedAlgorithm, datasetTypes ?? {})
         // Column mapping applies only to a fresh upload. An existing dataset was
         // already uploaded with its mapping applied, `columnMapping` is unused
         // downstream for it (neither the uploadDataset call nor the preview
@@ -246,6 +246,7 @@ export function StartTuningWizard() {
     parsedData.length,
     datasetForm.name,
     columnMapping,
+    datasetTypes,
     isSplitEnabled,
     validationFile,
     isDatasetCompatible,

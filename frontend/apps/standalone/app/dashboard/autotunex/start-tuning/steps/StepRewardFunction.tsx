@@ -175,6 +175,35 @@ function syncFieldsToJson(tc: TestCase): TestCase {
   return { ...tc, json: JSON.stringify(parsed, null, 2) }
 }
 
+/**
+ * Sync only the computed reward → JSON string, leaving every other key as the
+ * user typed it.
+ *
+ * JSON View is the one mode where `json` is the authoritative copy: edits there
+ * go through updateTestCaseField('json', …), which never touches the simple
+ * fields, so those stay at whatever they held when the mode was switched. Using
+ * syncFieldsToJson to inject `_reward` therefore stamped the stale fields back
+ * over the edit — the JSON silently reverted while displaying a reward computed
+ * from the edited value.
+ */
+function syncRewardToJson(tc: TestCase): TestCase {
+  let parsed: Record<string, any>
+  try {
+    parsed = JSON.parse(tc.json)
+  } catch {
+    // Unparseable JSON can't have been tested (parseTestCases would have bailed),
+    // so there is no reward to inject — and rebuilding the object here, as
+    // syncFieldsToJson does, would discard what the user is mid-way through typing.
+    return tc
+  }
+  if (tc.reward !== null) {
+    parsed._reward = Number(tc.reward.toFixed(3))
+  } else {
+    delete parsed._reward
+  }
+  return { ...tc, json: JSON.stringify(parsed, null, 2) }
+}
+
 /** Sync JSON string → simple fields (called when switching to Table View). */
 function syncJsonToFields(tc: TestCase): TestCase {
   try {
@@ -538,7 +567,7 @@ export function StepRewardFunction({
             : { ...tc, reward: null, rewardError: null }
           return updated
         })
-        return advancedTestMode ? next.map(syncFieldsToJson) : next
+        return advancedTestMode ? next.map(syncRewardToJson) : next
       })
     } else {
       setTestCases((prev) =>
