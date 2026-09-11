@@ -65,7 +65,10 @@ jobs:
 
       # No Node version is pinned anywhere in the repo (no .nvmrc/.node-version, no
       # engines field), so this is a fresh choice: 22 is the active LTS, and 20 went
-      # end-of-life in April 2026.
+      # end-of-life in April 2026. The floor is hard rather than stylistic: the
+      # standalone tests `require()` the workspace's .ts sources and rely on Node's
+      # built-in type stripping, which is only on by default from 22.18. "22"
+      # resolves to the latest 22.x and so satisfies that — do not pin below 22.18.
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -107,36 +110,6 @@ jobs:
 
       - name: Run quick tests
         run: make quick-tests
-
-  frontend:
-    if: ${{ !github.event.repository.fork }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      # >= 22.18 is required, not merely preferred: the tests `require()` the
-      # workspace's .ts sources directly and rely on Node's built-in type
-      # stripping, which is only on by default from 22.18. On an older Node every
-      # test that imports a .ts module fails to load.
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22.18'
-          cache: yarn
-          cache-dependency-path: frontend/yarn.lock
-
-      - name: Install dependencies
-        working-directory: frontend
-        run: yarn install --frozen-lockfile
-
-      # Before the tests, not after: build-output.test.js asserts against the
-      # emitted bundle, so it can only pass once out/ exists.
-      - name: Build
-        working-directory: frontend
-        run: yarn build
-
-      - name: Test
-        working-directory: frontend
-        run: yarn test
 
   demo-cpu:
     if: ${{ !github.event.repository.fork }}
