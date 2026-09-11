@@ -204,6 +204,15 @@ destination shape:
 Prefer a **relative** destination (see [file_mounts](skypilot.md#file_mounts)) — it is the simplest and
 gives per-target isolation, with the payload written onto the shared workdir for the job to read.
 
+> **Contrast with SLURM.** Because the LSF backend identity-mounts the shared-FS roots (`/proj`,
+> `/opt/share`) into every container, a `shared_workdir` under one of them is automatically visible to
+> containerized steps — no extra configuration. The SkyPilot **SLURM** backend does *not* do this; there
+> a containerized step needs the SkyPilot `workdir` set to an ancestor of `shared_workdir` to get the
+> per-run workdir mounted into the container (see
+> [skypilot-slurm.md](skypilot-slurm.md#workdir-containerized-steps)). On LSF the `workdir` under
+> `cloud_config.lsf.cluster_configs.<cluster>` need not be an ancestor of `shared_workdir` for this
+> reason.
+
 > **Implementation note.** SkyPilot's backend normally sudo-symlink-wraps every absolute,
 > non-`~/`/non-`/tmp/` destination, which fails on the sudo-less login node and would redirect the
 > payload away from the identity-mounted path. The team SkyPilot fork exempts the shared-FS roots from

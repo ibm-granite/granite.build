@@ -42,6 +42,11 @@ autostop or `null` to disable.
 For cross-step state, point `shared_workdir` at a path backed by a **ReadWriteMany PVC** mounted on
 every worker (e.g. `/mnt/shared`). See [skypilot.md](skypilot.md#shared_workdir).
 
+Kubernetes has no host/container split to worry about: the step's image **is** the pod, and the PVC is
+attached as a pod volume, so it is already the container's filesystem. There is no separate `workdir`
+mount to configure (unlike SLURM) — mounting the RWX PVC at your `shared_workdir` path makes the per-run
+workdir visible to every step, bare or containerized.
+
 ## Example `environment.yaml`
 
 The `env://` store is registered implicitly for **every** environment, so it needs no `assetstores`

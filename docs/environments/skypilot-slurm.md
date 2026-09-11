@@ -105,6 +105,53 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > `FAILED 1:0` while the host-side steps complete. The image must also grant passwordless `sudo` (or run
 > as root).
 
+### `workdir` (containerized steps)
+
+A containerized step (`command_config.image` set) runs its `run:` inside an enroot container whose
+filesystem is **not** the compute node's. The SkyPilot SLURM backend bind-mounts only three host paths
+into that container — the account home, the ccache dir, and the SkyPilot **`workdir`**
+([`sky/provision/slurm/instance.py`](../../.venv/lib/python3.13/site-packages/sky/provision/slurm/instance.py)
+builds `--container-mounts` as `home:home`, `ccache:ccache`, and `workdir:workdir`, the last only when
+`workdir` is set and differs from home). It does **not** identity-mount `/proj` (that is the LSF
+backend, not this one). So unless `shared_workdir` falls under a mounted path, the per-run
+`$GB_BUILD_WORKDIR` does not exist inside the container: the launcher's `cd "$GB_BUILD_WORKDIR"`
+`mkdir`s it in the container's ephemeral writable overlay, the step writes its output there, the overlay
+is discarded at teardown, and the separate bare `hfpush` step then fails with `out does not exist` (or
+`<path> does not exist`).
+
+**Fix:** set the SkyPilot `workdir` to an ancestor of (or equal to) `shared_workdir` via the
+environment's `cloud_config` block, which is deep-merged into `~/.sky/config.yaml` at launch. The key
+path is `slurm.cluster_configs.<cluster>.workdir` (`<cluster>` is the `cluster:` name):
+
+```yaml
+config:
+  shared_workdir: /proj/data-eng/llmb-read-write/builds/
+  cloud_config:
+    slurm:
+      cluster_configs:
+        bluevela:                                    # must match config.cluster
+          workdir: /proj/data-eng/llmb-read-write/builds   # ancestor of shared_workdir
+```
+
+With this, the enroot container mounts `/proj/data-eng/llmb-read-write/builds` identity, the container's
+`cd "$GB_BUILD_WORKDIR"` lands on the real shared filesystem, and a relative output path (e.g. `out/`)
+is visible to the downstream `hfpush`. No `build.yaml` change is needed.
+
+Constraints and notes:
+
+- **`workdir` must be an ancestor of (or equal to) `shared_workdir`** so the derived
+  `$GB_BUILD_WORKDIR = <shared_workdir>/builds/<build_id>/runs/<targetrun_id>/` falls inside the
+  `workdir:workdir` bind mount.
+- **`workdir` must not equal the account home** (`remote_home_dir`); when it does, the backend adds no
+  extra mount and the fix is inert.
+- **Bare steps don't need this** — they run on the host and see `shared_workdir` directly. `workdir` is
+  only required once a step runs in a container.
+- **Side effect:** SkyPilot relocates its cluster home to `<workdir>/.sky_clusters/<cluster>`. This is
+  benign and does not collide with gbserver's `<shared_workdir>/builds/...` run tree.
+- This mirrors LSF's `cloud_config.lsf.cluster_configs.<cluster>.workdir`, but LSF does **not** require
+  the ancestor relationship because its backend identity-mounts all of `/proj` (see
+  [skypilot-lsf.md](skypilot-lsf.md#file_mounts-inside-enroot-containers)).
+
 ## Example `environment.yaml` (bare-host SLURM)
 
 This is the pattern used by the

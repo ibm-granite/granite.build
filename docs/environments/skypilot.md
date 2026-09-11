@@ -100,6 +100,29 @@ When unset, gbserver-managed caches fall back to `~/.cache/gbserver/<store>` on 
 works when consecutive steps land on the same machine. Example paths per backend: `slurm: /shared`
 (NFS/Lustre/GPFS), `k8s: /mnt/shared` (RWX PVC), `aws: /mnt/efs` (EFS/FSx).
 
+#### Containerized steps must also see the shared workdir *inside* the container
+
+`shared_workdir` being present on the worker is enough for a **bare** step — it runs directly on the
+host and sees the filesystem. A step that sets an `image_id` is different: its `run` executes inside a
+container whose filesystem is **not** the host's, so the per-run workdir (the step's CWD) must *also*
+be visible inside that container. When it isn't, the launcher's `cd "$GB_BUILD_WORKDIR"` lands in the
+container's ephemeral writable layer, the step writes its output there, and that layer is discarded at
+teardown — a later step (e.g. the auto-queued `hfpush`) then fails with `<path> does not exist`.
+
+How the shared filesystem is exposed to a container differs by backend:
+
+- **SLURM** — the enroot container mounts only the account home, ccache, and the SkyPilot `workdir`;
+  set `workdir` to an ancestor of `shared_workdir`. See
+  [skypilot-slurm.md](skypilot-slurm.md#workdir-containerized-steps).
+- **LSF** — the shared-FS roots (`/proj`, `/opt/share`) are bind-mounted *identity* into the container
+  automatically, so a `shared_workdir` under one of them just works. See
+  [skypilot-lsf.md](skypilot-lsf.md#file_mounts-inside-enroot-containers).
+- **Kubernetes** — the step image *is* the pod, so a PVC attached as a pod volume is already the
+  container's filesystem (no host/container split). See
+  [skypilot-kubernetes.md](skypilot-kubernetes.md#shared_workdir).
+- **AWS** — EFS/FSx is mounted on the VM; a bare step sees it directly, a containerized step needs the
+  mount visible inside the container. See [skypilot-aws.md](skypilot-aws.md#shared_workdir).
+
 ## `step.yaml` — launcher and monitor types
 
 | `type` | Method | Notes |
