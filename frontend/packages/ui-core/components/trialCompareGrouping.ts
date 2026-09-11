@@ -1,5 +1,5 @@
 // Grouping logic behind the three labelled sections of the trial comparison
-// view: Results, What differs, and Same for all. Kept separate from
+// view: Results, Differences, and Similarities. Kept separate from
 // TrialCompare.tsx so the partition driving the section headings' counts is
 // unit-testable (the frontend test harness has no jsdom).
 
@@ -122,7 +122,7 @@ export function getOddOnesOut(
 // `metricKeys` carries the trials' own primary-metric names (`trial.metric`),
 // which are dynamic. RESULT_KEYS alone is a fixed list, so a job reporting e.g.
 // eval_loss sorted by it correctly — lossOf() honours trial.metric — and then
-// filed that number under "What differs" as if it were a hyperparameter, while
+// filed that number under "Differences" as if it were a hyperparameter, while
 // Results showed no loss at all. It is the same number TrialsTable prints in its
 // Loss column, which is what made the two views disagree.
 export function groupCompareKeys(
