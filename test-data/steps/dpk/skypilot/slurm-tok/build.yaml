@@ -1,0 +1,129 @@
+granite.build:
+  name: skypilot-slurm-dpk-tokenize
+  # DPK tokenize WITH VALIDATION, on the local Docker SLURM cluster (via SkyPilot).
+  #
+  # ONE target, because `validate: true` folds the check into the transform's own
+  # step rather than needing a second target to bind its output and run the
+  # validator.
+  #
+  # WHAT REACHING SUCCESS PROVES:
+  #   1. `transform: tokenization2arrow` derives the module
+  #      (dpk_tokenization2arrow.runtime) and the pip extra
+  #      ([tokenization2arrow]) — the build names one DPK detail.
+  #   2. `validate: true` finds src/validate_tokenization2arrow.py by the
+  #      validate_<transform>.py rule and runs it on the node, AFTER the transform
+  #      and BEFORE the artifact marker. A validation failure fails this target and
+  #      registers nothing, so SUCCESS means the transform ran AND its output is
+  #      self-consistent AND complete (every non-empty source parquet produced
+  #      output).
+  #   3. validation.json lands inside the registered output directory, so the
+  #      record ships with the data it describes.
+  #   4. `args: {runtime_num_processors: 2}` drives DPK's multiprocessing pool. This
+  #      is the ONLY cluster coverage of the parallel path — slurm-pii omits it and
+  #      covers the sequential one, so a single `make test` exercises both. The step
+  #      injects no default (see the parallelism note in step-template.yaml for why
+  #      auto-sizing was tried and reverted), so a pool only ever appears because a
+  #      build asked for one, which is exactly what this asserts.
+  #   5. `module` and `pip_index_url` are plumbed. Both are set to the values the
+  #      step would use anyway — the derived module and the default index — so they
+  #      prove the fields are READ, not that a different value works. Deliberately
+  #      weak: a divergent value would fail for unrelated reasons.
+  #
+  # FIELD COVERAGE. Between this fixture and slurm-pii, 9 of the step's 10
+  # dpk_config fields are exercised on a real cluster. The exception is `dpk_image`,
+  # which needs the Pyxis SPANK plugin that `make slurm-setup` does not install — a
+  # pre-existing gap recorded in README.md's Known gaps, not something a fixture can
+  # close here.
+  #
+  # COVERAGE MOVED, NOT DELETED — read this before "simplifying" further. The
+  # two-target form this replaced was the only CLUSTER-level coverage of:
+  #   * the cross-node env:///shared handoff — two targets on possibly different
+  #     compute nodes, where env:// moves no bytes (EnvURI.pull() is a no-op), so
+  #     the bytes survive only if the producer writes them somewhere the consumer
+  #     can read; on this cluster /tmp is per-node but /shared is mounted on all of
+  #     them; and
+  # The handoff is no longer covered end to end anywhere: test_dpk_run_sh.py executes
+  # the validator hook and the marker contract, but nothing exercises two targets
+  # sharing a filesystem. If a handoff regression is ever suspected, restore the
+  # two-target form from this file's history rather than debugging blind.
+  #
+  # Input is an hf:// dataset: the SkyPilot launcher injects
+  # `hf download <repo> --local-dir <path>` into the step's setup, and the step
+  # exports the staged path as $GB_INPUT_docs. The dataset is public, so no
+  # HF_TOKEN is needed here or in CI.
+  targets:
+
+    tokenize:
+      environment_uri: space://environments/skypilot/slurm
+      inputs:
+        docs:
+          # Public dataset: DPK's own tokenization test fixture (5 parquet, 2
+          # deliberately empty, Apache-2.0) mirrored to the Hub so it stages on
+          # every endpoint with no credentials.
+          # NOTE: personal namespace pending an org move — an ibm-research request
+          # is outstanding. Only this URI changes when it lands.
+          uri: hf:///datasets/shalisha-witherspoon/dpk-tokenization-sample
+      outputs:
+        tokens:
+          # Terminal output: nothing downstream reads it now that validation runs
+          # in-target, so the step's default output_path (./output, in the
+          # per-target workdir) is appropriate and this uri names no path to match.
+          uri: "env:///tokens"
+          type: dataset
+      steps:
+        - step_uri: space://steps/dpk
+          config:
+            # Fast completion detection (the skypilot monitor's own default is
+            # 300s, which would dominate wall-clock for this quick job).
+            poll_interval_seconds: 5
+            dpk_config:
+              transform: tokenization2arrow
+              dpk_version: "1.1.8"
+              # A PATH, resolved here from this target's own declared input — the
+              # byoc pattern (steps/byoc/skypilot/USAGE.md). The step never learns
+              # binding NAMES, so it cannot be wrong about them.
+              input_path: "{{ bindings.docs.binding.path }}"
+              output: tokens
+              # The point of this fixture. One line replaces a whole second target;
+              # the step runs src/validate_tokenization2arrow.py before registering
+              # the output.
+              validate: true
+              # Exercised so the field is not merely documented: this is the value
+              # the step's own rule already derives, so it asserts the OVERRIDE PATH
+              # is wired, not a different runtime. (Weak coverage on purpose — a
+              # divergent value would fail for reasons unrelated to the field.)
+              module: dpk_tokenization2arrow.runtime
+              # The default, stated explicitly, to prove it is plumbed through to
+              # `uv pip install --index-url` rather than silently ignored.
+              pip_index_url: "https://pypi.org/simple"
+              args:
+                # Full flag names as DPK spells them — tokenization's prefix is
+                # `tkn_`, which is NOT derivable from the module name, so the step
+                # passes these through verbatim.
+                tkn_tokenizer: hf-internal-testing/llama-tokenizer
+                tkn_doc_id_column: document_id
+                tkn_doc_content_column: contents
+                tkn_text_lang: en
+                tkn_chunk_size: 0
+                # PARALLEL BRANCH. The step injects nothing, so DPK's own default of
+                # 0 means sequential; a build turns the pool on here. This fixture is
+                # the only cluster coverage of the multiprocessing path — slurm-pii
+                # deliberately omits it and covers the sequential one, so one
+                # `make test` exercises both.
+                #
+                # 2, matching num_cpus_per_node below, because the local cluster's
+                # nodes advertise exactly 2 CPUs (`sinfo -o "%n %c"`) — 3 fails with
+                # "Requested node configuration is not available". Tokenization is
+                # light enough to fork: this is NOT on slurm-pii, whose flair and
+                # presidio models would be loaded per worker on a 1GB node.
+                runtime_num_processors: 2
+            compute_config:
+              # Asking for CPUs is what makes SLURM export SLURM_CPUS_PER_TASK, and
+              # it keeps the pool from oversubscribing: 2 workers, 2 cores.
+              num_cpus_per_node: 2
+              num_gpus_per_node: 0
+              # The compute_config memory floor is skipped for the SLURM/LSF
+              # clouds (they don't reliably track memory as a consumable), so this
+              # is advisory here and will not leave the job PENDING even though the
+              # local cluster's nodes advertise RealMemory=1024.
+              total_memory_per_node: 4Gi

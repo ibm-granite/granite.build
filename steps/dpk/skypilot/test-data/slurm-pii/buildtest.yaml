@@ -1,0 +1,42 @@
+# YAML-driven spec for test_skypilot_slurm_dpk_pii.py (located by the
+# test/ <-> test-data/ helper, so this pairing holds in both test modes).
+#
+# PII redaction through the SAME dpk step as the tokenization fixture. The point
+# of this fixture is the GENERALITY claim: reaching SUCCESS proves a second,
+# unrelated DPK transform runs with no change to step-template.yaml — only
+# `transform`, `args`, and the artifact names differ in the build.yaml.
+targets:
+  - redact
+target_expectations:
+  # step_count 2: the queued hfpull for the hf:// input plus the dpk step.
+  # skypilot/slurm does not set `inline: true` on its hf assetstore pull (unlike
+  # skypilot/aws), so the download is its own step. The env:// output moves no
+  # bytes and queues no push step.
+  #
+  # jobstats_count is not asserted under standalone's NoopLineageStore but is
+  # kept accurate. CALIBRATE against the first green run.
+  - target_name: redact
+    step_count: 2              # hfpull(docs) + dpk
+    input_artifact_count: 1    # docs
+    output_artifact_count: 1   # clean (env://, registered inline from the marker)
+    jobstats_count: 1
+    # Pin what this fixture is for: the build named a DIFFERENT transform and the
+    # step derived its module and pip extra. Read from step_storage, so it holds
+    # under NoopLineageStore.
+    expected_steps:
+      - step_uri: space://steps/dpk
+        config:
+          dpk_config:
+            transform: pii_redactor
+# Same Space as the sibling fixtures: Mode 1 resolves space://steps/dpk from the
+# locally rendered steps/dpk/skypilot/space/; `make publish-step` rewrites this to
+# configurations/spaces/local for Mode 2.
+space_uri: ../../space
+# Happy-path run only — skip the cancellation variant.
+tests:
+  - runner
+simulate_step_failure: false
+# The [pii-redactor] extra installs 125 packages (torch, flair, presidio) and the
+# transform downloads a flair NER model on first use. Measured at several minutes
+# locally for the install alone; a cold SLURM node is slower, hence 60.
+timeout_minutes: 60
