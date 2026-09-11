@@ -29,6 +29,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import type { Dataset } from '../types'
 import { getDatasets, deleteDataset } from '../api/autotunex'
+import { deleteEach, isBulkDeleteError } from '../lib/autotunex/bulkDelete'
 import { listSpaces } from '../api/gbserver'
 import { SettingsDeleteModal } from './SettingsDeleteModal'
 import { SettingsDatasetView } from './SettingsDatasetView'
@@ -106,27 +107,34 @@ export function DatasetsTable() {
   const anyUndeletable = selectedDatasets.some(isUndeletable)
 
   const deleteMutation = useMutation({
-    mutationFn: async (ids: string[]) => {
-      for (const id of ids) await deleteDataset(id, scope)
-    },
+    mutationFn: (ids: string[]) => deleteEach(ids, (id) => deleteDataset(id, scope)),
     onSuccess: (_data, ids) => {
-      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
       setSelectedIds([])
       setDeleteOpen(false)
       setDeleteError(undefined)
       // If the delete emptied the last page, clamp back onto the new last
-      // page and let the invalidated query above refetch it — no in-memory
+      // page and let the onSettled invalidation refetch it — no in-memory
       // re-slicing of a locally-shrunk array.
       const newTotal = Math.max(0, total - ids.length)
       const lastPage = Math.max(1, Math.ceil(newTotal / pageSize))
       if (page > lastPage) setPage(lastPage)
     },
     onError: (err) => {
-      if (axios.isAxiosError(err) && err.response?.status === 409) {
+      // A best-effort delete really did remove the ids that succeeded, so narrow
+      // the selection to the survivors — otherwise confirming again re-issues a
+      // DELETE for rows that are already gone.
+      if (isBulkDeleteError(err)) setSelectedIds(err.failedIds)
+      const cause = isBulkDeleteError(err) ? err.firstError : err
+      if (axios.isAxiosError(cause) && cause.response?.status === 409) {
         setDeleteError('This dataset is in use by a running job and cannot be deleted.')
       } else {
         setDeleteError('Something went wrong while deleting. Please try again.')
       }
+    },
+    // onSettled, not onSuccess: a partially-failed delete still removed rows, and
+    // without a refetch the table keeps rendering them.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
     },
   })
 

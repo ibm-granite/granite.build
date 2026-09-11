@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { InlineNotification } from '@carbon/react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import axios from 'axios'
 import { getJobs, deleteJob } from '@granite-build/ui-core/api/autotunex'
+import { deleteEach, isBulkDeleteError } from '@granite-build/ui-core/lib/autotunex/bulkDelete'
 import { listSpaces } from '@granite-build/ui-core/api/gbserver'
 import { AutotunexTabs } from '@granite-build/ui-core/components/AutotunexTabs'
 import { TuningsTable } from '@granite-build/ui-core/components/TuningsTable'
@@ -21,6 +23,7 @@ export default function AutoTuneXPage() {
   const [scope, setScope] = useState<'own' | 'all'>('own')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
   const [compareOpen, setCompareOpen] = useState(false)
 
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -48,19 +51,34 @@ export default function AutoTuneXPage() {
   const total = data?.total ?? 0
 
   const deleteMutation = useMutation({
-    mutationFn: async (ids: string[]) => {
-      for (const id of ids) await deleteJob(id, scope)
-    },
+    mutationFn: (ids: string[]) => deleteEach(ids, (id) => deleteJob(id, scope)),
     onSuccess: (_data, ids) => {
-      queryClient.invalidateQueries({ queryKey: ['autotunex-jobs'] })
       setSelectedIds([])
       setDeleteOpen(false)
+      setDeleteError(undefined)
       // If the delete emptied the last page, clamp back onto the new last
-      // page and let the invalidated query above refetch it — no in-memory
+      // page and let the onSettled invalidation refetch it — no in-memory
       // re-slicing of a locally-shrunk array.
       const newTotal = Math.max(0, total - ids.length)
       const lastPage = Math.max(1, Math.ceil(newTotal / pageSize))
       if (page > lastPage) setPage(lastPage)
+    },
+    onError: (err) => {
+      // A best-effort delete really did remove the ids that succeeded, so narrow
+      // the selection to the survivors — otherwise confirming again re-issues a
+      // DELETE for rows that are already gone.
+      if (isBulkDeleteError(err)) setSelectedIds(err.failedIds)
+      const cause = isBulkDeleteError(err) ? err.firstError : err
+      if (axios.isAxiosError(cause) && cause.response?.status === 409) {
+        setDeleteError('This tuning is still running and cannot be deleted.')
+      } else {
+        setDeleteError('Something went wrong while deleting. Please try again.')
+      }
+    },
+    // onSettled, not onSuccess: a partially-failed delete still removed rows, and
+    // without a refetch the table keeps rendering them.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['autotunex-jobs'] })
     },
   })
 
@@ -129,7 +147,8 @@ export default function AutoTuneXPage() {
         open={deleteOpen}
         count={selectedIds.length}
         isDeleting={deleteMutation.isPending}
-        onClose={() => setDeleteOpen(false)}
+        errorMessage={deleteError}
+        onClose={() => { setDeleteOpen(false); setDeleteError(undefined) }}
         onConfirm={() => deleteMutation.mutate(selectedIds)}
       />
 

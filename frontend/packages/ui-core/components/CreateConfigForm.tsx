@@ -198,6 +198,16 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
     })
   }
 
+  // Sibling of updateGenericField for the sections' plain-scalar entries (e.g.
+  // tuner_name, reward_function_path). Those must be assigned, not merged:
+  // spreading a scalar as updateGenericField does yields an index-keyed object.
+  function updateGenericScalar(sectionKey: string, fieldKey: string, value: string) {
+    setConfig((prev) => {
+      const section: any = (prev as any)[sectionKey] ?? {}
+      return { ...prev, [sectionKey]: { ...section, [fieldKey]: value } } as ConfigForm
+    })
+  }
+
   function renderHyperparamField(sectionKey: 'tuners_config' | 'tuners_rl_config', tunerKey: string, paramName: string, paramConfig: any) {
     const update = (patch: Record<string, any>) => updateHyperparam(sectionKey, tunerKey, paramName, patch)
     const fieldId = `${sectionKey}-${tunerKey}-${paramName}`
@@ -378,7 +388,7 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
               return (
                 <TextInput
                   key={key}
-                  id={`${sectionKey}-${key}`} labelText={toUpperCase(key) ?? key} value={String(section[key])} onChange={(e) => updateGenericField(sectionKey, key, { default: e.target.value })} />
+                  id={`${sectionKey}-${key}`} labelText={toUpperCase(key) ?? key} value={String(section[key])} onChange={(e) => updateGenericScalar(sectionKey, key, e.target.value)} />
               )
             }
 

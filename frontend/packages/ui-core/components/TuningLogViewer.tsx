@@ -12,7 +12,8 @@ interface Props {
   status: TuningJob['status']
   /** Cap the inline scroll container height (px). Omit to keep the SCSS 70vh default (detail page). */
   maxHeight?: number
-  /** List scope to fetch logs under. Omit to use getJobLogs' 'own' default (detail page). */
+  /** List scope to fetch logs under. Must match the scope the enclosing job was
+   *  resolved with — fetching an admin's 'all'-resolved job as 'own' 403s. */
   scope?: 'own' | 'all'
 }
 

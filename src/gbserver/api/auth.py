@@ -68,14 +68,14 @@ _PUBLIC_EXACT_PATHS = frozenset(
 # /dashboard prefix below; a new *top-level* page outside /dashboard needs a
 # new prefix here. /api/v1/auth is the OIDC pre-auth login flow (see
 # auth_routes.py) — deliberately public.
-# The AutoTuneX reverse proxy (/api/autotunex) is deliberately NOT listed here.
-# It needs an all-methods exemption so gbserver does not block it before
-# forwarding, but it must not inherit this list's unconditional public status:
-# the upstream provides no protection of its own (AutoTuneX defaults to
-# auth_providers=["disabled"], which authenticates nothing), so an unconditional
-# exemption would be an unauthenticated write surface — POST /api/autotunex/jobs
-# launches a real build, DELETE removes datasets and configurations. It is
-# instead gated on the request coming from loopback, in dispatch() below.
+# The AutoTuneX reverse proxy (/api/autotunex) is deliberately NOT listed here,
+# so it authenticates exactly like every other API path. It must not inherit
+# this list's unconditional public status: the upstream provides no protection
+# of its own (AutoTuneX defaults to auth_providers=["disabled"], which
+# authenticates nothing), so an exemption here would be an unauthenticated
+# write surface — POST /api/autotunex/jobs launches a real build, DELETE
+# removes datasets and configurations. See the comment in dispatch() below for
+# why the shipped deployments still reach it without an exemption.
 _PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/dashboard", "/_next")
 
 # Every mounted sub-app owns its own Swagger/OpenAPI doc pages directly under
