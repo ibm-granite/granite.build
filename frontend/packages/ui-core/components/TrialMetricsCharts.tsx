@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
 import {
   Accordion,
   AccordionItem,
@@ -62,10 +63,20 @@ function Tile({ label, value, detail, last }: { label: string; value: string; de
   )
 }
 
-function Chart({ title, rows, options }: { title: string; rows: unknown[]; options: object }) {
+function Chart({
+  title,
+  rows,
+  options,
+  style,
+}: {
+  title: string
+  rows: unknown[]
+  options: object
+  style?: CSSProperties
+}) {
   if (rows.length === 0) return null
   return (
-    <div style={{ marginTop: '1rem' }}>
+    <div style={{ marginTop: '1rem', ...style }}>
       <h6 style={{ marginBottom: '0.5rem' }}>{title}</h6>
       {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
       <LineChart data={rows as any} options={options as any} />
@@ -248,51 +259,9 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
         </div>
       </div>
 
-      {searchLoss.length > 0 && (
-        <section>
-          <h5 style={{ marginTop: '1rem' }}>Search trials</h5>
-          {searchCaption && (
-            <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.75rem', margin: '0.25rem 0 0' }}>
-              {searchCaption} — not comparable with the final run below.
-            </p>
-          )}
-          <Chart
-            title={`Training loss${smooth ? ' (smoothed)' : ''}`}
-            rows={searchLoss}
-            options={metricChartOptions({ ...sharedSpec, yTitle: 'Loss' })}
-          />
-          <Chart
-            title="Eval loss"
-            rows={searchEval}
-            options={metricChartOptions({ ...sharedSpec, yTitle: 'Eval loss', height: '220px', points: true })}
-          />
-          <div style={{ marginTop: '1rem' }}>
-            <Accordion>
-              <AccordionItem title="Diagnostics — learning rate and gradient norm">
-              <Chart
-                title="Learning rate"
-                rows={searchLr}
-                options={metricChartOptions({
-                  ...sharedSpec,
-                  yTitle: 'Learning rate',
-                  height: '220px',
-                  logY: true,
-                })}
-              />
-              <Chart
-                title={`Gradient norm${smooth ? ' (smoothed)' : ''}`}
-                rows={searchGrad}
-                options={metricChartOptions({ ...sharedSpec, yTitle: 'Grad norm', height: '220px' })}
-              />
-              </AccordionItem>
-            </Accordion>
-          </div>
-        </section>
-      )}
-
       {finalRows.length > 0 && (
         <section>
-          <h5 style={{ marginTop: '2rem' }}>Final run</h5>
+          <h5 style={{ marginTop: '1rem' }}>Final run</h5>
           <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.75rem', margin: '0.25rem 0 0.75rem' }}>
             The winning configuration, trained once{finalCaption ? ` on the ${finalCaption}` : ''}.
           </p>
@@ -358,6 +327,63 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
               points: true,
             })}
           />
+        </section>
+      )}
+
+      {searchLoss.length > 0 && (
+        <section>
+          <h5 style={{ marginTop: '2rem' }}>Search trials</h5>
+          {searchCaption && (
+            <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.75rem', margin: '0.25rem 0 0' }}>
+              {searchCaption} — not comparable with the final run above.
+            </p>
+          )}
+          {/* Train and eval loss side by side. They stay two charts on two
+              y-scales rather than one plot: eval loss is sampled once an epoch
+              and sits on a different scale, and overlaying them on a shared
+              axis is the dual-axis reading we avoid elsewhere in this file.
+              `flexWrap` stacks them again when the viewport can't seat both,
+              and `minWidth: 0` lets each one actually shrink — without it a flex
+              item refuses to go below its content width and overflows the row.
+              The charts are the flex items themselves, so a phase with no eval
+              rows (Chart renders nothing) leaves training loss spanning the full
+              width instead of half of it beside an empty column. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'flex-start' }}>
+            <Chart
+              title={`Training loss${smooth ? ' (smoothed)' : ''}`}
+              rows={searchLoss}
+              options={metricChartOptions({ ...sharedSpec, yTitle: 'Loss' })}
+              style={{ flex: '1 1 24rem', minWidth: 0 }}
+            />
+            <Chart
+              title="Eval loss"
+              rows={searchEval}
+              // Same height as the chart beside it, so the pair's plot areas line up.
+              options={metricChartOptions({ ...sharedSpec, yTitle: 'Eval loss', points: true })}
+              style={{ flex: '1 1 24rem', minWidth: 0 }}
+            />
+          </div>
+          <div style={{ marginTop: '1rem' }}>
+            <Accordion>
+              <AccordionItem title="Diagnostics — learning rate and gradient norm">
+              <Chart
+                title="Learning rate"
+                rows={searchLr}
+                options={metricChartOptions({
+                  ...sharedSpec,
+                  yTitle: 'Learning rate',
+                  height: '220px',
+                  logY: true,
+                })}
+              />
+              <Chart
+                title={`Gradient norm${smooth ? ' (smoothed)' : ''}`}
+                rows={searchGrad}
+                options={metricChartOptions({ ...sharedSpec, yTitle: 'Grad norm', height: '220px' })}
+              />
+              </AccordionItem>
+            </Accordion>
+          </div>
         </section>
       )}
     </div>
