@@ -274,7 +274,7 @@ export function TrialsTable({ job }: Props) {
           )
         }}
       >
-        {({ rows: tableRows, headers, getTableProps, getHeaderProps, getRowProps, getExpandedRowProps, getSelectionProps, onInputChange, selectRow }) => (
+        {({ rows: tableRows, headers, getTableProps, getHeaderProps, getRowProps, getExpandedRowProps, getSelectionProps, onInputChange, selectRow, selectedRows }) => (
           <TableContainer>
             <TableToolbar>
               <TableToolbarContent>
@@ -287,14 +287,18 @@ export function TrialsTable({ job }: Props) {
                 {selectedIds.length > 0 && (
                   <Button
                     kind="ghost"
-                    // Clears the whole selection regardless of what the search is
-                    // showing. Carbon's own onCancel skips rows outside the active
-                    // filter, which would leave this button visible with nothing
-                    // left for it to do; selectRow toggles rowsById directly and
-                    // ignores the filter. Every id in selectedIds is selected by
-                    // definition, so each call deselects exactly one row.
+                    // Clear both copies of the selection from Carbon's own list,
+                    // not from `selectedIds`. selectRow toggles a row, so driving
+                    // it from the mirror inverts the selection whenever the two
+                    // have drifted: the isLoading / isError / no-trials returns
+                    // above unmount the DataTable while this component (and the
+                    // mirror) stay alive, so a failed poll on a running job can
+                    // leave the mirror holding ids that a freshly mounted table
+                    // has unselected — and toggling those would re-select them.
+                    // selectedRows spans every row, not just the filtered ones
+                    // (DataTable.js:256), so Cancel still ignores the search.
                     onClick={() => {
-                      selectedIds.forEach((id) => selectRow(id))
+                      selectedRows.forEach(({ id }) => selectRow(id))
                       setSelectedIds([])
                     }}
                   >
@@ -324,6 +328,10 @@ export function TrialsTable({ job }: Props) {
                       // the search has hidden: Carbon keeps it selected while the
                       // mirror forgets it, leaving a ticked checkbox that Compare
                       // and the radar ignore and that Cancel is not shown to clear.
+                      // Carbon's handleSelectAll deselects whenever anything is
+                      // already selected (DataTable.js:303), so with a selected
+                      // row hidden by the search this click is a no-op the user
+                      // can repeat — Carbon's own semantics, not a desync.
                       const { checked } = e.target as HTMLInputElement
                       setSelectedIds((prev) =>
                         checked
