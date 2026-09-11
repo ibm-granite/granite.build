@@ -4,6 +4,10 @@ import { Fragment, useMemo, useState } from 'react'
 import {
   DataTable,
   Table,
+  TableContainer,
+  TableToolbar,
+  TableToolbarContent,
+  TableToolbarSearch,
   TableHead,
   TableRow,
   TableHeader,
@@ -258,99 +262,129 @@ export function TrialsTable({ job }: Props) {
           no radar the table is the only child and takes the full width. */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'flex-start' }}>
         <div style={{ flex: '1 1 32rem', minWidth: 0, overflowX: 'auto' }}>
-      <DataTable rows={rows} headers={HEADERS} isSortable>
-        {({ rows: tableRows, headers, getTableProps, getHeaderProps, getRowProps, getExpandedRowProps, getSelectionProps }) => (
-          <Table {...getTableProps()} size="sm">
-            <TableHead>
-              <TableRow>
-                <TableExpandHeader aria-label="Expand row" />
-                <TableSelectAll
-                  {...getSelectionProps()}
-                  onSelect={(e) => {
-                    getSelectionProps().onSelect(e)
-                    setSelectedIds((e.target as HTMLInputElement).checked ? tableRows.map((r) => r.id) : [])
-                  }}
+      <DataTable
+        rows={rows}
+        headers={HEADERS}
+        isSortable
+        // Carbon's default filter matches String(cell.value), but these cells
+        // render formatted text — so "5m 20" would miss the row showing
+        // "5m 20s" over a raw 320. Same shape as Carbon's defaultFilterRows
+        // with formatCell in place of String(). Typed contextually from the
+        // prop, so no annotation is needed here.
+        filterRows={({ rowIds, headers, cellsById, inputValue, getCellId }) => {
+          const query = inputValue.trim().toLowerCase()
+          if (!query) return rowIds
+          return rowIds.filter((rowId) =>
+            headers.some(({ key }) =>
+              formatCell(key, cellsById[getCellId(rowId, key)].value).toLowerCase().includes(query)
+            )
+          )
+        }}
+      >
+        {({ rows: tableRows, headers, getTableProps, getHeaderProps, getRowProps, getExpandedRowProps, getSelectionProps, onInputChange }) => (
+          <TableContainer>
+            <TableToolbar>
+              <TableToolbarContent>
+                <TableToolbarSearch
+                  persistent
+                  placeholder="Search trials…"
+                  onChange={onInputChange}
+                  aria-label="Search trials"
                 />
-                {(() => {
-                  const headerProps = headers.map((h) => getHeaderProps({ header: h }))
-                  // Carbon only marks a header as the active sort column once the user
-                  // clicks it — it has no notion that `rows` already arrived pre-sorted
-                  // by loss. Until the user actually sorts something, show the Loss
-                  // header as the (ascending) active sort column so the arrow matches
-                  // the real row order.
-                  const userHasSorted = headerProps.some((hp) => hp.isSortHeader)
-                  return headers.map((h, i) => {
-                    const { key: _k, ...hProps } = headerProps[i]
-                    const isDefaultLossSort = !userHasSorted && h.key === 'loss'
-                    return (
-                      <TableHeader
-                        key={h.key}
-                        {...hProps}
-                        isSortHeader={isDefaultLossSort ? true : hProps.isSortHeader}
-                        sortDirection={isDefaultLossSort ? 'ASC' : hProps.sortDirection}
-                      >
-                        {h.header}
-                      </TableHeader>
-                    )
-                  })
-                })()}
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {tableRows.map((row) => {
-                const { key: _k, ...rowProps } = getRowProps({ row })
-                const selectionProps = getSelectionProps({ row })
-                const trial = trialsById.get(row.id)
-                return (
-                  <Fragment key={row.id}>
-                    <TableExpandRow {...rowProps}>
-                      <TableSelectRow
-                        {...selectionProps}
-                        onSelect={(e) => {
-                          selectionProps.onSelect(e)
-                          const checked = (e.target as HTMLInputElement).checked
-                          setSelectedIds((prev) => (checked ? [...prev, row.id] : prev.filter((id) => id !== row.id)))
-                        }}
-                      />
-                      {row.cells.map((cell) => (
-                        <TableCell key={cell.id}>{formatCell(cell.info.header, cell.value)}</TableCell>
-                      ))}
-                    </TableExpandRow>
-                    {row.isExpanded && trial && (
-                      <TableExpandedRow {...getExpandedRowProps({ row })} colSpan={headers.length + 2}>
-                        <Tabs>
-                          <TabList aria-label="Trial detail tabs" contained>
-                            <Tab>Metrics</Tab>
-                            <Tab>Logs</Tab>
-                            <Tab>Configuration</Tab>
-                          </TabList>
-                          <TabPanels>
-                            <TabPanel>
-                              <TrialMetricsPanel
-                                jobId={jobId}
-                                trialId={trial.id}
-                                status={trial.status}
-                                color={colorScale[trial.id]}
-                                scope={scope}
-                              />
-                            </TabPanel>
-                            <TabPanel>
-                              <TrialLogViewer jobId={jobId} trialId={trial.id} status={trial.status} scope={scope} />
-                            </TabPanel>
-                            <TabPanel>
-                              <CodeSnippet type="multi" wrapText>
-                                {JSON.stringify(trial.config, null, 2)}
-                              </CodeSnippet>
-                            </TabPanel>
-                          </TabPanels>
-                        </Tabs>
-                      </TableExpandedRow>
-                    )}
-                  </Fragment>
-                )
-              })}
-            </TableBody>
-          </Table>
+              </TableToolbarContent>
+            </TableToolbar>
+            <Table {...getTableProps()} size="sm">
+              <TableHead>
+                <TableRow>
+                  <TableExpandHeader aria-label="Expand row" />
+                  <TableSelectAll
+                    {...getSelectionProps()}
+                    onSelect={(e) => {
+                      getSelectionProps().onSelect(e)
+                      setSelectedIds((e.target as HTMLInputElement).checked ? tableRows.map((r) => r.id) : [])
+                    }}
+                  />
+                  {(() => {
+                    const headerProps = headers.map((h) => getHeaderProps({ header: h }))
+                    // Carbon only marks a header as the active sort column once the user
+                    // clicks it — it has no notion that `rows` already arrived pre-sorted
+                    // by loss. Until the user actually sorts something, show the Loss
+                    // header as the (ascending) active sort column so the arrow matches
+                    // the real row order.
+                    const userHasSorted = headerProps.some((hp) => hp.isSortHeader)
+                    return headers.map((h, i) => {
+                      const { key: _k, ...hProps } = headerProps[i]
+                      const isDefaultLossSort = !userHasSorted && h.key === 'loss'
+                      return (
+                        <TableHeader
+                          key={h.key}
+                          {...hProps}
+                          isSortHeader={isDefaultLossSort ? true : hProps.isSortHeader}
+                          sortDirection={isDefaultLossSort ? 'ASC' : hProps.sortDirection}
+                        >
+                          {h.header}
+                        </TableHeader>
+                      )
+                    })
+                  })()}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {tableRows.map((row) => {
+                  const { key: _k, ...rowProps } = getRowProps({ row })
+                  const selectionProps = getSelectionProps({ row })
+                  const trial = trialsById.get(row.id)
+                  return (
+                    <Fragment key={row.id}>
+                      <TableExpandRow {...rowProps}>
+                        <TableSelectRow
+                          {...selectionProps}
+                          onSelect={(e) => {
+                            selectionProps.onSelect(e)
+                            const checked = (e.target as HTMLInputElement).checked
+                            setSelectedIds((prev) => (checked ? [...prev, row.id] : prev.filter((id) => id !== row.id)))
+                          }}
+                        />
+                        {row.cells.map((cell) => (
+                          <TableCell key={cell.id}>{formatCell(cell.info.header, cell.value)}</TableCell>
+                        ))}
+                      </TableExpandRow>
+                      {row.isExpanded && trial && (
+                        <TableExpandedRow {...getExpandedRowProps({ row })} colSpan={headers.length + 2}>
+                          <Tabs>
+                            <TabList aria-label="Trial detail tabs" contained>
+                              <Tab>Metrics</Tab>
+                              <Tab>Logs</Tab>
+                              <Tab>Configuration</Tab>
+                            </TabList>
+                            <TabPanels>
+                              <TabPanel>
+                                <TrialMetricsPanel
+                                  jobId={jobId}
+                                  trialId={trial.id}
+                                  status={trial.status}
+                                  color={colorScale[trial.id]}
+                                  scope={scope}
+                                />
+                              </TabPanel>
+                              <TabPanel>
+                                <TrialLogViewer jobId={jobId} trialId={trial.id} status={trial.status} scope={scope} />
+                              </TabPanel>
+                              <TabPanel>
+                                <CodeSnippet type="multi" wrapText>
+                                  {JSON.stringify(trial.config, null, 2)}
+                                </CodeSnippet>
+                              </TabPanel>
+                            </TabPanels>
+                          </Tabs>
+                        </TableExpandedRow>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
         )}
       </DataTable>
         </div>
