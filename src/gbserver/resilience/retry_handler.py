@@ -240,6 +240,35 @@ class RetryStrategy(ABC):
         """
         raise NotImplementedError("Subclasses must implement should_retry()")
 
+    def is_exhausted(
+        self: Self,
+        _event: BuildEvent,
+        retry_count: int,
+        max_retries: int,
+    ) -> bool:
+        """
+        Report whether this strategy's tolerance for the event is used up.
+
+        The engine treats a retriable event (``should_retry`` True) that was not
+        relaunched as a terminal failure only once the owning strategy is
+        exhausted -- so a strategy that tolerates an interruption beyond the shared
+        ``max_retries`` (e.g. preemption, on its own larger budget) can keep the
+        build alive by staying un-exhausted, while an ordinary retriable failure
+        still becomes terminal when the retry budget is spent.
+
+        Default: exhausted once the shared retry budget is spent, which preserves
+        the "retried N times, now give up" behavior for every existing strategy.
+
+        Args:
+            _event: BuildEvent from the monitor (unused in base implementation)
+            retry_count: retries already performed this launch
+            max_retries: the shared retry budget
+
+        Returns:
+            bool: True when the strategy no longer tolerates the event.
+        """
+        return retry_count >= max_retries
+
     def extract_nodes_to_avoid(
         self: Self,
         _event: BuildEvent,
@@ -389,27 +418,38 @@ class RetryHandler:
                 # Check if this is a terminal failure
                 is_terminal_failure = self._is_terminal_failure_event(event)
 
-                # A retriable failure we can no longer retry (retries exhausted)
-                # is itself terminal. Without this, an event a strategy WOULD
-                # retry -- but can't, because retry_count >= max_retries -- would
-                # be neither relaunched nor raised, leaving a monitor's deferred
-                # wait (e.g. LSF's _retry_pending_after_monitor) hanging forever.
+                # A retriable failure the owning strategy no longer tolerates is
+                # itself terminal. Without this, an event a strategy WOULD retry --
+                # but can't, because it is exhausted -- would be neither relaunched
+                # nor raised, leaving a monitor's deferred wait (e.g. LSF's
+                # _retry_pending_after_monitor) hanging forever.
                 #
-                # But this escalation must not fire while the workload is still
-                # live: a retriable event that reports a present, non-terminal
-                # state (e.g. a K8s AppWrapper still Running/Unhealthy whose pod
-                # is stuck in FailedScheduling on cluster-wide GPU exhaustion) is
-                # transient backpressure, not a failure. Failing it -- especially
-                # when retries are disabled (max_retries == 0, so retry_count 0 >=
-                # 0 is immediately true) -- would turn a workload that is merely
-                # waiting for capacity, and may still succeed, into a false-positive
-                # build failure (#335). Stateless failure events (e.g. LSF's) carry
-                # no state and so still escalate.
-                retries_exhausted_on_retriable = (
-                    not retry_triggered
-                    and self.retry_count >= self.max_retries
-                    and self._is_retriable_event(event)
-                    and not self._is_live_nonterminal_state(event)
+                # "Exhausted" is the strategy's call (``is_exhausted``), not a
+                # hardcoded retry_count check: an ordinary retriable failure is
+                # exhausted when the shared budget is spent, but a strategy may
+                # tolerate an interruption further on its own budget (preemption,
+                # up to max_preemptions) and stay un-exhausted -- which is how a
+                # transient preemption avoids failing the build even when step
+                # retries are disabled.
+                #
+                # This escalation must not fire while the workload is still live: a
+                # retriable event reporting a present, non-terminal state (e.g. a
+                # K8s AppWrapper still Running/Unhealthy whose pod is stuck in
+                # FailedScheduling on cluster-wide GPU exhaustion) is transient
+                # backpressure, not a failure (#335). Stateless failure events
+                # (e.g. LSF's) carry no state and so still escalate.
+                # Ask the owning strategy once whether this retriable event is
+                # exhausted (evaluated once so a strategy that counts occurrences
+                # is not double-counted).
+                retriable = not retry_triggered and self._is_retriable_event(event)
+                exhausted = retriable and self._is_retriable_exhausted(event)
+
+                # A retriable event a strategy still tolerates (not exhausted):
+                # neither retried (budget spent) nor failed -- kept alive.
+                tolerated_without_retry = retriable and not exhausted
+
+                retriable_and_exhausted = (
+                    exhausted and not self._is_live_nonterminal_state(event)
                 )
 
                 # Always forward the event downstream, but enrich with retry metadata
@@ -432,19 +472,23 @@ class RetryHandler:
                 # Forward to downstream queue
                 await self.downstream_queue.put(event)
 
-                # If terminal failure (or a retriable failure with no retries
-                # left) and no retry was triggered, raise to stop the build.
+                # Raise to stop the build when the event is terminal or a retriable
+                # failure the owning strategy no longer tolerates -- unless a
+                # strategy still tolerates it (e.g. a transient preemption under its
+                # ceiling), which keeps even a terminal-shaped "Failed" from failing
+                # the build.
                 if (
-                    is_terminal_failure or retries_exhausted_on_retriable
-                ) and not retry_triggered:
+                    (is_terminal_failure or retriable_and_exhausted)
+                    and not retry_triggered
+                    and not tolerated_without_retry
+                ):
                     error_message = self._extract_failure_message(event)
                     logger.error(
                         "[RetryHandler launch_id %s] %s detected with no retry possible. Raising exception.",
                         self.launch_id,
                         (
                             "Retries exhausted on retriable failure"
-                            if retries_exhausted_on_retriable
-                            and not is_terminal_failure
+                            if retriable_and_exhausted and not is_terminal_failure
                             else "Terminal failure"
                         ),
                     )
@@ -569,9 +613,7 @@ class RetryHandler:
         Report whether any registered strategy recognizes this event as retriable.
 
         Unlike _evaluate_and_retry, this ignores retry_count / max_retries; it
-        only asks whether the event matches a retry strategy. process_events uses
-        it to detect a retriable failure that can no longer be retried (retries
-        exhausted), which is itself terminal.
+        only asks whether the event matches a retry strategy.
 
         Args:
             event: BuildEvent from the monitor
@@ -580,6 +622,29 @@ class RetryHandler:
             bool: True if at least one strategy would retry this event
         """
         return any(strategy.should_retry(event=event) for strategy in self.strategies)
+
+    def _is_retriable_exhausted(self: Self, event: BuildEvent) -> bool:
+        """
+        Report whether a strategy recognizes this event as retriable AND its
+        tolerance for it is exhausted -- the "retried as much as allowed, now
+        terminal" condition process_events escalates.
+
+        Each matching strategy decides its own exhaustion via ``is_exhausted``
+        (default: the shared ``max_retries`` budget), so a strategy that tolerates
+        an event on a larger budget (preemption, up to max_preemptions) stays
+        un-exhausted and keeps the build alive.
+
+        Args:
+            event: BuildEvent from the monitor
+
+        Returns:
+            bool: True if a matching strategy is exhausted for this event.
+        """
+        return any(
+            strategy.should_retry(event=event)
+            and strategy.is_exhausted(event, self.retry_count, self.max_retries)
+            for strategy in self.strategies
+        )
 
     async def _evaluate_and_retry(
         self: Self,
@@ -772,6 +837,11 @@ class RetryHandler:
         2. A ``MESSAGE_EVENT`` whose ``msg`` carries a ```json``` block with
            ``state == "Failed"`` or ``state`` starting with ``"Exception:"`` — the
            K8s AppWrapper terminal shape.
+
+        This is the generic, environment-agnostic terminal test. Environment-
+        specific "this failure is actually transient" knowledge (e.g. K8s/Kueue
+        preemption) is expressed by a strategy recognizing the event as retriable
+        and not yet exhausted, applied by ``process_events``, not here.
 
         Args:
             event: BuildEvent from the monitor
