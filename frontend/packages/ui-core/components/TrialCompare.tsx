@@ -240,10 +240,15 @@ export function TrialCompare({ trials }: Props) {
             {rows.map((row, i) => (
               <StructuredListCell key={row.id} head style={dataCellStyle}>
                 {row.id}
+                {/* Own block below the id, so a long tag never squeezes the id's
+                    column or wraps beside it. Carbon's .cds--tag carries its own
+                    margin; the wrapper owns the spacing instead. */}
                 {i === 0 && showBestTag && (
-                  <Tag type="green" size="sm" style={{ marginLeft: '0.5rem' }}>
-                    Best
-                  </Tag>
+                  <div style={{ marginTop: '0.25rem' }}>
+                    <Tag type="gray" size="sm" style={{ margin: 0 }}>
+                      Best eval loss
+                    </Tag>
+                  </div>
                 )}
               </StructuredListCell>
             ))}
@@ -253,7 +258,7 @@ export function TrialCompare({ trials }: Props) {
 
       {resultKeys.length > 0 && (
         <>
-          <SectionHeading title="Results" subtitle="How each trial scored" />
+          <SectionHeading title="Results" subtitle="How each trial performed" />
           {renderList(resultKeys, 'Trial results')}
         </>
       )}
@@ -261,7 +266,7 @@ export function TrialCompare({ trials }: Props) {
       {differingKeys.length > 0 && (
         <>
           <SectionHeading
-            title="What differs"
+            title="Differences"
             subtitle={`${plural(differingKeys.length, 'hyperparameter')} varied across these trials`}
           />
           {renderList(differingKeys, 'Differing hyperparameters')}
@@ -295,7 +300,7 @@ export function TrialCompare({ trials }: Props) {
               }}
             >
               <span style={{ display: 'flex', alignItems: 'baseline', gap: '0.75rem' }}>
-                <span style={HEADING_TITLE}>Same for all</span>
+                <span style={HEADING_TITLE}>Similarities</span>
                 <span style={HEADING_SUBTITLE}>
                   {`${plural(sameKeys.length, 'hyperparameter')} identical across all ${rows.length} trials`}
                 </span>
