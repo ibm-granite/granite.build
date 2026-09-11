@@ -386,23 +386,56 @@ class Build(BuildEntity):
         """Return the local directory ``Path`` for the target's env URI, or ``None``.
 
         Central guard for the validator's env-yaml reads: yields ``None`` when the
-        env URI is unavailable or carries no local path.  Both :meth:`__env_dir_uri`
-        and :meth:`_read_env_types` build on this instead of re-deriving the path.
+        env URI is unavailable or can't be materialized locally.  Both
+        :meth:`__env_dir_uri` and :meth:`_read_env_types` build on this instead of
+        re-deriving the path.
+
+        A local (``file://`` / bare) env URI carries its directory directly in
+        ``uri.path``.  A **git-backed** space, though, resolves
+        ``space://environments/...`` to a ``GitURI`` whose ``uri.path`` is the repo
+        *URL* path (e.g. ``/owner/repo.git@branch``), not a local clone — using it
+        verbatim makes the validator miss ``environment.yaml`` and drop the env
+        class, which in turn makes builtin ``space://steps/<name>`` URIs
+        unresolvable.  So for such URIs we materialize the already-cached clone via
+        ``get_path_in_repo_from_cache`` (honors any ``#subdirectory=`` fragment, no
+        re-clone), mirroring :meth:`SpaceURI._uri_to_local_path`.
+
+        Args:
+            target_env_uri: The target's resolved ``environment_uri``, or ``None``.
+
+        Returns:
+            The env directory ``Path`` (local dir, or the reused git clone),
+            or ``None`` when the URI is unavailable or can't be materialized.
         """
         if target_env_uri is None or target_env_uri.uri is None:
             return None
+        # Local file:// (or bare) env URIs carry their dir directly in .path.
         env_path_str = target_env_uri.uri.path
-        if not env_path_str:
-            return None
-        return Path(env_path_str)
+        if env_path_str and Path(env_path_str).is_dir():
+            return Path(env_path_str)
+        # Git-backed space: materialize the (cached) clone, honoring any
+        # #subdirectory= fragment — the same helper SpaceURI uses, so no re-clone.
+        get_path_in_repo = getattr(
+            target_env_uri, "get_path_in_repo_from_cache", None
+        )
+        if get_path_in_repo is not None:
+            try:
+                return get_path_in_repo()
+            except Exception:  # pylint: disable=broad-except
+                # A clone failure (network/auth) is non-fatal: degrade to
+                # "can't inspect" so the facet is silently skipped, as before.
+                return None
+        return Path(env_path_str) if env_path_str else None
 
     @staticmethod
     def __env_dir_uri(target_env_uri: Optional[URI]) -> Optional[str]:
         """Return a ``file://`` URI for the resolved env directory, or ``None``.
 
         Feeds ``SpaceURI``'s Tier 1 ancestor-walk during validation so
-        env-co-located and ancestor steps resolve.  Returns ``None`` when the
-        env URI is unavailable or not a local path.
+        env-co-located and ancestor steps resolve.  Builds on
+        :meth:`__env_dir_path`, so a git-backed env resolves to its reused local
+        clone; returns ``None`` only when the env URI is unavailable or can't be
+        materialized locally.
         """
         env_path = Build.__env_dir_path(target_env_uri)
         return f"file://{env_path}" if env_path is not None else None
@@ -416,8 +449,10 @@ class Build(BuildEntity):
         Returns ``(class_name, subtype)`` for scoping step URI validation: the
         class name (e.g. ``"K8s"``, ``"Skypilot"``) drives the env-class-match
         tier, and the sub-type drives the per-step ``subtypes`` filter.  Either
-        element is ``None`` when the env URI is unavailable, not a local path, or
-        its yaml can't be parsed — in which case that facet is silently skipped.
+        element is ``None`` when the env URI is unavailable, can't be materialized
+        locally (:meth:`__env_dir_path` handles both ``file://`` and git-backed
+        env dirs), or its yaml can't be parsed — that facet is then silently
+        skipped.
 
         Lightweight on purpose: skips the full ``Environment.get_environment``
         instantiation (which requires an event_q and runs side effects); the
