@@ -7,18 +7,17 @@
 targets:
   - slurm-run
 target_expectations:
-  # step_count = 1: the env_local assetstore is a no-op (no hfpull/hfpush steps
-  # are queued), so only the single `command` step is recorded. The env:// input
-  # and env:// output each add one artifact but launch no pull/push step; the
-  # env:// output produces one jobstat.
   - target_name: slurm-run
-    step_count: 1
-    input_artifact_count: 1
-    output_artifact_count: 1
+    step_count: 3 # hf pull, command, hf push (env:// pull+push are no-ops, no steps)
+    input_artifact_count: 2 # hf input + env:// input
+    output_artifact_count: 2 # hf output + env:// output
     jobstats_count: 1
 # Resolve space:// URIs (env + the shared `command` step) from the repo's local
 # space without cloning from GitHub. Relative to this YAML's directory.
-space_uri: ../../../../../../../configurations/spaces/local
+#space_uri: ../../../../../../../configurations/spaces/local
+#space_uri: ../../../../../../../../gb-test
+#space_uri: https://github.ibm.com/granite-dot-build/gb-test
+space_uri: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
 # No simulated failure: the runner test exercises the happy path, and the
 # runner_cancellation test cancels a genuinely-running step.
 simulate_step_failure: false
