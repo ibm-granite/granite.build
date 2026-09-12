@@ -47,7 +47,6 @@ def _make_lsf(login_nodes: List[str]) -> Lsf:
     lsf.ssh_host_key_verification = False
     lsf.ssh_port = 22
     lsf.ssh_max_sessions = 10
-    lsf.ssh_timeout = 5
     # Short budget + backoff so a failing test fails fast rather than hanging.
     lsf.ssh_connect_budget_s = 3600
     lsf.ssh_connect_base_backoff_s = 1
@@ -58,6 +57,7 @@ def _make_lsf(login_nodes: List[str]) -> Lsf:
     lsf.ssh_keepalive_interval_s = 10
     lsf.ssh_keepalive_count_max = 3
     lsf.ssh_command_timeout_s = 120
+    lsf.ssh_probe_timeout_s = 30
     return lsf
 
 
@@ -372,12 +372,12 @@ class TestEnsureSshTunnelConcurrency:
 
 
 class TestReachabilityProbeBannerBound:
-    """The pre-tunnel `ssh` probe gates tunnel establishment, so its ConnectTimeout
-    reuses the tunnel's login_timeout — NOT the old 5s ssh_timeout, which cut off a
-    slow-but-recoverable node before the tunnel could try it."""
+    """The pre-tunnel `ssh` probe gates tunnel establishment and runs per node with
+    no per-sweep deadline, so it uses a small dedicated probe timeout — keeping a
+    hung cluster from blowing a short-budget caller (bkill)."""
 
     @pytest.mark.asyncio
-    async def test_probe_uses_login_timeout_not_ssh_timeout(self: Self) -> None:
+    async def test_probe_uses_small_probe_timeout(self: Self) -> None:
         lsf = _make_lsf(["a"])
         captured: dict = {}
 
@@ -393,9 +393,9 @@ class TestReachabilityProbeBannerBound:
 
         assert ok is True
         cmd = captured["cmd"]
-        # Probe reuses the tunnel's patient login_timeout, never the rigid 5s.
-        assert f"ConnectTimeout={lsf.ssh_login_timeout_s}" in cmd
-        assert f"ConnectTimeout={lsf.ssh_timeout}" not in cmd
+        # Probe uses the small dedicated timeout, not the long command/login ones.
+        assert f"ConnectTimeout={lsf.ssh_probe_timeout_s}" in cmd
+        assert f"ConnectTimeout={lsf.ssh_command_timeout_s}" not in cmd
 
 
 class TestSshTunnelIsHealthy:

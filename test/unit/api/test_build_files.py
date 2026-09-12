@@ -1562,6 +1562,36 @@ class TestOpenLsfTunnelFailover:
         assert opened_hosts == ["node-a", "node-b"]
 
     @pytest.mark.asyncio
+    async def test_readlink_timeout_returns_503_not_500(self):
+        """A command_timeout on the post-open readlink canonicalize (slow session
+        setup) must surface as a clean 503, not an opaque 500."""
+        from gbserver.api import lsf_tunnel
+
+        resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
+
+        def make_tunnel(**kwargs):
+            t = MagicMock()
+            t.open = AsyncMock(return_value=None)
+            # asyncssh raises TimeoutError (subclasses builtin) when conn.run
+            # exceeds command_timeout.
+            t.run_remote = AsyncMock(side_effect=TimeoutError("command timed out"))
+            t.close = AsyncMock()
+            return t
+
+        with (
+            resolve,
+            fetch,
+            write,
+            unlink,
+            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+        ):
+            with pytest.raises(HTTPException) as ei:
+                async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                    pass
+
+        assert ei.value.status_code == 503
+
+    @pytest.mark.asyncio
     async def test_all_nodes_fail_returns_503_with_list(self):
         from gbserver.api import lsf_tunnel
         from gbserver.utils.ssh_tunnel import SshTunnelError

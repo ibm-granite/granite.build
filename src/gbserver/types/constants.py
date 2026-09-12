@@ -856,6 +856,15 @@ GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S = int(
 GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_KEEPALIVE_COUNT_MAX", "3"), base=10
 )
+# Overall timeout for the plain-`ssh` reachability probe (__is_ssh_node_reachable),
+# which gates tunnel establishment. Kept SMALL and dedicated (not command_timeout):
+# _get_reachable_ssh_node probes every node in turn with no per-sweep deadline, so
+# a large per-probe cap would let one sweep run N * cap and blow a caller's budget
+# (e.g. bkill's 300s). A wedged node fails over in ~this long; a healthy one
+# answers well within it even with slow session setup.
+GBSERVER_LSF_SSH_PROBE_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_PROBE_TIMEOUT_S", "30"), base=10
+)
 # Establish budget: how long the synchronous file APIs sweep candidate login nodes
 # for a tunnel before returning 503. Short because they run behind an HTTPS route
 # (HAProxy server-timeout 600s, k8s/chart/values.yaml) for an interactive caller;

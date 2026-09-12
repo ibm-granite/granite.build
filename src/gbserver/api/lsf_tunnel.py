@@ -310,10 +310,19 @@ async def open_lsf_tunnel(
         # symlinked parent of the workspace could let validate_subpath's
         # lexical containment check disagree with readlink-based checks
         # downstream.
-        rc, stdout, stderr = await tunnel.run_remote(
-            f"readlink -f -- {shlex.quote(workspace_remote_dir)}",
-            raise_on_error=False,
-        )
+        try:
+            rc, stdout, stderr = await tunnel.run_remote(
+                f"readlink -f -- {shlex.quote(workspace_remote_dir)}",
+                raise_on_error=False,
+            )
+        except (SshTunnelError, TimeoutError) as e:
+            # command_timeout expiry (slow bluevela session setup) or a dropped
+            # tunnel — transient, so 503 not an opaque 500. (asyncssh.TimeoutError
+            # subclasses builtin TimeoutError.)
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "login node is slow or unreachable; please retry",
+            ) from e
         canonical_workspace = (stdout or "").strip()
         if rc != 0 or not canonical_workspace:
             raise HTTPException(

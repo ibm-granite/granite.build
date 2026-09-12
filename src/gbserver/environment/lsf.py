@@ -69,6 +69,7 @@ from gbserver.types.constants import (
     GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
     GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
     GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
+    GBSERVER_LSF_SSH_PROBE_TIMEOUT_S,
     LSF_USE_ASPERA,
     STEP_FILE_NAME,
 )
@@ -223,7 +224,6 @@ class Lsf(Environment):
             "rsync",
         ), f"invalid copy_method: {self.copy_method} (expected 'scp' or 'rsync')"
 
-        self.ssh_timeout = int(authentication.get("ssh_timeout", "5"))
         self.node_search_lock = asyncio.Lock()
         self.unreachable_ssh_nodes = []  # type: ignore[var-annotated]
         # Resilient SSH-tunnel establishment (see _ensure_ssh_tunnel).
@@ -284,6 +284,14 @@ class Lsf(Environment):
             authentication.get(
                 "ssh_command_timeout_s", GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S
             )
+        )
+        # Small, dedicated overall timeout for the reachability probe. Kept short
+        # (not command_timeout) because _get_reachable_ssh_node probes nodes in
+        # sequence with no per-sweep deadline, so the per-probe cap directly bounds
+        # how long a caller with a short budget (e.g. bkill) can block on a hung
+        # cluster.
+        self.ssh_probe_timeout_s = int(
+            authentication.get("ssh_probe_timeout_s", GBSERVER_LSF_SSH_PROBE_TIMEOUT_S)
         )
         if self.use_ssh:
             assert (
@@ -445,21 +453,20 @@ class Lsf(Environment):
         assert node, "Node must be provided, otherwise we have an infinite loop here"
         cmds = await self.create_ssh_base_cmd(node=node)
         # ConnectTimeout bounds connect+banner (modern OpenSSH covers the banner
-        # exchange here); reuse login_timeout so the probe is as patient as the
-        # tunnel and doesn't reject a briefly-slow node the tunnel would accept.
+        # exchange here). ServerAlive* / the subprocess helper don't bound the
+        # post-connect `echo` (which incurs the same session-setup delay), so an
+        # overall wait_for is the real bound. Both use one small probe timeout:
+        # _get_reachable_ssh_node probes nodes in sequence with no per-sweep
+        # deadline, so keeping this small is what stops a hung cluster from
+        # blowing a short-budget caller (bkill) — N nodes * probe_timeout.
         cmds.append("-o")
-        cmds.append(f"ConnectTimeout={self.ssh_login_timeout_s}")
+        cmds.append(f"ConnectTimeout={self.ssh_probe_timeout_s}")
         cmds.append("echo")
         cmds.append("testing node availability")
-        # The `echo` incurs the same slow server-side session/exec setup as a real
-        # command, which ConnectTimeout doesn't bound and the subprocess helper
-        # doesn't time out. Wrap the whole probe in login+command budget: patient
-        # enough for a slow-but-alive node, finite so a wedged one fails over.
-        overall_timeout = self.ssh_login_timeout_s + self.ssh_command_timeout_s
         try:
             await asyncio.wait_for(
                 launch_command_and_raise_errors(command_list=cmds, launch_id=launch_id),
-                timeout=overall_timeout,
+                timeout=self.ssh_probe_timeout_s,
             )
             return True
         except Exception:
