@@ -69,11 +69,9 @@ def translate_remote_file_errors() -> Iterator[None]:
         )
         raise HTTPException(status_code, str(e)) from e
     except (SshTunnelError, TimeoutError) as e:
-        # A remote command hit the SSH command_timeout (slow bluevela session
-        # setup) or the tunnel dropped mid-op. That's a transient login-node
-        # problem, not a client error — surface 503 so the interactive caller
-        # sees "try again" rather than an opaque 500. (asyncssh.TimeoutError
-        # subclasses builtin TimeoutError.)
+        # SSH command_timeout (slow bluevela session setup) or a dropped tunnel:
+        # transient, so 503 not an opaque 500. Assumes this CM only ever wraps
+        # remote SSH ops; narrow the catch if a non-SSH await is ever wrapped.
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "login node is slow or unreachable; please retry",

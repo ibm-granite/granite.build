@@ -831,9 +831,8 @@ GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S = int(
 # "slow"; the real delay is server-side session/exec setup AFTER auth, bounded by
 # COMMAND_TIMEOUT below. So login/connect timeouts are not the fix — they only
 # bound a genuinely-degraded node before failover.
-# login_timeout: banner+kex+auth ("Login timeout expired"). Also reused as the
-# reachability probe's ConnectTimeout (modern OpenSSH ConnectTimeout covers the
-# banner exchange), so probe and tunnel agree on which nodes are reachable.
+# login_timeout: banner+kex+auth ("Login timeout expired"). The reachability probe
+# has its own bound (PROBE_TIMEOUT below), independent of this.
 GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_LOGIN_TIMEOUT_S", "30"), base=10
 )

@@ -316,9 +316,7 @@ async def open_lsf_tunnel(
                 raise_on_error=False,
             )
         except (SshTunnelError, TimeoutError) as e:
-            # command_timeout expiry (slow bluevela session setup) or a dropped
-            # tunnel — transient, so 503 not an opaque 500. (asyncssh.TimeoutError
-            # subclasses builtin TimeoutError.)
+            # command_timeout expiry or dropped tunnel — transient, so 503 not 500.
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 "login node is slow or unreachable; please retry",

@@ -82,10 +82,7 @@ from gbserver.types.environmentconfig import (
 from gbserver.types.errors import WorkloadFailedException
 from gbserver.types.stepconfig import StepConfig
 from gbserver.utils.filesystem import sync_or_copy
-from gbserver.utils.launch import (
-    launch_command_and_raise_errors,
-    launch_command_and_retry_or_raise_errors,
-)
+from gbserver.utils.launch import launch_command_and_retry_or_raise_errors
 from gbserver.utils.logger import get_logger
 from gbserver.utils.redaction import REDACTED, SENSITIVE_KEY_RE, scrub_url_credentials
 from gbserver.utils.ssh_keys import write_private_key_file
@@ -452,25 +449,44 @@ class Lsf(Environment):
         """"""
         assert node, "Node must be provided, otherwise we have an infinite loop here"
         cmds = await self.create_ssh_base_cmd(node=node)
-        # ConnectTimeout bounds connect+banner (modern OpenSSH covers the banner
-        # exchange here). ServerAlive* / the subprocess helper don't bound the
-        # post-connect `echo` (which incurs the same session-setup delay), so an
-        # overall wait_for is the real bound. Both use one small probe timeout:
-        # _get_reachable_ssh_node probes nodes in sequence with no per-sweep
-        # deadline, so keeping this small is what stops a hung cluster from
-        # blowing a short-budget caller (bkill) — N nodes * probe_timeout.
+        # One small probe timeout for both ConnectTimeout and the overall wait_for
+        # (the `echo` incurs the session-setup delay that ConnectTimeout doesn't
+        # bound). Kept small: _get_reachable_ssh_node probes nodes in sequence with
+        # no per-sweep deadline, so this caps a hung cluster's cost per caller
+        # budget (N * probe_timeout) — notably bkill's short one.
         cmds.append("-o")
         cmds.append(f"ConnectTimeout={self.ssh_probe_timeout_s}")
         cmds.append("echo")
         cmds.append("testing node availability")
+        # Spawn ssh directly (not via the shared helper) so we can kill the child
+        # on timeout: wait_for only cancels the await, it doesn't reap the process.
+        logger.info("probing node reachability: %s", cmd_safe_join(cmds))
+        proc = await asyncio.create_subprocess_exec(
+            *cmds,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
-            await asyncio.wait_for(
-                launch_command_and_raise_errors(command_list=cmds, launch_id=launch_id),
-                timeout=self.ssh_probe_timeout_s,
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.ssh_probe_timeout_s
             )
-            return True
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — timeout/IO error => unreachable
+            # Kill the child so a timed-out ssh doesn't linger, then reap it.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            logger.warning("node %s not reachable: %s", node, e)
             return False
+        if proc.returncode == 0:
+            return True
+        logger.warning(
+            "node %s not reachable (rc=%s): %s",
+            node,
+            proc.returncode,
+            (stderr or b"").decode("utf-8", errors="replace").strip(),
+        )
+        return False
 
     def _prepare_assets_replace_vars(
         self: Self,

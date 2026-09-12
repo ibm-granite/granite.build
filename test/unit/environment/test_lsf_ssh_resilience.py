@@ -376,18 +376,27 @@ class TestReachabilityProbeBannerBound:
     no per-sweep deadline, so it uses a small dedicated probe timeout — keeping a
     hung cluster from blowing a short-budget caller (bkill)."""
 
+    @staticmethod
+    def _mock_proc(returncode: int = 0) -> MagicMock:
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = returncode
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock()
+        return proc
+
     @pytest.mark.asyncio
     async def test_probe_uses_small_probe_timeout(self: Self) -> None:
         lsf = _make_lsf(["a"])
         captured: dict = {}
 
-        async def _capture(command_list, launch_id):  # noqa: ANN001
-            captured["cmd"] = command_list
-            return MagicMock(), "", ""
+        async def _spawn(*args, **kwargs):  # noqa: ANN002, ANN003
+            captured["cmd"] = list(args)
+            return self._mock_proc(returncode=0)
 
         with patch(
-            "gbserver.environment.lsf.launch_command_and_raise_errors",
-            new=AsyncMock(side_effect=_capture),
+            "gbserver.environment.lsf.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=_spawn),
         ):
             ok = await lsf._Lsf__is_ssh_node_reachable(node="a", launch_id="lid")
 
@@ -396,6 +405,23 @@ class TestReachabilityProbeBannerBound:
         # Probe uses the small dedicated timeout, not the long command/login ones.
         assert f"ConnectTimeout={lsf.ssh_probe_timeout_s}" in cmd
         assert f"ConnectTimeout={lsf.ssh_command_timeout_s}" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_probe_kills_child_on_timeout(self: Self) -> None:
+        """A timed-out probe must kill the ssh child so it doesn't linger."""
+        lsf = _make_lsf(["a"])
+        proc = self._mock_proc()
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        with patch(
+            "gbserver.environment.lsf.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            ok = await lsf._Lsf__is_ssh_node_reachable(node="a", launch_id="lid")
+
+        assert ok is False
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited_once()
 
 
 class TestSshTunnelIsHealthy:
