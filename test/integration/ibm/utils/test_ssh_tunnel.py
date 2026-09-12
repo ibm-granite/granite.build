@@ -77,6 +77,48 @@ async def test_open_connects_with_correct_kwargs():
 
 
 @pytest.mark.asyncio
+async def test_open_passes_timeout_and_keepalive_kwargs():
+    """Timeout/keepalive params should reach asyncssh.connect when set."""
+    mock_conn, _ = _make_mock_conn()
+
+    with patch(
+        "asyncssh.connect", new=AsyncMock(return_value=mock_conn)
+    ) as mock_connect:
+        tunnel = SshTunnel(
+            host="myhost",
+            connect_timeout=20,
+            login_timeout=90,
+            keepalive_interval=10,
+            keepalive_count_max=3,
+        )
+        await tunnel.open()
+
+    _, kwargs = mock_connect.call_args
+    assert kwargs["connect_timeout"] == 20
+    assert kwargs["login_timeout"] == 90
+    assert kwargs["keepalive_interval"] == 10
+    assert kwargs["keepalive_count_max"] == 3
+
+
+@pytest.mark.asyncio
+async def test_open_omits_timeout_kwargs_when_unset():
+    """Unset timeout/keepalive params must not override asyncssh defaults."""
+    mock_conn, _ = _make_mock_conn()
+
+    with patch(
+        "asyncssh.connect", new=AsyncMock(return_value=mock_conn)
+    ) as mock_connect:
+        tunnel = SshTunnel(host="myhost")
+        await tunnel.open()
+
+    _, kwargs = mock_connect.call_args
+    assert "connect_timeout" not in kwargs
+    assert "login_timeout" not in kwargs
+    assert "keepalive_interval" not in kwargs
+    assert "keepalive_count_max" not in kwargs
+
+
+@pytest.mark.asyncio
 async def test_open_disables_host_key_verification():
     """host_key_verification=False should pass known_hosts=None."""
     mock_conn, _ = _make_mock_conn()
@@ -138,6 +180,34 @@ async def test_run_returns_stdout_stderr_on_success():
     assert stdout == "hello\n"
     assert stderr == ""
     mock_conn.run.assert_called_once_with("echo hello", check=False)
+
+
+@pytest.mark.asyncio
+async def test_run_applies_command_timeout_when_set():
+    """command_timeout should be forwarded to conn.run so a slow server-side
+    session/exec setup is bounded (the bluevela symptom)."""
+    mock_conn, _ = _make_mock_conn(run_exit_status=0, run_stdout="ok\n")
+
+    with patch("asyncssh.connect", new=AsyncMock(return_value=mock_conn)):
+        tunnel = SshTunnel(host="myhost", command_timeout=120)
+        await tunnel.open()
+        await tunnel.run_remote("echo ok")
+
+    mock_conn.run.assert_called_once_with("echo ok", check=False, timeout=120)
+
+
+@pytest.mark.asyncio
+async def test_run_omits_command_timeout_when_unset():
+    """No command_timeout must leave conn.run at its default (no timeout kwarg)."""
+    mock_conn, _ = _make_mock_conn(run_exit_status=0, run_stdout="ok\n")
+
+    with patch("asyncssh.connect", new=AsyncMock(return_value=mock_conn)):
+        tunnel = SshTunnel(host="myhost")
+        await tunnel.open()
+        await tunnel.run_remote("echo ok")
+
+    _, kwargs = mock_conn.run.call_args
+    assert "timeout" not in kwargs
 
 
 @pytest.mark.asyncio

@@ -49,6 +49,11 @@ def _make_lsf(use_ssh: bool = True) -> Lsf:
     lsf._ssh_tunnel = _mock_tunnel() if use_ssh else None
     lsf._send_message = MagicMock()
     lsf._dispatch_event = MagicMock()
+    # _bkill now reconnects through ensure_and_use -> _ensure_ssh_tunnel, whose
+    # fast path reuses a healthy tunnel but first asserts the key file and may take
+    # _tunnel_lock. Provide both so a healthy mock tunnel is returned as-is.
+    lsf._key_file_path = "/tmp/fake_key"
+    lsf._tunnel_lock = asyncio.Lock()
     return lsf
 
 
@@ -159,6 +164,61 @@ class TestCleanupBsub:
         )
 
         assert lsf._ssh_tunnel.run_remote.call_count == 3
+        lsf._send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bkill_reconnects_dead_tunnel_with_short_budget(self: Self) -> None:
+        """A wedged/absent tunnel is no longer a skip: bkill reconnects through the
+        robust establish path, but with the short bkill budget, not the 4h one."""
+        from gbserver.environment import lsf as lsf_mod
+
+        lsf = _make_lsf(use_ssh=True)
+        lsf._launched_jobs["launch-1"] = "12345"
+        lsf._ssh_tunnel = None  # no live tunnel at cleanup time
+
+        fresh = _mock_tunnel()
+        fresh.run_remote = AsyncMock(
+            return_value=(0, "Job <12345> is being terminated\n", "")
+        )
+
+        with patch.object(
+            lsf, "_ensure_ssh_tunnel", new=AsyncMock(return_value=fresh)
+        ) as ensure:
+            await lsf.cleanup_bsub(
+                launch_id="launch-1",
+                run_metadata={"build_id": "b1"},
+            )
+
+        # Reconnected (not skipped) and used the short bkill budget.
+        ensure.assert_awaited_once()
+        assert (
+            ensure.await_args.kwargs["budget_s"]
+            == lsf_mod.GBSERVER_LSF_BKILL_SSH_BUDGET_S
+        )
+        fresh.run_remote.assert_awaited_once()
+        lsf._send_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_bkill_skips_when_reconnect_fails(self: Self) -> None:
+        """If the short-budget reconnect can't establish a tunnel, bkill stays
+        best-effort: log and skip, never fail teardown."""
+        from gbserver.utils.ssh_tunnel import SshTunnelError
+
+        lsf = _make_lsf(use_ssh=True)
+        lsf._launched_jobs["launch-1"] = "12345"
+        lsf._ssh_tunnel = None
+
+        with patch.object(
+            lsf,
+            "_ensure_ssh_tunnel",
+            new=AsyncMock(side_effect=SshTunnelError("no reachable node in budget")),
+        ):
+            # No exception propagates out of teardown.
+            await lsf.cleanup_bsub(
+                launch_id="launch-1",
+                run_metadata={"build_id": "b1"},
+            )
+
         lsf._send_message.assert_not_called()
 
 

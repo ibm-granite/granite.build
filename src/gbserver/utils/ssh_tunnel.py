@@ -80,6 +80,11 @@ class SshTunnel:
         host_key_verification: bool = True,
         port_forwards: Optional[List[Tuple[int, str, int]]] = None,
         max_sessions: int = 10,  # 10 is the default MaxSessions value for sshd
+        connect_timeout: Optional[float] = None,
+        login_timeout: Optional[float] = None,
+        keepalive_interval: Optional[float] = None,
+        keepalive_count_max: Optional[int] = None,
+        command_timeout: Optional[float] = None,
     ) -> None:
         if not HAS_ASYNCSSH:
             raise ImportError(
@@ -91,6 +96,26 @@ class SshTunnel:
         self.key_file = key_file
         self.host_key_verification = host_key_verification
         self.port_forwards: List[Tuple[int, str, int]] = port_forwards or []
+        # Bound the connect/login phase and detect a wedged post-connect session.
+        # A host can leave the connection TCP-open yet withhold its SSH banner (or
+        # accept the connection then stop responding); without these, open() and
+        # subsequent commands can hang indefinitely. login_timeout bounds the
+        # banner+auth phase; keepalive_* catches a session that goes silent after
+        # auth. Callers pass explicit values (see the LSF environment); the None
+        # defaults leave asyncssh's own behavior unchanged for other callers.
+        self.connect_timeout = connect_timeout
+        self.login_timeout = login_timeout
+        self.keepalive_interval = keepalive_interval
+        self.keepalive_count_max = keepalive_count_max
+        # Per-command execution timeout (asyncssh conn.run(timeout=...)). Bounds
+        # the phase that is actually slow on bluevela: connect+auth complete in
+        # ~1s, but SERVER-SIDE session/exec setup (networked home dir, login rc,
+        # module init) can delay a command's first output by tens of seconds. This
+        # must be generous enough to wait that out yet finite so a truly wedged
+        # session can't hang forever; on expiry asyncssh raises TimeoutError, which
+        # run_remote_with_retries retries. None = no command timeout (asyncssh
+        # default) for callers that don't set one.
+        self.command_timeout = command_timeout
 
         self._conn: Optional[asyncssh.SSHClientConnection] = None
         self._listeners: List[asyncssh.SSHListener] = []
@@ -118,6 +143,16 @@ class SshTunnel:
             connect_kwargs["client_keys"] = [self.key_file]
         if not self.host_key_verification:
             connect_kwargs["known_hosts"] = None
+        # Only pass a timeout/keepalive when set, so unset values fall back to
+        # asyncssh's defaults rather than overriding them with None.
+        if self.connect_timeout is not None:
+            connect_kwargs["connect_timeout"] = self.connect_timeout
+        if self.login_timeout is not None:
+            connect_kwargs["login_timeout"] = self.login_timeout
+        if self.keepalive_interval is not None:
+            connect_kwargs["keepalive_interval"] = self.keepalive_interval
+        if self.keepalive_count_max is not None:
+            connect_kwargs["keepalive_count_max"] = self.keepalive_count_max
 
         logger.info("[SshTunnel] Connecting to %s", self.host)
         try:
@@ -314,8 +349,13 @@ class SshTunnel:
         if self._conn is None:
             raise SshTunnelError("Tunnel is not open. Call open() first.")
         logger.info("[SshTunnel] Running command: %s", logged_command)
+        # command_timeout bounds slow server-side session/exec setup; on expiry
+        # asyncssh raises TimeoutError, which run_remote_with_retries retries.
+        run_kwargs: dict = {"check": False}
+        if self.command_timeout is not None:
+            run_kwargs["timeout"] = self.command_timeout
         async with self._semaphore:
-            result = await self._conn.run(command, check=False)
+            result = await self._conn.run(command, **run_kwargs)
         return result
 
     async def run_local(

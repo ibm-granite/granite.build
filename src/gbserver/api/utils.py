@@ -31,6 +31,7 @@ from gbserver.utils.remote_files_ops import (
     RemoteFileNotFound,
     RemoteFileOpFailed,
 )
+from gbserver.utils.ssh_tunnel import SshTunnelError
 
 # Maps each remote-file domain error to the HTTP status the API surfaces for it.
 # The remote_files_ops module is framework-free (raises these instead of
@@ -67,6 +68,14 @@ def translate_remote_file_errors() -> Iterator[None]:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
         raise HTTPException(status_code, str(e)) from e
+    except (SshTunnelError, TimeoutError) as e:
+        # SSH command_timeout (slow bluevela session setup) or a dropped tunnel:
+        # transient, so 503 not an opaque 500. Assumes this CM only ever wraps
+        # remote SSH ops; narrow the catch if a non-SSH await is ever wrapped.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "login node is slow or unreachable; please retry",
+        ) from e
 
 
 def get_row_filter(**kwargs):

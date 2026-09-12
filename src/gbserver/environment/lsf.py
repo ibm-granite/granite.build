@@ -59,10 +59,17 @@ from gbserver.types.buildevent import (
 from gbserver.types.constants import (
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENABLE_SSH_HOST_KEY_VERIFICATION,
+    GBSERVER_LSF_BKILL_SSH_BUDGET_S,
     GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
+    GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S,
     GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S,
     GBSERVER_LSF_SSH_CONNECT_BUDGET_S,
     GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S,
+    GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S,
+    GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
+    GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
+    GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
+    GBSERVER_LSF_SSH_PROBE_TIMEOUT_S,
     LSF_USE_ASPERA,
     STEP_FILE_NAME,
 )
@@ -75,10 +82,7 @@ from gbserver.types.environmentconfig import (
 from gbserver.types.errors import WorkloadFailedException
 from gbserver.types.stepconfig import StepConfig
 from gbserver.utils.filesystem import sync_or_copy
-from gbserver.utils.launch import (
-    launch_command_and_raise_errors,
-    launch_command_and_retry_or_raise_errors,
-)
+from gbserver.utils.launch import launch_command_and_retry_or_raise_errors
 from gbserver.utils.logger import get_logger
 from gbserver.utils.redaction import REDACTED, SENSITIVE_KEY_RE, scrub_url_credentials
 from gbserver.utils.ssh_keys import write_private_key_file
@@ -95,6 +99,9 @@ REPLACE_THIS_PREFIX = "LLMB_LSF_REPLACE_THIS_"
 # Bounded drain at teardown: wait this long for an in-flight transfer to
 # release the tunnel before closing anyway.
 SSH_TEARDOWN_DRAIN_S = 30.0
+# Slice length for the SSH-establish backoff sleep, so a teardown mid-backoff is
+# noticed within ~this long rather than after the full (up to a minute) delay.
+SSH_ESTABLISH_CANCEL_POLL_S = 2.0
 
 # Builtin step names auto-injected by this module's pullasset/pushasset
 # handlers.  Each resolves via SpaceURI to the LSF env-keyed copy under
@@ -214,7 +221,6 @@ class Lsf(Environment):
             "rsync",
         ), f"invalid copy_method: {self.copy_method} (expected 'scp' or 'rsync')"
 
-        self.ssh_timeout = int(authentication.get("ssh_timeout", "5"))
         self.node_search_lock = asyncio.Lock()
         self.unreachable_ssh_nodes = []  # type: ignore[var-annotated]
         # Resilient SSH-tunnel establishment (see _ensure_ssh_tunnel).
@@ -246,6 +252,43 @@ class Lsf(Environment):
                     "ssh_connect_max_backoff_s", GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S
                 )
             ),
+        )
+        # Per-attempt bounds on the SSH banner/login phase. Distinct from the sweep
+        # budget above: these bound how long one login node may hang (banner never
+        # arriving, or a connected-but-silent session) before we fail over. See the
+        # constants for the bluevela symptom this addresses.
+        self.ssh_login_timeout_s = int(
+            authentication.get("ssh_login_timeout_s", GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S)
+        )
+        self.ssh_connect_timeout_s = int(
+            authentication.get(
+                "ssh_connect_timeout_s", GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S
+            )
+        )
+        self.ssh_keepalive_interval_s = int(
+            authentication.get(
+                "ssh_keepalive_interval_s", GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S
+            )
+        )
+        self.ssh_keepalive_count_max = int(
+            authentication.get(
+                "ssh_keepalive_count_max", GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX
+            )
+        )
+        # Per-command execution timeout: bounds the slow server-side session/exec
+        # setup that is the true bluevela bottleneck (connect+auth are ~1s).
+        self.ssh_command_timeout_s = int(
+            authentication.get(
+                "ssh_command_timeout_s", GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S
+            )
+        )
+        # Small, dedicated overall timeout for the reachability probe. Kept short
+        # (not command_timeout) because _get_reachable_ssh_node probes nodes in
+        # sequence with no per-sweep deadline, so the per-probe cap directly bounds
+        # how long a caller with a short budget (e.g. bkill) can block on a hung
+        # cluster.
+        self.ssh_probe_timeout_s = int(
+            authentication.get("ssh_probe_timeout_s", GBSERVER_LSF_SSH_PROBE_TIMEOUT_S)
         )
         if self.use_ssh:
             assert (
@@ -406,17 +449,44 @@ class Lsf(Environment):
         """"""
         assert node, "Node must be provided, otherwise we have an infinite loop here"
         cmds = await self.create_ssh_base_cmd(node=node)
+        # One small probe timeout for both ConnectTimeout and the overall wait_for
+        # (the `echo` incurs the session-setup delay that ConnectTimeout doesn't
+        # bound). Kept small: _get_reachable_ssh_node probes nodes in sequence with
+        # no per-sweep deadline, so this caps a hung cluster's cost per caller
+        # budget (N * probe_timeout) — notably bkill's short one.
         cmds.append("-o")
-        cmds.append(f"ConnectTimeout={self.ssh_timeout}")
+        cmds.append(f"ConnectTimeout={self.ssh_probe_timeout_s}")
         cmds.append("echo")
         cmds.append("testing node availability")
+        # Spawn ssh directly (not via the shared helper) so we can kill the child
+        # on timeout: wait_for only cancels the await, it doesn't reap the process.
+        logger.info("probing node reachability: %s", cmd_safe_join(cmds))
+        proc = await asyncio.create_subprocess_exec(
+            *cmds,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
-            await launch_command_and_raise_errors(
-                command_list=cmds, launch_id=launch_id
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.ssh_probe_timeout_s
             )
-            return True
-        except:
+        except Exception as e:  # noqa: BLE001 — timeout/IO error => unreachable
+            # Kill the child so a timed-out ssh doesn't linger, then reap it.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            logger.warning("node %s not reachable: %s", node, e)
             return False
+        if proc.returncode == 0:
+            return True
+        logger.warning(
+            "node %s not reachable (rc=%s): %s",
+            node,
+            proc.returncode,
+            (stderr or b"").decode("utf-8", errors="replace").strip(),
+        )
+        return False
 
     def _prepare_assets_replace_vars(
         self: Self,
@@ -934,7 +1004,7 @@ class Lsf(Environment):
 
     @contextlib.asynccontextmanager
     async def ensure_and_use(
-        self: Self, setup_id: str = "runtime"
+        self: Self, setup_id: str = "runtime", budget_s: Optional[float] = None
     ) -> AsyncIterator[SshTunnel]:
         """Ensure a healthy tunnel and hold it in-use for the enclosed block.
 
@@ -943,28 +1013,46 @@ class Lsf(Environment):
         window where a concurrent rebuild could retire it between ensure and use.
         Runtime SSH callers should prefer this over calling ``_ensure_ssh_tunnel``
         then ``tunnel.use()`` as separate statements.
+
+        ``budget_s`` is forwarded to :meth:`_ensure_ssh_tunnel` (see there); it
+        defaults to the multi-hour build-runner budget.
         """
-        tunnel = await self._ensure_ssh_tunnel(setup_id=setup_id)
+        tunnel = await self._ensure_ssh_tunnel(setup_id=setup_id, budget_s=budget_s)
         async with tunnel.use():
             yield tunnel
 
-    async def _ensure_ssh_tunnel(self: Self, setup_id: str = "runtime") -> SshTunnel:
+    async def _ensure_ssh_tunnel(
+        self: Self, setup_id: str = "runtime", budget_s: Optional[float] = None
+    ) -> SshTunnel:
         """Return a healthy persistent SshTunnel, (re)establishing it if needed.
 
         The single entry point for both target setup and every runtime SSH
         command, so a login node that dies mid-build is transparently replaced.
         Reuses a live tunnel; otherwise sweeps the login nodes with failover and
-        backoff+jitter for up to ``ssh_connect_budget_s`` before raising
-        ``SshTunnelError``. ``_tunnel_lock`` serializes rebuilds so concurrent
-        callers don't each open a tunnel.
+        backoff+jitter for up to ``budget_s`` before raising ``SshTunnelError``.
+        ``_tunnel_lock`` serializes rebuilds so concurrent callers don't each open
+        a tunnel.
+
+        ``budget_s`` defaults to ``ssh_connect_budget_s`` (the multi-hour
+        build-runner budget). Best-effort cleanup callers (e.g. ``_bkill``) pass a
+        short budget so they still reconnect/fail over robustly but can't block
+        teardown for hours.
 
         Callers that immediately transfer over the tunnel should use
         :meth:`ensure_and_use` instead, which holds the tunnel in-use before
         releasing the lock and so is atomic against the retire path.
         """
-        assert (
-            self._key_file_path
-        ), "SSH key file must be set up before opening a tunnel"
+        if budget_s is None:
+            budget_s = self.ssh_connect_budget_s
+        # First-class check (not an assert): teardown_bsub nulls _key_file_path on
+        # cancel, and a best-effort bkill can race in here afterwards. Raising the
+        # normal error keeps that path graceful and survives `python -O` (which
+        # would strip an assert and let a None key fall through to a later assert).
+        if not self._key_file_path:
+            raise SshTunnelError(
+                "SSH key file not set up (environment torn down / build "
+                "cancelled); cannot open a tunnel"
+            )
         # Fast path: a healthy tunnel needs no rebuild, so skip the lock — a burst
         # of concurrent transfers shouldn't serialize on it when it's already up.
         existing = self._ssh_tunnel
@@ -987,11 +1075,21 @@ class Lsf(Environment):
                 self._retire_tunnel(existing)
                 self._ssh_tunnel = None
 
-            deadline = time.monotonic() + self.ssh_connect_budget_s
+            deadline = time.monotonic() + budget_s
             attempt = 0
             last_err: Optional[Exception] = None
             while True:
                 attempt += 1
+                # Cooperative cancellation: teardown_bsub nulls _key_file_path when
+                # the build is cancelled / torn down. Without this check the sweep
+                # kept probing dead login nodes for seconds after a SIGTERM-driven
+                # cancel (observed in the field). Bail promptly instead — there is
+                # nothing left to connect for once the key is gone.
+                if self._key_file_path is None:
+                    raise SshTunnelError(
+                        "SSH key file removed (environment torn down / build "
+                        "cancelled); aborting tunnel establishment"
+                    ) from last_err
                 # Fresh view each sweep so a recovered node gets retried. Note:
                 # this list is otherwise guarded by node_search_lock, not
                 # _tunnel_lock — the two aren't mutually excluded, so a concurrent
@@ -1009,6 +1107,11 @@ class Lsf(Environment):
                         host_key_verification=self.ssh_host_key_verification,
                         port_forwards=[(0, login_node, self.ssh_port)],
                         max_sessions=self.ssh_max_sessions,
+                        connect_timeout=self.ssh_connect_timeout_s,
+                        login_timeout=self.ssh_login_timeout_s,
+                        keepalive_interval=self.ssh_keepalive_interval_s,
+                        keepalive_count_max=self.ssh_keepalive_count_max,
+                        command_timeout=self.ssh_command_timeout_s,
                     )
                     await tunnel.open()
                     # A node can open a connection yet not execute commands; prove
@@ -1032,7 +1135,7 @@ class Lsf(Environment):
                         raise SshTunnelError(
                             f"Could not establish an SSH tunnel to any login node "
                             f"{self.login_nodes} after {attempt} sweeps over "
-                            f"{self.ssh_connect_budget_s}s"
+                            f"{budget_s:.0f}s"
                         ) from last_err
                     # Floor at 1s so a misconfigured base backoff of 0 can't spin.
                     base = max(1, self.ssh_connect_base_backoff_s)
@@ -1044,15 +1147,25 @@ class Lsf(Environment):
                     delay = min(delay, remaining)
                     logger.warning(
                         "setup_id: %s SSH tunnel establish attempt %d failed (%s); "
-                        "retrying in %.0fs (%.0fs of %ds budget left)",
+                        "retrying in %.0fs (%.0fs of %.0fs budget left)",
                         setup_id,
                         attempt,
                         e,
                         delay,
                         remaining,
-                        self.ssh_connect_budget_s,
+                        budget_s,
                     )
-                    await asyncio.sleep(delay)
+                    # Sleep in short slices so a teardown (key file removed) during
+                    # the backoff is noticed within ~a slice rather than after the
+                    # full delay — the backoff cap can be up to a minute. The
+                    # top-of-loop check does the actual bail.
+                    slept = 0.0
+                    while slept < delay:
+                        if self._key_file_path is None:
+                            break
+                        slice_s = min(SSH_ESTABLISH_CANCEL_POLL_S, delay - slept)
+                        await asyncio.sleep(slice_s)
+                        slept += slice_s
 
     async def _cleanup_asset_dirs(self) -> None:
         # Delete all launch dirs now that all pipeline steps are done.
@@ -2199,19 +2312,21 @@ class Lsf(Environment):
 
         try:
             if self.use_ssh:
-                # Best-effort: reuse a live tunnel but don't trigger the multi-hour
-                # reconnect just to bkill — if it's gone, so is the job's session.
-                ssh_tunnel = self._ssh_tunnel
-                if ssh_tunnel is None or not ssh_tunnel.is_healthy():
-                    logger.warning(
-                        "no healthy SSH tunnel for bkill of job %s; skipping remote kill",
-                        job_id,
-                    )
-                    return
+                # bkill must reach a login node to run a command, so it uses the
+                # same robust establish/failover path as every other SSH caller
+                # (reconnecting a wedged tunnel — the whole point of #368/#369) —
+                # but with a SHORT budget, never the runner's multi-hour one:
+                # teardown can't block for hours, and a job left running is better
+                # surfaced fast than waited out. On failure (all nodes unreachable
+                # within the budget, or the key file already removed by teardown)
+                # this stays best-effort and skips rather than failing teardown.
                 logger.info("running cleanup command via tunnel: bkill %s", job_id)
                 max_attempts = 3
                 try:
-                    async with ssh_tunnel.use():
+                    async with self.ensure_and_use(
+                        setup_id="bkill",
+                        budget_s=GBSERVER_LSF_BKILL_SSH_BUDGET_S,
+                    ) as ssh_tunnel:
                         for attempt in range(1, max_attempts + 1):
                             try:
                                 rc, stdout, stderr = await ssh_tunnel.run_remote(
@@ -2230,8 +2345,9 @@ class Lsf(Environment):
                                 else:
                                     raise
                 except Exception as e:  # noqa: BLE001 — cleanup is best-effort
-                    # Tunnel dropped between the health check and the kill (or the
-                    # kill kept timing out); skip rather than fail teardown.
+                    # Couldn't establish a tunnel within the short budget, the
+                    # tunnel dropped mid-kill, or the kill kept timing out; skip
+                    # rather than fail teardown.
                     logger.warning(
                         "best-effort bkill of job %s via tunnel failed, skipping: %s",
                         job_id,

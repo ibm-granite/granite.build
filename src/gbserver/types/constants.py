@@ -826,6 +826,65 @@ GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S = int(
 GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_CONNECT_MAX_BACKOFF_S", "60"), base=10
 )
+# Per-SSH-attempt timeouts (asyncssh), inside one establish attempt of the sweep
+# above. Empirically (ssh -vv) connect+banner+auth take ~1s on bluevela even when
+# "slow"; the real delay is server-side session/exec setup AFTER auth, bounded by
+# COMMAND_TIMEOUT below. So login/connect timeouts are not the fix — they only
+# bound a genuinely-degraded node before failover.
+# login_timeout: banner+kex+auth ("Login timeout expired"). The reachability probe
+# has its own bound (PROBE_TIMEOUT below), independent of this.
+GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_LOGIN_TIMEOUT_S", "30"), base=10
+)
+# connect_timeout: TCP connect leg only (~instant on bluevela).
+GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_CONNECT_TIMEOUT_S", "10"), base=10
+)
+# command_timeout (asyncssh conn.run(timeout=...)): THE fix. Bounds the slow
+# server-side session/exec setup (~28s, up to a minute under load) before a
+# command produces output. On expiry asyncssh raises TimeoutError (retried by
+# run_remote_with_retries) instead of hanging. 120s = observed delay + margin.
+GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_COMMAND_TIMEOUT_S", "120"), base=10
+)
+# Keepalive: drop a session whose server stops answering transport probes.
+# interval * count_max ≈ dead-session detection (~30s).
+GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_KEEPALIVE_INTERVAL_S", "10"), base=10
+)
+GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_KEEPALIVE_COUNT_MAX", "3"), base=10
+)
+# Overall timeout for the plain-`ssh` reachability probe (__is_ssh_node_reachable),
+# which gates tunnel establishment. Kept SMALL and dedicated (not command_timeout):
+# _get_reachable_ssh_node probes every node in turn with no per-sweep deadline, so
+# a large per-probe cap would let one sweep run N * cap and blow a caller's budget
+# (e.g. bkill's 300s). A wedged node fails over in ~this long; a healthy one
+# answers well within it even with slow session setup.
+GBSERVER_LSF_SSH_PROBE_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_PROBE_TIMEOUT_S", "30"), base=10
+)
+# Establish budget: how long the synchronous file APIs sweep candidate login nodes
+# for a tunnel before returning 503. Short because they run behind an HTTPS route
+# (HAProxy server-timeout 600s, k8s/chart/values.yaml) for an interactive caller;
+# keep well under 600s.
+GBSERVER_LSF_FILE_API_SSH_BUDGET_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_FILE_API_SSH_BUDGET_S", "45"), base=10
+)
+# File-API command timeout: same session-setup leniency as the runner's
+# COMMAND_TIMEOUT but a shorter max, since the caller is interactive (not a patient
+# batch runner). Waits out the ~28s setup with margin, stays well under 600s.
+GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_FILE_API_COMMAND_TIMEOUT_S", "60"), base=10
+)
+# Establish budget for a best-effort bkill during cleanup: bkill must reach a
+# login node to run the kill, so it reconnects via the robust path — but with a
+# short budget, not the runner's multi-hour one (teardown can't block for hours; a
+# leaked job is better surfaced fast). 5 min spans a few real attempts across the
+# nodes, then gives up and logs the skip.
+GBSERVER_LSF_BKILL_SSH_BUDGET_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_BKILL_SSH_BUDGET_S", "300"), base=10
+)
 # Used by the build framework monitoring to allow the consumption of all the events
 GBSERVER_MONITORING_GRACE_PERIOD = int(
     os.getenv(ENV_VAR_PREFIX + "_MONITORING_GRACE_PERIOD", "30"), base=10

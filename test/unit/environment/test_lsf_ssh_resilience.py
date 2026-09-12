@@ -47,11 +47,17 @@ def _make_lsf(login_nodes: List[str]) -> Lsf:
     lsf.ssh_host_key_verification = False
     lsf.ssh_port = 22
     lsf.ssh_max_sessions = 10
-    lsf.ssh_timeout = 5
     # Short budget + backoff so a failing test fails fast rather than hanging.
     lsf.ssh_connect_budget_s = 3600
     lsf.ssh_connect_base_backoff_s = 1
     lsf.ssh_connect_max_backoff_s = 4
+    # Per-attempt banner/login bounds threaded into the tunnel + probe.
+    lsf.ssh_connect_timeout_s = 20
+    lsf.ssh_login_timeout_s = 90
+    lsf.ssh_keepalive_interval_s = 10
+    lsf.ssh_keepalive_count_max = 3
+    lsf.ssh_command_timeout_s = 120
+    lsf.ssh_probe_timeout_s = 30
     return lsf
 
 
@@ -224,6 +230,56 @@ class TestEnsureSshTunnel:
         assert lsf._ssh_tunnel is good
 
     @pytest.mark.asyncio
+    async def test_builds_tunnel_with_banner_login_bounds(self: Self) -> None:
+        """The tunnel is constructed with the connect/login/keepalive bounds so a
+        slow-banner or wedged login node fails over instead of hanging."""
+        lsf = _make_lsf(["a"])
+        good = _healthy_tunnel("a")
+
+        with (
+            patch("gbserver.environment.lsf.SshTunnel", return_value=good) as cls,
+            patch.object(
+                lsf, "_get_reachable_ssh_node", new=AsyncMock(return_value="a")
+            ),
+        ):
+            await lsf._ensure_ssh_tunnel()
+
+        _, kwargs = cls.call_args
+        assert kwargs["connect_timeout"] == lsf.ssh_connect_timeout_s
+        assert kwargs["login_timeout"] == lsf.ssh_login_timeout_s
+        assert kwargs["keepalive_interval"] == lsf.ssh_keepalive_interval_s
+        assert kwargs["keepalive_count_max"] == lsf.ssh_keepalive_count_max
+        # command_timeout bounds the slow server-side session/exec setup that is
+        # the actual bluevela bottleneck.
+        assert kwargs["command_timeout"] == lsf.ssh_command_timeout_s
+
+    @pytest.mark.asyncio
+    async def test_aborts_when_key_file_removed_by_teardown(self: Self) -> None:
+        """A teardown mid-sweep (key file nulled) aborts promptly, rather than
+        continuing to probe dead nodes for the rest of the budget."""
+        lsf = _make_lsf(["a", "b"])
+        lsf.ssh_connect_budget_s = 14400  # long budget; teardown must still win
+
+        async def _node_then_teardown() -> str:
+            # Simulate teardown_bsub racing in: the key file is removed while the
+            # sweep is between attempts.
+            lsf._key_file_path = None
+            raise RuntimeError("no reachable node")
+
+        get_node = AsyncMock(wraps=_node_then_teardown)
+        with (
+            patch("gbserver.environment.lsf.SshTunnel"),
+            patch.object(lsf, "_get_reachable_ssh_node", new=get_node),
+            patch("gbserver.environment.lsf.asyncio.sleep", new=AsyncMock()) as sleep,
+        ):
+            with pytest.raises(SshTunnelError, match="torn down / build"):
+                await lsf._ensure_ssh_tunnel()
+            # Second sweep's top-of-loop check bails before another node search.
+            assert get_node.await_count == 1
+            # No long budget wait — we aborted, not slept out 4h.
+            sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_healthy_fast_path_skips_lock(self: Self) -> None:
         """A healthy tunnel is returned without ever taking _tunnel_lock."""
         lsf = _make_lsf(["a"])
@@ -313,6 +369,59 @@ class TestEnsureSshTunnelConcurrency:
         await holder
         await asyncio.sleep(0)  # let close_when_idle drain and close
         first.close.assert_awaited()  # closed once the in-flight use drained
+
+
+class TestReachabilityProbeBannerBound:
+    """The pre-tunnel `ssh` probe gates tunnel establishment and runs per node with
+    no per-sweep deadline, so it uses a small dedicated probe timeout — keeping a
+    hung cluster from blowing a short-budget caller (bkill)."""
+
+    @staticmethod
+    def _mock_proc(returncode: int = 0) -> MagicMock:
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = returncode
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock()
+        return proc
+
+    @pytest.mark.asyncio
+    async def test_probe_uses_small_probe_timeout(self: Self) -> None:
+        lsf = _make_lsf(["a"])
+        captured: dict = {}
+
+        async def _spawn(*args, **kwargs):  # noqa: ANN002, ANN003
+            captured["cmd"] = list(args)
+            return self._mock_proc(returncode=0)
+
+        with patch(
+            "gbserver.environment.lsf.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=_spawn),
+        ):
+            ok = await lsf._Lsf__is_ssh_node_reachable(node="a", launch_id="lid")
+
+        assert ok is True
+        cmd = captured["cmd"]
+        # Probe uses the small dedicated timeout, not the long command/login ones.
+        assert f"ConnectTimeout={lsf.ssh_probe_timeout_s}" in cmd
+        assert f"ConnectTimeout={lsf.ssh_command_timeout_s}" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_probe_kills_child_on_timeout(self: Self) -> None:
+        """A timed-out probe must kill the ssh child so it doesn't linger."""
+        lsf = _make_lsf(["a"])
+        proc = self._mock_proc()
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        with patch(
+            "gbserver.environment.lsf.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            ok = await lsf._Lsf__is_ssh_node_reachable(node="a", launch_id="lid")
+
+        assert ok is False
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited_once()
 
 
 class TestSshTunnelIsHealthy:
