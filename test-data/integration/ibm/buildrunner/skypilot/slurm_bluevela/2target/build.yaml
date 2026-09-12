@@ -16,7 +16,8 @@ granite.build:
   # Requires HF_TOKEN with write access to the ibm-research output repos.
   targets:
     first:
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      #environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         # Real hf:// dataset input — buildrunner queues an hfpull step that
         # downloads it onto the compute node and binds its local path.
@@ -36,16 +37,24 @@ granite.build:
             command_config:
               # No `image`: image_id resolves to "" so the command runs directly
               # on the SLURM compute node (bare host — no Pyxis plugin needed).
-              # Writes a REAL file so the hf push has something to upload.
+              # Writes a REAL file so the hf push has something to upload. The
+              # file is written RELATIVE (into the per-run $GB_BUILD_WORKDIR that
+              # gbserver cd's every step into on the shared FS), but the
+              # GB_ARTIFACT_PATH reported to the separate hfpush job (a different
+              # SLURM node) is the ABSOLUTE `$pwd/out1.json` inside that shared
+              # workdir — a bare relative path is resolved against the hfpush
+              # node's own CWD and is not cross-node-visible. Mirrors 1step.
               command: >-
+                pwd=$(pwd);
                 echo "first target on bluevela gpu-mid partition";
                 echo "hf input path: {{ bindings.input_model.binding.path }}";
                 file=out1.json; echo '{"artifact": "out1", "produced_by": "first"}' > $file;
-                echo "GB_ARTIFACT_ID:out1 GB_ARTIFACT_PATH:$file"
+                echo "GB_ARTIFACT_ID:out1 GB_ARTIFACT_PATH:$pwd/$file"
             # No launcher_config.resources.cluster or zone: the environment's
             # cluster (bluevela) and zone (gpu-mid) resolve the infra.
     second:
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      #environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         # Cross-target binding: first.out1 is an hf:// artifact, so buildrunner
         # hf-pulls it onto second's node and binds its local path.
@@ -60,6 +69,7 @@ granite.build:
             # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
             command_config:
+              image: quay.io/itsme/debian:slim
               # Reads the path bound from first.out1 (proving the cross-target
               # binding flows through), then writes its own REAL file for the hf
               # push of out2.
@@ -67,4 +77,5 @@ granite.build:
                 echo "second target received first output path: {{ bindings.from_first.binding.path }}";
                 cat {{ bindings.from_first.binding.path }} || echo "first output not readable (ok if pull is a no-op)";
                 file=out2.json; echo '{"artifact": "out2", "produced_by": "second"}' > $file;
-                echo "GB_ARTIFACT_ID:out2 GB_ARTIFACT_PATH:$file"
+                pwd=$(pwd);
+                echo "GB_ARTIFACT_ID:out2 GB_ARTIFACT_PATH:$pwd/$file"

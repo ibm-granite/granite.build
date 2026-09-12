@@ -172,6 +172,15 @@ targets:
 > Container images (`image_id` / `image_id` in the step config) require enroot on the LSF nodes — see
 > the `cloud_config.lsf.cluster_configs.<cluster>.enroot` block above.
 
+> **Container images must be Debian/Ubuntu-based (apt).** When running in a container, SkyPilot
+> bootstraps its in-container SSH shim with `apt-get`, so only Debian-based images are supported (see
+> the SkyPilot [Docker containers docs](https://docs.skypilot.ai/en/latest/examples/docker-containers.html)).
+> A non-Debian image (e.g. a Fedora/RPM image) pulls fine but fails during job setup — enroot launches
+> it, the `apt-get` step exits non-zero, and the failure surfaces only as a generic
+> `ResourcesUnavailableError`. Confirm with `sacct -j <job_id> --format=JobID,State,ExitCode,Reason`:
+> the container-setup sub-steps show `FAILED 1:0` while the host-side steps complete. The image must
+> also grant passwordless `sudo` (or run as root).
+
 ### `file_mounts` inside enroot containers
 
 With an image, the step's `run` executes inside an enroot container on the compute node, which has its
@@ -194,6 +203,15 @@ destination shape:
 
 Prefer a **relative** destination (see [file_mounts](skypilot.md#file_mounts)) — it is the simplest and
 gives per-target isolation, with the payload written onto the shared workdir for the job to read.
+
+> **Contrast with SLURM.** Because the LSF backend identity-mounts the shared-FS roots (`/proj`,
+> `/opt/share`) into every container, a `shared_workdir` under one of them is automatically visible to
+> containerized steps — no extra configuration. The SkyPilot **SLURM** backend does *not* do this; there
+> a containerized step needs the SkyPilot `workdir` set to an ancestor of `shared_workdir` to get the
+> per-run workdir mounted into the container (see
+> [skypilot-slurm.md](skypilot-slurm.md#workdir-containerized-steps)). On LSF the `workdir` under
+> `cloud_config.lsf.cluster_configs.<cluster>` need not be an ancestor of `shared_workdir` for this
+> reason.
 
 > **Implementation note.** SkyPilot's backend normally sudo-symlink-wraps every absolute,
 > non-`~/`/non-`/tmp/` destination, which fails on the sudo-less login node and would redirect the

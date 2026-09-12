@@ -4,7 +4,13 @@ type: exec
 config:
   command_config:
     command: ""    # command to run on the launcher node
-    image: ""      # optional docker image; empty => run on the bare launcher node
+    # Optional container image. Give a BARE reference WITHOUT the "docker:"
+    # scheme (e.g. quay.io/org/img:tag) — the launcher below composes image_id
+    # as ("docker:" ~ image), so including "docker:" here doubles it into an
+    # unpullable "docker:docker:...". Empty => run on the bare launcher node.
+    # Must be a Debian/Ubuntu (apt-based) image on SLURM/LSF; see
+    # docs/environments/skypilot-slurm.md and skypilot-lsf.md.
+    image: ""
 
 environment_configs:
   Skypilot:

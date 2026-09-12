@@ -77,3 +77,30 @@ class StepConfigSection(BaseModel):
 
 class StepEnvConfig(Config):
     """Base class for config specific to the environment from the step.yaml"""
+
+
+class EnvironmentVariableConfig(Config):
+    """A single secret-to-env-var mapping declared by a step.
+
+    Names a secret to fetch from the space/user secret bag and the env var to
+    expose it under in the launched step. ``secret_name`` is optional: when
+    omitted it defaults to ``env_name`` (the common case where the secret is
+    registered under the same name as the desired env var).
+    """
+
+    env_name: Optional[str] = None
+    secret_name: Optional[str] = None
+
+
+class StepSecretsConfig(Config):
+    """The ``secrets`` section shared by every environment's step config.
+
+    Holds the declarative allow-list of secrets a step wants exposed as env
+    vars. Environments resolve it via ``Environment._resolve_declared_secret_env_vars``.
+    Environment-specific secret concepts (e.g. k8s image-pull secrets) live on
+    per-environment subclasses so they do not leak into the shared type.
+    """
+
+    secret_names_to_use_as_env_variable: List[EnvironmentVariableConfig] = Field(
+        default_factory=list
+    )

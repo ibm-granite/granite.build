@@ -48,6 +48,8 @@ from gbserver.spaces.hf_push_config import (
 )
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
+from gbserver.types.environment.environment import EnvironmentVariableConfig
+from gbserver.types.environment.skypilot import StepSkypilotConfig
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import (
     ErrSkypilotInteractiveAuthFailed,
@@ -68,6 +70,26 @@ if HAS_SKYPILOT:
     import sky.exceptions
 else:
     sky = None  # type: ignore[assignment]
+
+
+def _get_step_skypilot_config(config: Optional[Dict]) -> StepSkypilotConfig:
+    """Parse the step's ``config.skypilot`` section into a typed model.
+
+    Mirrors ``K8s._get_step_env_config``: reads the per-cloud step-config
+    section (``config.skypilot`` / ``config.Skypilot``) so declared secrets and
+    other skypilot-specific step settings are validated. Extra keys are ignored,
+    and a missing section yields an empty default. Module-level so both the
+    unmanaged ``Skypilot`` launcher and the ``Skypilot_managed`` job launcher can
+    share it.
+
+    :param config: the full step config dict (may be None).
+    :returns: the parsed ``StepSkypilotConfig`` (empty default if absent).
+    """
+    sky_dict = (config.get("skypilot") or config.get("Skypilot")) if config else None
+    if not sky_dict:
+        return StepSkypilotConfig()
+    return StepSkypilotConfig(**sky_dict)
+
 
 _DEFAULT_POLL_INTERVAL_SECONDS = 300
 
@@ -1450,48 +1472,90 @@ class Skypilot(Environment):
                     return token
         return None
 
-    def get_launch_env_vars(
+    def _declared_secret_mappings(
+        self: Self, **kwargs: Any
+    ) -> List[EnvironmentVariableConfig]:
+        """Declared SkyPilot secret mappings for the shared launch-env composer.
+
+        Overrides :meth:`Environment._declared_secret_mappings` so only secrets
+        the step *declares* in
+        ``config.skypilot.secrets.secret_names_to_use_as_env_variable`` are
+        injected — never the whole secret bag, so a space's unrelated (and
+        possibly non-identifier-named) secrets never reach the task
+        (least-privilege, matching LSF/K8s).
+
+        :param kwargs: the launch context; only ``config`` is read.
+        :returns: the declared ``EnvironmentVariableConfig`` mappings.
+        """
+        return _get_step_skypilot_config(
+            kwargs.get("config") or {}
+        ).secrets.secret_names_to_use_as_env_variable
+
+    def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
+        """SkyPilot env layers for the shared launch-env composer.
+
+        Overrides :meth:`Environment._launch_env_layers`. Ordered
+        lowest->highest above declared secrets and below the standard set:
+        launcher ``envs`` < ``config.launcher_config.envs`` < the built-in
+        ``GB_SKYPILOT_*``/workdir/GB_TARGETRUN_ID/HF_TOKEN vars.
+
+        Built-in asset steps deliver their tokens explicitly through launcher
+        ``envs`` (HF_TOKEN / AWS keys), so they need no declaration. The
+        ``bindings`` HF_TOKEN is the *weakest* source: it fills in HF_TOKEN only
+        when no lower layer (declared secret, launcher or config ``envs``)
+        already provides it.
+
+        :param kwargs: the launch context; reads ``run_metadata`` (GB_TARGETRUN_ID),
+            ``launcher_config`` / ``config`` (``envs``), ``launch_id``,
+            ``cluster_name``, ``build_workdir``, and ``bindings`` (inline HF_TOKEN).
+        :returns: the ordered env layers to compose.
+        """
+        launcher_config = kwargs.get("launcher_config") or {}
+        config = kwargs.get("config") or {}
+        run_metadata = kwargs.get("run_metadata") or {}
+        launcher_envs = launcher_config.get("envs", {})
+        config_envs = config.get("launcher_config", {}).get("envs", {})
+        builtins = self._skypilot_builtin_env(
+            kwargs.get("launch_id", ""),
+            kwargs.get("cluster_name", ""),
+            kwargs.get("build_workdir"),
+        )
+        if run_metadata.get("targetrun_id"):
+            builtins["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
+        # HF_TOKEN from bindings is the weakest source: fill in only when no
+        # lower layer (declared secret / launcher / config env) already sets it.
+        hf_token = self._first_hf_token(kwargs.get("bindings"))
+        declared = self._declared_secret_mappings(config=config)
+        lower_names = (
+            set(launcher_envs)
+            | set(config_envs)
+            | {m.env_name for m in declared if m.env_name}
+        )
+        if hf_token and "HF_TOKEN" not in lower_names:
+            builtins["HF_TOKEN"] = hf_token
+        return [launcher_envs, config_envs, builtins]
+
+    def _skypilot_builtin_env(
         self: Self,
-        run_metadata: Optional[Dict[str, Any]] = None,
-        launcher_config: Optional[Dict] = None,
-        config: Optional[Dict] = None,
-        launch_id: str = "",
-        cluster_name: str = "",
-        build_workdir: Optional[str] = None,
-        bindings: Optional[Dict] = None,
-        **kwargs: Any,
+        launch_id: str,
+        cluster_name: str,
+        build_workdir: Optional[str],
     ) -> Dict[str, str]:
-        """Build the full env dict for a skypilot step launch.
+        """Assemble the always-present ``GB_SKYPILOT_*``/workdir launcher vars.
 
-        Precedence (lowest->highest): secrets < launcher ``envs`` <
-        ``config.launcher_config.envs`` < the built-in
-        ``GB_SKYPILOT_*``/workdir/HF_TOKEN vars < the standard cross-environment
-        set from ``super()`` (GBTEST_ test-control vars + e.g. GB_BUILD_ID),
-        which is authoritative.
+        These sit above the secret and ``envs`` layers but below the standard
+        cross-environment set (see :meth:`get_launch_env_vars`). GB_TARGETRUN_ID
+        and HF_TOKEN are added by the caller because they are conditional.
 
-        :param run_metadata: launch run_metadata; forwarded to ``super()`` and
-            the source of GB_TARGETRUN_ID.
-        :param launcher_config: step.yaml launcher config (its ``envs``).
-        :param config: full step config (``config.launcher_config.envs`` is
-            picked up for auto-queued steps).
         :param launch_id: unique id for this launch (GB_SKYPILOT_LAUNCH_ID).
         :param cluster_name: the sky cluster name (GB_SKYPILOT_CLUSTER_NAME).
         :param build_workdir: per-run workdir (GB_BUILD_WORKDIR) if provisioned.
-        :param bindings: launch bindings; scanned for an inline HF_TOKEN.
-        :returns: the complete ``{name: value}`` env dict for the sky.Task.
+        :returns: a dict of the built-in launcher env vars.
         """
-        launcher_config = launcher_config or {}
-        config = config or {}
-        run_metadata = run_metadata or {}
-        env: Dict[str, str] = {}
-        if self.secrets:
-            env.update(self.secrets)
-        env.update(launcher_config.get("envs", {}))
-        env.update(config.get("launcher_config", {}).get("envs", {}))
-        env["GB_SKYPILOT_LAUNCH_ID"] = launch_id
-        env["GB_SKYPILOT_CLUSTER_NAME"] = cluster_name
-        if run_metadata.get("targetrun_id"):
-            env["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
+        env: Dict[str, str] = {
+            "GB_SKYPILOT_LAUNCH_ID": launch_id,
+            "GB_SKYPILOT_CLUSTER_NAME": cluster_name,
+        }
         shared_workdir = (
             self.config.config.get("shared_workdir") if self.config else None
         )
@@ -1499,14 +1563,7 @@ class Skypilot(Environment):
             env["GB_SHARED_WORKDIR"] = shared_workdir
         if build_workdir:
             env["GB_BUILD_WORKDIR"] = build_workdir
-        hf_token = self._first_hf_token(bindings)
-        if hf_token and "HF_TOKEN" not in env:
-            env["HF_TOKEN"] = hf_token
-        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        # Uniform with the other environments; a no-op here since skypilot's
-        # launcher vars are already GB_-prefixed (GB_SKYPILOT_*), so there are no
-        # LLMB_ names to mirror.
-        return self._add_gb_aliases(env)
+        return env
 
     async def launch_skypilot(
         self: Self,

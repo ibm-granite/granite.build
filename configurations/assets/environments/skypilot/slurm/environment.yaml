@@ -27,6 +27,20 @@ config:
         IdentityFile: ~/.ssh/slurm_docker_key
         StrictHostKeyChecking: "no"
         UserKnownHostsFile: /dev/null
+  # SkyPilot `workdir` set to an ancestor of (here equal to) `shared_workdir`,
+  # deep-merged into ~/.sky/config.yaml at launch. On SLURM this is both the
+  # cluster base dir and the one host path the enroot container bind-mounts
+  # (--container-mounts = home + ccache + workdir), so a containerized step's
+  # per-run $GB_BUILD_WORKDIR lands on the real shared FS (see
+  # docs/environments/skypilot-slurm.md#workdir-containerized-steps). This local
+  # Docker fixture is bare-host (no Pyxis plugin) and does not run containers, so
+  # the mount is inert here — kept only to mirror the bluevela env. Lookup key
+  # path is slurm/cluster_configs/<cluster>/workdir (cluster = `slurm-docker`).
+  cloud_config:
+    slurm:
+      cluster_configs:
+        slurm-docker:
+          workdir: /shared
 assetstores:
   - store_uri: space://assetstores/hf
     pull:

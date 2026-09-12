@@ -54,6 +54,7 @@ from gbserver.utils.filesystem import (
     sync_or_copy,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.redaction import redact_sensitive
 from gbserver.utils.step_image import get_step_image
 from gbserver.utils.template import fill_template
 from gbserver.utils.utils import random_string
@@ -670,7 +671,11 @@ class TargetStep(BuildEntity):
         if build_yaml_step_config is None:
             logger.warning("there is no step config to validate")
             return errors
-        logger.info("validating the step config: %s", build_yaml_step_config)
+        # redact_sensitive masks secret-named keys (e.g. launcher_config.envs.HF_TOKEN)
+        # before the config reaches the log; see gbserver.utils.redaction.
+        logger.info(
+            "validating the step config: %s", redact_sensitive(build_yaml_step_config)
+        )
         # ------------------
         if "gb" in build_yaml_step_config:
             errors.add_warning(

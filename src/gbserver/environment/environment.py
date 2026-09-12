@@ -80,7 +80,10 @@ from gbserver.types.constants import (
     FULL_CONFIG_RUN_METADATA_KEY,
     GBSERVER_ENABLE_STEP_RETRY,
 )
-from gbserver.types.environment.environment import StepConfigSection
+from gbserver.types.environment.environment import (
+    EnvironmentVariableConfig,
+    StepConfigSection,
+)
 from gbserver.types.environmentconfig import (
     ENVIRONMENT_FILENAME,
     AssetStoreEnvironmentConfig,
@@ -920,43 +923,108 @@ class Environment(ABC):
         run_metadata: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, str]:
-        """Return the env vars to inject into a launched step.
+        """Compose the full env dict to inject into a launched step.
 
-        The base implementation returns the standard cross-environment set that
-        every environment gets, regardless of launcher:
+        This is the **single, non-overridden** strategy every environment uses:
+        precedence, least-privilege secret resolution, and the ``LLMB_``->``GB_``
+        aliasing are therefore uniform. Each environment contributes only two
+        small data-producing hooks — :meth:`_declared_secret_mappings` and
+        :meth:`_launch_env_layers` — never its own version of this method.
 
-        1. The ``GBTEST_`` test-control vars currently set in the server's own
-           environment (e.g. GBTEST_MOCK_HF), forwarded so a step running
-           in a detached env — remote pod/job, container, or the clean-env bash
-           subprocess — mocks the same HF ops the server would.
-        2. The run_metadata-derived standard vars (currently GB_BUILD_ID; see
-           STANDARD_STEP_ENV_FROM_RUN_METADATA).
+        Layers are applied lowest to highest (a later layer overrides an earlier
+        one of the same name):
 
-        Subclasses OVERRIDE this to build their full env dict (config env,
-        secrets, launcher envs, LLMB_*/GB_* vars) and then merge the result of
-        ``super().get_launch_env_vars(...)`` LAST, so this standard set wins over
-        any config/secret/launcher value of the same name. Overrides that inject
-        legacy ``LLMB_``-prefixed launcher vars additionally call
-        ``_add_gb_aliases`` as their final step to mirror each onto a ``GB_``
-        twin (the standardized prefix) while keeping the ``LLMB_`` name.
+        1. **Declared secrets** (lowest) — the mappings from
+           :meth:`_declared_secret_mappings`, resolved once against
+           ``self.secrets`` via :meth:`_resolve_declared_secret_env_vars`
+           (validated, least-privilege: only the secrets a step declares). This
+           covers every environment that injects secret *values*; K8s inherits
+           the empty default because it emits ``secretKeyRef`` *names* for the
+           kubelet to mount rather than resolving values here.
+        2. **Environment layers** (mid) — the dicts from
+           :meth:`_launch_env_layers`, applied in the returned order (e.g.
+           launcher ``envs``, ``config`` env overrides, built-in
+           ``LLMB_*``/``GB_*`` launcher vars).
+        3. **Standard cross-environment set** (highest, always applied) — the
+           ``GBTEST_`` test-control vars from the server's own environment
+           (e.g. GBTEST_MOCK_HF, forwarded so a step in a detached env mocks the
+           same HF ops the server would) plus the run_metadata-derived standard
+           vars (currently GB_BUILD_ID; see STANDARD_STEP_ENV_FROM_RUN_METADATA).
+           It is applied last so it wins over any config/secret/launcher value
+           of the same name.
 
-        :param run_metadata: the launch's run_metadata dict; the source of the
-            run_metadata-derived standard values. May be None/empty, in which
-            case no run_metadata-derived vars are emitted.
-        :param kwargs: ignored by the base; accepted so subclass overrides can
-            forward their own launch-time context to ``super()`` without the
-            base signature drifting.
+        Aliasing runs unconditionally as the final step: it is a no-op unless a
+        layer produced an ``LLMB_``-prefixed var, so environments that emit no
+        legacy names (e.g. K8s) are unaffected. Called with only ``run_metadata``
+        (both hooks returning empty) it yields exactly the standard set — the
+        shape environments that build their env elsewhere (e.g. K8s
+        ``--set-string`` values) rely on.
+
+        :param run_metadata: the launch's run_metadata dict; source of the
+            run_metadata-derived standard values, and forwarded to both hooks.
+            May be None/empty, in which case no run_metadata-derived vars are
+            emitted.
+        :param kwargs: launch-time context (e.g. ``config``, ``launcher_config``,
+            ``launch_id``); forwarded verbatim, alongside ``run_metadata``, to
+            both hooks so each environment can pluck what it needs.
         :returns: a ``{name: str_value}`` dict; each run_metadata-derived var is
             included only when its value is truthy, coerced with ``str()``.
+        :raises ValueError: if a declared-secret mapping omits ``env_name`` or
+            names a secret absent from ``self.secrets`` (secret values are never
+            included in the message).
         """
+        hook_kwargs = {"run_metadata": run_metadata, **kwargs}
+        env: Dict[str, str] = {}
+        # (lowest) Declared secrets, resolved once and validated.
+        mappings = self._declared_secret_mappings(**hook_kwargs)
+        if mappings:
+            env.update(self._resolve_declared_secret_env_vars(mappings, self.secrets))
+        # (mid) Environment layers, applied low->high in the returned order.
+        for layer in self._launch_env_layers(**hook_kwargs):
+            env.update(layer)
+        # (highest) Standard cross-environment set: GBTEST_ vars then
+        # run_metadata-derived vars (e.g. GB_BUILD_ID). Applied last so it wins.
+        env.update(get_exported_gbtest_env_vars())
         rm = run_metadata or {}
-        # (1) Forward GBTEST_ test-control vars from the server's environment.
-        env: Dict[str, str] = dict(get_exported_gbtest_env_vars())
-        # (2) run_metadata-derived standard vars (e.g. GB_BUILD_ID).
         for env_name, meta_key in STANDARD_STEP_ENV_FROM_RUN_METADATA.items():
             if rm.get(meta_key):
                 env[env_name] = str(rm[meta_key])
-        return env
+        # Mirror legacy LLMB_* launcher vars onto GB_* twins as the final step.
+        return self._add_gb_aliases(env)
+
+    def _declared_secret_mappings(
+        self: Self, **kwargs: Any
+    ) -> List[EnvironmentVariableConfig]:
+        """Declared secret->env-var mappings for this launch (composer hook).
+
+        The lowest layer of :meth:`get_launch_env_vars`. Environments that
+        inject secret *values* (LSF, SkyPilot) override this to parse their own
+        ``config.<env>.secrets`` allow-list; the base returns none, so
+        value-less environments (K8s emits ``secretKeyRef`` names; Bash/Docker/
+        RunPod inject no declared secrets) inherit it unchanged.
+
+        :param kwargs: the launch context (``run_metadata`` plus whatever the
+            caller passed, e.g. ``config``); each override plucks what it needs.
+        :returns: the declared ``EnvironmentVariableConfig`` mappings; empty by
+            default.
+        """
+        return []
+
+    def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
+        """Environment-specific env layers for this launch (composer hook).
+
+        The mid layers of :meth:`get_launch_env_vars`, applied lowest-to-highest
+        in the returned order (above declared secrets, below the standard set).
+        Environments override this to contribute launcher ``env``/``envs``,
+        config env overrides, and their built-in ``LLMB_*``/``GB_*`` launcher
+        vars; the base returns none.
+
+        :param kwargs: the launch context (``run_metadata`` plus whatever the
+            caller passed, e.g. ``launcher_config``, ``launch_id``); each
+            override plucks what it needs.
+        :returns: the env dicts to layer in, lowest-to-highest; empty by default.
+        """
+        return []
 
     @staticmethod
     def _add_gb_aliases(env: Dict[str, str]) -> Dict[str, str]:
@@ -981,6 +1049,82 @@ class Environment(ABC):
             if name.startswith("LLMB_"):
                 env.setdefault("GB_" + name[len("LLMB_") :], value)
         return env
+
+    @staticmethod
+    def _require_declared_env_name(env_name: Optional[str]) -> str:
+        """Validate a declared secret mapping carries an ``env_name``; return it.
+
+        The single validation point shared by every environment's secret
+        handling, so a malformed ``secret_names_to_use_as_env_variable`` entry
+        fails identically on all backends (LSF/SkyPilot resolution and K8s
+        ``secretKeyRef`` generation) rather than diverging.
+
+        :param env_name: the mapping's ``env_name`` field (may be ``None``).
+        :returns: the validated, non-empty ``env_name``.
+        :raises ValueError: if ``env_name`` is missing/empty (a config error
+            surfaced at launch time; no secret values are involved).
+        """
+        if not env_name:
+            raise ValueError(
+                "secret_names_to_use_as_env_variable entry is missing 'env_name'"
+            )
+        return env_name
+
+    @staticmethod
+    def _resolve_declared_secret_env_vars(
+        mappings: List[EnvironmentVariableConfig],
+        secrets: Optional[Dict[str, str]],
+    ) -> Dict[str, str]:
+        """Resolve declared secret->env-var mappings against a secret bag.
+
+        The shared, least-privilege path every environment uses to hand a step
+        *only* the secrets it explicitly declares (its
+        ``secret_names_to_use_as_env_variable``), rather than exposing the whole
+        secret bag. Each mapping names the env var to expose (``env_name``) and
+        the secret to read (``secret_name``, defaulting to ``env_name`` for the
+        common case where they match).
+
+        :param mappings: the step's declared secret-to-env-var mappings.
+        :param secrets: the resolved secret bag (merged space + user secrets).
+        :returns: a ``{env_name: secret_value}`` dict for the declared mappings.
+        :raises ValueError: if a mapping omits ``env_name`` or a declared secret
+            is absent from ``secrets`` (a config error surfaced at launch time;
+            secret *values* are never included in the message).
+        """
+        secrets = secrets or {}
+        resolved: Dict[str, str] = {}
+        for mapping in mappings:
+            env_name = Environment._require_declared_env_name(mapping.env_name)
+            secret_name = mapping.secret_name or env_name
+            if secret_name not in secrets:
+                raise ValueError(
+                    f"declared secret '{secret_name}' for env var '{env_name}' "
+                    f"was not found among the {len(secrets)} available secret(s)"
+                )
+            resolved[env_name] = secrets[secret_name]
+        return resolved
+
+    @staticmethod
+    def _declared_secret_env_key_names(
+        mappings: List[EnvironmentVariableConfig],
+    ) -> Set[str]:
+        """Env-var names to mask in redacted logs for declared secret mappings.
+
+        Includes every declared ``env_name`` plus, for any declared with the
+        legacy ``LLMB_`` prefix, the ``GB_``-prefixed twin ``_add_gb_aliases``
+        mints — so the twin's value is masked by name too. Keep this transform
+        in sync with ``_add_gb_aliases``.
+
+        :param mappings: the step's declared secret-to-env-var mappings.
+        :returns: the set of env-var names (declared + ``GB_`` twins) to redact.
+        """
+        declared = {m.env_name for m in mappings if m.env_name}
+        twins = {
+            "GB_" + name[len("LLMB_") :]
+            for name in declared
+            if name.startswith("LLMB_")
+        }
+        return declared | twins
 
     def launch(
         self: Self,

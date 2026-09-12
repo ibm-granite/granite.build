@@ -7,24 +7,44 @@ granite.build:
   # no partition is set here. This is the SLURM bare-host path; the containerized
   # (Pyxis/enroot) path is covered by the LSF test_1step_image.py.
   #
-  # env:// (env_local) I/O is a shared-FS no-op: push/pull do nothing, so the
-  # artifact registration/binding works purely on the GB_ARTIFACT_PATH string
-  # and no real files need to exist on disk. This keeps the test free of HF
-  # credentials and real pushes while still driving the command step end-to-end.
+  # This target uses hf:// URIs for its main input and output, so buildrunner
+  # auto-queues REAL HuggingFace pull/push steps around the command: the input
+  # is downloaded onto the compute node and bound, and the command must write a
+  # real file for its output to be pushed (hfpush refuses an empty/missing
+  # source). Requires HF_TOKEN with write access to the ibm-research output repo.
+  #
+  # It ALSO declares an env:// input and an env:// output alongside the hf ones.
+  # The env:// store is a no-op on every backend: pull just hands the command the
+  # absolute path string (no download, existence is not checked) and push just
+  # registers the concrete path (no transfer). So the env:// pair adds NO extra
+  # steps — only one more input artifact and one more output artifact — and
+  # exercises SkyPilot's inherited pullasset_envstore/pushasset_envstore path.
   targets:
     slurm-run:
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      #environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
-        # env:// input: a shared-FS path pulled as a no-op. The path need not
-        # exist and its value isn't asserted; it just flows to the command as a
-        # binding.
+        # Real hf:// dataset input — buildrunner queues an hfpull step that
+        # downloads it onto the compute node and binds its local path.
+        hf_input:
+          uri: hf:///datasets/ibm-research/vira-intents-live
+        # env:// (filesystem) input — no-op pull binds this absolute path as-is;
+        # the file need not exist (env pull does not fetch or stat it), the
+        # command just receives the path string via its binding.
         env_input:
-          uri: "env:///tmp/gb-env-input.txt"
+          uri: env:///tmp/gb-env-input.txt
       outputs:
-        # env:// output: registered inline from the GB_ARTIFACT marker the
-        # command emits below. `type` is required for env:// outputs.
+        # Real hf:// output — buildrunner queues an hfpush step that uploads the
+        # fileset the command registers via the GB_ARTIFACT marker below.
+        hf_output:
+          uri: hf://huggingface.co/datasets/ibm-research/test-output1_{{ binding.path | short_hash }}
+          type: fileset
+        # env:// (filesystem) output — no-op push registers the concrete path the
+        # command produces. `binding.path` resolves to the absolute GB_ARTIFACT_PATH
+        # the command emits for env_output below (env:// push requires an absolute
+        # path), yielding a triple-slash env:///... artifact URI.
         env_output:
-          uri: "env://{{ binding.path }}"
+          uri: env://{{ binding.path }}
           type: fileset
       steps:
         - step_uri: space://steps/command
@@ -32,12 +52,25 @@ granite.build:
             # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
             command_config:
-              # No `image`: image_id resolves to "" so the command runs directly
-              # on the SLURM compute node (bare host — no Pyxis plugin needed).
+              image: quay.io/itsme/debian:slim
+              # Writes a REAL file so the hf push has something to upload (an
+              # empty/missing source fails hfpush). The output goes into a
+              # RELATIVE `out/` dir: on bluevela the env's shared_workdir means
+              # gbserver cd's every step into the same per-run $GB_BUILD_WORKDIR
+              # on the shared FS, so a relative path written here is visible to
+              # the separate hfpush job (a different SLURM node). An absolute
+              # path outside $GB_BUILD_WORKDIR is NOT cross-node-visible and the
+              # push fails with "<path> does not exist". Mirrors 2target.
               command: >-
+                pwd=$(pwd);
+                mkdir -p out out2;
                 echo "slurm-run target on bluevela gpu-mid partition";
-                echo "env input path: {{ bindings.env_input.binding.path }}";
-                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/proj/granite-build/g4os/gbtest/command-1step-slurm/{{ run_metadata.targetsteprun_id | short_hash }}/out"
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                echo "env fs input path: {{ bindings.env_input.binding.path }}";
+                echo '{"artifact": "hf_output", "produced_by": "slurm-run"}' > out/result.json;
+                echo '{"artifact": "env_output", "produced_by": "slurm-run"}' > out2/result.json;
+                echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$pwd/out";
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:$pwd/out2"
             # No launcher_config.resources.cluster or zone: the environment's
             # cluster (bluevela) and zone (gpu-mid) resolve the infra. Set
             # `zone` here (or in the environment) to target a different partition.

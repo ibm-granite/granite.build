@@ -81,6 +81,13 @@ launchers:
 For cross-step state, point `shared_workdir` at a path backed by **EFS / FSx** mounted on every worker
 (e.g. `/mnt/efs`). See [skypilot.md](skypilot.md#shared_workdir).
 
+Containers run natively on AWS (Docker on the VM), so a step with an `image_id` still needs the shared
+mount visible **inside** the container, not just on the host — otherwise its output lands in the
+container's ephemeral layer and the downstream `hfpush` can't see it (the general caveat in
+[skypilot.md](skypilot.md#containerized-steps-must-also-see-the-shared-workdir-inside-the-container)).
+Ensure the EFS/FSx mount is exposed to the container (e.g. as a Docker bind/volume) so the per-run
+workdir resolves the same path on the host and in the container.
+
 ## Runbook: use a non-default AWS profile via the local secret store
 
 Use this when the gbserver host **already has a working `~/.aws/credentials` `[default]`** whose

@@ -6,7 +6,7 @@ unless a RunPod environment is actually configured.
 """
 
 import asyncio
-from typing import Any, Dict, Optional, Self
+from typing import Any, Dict, List, Optional, Self
 
 from gbserver.environment.environment import Environment
 from gbserver.types.environmentconfig import EnvironmentConfig
@@ -125,44 +125,37 @@ class Runpod(Environment):
             )
         return resolve_runpod_gpu_type(gpu_type)
 
-    def get_launch_env_vars(
-        self: Self,
-        run_metadata: Optional[Dict[str, Any]] = None,
-        environment_config: Optional[EnvironmentConfig] = None,
-        launcher_config: Optional[Dict] = None,
-        launch_id: str = "",
-        pod_name: str = "",
-        **kwargs: Any,
-    ) -> Dict[str, str]:
-        """Build the full env dict for a runpod step launch.
+    def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
+        """RunPod env layers for the shared launch-env composer.
 
-        Precedence (lowest->highest): environment.yaml ``env`` < launcher
-        ``env`` < built-in ``LLMB_RUNPOD_*`` vars < the standard
-        cross-environment set from ``super()`` (GBTEST_ test-control vars +
-        e.g. GB_BUILD_ID), which is
-        authoritative.
+        Overrides :meth:`Environment._launch_env_layers` (RunPod injects no
+        declared space secrets, so it leaves :meth:`_declared_secret_mappings`
+        at its empty default). Ordered lowest->highest above the empty secret
+        layer and below the standard set: environment.yaml ``env`` < launcher
+        ``env`` < the built-in ``LLMB_RUNPOD_*`` vars.
 
         The built-in launcher vars are standardized on the ``GB_`` prefix
-        (``GB_RUNPOD_*``): ``_add_gb_aliases`` mirrors each ``LLMB_RUNPOD_*``
-        onto a ``GB_RUNPOD_*`` twin as the final step, keeping the
+        (``GB_RUNPOD_*``): the composer's unconditional aliasing mirrors each
+        ``LLMB_RUNPOD_*`` onto a ``GB_RUNPOD_*`` twin, keeping the legacy
         ``LLMB_RUNPOD_*`` names for backwards compatibility.
 
-        :param run_metadata: launch run_metadata, forwarded to ``super()``.
-        :param environment_config: the environment config (its ``env``).
-        :param launcher_config: the step.yaml launcher config (its ``env``).
-        :param launch_id: unique id for this launch (LLMB_RUNPOD_LAUNCH_ID).
-        :param pod_name: the pod name (LLMB_RUNPOD_POD_NAME).
-        :returns: the complete ``{name: value}`` env dict for the pod.
+        :param kwargs: the launch context; reads ``environment_config`` (its
+            ``env``), ``launcher_config`` (its ``env``), ``launch_id``
+            (LLMB_RUNPOD_LAUNCH_ID), and ``pod_name`` (LLMB_RUNPOD_POD_NAME).
+        :returns: the ordered env layers to compose.
         """
-        env: Dict[str, str] = {}
-        if environment_config:
-            env.update(environment_config.config.get("env", {}) or {})
-        env.update((launcher_config or {}).get("env", {}))
-        env["LLMB_RUNPOD_LAUNCH_ID"] = launch_id
-        env["LLMB_RUNPOD_POD_NAME"] = pod_name
-        env.update(super().get_launch_env_vars(run_metadata=run_metadata))
-        # Mirror LLMB_RUNPOD_* onto GB_RUNPOD_* twins (GB_ is the standard prefix).
-        return self._add_gb_aliases(env)
+        environment_config = kwargs.get("environment_config")
+        launcher_config = kwargs.get("launcher_config") or {}
+        env_layer = (
+            (environment_config.config.get("env", {}) or {})
+            if environment_config
+            else {}
+        )
+        builtins: Dict[str, str] = {
+            "LLMB_RUNPOD_LAUNCH_ID": kwargs.get("launch_id", ""),
+            "LLMB_RUNPOD_POD_NAME": kwargs.get("pod_name", ""),
+        }
+        return [env_layer, launcher_config.get("env", {}), builtins]
 
     async def launch_runpod(
         self: Self,

@@ -42,12 +42,17 @@ from gbserver.environment.environment import Environment
 
 
 def _base_env_vars(run_metadata):
-    """Invoke the BASE implementation regardless of any subclass override.
+    """Invoke the BASE implementation with both composer hooks empty.
 
-    The base method does not use ``self``, so a bare object suffices as the
-    bound instance.
+    A bare ``Environment`` (no launcher subclass) inherits the default
+    :meth:`_declared_secret_mappings` and :meth:`_launch_env_layers` hooks, both
+    of which return nothing — so the result is exactly the standard set.
+    ``object.__new__`` skips the heavy ``__init__``; ``self.secrets`` is never
+    read because no secret mapping is declared.
     """
-    return Environment.get_launch_env_vars(object(), run_metadata=run_metadata)
+    return Environment.get_launch_env_vars(
+        object.__new__(Environment), run_metadata=run_metadata
+    )
 
 
 class TestBaseStandardEnv:
@@ -98,6 +103,158 @@ class TestBaseGbtestForwarding:
             "GBTEST_MOCK_HF": "true",
             "GB_BUILD_ID": "b1",
         }
+
+
+class _ComposerProbe(Environment):
+    """Minimal ``Environment`` exercising the two composition hooks directly.
+
+    Instead of a real launcher, its :meth:`_declared_secret_mappings` and
+    :meth:`_launch_env_layers` hooks return whatever a test stored on the
+    instance, so the base :meth:`Environment.get_launch_env_vars` — the single
+    launch-env strategy — can be tested in isolation. Built via
+    ``object.__new__`` to skip the heavy ``__init__``.
+    """
+
+    def _declared_secret_mappings(self, **kwargs):
+        """Return the test-supplied declared-secret mappings (composer hook)."""
+        return self._probe_mappings
+
+    def _launch_env_layers(self, **kwargs):
+        """Return the test-supplied env layers (composer hook)."""
+        return self._probe_layers
+
+
+class TestBaseComposition:
+    """Direct tests for the base composer: declared-secret resolution (lowest,
+    from :meth:`_declared_secret_mappings`), layer ordering (mid, from
+    :meth:`_launch_env_layers`), the standard set (highest), and the
+    unconditional ``LLMB_``->``GB_`` aliasing. This is the single place every
+    environment now layers its launch env."""
+
+    @pytest.fixture(autouse=True)
+    def _no_gbtest(self, monkeypatch):
+        monkeypatch.setattr(
+            environment_module, "get_exported_gbtest_env_vars", lambda: {}
+        )
+
+    def _probe(self, secrets=None, mappings=None, layers=None):
+        inst = object.__new__(_ComposerProbe)
+        inst.secrets = secrets
+        inst._probe_mappings = mappings or []
+        inst._probe_layers = layers or []
+        return inst
+
+    def test_layers_lowest_to_highest(self):
+        # secret (lowest) < layers (in order) < standard set (highest).
+        env = self._probe(
+            secrets={"tok": "sv"},
+            mappings=_mappings(("MY_TOKEN", "tok")),
+            layers=[{"A": "1", "MY_TOKEN": "layer"}, {"A": "2"}],
+        ).get_launch_env_vars(run_metadata={"build_id": "b1"})
+        assert env["MY_TOKEN"] == "layer"  # a layer overrides the secret
+        assert env["A"] == "2"  # a later layer overrides an earlier one
+        assert env["GB_BUILD_ID"] == "b1"  # standard set is present
+
+    def test_standard_set_overrides_layers(self):
+        env = self._probe(layers=[{"GB_BUILD_ID": "from-layer"}]).get_launch_env_vars(
+            run_metadata={"build_id": "real"}
+        )
+        assert env["GB_BUILD_ID"] == "real"
+
+    def test_no_secret_mappings_never_touches_bag(self):
+        # A None secret bag is fine when nothing is declared (K8s/Bash path).
+        env = self._probe(secrets=None).get_launch_env_vars(
+            run_metadata={"build_id": "b"}
+        )
+        assert env == {"GB_BUILD_ID": "b"}
+
+    def test_aliasing_always_mirrors_llmb(self):
+        # Aliasing is now unconditional; an LLMB_ layer var gains a GB_ twin.
+        env = self._probe(layers=[{"LLMB_FOO": "v"}]).get_launch_env_vars(
+            run_metadata={}
+        )
+        assert env["LLMB_FOO"] == "v" and env["GB_FOO"] == "v"
+
+    def test_aliasing_is_noop_without_llmb(self):
+        # No LLMB_ var -> aliasing adds nothing (the K8s path stays clean).
+        env = self._probe(layers=[{"PLAIN": "v"}]).get_launch_env_vars(run_metadata={})
+        assert env == {"PLAIN": "v"}
+
+
+# ---------------------------------------------------------------------------
+# Shared declared-secret resolver (used by every environment)
+# ---------------------------------------------------------------------------
+
+
+def _mappings(*pairs):
+    """Build a list of EnvironmentVariableConfig from (env_name, secret_name).
+
+    A ``secret_name`` of None exercises the "defaults to env_name" path.
+    """
+    from gbserver.types.environment.environment import EnvironmentVariableConfig
+
+    return [
+        EnvironmentVariableConfig(env_name=env_name, secret_name=secret_name)
+        for env_name, secret_name in pairs
+    ]
+
+
+class TestDeclaredSecretResolver:
+    """Direct tests for ``Environment._resolve_declared_secret_env_vars`` and
+    ``Environment._declared_secret_env_key_names`` — the shared least-privilege
+    path every environment funnels declared secrets through."""
+
+    def test_resolves_declared_mapping(self):
+        resolved = Environment._resolve_declared_secret_env_vars(
+            _mappings(("MY_TOKEN", "tok")), {"tok": "secret-val", "other": "nope"}
+        )
+        # Only the declared secret is exposed; unrelated bag entries are not.
+        assert resolved == {"MY_TOKEN": "secret-val"}
+
+    def test_secret_name_defaults_to_env_name(self):
+        resolved = Environment._resolve_declared_secret_env_vars(
+            _mappings(("MY_TOKEN", None)), {"MY_TOKEN": "secret-val"}
+        )
+        assert resolved == {"MY_TOKEN": "secret-val"}
+
+    def test_empty_mappings_yield_empty(self):
+        assert Environment._resolve_declared_secret_env_vars([], {"tok": "v"}) == {}
+
+    def test_missing_secret_raises_without_leaking_value(self):
+        with pytest.raises(ValueError) as exc:
+            Environment._resolve_declared_secret_env_vars(
+                _mappings(("MY_TOKEN", "absent")), {"tok": "super-secret-value"}
+            )
+        # The config error names the missing secret and env var but never the
+        # secret VALUES that were available.
+        assert "absent" in str(exc.value)
+        assert "MY_TOKEN" in str(exc.value)
+        assert "super-secret-value" not in str(exc.value)
+
+    def test_missing_env_name_raises(self):
+        with pytest.raises(ValueError, match="missing 'env_name'"):
+            Environment._resolve_declared_secret_env_vars(
+                _mappings((None, "tok")), {"tok": "v"}
+            )
+
+    def test_none_secret_bag_treated_as_empty(self):
+        with pytest.raises(ValueError):
+            Environment._resolve_declared_secret_env_vars(
+                _mappings(("MY_TOKEN", "tok")), None
+            )
+
+    def test_key_names_include_llmb_twin(self):
+        assert Environment._declared_secret_env_key_names(
+            _mappings(("LLMB_MYVAL", "tok"))
+        ) == {"LLMB_MYVAL", "GB_MYVAL"}
+
+    def test_key_names_non_llmb_has_no_twin(self):
+        assert Environment._declared_secret_env_key_names(
+            _mappings(("MY_TOKEN", "tok"))
+        ) == {"MY_TOKEN"}
+
+    def test_key_names_empty_mappings(self):
+        assert Environment._declared_secret_env_key_names([]) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -205,11 +362,26 @@ class TestRunpodOverride:
         assert env["GB_BUILD_ID"] == "real-build"
 
 
+# A step declaring one secret (config.skypilot.secrets allow-list); the secret
+# bag also holds an undeclared, hyphen-named entry that must NOT be injected
+# (hyphenated keys are the invalid-envs crash that motivated declared-only).
+_SKY_SECRET_CONFIG = {
+    "skypilot": {
+        "secrets": {
+            "secret_names_to_use_as_env_variable": [
+                {"env_name": "MY_TOKEN", "secret_name": "tok"}
+            ]
+        }
+    }
+}
+_SKY_SECRET_BAG = {"tok": "secret-val", "rits-access": "hyphen-named"}
+
+
 class TestSkypilotOverride:
-    def _skypilot(self):
+    def _skypilot(self, secrets=None):
         from gbserver.environment.skypilot import Skypilot
 
-        return Skypilot(event_q=asyncio.Queue())
+        return Skypilot(event_q=asyncio.Queue(), secrets=secrets)
 
     def test_inline_vars_and_authority(self):
         env = self._skypilot().get_launch_env_vars(
@@ -224,12 +396,46 @@ class TestSkypilotOverride:
         assert env["GB_TARGETRUN_ID"] == "tr-1"
         assert env["GB_BUILD_ID"] == "real-build"
 
+    def test_only_declared_secret_injected(self):
+        # The declared secret is injected; the undeclared, hyphen-named bag entry
+        # is NOT (least-privilege; and hyphenated keys would break sky's envs).
+        env = self._skypilot(secrets=_SKY_SECRET_BAG).get_launch_env_vars(
+            run_metadata=RUN_META, config=_SKY_SECRET_CONFIG, launch_id="lid"
+        )
+        assert env["MY_TOKEN"] == "secret-val"
+        assert "rits-access" not in env
+        assert "hyphen-named" not in env.values()
+
+    def test_no_declared_secrets_injects_nothing(self):
+        # With no config.skypilot.secrets allow-list, the whole bag stays out.
+        env = self._skypilot(secrets=_SKY_SECRET_BAG).get_launch_env_vars(
+            run_metadata=RUN_META, launch_id="lid"
+        )
+        assert "tok" not in env and "rits-access" not in env
+        assert "secret-val" not in env.values()
+
+    def test_missing_declared_secret_raises(self):
+        with pytest.raises(ValueError, match="tok"):
+            self._skypilot(secrets={"other": "v"}).get_launch_env_vars(
+                run_metadata=RUN_META, config=_SKY_SECRET_CONFIG, launch_id="lid"
+            )
+
+    def test_launcher_env_wins_over_declared_secret(self):
+        # Precedence: launcher envs override declared-secret vars of the same name.
+        env = self._skypilot(secrets=_SKY_SECRET_BAG).get_launch_env_vars(
+            run_metadata=RUN_META,
+            config=_SKY_SECRET_CONFIG,
+            launcher_config={"envs": {"MY_TOKEN": "from-launcher"}},
+            launch_id="lid",
+        )
+        assert env["MY_TOKEN"] == "from-launcher"
+
 
 class TestSkypilotManagedOverride:
-    def _managed(self):
+    def _managed(self, secrets=None):
         from gbserver.environment.skypilot_managed import Skypilot_managed
 
-        return Skypilot_managed(event_q=asyncio.Queue())
+        return Skypilot_managed(event_q=asyncio.Queue(), secrets=secrets)
 
     def test_inline_vars_and_authority(self):
         env = self._managed().get_launch_env_vars(
@@ -243,12 +449,31 @@ class TestSkypilotManagedOverride:
         assert env["GB_TARGETRUN_ID"] == "tr-1"
         assert env["GB_BUILD_ID"] == "real-build"
 
+    def test_only_declared_secret_injected(self):
+        env = self._managed(secrets=_SKY_SECRET_BAG).get_launch_env_vars(
+            run_metadata=RUN_META, config=_SKY_SECRET_CONFIG, launch_id="lid"
+        )
+        assert env["MY_TOKEN"] == "secret-val"
+        assert "rits-access" not in env
+        assert "hyphen-named" not in env.values()
+
+    def test_missing_declared_secret_raises(self):
+        with pytest.raises(ValueError, match="tok"):
+            self._managed(secrets={"other": "v"}).get_launch_env_vars(
+                run_metadata=RUN_META, config=_SKY_SECRET_CONFIG, launch_id="lid"
+            )
+
 
 class TestLsfOverride:
-    def _lsf(self):
+    def _lsf(self, secrets=None):
+        # LSF now resolves declared secrets against ``self.secrets`` (the same
+        # space-secret bag once threaded via setup_config.space_secrets), so
+        # tests provide the bag on the instance rather than through setup_config.
         from gbserver.environment.lsf import Lsf
 
-        return object.__new__(Lsf)
+        env = object.__new__(Lsf)
+        env.secrets = secrets
+        return env
 
     def test_secret_derived_vars_and_authority(self):
         config = {
@@ -260,9 +485,8 @@ class TestLsfOverride:
                 }
             }
         }
-        setup_config = {"space_secrets": {"tok": "secret-val"}}
-        env = self._lsf().get_launch_env_vars(
-            run_metadata=RUN_META, config=config, setup_config=setup_config
+        env = self._lsf(secrets={"tok": "secret-val"}).get_launch_env_vars(
+            run_metadata=RUN_META, config=config
         )
         assert env["MY_TOKEN"] == "secret-val"
         # LSF gains GB_BUILD_ID (SSH path), authoritative
@@ -312,9 +536,8 @@ class TestLsfOverride:
                 }
             }
         }
-        setup_config = {"space_secrets": {"tok": "secret-val"}}
-        env = self._lsf().get_launch_env_vars(
-            run_metadata=RUN_META, config=config, setup_config=setup_config
+        env = self._lsf(secrets={"tok": "secret-val"}).get_launch_env_vars(
+            run_metadata=RUN_META, config=config
         )
         # The twin exists (aliasing still runs last) ...
         assert env["GB_MYVAL"] == "secret-val"
@@ -348,6 +571,81 @@ class TestK8sOverride:
         env = self._k8s().get_launch_env_vars(run_metadata=RUN_META)
         assert env["GB_BUILD_ID"] == "real-build"
         assert env["GBTEST_MOCK_HF"] == "true"
+
+
+@requires_k8s
+class TestK8sSecretEnvHelmValues:
+    """Direct tests for ``K8s._secret_env_helm_values`` — the secretKeyRef
+    Helm-arg builder that exposes each declared secret under its verbatim
+    ``env_name`` plus a DEPRECATED lowercase alias for back-compat."""
+
+    def _values(self, mappings, space_secret="sp"):
+        from gbserver.environment.k8s import K8s
+
+        return K8s._secret_env_helm_values(mappings, space_secret)
+
+    def test_uppercase_name_emits_verbatim_and_lower_alias(self):
+        # No secret_name: exposed under both MY_TOKEN (verbatim, portable) and
+        # my_token (deprecated lowercase alias). Both reference the SAME data-key
+        # (the historical lowercase default) — the Secret stores the value under
+        # one key, so a verbatim-cased key would dangle and fail the pod.
+        assert self._values(_mappings(("MY_TOKEN", None))) == [
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "my_token"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "my_token"),
+        ]
+
+    def test_already_lowercase_name_emits_single_entry(self):
+        # verbatim == lowercase -> the alias is deduped away.
+        assert self._values(_mappings(("hf_token", None))) == [
+            ("k8s.env.hf_token.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.hf_token.valueFrom.secretKeyRef.key", "hf_token"),
+        ]
+
+    def test_explicit_secret_name_shared_by_both_aliases(self):
+        # An explicit (often hyphenated) secret_name is the data-key for both
+        # the verbatim and the deprecated lowercase env-var names.
+        assert self._values(_mappings(("MY_TOKEN", "huggingface-token"))) == [
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "huggingface-token"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "huggingface-token"),
+        ]
+
+    def test_missing_space_secret_raises(self):
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError, match="space"):
+            self._values(_mappings(("MY_TOKEN", None)), space_secret=None)
+
+    def test_empty_mappings_yield_empty_even_without_space_secret(self):
+        # No declared env vars -> nothing emitted and no space-secret needed.
+        assert self._values([], space_secret=None) == []
+
+    def test_mapping_without_env_name_raises(self):
+        # A malformed entry fails fast, matching the shared LSF/SkyPilot path,
+        # rather than being silently dropped.
+        with pytest.raises(ValueError, match="missing 'env_name'"):
+            self._values(_mappings((None, "tok")))
+
+    def test_conflicting_data_keys_for_same_name_raises(self):
+        # MY_TOKEN (no secret_name) resolves my_token -> my_token; a second
+        # my_token mapping with an explicit secret_name wants my_token ->
+        # real_key. Both claim the pod env var my_token with different keys, so
+        # the later mapping must not be silently dropped -- it raises.
+        with pytest.raises(ValueError, match="conflicting secret data-keys"):
+            self._values(_mappings(("MY_TOKEN", None), ("my_token", "real_key")))
+
+    def test_idempotent_duplicate_mapping_is_deduped(self):
+        # The same mapping declared twice resolves each name to the same key,
+        # so it is deduped rather than treated as a conflict.
+        assert self._values(_mappings(("MY_TOKEN", None), ("MY_TOKEN", None))) == [
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "my_token"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "my_token"),
+        ]
 
 
 class TestAddGbAliases:

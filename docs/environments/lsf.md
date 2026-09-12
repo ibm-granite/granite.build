@@ -116,6 +116,15 @@ config:
       conda: ""                     # Conda environment to activate.
 
   lsf:                              # LSF-specific overrides for a single step run.
+    secrets:
+      secret_names_to_use_as_env_variable:
+        - env_name: HF_TOKEN        # Env var injected into the job's environment.
+          secret_name: huggingface_token  # Space secret to read; defaults to env_name (verbatim)
+                                    # when omitted. Only declared secrets are injected
+                                    # (least-privilege). A declared secret missing from the space
+                                    # secret bag fails the launch fast with a ValueError (the secret
+                                    # value is never logged). This is the same allow-list K8s and
+                                    # SkyPilot read — see the generalized environment reference.
     bsub:
       jobid: ""                     # Adopt this pre-existing job ID instead of submitting a new one.
       log_path: ""                  # Log file path to use with a pre-existing jobid.

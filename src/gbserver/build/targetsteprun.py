@@ -54,6 +54,7 @@ from gbserver.utils.filesystem import (
     sync_or_copy,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.redaction import redact_sensitive
 from gbserver.utils.template import fill_objtemplate
 
 logger = get_logger(__name__)
@@ -550,7 +551,11 @@ class TargetStepRun(Run):
             logger.info(
                 "FULL CONFIG MONITOR CONFIG: %s", self.full_config[MONITOR_CONFIG]
             )
-            logger.info("FULL CONFIG's CONFIG: %s", self.full_config[CONFIG_KEY])
+            # redact secret-named keys (e.g. launcher_config.envs.HF_TOKEN) before logging.
+            logger.info(
+                "FULL CONFIG's CONFIG: %s",
+                redact_sensitive(self.full_config[CONFIG_KEY]),
+            )
 
             # Copy the shared merged_step_dir to a per-run temp directory.
             # fill_templates_in_dir destructively renders Jinja expressions in
@@ -605,7 +610,8 @@ class TargetStepRun(Run):
     async def _run(self: Self, tg: Optional[TaskGroup] = None, **kwargs) -> Any:
         self_entity = self.entity
         assert isinstance(self_entity, TargetStep)
-        logger.info("self.full_config: %s", self.full_config)
+        # redact secret-named keys (e.g. launcher_config.envs.HF_TOKEN) before logging.
+        logger.info("self.full_config: %s", redact_sensitive(self.full_config))
 
         build_config = self_entity.config
         if (
