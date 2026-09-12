@@ -38,7 +38,6 @@ import shlex
 import stat
 import tempfile
 import time
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator, Dict, List, Optional
 
@@ -48,6 +47,7 @@ from gbserver.environment.environment import Environment
 from gbserver.types.constants import (
     ENABLE_SSH_HOST_KEY_VERIFICATION,
     GBSERVER_LSF_FILE_API_SSH_BUDGET_S,
+    GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S,
     GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S,
     GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
     GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
@@ -210,7 +210,7 @@ def _write_key_file(key_material: str) -> str:
     return path
 
 
-@asynccontextmanager
+@contextlib.asynccontextmanager
 async def open_lsf_tunnel(
     space_name: str,
     environment_uri: str,
@@ -268,6 +268,7 @@ async def open_lsf_tunnel(
                 login_timeout=GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
                 keepalive_interval=GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
                 keepalive_count_max=GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
+                command_timeout=GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S,
             )
             logger.info(
                 "[build-files] opening tunnel: space=%s node=%s key_file=%s",

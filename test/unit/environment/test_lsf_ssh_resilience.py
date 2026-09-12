@@ -57,6 +57,8 @@ def _make_lsf(login_nodes: List[str]) -> Lsf:
     lsf.ssh_login_timeout_s = 90
     lsf.ssh_keepalive_interval_s = 10
     lsf.ssh_keepalive_count_max = 3
+    lsf.ssh_command_timeout_s = 120
+    lsf.ssh_probe_connect_timeout_s = 65
     lsf.ssh_probe_server_alive_interval = 10
     lsf.ssh_probe_server_alive_count_max = 9
     return lsf
@@ -250,6 +252,9 @@ class TestEnsureSshTunnel:
         assert kwargs["login_timeout"] == lsf.ssh_login_timeout_s
         assert kwargs["keepalive_interval"] == lsf.ssh_keepalive_interval_s
         assert kwargs["keepalive_count_max"] == lsf.ssh_keepalive_count_max
+        # command_timeout bounds the slow server-side session/exec setup that is
+        # the actual bluevela bottleneck.
+        assert kwargs["command_timeout"] == lsf.ssh_command_timeout_s
 
     @pytest.mark.asyncio
     async def test_aborts_when_key_file_removed_by_teardown(self: Self) -> None:
@@ -370,10 +375,14 @@ class TestEnsureSshTunnelConcurrency:
 
 
 class TestReachabilityProbeBannerBound:
-    """The pre-tunnel `ssh` probe must bound the banner phase, not just TCP."""
+    """The pre-tunnel `ssh` probe gates tunnel establishment, so its ConnectTimeout
+    must be as patient as the tunnel's login_timeout — NOT the old 5s ssh_timeout,
+    which cut off a slow-but-recoverable banner before the tunnel could try it."""
 
     @pytest.mark.asyncio
-    async def test_probe_command_includes_server_alive_flags(self: Self) -> None:
+    async def test_probe_uses_patient_connect_timeout_not_ssh_timeout(
+        self: Self,
+    ) -> None:
         lsf = _make_lsf(["a"])
         captured: dict = {}
 
@@ -389,9 +398,11 @@ class TestReachabilityProbeBannerBound:
 
         assert ok is True
         cmd = captured["cmd"]
-        # ConnectTimeout (TCP) is still present, and ServerAlive* now bounds the
-        # banner/post-TCP phase with the configured values.
-        assert f"ConnectTimeout={lsf.ssh_timeout}" in cmd
+        # The probe waits for a slow banner using the patient probe timeout, and
+        # must NOT fall back to the old rigid 5s ssh_timeout.
+        assert f"ConnectTimeout={lsf.ssh_probe_connect_timeout_s}" in cmd
+        assert f"ConnectTimeout={lsf.ssh_timeout}" not in cmd
+        # ServerAlive* is present as a secondary post-banner net.
         assert f"ServerAliveInterval={lsf.ssh_probe_server_alive_interval}" in cmd
         assert f"ServerAliveCountMax={lsf.ssh_probe_server_alive_count_max}" in cmd
 

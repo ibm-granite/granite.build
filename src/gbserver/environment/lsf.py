@@ -61,6 +61,7 @@ from gbserver.types.constants import (
     ENABLE_SSH_HOST_KEY_VERIFICATION,
     GBSERVER_LSF_BKILL_SSH_BUDGET_S,
     GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
+    GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S,
     GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S,
     GBSERVER_LSF_SSH_CONNECT_BUDGET_S,
     GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S,
@@ -68,6 +69,7 @@ from gbserver.types.constants import (
     GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
     GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
     GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
+    GBSERVER_LSF_SSH_PROBE_CONNECT_TIMEOUT_S,
     GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_COUNT_MAX,
     GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_INTERVAL_S,
     LSF_USE_ASPERA,
@@ -279,9 +281,25 @@ class Lsf(Environment):
                 "ssh_keepalive_count_max", GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX
             )
         )
+        # Per-command execution timeout: bounds the slow server-side session/exec
+        # setup that is the true bluevela bottleneck (connect+auth are ~1s). See
+        # the constant for details.
+        self.ssh_command_timeout_s = int(
+            authentication.get(
+                "ssh_command_timeout_s", GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S
+            )
+        )
         # Banner bound for the plain-`ssh` reachability probe (see
-        # __is_ssh_node_reachable). ConnectTimeout is TCP-only; ServerAlive* bounds
-        # a stalled post-TCP phase so a slow banner fails fast instead of hanging.
+        # __is_ssh_node_reachable). The probe GATES every tunnel establishment, so
+        # its ConnectTimeout — not ssh_timeout (5s) — must be as patient as the
+        # tunnel's login_timeout, or a slow-banner node is rejected before the
+        # tunnel's own generous timeout can run. ServerAlive* is a secondary net
+        # for a post-banner stall (it can't bound the pre-banner wait).
+        self.ssh_probe_connect_timeout_s = int(
+            authentication.get(
+                "ssh_probe_connect_timeout_s", GBSERVER_LSF_SSH_PROBE_CONNECT_TIMEOUT_S
+            )
+        )
         self.ssh_probe_server_alive_interval = int(
             authentication.get(
                 "ssh_probe_server_alive_interval",
@@ -453,24 +471,35 @@ class Lsf(Environment):
         """"""
         assert node, "Node must be provided, otherwise we have an infinite loop here"
         cmds = await self.create_ssh_base_cmd(node=node)
+        # ConnectTimeout bounds connect+banner (in modern OpenSSH it covers the
+        # banner exchange — our runner log fired "Connection timed out during
+        # banner exchange" at exactly ConnectTimeout). It must not be the old 5s
+        # (ssh_timeout), which could cut off a node whose banner was briefly
+        # delayed before the tunnel ever got to try it. ServerAlive* is a secondary
+        # net for a post-auth stall over the encrypted transport.
         cmds.append("-o")
-        cmds.append(f"ConnectTimeout={self.ssh_timeout}")
-        # ConnectTimeout bounds only the TCP handshake. bluevela can complete the
-        # TCP connect yet withhold its SSH banner for a minute or more, which would
-        # otherwise hang the probe past ssh_timeout and wrongly mark the node
-        # unreachable. ServerAlive* bounds that stalled banner/post-TCP phase.
+        cmds.append(f"ConnectTimeout={self.ssh_probe_connect_timeout_s}")
         cmds.append("-o")
         cmds.append(f"ServerAliveInterval={self.ssh_probe_server_alive_interval}")
         cmds.append("-o")
         cmds.append(f"ServerAliveCountMax={self.ssh_probe_server_alive_count_max}")
         cmds.append("echo")
         cmds.append("testing node availability")
+        # The probe's `echo` incurs the same slow server-side session/exec setup as
+        # a real command (connect+auth are ~1s; the exec can take tens of seconds).
+        # ConnectTimeout does not bound that exec phase and the subprocess helper
+        # has no timeout of its own, so wrap the whole probe in an overall deadline
+        # (connect+banner budget plus the command budget) — generous enough to wait
+        # out a slow-but-alive node, finite so a wedged one is marked unreachable
+        # and we fail over instead of hanging.
+        overall_timeout = self.ssh_probe_connect_timeout_s + self.ssh_command_timeout_s
         try:
-            await launch_command_and_raise_errors(
-                command_list=cmds, launch_id=launch_id
+            await asyncio.wait_for(
+                launch_command_and_raise_errors(command_list=cmds, launch_id=launch_id),
+                timeout=overall_timeout,
             )
             return True
-        except:
+        except Exception:
             return False
 
     def _prepare_assets_replace_vars(
@@ -1029,9 +1058,15 @@ class Lsf(Environment):
         """
         if budget_s is None:
             budget_s = self.ssh_connect_budget_s
-        assert (
-            self._key_file_path
-        ), "SSH key file must be set up before opening a tunnel"
+        # First-class check (not an assert): teardown_bsub nulls _key_file_path on
+        # cancel, and a best-effort bkill can race in here afterwards. Raising the
+        # normal error keeps that path graceful and survives `python -O` (which
+        # would strip an assert and let a None key fall through to a later assert).
+        if not self._key_file_path:
+            raise SshTunnelError(
+                "SSH key file not set up (environment torn down / build "
+                "cancelled); cannot open a tunnel"
+            )
         # Fast path: a healthy tunnel needs no rebuild, so skip the lock — a burst
         # of concurrent transfers shouldn't serialize on it when it's already up.
         existing = self._ssh_tunnel
@@ -1090,6 +1125,7 @@ class Lsf(Environment):
                         login_timeout=self.ssh_login_timeout_s,
                         keepalive_interval=self.ssh_keepalive_interval_s,
                         keepalive_count_max=self.ssh_keepalive_count_max,
+                        command_timeout=self.ssh_command_timeout_s,
                     )
                     await tunnel.open()
                     # A node can open a connection yet not execute commands; prove

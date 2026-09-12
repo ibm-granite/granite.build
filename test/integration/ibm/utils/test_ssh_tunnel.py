@@ -183,6 +183,34 @@ async def test_run_returns_stdout_stderr_on_success():
 
 
 @pytest.mark.asyncio
+async def test_run_applies_command_timeout_when_set():
+    """command_timeout should be forwarded to conn.run so a slow server-side
+    session/exec setup is bounded (the bluevela symptom)."""
+    mock_conn, _ = _make_mock_conn(run_exit_status=0, run_stdout="ok\n")
+
+    with patch("asyncssh.connect", new=AsyncMock(return_value=mock_conn)):
+        tunnel = SshTunnel(host="myhost", command_timeout=120)
+        await tunnel.open()
+        await tunnel.run_remote("echo ok")
+
+    mock_conn.run.assert_called_once_with("echo ok", check=False, timeout=120)
+
+
+@pytest.mark.asyncio
+async def test_run_omits_command_timeout_when_unset():
+    """No command_timeout must leave conn.run at its default (no timeout kwarg)."""
+    mock_conn, _ = _make_mock_conn(run_exit_status=0, run_stdout="ok\n")
+
+    with patch("asyncssh.connect", new=AsyncMock(return_value=mock_conn)):
+        tunnel = SshTunnel(host="myhost")
+        await tunnel.open()
+        await tunnel.run_remote("echo ok")
+
+    _, kwargs = mock_conn.run.call_args
+    assert "timeout" not in kwargs
+
+
+@pytest.mark.asyncio
 async def test_run_raises_on_nonzero_exit_by_default():
     """run() should raise ValueError on non-zero exit when raise_on_error=True."""
     mock_conn, _ = _make_mock_conn(run_exit_status=1, run_stderr="not found")

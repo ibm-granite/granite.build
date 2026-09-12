@@ -833,17 +833,31 @@ GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S = int(
 # banner for a minute or more; ConnectTimeout (a TCP-only bound) doesn't cover
 # that, so the login phase must be bounded separately.
 # login_timeout bounds the banner+kex+auth phase (asyncssh raises "Login timeout
-# expired"). Lenient enough to wait out the observed bluevela banner delay on a
-# node before failing over, but bounded so a wedged node can't hang a whole
-# attempt indefinitely. The runner keeps sweeping the node list (see
-# _CONNECT_BUDGET_S) so a per-node give-up here isn't a build failure.
+# expired"). Empirically (ssh -vv against bluevela login nodes) connect+banner+
+# kex+auth all complete in ~1s even when the node is "slow" — the real delay is
+# server-side session/exec setup AFTER auth (see _COMMAND_TIMEOUT_S below), not
+# login. So this is NOT the slow-node fix; it only needs to be generous enough to
+# wait out a login node that is genuinely degraded at the auth stage (or briefly
+# withholding its banner) before failing over. 30s is ample; the runner keeps
+# sweeping the node list (see _CONNECT_BUDGET_S) so a per-node give-up isn't a
+# build failure.
 GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S = int(
-    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_LOGIN_TIMEOUT_S", "65"), base=10
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_LOGIN_TIMEOUT_S", "30"), base=10
 )
 # connect_timeout bounds the TCP+initial-connect leg (login_timeout applies to auth
-# on top of this).
+# on top of this). TCP connect is ~instant on bluevela; kept small.
 GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_CONNECT_TIMEOUT_S", "10"), base=10
+)
+# Per-command execution timeout (asyncssh conn.run(timeout=...)). THIS is the fix
+# for the observed symptom: connect+auth are ~1s, but the server takes tens of
+# seconds (observed ~28s, "up to a minute or longer" under load) to set up the
+# session/exec — slow networked home dir, login rc, module init — before a
+# command produces output. Generous enough to wait that out, finite so a truly
+# wedged session raises TimeoutError (which run_remote_with_retries retries)
+# instead of hanging forever. 120s covers the observed delay with wide margin.
+GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_COMMAND_TIMEOUT_S", "120"), base=10
 )
 # Post-connect keepalive: detect a session that connected but then stops responding
 # mid-command. interval * count_max ≈ dead-session detection time (default ~30s).
@@ -853,10 +867,25 @@ GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S = int(
 GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_KEEPALIVE_COUNT_MAX", "3"), base=10
 )
-# Banner bound for the pre-tunnel reachability probe (plain `ssh` subprocess).
-# ServerAlive* is how OpenSSH bounds a stalled post-TCP phase; interval * count ≈
-# probe banner tolerance. Sized to ≈ the tunnel's login_timeout (10s × 6 ≈ 60s)
-# so the probe and the tunnel agree on which nodes count as reachable.
+# Connect timeout (seconds) for the pre-tunnel reachability probe (plain `ssh`
+# subprocess in __is_ssh_node_reachable). Every tunnel establishment is gated by
+# this probe, so it must not give up before the node has a fair chance: the old
+# 5s (ssh_timeout) could cut off a node whose banner was briefly delayed. In
+# modern OpenSSH ConnectTimeout covers the banner exchange (our runner log fired
+# "Connection timed out during banner exchange" at exactly ConnectTimeout=5s), so
+# sizing this to ≈ the tunnel's login_timeout keeps the probe's verdict consistent
+# with what the tunnel would find. NOTE: ConnectTimeout covers connect+banner, NOT
+# the post-auth session/exec setup — the probe's `echo` still incurs the same
+# tens-of-seconds server delay; the probe tolerates that via the command timeout
+# below, not here.
+GBSERVER_LSF_SSH_PROBE_CONNECT_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_PROBE_CONNECT_TIMEOUT_S", "30"), base=10
+)
+# Keepalive for the probe's post-banner phase (the trivial `echo` command). NOTE:
+# ServerAlive* runs only over the post-kex encrypted transport, so — unlike the
+# ConnectTimeout above — it does NOT bound the pre-banner wait; it only catches a
+# session that connected+authed but then goes silent during the echo. Kept as a
+# secondary safety net; interval * count ≈ 60s.
 GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_INTERVAL_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_PROBE_SERVER_ALIVE_INTERVAL_S", "10"), base=10
 )
