@@ -46,8 +46,8 @@ from fastapi import HTTPException, status
 from gbserver.environment.environment import Environment
 from gbserver.types.constants import (
     ENABLE_SSH_HOST_KEY_VERIFICATION,
+    GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S,
     GBSERVER_LSF_FILE_API_SSH_BUDGET_S,
-    GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S,
     GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S,
     GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
     GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
@@ -268,7 +268,11 @@ async def open_lsf_tunnel(
                 login_timeout=GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
                 keepalive_interval=GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
                 keepalive_count_max=GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
-                command_timeout=GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S,
+                # File-API commands hit the SAME server-side session/exec setup
+                # slowness as the runner, so they need the same leniency — but a
+                # shorter max, since this runs synchronously for an interactive
+                # caller behind a route, not a patient batch runner.
+                command_timeout=GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S,
             )
             logger.info(
                 "[build-files] opening tunnel: space=%s node=%s key_file=%s",

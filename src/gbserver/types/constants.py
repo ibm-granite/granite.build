@@ -907,6 +907,18 @@ GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_COUNT_MAX = int(
 GBSERVER_LSF_FILE_API_SSH_BUDGET_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_FILE_API_SSH_BUDGET_S", "45"), base=10
 )
+# Per-command timeout (seconds) for the synchronous file APIs, SEPARATE from the
+# runner's GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S. The file APIs hit the SAME
+# server-side session/exec setup slowness (~28s, "up to a minute") as everything
+# else, so they need the same kind of leniency — but with a SHORTER max, because
+# they run synchronously behind an HTTPS route for an interactive caller that
+# gives up in ~a minute, not the 120s a batch runner tolerates. Sized to wait out
+# the observed session-setup with a little margin (60s) yet stay well under the
+# 600s route ceiling. If a file-API command exceeds this, asyncssh raises
+# TimeoutError and the request returns an error rather than hanging the caller.
+GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_PREFIX + "_LSF_FILE_API_COMMAND_TIMEOUT_S", "60"), base=10
+)
 # Establish budget (seconds) for a best-effort bkill during cleanup. bkill
 # genuinely needs to reach a login node and run a command, so it uses the same
 # robust reconnect/failover path as everything else — but must NOT inherit the

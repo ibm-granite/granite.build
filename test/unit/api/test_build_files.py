@@ -1634,6 +1634,13 @@ class TestOpenLsfTunnelFailover:
             seen["keepalive_count_max"]
             == lsf_tunnel.GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX
         )
+        # File-API commands use the shorter file-API command timeout (tolerate the
+        # same session-setup slowness, but with a shorter max than the runner's),
+        # NOT the runner's GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S.
+        assert (
+            seen["command_timeout"]
+            == lsf_tunnel.GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S
+        )
 
     @pytest.mark.asyncio
     async def test_overall_budget_short_circuits_remaining_nodes(self):
