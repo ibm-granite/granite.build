@@ -1562,6 +1562,43 @@ class TestOpenLsfTunnelFailover:
         assert opened_hosts == ["node-a", "node-b"]
 
     @pytest.mark.asyncio
+    async def test_slow_but_alive_node_succeeds(self):
+        """The real bluevela mode: open() is fast (connect+auth ~1s) but the first
+        command (readlink) is slow due to server-side session setup. As long as it
+        finishes under command_timeout, the tunnel must open successfully — this is
+        the case whose failure got a running build cancelled."""
+        from gbserver.api import lsf_tunnel
+
+        resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
+
+        def make_tunnel(**kwargs):
+            t = MagicMock()
+            t.open = AsyncMock(return_value=None)  # connect+auth: fast
+
+            async def _slow_readlink(cmd, raise_on_error=True):
+                # Simulate the ~28s session-setup latency, compressed for the test.
+                await asyncio.sleep(0.05)
+                return (0, "/ws\n", "")
+
+            t.run_remote = AsyncMock(side_effect=_slow_readlink)
+            t.close = AsyncMock()
+            return t
+
+        with (
+            resolve,
+            fetch,
+            write,
+            unlink,
+            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+        ):
+            async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x") as (
+                tunnel,
+                cfg,
+            ):
+                assert cfg.workspace_remote_dir == "/ws"
+                assert tunnel is not None
+
+    @pytest.mark.asyncio
     async def test_readlink_timeout_returns_503_not_500(self):
         """A command_timeout on the post-open readlink canonicalize (slow session
         setup) must surface as a clean 503, not an opaque 500."""
