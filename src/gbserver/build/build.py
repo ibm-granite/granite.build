@@ -415,9 +415,7 @@ class Build(BuildEntity):
             return Path(env_path_str)
         # Git-backed space: materialize the (cached) clone, honoring any
         # #subdirectory= fragment — the same helper SpaceURI uses, so no re-clone.
-        get_path_in_repo = getattr(
-            target_env_uri, "get_path_in_repo_from_cache", None
-        )
+        get_path_in_repo = getattr(target_env_uri, "get_path_in_repo_from_cache", None)
         if get_path_in_repo is not None:
             try:
                 return get_path_in_repo()

@@ -156,9 +156,9 @@ class TestBaseComposition:
         assert env["GB_BUILD_ID"] == "b1"  # standard set is present
 
     def test_standard_set_overrides_layers(self):
-        env = self._probe(
-            layers=[{"GB_BUILD_ID": "from-layer"}]
-        ).get_launch_env_vars(run_metadata={"build_id": "real"})
+        env = self._probe(layers=[{"GB_BUILD_ID": "from-layer"}]).get_launch_env_vars(
+            run_metadata={"build_id": "real"}
+        )
         assert env["GB_BUILD_ID"] == "real"
 
     def test_no_secret_mappings_never_touches_bag(self):
@@ -177,9 +177,7 @@ class TestBaseComposition:
 
     def test_aliasing_is_noop_without_llmb(self):
         # No LLMB_ var -> aliasing adds nothing (the K8s path stays clean).
-        env = self._probe(layers=[{"PLAIN": "v"}]).get_launch_env_vars(
-            run_metadata={}
-        )
+        env = self._probe(layers=[{"PLAIN": "v"}]).get_launch_env_vars(run_metadata={})
         assert env == {"PLAIN": "v"}
 
 

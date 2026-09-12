@@ -978,9 +978,7 @@ class Environment(ABC):
         # (lowest) Declared secrets, resolved once and validated.
         mappings = self._declared_secret_mappings(**hook_kwargs)
         if mappings:
-            env.update(
-                self._resolve_declared_secret_env_vars(mappings, self.secrets)
-            )
+            env.update(self._resolve_declared_secret_env_vars(mappings, self.secrets))
         # (mid) Environment layers, applied low->high in the returned order.
         for layer in self._launch_env_layers(**hook_kwargs):
             env.update(layer)
