@@ -69,9 +69,6 @@ from gbserver.types.constants import (
     GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
     GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
     GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
-    GBSERVER_LSF_SSH_PROBE_CONNECT_TIMEOUT_S,
-    GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_COUNT_MAX,
-    GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_INTERVAL_S,
     LSF_USE_ASPERA,
     STEP_FILE_NAME,
 )
@@ -282,34 +279,10 @@ class Lsf(Environment):
             )
         )
         # Per-command execution timeout: bounds the slow server-side session/exec
-        # setup that is the true bluevela bottleneck (connect+auth are ~1s). See
-        # the constant for details.
+        # setup that is the true bluevela bottleneck (connect+auth are ~1s).
         self.ssh_command_timeout_s = int(
             authentication.get(
                 "ssh_command_timeout_s", GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S
-            )
-        )
-        # Banner bound for the plain-`ssh` reachability probe (see
-        # __is_ssh_node_reachable). The probe GATES every tunnel establishment, so
-        # its ConnectTimeout — not ssh_timeout (5s) — must be as patient as the
-        # tunnel's login_timeout, or a slow-banner node is rejected before the
-        # tunnel's own generous timeout can run. ServerAlive* is a secondary net
-        # for a post-banner stall (it can't bound the pre-banner wait).
-        self.ssh_probe_connect_timeout_s = int(
-            authentication.get(
-                "ssh_probe_connect_timeout_s", GBSERVER_LSF_SSH_PROBE_CONNECT_TIMEOUT_S
-            )
-        )
-        self.ssh_probe_server_alive_interval = int(
-            authentication.get(
-                "ssh_probe_server_alive_interval",
-                GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_INTERVAL_S,
-            )
-        )
-        self.ssh_probe_server_alive_count_max = int(
-            authentication.get(
-                "ssh_probe_server_alive_count_max",
-                GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_COUNT_MAX,
             )
         )
         if self.use_ssh:
@@ -471,28 +444,18 @@ class Lsf(Environment):
         """"""
         assert node, "Node must be provided, otherwise we have an infinite loop here"
         cmds = await self.create_ssh_base_cmd(node=node)
-        # ConnectTimeout bounds connect+banner (in modern OpenSSH it covers the
-        # banner exchange — our runner log fired "Connection timed out during
-        # banner exchange" at exactly ConnectTimeout). It must not be the old 5s
-        # (ssh_timeout), which could cut off a node whose banner was briefly
-        # delayed before the tunnel ever got to try it. ServerAlive* is a secondary
-        # net for a post-auth stall over the encrypted transport.
+        # ConnectTimeout bounds connect+banner (modern OpenSSH covers the banner
+        # exchange here); reuse login_timeout so the probe is as patient as the
+        # tunnel and doesn't reject a briefly-slow node the tunnel would accept.
         cmds.append("-o")
-        cmds.append(f"ConnectTimeout={self.ssh_probe_connect_timeout_s}")
-        cmds.append("-o")
-        cmds.append(f"ServerAliveInterval={self.ssh_probe_server_alive_interval}")
-        cmds.append("-o")
-        cmds.append(f"ServerAliveCountMax={self.ssh_probe_server_alive_count_max}")
+        cmds.append(f"ConnectTimeout={self.ssh_login_timeout_s}")
         cmds.append("echo")
         cmds.append("testing node availability")
-        # The probe's `echo` incurs the same slow server-side session/exec setup as
-        # a real command (connect+auth are ~1s; the exec can take tens of seconds).
-        # ConnectTimeout does not bound that exec phase and the subprocess helper
-        # has no timeout of its own, so wrap the whole probe in an overall deadline
-        # (connect+banner budget plus the command budget) — generous enough to wait
-        # out a slow-but-alive node, finite so a wedged one is marked unreachable
-        # and we fail over instead of hanging.
-        overall_timeout = self.ssh_probe_connect_timeout_s + self.ssh_command_timeout_s
+        # The `echo` incurs the same slow server-side session/exec setup as a real
+        # command, which ConnectTimeout doesn't bound and the subprocess helper
+        # doesn't time out. Wrap the whole probe in login+command budget: patient
+        # enough for a slow-but-alive node, finite so a wedged one fails over.
+        overall_timeout = self.ssh_login_timeout_s + self.ssh_command_timeout_s
         try:
             await asyncio.wait_for(
                 launch_command_and_raise_errors(command_list=cmds, launch_id=launch_id),

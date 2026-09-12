@@ -826,112 +826,54 @@ GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S = int(
 GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_CONNECT_MAX_BACKOFF_S", "60"), base=10
 )
-# Per-attempt bounds on the SSH banner/login phase for the asyncssh tunnel. These
-# sit *inside* one establish attempt of the sweep above: they bound how long a
-# single login node may hang before we fail over, distinct from the overall
-# connect budget. bluevela can leave a connection TCP-open yet withhold its SSH
-# banner for a minute or more; ConnectTimeout (a TCP-only bound) doesn't cover
-# that, so the login phase must be bounded separately.
-# login_timeout bounds the banner+kex+auth phase (asyncssh raises "Login timeout
-# expired"). Empirically (ssh -vv against bluevela login nodes) connect+banner+
-# kex+auth all complete in ~1s even when the node is "slow" — the real delay is
-# server-side session/exec setup AFTER auth (see _COMMAND_TIMEOUT_S below), not
-# login. So this is NOT the slow-node fix; it only needs to be generous enough to
-# wait out a login node that is genuinely degraded at the auth stage (or briefly
-# withholding its banner) before failing over. 30s is ample; the runner keeps
-# sweeping the node list (see _CONNECT_BUDGET_S) so a per-node give-up isn't a
-# build failure.
+# Per-SSH-attempt timeouts (asyncssh), inside one establish attempt of the sweep
+# above. Empirically (ssh -vv) connect+banner+auth take ~1s on bluevela even when
+# "slow"; the real delay is server-side session/exec setup AFTER auth, bounded by
+# COMMAND_TIMEOUT below. So login/connect timeouts are not the fix — they only
+# bound a genuinely-degraded node before failover.
+# login_timeout: banner+kex+auth ("Login timeout expired"). Also reused as the
+# reachability probe's ConnectTimeout (modern OpenSSH ConnectTimeout covers the
+# banner exchange), so probe and tunnel agree on which nodes are reachable.
 GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_LOGIN_TIMEOUT_S", "30"), base=10
 )
-# connect_timeout bounds the TCP+initial-connect leg (login_timeout applies to auth
-# on top of this). TCP connect is ~instant on bluevela; kept small.
+# connect_timeout: TCP connect leg only (~instant on bluevela).
 GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_CONNECT_TIMEOUT_S", "10"), base=10
 )
-# Per-command execution timeout (asyncssh conn.run(timeout=...)). THIS is the fix
-# for the observed symptom: connect+auth are ~1s, but the server takes tens of
-# seconds (observed ~28s, "up to a minute or longer" under load) to set up the
-# session/exec — slow networked home dir, login rc, module init — before a
-# command produces output. Generous enough to wait that out, finite so a truly
-# wedged session raises TimeoutError (which run_remote_with_retries retries)
-# instead of hanging forever. 120s covers the observed delay with wide margin.
+# command_timeout (asyncssh conn.run(timeout=...)): THE fix. Bounds the slow
+# server-side session/exec setup (~28s, up to a minute under load) before a
+# command produces output. On expiry asyncssh raises TimeoutError (retried by
+# run_remote_with_retries) instead of hanging. 120s = observed delay + margin.
 GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_COMMAND_TIMEOUT_S", "120"), base=10
 )
-# Post-connect keepalive: detect a session that connected but then stops responding
-# mid-command. interval * count_max ≈ dead-session detection time (default ~30s).
+# Keepalive: drop a session whose server stops answering transport probes.
+# interval * count_max ≈ dead-session detection (~30s).
 GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_KEEPALIVE_INTERVAL_S", "10"), base=10
 )
 GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_KEEPALIVE_COUNT_MAX", "3"), base=10
 )
-# Connect timeout (seconds) for the pre-tunnel reachability probe (plain `ssh`
-# subprocess in __is_ssh_node_reachable). Every tunnel establishment is gated by
-# this probe, so it must not give up before the node has a fair chance: the old
-# 5s (ssh_timeout) could cut off a node whose banner was briefly delayed. In
-# modern OpenSSH ConnectTimeout covers the banner exchange (our runner log fired
-# "Connection timed out during banner exchange" at exactly ConnectTimeout=5s), so
-# sizing this to ≈ the tunnel's login_timeout keeps the probe's verdict consistent
-# with what the tunnel would find. NOTE: ConnectTimeout covers connect+banner, NOT
-# the post-auth session/exec setup — the probe's `echo` still incurs the same
-# tens-of-seconds server delay; the probe tolerates that via the command timeout
-# below, not here.
-GBSERVER_LSF_SSH_PROBE_CONNECT_TIMEOUT_S = int(
-    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_PROBE_CONNECT_TIMEOUT_S", "30"), base=10
-)
-# Keepalive for the probe's post-banner phase (the trivial `echo` command). NOTE:
-# ServerAlive* runs only over the post-kex encrypted transport, so — unlike the
-# ConnectTimeout above — it does NOT bound the pre-banner wait; it only catches a
-# session that connected+authed but then goes silent during the echo. Kept as a
-# secondary safety net; interval * count ≈ 60s.
-GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_INTERVAL_S = int(
-    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_PROBE_SERVER_ALIVE_INTERVAL_S", "10"), base=10
-)
-GBSERVER_LSF_SSH_PROBE_SERVER_ALIVE_COUNT_MAX = int(
-    os.getenv(ENV_VAR_PREFIX + "_LSF_SSH_PROBE_SERVER_ALIVE_COUNT_MAX", "6"), base=10
-)
-# Overall wall-time budget (seconds) for the *synchronous file APIs* to open a
-# tunnel across all candidate login nodes. Unlike the build runner — which is
-# batch and may patiently sweep for hours — the env/build file APIs are served
-# over an HTTPS OpenShift route whose HAProxy server-timeout is 600s (see
-# k8s/chart/values.yaml routes.haproxy_timeout): the route HARD-DROPS the
-# connection at 600s no matter what we do here, and the interactive MCP agent
-# calling it realistically gives up well before that. So this is a HARD CEILING
-# well under 600s, and must also leave headroom for the actual file op (readlink
-# canonicalize + grep/list/peek) that runs AFTER the tunnel opens. Default 45s:
-# enough to try a node or two with the banner/login bounds, then return a clean
-# fast 503 instead of letting per-node login_timeouts stack up past the caller's
-# timeout. Do NOT raise this near 600s. Independent of ssh_connect_budget_s.
+# Establish budget: how long the synchronous file APIs sweep candidate login nodes
+# for a tunnel before returning 503. Short because they run behind an HTTPS route
+# (HAProxy server-timeout 600s, k8s/chart/values.yaml) for an interactive caller;
+# keep well under 600s.
 GBSERVER_LSF_FILE_API_SSH_BUDGET_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_FILE_API_SSH_BUDGET_S", "45"), base=10
 )
-# Per-command timeout (seconds) for the synchronous file APIs, SEPARATE from the
-# runner's GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S. The file APIs hit the SAME
-# server-side session/exec setup slowness (~28s, "up to a minute") as everything
-# else, so they need the same kind of leniency — but with a SHORTER max, because
-# they run synchronously behind an HTTPS route for an interactive caller that
-# gives up in ~a minute, not the 120s a batch runner tolerates. Sized to wait out
-# the observed session-setup with a little margin (60s) yet stay well under the
-# 600s route ceiling. If a file-API command exceeds this, asyncssh raises
-# TimeoutError and the request returns an error rather than hanging the caller.
+# File-API command timeout: same session-setup leniency as the runner's
+# COMMAND_TIMEOUT but a shorter max, since the caller is interactive (not a patient
+# batch runner). Waits out the ~28s setup with margin, stays well under 600s.
 GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_FILE_API_COMMAND_TIMEOUT_S", "60"), base=10
 )
-# Establish budget (seconds) for a best-effort bkill during cleanup. bkill
-# genuinely needs to reach a login node and run a command, so it uses the same
-# robust reconnect/failover path as everything else — but must NOT inherit the
-# runner's multi-hour ssh_connect_budget_s: teardown can't block for hours, and a
-# job left running is better surfaced sooner than waited out for hours.
-# Sized so each attempt gets a *real* chance: one node can consume up to
-# connect_timeout + login_timeout (~10+65s) before failover, so this must span
-# several such attempts across the login nodes (nothing can run until SSH is
-# actually established) — not a fail-fast cap. 5 min covers all nodes with a
-# couple of backoff rounds, then gives up and logs that the remote kill was
-# skipped. Deliberately longer than the file-API budget, whose caller (an
-# interactive agent behind an HTTPS route) gives up in ~a minute; bkill's caller
-# is teardown, which can afford minutes to avoid leaking a running job.
+# Establish budget for a best-effort bkill during cleanup: bkill must reach a
+# login node to run the kill, so it reconnects via the robust path — but with a
+# short budget, not the runner's multi-hour one (teardown can't block for hours; a
+# leaked job is better surfaced fast). 5 min spans a few real attempts across the
+# nodes, then gives up and logs the skip.
 GBSERVER_LSF_BKILL_SSH_BUDGET_S = int(
     os.getenv(ENV_VAR_PREFIX + "_LSF_BKILL_SSH_BUDGET_S", "300"), base=10
 )

@@ -58,9 +58,6 @@ def _make_lsf(login_nodes: List[str]) -> Lsf:
     lsf.ssh_keepalive_interval_s = 10
     lsf.ssh_keepalive_count_max = 3
     lsf.ssh_command_timeout_s = 120
-    lsf.ssh_probe_connect_timeout_s = 65
-    lsf.ssh_probe_server_alive_interval = 10
-    lsf.ssh_probe_server_alive_count_max = 9
     return lsf
 
 
@@ -376,13 +373,11 @@ class TestEnsureSshTunnelConcurrency:
 
 class TestReachabilityProbeBannerBound:
     """The pre-tunnel `ssh` probe gates tunnel establishment, so its ConnectTimeout
-    must be as patient as the tunnel's login_timeout — NOT the old 5s ssh_timeout,
-    which cut off a slow-but-recoverable banner before the tunnel could try it."""
+    reuses the tunnel's login_timeout — NOT the old 5s ssh_timeout, which cut off a
+    slow-but-recoverable node before the tunnel could try it."""
 
     @pytest.mark.asyncio
-    async def test_probe_uses_patient_connect_timeout_not_ssh_timeout(
-        self: Self,
-    ) -> None:
+    async def test_probe_uses_login_timeout_not_ssh_timeout(self: Self) -> None:
         lsf = _make_lsf(["a"])
         captured: dict = {}
 
@@ -398,13 +393,9 @@ class TestReachabilityProbeBannerBound:
 
         assert ok is True
         cmd = captured["cmd"]
-        # The probe waits for a slow banner using the patient probe timeout, and
-        # must NOT fall back to the old rigid 5s ssh_timeout.
-        assert f"ConnectTimeout={lsf.ssh_probe_connect_timeout_s}" in cmd
+        # Probe reuses the tunnel's patient login_timeout, never the rigid 5s.
+        assert f"ConnectTimeout={lsf.ssh_login_timeout_s}" in cmd
         assert f"ConnectTimeout={lsf.ssh_timeout}" not in cmd
-        # ServerAlive* is present as a secondary post-banner net.
-        assert f"ServerAliveInterval={lsf.ssh_probe_server_alive_interval}" in cmd
-        assert f"ServerAliveCountMax={lsf.ssh_probe_server_alive_count_max}" in cmd
 
 
 class TestSshTunnelIsHealthy:
