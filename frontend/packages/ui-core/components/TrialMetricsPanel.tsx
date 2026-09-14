@@ -7,7 +7,7 @@ import { useChartsTheme } from '../hooks/useTheme'
 import { useMetricStream } from '../hooks/useMetricStream'
 import { getTrialMetrics } from '../api/autotunex'
 import { metricChartOptions } from './metricChartOptions'
-import { METRIC_PALETTE, emaChartRows, splitMetricRows, toChartRows } from './trialMetrics'
+import { METRIC_PALETTE, splitMetricRows, toChartRows } from './trialMetrics'
 import type { TuningStatus } from '../types'
 
 type Scope = 'own' | 'all'
@@ -67,8 +67,10 @@ export function TrialMetricsPanel({ jobId, trialId, status, color, scope }: Prop
   const evalColor = METRIC_PALETTE[theme][2] === color ? METRIC_PALETTE[theme][1] : METRIC_PALETTE[theme][2]
 
   const lossRows = useMemo(() => {
-    const raw = toChartRows(split.trainSteps, 'global_step', (r) => r.loss)
-    const train = emaChartRows(raw).map((r) => ({ ...r, group: TRAIN }))
+    const train = toChartRows(split.trainSteps, 'global_step', (r) => r.loss).map((r) => ({
+      ...r,
+      group: TRAIN,
+    }))
     const evals = toChartRows(split.evals, 'global_step', (r) => r.extra?.eval_loss).map((r) => ({
       ...r,
       group: EVAL,
@@ -86,7 +88,7 @@ export function TrialMetricsPanel({ jobId, trialId, status, color, scope }: Prop
   )
   const gradRows = useMemo(
     () =>
-      emaChartRows(toChartRows(split.trainSteps, 'global_step', (r) => r.grad_norm)).map((r) => ({
+      toChartRows(split.trainSteps, 'global_step', (r) => r.grad_norm).map((r) => ({
         ...r,
         group: 'Grad norm',
       })),
@@ -123,7 +125,7 @@ export function TrialMetricsPanel({ jobId, trialId, status, color, scope }: Prop
   return (
     <div>
       <Chart
-        title="Loss — train (smoothed) and eval"
+        title="Loss — train and eval"
         rows={lossRows}
         options={metricChartOptions({
           ...shared,
@@ -143,7 +145,7 @@ export function TrialMetricsPanel({ jobId, trialId, status, color, scope }: Prop
         })}
       />
       <Chart
-        title="Gradient norm (smoothed)"
+        title="Gradient norm"
         rows={gradRows}
         options={metricChartOptions({
           ...shared,

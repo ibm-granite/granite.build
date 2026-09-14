@@ -388,12 +388,23 @@ export function TrialsTable({ job }: Props) {
                       {row.isExpanded && trial && (
                         <TableExpandedRow {...getExpandedRowProps({ row })} colSpan={headers.length + 2}>
                           <Tabs>
+                            {/* Logs first: when a reader expands a trial they are
+                                usually chasing what it did or why it stopped, and
+                                the log is the only tab that answers that. */}
                             <TabList aria-label="Trial detail tabs" contained>
-                              <Tab>Metrics</Tab>
                               <Tab>Logs</Tab>
                               <Tab>Configuration</Tab>
+                              <Tab>Metrics</Tab>
                             </TabList>
                             <TabPanels>
+                              <TabPanel>
+                                <TrialLogViewer jobId={jobId} trialId={trial.id} status={trial.status} scope={scope} />
+                              </TabPanel>
+                              <TabPanel>
+                                <CodeSnippet type="multi" wrapText>
+                                  {JSON.stringify(trial.config, null, 2)}
+                                </CodeSnippet>
+                              </TabPanel>
                               <TabPanel>
                                 <TrialMetricsPanel
                                   jobId={jobId}
@@ -402,14 +413,6 @@ export function TrialsTable({ job }: Props) {
                                   color={colorScale[trial.id]}
                                   scope={scope}
                                 />
-                              </TabPanel>
-                              <TabPanel>
-                                <TrialLogViewer jobId={jobId} trialId={trial.id} status={trial.status} scope={scope} />
-                              </TabPanel>
-                              <TabPanel>
-                                <CodeSnippet type="multi" wrapText>
-                                  {JSON.stringify(trial.config, null, 2)}
-                                </CodeSnippet>
                               </TabPanel>
                             </TabPanels>
                           </Tabs>
