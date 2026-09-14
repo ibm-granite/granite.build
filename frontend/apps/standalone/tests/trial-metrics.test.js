@@ -15,6 +15,11 @@
  *    The dangerous case is the trials query not having resolved yet: the id set
  *    is then empty and the whole job would misclassify as one final run.
  *
+ * 3. The `elapsed` x axis measures each run from its own first row, and the
+ *    origin has to be shared across a run's series. Taken per series it would
+ *    re-anchor eval loss at zero, drawing the first eval — logged at the end of
+ *    an epoch — as if it arrived with the first training step.
+ *
  * The fixture mirrors the real shape and per-kind counts of reference job
  * b32d2a29-9af1-4c95-b189-dd1940128d2f: four search trials of 34 step rows +
  * 3 evals + 1 summary, then a final run of 23 step rows + 5 evals + 1 summary.
@@ -32,7 +37,7 @@ const {
   trialColorScale,
   bestTrialId,
   toChartRows,
-  emaChartRows,
+  runOrigins,
   METRIC_PALETTE,
   METRIC_DE_EMPHASIS,
   EMPHASIS_THRESHOLD,
@@ -42,6 +47,31 @@ const SEARCH_IDS = ['491c7_00000', '491c7_00001', '491c7_00002', '491c7_00003']
 const FINAL_ID = '11517_00000'
 
 let nextId = 245 // the reference job's first metric id
+
+// When each run began. `training_metrics.created_at` is NOT NULL, so every real
+// row carries one. The search trials run two at a time and the final run follows
+// them, which is why an absolute clock would place the phases in disjoint
+// windows and the `elapsed` axis measures each run from its own start instead.
+const RUN_START = {
+  '491c7_00000': Date.parse('2026-09-03T12:16:30Z'),
+  '491c7_00001': Date.parse('2026-09-03T12:16:35Z'),
+  '491c7_00002': Date.parse('2026-09-03T12:24:00Z'),
+  '491c7_00003': Date.parse('2026-09-03T12:24:05Z'),
+  '11517_00000': Date.parse('2026-09-03T12:40:00Z'),
+}
+
+const SECONDS_PER_STEP = 15
+
+/**
+ * `created_at` for a row of `trialId` at `step`, `offset` seconds after it.
+ * A run outside `RUN_START` gets no stamp — that is the "this row has no place
+ * on the elapsed axis" case, which the tests below lean on.
+ */
+function stampAt(trialId, step, offset = 0) {
+  const base = RUN_START[trialId]
+  if (base === undefined) return undefined
+  return new Date(base + (step * SECONDS_PER_STEP + offset) * 1000).toISOString()
+}
 
 function stepRow(trialId, step, epoch) {
   return {
@@ -54,6 +84,7 @@ function stepRow(trialId, step, epoch) {
     learning_rate: 1e-6 * (1 + (step % 7)),
     split: 'train',
     extra: {},
+    created_at: stampAt(trialId, step),
   }
 }
 
@@ -68,6 +99,7 @@ function evalRow(trialId, step, epoch, evalLoss) {
     learning_rate: null,
     split: 'eval',
     extra: { eval_loss: evalLoss, eval_runtime: 4.1, eval_samples_per_second: 4.8 },
+    created_at: stampAt(trialId, step, 1),
   }
 }
 
@@ -82,6 +114,7 @@ function summaryRow(trialId, step, trainLoss) {
     learning_rate: null,
     split: 'train',
     extra: { train_loss: trainLoss, train_runtime: 457.1, total_flos: 1.83e14 },
+    created_at: stampAt(trialId, step, 2),
   }
 }
 
@@ -258,34 +291,76 @@ describe('toChartRows', () => {
   })
 })
 
-describe('emaChartRows', () => {
-  it('leaves each group’s first point untouched', () => {
-    const raw = [
-      { group: 'a', key: 1, value: 10 },
-      { group: 'a', key: 2, value: 20 },
-      { group: 'b', key: 1, value: 100 },
-    ]
-    const smoothed = emaChartRows(raw, 0.5)
-    assert.equal(smoothed[0].value, 10)
-    assert.equal(smoothed[2].value, 100, 'group b does not inherit group a’s state')
-    assert.equal(smoothed[1].value, 15)
+describe('runOrigins', () => {
+  it('anchors each run at its own earliest row', () => {
+    const origins = runOrigins(fixture())
+    assert.equal(origins.size, 5, 'four search trials and the final run')
+    // A run's earliest row is its first step row, at global_step 2.
+    for (const [id, base] of Object.entries(RUN_START)) {
+      assert.equal(origins.get(id), base + 2 * SECONDS_PER_STEP * 1000)
+    }
   })
 
-  it('reduces variance without moving the level', () => {
-    const raw = []
-    for (let i = 0; i < 40; i++) raw.push({ group: 'a', key: i, value: 15 + (i % 2 ? 1 : -1) })
-    const smoothed = emaChartRows(raw)
-    const spread = (xs) => Math.max(...xs) - Math.min(...xs)
-    const rawValues = raw.map((r) => r.value)
-    const smoothValues = smoothed.slice(5).map((r) => r.value)
-    assert.ok(spread(smoothValues) < spread(rawValues) / 2, 'noise band narrows')
-    const mean = smoothValues.reduce((a, b) => a + b, 0) / smoothValues.length
-    assert.ok(Math.abs(mean - 15) < 0.2, 'and stays on the same level')
+  it('ignores rows with no usable timestamp', () => {
+    assert.equal(runOrigins([stepRow('no-such-run', 2, 0.1)]).size, 0)
   })
 
-  it('does not mutate the input rows', () => {
-    const raw = [{ group: 'a', key: 1, value: 10 }, { group: 'a', key: 2, value: 20 }]
-    emaChartRows(raw, 0.5)
-    assert.equal(raw[1].value, 20)
+  it('files a row with no trial id under the job\u2019s single run', () => {
+    const row = { ...stepRow(SEARCH_IDS[0], 2, 0.1), trial_id: null }
+    assert.deepEqual([...runOrigins([row]).keys()], ['run'])
+  })
+})
+
+describe('toChartRows on the elapsed axis', () => {
+  it('starts every run at its own zero', () => {
+    const rows = fixture()
+    const chart = toChartRows(
+      splitMetricRows(rows).trainSteps,
+      'elapsed',
+      (r) => r.loss,
+      runOrigins(rows)
+    )
+    assert.equal(chart.length, 159, 'no step row is lost to the time axis')
+    for (const id of [...SEARCH_IDS, FINAL_ID]) {
+      const own = chart.filter((r) => r.group === id)
+      assert.equal(own[0].key, 0, `${id} starts at zero`)
+      assert.ok(own[own.length - 1].key > 0, `${id} advances`)
+    }
+  })
+
+  it('reads in minutes', () => {
+    // A search trial logs 34 step rows at global_step 2..68, one every
+    // SECONDS_PER_STEP, so it spans (68 - 2) * 15s = 16.5 minutes.
+    const rows = fixture()
+    const own = toChartRows(
+      splitMetricRows(rows).trainSteps,
+      'elapsed',
+      (r) => r.loss,
+      runOrigins(rows)
+    ).filter((r) => r.group === SEARCH_IDS[0])
+    assert.equal(own[own.length - 1].key, 16.5)
+  })
+
+  it('leaves evals where they were logged rather than at zero', () => {
+    // The regression this guards: origins taken from `split.evals` alone would
+    // make each run's first eval the origin, so eval loss would start at zero
+    // beside the training curve instead of an epoch into the run.
+    const rows = fixture()
+    const split = splitMetricRows(rows)
+    const evals = toChartRows(split.evals, 'elapsed', (r) => r.extra?.eval_loss, runOrigins(rows))
+    for (const id of [...SEARCH_IDS, FINAL_ID]) {
+      const own = evals.filter((r) => r.group === id)
+      assert.ok(own[0].key > 0, `${id}'s first eval keeps its offset`)
+    }
+  })
+
+  it('drops rows it cannot place instead of guessing an origin', () => {
+    const rows = [stepRow(SEARCH_IDS[0], 2, 0.1), stepRow(SEARCH_IDS[0], 4, 0.2)]
+    assert.equal(toChartRows(rows, 'elapsed', (r) => r.loss).length, 0, 'no origins given')
+    assert.equal(
+      toChartRows(rows, 'elapsed', (r) => r.loss, new Map()).length,
+      0,
+      'run absent from origins'
+    )
   })
 })
