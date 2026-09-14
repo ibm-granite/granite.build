@@ -163,7 +163,8 @@ backend is reachable:
 
 > **Image mode has no cluster coverage either**, because the local Docker SLURM cluster has no
 > Pyxis SPANK plugin and so cannot run container images at all. `dpk_image` is exercised only
-> by render tests until the local cluster gains Pyxis or an aws fixture covers it.
+> by render tests until the local cluster gains Pyxis or a future *image-mode* aws
+> fixture covers it (the current aws fixtures are bare-node).
 
 > Container images require the Pyxis SPANK plugin on SLURM/LSF, which the local Docker
 > SLURM cluster does not have — so the slurm fixtures leave `dpk_image` empty and run on the
