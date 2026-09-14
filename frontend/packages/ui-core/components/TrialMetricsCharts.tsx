@@ -260,13 +260,13 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
   //
   // The gates are exact complements, which is what makes the second one a
   // fallback as well as a gate: a job with no final run — still searching, or a
-  // plain tuning job — keeps drawing its search curves instead of going blank.
+  // plain tuning job — keeps drawing its training curves instead of going blank.
   //
   // Which phase exists is a question about the phase's own rows, never about the
   // ones a chart happens to plot: `finalRows` is already filtered to the current
   // x axis and `epoch` — the default axis — is nullable, so keying these off it
   // would let a final run that logged only `global_step` read as "no final run",
-  // put the search curves on screen as the whole story, and make the axis
+  // put the training curves on screen as the whole story, and make the axis
   // switcher swap which phase the tab shows.
   const hasSelection = selectedIds.length > 0
   const hasFinalRun = phases.final.length > 0
@@ -311,12 +311,12 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
           <h5 style={{ marginTop: '1rem' }}>Final run</h5>
           <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.75rem', margin: '0.25rem 0 0.75rem' }}>
             The winning configuration, trained once{finalCaption ? ` on the ${finalCaption}` : ''}.
-            {/* The search curves are only reachable through the table's
+            {/* The training curves are only reachable through the table's
                 checkboxes now, so say so — otherwise nothing on screen suggests
                 they exist. Gated on there being any, so a job without search
                 trials does not point at a table that has no rows to tick. */}
             {phases.search.length > 0 &&
-              ' Select trials in the table above to see their search curves instead.'}
+              ' Select trials in the table above to see their training curves instead.'}
           </p>
           {finalSummary && (
             <div
