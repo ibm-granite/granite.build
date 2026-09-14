@@ -366,8 +366,18 @@ export function Step1DatasetUpload({
           }
         }
 
-        setColumnMapping(newMapping)
-        setAiSuggestedFields(newSuggested)
+        if (Object.keys(newMapping).length > 0) {
+          setColumnMapping(newMapping)
+          setAiSuggestedFields(newSuggested)
+        } else {
+          // Every entry was filtered out -- an aiKey we cannot match, or a source
+          // column absent from the file. Committing `{}` left Step 1 with no mapping
+          // at all, and `setAiSuggestion` above has already fired, so the heuristic
+          // effect can never fill it in: it bails on `aiSuggestion` from here on.
+          // Fall back to the heuristic explicitly, against the algorithm the AI
+          // actually chose rather than the one this closure captured.
+          setColumnMapping(suggestColumnMappingHeuristic(colNames, aiAllCols))
+        }
       }
     } catch {
       // Heuristic mapping already applied by the effect above; nothing else to do.

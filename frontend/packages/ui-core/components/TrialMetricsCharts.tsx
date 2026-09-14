@@ -20,6 +20,7 @@ import styles from './TrialMetricsCharts.module.scss'
 import {
   METRIC_PALETTE,
   derivePhases,
+  positiveRows,
   rowsForTrials,
   runOrigins,
   splitMetricRows,
@@ -166,7 +167,7 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
     [search.evals, xKey, searchOrigins]
   )
   const searchLr = useMemo(
-    () => toChartRows(search.trainSteps, xKey, (r) => r.learning_rate, searchOrigins),
+    () => positiveRows(toChartRows(search.trainSteps, xKey, (r) => r.learning_rate, searchOrigins)),
     [search.trainSteps, xKey, searchOrigins]
   )
   const searchGrad = useMemo(

@@ -303,3 +303,19 @@ export function toChartRows(
   }
   return out.sort((a, b) => (a.group === b.group ? a.key - b.key : a.group < b.group ? -1 : 1))
 }
+
+/**
+ * Drops non-positive points, for the charts drawn on a log y axis.
+ *
+ * Carbon's LOG scale throws ("Data must have values greater than 0 if log scale
+ * type is used.") when the axis domain's minimum is <= 0, and HF Trainer logs
+ * `learning_rate: 0` on the final step of a linear-decay schedule. So an
+ * ordinary completed run would otherwise take the chart -- and, with no error
+ * boundary above it, the whole panel -- down.
+ *
+ * Applied at the log-axis call sites rather than inside `toChartRows`, because a
+ * genuine `loss: 0` is a real point and belongs on a linear chart.
+ */
+export function positiveRows(rows: ChartRow[]): ChartRow[] {
+  return rows.filter((r) => r.value > 0)
+}

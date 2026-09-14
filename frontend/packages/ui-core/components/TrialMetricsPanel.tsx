@@ -7,7 +7,7 @@ import { useChartsTheme } from '../hooks/useTheme'
 import { useMetricStream } from '../hooks/useMetricStream'
 import { getTrialMetrics } from '../api/autotunex'
 import { metricChartOptions } from './metricChartOptions'
-import { METRIC_PALETTE, splitMetricRows, toChartRows } from './trialMetrics'
+import { METRIC_PALETTE, positiveRows, splitMetricRows, toChartRows } from './trialMetrics'
 import type { TuningStatus } from '../types'
 
 type Scope = 'own' | 'all'
@@ -80,7 +80,7 @@ export function TrialMetricsPanel({ jobId, trialId, status, color, scope }: Prop
 
   const lrRows = useMemo(
     () =>
-      toChartRows(split.trainSteps, 'global_step', (r) => r.learning_rate).map((r) => ({
+      positiveRows(toChartRows(split.trainSteps, 'global_step', (r) => r.learning_rate)).map((r) => ({
         ...r,
         group: 'Learning rate',
       })),
