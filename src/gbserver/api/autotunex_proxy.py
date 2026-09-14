@@ -125,23 +125,41 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
     # The base is rstripped so a trailing slash on AUTOTUNEX_API_URL cannot make
     # that `//api/v1/...`, which the check would read as leaving the API space
     # (and which was previously forwarded upstream as a double slash).
-    upstream_url = httpx.URL(f"{AUTOTUNEX_URL.rstrip('/')}{_UPSTREAM_PREFIX}/{path}")
+    #
+    # httpx also raises InvalidURL for a path it cannot encode -- a raw NUL or any
+    # other non-printable ASCII, which Starlette hands us already decoded from
+    # `{path:path}`, so any client can send one. InvalidURL is not an
+    # httpx.RequestError, so it escaped the handler further down and surfaced as a
+    # 500 with a traceback, for the same class of hostile input the check below
+    # answers with a 400.
+    try:
+        upstream_url = httpx.URL(
+            f"{AUTOTUNEX_URL.rstrip('/')}{_UPSTREAM_PREFIX}/{path}"
+        )
+    except httpx.InvalidURL:
+        logger.warning("rejected malformed AutoTuneX proxy path: %r", path)
+        return JSONResponse({"detail": "Invalid proxy path."}, status_code=400)
     if not upstream_url.path.startswith(_UPSTREAM_PREFIX + "/"):
         logger.warning("rejected AutoTuneX proxy path escaping the API mount: %r", path)
         return JSONResponse({"detail": "Invalid proxy path."}, status_code=400)
 
-    fwd_headers = {
-        k: v
+    # Pairs, not a dict: Headers.items() yields one entry per header *line*, so a
+    # dict comprehension collapses repeats to the last value. Splitting Cookie
+    # across several lines is legal (and normal over HTTP/2), and that dropped
+    # every crumb but the last -- including the AutoTuneX session cookie. The
+    # response path below already preserves duplicates for the same reason.
+    fwd_headers = [
+        (k, v)
         for k, v in request.headers.items()
         if k.lower() not in _DROP_REQUEST_HEADERS
-    }
+    ]
     # The shared AsyncClient keeps a process-wide cookie jar. Without an
     # explicit Cookie header, httpx injects jar cookies captured from a PRIOR
     # proxied response, bleeding one user's AutoTuneX session onto another
     # user's cookie-less request. Always forward an explicit Cookie (the
     # browser's, or empty) so the jar is never consulted for injection.
-    if not any(k.lower() == "cookie" for k in fwd_headers):
-        fwd_headers["cookie"] = ""
+    if not any(k.lower() == "cookie" for k, _ in fwd_headers):
+        fwd_headers.append(("cookie", ""))
 
     # Forward the body as a stream rather than reading it with request.body().
     # Buffering would fully materialize a multi-GB training-set upload in this
@@ -165,7 +183,8 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
     upstream_request = client.build_request(
         request.method,
         upstream_url,
-        headers=fwd_headers,
+        # tuple() for the same mypy reason as `params` below.
+        headers=tuple(fwd_headers),
         # tuple(), not the list multi_items() returns: httpx accepts either, but
         # list is invariant so mypy rejects list[tuple[str, str]] against the
         # wider pair type it declares. Duplicate keys are preserved either way.

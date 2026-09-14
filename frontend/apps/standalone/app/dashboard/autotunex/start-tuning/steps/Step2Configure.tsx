@@ -118,6 +118,13 @@ export function Step2Configure({
   const [needsSaveAs, setNeedsSaveAs] = useState(false)
   const [editConfigName, setEditConfigName] = useState('')
   const [isLoadingEditConfig, setIsLoadingEditConfig] = useState(false)
+  // The id `selectConfig` is currently resolving, set synchronously so a slower
+  // earlier response cannot overwrite a later selection. GET /configs nulls
+  // `config_data`, so every selection fires a fetch: picking A then B with A
+  // landing second left `selectedConfig` as A while `selectedConfigId` was B, so
+  // the review card, generated experiment name and estimate all described A while
+  // the launch posted B.
+  const resolvingConfigIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!isEditingConfig || !selectedConfig) {
@@ -128,7 +135,18 @@ export function Step2Configure({
     const hasAssociatedJobs = (selectedConfig.associated_jobs?.length ?? 0) > 0
     const requiresSaveAs = isSystemConfig || hasAssociatedJobs
     setNeedsSaveAs(requiresSaveAs)
-    if (requiresSaveAs) setEditConfigName((prev) => prev || `${selectedConfig.name}_modified`)
+    // `prev ||` alone made this default unreachable: `enterEditMode` pre-fills the
+    // existing name (the rename path below needs it), so `prev` was always truthy.
+    // A system config always requires Save As, so that pre-filled name tripped the
+    // "already exists" check the moment the panel opened, and confirming an edit
+    // meant retyping a name by hand every time. Treat "still the original name" as
+    // untouched -- it is never a legal Save As target anyway -- while keeping
+    // anything the user actually typed.
+    if (requiresSaveAs) {
+      setEditConfigName((prev) =>
+        !prev || prev === selectedConfig.name ? `${selectedConfig.name}_modified` : prev
+      )
+    }
   }, [isEditingConfig, selectedConfig])
 
   async function selectConfig(config: Configuration) {
@@ -136,11 +154,13 @@ export function Step2Configure({
     if (isCreatingConfig) cancelCreateMode()
     setSelectedConfigId(config.id)
     setSelectedConfig(config)
+    resolvingConfigIdRef.current = config.id
     onClearPendingConfig()
 
     if (!config.config_data && config.id) {
       try {
         const fullConfig = await getConfiguration(config.id)
+        if (resolvingConfigIdRef.current !== config.id) return
         setSelectedConfig(fullConfig)
       } catch {
         // Keep the summary config; preview will show what's available.

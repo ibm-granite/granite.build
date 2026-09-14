@@ -422,7 +422,14 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
                     const num = typeof v === 'number' ? v : Number(v)
                     updateGenericField(sectionKey, key, { default: num })
                     if (config.tune_config?.max_concurrent_trials) {
-                      updateGenericField('tune_config', 'max_concurrent_trials', { default: maxConcurrentTrialsCap(value.max_val, num) })
+                      // Clamp to the new ceiling rather than assign it -- see the same
+                      // handler in GeneralConfigForm for why.
+                      updateGenericField('tune_config', 'max_concurrent_trials', {
+                        default: Math.max(
+                          1,
+                          Math.min(config.tune_config.max_concurrent_trials.default, maxConcurrentTrialsCap(value.max_val, num))
+                        ),
+                      })
                     }
                   }}
                 />

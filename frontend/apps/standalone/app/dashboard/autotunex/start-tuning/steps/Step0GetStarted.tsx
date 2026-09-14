@@ -13,6 +13,7 @@ import {
   Tile,
   Link,
   InlineLoading,
+  InlineNotification,
   TextInput,
 } from '@carbon/react'
 import {
@@ -29,6 +30,7 @@ import remarkBreaks from 'remark-breaks'
 import type { HuggingFaceModel, ModelSource, TuningGoal } from '@granite-build/ui-core/types'
 import { GOAL_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import { getDefaultAlgorithmForGoal } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
+import { stripFrontMatter } from '@granite-build/ui-core/lib/autotunex/modelCard'
 import { MODEL_SOURCE_LABELS, MODEL_SOURCE_OPTIONS } from '../../modelSources'
 import { getHFModelCard, getHFModels } from '@granite-build/ui-core/api/autotunex'
 import { resolveModelComboItem, type ModelSuggestion } from '../modelComboSelection'
@@ -51,31 +53,6 @@ const RESOURCE_PANEL_CLASS: Record<TuningGoal, string> = {
   sft: styles.resourcePanelSft,
   offline_rl: styles.resourcePanelOfflineRl,
   online_rl: styles.resourcePanelOnlineRl,
-}
-
-/** Strips YAML front matter from a HuggingFace README so it doesn't render as visible text. */
-function stripFrontMatter(raw: string): string {
-  const lines = raw.split('\n')
-  let inFrontMatter = false
-  let contentStarted = false
-  const out: string[] = []
-  for (const line of lines) {
-    if (line.trim() === '---') {
-      if (!inFrontMatter) {
-        inFrontMatter = true
-      } else {
-        inFrontMatter = false
-        contentStarted = true
-      }
-      continue
-    }
-    if (inFrontMatter) continue
-    if (contentStarted || line.trim() !== '') {
-      contentStarted = true
-      out.push(line)
-    }
-  }
-  return out.join('\n').trim()
 }
 
 interface Step0GetStartedProps {
@@ -104,6 +81,11 @@ export function Step0GetStarted({
   const [models, setModels] = useState<HuggingFaceModel[]>([])
   const [suggestions, setSuggestions] = useState<ModelSuggestion[]>([])
   const [modelCard, setModelCard] = useState<string | null>(null)
+  // `modelCard === null` used to mean both "not fetched" and "the fetch failed",
+  // and the modal read either as "still loading" -- so a card that could not be
+  // reached (no egress to huggingface.co, or a gated repo) left an InlineLoading
+  // spinning forever with no error and no way to retry.
+  const [modelCardStatus, setModelCardStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [comboBoxReady, setComboBoxReady] = useState(false)
   const [showModelCardModal, setShowModelCardModal] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -131,17 +113,21 @@ export function Step0GetStarted({
   }
 
   async function fetchModelCard(modelId: string) {
+    // Model cards are a HuggingFace-only concept — neither a registry entry
+    // nor a filesystem path has one.
+    if (modelSource !== 'huggingface' || !modelId) {
+      setModelCard(null)
+      setModelCardStatus('idle')
+      return
+    }
+    setModelCardStatus('loading')
     try {
-      // Model cards are a HuggingFace-only concept — neither a registry entry
-      // nor a filesystem path has one.
-      if (modelSource !== 'huggingface' || !modelId) {
-        setModelCard(null)
-        return
-      }
       const rawContent = await getHFModelCard(modelId)
       setModelCard(stripFrontMatter(rawContent))
+      setModelCardStatus('ready')
     } catch {
       setModelCard(null)
+      setModelCardStatus('error')
     }
   }
 
@@ -156,6 +142,7 @@ export function Step0GetStarted({
       setSelectedModel('')
       setSuggestions([])
       setModelCard(null)
+      setModelCardStatus('idle')
     } else {
       setSelectedModel('ibm-granite/granite-4.0-h-micro')
       setSuggestions(models.map((m) => ({ id: m.id, text: m.id })))
@@ -344,7 +331,7 @@ export function Step0GetStarted({
                       iconDescription="View model details"
                       hasIconOnly={false}
                       onClick={() => {
-                        if (!modelCard) fetchModelCard(selectedModel)
+                        if (modelCardStatus !== 'ready' && modelCardStatus !== 'loading') fetchModelCard(selectedModel)
                         setShowModelCardModal(true)
                       }}
                     >
@@ -364,12 +351,27 @@ export function Step0GetStarted({
         passiveModal
         size="lg"
       >
-        {modelCard ? (
+        {modelCardStatus === 'error' ? (
+          <>
+            <InlineNotification
+              kind="error"
+              title="Could not load the model card"
+              subtitle={`Fetching the card for ${selectedModel} failed. The model itself is still selectable.`}
+              hideCloseButton
+              lowContrast
+            />
+            <Button size="sm" kind="tertiary" onClick={() => fetchModelCard(selectedModel)}>
+              Retry
+            </Button>
+          </>
+        ) : modelCardStatus === 'loading' ? (
+          <InlineLoading description="Loading model card..." />
+        ) : modelCard ? (
           <div className={styles.modelCardContent}>
             <ReactMarkdown remarkPlugins={[remarkBreaks]}>{modelCard}</ReactMarkdown>
           </div>
         ) : (
-          <InlineLoading description="Loading model card..." />
+          <p>This model has no model card.</p>
         )}
       </Modal>
     </div>

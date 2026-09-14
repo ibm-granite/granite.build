@@ -328,6 +328,14 @@ export function StepRewardFunction({
 
   // View mode: 0 = Table View, 1 = JSON View
   const [viewModeIndex, setViewModeIndex] = useState(0)
+  // Bumped to remount the ContentSwitcher when a switch is refused. Carbon's
+  // ContentSwitcher holds its own selected index and re-syncs only when the
+  // `selectedIndex` prop *value* changes -- it has already moved to the clicked
+  // index by the time onChange fires, so writing back the value we still hold is a
+  // no-op. Without this the switcher read "Table View" while the JSON textareas
+  // rendered, and clicking it again fired nothing (its own `selectedIndex !== index`
+  // guard), so recovering took a JSON-View -> Table-View round trip.
+  const [switcherKey, setSwitcherKey] = useState(0)
   const advancedTestMode = viewModeIndex === 1
   const [modeSwitchWarning, setModeSwitchWarning] = useState<string | null>(null)
 
@@ -443,6 +451,7 @@ export function StepRewardFunction({
       if (!check.ok) {
         setModeSwitchWarning(check.error ?? null)
         setViewModeIndex(1) // Stay on JSON View
+        setSwitcherKey((k) => k + 1)
         return
       }
       const synced = testCases.map(syncJsonToFields)
@@ -702,6 +711,7 @@ export function StepRewardFunction({
                   <p className={styles.testPanelTitle}>Test Cases</p>
                   <div className={styles.viewModeSwitcher}>
                     <ContentSwitcher
+                      key={switcherKey}
                       size="sm"
                       selectedIndex={viewModeIndex}
                       onChange={({ index }) => handleViewModeChange(index ?? 0)}

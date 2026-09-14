@@ -61,9 +61,18 @@ async function waitForDatasetReady(id: string): Promise<void> {
   const deadline = Date.now() + DATASET_READY_TIMEOUT_MS
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const ds = await getDataset(id)
-    if (ds.status === 'ready') return
-    if (ds.status === 'error') throw new Error(ds.status_detail || 'Dataset processing failed.')
+    // A failed poll is just a poll to retry. Letting the rejection propagate meant
+    // one transient GET blip aborted a launch whose upload had already succeeded,
+    // and the caller never reached `setDatasetId`, so a retry re-uploaded the same
+    // file into the populated record. Only the deadline ends the wait unhappily.
+    let ds: Dataset | null = null
+    try {
+      ds = await getDataset(id)
+    } catch (err) {
+      if (Date.now() > deadline) throw err
+    }
+    if (ds?.status === 'ready') return
+    if (ds?.status === 'error') throw new Error(ds.status_detail || 'Dataset processing failed.')
     if (Date.now() > deadline) throw new Error('Dataset upload timed out while processing. Please try again.')
     await new Promise((resolve) => setTimeout(resolve, DATASET_READY_POLL_MS))
   }
@@ -124,6 +133,10 @@ export function StartTuningWizard() {
 
   // Idempotent retry: resources already created on a failed launch attempt
   const createdDatasetIdRef = useRef<string | null>(null)
+  // The dataset the file has already been uploaded into. `createdDatasetIdRef`
+  // only covers the metadata POST, so a retry after the upload succeeded but the
+  // readiness wait failed re-POSTed the same file into a populated record.
+  const uploadedDatasetIdRef = useRef<string | null>(null)
   const createdConfigIdRef = useRef<string | null>(null)
 
   const [resourceEstimation, setResourceEstimation] = useState<Resources | null>(null)
@@ -424,6 +437,7 @@ export function StartTuningWizard() {
     // Only set during a launch attempt; a stale value would upload the new file
     // into the dataset record created by a previous, failed attempt.
     createdDatasetIdRef.current = null
+    uploadedDatasetIdRef.current = null
     setSelectedConfigId(null)
     setSelectedConfig(null)
     setPendingNewConfig(null)
@@ -453,20 +467,23 @@ export function StartTuningWizard() {
         finalDatasetId = createdDatasetIdRef.current
 
         setLaunchPhase('uploading_files')
-        await uploadDataset(
-          finalDatasetId!,
-          {
-            // Keyed off the toggle, the way SettingsDatasetCreate does it. Reading
-            // intent off `validationFile` instead let a stale file silently win
-            // over an enabled split. Step 1's Next gate requires isSplitEnabled or
-            // a file, so "neither" cannot reach here.
-            trainFile: uploadedFile,
-            validationFile: isSplitEnabled ? null : validationFile,
-            validationPercentage: isSplitEnabled ? 100 - splitRatio : null,
-            columnMapping,
-          },
-          setUploadProgress
-        )
+        if (uploadedDatasetIdRef.current !== finalDatasetId) {
+          await uploadDataset(
+            finalDatasetId!,
+            {
+              // Keyed off the toggle, the way SettingsDatasetCreate does it. Reading
+              // intent off `validationFile` instead let a stale file silently win
+              // over an enabled split. Step 1's Next gate requires isSplitEnabled or
+              // a file, so "neither" cannot reach here.
+              trainFile: uploadedFile,
+              validationFile: isSplitEnabled ? null : validationFile,
+              validationPercentage: isSplitEnabled ? 100 - splitRatio : null,
+              columnMapping,
+            },
+            setUploadProgress
+          )
+          uploadedDatasetIdRef.current = finalDatasetId!
+        }
 
         // Multipart upload responds 202 ("uploading") — the server finishes
         // processing off-request, so wait for it before referencing this
@@ -562,14 +579,26 @@ export function StartTuningWizard() {
         </div>
       )}
 
+      {/* The steps are built as an array rather than written inline with a
+          `{hasRewardStep && ...}` hole. React.Children.map invokes its callback for
+          a `false` child and still advances the index, and Carbon's
+          ProgressIndicator numbers its steps by that index -- so with the reward
+          step absent, "Review & Launch" sat at index 4 while `currentIndex` was 3.
+          The highlighted step was the invisible one, the last step never read as
+          current, and clicking it called onChange(4), which `goToStep` rejects as
+          past `lastStepIndex`. Keep this list free of falsy entries. */}
       <ProgressIndicator key={hasRewardStep ? 'with-reward' : 'no-reward'} currentIndex={currentStep} spaceEqually onChange={goToStep}>
-        <ProgressStep complete={completedSteps[0]} label="Get Started" description="Choose your approach" />
-        <ProgressStep disabled={!completedSteps[0]} complete={completedSteps[1]} label="Upload Dataset" description="Upload and preview your data" />
-        <ProgressStep disabled={!completedSteps[1]} complete={completedSteps[2]} label="Configure" description="Select or create a configuration" />
-        {hasRewardStep && (
-          <ProgressStep disabled={!completedSteps[2]} complete={completedSteps[3]} label="Reward Function" description="Define your reward function" />
-        )}
-        <ProgressStep disabled={!completedSteps[hasRewardStep ? 3 : 2]} complete={completedSteps[hasRewardStep ? 4 : 3]} label="Review & Launch" description="Review and start tuning" />
+        {[
+          <ProgressStep key="get-started" complete={completedSteps[0]} label="Get Started" description="Choose your approach" />,
+          <ProgressStep key="dataset" disabled={!completedSteps[0]} complete={completedSteps[1]} label="Upload Dataset" description="Upload and preview your data" />,
+          <ProgressStep key="configure" disabled={!completedSteps[1]} complete={completedSteps[2]} label="Configure" description="Select or create a configuration" />,
+          ...(hasRewardStep
+            ? [
+                <ProgressStep key="reward" disabled={!completedSteps[2]} complete={completedSteps[3]} label="Reward Function" description="Define your reward function" />,
+              ]
+            : []),
+          <ProgressStep key="review" disabled={!completedSteps[hasRewardStep ? 3 : 2]} complete={completedSteps[hasRewardStep ? 4 : 3]} label="Review & Launch" description="Review and start tuning" />,
+        ]}
       </ProgressIndicator>
 
       <div className={styles.stepContent}>

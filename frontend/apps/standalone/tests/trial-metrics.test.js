@@ -38,6 +38,7 @@ const {
   trialColorScale,
   bestTrialId,
   toChartRows,
+  positiveRows,
   runOrigins,
   METRIC_PALETTE,
   METRIC_DE_EMPHASIS,
@@ -400,5 +401,45 @@ describe('toChartRows on the elapsed axis', () => {
       0,
       'run absent from origins'
     )
+  })
+})
+
+describe('positiveRows — the log-axis guard', () => {
+  // Carbon's LOG scale throws outright when the domain minimum is <= 0, and it
+  // takes the enclosing panel with it — there is no error boundary above these
+  // charts. HF Trainer logs `learning_rate: 0` on the final step of a
+  // linear-decay schedule, so this is an ordinary completed run, not a corrupt
+  // one. `toChartRows` deliberately keeps the point: 0 is finite, and a real
+  // `loss: 0` belongs on the linear charts.
+  it('drops the zero learning rate a decay schedule logs on its last step', () => {
+    const rows = [stepRow(SEARCH_IDS[0], 1, 0.1), stepRow(SEARCH_IDS[0], 2, 0.2)]
+    rows[1].learning_rate = 0
+    const chart = toChartRows(rows, 'global_step', (r) => r.learning_rate)
+    assert.equal(chart.length, 2, 'toChartRows keeps it — 0 is finite')
+
+    const safe = positiveRows(chart)
+    assert.equal(safe.length, 1)
+    assert.ok(
+      Math.min(...safe.map((r) => r.value)) > 0,
+      'the LOG domain minimum must be strictly positive'
+    )
+  })
+
+  it('drops a negative value as well as a zero', () => {
+    const rows = [
+      { group: 'a', key: 1, value: -1e-7 },
+      { group: 'a', key: 2, value: 0 },
+      { group: 'a', key: 3, value: 1e-6 },
+    ]
+    assert.deepEqual(positiveRows(rows), [{ group: 'a', key: 3, value: 1e-6 }])
+  })
+
+  it('leaves an all-positive series untouched', () => {
+    const chart = toChartRows(
+      [stepRow(SEARCH_IDS[0], 1, 0.1), stepRow(SEARCH_IDS[0], 2, 0.2)],
+      'global_step',
+      (r) => r.learning_rate
+    )
+    assert.deepEqual(positiveRows(chart), chart)
   })
 })
