@@ -275,8 +275,11 @@ config:
 ### Secrets as environment variables
 
 Every environment that supports secret injection reads the **same** declarative allow-list, so the
-block is portable across compute backends — place it under the matching per-cloud key (`config.k8s`,
-`config.lsf`, or `config.skypilot`):
+block's *shape* carries across compute backends — place it under the matching per-cloud key
+(`config.k8s`, `config.lsf`, or `config.skypilot`). One caveat: when `secret_name` is **omitted** the
+secret key each backend looks up is *not* identical (K8s lowercases it; LSF/SkyPilot use `env_name`
+**verbatim** — see **Delivery differs by environment** below), so a target that must run on more than
+one backend should set `secret_name` explicitly to match the space secret's actual key:
 
 ```yaml
 config:
