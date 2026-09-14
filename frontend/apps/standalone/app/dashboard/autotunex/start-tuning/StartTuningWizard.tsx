@@ -27,6 +27,7 @@ import {
   createDataset,
   estimateUsage,
   getAutotuneDatasetTypes,
+  getConfiguration,
   getConfigurations,
   getDataset,
   getDatasets,
@@ -40,7 +41,7 @@ import { getRequiredColumnsFromTypes, isModelSelectionValid, normalizeTokenizerL
 import { normalizeVerlRows } from '@granite-build/ui-core/lib/autotunex/verlNormalize'
 import { DATASET_READY_TIMEOUT_MS } from '@granite-build/ui-core/lib/autotunex/datasetReady'
 import { ALGORITHM_DETAILS, ALGORITHM_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
-import { clearDraft, saveDraft } from './wizardDraft'
+import { clearDraft, loadDraft, resolveDraft, saveDraft } from './wizardDraft'
 import { Step0GetStarted } from './steps/Step0GetStarted'
 import { Step1DatasetUpload } from './steps/Step1DatasetUpload'
 import { Step2Configure } from './steps/Step2Configure'
@@ -80,6 +81,15 @@ async function waitForDatasetReady(id: string): Promise<void> {
 
 export function StartTuningWizard() {
   const router = useRouter()
+
+  // A draft saved by a previous visit, offered rather than applied: silently
+  // restoring would be a surprise, and some of it may no longer be restorable.
+  // Read synchronously at first render because the debounced autosave below would
+  // otherwise overwrite the stored draft with this session's empty state within
+  // DRAFT_DEBOUNCE_MS, before the user could answer.
+  const [draftOffer, setDraftOffer] = useState<WizardDraft | null>(() => loadDraft())
+  const [draftNotes, setDraftNotes] = useState<string[]>([])
+  const [isResumingDraft, setIsResumingDraft] = useState(false)
 
   // Step tracking
   const [currentStep, setCurrentStep] = useState(0)
@@ -330,6 +340,62 @@ export function StartTuningWizard() {
     autotuneEnabled,
   ])
 
+  async function resumeDraft() {
+    if (!draftOffer) return
+    setIsResumingDraft(true)
+    try {
+      // A draft lives up to 24 hours, so confirm its references still resolve before
+      // restoring them; a failed lookup counts as gone. `resolveDraft` then rewinds to
+      // the step that owns anything missing, rather than letting the user walk to
+      // Review and launch against a dead id.
+      const [dataset, config] = await Promise.all([
+        draftOffer.existingDatasetId
+          ? getDataset(draftOffer.existingDatasetId).catch(() => null)
+          : Promise.resolve(null),
+        draftOffer.selectedConfigId
+          ? getConfiguration(draftOffer.selectedConfigId).catch(() => null)
+          : Promise.resolve(null),
+      ])
+      const { draft, notes } = resolveDraft(draftOffer, {
+        dataset: Boolean(dataset),
+        config: Boolean(config),
+      })
+
+      setSelectedGoal(draft.selectedGoal)
+      // Suppress the goal-change reset, which fires on Step 0 and would wipe
+      // everything else this function is about to restore.
+      prevGoalRef.current = draft.selectedGoal
+      setSelectedAlgorithm(draft.selectedAlgorithm)
+      setSelectedModel(draft.selectedModel)
+      setModelSource(draft.modelSource)
+      setAutotuneEnabled(draft.autotuneEnabled ?? true)
+      setDatasetForm((prev) => ({
+        ...prev,
+        name: draft.datasetForm.name,
+        description: draft.datasetForm.description,
+      }))
+      // `splitRatio` is a fixed const in this wizard, not state, so the draft's copy
+      // has nothing to restore into.
+      setExistingDatasetId(draft.existingDatasetId)
+      setSelectedExistingDataset(draft.existingDatasetId ? dataset : null)
+      setSelectedConfigId(draft.selectedConfigId)
+      setSelectedConfig(draft.selectedConfigId ? config : null)
+      setExperimentName(draft.experimentName)
+      setCompletedSteps(draft.completedSteps)
+      setCurrentStep(draft.currentStep)
+
+      setDraftNotes(notes)
+      setDraftOffer(null)
+    } finally {
+      setIsResumingDraft(false)
+    }
+  }
+
+  function discardDraft() {
+    clearDraft()
+    setDraftOffer(null)
+  }
+
   function goToStep(step: number) {
     if (step < 0 || step > lastStepIndex) return
     if (step <= currentStep || completedSteps[step - 1]) setCurrentStep(step)
@@ -577,6 +643,38 @@ export function StartTuningWizard() {
             })}
           </Breadcrumb>
         </div>
+      )}
+
+      {draftOffer && (
+        <div style={{ marginBottom: '1rem' }}>
+          <InlineNotification
+            kind="info"
+            lowContrast
+            hideCloseButton
+            title="Resume your previous setup?"
+            subtitle={`You left a draft on ${new Date(draftOffer.savedAt).toLocaleString()}.`}
+            style={{ marginBottom: '0.5rem' }}
+          />
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <Button size="sm" kind="tertiary" onClick={resumeDraft} disabled={isResumingDraft}>
+              {isResumingDraft ? 'Restoring…' : 'Resume'}
+            </Button>
+            <Button size="sm" kind="ghost" onClick={discardDraft} disabled={isResumingDraft}>
+              Start fresh
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {draftNotes.length > 0 && (
+        <InlineNotification
+          kind="warning"
+          lowContrast
+          title="Some of your draft could not be restored"
+          subtitle={draftNotes.join(' ')}
+          onCloseButtonClick={() => setDraftNotes([])}
+          style={{ marginBottom: '1rem' }}
+        />
       )}
 
       {/* The steps are built as an array rather than written inline with a
