@@ -205,6 +205,22 @@ export async function createDataset(payload: { name: string; description: string
   return adaptDataset(data)
 }
 
+// PUT /datasets/{id} replaces a dataset's metadata (name required, description
+// optional). Needed because the name is otherwise only ever sent at creation: when
+// an upload failed and the user corrected a typo in the name before retrying, the
+// retry reused the existing record and silently discarded the correction.
+//
+// `data_format` is left off deliberately. `createDataset` does not send it either,
+// so the server's own default is what the record already holds -- naming it here
+// would mean guessing at a value the create path never chose.
+export async function updateDataset(
+  id: string,
+  payload: { name: string; description: string }
+): Promise<Dataset> {
+  const { data } = await client.put<Record<string, unknown>>(`/datasets/${id}`, payload)
+  return adaptDataset(data)
+}
+
 export async function deleteDataset(id: string, scope: Scope = 'own'): Promise<void> {
   await client.delete(`/datasets/${id}`, { params: { scope } })
 }

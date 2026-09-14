@@ -20,7 +20,7 @@ import {
 import { MagicWand } from '@carbon/icons-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnMapping, ColumnMetadata, DatasetStatus } from '../types'
-import { createDataset, uploadDataset, getDataset, getAutotuneDatasetTypes, suggestColumnMappingAI } from '../api/autotunex'
+import { createDataset, updateDataset, uploadDataset, getDataset, getAutotuneDatasetTypes, suggestColumnMappingAI } from '../api/autotunex'
 import { DATASET_READY_TIMEOUT_MS } from '../lib/autotunex/datasetReady'
 import { processUploadedFileAsync } from '../lib/autotunex/processUploadedFile'
 import { extractColumnMetadata, getColumnsFromTypes, getRequiredColumnsFromTypes } from '../lib/autotunex/wizardUtils'
@@ -171,6 +171,14 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
         const info = await createDataset({ name: name.trim(), description: description.trim() })
         datasetId = info.id
         setCreatedId(datasetId)
+      } else {
+        // Reusing the record a previous failed attempt created. The name is
+        // otherwise only ever sent at creation -- `uploadDataset` carries files and
+        // the column mapping only -- so a typo the user corrected before retrying was
+        // silently discarded and the dataset kept the bad name. Sent unconditionally
+        // rather than diffed against what the server holds: one small PUT on a retry
+        // is cheaper than tracking that.
+        await updateDataset(datasetId, { name: name.trim(), description: description.trim() })
       }
       await uploadDataset(
         datasetId,

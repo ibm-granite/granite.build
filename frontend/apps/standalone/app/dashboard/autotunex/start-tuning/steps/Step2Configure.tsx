@@ -204,13 +204,19 @@ export function Step2Configure({
   async function enterEditMode() {
     if (!selectedConfig) return
     if (isCreatingConfig) cancelCreateMode()
+    // Same guard as `selectConfig`: this await can land after the user has picked a
+    // different config, and `setSelectedConfig(fullConfig)` would then overwrite the
+    // new selection with the old one's detail.
+    const configId = selectedConfig.id
+    resolvingConfigIdRef.current = configId
     setIsEditingConfig(true)
     setEditSaveError('')
     setEditConfigName(selectedConfig.name)
     setIsLoadingEditConfig(true)
 
     try {
-      const fullConfig = await getConfiguration(selectedConfig.id)
+      const fullConfig = await getConfiguration(configId)
+      if (resolvingConfigIdRef.current !== configId) return
       setSelectedConfig(fullConfig)
       setEditableConfig({
         name: fullConfig.name,
@@ -223,6 +229,7 @@ export function Step2Configure({
         ...(fullConfig.config_data ?? ({} as ConfigData)),
       })
     } catch {
+      if (resolvingConfigIdRef.current !== configId) return
       setEditSaveError('Failed to load configuration details for editing.')
     } finally {
       setIsLoadingEditConfig(false)
