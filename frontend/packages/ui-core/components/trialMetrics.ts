@@ -181,45 +181,78 @@ export interface ChartRow {
   value: number
 }
 
-export type MetricXKey = 'global_step' | 'epoch'
+export type MetricXKey = 'global_step' | 'epoch' | 'elapsed'
+
+/** Which run a row belongs to. A row with no trial id is the job's single run. */
+function groupOf(row: MetricPoint): string {
+  return row.trial_id ?? 'run'
+}
+
+const MS_PER_MINUTE = 60_000
+
+/**
+ * Run id -> the wall-clock ms of its earliest row, for the `elapsed` x axis.
+ *
+ * Call this on a whole phase's rows, never on one split series. The origin has
+ * to be shared across a run's series: `splitMetricRows` hands out train steps
+ * and evals separately, and an origin taken per series would re-anchor eval loss
+ * at zero — drawing the first eval, which lands at the end of an epoch, as if it
+ * were logged at the same moment as the first training step.
+ *
+ * Elapsed is measured per run rather than against one job-wide clock so that
+ * every curve starts at zero and the runs stay comparable. Search trials execute
+ * `max_concurrent_trials` at a time and the final run follows them, so on an
+ * absolute clock the phases would sit side by side in disjoint time windows
+ * instead of overlapping.
+ */
+export function runOrigins(rows: MetricPoint[]): Map<string, number> {
+  const origins = new Map<string, number>()
+  for (const row of rows) {
+    if (!row.created_at) continue
+    const at = Date.parse(row.created_at)
+    if (!Number.isFinite(at)) continue
+    const group = groupOf(row)
+    const first = origins.get(group)
+    if (first === undefined || at < first) origins.set(group, at)
+  }
+  return origins
+}
+
+/** A row's x value, in minutes for `elapsed`; undefined if it has no place on the axis. */
+function xValueOf(
+  row: MetricPoint,
+  xKey: MetricXKey,
+  origins?: Map<string, number>
+): number | null | undefined {
+  if (xKey !== 'elapsed') return row[xKey]
+  const origin = origins?.get(groupOf(row))
+  if (origin === undefined || !row.created_at) return undefined
+  return (Date.parse(row.created_at) - origin) / MS_PER_MINUTE
+}
 
 /**
  * Reshapes metric rows into Carbon's `{group, key, value}` rows, dropping any
  * point whose x or y is absent. Rows arrive ordered by `id`, which is ascending
  * by write time; sorting by x keeps a line monotonic even when two runs
  * interleave (`max_concurrent_trials > 1`).
+ *
+ * @param origins needed only for `xKey: 'elapsed'` — see `runOrigins`. A run
+ *   missing from the map has its rows dropped rather than plotted against some
+ *   other run's zero.
  */
 export function toChartRows(
   rows: MetricPoint[],
   xKey: MetricXKey,
-  valueOf: (row: MetricPoint) => number | null | undefined
+  valueOf: (row: MetricPoint) => number | null | undefined,
+  origins?: Map<string, number>
 ): ChartRow[] {
   const out: ChartRow[] = []
   for (const row of rows) {
-    const key = row[xKey]
+    const key = xValueOf(row, xKey, origins)
     const value = valueOf(row)
     if (typeof key !== 'number' || typeof value !== 'number') continue
     if (!Number.isFinite(key) || !Number.isFinite(value)) continue
-    out.push({ group: row.trial_id ?? 'run', key, value })
+    out.push({ group: groupOf(row), key, value })
   }
   return out.sort((a, b) => (a.group === b.group ? a.key - b.key : a.group < b.group ? -1 : 1))
-}
-
-/**
- * Exponential moving average within each group, in x order.
- *
- * Per-step loss is dominated by batch noise — on the reference job it swings
- * across 1.5 while the runs' reported losses sit inside 0.08 of each other — so
- * several raw lines on one plot are a single indistinguishable thicket. The
- * charts smooth by default and keep a Raw toggle; tooltips read the raw series,
- * so no reader is shown a smoothed number as if it were logged.
- */
-export function emaChartRows(rows: ChartRow[], alpha = 0.34): ChartRow[] {
-  const previous = new Map<string, number>()
-  return rows.map((row) => {
-    const last = previous.get(row.group)
-    const value = last === undefined ? row.value : alpha * row.value + (1 - alpha) * last
-    previous.set(row.group, value)
-    return { ...row, value }
-  })
 }
