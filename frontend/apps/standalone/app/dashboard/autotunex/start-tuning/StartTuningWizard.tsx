@@ -90,6 +90,12 @@ export function StartTuningWizard() {
   const [draftOffer, setDraftOffer] = useState<WizardDraft | null>(() => loadDraft())
   const [draftNotes, setDraftNotes] = useState<string[]>([])
   const [isResumingDraft, setIsResumingDraft] = useState(false)
+  // A restore jumps straight to the saved step, so it skips `handleNext` and with it
+  // `prepareReviewStep` -- the review step came up with no resource estimate. This
+  // cannot just be called at the end of `resumeDraft`, because prepareReviewStep
+  // reads the very state those setState calls are still queuing; the effect below
+  // runs it once React has applied them.
+  const [prepareReviewAfterRestore, setPrepareReviewAfterRestore] = useState(false)
 
   // Step tracking
   const [currentStep, setCurrentStep] = useState(0)
@@ -386,10 +392,18 @@ export function StartTuningWizard() {
 
       setDraftNotes(notes)
       setDraftOffer(null)
+      setPrepareReviewAfterRestore(true)
     } finally {
       setIsResumingDraft(false)
     }
   }
+
+  useEffect(() => {
+    if (!prepareReviewAfterRestore) return
+    setPrepareReviewAfterRestore(false)
+    if (currentStep === lastStepIndex) prepareReviewStep()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prepareReviewAfterRestore, currentStep, lastStepIndex])
 
   function discardDraft() {
     clearDraft()
