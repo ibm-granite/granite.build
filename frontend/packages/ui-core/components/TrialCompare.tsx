@@ -4,6 +4,7 @@ import { useId, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   Button,
+  IconButton,
   StructuredListWrapper,
   StructuredListHead,
   StructuredListBody,
@@ -11,7 +12,7 @@ import {
   StructuredListCell,
   Tag,
 } from '@carbon/react'
-import { ChevronDown, ChevronRight } from '@carbon/icons-react'
+import { ChevronDown, ChevronRight, Close } from '@carbon/icons-react'
 import type { Trial } from '../types'
 import { getOddOnesOut, groupCompareKeys, labelForCompareKey } from './trialCompareGrouping'
 
@@ -155,9 +156,11 @@ function plural(count: number, noun: string): string {
 
 interface Props {
   trials: Trial[]
+  /** Drop one trial from the comparison. */
+  onRemove: (trialId: string) => void
 }
 
-export function TrialCompare({ trials }: Props) {
+export function TrialCompare({ trials, onRemove }: Props) {
   // Shared hyperparameters are collapsed by default so the parameters that
   // actually varied occupy the visible page.
   const [sharedExpanded, setSharedExpanded] = useState(false)
@@ -192,6 +195,15 @@ export function TrialCompare({ trials }: Props) {
   const runnerUpLoss = sortedTrials.length > 1 ? lossOf(sortedTrials[1]) : null
   const showBestTag =
     sortedTrials.length > 1 && bestLoss !== null && (runnerUpLoss === null || bestLoss < runnerUpLoss)
+
+  // A comparison needs two columns to be a comparison, so removal stops at two.
+  // The reason rides in the caption below rather than in a tooltip on the
+  // disabled buttons: Carbon sets `pointer-events: none` on a disabled
+  // icon-only button (_button.scss, the #13815 workaround) and binds the
+  // tooltip's mouseenter to the button element itself, so a disabled
+  // IconButton's tooltip never opens — nor can a disabled button be focused
+  // into, which would leave a keyboard reader with no explanation at all.
+  const atRemovalFloor = rows.length <= 2
 
   // Fixed label column + data columns split evenly across the available width.
   // Carbon's default auto table layout leaves large gaps when cell content is
@@ -239,7 +251,18 @@ export function TrialCompare({ trials }: Props) {
             <StructuredListCell head style={labelCellStyle} />
             {rows.map((row, i) => (
               <StructuredListCell key={row.id} head style={dataCellStyle}>
-                {row.id}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                  <span>{row.id}</span>
+                  <IconButton
+                    kind="ghost"
+                    size="sm"
+                    label={`Remove ${row.id} from comparison`}
+                    disabled={atRemovalFloor}
+                    onClick={() => onRemove(String(row.id))}
+                  >
+                    <Close />
+                  </IconButton>
+                </div>
                 {/* Own block below the id, so a long tag never squeezes the id's
                     column or wraps beside it. Carbon's .cds--tag carries its own
                     margin; the wrapper owns the spacing instead. */}
@@ -255,6 +278,12 @@ export function TrialCompare({ trials }: Props) {
           </StructuredListRow>
         </StructuredListHead>
       </StructuredListWrapper>
+
+      {atRemovalFloor && (
+        <p style={{ ...HEADING_SUBTITLE, padding: '0.25rem 0 0' }}>
+          A comparison needs two trials — use Back to Hyperparameters to pick a different pair.
+        </p>
+      )}
 
       {resultKeys.length > 0 && (
         <>
