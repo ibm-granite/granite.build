@@ -92,7 +92,12 @@ export function ConfigurationsTable() {
   })
   const isSpaceAdmin = spaces.some((s) => s.is_admin)
 
-  const { data, isLoading } = useQuery({
+  // `error` is surfaced rather than swallowed: without it a 500 or a dropped
+  // connection rendered a populated-looking table with 0 rows and "0 items",
+  // indistinguishable from "you have none". It also matters for the `onSettled`
+  // refetch after a delete -- `placeholderData` keeps the previous page on screen,
+  // so a failed refetch would otherwise leave deleted rows showing silently.
+  const { data, isLoading, error } = useQuery({
     queryKey: ['autotunex', 'configurations', page, pageSize, q, scope],
     queryFn: () => getConfigurations({ page, pageSize, q: q || undefined, scope }),
     placeholderData: (prev) => prev,
@@ -155,6 +160,14 @@ export function ConfigurationsTable() {
 
   return (
     <>
+      {error && (
+        <InlineNotification
+          kind="error"
+          title="Failed to load configurations"
+          subtitle={String(error)}
+          style={{ marginBottom: '1rem' }}
+        />
+      )}
       <DataTable rows={rows} headers={HEADERS} isSortable>
         {({ rows: tableRows, headers, getTableProps, getHeaderProps, getRowProps, getSelectionProps, getBatchActionProps }) => {
           const batchActionProps = getBatchActionProps()

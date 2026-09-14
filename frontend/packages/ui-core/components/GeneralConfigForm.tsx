@@ -56,7 +56,19 @@ export function GeneralConfigForm({ config, onConfigChange }: GeneralConfigFormP
                 ...prev.tune_config,
                 max_concurrent_trials: {
                   ...prev.tune_config.max_concurrent_trials,
-                  default: maxConcurrentTrialsCap(prev.training_config.num_gpus_per_trial.max_val, num),
+                  // Clamp to the new ceiling rather than assign it. Raising GPUs per
+                  // trial lowers how many can run at once, but a deliberately smaller
+                  // choice below that ceiling has to stand -- assigning the cap
+                  // silently raised a chosen 2 to 4 and submitted that. The Math.max
+                  // mirrors maxConcurrentTrialsCap's own floor, so a field cleared to
+                  // 0 cannot survive into a saved config.
+                  default: Math.max(
+                    1,
+                    Math.min(
+                      prev.tune_config.max_concurrent_trials.default,
+                      maxConcurrentTrialsCap(prev.training_config.num_gpus_per_trial.max_val, num)
+                    )
+                  ),
                 },
               },
             }))
