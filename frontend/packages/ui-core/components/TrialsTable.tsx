@@ -43,6 +43,7 @@ import { TrialMetricsPanel } from './TrialMetricsPanel'
 import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, bestTrialId, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import styles from './TrialsTable.module.scss'
+import { toRadarData } from './trialsRadar'
 import type { JobDetail, Trial } from '../types'
 
 const HEADERS = [
@@ -69,75 +70,6 @@ const ACTIVE_STATUSES = new Set(['running', 'pending'])
 // more trials than this still de-emphasises however few are ticked. Capping the
 // selection does not make those runs distinctly coloured.
 const MAX_SELECTED = EMPHASIS_THRESHOLD
-
-function toFeatureLabel(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())
-}
-
-// Carbon's RadarChart requires a complete grid: every group (trial) must carry a
-// value for every axis (feature). If any (group, feature) pair is missing — e.g.
-// one trial reports `loss` and another doesn't — the chart rejects with the name
-// of the offending axis (that was the "Uncaught (in promise) Loss" error).
-//
-// So we take the *union* of metric names across all trials, then emit one entry
-// per trial per axis, defaulting a missing metric to 0.
-//
-// Each axis runs 0..1 over `boundsFrom` rather than over the plotted trials. One
-// trial has no range of its own — min === max on every axis — so scaling it
-// against itself would pin the whole blob to the centre point. Run-wide bounds
-// also hold a blob's shape still as the selection grows, instead of reshaping
-// every ticked trial each time another row is ticked.
-function toRadarData(
-  trials: Trial[],
-  boundsFrom: Trial[] = trials
-): { product: string; feature: string; score: number }[] {
-  const withMetrics = trials.filter((t) => t.metrics && Object.keys(t.metrics).length > 0)
-  if (withMetrics.length === 0) return []
-
-  const metricNames = Array.from(
-    new Set(withMetrics.flatMap((t) => Object.keys(t.metrics)))
-  )
-
-  // Plotted trials join the bounds set (deduped by id) so a plotted value can
-  // never land outside its own axis, however the caller picks `boundsFrom`.
-  const scaleTrials = Array.from(
-    new Map(
-      [...boundsFrom, ...withMetrics]
-        .filter((t) => t.metrics && Object.keys(t.metrics).length > 0)
-        .map((t) => [t.id, t] as const)
-    ).values()
-  )
-
-  const bounds: Record<string, { min: number; max: number }> = {}
-  for (const name of metricNames) {
-    const values = scaleTrials
-      .map((t) => t.metrics[name])
-      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
-    bounds[name] = {
-      min: values.length ? Math.min(...values) : 0,
-      max: values.length ? Math.max(...values) : 0,
-    }
-  }
-
-  const data: { product: string; feature: string; score: number }[] = []
-  for (const trial of withMetrics) {
-    for (const name of metricNames) {
-      const raw = trial.metrics[name]
-      const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : bounds[name].min
-      const { min, max } = bounds[name]
-      // Every trial in the bounds set reporting one value leaves nothing to
-      // rank on that axis. Mid-radius reads as "no spread here"; 0 would read as
-      // worst-in-run, which is a claim the data does not make.
-      const normalized = min === max ? 0.5 : (value - min) / (max - min)
-      data.push({
-        product: trial.id,
-        feature: toFeatureLabel(name),
-        score: normalized,
-      })
-    }
-  }
-  return data
-}
 
 interface Props {
   job: JobDetail
