@@ -127,11 +127,32 @@ export function rowsForTrials(rows: MetricPoint[], trialIds: string[]): MetricPo
 // and green-60 are too dark against Carbon's g100 layer, so they step up to
 // purple-50 and green-50.
 //
+// Slots 6-10 come from Carbon's 14-variant categorical pairing (option 1), the
+// only set Carbon publishes above five — its pairings run 1..5 and then jump
+// straight to 14. Candidates were filtered on 3:1 contrast against the layer and
+// a chroma floor of 25, which independently rejected the same #005d5d the note
+// above names, plus #012749 on light and #fff1f1 / #bae6ff on dark; the rest were
+// chosen to maximise the worst-case pairwise ΔE across normal, deuteranopia and
+// protanopia vision.
+//
+// APPEND ONLY — never reorder. The first five slots are load-bearing twice over:
+// reordering repaints every trial a reader has already learned, and slot 2 of
+// g100 is asserted literally in trial-metrics.test.js.
+//
+// Measured worst case (Machado severity 1.0 + ΔE76 — a different model from the
+// 6.3 quoted above, so compare only within this note): light 23.9 at five slots,
+// 13.3 at ten. Dark is 8.5 at both, because the pair that sets it is already in
+// the first five — #1192e8 against #a56eff under deuteranopia, a consequence of
+// the purple-70 → purple-50 step-up above. Widening to ten does not move that
+// number, and fixing it would mean repainting an existing dark slot.
+//
 // Keys match `useChartsTheme()` in `@/hooks/useTheme`, which is what Carbon's
 // `theme` option takes.
 export const METRIC_PALETTE: Record<ChartsTheme, string[]> = {
-  white: ['#1192e8', '#b28600', '#6929c4', '#198038', '#ee538b'],
-  g100: ['#1192e8', '#b28600', '#a56eff', '#24a148', '#ee538b'],
+  white: ['#1192e8', '#b28600', '#6929c4', '#198038', '#ee538b',
+          '#9f1853', '#fa4d56', '#520408', '#009d9a', '#8a3800'],
+  g100: ['#1192e8', '#b28600', '#a56eff', '#24a148', '#ee538b',
+         '#8a3ffc', '#33b1ff', '#007d79', '#ff7eb6', '#fa4d56'],
 }
 
 /** Carbon grey-40 / grey-60 — the "context, not subject" stroke for emphasis. */
@@ -141,12 +162,17 @@ export const METRIC_DE_EMPHASIS: Record<ChartsTheme, string> = {
 }
 
 /**
- * Past this many runs, categorical colour stops telling series apart and starts
- * burying the winner, so the charts switch to emphasis instead of reaching for
- * more hues. A generated 6th+ hue is indistinguishable from an existing one
- * under colour-vision deficiency.
+ * Past this many runs the charts switch to emphasis — best run in the first
+ * palette slot, every other run in the de-emphasis grey — rather than reaching
+ * for more hues. Ten is where `METRIC_PALETTE` runs out: past it a hue would have
+ * to be invented rather than taken from Carbon, and an invented hue is
+ * indistinguishable from an existing one under colour-vision deficiency.
+ *
+ * This counts every run in the job, not the selected subset. Colour follows the
+ * run, so `trialColorScale` is always handed the full list — an 11-trial job is
+ * in emphasis form even when the reader has ticked only two of them.
  */
-export const EMPHASIS_THRESHOLD = 5
+export const EMPHASIS_THRESHOLD = 10
 
 export type ChartsTheme = 'white' | 'g100'
 
