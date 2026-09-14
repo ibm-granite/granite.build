@@ -261,9 +261,22 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
   // The gates are exact complements, which is what makes the second one a
   // fallback as well as a gate: a job with no final run — still searching, or a
   // plain tuning job — keeps drawing its search curves instead of going blank.
+  //
+  // Which phase exists is a question about the phase's own rows, never about the
+  // ones a chart happens to plot: `finalRows` is already filtered to the current
+  // x axis and `epoch` — the default axis — is nullable, so keying these off it
+  // would let a final run that logged only `global_step` read as "no final run",
+  // put the search curves on screen as the whole story, and make the axis
+  // switcher swap which phase the tab shows.
   const hasSelection = selectedIds.length > 0
-  const showFinalRun = !hasSelection && finalRows.length > 0
-  const showSearch = hasSelection || finalRows.length === 0
+  const hasFinalRun = phases.final.length > 0
+  const showFinalRun = !hasSelection && hasFinalRun
+  const showSearch = hasSelection || !hasFinalRun
+
+  // Whether the search phase has anything to draw *on this axis*. Eval loss
+  // counts on its own: a selection with eval rows but no train-step rows has a
+  // curve to show, and gating on training loss alone suppressed it.
+  const searchPlottable = searchLoss.length > 0 || searchEval.length > 0
 
   return (
     <div style={{ marginTop: '2rem' }}>
@@ -302,7 +315,7 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
                 checkboxes now, so say so — otherwise nothing on screen suggests
                 they exist. Gated on there being any, so a job without search
                 trials does not point at a table that has no rows to tick. */}
-            {searchLoss.length > 0 &&
+            {phases.search.length > 0 &&
               ' Select trials in the table above to see their search curves instead.'}
           </p>
           {finalSummary && (
@@ -370,7 +383,7 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
         </section>
       )}
 
-      {showSearch && searchLoss.length > 0 && (
+      {showSearch && searchPlottable && (
         <section>
           <h5 style={{ marginTop: '2rem' }}>Search trials</h5>
           {searchCaption && (
@@ -436,12 +449,25 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
 
       {/* Mirrors the search section's own gate exactly, so a selection with
           nothing to draw says so instead of leaving the page blank — the final
-          run is off screen for as long as any trial is ticked. */}
-      {hasSelection && searchLoss.length === 0 && (
+          run is off screen for as long as any trial is ticked.
+          Two different reasons the page would be blank, and they need different
+          sentences: rows that have not arrived yet will, rows that carry no value
+          on the current axis never will however long the reader waits. Telling
+          the second reader to expect curves sends them to watch an axis that has
+          nothing to say. */}
+      {hasSelection && !searchPlottable && (
         <InlineNotification
           kind="info"
-          title="No step metrics for this selection yet"
-          subtitle="Curves appear here as the selected trials report them. Clear the selection to see the final run."
+          title={
+            searchRows.length === 0
+              ? 'No step metrics for this selection yet'
+              : `Nothing to plot on the ${xTitle} axis`
+          }
+          subtitle={
+            searchRows.length === 0
+              ? 'Curves appear here as the selected trials report them. Clear the selection to see the final run.'
+              : `The selected trials logged steps, but none of them carry a ${xTitle.toLowerCase()} value. Try another x axis, or clear the selection to see the final run.`
+          }
           lowContrast
           hideCloseButton
           style={{ marginTop: '2rem' }}
