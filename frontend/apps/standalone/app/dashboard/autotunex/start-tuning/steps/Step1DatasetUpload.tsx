@@ -287,10 +287,18 @@ export function Step1DatasetUpload({
     setValidationRecordCount(0)
   }, [isSplitEnabled, validationFile])
 
-  // Restore an existing dataset's details on remount (e.g. navigating back to this step)
+  // Restore an existing dataset's details on remount (e.g. navigating back to this
+  // step), and after a draft restore, which can only carry the id.
+  //
+  // Both the `preview: true` and the `parsedData` check are load-bearing. The old
+  // version fetched without a preview and bailed as soon as `selectedExistingDataset`
+  // was set, so a restored draft showed an empty preview panel, "0 records" on the
+  // file tile, and an unknown format. Navigating back is unaffected: `parsedData`
+  // lives in the wizard, so it is already populated and this does nothing.
   useEffect(() => {
-    if (!existingDatasetId || selectedExistingDataset) return
-    getDataset(existingDatasetId).then(setSelectedExistingDataset).catch(() => {})
+    if (!existingDatasetId) return
+    if (selectedExistingDataset && parsedData.length > 0) return
+    loadExistingDataset(existingDatasetId, { suggestAlgorithm: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existingDatasetId])
 
@@ -451,45 +459,58 @@ export function Step1DatasetUpload({
       return
     }
 
-    setIsProcessing(true)
-    setError('')
     onDatasetChanged()
+    await loadExistingDataset(datasetId, { suggestAlgorithm: true })
+  }
 
-    try {
-      const dataset = await getDataset(datasetId, { preview: true, previewRows: 50 })
-      setSelectedExistingDataset(dataset)
-      setExistingDatasetId(dataset.id)
-      setTotalRecords((dataset.train_records || 0) + (dataset.validation_records || 0))
-      setDatasetForm(() => ({ name: dataset.name, description: dataset.description, train_file: null, validation_file: null }))
+  // Applies a fetched dataset -- preview included -- to this step's state.
+  //
+  // `suggestAlgorithm` is for an explicit pick only, where the columns are new
+  // information. On a rehydrate it would overwrite an algorithm the user has already
+  // chosen, including one just restored from a draft.
+  function applyExistingDataset(dataset: Dataset, opts: { suggestAlgorithm: boolean }) {
+    setSelectedExistingDataset(dataset)
+    setExistingDatasetId(dataset.id)
+    setTotalRecords((dataset.train_records || 0) + (dataset.validation_records || 0))
+    setDatasetForm(() => ({ name: dataset.name, description: dataset.description, train_file: null, validation_file: null }))
 
-      const trainPreview = dataset.preview?.train ?? []
-      if (trainPreview.length > 0) {
-        setParsedData(trainPreview)
-        const columns = Object.keys(trainPreview[0] || {})
-        setColumnMetadata(extractColumnMetadata(trainPreview))
-        setDetectedFormat(detectDatasetFormat(columns))
+    const trainPreview = dataset.preview?.train ?? []
+    if (trainPreview.length > 0) {
+      setParsedData(trainPreview)
+      const columns = Object.keys(trainPreview[0] || {})
+      setColumnMetadata(extractColumnMetadata(trainPreview))
+      setDetectedFormat(detectDatasetFormat(columns))
+      if (opts.suggestAlgorithm) {
         const suggestedAlgo = suggestAlgorithm(columns)
         const suggestedDetail = ALGORITHM_DETAILS.find((a) => a.id === suggestedAlgo)
         if (!selectedGoal || (suggestedDetail && suggestedDetail.category === selectedGoal)) {
           setSelectedAlgorithm(suggestedAlgo)
         }
-      } else {
-        setParsedData([])
-        setColumnMetadata([])
-        setDetectedFormat('unknown')
       }
+    } else {
+      setParsedData([])
+      setColumnMetadata([])
+      setDetectedFormat('unknown')
+    }
 
-      const validationPreview = dataset.preview?.validation ?? []
-      if (validationPreview.length > 0) {
-        const result = buildPreviewData(validationPreview)
-        setValPreviewHeaders(result.headers)
-        setValPreviewRows(result.rows)
-        setValidationRecordCount(dataset.validation_records || validationPreview.length)
-      } else {
-        setValPreviewRows([])
-        setValPreviewHeaders([])
-        setValidationRecordCount(0)
-      }
+    const validationPreview = dataset.preview?.validation ?? []
+    if (validationPreview.length > 0) {
+      const result = buildPreviewData(validationPreview)
+      setValPreviewHeaders(result.headers)
+      setValPreviewRows(result.rows)
+      setValidationRecordCount(dataset.validation_records || validationPreview.length)
+    } else {
+      setValPreviewRows([])
+      setValPreviewHeaders([])
+      setValidationRecordCount(0)
+    }
+  }
+
+  async function loadExistingDataset(datasetId: string, opts: { suggestAlgorithm: boolean }) {
+    setIsProcessing(true)
+    setError('')
+    try {
+      applyExistingDataset(await getDataset(datasetId, { preview: true, previewRows: 50 }), opts)
     } catch (err: any) {
       setError(err.message || 'Failed to load dataset')
     } finally {
