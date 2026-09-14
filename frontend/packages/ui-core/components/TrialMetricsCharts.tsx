@@ -20,6 +20,7 @@ import styles from './TrialMetricsCharts.module.scss'
 import {
   METRIC_PALETTE,
   derivePhases,
+  rowsForTrials,
   runOrigins,
   splitMetricRows,
   toChartRows,
@@ -101,20 +102,24 @@ interface Props {
   trialsLoaded: boolean
   /** Run id → colour, built once by the caller so both views agree. */
   colorScale: Record<string, string>
+  /** Trials ticked in the table. Empty means "draw the final run instead". */
+  selectedIds: string[]
   scope: Scope
 }
 
 /**
  * Per-step training curves for a tuning job, below the trials table.
  *
- * The job's two phases are drawn as separate blocks and never share a y-scale.
+ * One phase is on screen at a time, and the trials table's selection picks which:
+ * nothing ticked draws the final run, ticking trials draws those trials' search
+ * curves. The two never share a chart, a y-scale, or the screen.
  * The HPO search trials each saw a fraction of the data for a few epochs; the
  * final run trained the winning config once over everything. Side by side on one
  * axis the final run's long descent next to the trials' short flat stubs reads as
  * a dramatic win, when the real difference is how much data each one saw. See
  * `derivePhases`.
  */
-export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scope }: Props) {
+export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, selectedIds, scope }: Props) {
   const theme = useChartsTheme()
   const [xKey, setXKey] = useState<MetricXKey>('epoch')
 
@@ -132,14 +137,24 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
 
   const trialIds = useMemo(() => trials.map((t) => t.id), [trials])
   const phases = useMemo(() => derivePhases(rows, trialIds, trialsLoaded), [rows, trialIds, trialsLoaded])
-  const search = useMemo(() => splitMetricRows(phases.search), [phases.search])
+
+  // A selection narrows the search phase to the ticked trials. With nothing
+  // ticked these charts are off screen entirely (see `showSearch`), so the
+  // unfiltered rows are only ever what the no-final-run fallback draws.
+  const searchRows = useMemo(
+    () => (selectedIds.length > 0 ? rowsForTrials(phases.search, selectedIds) : phases.search),
+    [phases.search, selectedIds]
+  )
+  const search = useMemo(() => splitMetricRows(searchRows), [searchRows])
   const final = useMemo(() => splitMetricRows(phases.final), [phases.final])
 
   const xTitle = X_TITLES[xKey]
 
   // Origins for the `elapsed` axis, taken from each phase's whole row set rather
-  // than from the split series a chart happens to draw — see `runOrigins`.
-  const searchOrigins = useMemo(() => runOrigins(phases.search), [phases.search])
+  // than from the split series a chart happens to draw — see `runOrigins`. A set
+  // narrowed to a selection is still a whole row set: `rowsForTrials` drops whole
+  // runs and leaves the survivors' rows intact, so their origins do not move.
+  const searchOrigins = useMemo(() => runOrigins(searchRows), [searchRows])
   const finalOrigins = useMemo(() => runOrigins(phases.final), [phases.final])
 
   const searchLoss = useMemo(
@@ -237,6 +252,19 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
 
   const sharedSpec = { theme, colorScale, xTitle, height: '260px' } as const
 
+  // One phase at a time. With nothing ticked the final run answers the question a
+  // reader arrives with — how did the winning config do — and the search trials,
+  // which are not comparable with it, stay out of the way. Ticking trials swaps
+  // the final run out for those trials' curves rather than adding to it, so the
+  // two are never on screen together to be read as peers.
+  //
+  // The gates are exact complements, which is what makes the second one a
+  // fallback as well as a gate: a job with no final run — still searching, or a
+  // plain tuning job — keeps drawing its search curves instead of going blank.
+  const hasSelection = selectedIds.length > 0
+  const showFinalRun = !hasSelection && finalRows.length > 0
+  const showSearch = hasSelection || finalRows.length === 0
+
   return (
     <div style={{ marginTop: '2rem' }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'flex-end', marginBottom: '0.5rem' }}>
@@ -265,11 +293,17 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
         </div>
       </div>
 
-      {finalRows.length > 0 && (
+      {showFinalRun && (
         <section>
           <h5 style={{ marginTop: '1rem' }}>Final run</h5>
           <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.75rem', margin: '0.25rem 0 0.75rem' }}>
             The winning configuration, trained once{finalCaption ? ` on the ${finalCaption}` : ''}.
+            {/* The search curves are only reachable through the table's
+                checkboxes now, so say so — otherwise nothing on screen suggests
+                they exist. Gated on there being any, so a job without search
+                trials does not point at a table that has no rows to tick. */}
+            {searchLoss.length > 0 &&
+              ' Select trials in the table above to see their search curves instead.'}
           </p>
           {finalSummary && (
             <div
@@ -336,12 +370,12 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
         </section>
       )}
 
-      {searchLoss.length > 0 && (
+      {showSearch && searchLoss.length > 0 && (
         <section>
           <h5 style={{ marginTop: '2rem' }}>Search trials</h5>
           {searchCaption && (
             <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.75rem', margin: '0.25rem 0 0' }}>
-              {searchCaption} — not comparable with the final run above.
+              {searchCaption} — not comparable with the final run.
             </p>
           )}
           {/* Train and eval loss side by side. They stay two charts on two
@@ -398,6 +432,20 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
             </Accordion>
           </div>
         </section>
+      )}
+
+      {/* Mirrors the search section's own gate exactly, so a selection with
+          nothing to draw says so instead of leaving the page blank — the final
+          run is off screen for as long as any trial is ticked. */}
+      {hasSelection && searchLoss.length === 0 && (
+        <InlineNotification
+          kind="info"
+          title="No step metrics for this selection yet"
+          subtitle="Curves appear here as the selected trials report them. Clear the selection to see the final run."
+          lowContrast
+          hideCloseButton
+          style={{ marginTop: '2rem' }}
+        />
       )}
     </div>
   )

@@ -1,6 +1,7 @@
 'use client'
 
 import { Fragment, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
 import {
   DataTable,
   Table,
@@ -176,6 +177,7 @@ export function TrialsTable({ job }: Props) {
           trials={trials}
           trialsLoaded={!isLoading && !isError}
           colorScale={colorScale}
+          selectedIds={selectedIds}
           scope={scope}
         />
       </div>
@@ -388,7 +390,31 @@ export function TrialsTable({ job }: Props) {
                   const trial = trialsById.get(row.id)
                   return (
                     <Fragment key={row.id}>
-                      <TableExpandRow {...rowProps}>
+                      <TableExpandRow
+                        {...rowProps}
+                        // Tint the ticked checkbox to match this trial's line in
+                        // the charts below. It rides on the <tr> because
+                        // TableSelectRow renders the checkbox cell itself and
+                        // forwards neither style nor arbitrary props — only a
+                        // single className, which cannot carry a per-trial value.
+                        // Nothing else in a row reads --cds-icon-primary: the
+                        // expand chevron is filled from --cds-layer-selected-inverse
+                        // and the data cells are text, and the expanded panel is a
+                        // sibling <tr>, not a child. The checkmark stays
+                        // --cds-icon-inverse, which clears 3:1 on every palette hue.
+                        //
+                        // Only while selected: Carbon draws the *unchecked* box's
+                        // border from the same token, so applying this
+                        // unconditionally would tint every empty checkbox too.
+                        // Keyed off the mirror rather than Carbon's own checked
+                        // state because the mirror is what the charts draw, and
+                        // matching the charts is the whole point.
+                        style={
+                          selectedIds.includes(row.id)
+                            ? ({ '--cds-icon-primary': colorScale[row.id] } as CSSProperties)
+                            : undefined
+                        }
+                      >
                         <TableSelectRow
                           {...selectionProps}
                           onSelect={(e) => {
@@ -465,6 +491,7 @@ export function TrialsTable({ job }: Props) {
         trials={trials}
         trialsLoaded={!isLoading && !isError}
         colorScale={colorScale}
+        selectedIds={selectedIds}
         scope={scope}
       />
     </div>

@@ -99,6 +99,27 @@ export function derivePhases(
   return { search, final, finalTrialIds }
 }
 
+/**
+ * The rows belonging to the given runs — for drawing a selection rather than a
+ * whole phase.
+ *
+ * A row with no `trial_id` is dropped. It belongs to the job's single unnamed run
+ * (`groupOf` files it under `run`), which has no row in the trials table and so
+ * can never be one of the ids passed here; keeping it would draw a curve the
+ * reader did not ask for beside the ones they did.
+ *
+ * An empty `trialIds` returns nothing rather than everything: "show them all" is
+ * the caller's decision, not a special case hidden in here.
+ *
+ * Safe to hand the result to `runOrigins`. This drops whole runs and leaves the
+ * survivors' rows untouched, so each surviving run's earliest row — its origin on
+ * the `elapsed` axis — is exactly what it was before the filter.
+ */
+export function rowsForTrials(rows: MetricPoint[], trialIds: string[]): MetricPoint[] {
+  const wanted = new Set(trialIds)
+  return rows.filter((row) => row.trial_id != null && wanted.has(row.trial_id))
+}
+
 // Carbon's own categorical steps, reordered until they passed colour-vision
 // validation — Carbon's default order fails twice: teal-70 (#005d5d) drops below
 // the chroma floor and reads grey, and magenta-70 next to it separates by only
