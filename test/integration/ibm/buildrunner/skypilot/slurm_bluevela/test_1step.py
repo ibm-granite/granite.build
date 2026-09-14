@@ -8,8 +8,9 @@
 
 """Bare-host command-step target on BlueVela SLURM (via Skypilot).
 
-Runs a single `command` step against the sky-slurm-bluevela environment
-(space://environments/skypilot/slurm/ibm-bluevela), which reaches BlueVela's
+Runs a single `command` step against the BlueVela SLURM environment
+(space://environments/skypilot/slurm/bluevela, provided by the remote gb-test
+space — see the naming note in docs/environments/skypilot-slurm.md), which reaches BlueVela's
 SLURM login node (login1) over SSH and submits to the `gpu-mid` partition (set
 via the environment's `zone`). The command runs DIRECTLY on the allocated
 compute node — no `command_config.image` is set, so no Pyxis SPANK plugin is
@@ -50,14 +51,15 @@ pytestmark = pytest.mark.ibm
 @extended_testing_only
 @pytest.mark.xdist_group(name="buildtest_bv")
 # For this test to run in IBM SPS build tests, it needs to
-# 1) have an environments/skypilot/slurm/ibm-bluevela/environment.yaml referencing
+# 1) have an environments/skypilot/slurm/bluevela/environment.yaml referencing
 #    the BV_SSH_PRIVATE_KEY secret (IdentityKey: BV_SSH_PRIVATE_KEY)
 # 2) Change the test to use the public IBM space, which uses the ibm secret manager
-# Without these changes, the test uses the local space and expects a local
-# ~/.ssh/ibm-bluevela.key, allowing it to be run locally.
+# The fixture currently resolves the `bluevela` env from the remote gb-test space
+# (buildtest.yaml space_uri: git+ssh://.../gb-test.git@gbspace-config); the commented
+# local `file://` space alternative instead expects an on-host ~/.ssh/ibm-bluevela.key.
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
-    reason="Skip in SPS CI/CD until we have environments/skypilot/slurm/ibm-bluevela/environment.yaml with key reference in gb-test and other space repos",
+    reason="Skip in SPS CI/CD until we have environments/skypilot/slurm/bluevela/environment.yaml with key reference in gb-test and other space repos",
 )
 class TestSkypilotBlueVelaSlurm1Step(AbstractYamlBuildRunnerTest):
     """Single bare-host command step on BlueVela SLURM (gpu-mid partition)."""

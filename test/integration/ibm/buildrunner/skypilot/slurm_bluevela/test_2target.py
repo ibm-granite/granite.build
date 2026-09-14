@@ -8,8 +8,9 @@
 
 """Two bash-step targets on BlueVela SLURM (via Skypilot) with hf:// I/O.
 
-`first` runs the generic `command` step against the sky-slurm-bluevela
-environment (space://environments/skypilot/slurm/ibm-bluevela): it pulls an hf://
+`first` runs the generic `command` step against the BlueVela SLURM
+environment (space://environments/skypilot/slurm/bluevela, provided by the remote
+gb-test space — see the naming note in docs/environments/skypilot-slurm.md): it pulls an hf://
 dataset input, writes a real output file on the allocated compute node, and
 registers it as artifact `out1` — which is pushed to an hf:// dataset repo.
 `second` binds `first.out1` as an input (so buildrunner hf-pulls first's output),
@@ -53,14 +54,15 @@ pytestmark = pytest.mark.ibm
 @extended_testing_only
 @pytest.mark.xdist_group(name="buildtest_bv")
 # For this test to run in IBM SPS build tests, it needs to
-# 1) have an environments/skypilot/slurm/ibm-bluevela/environment.yaml referencing
+# 1) have an environments/skypilot/slurm/bluevela/environment.yaml referencing
 #    the BV_SSH_PRIVATE_KEY secret (IdentityKey: BV_SSH_PRIVATE_KEY)
 # 2) Change the test to use the public IBM space, which uses the ibm secret manager
-# Without these changes, the test uses the local space and expects a local
-# ~/.ssh/ibm-bluevela.key, allowing it to be run locally.
+# The fixture currently resolves the `bluevela` env from the remote gb-test space
+# (buildtest.yaml space_uri: git+ssh://.../gb-test.git@gbspace-config); the commented
+# local `file://` space alternative instead expects an on-host ~/.ssh/ibm-bluevela.key.
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
-    reason="Skip in SPS CI/CD until we have environments/skypilot/slurm/ibm-bluevela/environment.yaml with key reference in gb-test and other space repos",
+    reason="Skip in SPS CI/CD until we have environments/skypilot/slurm/bluevela/environment.yaml with key reference in gb-test and other space repos",
 )
 class TestSkypilotBlueVelaSlurm2Target(AbstractYamlBuildRunnerTest):
     """Two hf:// command targets on BlueVela SLURM; target 2 binds target 1's output."""

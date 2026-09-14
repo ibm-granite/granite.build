@@ -82,6 +82,18 @@ the step launcher's `resources`). For a real-cluster example, see the
 [`skypilot/slurm/ibm-bluevela`](../../configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml)
 environment (BlueVela's `gpu-mid` partition, reached at `login1`).
 
+> **`ibm-bluevela` (this asset) vs. `bluevela` (remote spaces).** The asset above is the
+> *standalone*-space definition shipped in this repo — internal name `sky-slurm-bluevela`,
+> authenticated with an on-host key (`IdentityFile: ~/.ssh/ibm-bluevela.key`). Remote spaces
+> such as `gb-test` expose the **same** BlueVela cluster — identical `cluster: bluevela`,
+> `zone: gpu-mid`, `shared_workdir`, and `cloud_config` — under the shorter name `bluevela`,
+> differing only in deployment/credential details (the SSH credential source, and the HF
+> assetstore cache path / pull-push mode labels). The SLURM/BlueVela integration fixtures under
+> `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` resolve
+> `space://environments/skypilot/slurm/bluevela` against that remote space, which is why the
+> fixture's environment name differs from this asset and `bluevela` isn't found in this tree.
+> Unifying the two behind a single shared asset is a possible follow-up.
+
 ### Autostop is ignored
 
 SLURM does not support cluster autostop, so gbserver forces `idle_minutes_to_autostop=None` on the
