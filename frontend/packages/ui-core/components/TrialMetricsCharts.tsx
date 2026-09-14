@@ -16,6 +16,7 @@ import { useChartsTheme } from '../hooks/useTheme'
 import { useMetricStream } from '../hooks/useMetricStream'
 import { getJobMetrics } from '../api/autotunex'
 import { metricChartOptions } from './metricChartOptions'
+import styles from './TrialMetricsCharts.module.scss'
 import {
   METRIC_PALETTE,
   derivePhases,
@@ -239,10 +240,13 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
   return (
     <div style={{ marginTop: '2rem' }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'flex-end', marginBottom: '0.5rem' }}>
-        {/* Carbon gives the switcher `inline-size: 100%`, so this minWidth is the
-            only thing setting its width — three options need 16rem to keep
-            "Realtime" from truncating. */}
-        <div style={{ minWidth: '16rem' }}>
+        {/* Carbon forces `inline-size: 100%` on the switcher *and* on every
+            button inside it, and ellipsises the label, so a switch never widens
+            to fit its own text — the labels only get whatever room this wrapper
+            declares. Three buttons split it evenly and each spends ~2rem on
+            padding, so "Realtime" needs 20rem here to render in full; at 16rem
+            it came out as "Realti...". */}
+        <div style={{ minWidth: '20rem' }}>
           <FormLabel style={{ marginBottom: '0.375rem' }}>X axis</FormLabel>
           {/* Epoch by default: trials differ in batch size, so the same work takes
               a different number of steps and a step axis crushes the shorter runs
@@ -365,7 +369,7 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, scop
               style={{ flex: '1 1 24rem', minWidth: 0 }}
             />
           </div>
-          <div style={{ marginTop: '1rem' }}>
+          <div className={styles.diagnostics} style={{ marginTop: '1rem' }}>
             <Accordion>
               <AccordionItem title="Diagnostics — learning rate and gradient norm">
                 {/* Paired like the loss charts above — see that comment for why
