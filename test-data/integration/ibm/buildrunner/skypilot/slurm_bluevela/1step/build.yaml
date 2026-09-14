@@ -21,7 +21,6 @@ granite.build:
   # exercises SkyPilot's inherited pullasset_envstore/pushasset_envstore path.
   targets:
     slurm-run:
-      #environment_uri: space://environments/skypilot/slurm/ibm-bluevela
       environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         # Real hf:// dataset input — buildrunner queues an hfpull step that

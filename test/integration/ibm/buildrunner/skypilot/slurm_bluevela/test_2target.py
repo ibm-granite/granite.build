@@ -57,9 +57,8 @@ pytestmark = pytest.mark.ibm
 # 1) have an environments/skypilot/slurm/bluevela/environment.yaml referencing
 #    the BV_SSH_PRIVATE_KEY secret (IdentityKey: BV_SSH_PRIVATE_KEY)
 # 2) Change the test to use the public IBM space, which uses the ibm secret manager
-# The fixture currently resolves the `bluevela` env from the remote gb-test space
-# (buildtest.yaml space_uri: git+ssh://.../gb-test.git@gbspace-config); the commented
-# local `file://` space alternative instead expects an on-host ~/.ssh/ibm-bluevela.key.
+# The fixture resolves the `bluevela` env from the remote gb-test space
+# (buildtest.yaml space_uri: git+ssh://.../gb-test.git@gbspace-config).
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
     reason="Skip in SPS CI/CD until we have environments/skypilot/slurm/bluevela/environment.yaml with key reference in gb-test and other space repos",

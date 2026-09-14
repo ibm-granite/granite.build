@@ -78,28 +78,23 @@ whichever layer is most convenient:
 
 This precedence is implemented in `Skypilot._resolve_infra_and_zone` and applies to the HPC
 clouds (`slurm` and `lsf` — see [skypilot-lsf.md](skypilot-lsf.md); non-HPC clouds consult only
-the step launcher's `resources`). For a real-cluster example, see the
-[`skypilot/slurm/ibm-bluevela`](../../configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml)
-environment (BlueVela's `gpu-mid` partition, reached at `login1`).
+the step launcher's `resources`). For a real-cluster example, the SLURM/BlueVela integration
+fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` target BlueVela's
+`gpu-mid` partition (reached at `login1`) via the `bluevela` environment.
 
-> **`ibm-bluevela` (this asset) vs. `bluevela` (remote spaces).** The asset above is the
-> *standalone*-space definition shipped in this repo — internal name `sky-slurm-bluevela`,
-> authenticated with an on-host key (`IdentityFile: ~/.ssh/ibm-bluevela.key`). Remote spaces
-> such as `gb-test` expose the **same** BlueVela cluster — identical `cluster: bluevela`,
-> `zone: gpu-mid`, `shared_workdir`, and `cloud_config` — under the shorter name `bluevela`,
-> differing only in deployment/credential details (the SSH credential source, and the HF
-> assetstore cache path / pull-push mode labels). The SLURM/BlueVela integration fixtures under
-> `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` resolve
-> `space://environments/skypilot/slurm/bluevela` against that remote space, which is why the
-> fixture's environment name differs from this asset and `bluevela` isn't found in this tree.
-> Unifying the two behind a single shared asset is a possible follow-up.
+> **The `bluevela` environment lives in a remote space, not this repo.** Those fixtures resolve
+> `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), which is
+> why `bluevela` isn't found anywhere in this tree. That environment sets `cluster: bluevela`,
+> `zone: gpu-mid`, a shared `shared_workdir`, and the `cloud_config` workdir mapping described
+> below, and authenticates to the SLURM login node with an SSH key (an on-host
+> `~/.ssh/ibm-bluevela.key`, or a `BV_SSH_PRIVATE_KEY` secret in the space).
 
 #### Override the partition (`zone`) per build
 
 To run a target on a different partition than its environment declares, set `zone` in the build's
 step `config` — no `environment.yaml` change needed. Either build-level layer above works. Because a
 `zone` without a `cluster` is rejected (see above), also supply a `cluster` unless the environment
-already sets one (it does for `bluevela` / `ibm-bluevela`).
+already sets one (it does for `bluevela`).
 
 Layer 2 — under `launcher_config.resources` (wins over a top-level `zone`):
 

@@ -16,7 +16,6 @@ granite.build:
   # Requires HF_TOKEN with write access to the ibm-research output repos.
   targets:
     first:
-      #environment_uri: space://environments/skypilot/slurm/ibm-bluevela
       environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         # Real hf:// dataset input — buildrunner queues an hfpull step that
@@ -53,7 +52,6 @@ granite.build:
             # No launcher_config.resources.cluster or zone: the environment's
             # cluster (bluevela) and zone (gpu-mid) resolve the infra.
     second:
-      #environment_uri: space://environments/skypilot/slurm/ibm-bluevela
       environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         # Cross-target binding: first.out1 is an hf:// artifact, so buildrunner
