@@ -142,7 +142,19 @@ backend is reachable:
   `[pii-redactor]` extra is ~125 packages), hence `timeout_minutes: 60`. It is also the only
   cluster coverage of the `args` quoting path, since `pii_redactor_entities` is
   `ast.literal_eval`'d and must survive with its inner quotes intact.
-- **aws** — needs AWS credentials in the environment; provisions a real EC2 instance.
+- **aws** — needs AWS credentials in the environment (`AWS_ACCESS_KEY_ID` +
+  `AWS_SECRET_ACCESS_KEY`, or `AWS_PROFILE`); provisions a real EC2 instance via
+  SkyPilot. Two fixtures, the aws counterparts of the slurm ones:
+  - **aws-tok** — `transform: tokenization2arrow` with `validate: true`, parallel
+    (`runtime_num_processors: 2`). Proves the derivations and the in-step validator
+    hook on real EC2.
+  - **aws-pii** — `transform: pii_redactor`, the generality proof on aws (only
+    `transform`/`args`/artifact names differ). Sequential and slow (the
+    `[pii-redactor]` extra is ~125 packages), hence `timeout_minutes: 75`.
+
+  Both gate on `aws_credentials_present()` + `@extended_testing_only`, so EC2 is never
+  provisioned without credentials explicitly exported. On aws the hf pull is inline
+  (injected into the step's setup), so `step_count` is 1, not 2.
 
 > **No cluster coverage of the cross-node `env:///shared` handoff.** It was covered by the
 > two-target form of the `slurm` fixture, which `validate: true` replaced (see that fixture's
