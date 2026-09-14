@@ -32,10 +32,16 @@ config:
   # cluster base dir and the one host path the enroot container bind-mounts
   # (--container-mounts = home + ccache + workdir), so a containerized step's
   # per-run $GB_BUILD_WORKDIR lands on the real shared FS (see
-  # docs/environments/skypilot-slurm.md#workdir-containerized-steps). This local
-  # Docker fixture is bare-host (no Pyxis plugin) and does not run containers, so
-  # the mount is inert here — kept only to mirror the bluevela env. Lookup key
-  # path is slurm/cluster_configs/<cluster>/workdir (cluster = `slurm-docker`).
+  # docs/environments/skypilot-slurm.md#workdir-containerized-steps). This env is
+  # shared by the bare-host tests (1step/2target/filemount) AND the containerized
+  # test_skypilot_1step_image.py, which runs a real container when this same
+  # slurm-docker cluster is stood up with the Pyxis plugin — that image step is
+  # what needs this mount (without it the separate hfpush fails "<path> does not
+  # exist"). Bare-host runs don't need the mount; the only effect there is that
+  # SkyPilot relocates its cluster home to <workdir>/.sky_clusters/slurm-docker,
+  # which is benign because /shared is a root-writable shared volume the fixture
+  # already writes to (builds + hf_cache). Lookup key path is
+  # slurm/cluster_configs/<cluster>/workdir (cluster = `slurm-docker`).
   cloud_config:
     slurm:
       cluster_configs:
