@@ -193,17 +193,15 @@ export function TrialsTable({ job }: Props) {
           kind="ghost"
           size="sm"
           renderIcon={ArrowLeft}
-          // Clear the mirror on the way back, not just the compare flag.
-          // Carbon's DataTable keeps its own checkbox state and `selectedIds`
-          // only mirrors it through the onSelect handlers below. Entering this
-          // view unmounts the table, so going back mounts a fresh one whose
-          // internal selection is empty — leaving `selectedIds` populated would
-          // strand the Compare button and the radar on screen with every
-          // checkbox visibly unticked.
-          onClick={() => {
-            setShowCompare(false)
-            setSelectedIds([])
-          }}
+          // Keep the selection on the way back. A reader who narrows a
+          // comparison and returns to adjust it should not have to re-tick every
+          // row. This used to clear the mirror because Carbon's DataTable keeps
+          // its own checkbox state and a fresh one mounts unticked — which would
+          // strand the Compare button and the radar on screen above visibly
+          // empty checkboxes. The rows now carry `isSelected`, so the remounted
+          // table comes up matching the mirror instead. Cancel in the toolbar is
+          // how a reader clears it.
+          onClick={() => setShowCompare(false)}
           style={{ marginBottom: '1rem' }}
         >
           Back to Hyperparameters
@@ -223,6 +221,13 @@ export function TrialsTable({ job }: Props) {
   }
 
   // Default order: lowest loss first — trials without a loss sink to the end.
+  //
+  // `isSelected` seeds Carbon's own checkbox state. Carbon reads it off the row
+  // only when it has no prior state to preserve — on mount, since `normalize`
+  // otherwise takes the value from `prevRowsByIds` — so this restores a
+  // selection across a remount without contesting ownership of it afterwards.
+  // That is what lets Back keep the selection: the compare view unmounts this
+  // table, so returning mounts a fresh one that would come up unticked.
   const rows = trials
     .map((t) => ({
       id: t.id,
@@ -230,6 +235,7 @@ export function TrialsTable({ job }: Props) {
       status: t.status,
       loss: (t.metric ? t.metrics?.[t.metric] : undefined) ?? undefined,
       total_time: t.metrics?.total_time,
+      isSelected: selectedIds.includes(t.id),
     }))
     .sort((a, b) => {
       if (a.loss === undefined && b.loss === undefined) return 0
@@ -298,12 +304,13 @@ export function TrialsTable({ job }: Props) {
                     kind="ghost"
                     // Clear both copies of the selection from Carbon's own list,
                     // not from `selectedIds`. selectRow toggles a row, so driving
-                    // it from the mirror inverts the selection whenever the two
-                    // have drifted: the isLoading / isError / no-trials returns
-                    // above unmount the DataTable while this component (and the
-                    // mirror) stay alive, so a failed poll on a running job can
-                    // leave the mirror holding ids that a freshly mounted table
-                    // has unselected — and toggling those would re-select them.
+                    // it from the mirror would invert the selection if the two
+                    // ever drifted. Rows now carry `isSelected`, which re-seeds
+                    // Carbon from the mirror on every remount — the isLoading /
+                    // isError / no-trials returns above unmount the DataTable
+                    // while this component and the mirror stay alive — so that
+                    // known drift is closed; reading Carbon's own list remains
+                    // the right thing to do regardless of who drifted.
                     // selectedRows spans every row, not just the filtered ones
                     // (DataTable.js:256), so Cancel still ignores the search.
                     onClick={() => {
