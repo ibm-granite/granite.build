@@ -34,6 +34,7 @@ const assert = require('node:assert/strict')
 const {
   splitMetricRows,
   derivePhases,
+  rowsForTrials,
   trialColorScale,
   bestTrialId,
   toChartRows,
@@ -206,6 +207,43 @@ describe('derivePhases', () => {
     const rows = [...fixture(), stepRow('99999_00000', 2, 0.1)]
     const { finalTrialIds } = derivePhases(rows, SEARCH_IDS, true)
     assert.deepEqual(finalTrialIds, [FINAL_ID, '99999_00000'])
+  })
+})
+
+describe('rowsForTrials', () => {
+  it('keeps every kind of row for the requested runs and nothing else', () => {
+    const rows = rowsForTrials(fixture(), [SEARCH_IDS[0]])
+    assert.equal(rows.length, 38, '34 steps + 3 evals + 1 summary')
+    assert.ok(rows.every((r) => r.trial_id === SEARCH_IDS[0]))
+    // All three kinds survive — filtering by run must not double as a kind filter.
+    const { trainSteps, evals, summaries } = splitMetricRows(rows)
+    assert.deepEqual([trainSteps.length, evals.length, summaries.length], [34, 3, 1])
+  })
+
+  it('drops a row that carries no trial id', () => {
+    // Such a row is the job's single unnamed run. It has no checkbox in the
+    // trials table, so it can never be one of the requested ids, and drawing it
+    // beside a selection would show a curve nobody asked for.
+    const rows = [...fixture(), { ...stepRow(null, 2, 0.1), trial_id: null }]
+    const kept = rowsForTrials(rows, SEARCH_IDS)
+    assert.ok(kept.every((r) => r.trial_id != null))
+    assert.equal(kept.length, 4 * 38)
+  })
+
+  it('returns nothing for an empty id list rather than everything', () => {
+    assert.equal(rowsForTrials(fixture(), []).length, 0)
+  })
+
+  it('leaves a surviving run\u2019s elapsed origin exactly where it was', () => {
+    // The regression this guards: `runOrigins` is documented as taking a whole
+    // phase, so narrowing to a selection has to be origin-preserving or every
+    // curve re-anchors and the `elapsed` axis silently lies.
+    const rows = fixture()
+    const all = runOrigins(rows)
+    const narrowed = runOrigins(rowsForTrials(rows, [SEARCH_IDS[1], SEARCH_IDS[3]]))
+    assert.deepEqual([...narrowed.keys()].sort(), [SEARCH_IDS[1], SEARCH_IDS[3]].sort())
+    assert.equal(narrowed.get(SEARCH_IDS[1]), all.get(SEARCH_IDS[1]))
+    assert.equal(narrowed.get(SEARCH_IDS[3]), all.get(SEARCH_IDS[3]))
   })
 })
 
