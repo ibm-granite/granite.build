@@ -1,11 +1,11 @@
 granite.build:
   name: skypilot-bluevela-slurm-command
   # Single command-step target on BlueVela SLURM (via Skypilot) that runs the
-  # command DIRECTLY on the allocated compute node (no container). The command
-  # is submitted to the `gpu-mid` partition, which comes from the environment's
-  # `zone: gpu-mid` (composed by gbserver into infra=slurm/bluevela/gpu-mid) —
-  # no partition is set here. This is the SLURM bare-host path; the containerized
-  # (Pyxis/enroot) path is covered by the LSF test_1step_image.py.
+  # command INSIDE a container (command_config.image is set, so image_id resolves
+  # to docker:<image>) — the SLURM containerized path, which needs the Pyxis SPANK
+  # plugin that BlueVela provides. The command is submitted to the `gpu-mid`
+  # partition, which comes from the environment's `zone: gpu-mid` (composed by
+  # gbserver into infra=slurm/bluevela/gpu-mid) — no partition is set here.
   #
   # This target uses hf:// URIs for its main input and output, so buildrunner
   # auto-queues REAL HuggingFace pull/push steps around the command: the input

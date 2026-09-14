@@ -2,8 +2,9 @@
 # test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_1step.py.
 # build_yaml defaults to ./build.yaml (sibling) when omitted.
 #
-# Single bare-host command-step target on BlueVela SLURM (Skypilot) that runs
-# the command directly on the compute node (gpu-mid partition, no container).
+# Single containerized command-step target on BlueVela SLURM (Skypilot): the
+# command runs inside an image (command_config.image set) on the gpu-mid
+# partition, needing the Pyxis plugin BlueVela provides, with real hf:// I/O.
 targets:
   - slurm-run
 target_expectations:

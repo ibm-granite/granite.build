@@ -1,11 +1,13 @@
 granite.build:
   name: skypilot-bluevela-slurm-hf-2target
-  # Two targets on BlueVela SLURM (via Skypilot), both running the generic
-  # `command` step DIRECTLY on the allocated compute node (no container — no
-  # `command_config.image`, so no Pyxis/enroot plugin is required). Unlike the
-  # env_local no-op tests, these targets use hf:// URIs for their inputs and
-  # outputs, so buildrunner auto-queues REAL HuggingFace pull/push steps around
-  # each command: the command must write a real file for its output to be pushed.
+  # Two targets on BlueVela SLURM (via Skypilot) running the generic `command`
+  # step: `first` runs DIRECTLY on the allocated compute node (no
+  # `command_config.image`, bare host — no Pyxis plugin needed), while `second`
+  # runs INSIDE a container image (image set → image_id docker:<image>), which
+  # needs the Pyxis SPANK plugin that BlueVela provides. Unlike the env_local
+  # no-op tests, these targets use hf:// URIs for their inputs and outputs, so
+  # buildrunner auto-queues REAL HuggingFace pull/push steps around each command:
+  # the command must write a real file for its output to be pushed.
   #
   # `first` pulls an hf:// dataset input, writes a real output file, and registers
   # it as artifact `out1` (pushed to an hf:// dataset repo). `second` binds

@@ -6,19 +6,22 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Bare-host command-step target on BlueVela SLURM (via Skypilot).
+"""Containerized command-step target on BlueVela SLURM (via Skypilot) with real hf:// I/O.
 
 Runs a single `command` step against the BlueVela SLURM environment
 (space://environments/skypilot/slurm/bluevela, provided by the remote gb-test
-space — see the naming note in docs/environments/skypilot-slurm.md), which reaches BlueVela's
-SLURM login node (login1) over SSH and submits to the `gpu-mid` partition (set
-via the environment's `zone`). The command runs DIRECTLY on the allocated
-compute node — no `command_config.image` is set, so no Pyxis SPANK plugin is
-required (the SLURM equivalent of the enroot image path covered separately for
-LSF in test_1step_image.py).
+space — see the naming note in docs/environments/skypilot-slurm.md), which reaches
+BlueVela's SLURM login node (login1) over SSH and submits to the `gpu-mid`
+partition (set via the environment's `zone`). The command runs INSIDE a container
+image (`command_config.image` is set, so image_id resolves to docker:<image>),
+which on SLURM requires the Pyxis SPANK plugin — BlueVela provides it (unlike the
+bare-host local Docker fixture under test/integration/standalone/.../skypilot_slurm).
 
-env:// (env_local) I/O is a shared-FS no-op, so the test drives the command step
-end-to-end without HF credentials or real pushes.
+The target declares real hf:// input and output alongside an env:// no-op pair, so
+buildrunner auto-queues an hfpull before and an hfpush after the command
+(step_count 3: hfpull, command, hfpush; the env:// pull/push add no steps). Because
+the hf:// output is pushed to an ibm-research dataset repo, this test REQUIRES
+HF_TOKEN with write access and is @extended_testing_only.
 
 The fixture's build.yaml and buildtest.yaml live in the directory returned by
 _get_yaml_spec_dir below.
@@ -61,7 +64,7 @@ pytestmark = pytest.mark.ibm
     reason="Skip in SPS CI/CD until we have environments/skypilot/slurm/bluevela/environment.yaml with key reference in gb-test and other space repos",
 )
 class TestSkypilotBlueVelaSlurm1Step(AbstractYamlBuildRunnerTest):
-    """Single bare-host command step on BlueVela SLURM (gpu-mid partition)."""
+    """Single containerized command step on BlueVela SLURM (gpu-mid partition), real hf:// I/O."""
 
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""

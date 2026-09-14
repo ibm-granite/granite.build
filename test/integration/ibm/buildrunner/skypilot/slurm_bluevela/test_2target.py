@@ -15,9 +15,11 @@ dataset input, writes a real output file on the allocated compute node, and
 registers it as artifact `out1` — which is pushed to an hf:// dataset repo.
 `second` binds `first.out1` as an input (so buildrunner hf-pulls first's output),
 reads the bound path, and registers its own hf:// output `out2`. This exercises
-cross-target output -> input binding over REAL HuggingFace pulls/pushes on the
-SLURM bare-host path (no `command_config.image`, so no Pyxis SPANK plugin — the
-SLURM equivalent of the enroot image path covered for LSF in test_1step_image.py).
+cross-target output -> input binding over REAL HuggingFace pulls/pushes. The two
+targets also cover both SLURM command paths: `first` runs bare-host (no
+`command_config.image`, so no Pyxis plugin needed) while `second` runs INSIDE a
+container image (image set → image_id docker:<image>), which needs the Pyxis SPANK
+plugin that BlueVela provides.
 
 Because the hf:// URIs drive live HuggingFace pulls/pushes (real files, real
 uploads to ibm-research), this is @extended_testing_only and needs HF_TOKEN with
