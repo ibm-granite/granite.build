@@ -40,7 +40,7 @@ import { TrialCompare } from './TrialCompare'
 import { TrialProgressSummary } from './TrialProgressSummary'
 import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
-import { bestTrialId, trialColorScale } from './trialMetrics'
+import { METRIC_DE_EMPHASIS, bestTrialId, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import type { JobDetail, Trial } from '../types'
 
@@ -172,12 +172,17 @@ export function TrialsTable({ job }: Props) {
       <div>
         <TrialProgressSummary job={job} trials={trials} />
         <InlineNotification kind="info" title="No trial data available" hideCloseButton />
+        {/* No rows here means no Cancel button, so a selection carried in from a
+            page that did have rows would hide the final run with nothing on
+            screen able to clear it. There is nothing here to tick, so nothing
+            counts as ticked. The mirror itself is left alone rather than reset,
+            so a selection survives a query that comes back empty in passing. */}
         <TrialMetricsCharts
           job={job}
           trials={trials}
           trialsLoaded={!isLoading && !isError}
           colorScale={colorScale}
-          selectedIds={selectedIds}
+          selectedIds={[]}
           scope={scope}
         />
       </div>
@@ -401,7 +406,18 @@ export function TrialsTable({ job }: Props) {
                         // expand chevron is filled from --cds-layer-selected-inverse
                         // and the data cells are text, and the expanded panel is a
                         // sibling <tr>, not a child. The checkmark stays
-                        // --cds-icon-inverse, which clears 3:1 on every palette hue.
+                        // --cds-icon-inverse, which clears 3:1 against all ten
+                        // palette hues in both themes — worst 3.33:1, on the
+                        // light theme's #b28600.
+                        //
+                        // Skipped for a de-emphasised run, which is every run but
+                        // the best one past EMPHASIS_THRESHOLD trials. The scale
+                        // hands them all the same grey, so a tint drawn from it
+                        // tells two ticked rows apart no better than Carbon's own
+                        // default does — and white on #a8a8a8 is 2.38:1, under the
+                        // 3:1 non-text minimum and far under the near-black
+                        // default's 19:1. The best run still carries its hue,
+                        // which is the one the charts still colour too.
                         //
                         // Only while selected: Carbon draws the *unchecked* box's
                         // border from the same token, so applying this
@@ -410,7 +426,7 @@ export function TrialsTable({ job }: Props) {
                         // state because the mirror is what the charts draw, and
                         // matching the charts is the whole point.
                         style={
-                          selectedIds.includes(row.id)
+                          selectedIds.includes(row.id) && colorScale[row.id] !== METRIC_DE_EMPHASIS[theme]
                             ? ({ '--cds-icon-primary': colorScale[row.id] } as CSSProperties)
                             : undefined
                         }
