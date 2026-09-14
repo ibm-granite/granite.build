@@ -629,7 +629,9 @@ class TestK8sSecretEnvHelmValues:
         # MY_TOKEN (default data-key my_token) and an explicit my_token are
         # DISTINCT pod env-var names, so both are emitted independently — no
         # collision (the verbatim name is never lowercased into an alias).
-        assert self._values(_mappings(("MY_TOKEN", None), ("my_token", "real_key"))) == [
+        assert self._values(
+            _mappings(("MY_TOKEN", None), ("my_token", "real_key"))
+        ) == [
             ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
             ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "my_token"),
             ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
