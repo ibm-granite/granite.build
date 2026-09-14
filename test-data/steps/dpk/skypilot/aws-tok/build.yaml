@@ -1,0 +1,55 @@
+granite.build:
+  name: skypilot-aws-dpk-tokenize
+  # DPK tokenize WITH VALIDATION on a real EC2 instance (SkyPilot/aws) — the aws
+  # counterpart of test-data/slurm-tok/build.yaml. Same single target and the same
+  # transform config; only environment_uri and the compute sizing differ. Reaching
+  # SUCCESS proves the same things as slurm-tok (module + pip-extra derivation from
+  # `transform`, the validate_<transform>.py hook running on the node before the
+  # artifact marker, validation.json landing in the registered output) but on real
+  # EC2 provisioned by SkyPilot.
+  targets:
+
+    tokenize:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        docs:
+          # Public dataset (DPK's own tokenization fixture) — stages with no creds.
+          # On aws the hf assetstore pull is `inline: true`, so the download is
+          # injected into the step's setup rather than queued as a separate step
+          # (=> step_count 1 in buildtest.yaml, unlike slurm's 2).
+          uri: hf:///datasets/shalisha-witherspoon/dpk-tokenization-sample
+      outputs:
+        tokens:
+          # Terminal env:// output, registered inline from the step's marker (the
+          # byoc/aws pattern). Nothing downstream reads it, so the step's default
+          # output_path (./output in the per-run workdir) is fine on aws.
+          uri: "env:///tokens"
+          type: dataset
+      steps:
+        - step_uri: space://steps/dpk
+          config:
+            poll_interval_seconds: 5
+            dpk_config:
+              transform: tokenization2arrow
+              dpk_version: "1.1.8"
+              input_path: "{{ bindings.docs.binding.path }}"
+              output: tokens
+              validate: true
+              module: dpk_tokenization2arrow.runtime
+              pip_index_url: "https://pypi.org/simple"
+              args:
+                tkn_tokenizer: hf-internal-testing/llama-tokenizer
+                tkn_doc_id_column: document_id
+                tkn_doc_content_column: contents
+                tkn_text_lang: en
+                tkn_chunk_size: 0
+                # Parallel branch, mirroring slurm-tok. num_cpus_per_node below
+                # matches so the selected instance has at least this many vCPUs.
+                runtime_num_processors: 2
+            compute_config:
+              # On aws these render as SkyPilot "{n}+" minimums and select the
+              # smallest EC2 instance with >= 2 vCPUs / >= 4 GiB. The memory floor
+              # is ENFORCED on aws (unlike slurm, where it is advisory).
+              num_cpus_per_node: 2
+              num_gpus_per_node: 0
+              total_memory_per_node: 4Gi
