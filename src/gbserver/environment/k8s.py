@@ -284,74 +284,39 @@ class K8s(Environment):
         mounts the value into the pod at runtime.
 
         The ``secret_names_to_use_as_env_variable`` allow-list is shared with
-        LSF/SkyPilot. To keep the block portable **and** preserve the legacy
-        lowercase behavior, each mapping is exposed under **both** the verbatim
-        ``env_name`` (the portable, cross-cloud form) and its lowercased alias
-        when they differ. Both env-var names reference the **same** Secret
-        data-key — the declared ``secret_name``, otherwise the historical
-        lowercased ``env_name`` — because the space Secret stores each value
-        under exactly one key, so a verbatim-cased key on a mixed-case
-        ``env_name`` would dangle and fail the pod. The lowercased alias is
-        **deprecated** — retained only so existing pods that read the lowercased
-        env var keep working; new steps should rely on the verbatim name. When
-        the two cases are identical (``env_name`` already lowercase) a single
-        entry is emitted.
+        LSF/SkyPilot, so the pod env-var name is the declared ``env_name``
+        **verbatim** (portable across backends — the Helm chart renders the
+        name unchanged). The Secret **data-key** it references defaults to the
+        lowercased ``env_name`` when no explicit ``secret_name`` is given — the
+        long-standing K8s convention, since the space Secret stores each value
+        under its lowercased key.
 
         :param environment_variables: declared env-var -> secret mappings.
         :param space_secret: name of the space K8s Secret (its
             ``secretKeyRef.name``); required when any env var is declared.
         :returns: ``(helm_key, value)`` tuples to append to the ``--set``
             overrides. A missing declared ``secret_name`` defaults the data-key
-            to the lowercased ``env_name``, shared by both the verbatim and the
-            lowercased env-var-name entries.
+            to the lowercased ``env_name``.
         :raises ValueError: if a declared entry omits ``env_name`` (shared
-            fail-fast validation, consistent with LSF/SkyPilot); if any env var
-            is declared but ``space_secret`` is unset; or if two declarations
-            resolve the **same** pod env-var name to **different** data-keys
-            (e.g. ``MY_TOKEN`` with no ``secret_name`` and ``my_token`` with an
-            explicit one both claim ``my_token``) — surfaced rather than
-            silently dropping the later mapping. Secret values never appear in
-            the message.
+            fail-fast validation, consistent with LSF/SkyPilot), or if any env
+            var is declared but ``space_secret`` is unset. Secret values never
+            appear in the message.
         """
         values: List[Tuple[str, str]] = []
-        # Pod env-var name -> resolved Secret data-key. Dedups the verbatim /
-        # lowercase pair within one mapping and catches a genuine cross-mapping
-        # collision (the same env-var name resolved to a *different* key), which
-        # would otherwise silently drop the later, explicit mapping.
-        emitted_keys: Dict[str, str] = {}
         for env_var in environment_variables:
             # Same fail-fast validation as LSF/SkyPilot: a malformed entry
             # (missing env_name) raises rather than being silently dropped.
             env_name = Environment._require_declared_env_name(env_var.env_name)
             if not space_secret:
                 raise ValueError("setup_config['space']['secret'] is missing")
-            # The space Secret stores each value under exactly ONE data-key --
-            # the declared ``secret_name`` or the historical lowercase default.
-            # Both the verbatim and the DEPRECATED lowercase env-var names must
-            # reference that same key; emitting a verbatim-cased key for a
-            # mixed-case env_name would dangle (the Secret has no such key) and
-            # the kubelet would fail the pod with CreateContainerConfigError.
+            # Pod env-var name is the verbatim env_name (portable with
+            # LSF/SkyPilot). The Secret data-key defaults to the lowercased
+            # env_name -- the historical K8s convention -- unless an explicit
+            # secret_name selects a different key.
             secret_key = env_var.secret_name or env_name.lower()
-            # Pod env-var names: verbatim (portable) first, then the deprecated
-            # lowercase alias kept for back-compat.
-            for name in (env_name, env_name.lower()):
-                prior = emitted_keys.get(name)
-                if prior is not None:
-                    # Same name -> same key: an idempotent duplicate (the
-                    # verbatim==lowercase pair, or a repeated declaration).
-                    if prior == secret_key:
-                        continue
-                    # Same name -> different key: two declarations fight over
-                    # one pod env var. Fail fast instead of silently dropping
-                    # the later one (only key names appear, never values).
-                    raise ValueError(
-                        f"conflicting secret data-keys for env var {name!r}: "
-                        f"{prior!r} and {secret_key!r}"
-                    )
-                emitted_keys[name] = secret_key
-                base = f"k8s.env.{name}.valueFrom.secretKeyRef"
-                values.append((f"{base}.name", space_secret))
-                values.append((f"{base}.key", secret_key))
+            base = f"k8s.env.{env_name}.valueFrom.secretKeyRef"
+            values.append((f"{base}.name", space_secret))
+            values.append((f"{base}.key", secret_key))
         return values
 
     def _get_k8s_labels_and_annotations(self: Self, kwargs: Dict) -> Tuple[Dict, Dict]:
@@ -826,8 +791,8 @@ class K8s(Environment):
 
         # --- Environment Variables ---
         # Each declared secret is exposed via secretKeyRef under its verbatim
-        # env_name (portable with LSF/SkyPilot) plus a DEPRECATED lowercase
-        # alias for back-compat. See _secret_env_helm_values.
+        # env_name (portable with LSF/SkyPilot); the Secret data-key defaults to
+        # the lowercased env_name. See _secret_env_helm_values.
         space_secret = setup_config.get("space", {}).get("secret")
         extra_runmetadata_values.extend(
             self._secret_env_helm_values(environment_variables, space_secret)

@@ -149,8 +149,8 @@ config:
 
 The block is the **same** across environments and injects **only** the secrets the step declares
 (least-privilege). Delivery differs by backend — LSF/SkyPilot resolve the value into the task env
-var, while K8s hands the secret *name* to the kubelet via `secretKeyRef` and exposes each secret
-under its verbatim `env_name` plus a deprecated lowercased alias. See
+var, while K8s hands the secret *name* to the kubelet via `secretKeyRef`, exposing each secret under
+its verbatim `env_name` (the Secret data-key defaults to the lowercased `env_name`). See
 [Custom code steps → Secrets as environment variables](custom-code-steps.md#secrets-as-environment-variables)
 for a worked example and [Environments → Secrets as environment variables](../environments/README.md#secrets-as-environment-variables)
 for the full cross-environment reference.

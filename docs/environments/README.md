@@ -296,11 +296,10 @@ with a `ValueError` (the secret *value* is never included in the message).
 - **LSF and SkyPilot** resolve the value in the build server and inject it as a task/job environment
   variable. When `secret_name` is omitted it defaults to `env_name` **verbatim**.
 - **K8s** never materializes the value in the build server: it passes the secret *name* to Helm as a
-  `valueFrom.secretKeyRef` and the kubelet mounts the value into the pod at runtime. For portability
-  it exposes each declared secret under the **verbatim** `env_name` **plus** a **deprecated**
-  lowercased alias (a declared `MY_TOKEN` appears in the pod as both `MY_TOKEN` and `my_token`);
-  prefer the verbatim name. When `secret_name` is omitted the data-key defaults to those same
-  (verbatim + lowercased) forms.
+  `valueFrom.secretKeyRef` and the kubelet mounts the value into the pod at runtime. The pod env var
+  uses the `env_name` **verbatim** (portable with LSF/SkyPilot). When `secret_name` is omitted the
+  Secret **data-key** defaults to the **lowercased** `env_name` — the long-standing K8s convention,
+  since the space Secret stores each value under its lowercased key.
 
 K8s additionally supports `secret_names_to_use_as_pull_secret` (image pull secrets), which has no
 analogue on the other backends. See [k8s.md](k8s.md), [lsf.md](lsf.md), and [skypilot.md](skypilot.md)

@@ -577,40 +577,36 @@ class TestK8sOverride:
 class TestK8sSecretEnvHelmValues:
     """Direct tests for ``K8s._secret_env_helm_values`` — the secretKeyRef
     Helm-arg builder that exposes each declared secret under its verbatim
-    ``env_name`` plus a DEPRECATED lowercase alias for back-compat."""
+    ``env_name`` (portable with LSF/SkyPilot), with the Secret data-key
+    defaulting to the lowercased ``env_name``."""
 
     def _values(self, mappings, space_secret="sp"):
         from gbserver.environment.k8s import K8s
 
         return K8s._secret_env_helm_values(mappings, space_secret)
 
-    def test_uppercase_name_emits_verbatim_and_lower_alias(self):
-        # No secret_name: exposed under both MY_TOKEN (verbatim, portable) and
-        # my_token (deprecated lowercase alias). Both reference the SAME data-key
-        # (the historical lowercase default) — the Secret stores the value under
-        # one key, so a verbatim-cased key would dangle and fail the pod.
+    def test_uppercase_name_emits_verbatim_with_lowercased_data_key(self):
+        # No secret_name: the pod env var uses the verbatim MY_TOKEN name; the
+        # Secret data-key defaults to the lowercased env_name (the historical
+        # K8s convention — the Secret stores the value under its lowercased key).
         assert self._values(_mappings(("MY_TOKEN", None))) == [
             ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
             ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "my_token"),
-            ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
-            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "my_token"),
         ]
 
-    def test_already_lowercase_name_emits_single_entry(self):
-        # verbatim == lowercase -> the alias is deduped away.
+    def test_already_lowercase_name(self):
+        # env_name already lowercase -> name and default data-key coincide.
         assert self._values(_mappings(("hf_token", None))) == [
             ("k8s.env.hf_token.valueFrom.secretKeyRef.name", "sp"),
             ("k8s.env.hf_token.valueFrom.secretKeyRef.key", "hf_token"),
         ]
 
-    def test_explicit_secret_name_shared_by_both_aliases(self):
-        # An explicit (often hyphenated) secret_name is the data-key for both
-        # the verbatim and the deprecated lowercase env-var names.
+    def test_explicit_secret_name_is_the_data_key(self):
+        # An explicit (often hyphenated) secret_name is the data-key; the pod
+        # env-var name stays the verbatim env_name.
         assert self._values(_mappings(("MY_TOKEN", "huggingface-token"))) == [
             ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
             ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "huggingface-token"),
-            ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
-            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "huggingface-token"),
         ]
 
     def test_missing_space_secret_raises(self):
@@ -629,22 +625,15 @@ class TestK8sSecretEnvHelmValues:
         with pytest.raises(ValueError, match="missing 'env_name'"):
             self._values(_mappings((None, "tok")))
 
-    def test_conflicting_data_keys_for_same_name_raises(self):
-        # MY_TOKEN (no secret_name) resolves my_token -> my_token; a second
-        # my_token mapping with an explicit secret_name wants my_token ->
-        # real_key. Both claim the pod env var my_token with different keys, so
-        # the later mapping must not be silently dropped -- it raises.
-        with pytest.raises(ValueError, match="conflicting secret data-keys"):
-            self._values(_mappings(("MY_TOKEN", None), ("my_token", "real_key")))
-
-    def test_idempotent_duplicate_mapping_is_deduped(self):
-        # The same mapping declared twice resolves each name to the same key,
-        # so it is deduped rather than treated as a conflict.
-        assert self._values(_mappings(("MY_TOKEN", None), ("MY_TOKEN", None))) == [
+    def test_case_distinct_names_emit_independently(self):
+        # MY_TOKEN (default data-key my_token) and an explicit my_token are
+        # DISTINCT pod env-var names, so both are emitted independently — no
+        # collision (the verbatim name is never lowercased into an alias).
+        assert self._values(_mappings(("MY_TOKEN", None), ("my_token", "real_key"))) == [
             ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.name", "sp"),
             ("k8s.env.MY_TOKEN.valueFrom.secretKeyRef.key", "my_token"),
             ("k8s.env.my_token.valueFrom.secretKeyRef.name", "sp"),
-            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "my_token"),
+            ("k8s.env.my_token.valueFrom.secretKeyRef.key", "real_key"),
         ]
 
 
