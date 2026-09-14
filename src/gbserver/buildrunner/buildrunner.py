@@ -90,7 +90,7 @@ from gbserver.types.constants import (
 from gbserver.types.status import STATUS_TO_ICON, Status
 from gbserver.utils.archive import extract_archive
 from gbserver.utils.logger import get_logger
-from gbserver.utils.unwrap_errors import get_readable_error_message
+from gbserver.utils.unwrap_errors import format_failure_reason
 from gbserver.utils.utils import get_build_status_link
 
 logger = get_logger(__name__)
@@ -376,9 +376,10 @@ class BuildRunner(AbstractBuildRunner):
                 space = self.__get_build_space(stored_build)
             except ValueError as e:
                 err_stack = traceback.format_exc()
-                logger.error("%s", err_stack)
+                logger.error("build %s invalid: %s", build_id, e)
+                logger.debug("%s", err_stack)
                 self.__update_stored_build_status(
-                    status=Status.INVALID, failure_reason=str(err_stack)
+                    status=Status.INVALID, failure_reason=str(e)
                 )
                 self.build_message_logger.error(
                     markdown=f"build `{build_id}` status `{self.stored_build.status}`, error: {e}"
@@ -446,17 +447,19 @@ class BuildRunner(AbstractBuildRunner):
 
         except Exception as e:
             err_stack = traceback.format_exc()
-            logger.error("%s", err_stack)
+            # Concise reason at ERROR; full traceback (which otherwise reads like
+            # an uncaught crash) at DEBUG. PR keeps the stack in its <details>.
+            reason = format_failure_reason(e)
+            logger.error("build %s failed: %s", build_id, reason)
+            logger.debug("%s", err_stack)
             if not stored_build.status.is_finished():
                 logger.info(
                     "updating build status to failed for build %s", stored_build.uuid
                 )
                 self.__update_stored_build_status(
-                    status=Status.FAILED, failure_reason=str(err_stack)
+                    status=Status.FAILED, failure_reason=reason
                 )
-            markdown = (
-                f"build `{build_id}` status `{self.stored_build.status}`, error: {e}"
-            )
+            markdown = f"build `{build_id}` status `{self.stored_build.status}`, error: {reason}"
             self.build_message_logger.error(markdown=markdown)
 
     def __setup(self: Self, space: Space):

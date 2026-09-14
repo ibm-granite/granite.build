@@ -50,8 +50,19 @@ The run failed due to exception(s):
     return body
 
 
-def unwrap_errors(e: BaseException) -> str:
-    """Unwrap nested Exception(Group)s to create a readable message."""
+def format_failure_reason(e: BaseException) -> str:
+    """One-line failure reason (no traceback): the same leaf as
+    :func:`unwrap_errors`, collapsed to a single line — for a log line or stored
+    ``failure_reason``. ``fetch_logs=False`` keeps it a bare reason (no cloud-log
+    fetch), so calling it per layer is cheap."""
+    return " ".join(unwrap_errors(e, fetch_logs=False).split())
+
+
+def unwrap_errors(e: BaseException, fetch_logs: bool = True) -> str:
+    """Unwrap nested Exception(Group)s to create a readable message.
+
+    ``fetch_logs`` (default True) inlines the build's step logs for
+    Workload/LogMonitoring failures; pass False for a bare one-line reason."""
     assert isinstance(
         e, BaseException
     ), f"unwrap_errors called with non-exception type: {type(e)} {e}"
@@ -62,17 +73,17 @@ def unwrap_errors(e: BaseException) -> str:
             exc for exc in e.exceptions if not isinstance(exc, asyncio.CancelledError)
         ]
         if real_exceptions:
-            return "\n".join(unwrap_errors(exc) for exc in real_exceptions)
+            return "\n".join(unwrap_errors(exc, fetch_logs) for exc in real_exceptions)
         return str(e)
     if e.__cause__ is not None:
-        return unwrap_errors(e.__cause__)
+        return unwrap_errors(e.__cause__, fetch_logs)
     if isinstance(e, KeyError):
         return "key error: " + str(e)
     if isinstance(e, ValueError):
         return "value error: " + str(e)
     if isinstance(e, LogMonitoringFailedException):
         build_id = e.build_id
-        if FETCH_CLOUD_LOGS_MAX_RETRIES <= 0:
+        if not fetch_logs or FETCH_CLOUD_LOGS_MAX_RETRIES <= 0:
             return "log monitoring failed (fetching build logs is disabled): " + str(e)
         log_manager = None
         try:
@@ -96,7 +107,7 @@ def unwrap_errors(e: BaseException) -> str:
         return "log monitoring failed (also failed to fetch build logs): " + str(e)
     if isinstance(e, WorkloadFailedException):
         build_id = e.build_id
-        if FETCH_CLOUD_LOGS_MAX_RETRIES <= 0:
+        if not fetch_logs or FETCH_CLOUD_LOGS_MAX_RETRIES <= 0:
             return "workload failed: " + str(e)
         log_manager = None
         try:

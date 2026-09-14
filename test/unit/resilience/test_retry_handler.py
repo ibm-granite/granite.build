@@ -745,3 +745,97 @@ class TestExhaustedRetriableIsTerminal:
         assert (
             h._is_live_nonterminal_state(create_test_event("transient error")) is False
         )
+
+
+def create_lsf_failed_event(
+    job_id: str = "1636559",
+    error: str = "Job 1636559 failed with return code 1 (LSF state EXIT)",
+) -> BuildEvent:
+    """Terminal LSF failure event as emitted by LSFBsubMonitor: a ```json block
+    with job_id/state/error and NO ``appwrapper`` key."""
+    data = {"job_id": job_id, "state": "Failed", "error": error}
+    msg = f"\n```json\n{json.dumps(data, indent=4)}\n```\n"
+    payload = EventPayload.payload_parser(
+        event_type=BuildEventType.MESSAGE_EVENT,
+        data={"msg": msg},
+    )
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(build_id="test-build-id"),
+        type=BuildEventType.MESSAGE_EVENT,
+        payload=payload,
+    )
+
+
+def create_appwrapper_failed_event(
+    name: str = "gbtest", error: str = "pod OOMKilled"
+) -> BuildEvent:
+    """Terminal k8s AppWrapper failure event: carries BOTH ``appwrapper`` and
+    ``error`` (as AppWrapperMonitor emits), so it must still get the AppWrapper
+    wording, not the LSF wording."""
+    data = {
+        "appwrapper": name,
+        "state": "Failed",
+        "previous_state": "Running",
+        "error": error,
+    }
+    msg = f"\n```json\n{json.dumps(data, indent=4)}\n```\n"
+    payload = EventPayload.payload_parser(
+        event_type=BuildEventType.MESSAGE_EVENT,
+        data={"msg": msg},
+    )
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(build_id="test-build-id"),
+        type=BuildEventType.MESSAGE_EVENT,
+        payload=payload,
+    )
+
+
+class TestExtractFailureMessage:
+    """_extract_failure_message picks wording from the event's payload shape:
+    AppWrapper (`appwrapper` key) keeps the k8s wording; a plain `error`
+    (LSF) surfaces that error; neither -> generic fallback."""
+
+    def _handler(self: Self) -> RetryHandler:
+        return RetryHandler(
+            launch_id="2c26a9c0",
+            downstream_queue=asyncio.Queue(),
+            environment=MockEnvironment(),
+            max_retries=0,
+        )
+
+    def test_lsf_surfaces_error_and_job_id(self: Self) -> None:
+        msg = self._handler()._extract_failure_message(create_lsf_failed_event())
+        assert "Job 1636559 failed with return code 1 (LSF state EXIT)" in msg
+        assert "LSF job 1636559 failed" in msg
+        # The misleading k8s wording must NOT appear for an LSF job.
+        assert "appwrapper" not in msg.lower()
+        assert "failed_pods" not in msg
+        assert "is in a Failed state" not in msg
+
+    def test_lsf_without_job_id_still_uses_error(self: Self) -> None:
+        event = create_test_event(
+            '\n```json\n{"state": "Failed", "error": "boom on the node"}\n```\n'
+        )
+        msg = self._handler()._extract_failure_message(event)
+        assert "boom on the node" in msg
+        assert "appwrapper" not in msg.lower()
+        assert "LSF job" not in msg
+
+    def test_appwrapper_wording_unchanged(self: Self) -> None:
+        handler = self._handler()
+        msg = handler._extract_failure_message(create_appwrapper_failed_event())
+        # Byte-identical to the legacy k8s message (and the `error` did not leak in).
+        assert msg == (
+            f"[RetryHandler launch_id {handler.launch_id}] gbtest is in a Failed state. "
+            "Build will stop because of an appwrapper workload error. "
+            "The `failed_pods` and `events` sections in the message above have more error details."
+        )
+        assert "pod OOMKilled" not in msg
+
+    def test_json_without_error_or_appwrapper_falls_back(self: Self) -> None:
+        event = create_test_event('\n```json\n{"state": "Failed"}\n```\n')
+        msg = self._handler()._extract_failure_message(event)
+        assert msg == (
+            "[RetryHandler launch_id 2c26a9c0] Workload failed. "
+            "See event message for details."
+        )

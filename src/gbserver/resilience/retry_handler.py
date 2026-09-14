@@ -805,15 +805,27 @@ class RetryHandler:
         """
         data = self._parse_event_json(event)
         if data is not None:
-            appwrapper = data.get("appwrapper", "unknown")
-            state = data.get("state", "Failed")
-            return (
-                f"[RetryHandler launch_id {self.launch_id}] {appwrapper} is in a {state} state. "
-                + "Build will stop because of an appwrapper workload error. "
-                + "The `failed_pods` and `events` sections in the message above have more error details."
-            )
+            # AppWrapper shape (has `appwrapper`, often `error` too): checked
+            # first so its `failed_pods`/`events` wording stays byte-identical.
+            if "appwrapper" in data:
+                appwrapper = data.get("appwrapper", "unknown")
+                state = data.get("state", "Failed")
+                return (
+                    f"[RetryHandler launch_id {self.launch_id}] {appwrapper} is in a {state} state. "
+                    + "Build will stop because of an appwrapper workload error. "
+                    + "The `failed_pods` and `events` sections in the message above have more error details."
+                )
+            # LSF (plain `error`, no appwrapper): surface the real error rather
+            # than the AppWrapper wording, which doesn't apply here.
+            error = data.get("error")
+            if error:
+                job_id = data.get("job_id")
+                prefix = f"[RetryHandler launch_id {self.launch_id}]"
+                if job_id is not None:
+                    return f"{prefix} LSF job {job_id} failed: {error}"
+                return f"{prefix} {error}"
 
-        # No parseable AppWrapper JSON: preserve the original wording,
+        # No parseable JSON (or JSON without appwrapper/error): original wording,
         # distinguishing "no message at all" from "message present but not JSON".
         msg = getattr(event.payload, "msg", None) if event.payload else None
         if not msg:

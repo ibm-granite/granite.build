@@ -18,8 +18,12 @@ import asyncio
 import re
 from pathlib import Path
 
-from gbserver.types.errors import LogMonitoringFailedException
-from gbserver.utils.unwrap_errors import unwrap_errors
+from gbserver.types.errors import LogMonitoringFailedException, WorkloadFailedException
+from gbserver.utils.unwrap_errors import (
+    format_failure_reason,
+    get_readable_error_message,
+    unwrap_errors,
+)
 from gbserver.utils.utils import (
     K8S_LABEL_VALUE_MAX_LENGTH,
     get_common_ancestor,
@@ -277,6 +281,46 @@ assert 0 > 0
         except BaseException as e:
             readable_error = unwrap_errors(e)
             assert readable_error == expected_err
+
+    def test_format_failure_reason_single_line(self):
+        # build_id="" so unwrap_errors returns "workload failed: " + str(e)
+        # without attempting a cloud-log fetch.
+        e = WorkloadFailedException(
+            "[RetryHandler launch_id 2c26a9c0] LSF job 1636559 failed: "
+            "Job 1636559 failed with return code 1 (LSF state EXIT)"
+        )
+        reason = format_failure_reason(e)
+        assert reason.startswith("workload failed: ")
+        assert "LSF job 1636559 failed" in reason
+        assert "(LSF state EXIT)" in reason
+        assert "\n" not in reason
+        assert "Traceback" not in reason
+        assert "Exception Details:" not in reason
+
+    def test_format_failure_reason_unwraps_exception_group(self):
+        # A WorkloadFailedException wrapped through TaskGroups (BaseExceptionGroup)
+        # plus a sibling CancelledError -- the reason must resolve to the real
+        # failure, single-line, no traceback.
+        wfe = WorkloadFailedException("[RetryHandler] LSF job 42 failed: boom")
+        eg = BaseExceptionGroup("unhandled errors in a TaskGroup", [wfe])
+        reason = format_failure_reason(eg)
+        assert reason == "workload failed: [RetryHandler] LSF job 42 failed: boom"
+        assert "\n" not in reason
+        assert "Traceback" not in reason
+
+    def test_get_readable_error_message_keeps_details_block(self):
+        # Guard for Fix A: the PR-facing body must still carry the collapsible
+        # Full Stack Trace <details> block (only the runner LOG duplication was
+        # removed, not the PR body).
+        err_stack = 'Traceback (most recent call last):\n  File "x", line 1\nBoom'
+        body = get_readable_error_message(
+            e=WorkloadFailedException("[RetryHandler] LSF job 42 failed: boom"),
+            err_stack=err_stack,
+        )
+        assert "### Full Stack Trace" in body
+        assert "<details>" in body
+        assert err_stack in body
+        assert "workload failed:" in body
 
 
 # Kubernetes label value validation regex (from the API server rules):

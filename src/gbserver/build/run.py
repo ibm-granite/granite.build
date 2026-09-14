@@ -35,7 +35,10 @@ from gbserver.types.buildevent import (
 from gbserver.types.constants import truncate
 from gbserver.types.status import STATUS_TO_ICON, Status
 from gbserver.utils.logger import get_logger
-from gbserver.utils.unwrap_errors import get_readable_error_message
+from gbserver.utils.unwrap_errors import (
+    format_failure_reason,
+    get_readable_error_message,
+)
 from gbserver.utils.utils import get_uuid
 
 logger = get_logger(__name__)
@@ -53,17 +56,25 @@ class RunFailed(RuntimeError):
         if exceptions is None:
             super().__init__(*args)
         else:
-            aggregated_message = "Exception Details:"
-            aggregated_message += "\n".join(
-                [
-                    line
-                    for e in exceptions
-                    for line in traceback.format_exception(type(e), e, e.__traceback__)
-                ]
+            # One-line reasons, not full per-exception tracebacks: embedding them
+            # here got the stack re-wrapped and re-emitted, ever larger, at every
+            # layer above. Full stack stays at DEBUG and in the status <details>.
+            aggregated_message = "Exception Details: " + "; ".join(
+                format_failure_reason(e) for e in exceptions
             )
             super().__init__(aggregated_message)
         self.status_updated = status_updated
         self.exceptions = exceptions
+
+
+def _already_reported(exceptions: List[BaseException]) -> bool:
+    """True if an inner Run.run already emitted the detailed failure body (it
+    re-raised a RunFailed with status_updated=True), so outer layers can stay
+    concise instead of re-emitting the full, re-wrapped traceback."""
+    return any(
+        isinstance(e, RunFailed) and getattr(e, "status_updated", False)
+        for e in exceptions
+    )
 
 
 class Run(ABC):
@@ -146,17 +157,30 @@ class Run(ABC):
                         type(primary), primary, primary.__traceback__
                     )
                 )
-                body = get_readable_error_message(e=primary, err_stack=err_stack)  # type: ignore[arg-type]
-                self.update_status(Status.FAILED, extra_msg=body)
+                if _already_reported(failures):
+                    # Inner layer already emitted the full body + <details>; stay
+                    # concise here (full stack at DEBUG) so the re-wrapped
+                    # traceback isn't re-dumped at every layer above.
+                    self.update_status(
+                        Status.FAILED, extra_msg=format_failure_reason(primary)
+                    )
+                    logger.debug("%s", err_stack)
+                else:
+                    body = get_readable_error_message(e=primary, err_stack=err_stack)  # type: ignore[arg-type]
+                    self.update_status(Status.FAILED, extra_msg=body)
                 raise RunFailed(status_updated=True, exceptions=failures) from eg
             else:
                 self.update_status(Status.CANCELLED)
                 raise asyncio.CancelledError() from eg
         except Exception as e:
             err_stack = traceback.format_exc()
-            body = get_readable_error_message(e=e, err_stack=err_stack)
-            # logger.error("%s", body) # TODO: is this necessary?
-            self.update_status(Status.FAILED, extra_msg=body)
+            if isinstance(e, RunFailed) and getattr(e, "status_updated", False):
+                # Inner layer already reported the detailed body; stay concise.
+                self.update_status(Status.FAILED, extra_msg=format_failure_reason(e))
+                logger.debug("%s", err_stack)
+            else:
+                body = get_readable_error_message(e=e, err_stack=err_stack)
+                self.update_status(Status.FAILED, extra_msg=body)
             raise RunFailed(status_updated=True) from e
         finally:
             # == Build Cancellation & Cleanup ==
