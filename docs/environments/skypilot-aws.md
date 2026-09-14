@@ -175,6 +175,68 @@ pytest -s -m extended --strict-markers \
 - **Region is separate.** Placement comes from the launcher `resources.infra` (e.g. `aws/us-east-2`),
   not from this profile.
 
+## Quickstart: run the aws step tests for the first time
+
+The per-cluster **step tests** (`steps/{byoc,eval,dpk}/skypilot/test/aws/…`) provision a real
+EC2 instance and are gated so they never launch without credentials. Starting from just an AWS
+access-key pair, with the repo `.venv` built (`make venv` at the repo root):
+
+1. **Give the build its launch credentials.** Seed the local secret store so gbserver can
+   materialize the `gb-skypilot` profile the committed `environment.yaml` selects (mechanism in
+   the runbook above):
+
+   ```bash
+   mkdir -p ~/.granite.build/space_secrets
+   python3 - <<'PY'
+   import os, base64, json, pathlib
+   d = pathlib.Path.home() / ".granite.build" / "space_secrets"; d.mkdir(parents=True, exist_ok=True)
+   enc = lambda v: base64.b64encode(v.encode()).decode()
+   p = d / "aws.json"
+   p.write_text(json.dumps({
+       "GB_AWS_ACCESS_KEY_ID":     enc(os.environ["AWS_ACCESS_KEY_ID"]),
+       "GB_AWS_SECRET_ACCESS_KEY": enc(os.environ["AWS_SECRET_ACCESS_KEY"]),
+   }, indent=2)); p.chmod(0o600)
+   PY
+   ```
+
+   Skip this if you already have a working `[gb-skypilot]` profile in `~/.aws/credentials` — the
+   `GB_AWS_*` secrets are lenient when absent, so the on-disk profile is used as-is.
+
+2. **Set the skip-gate** so the test runs instead of self-skipping — export **either**
+   `AWS_PROFILE=gb-skypilot` **or** the `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` pair. A bare
+   `~/.aws/credentials` `[default]` does *not* satisfy the gate on its own.
+
+3. **Verify the credentials without provisioning EC2:**
+
+   ```bash
+   sky api stop
+   env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY sky check aws   # expect: AWS: enabled
+   ```
+
+   Stripping the env vars proves the `gb-skypilot` profile — not your shell — supplies the creds.
+
+4. **Run a fixture** — this provisions a real EC2 instance, runs the build, and tears it down:
+
+   ```bash
+   AWS_PROFILE=gb-skypilot make -C steps/dpk/skypilot test TEST_DIR=test/aws-tok
+   # or byoc, and the heavier dpk pii fixture:
+   AWS_PROFILE=gb-skypilot make -C steps/dpk/skypilot test TEST_DIR=test/aws-pii
+   ```
+
+   `make test` forces pytest's `-s` (required — a second SkyPilot launch in a captured process
+   hits `OSError: [Errno 9] Bad file descriptor`). Reaching SUCCESS proves the step ran end to
+   end on EC2. (`eval` is a custom-image step: publish its image first — see
+   `steps/eval/skypilot/README.md`.)
+
+5. **Confirm nothing leaked:**
+
+   ```bash
+   sky status --refresh    # expect: No existing clusters
+   ```
+
+Region/zone come from the launcher `resources` (`infra`, e.g. `aws/us-east-2`) or
+`AWS_DEFAULT_REGION`, not from the profile.
+
 ## Example `environment.yaml`
 
 ```yaml

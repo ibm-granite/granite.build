@@ -166,8 +166,9 @@ backend is reachable:
   `~/.granite.build/space_secrets/` — or, since the secrets are lenient when absent, rely on an
   existing `[gb-skypilot]` profile already in `~/.aws/credentials`; shared: the server-managed
   store supplies them. (A bare `[default]` profile does **not** satisfy the skip-gate unless
-  `AWS_PROFILE` or the key pair is exported.) Full runbook (identical to the byoc/eval steps):
-  [docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md).
+  `AWS_PROFILE` or the key pair is exported.) **First-time setup walkthrough** (and the full
+  runbook, identical to the byoc/eval steps):
+  [docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md#quickstart-run-the-aws-step-tests-for-the-first-time).
 
 > **No cluster coverage of the cross-node `env:///shared` handoff.** It was covered by the
 > two-target form of the `slurm` fixture, which `validate: true` replaced (see that fixture's
