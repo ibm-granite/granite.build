@@ -208,7 +208,16 @@ export function TrialsTable({ job }: Props) {
         >
           Back to Hyperparameters
         </Button>
-        <TrialCompare trials={selectedForCompare} />
+        <TrialCompare
+          trials={selectedForCompare}
+          // Removal drops the trial from the shared selection, so the compare
+          // view and the table's checkboxes cannot disagree. Carbon's DataTable
+          // is unmounted while this view is up, so there is no internal
+          // checkbox state to keep in step — and Back clears the mirror anyway.
+          // TrialCompare stops offering removal at two, so this can never empty
+          // the view out from under the reader.
+          onRemove={(id) => setSelectedIds((prev) => prev.filter((selected) => selected !== id))}
+        />
       </div>
     )
   }
