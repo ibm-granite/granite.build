@@ -181,9 +181,24 @@ The per-cluster **step tests** (`steps/{byoc,eval,dpk}/skypilot/test/aws/…`) p
 EC2 instance and are gated so they never launch without credentials. Starting from just an AWS
 access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 
-1. **Give the build its launch credentials.** Seed the local secret store so gbserver can
-   materialize the `gb-skypilot` profile the committed `environment.yaml` selects (mechanism in
-   the runbook above):
+1. **Give the build its launch credentials.** The committed `environment.yaml` selects the
+   `gb-skypilot` profile, so your key pair needs to reach that profile. Pick one path:
+
+   **A — simplest (local/standalone): add the profile to `~/.aws/credentials` by hand.**
+
+   ```ini
+   [gb-skypilot]
+   aws_access_key_id = AKIA...
+   aws_secret_access_key = ...
+   ```
+
+   gbserver leaves an existing `gb-skypilot` profile as-is (the `GB_AWS_*` secrets are lenient
+   when absent) and SkyPilot reads it. Do **not** *also* seed the secret store (path B) with
+   different values — a mismatch raises `SkypilotConfigCollisionError`.
+
+   **B — portable (standalone *and* shared): seed the secret store.** gbserver materializes the
+   `gb-skypilot` profile from the `GB_AWS_*` secrets at launch, so the *same* `environment.yaml`
+   also works in a server deployment (where the server-managed store supplies them):
 
    ```bash
    mkdir -p ~/.granite.build/space_secrets
@@ -198,9 +213,6 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
    }, indent=2)); p.chmod(0o600)
    PY
    ```
-
-   Skip this if you already have a working `[gb-skypilot]` profile in `~/.aws/credentials` — the
-   `GB_AWS_*` secrets are lenient when absent, so the on-disk profile is used as-is.
 
 2. **Set the skip-gate** so the test runs instead of self-skipping — export **either**
    `AWS_PROFILE=gb-skypilot` **or** the `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` pair. A bare
