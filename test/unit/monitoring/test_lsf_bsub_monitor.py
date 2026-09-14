@@ -123,8 +123,10 @@ def _make_monitor(
         stop_event=stop_event,
         monitor_interval=MONITOR_INTERVAL,
     )
-    # Never let a test reach out to a cluster for the transient-error probe.
+    # Never let a test reach out to a cluster for the transient-error probe or
+    # the failure log-tail read (both are best-effort SSH reads).
     monitor._check_for_transient_lsf_error = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    monitor._read_log_tail = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return monitor, queue, commands
 
 
@@ -292,6 +294,24 @@ async def test_exit_reason_is_surfaced_in_the_failure_message():
     joined = "\n".join(msgs)
     assert "137" in joined
     assert "TERM_MEMLIMIT" in joined
+
+
+@pytest.mark.asyncio
+async def test_workload_log_tail_is_attached_to_the_failure_message():
+    """The terminal failure event should carry the workload's own error (the log
+    tail), not just LSF's scheduler-level exit reason."""
+    monitor, queue, _ = _make_monitor(
+        [_bjobs_json("RUN"), _bjobs_json("EXIT", exit_code="1")]
+    )
+    monitor._read_log_tail = AsyncMock(  # type: ignore[method-assign]
+        return_value="RuntimeError: Engine core initialization failed.",
+    )
+    await _drive(monitor, expect_terminates=True)
+    msgs = _msgs(queue)
+    assert _has_terminal_failure(msgs)
+    joined = "\n".join(msgs)
+    assert "Last log lines:" in joined
+    assert "RuntimeError: Engine core initialization failed." in joined
 
 
 # ---------------------------------------------------------------------------

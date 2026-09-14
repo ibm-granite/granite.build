@@ -57,6 +57,11 @@ logger = get_logger(__name__)
 
 JOB_LOG_STDOUT_FILENAME = "job_log.out"
 
+# Lines of the workload log to attach to a terminal failure event, so the actual
+# compute-side error (e.g. a Python traceback) reaches the PR rather than only
+# LSF's scheduler-level exit reason.
+_FAILURE_LOG_TAIL_LINES = 40
+
 
 class LsfStateClass(StrEnum):
     """How a native LSF ``STAT`` maps onto the terminal decision for a step.
@@ -500,6 +505,43 @@ class LSFBsubMonitor(MonitorBase):
 
         return None
 
+    async def _read_log_tail(self: Self, path: str, max_lines: int) -> Optional[str]:
+        """Best-effort tail of the workload's log file (over SSH when enabled).
+
+        Used to attach the actual compute-side failure (e.g. a Python traceback)
+        to the terminal failure event, which otherwise carries only LSF's
+        scheduler-level exit reason. Returns None on any read failure -- the
+        failure event is still emitted without the tail."""
+        if not path:
+            return None
+        read_cmd = f"tail -n {max_lines} {shlex.quote(path)}"
+        if self.lsf.use_ssh:
+            from gbserver.environment.lsf import Lsf
+
+            assert isinstance(self.lsf, Lsf)
+            ssh_cmd = await self.lsf.create_ssh_base_cmd()
+            ssh_cmd.append(shlex.quote(read_cmd))
+            read_cmd = " ".join(ssh_cmd)
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                read_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode != 0:
+                return None
+            content = stdout.decode("utf-8", errors="replace").strip()
+            return content or None
+        except Exception as e:  # best-effort: never mask the real failure
+            logger.warning(
+                "[LSFBsubMonitor %s] could not read log tail from %s: %s",
+                self.launch_id,
+                path,
+                e,
+            )
+            return None
+
     async def monitor(self: Self) -> None:
         bare_bjobs_command = " ".join(
             [
@@ -645,6 +687,13 @@ class LSFBsubMonitor(MonitorBase):
                     )
                     self.emitted_error_event = True
                 return
+
+            # Attach a tail of the workload log so the terminal event carries the
+            # real compute-side error (e.g. a Python traceback), not just LSF's
+            # scheduler-level exit reason. Best-effort: keep going without it.
+            log_tail = await self._read_log_tail(log_path, _FAILURE_LOG_TAIL_LINES)
+            if log_tail:
+                error_message = f"{error_message}\n\nLast log lines:\n{log_tail}"
 
             # Publish a terminal failure event so RetryHandler can detect it
             # and raise WorkloadFailedException to fail the build.
