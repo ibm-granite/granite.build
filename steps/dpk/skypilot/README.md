@@ -142,9 +142,11 @@ backend is reachable:
   `[pii-redactor]` extra is ~125 packages), hence `timeout_minutes: 60`. It is also the only
   cluster coverage of the `args` quoting path, since `pii_redactor_entities` is
   `ast.literal_eval`'d and must survive with its inner quotes intact.
-- **aws** — needs AWS credentials in the environment (`AWS_ACCESS_KEY_ID` +
-  `AWS_SECRET_ACCESS_KEY`, or `AWS_PROFILE`); provisions a real EC2 instance via
-  SkyPilot. Two fixtures, the aws counterparts of the slurm ones:
+- **aws** — provisions a real EC2 instance via SkyPilot; **self-skips unless** AWS
+  credentials are present in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`,
+  or `AWS_PROFILE`). Those env vars are the **skip-gate** — they decide whether the test
+  runs, **not** how the build authenticates to AWS (that is `GB_AWS_*` → the `gb-skypilot`
+  profile; see below). Two fixtures, the aws counterparts of the slurm ones:
   - **aws-tok** — `transform: tokenization2arrow` with `validate: true`, parallel
     (`runtime_num_processors: 2`). Proves the derivations and the in-step validator
     hook on real EC2.
@@ -156,15 +158,16 @@ backend is reachable:
   provisioned without credentials explicitly exported. On aws the hf pull is inline
   (injected into the step's setup), so `step_count` is 1, not 2.
 
-  The env vars above are only the **skip gate** — they decide whether the test runs on this
-  host, not how the build authenticates to AWS. The aws `environment.yaml` resolves the
-  secret names `GB_AWS_ACCESS_KEY_ID` / `GB_AWS_SECRET_ACCESS_KEY` through the space **secret
-  manager** and materializes them into a non-default `gb-skypilot` profile that SkyPilot then
-  selects (an explicit profile disables the ambient `AWS_*` provider). Standalone: seed those
-  secret names (base64) into `~/.granite.build/space_secrets/`; shared: the server-managed
-  store supplies them. Note a bare `~/.aws/credentials` `[default]` does **not** satisfy the
-  skip gate unless `AWS_PROFILE` (or the key pair) is exported. Full runbook (identical to the
-  byoc/eval steps): [docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md).
+  **How the build actually authenticates** (distinct from the skip-gate above): the aws
+  `environment.yaml` resolves the secret names `GB_AWS_ACCESS_KEY_ID` /
+  `GB_AWS_SECRET_ACCESS_KEY` through the space **secret manager** and materializes them into a
+  non-default `gb-skypilot` profile that SkyPilot then selects (an explicit profile disables
+  the ambient `AWS_*` provider). Standalone: seed those secret names (base64) into
+  `~/.granite.build/space_secrets/` — or, since the secrets are lenient when absent, rely on an
+  existing `[gb-skypilot]` profile already in `~/.aws/credentials`; shared: the server-managed
+  store supplies them. (A bare `[default]` profile does **not** satisfy the skip-gate unless
+  `AWS_PROFILE` or the key pair is exported.) Full runbook (identical to the byoc/eval steps):
+  [docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md).
 
 > **No cluster coverage of the cross-node `env:///shared` handoff.** It was covered by the
 > two-target form of the `slurm` fixture, which `validate: true` replaced (see that fixture's
