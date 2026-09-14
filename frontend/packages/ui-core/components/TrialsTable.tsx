@@ -40,7 +40,7 @@ import { TrialCompare } from './TrialCompare'
 import { TrialProgressSummary } from './TrialProgressSummary'
 import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
-import { METRIC_DE_EMPHASIS, bestTrialId, trialColorScale } from './trialMetrics'
+import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, bestTrialId, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import type { JobDetail, Trial } from '../types'
 
@@ -56,6 +56,18 @@ const HEADERS = [
 // TuningDetailPageClient polls the job itself, so the table and the page header
 // advance together.
 const ACTIVE_STATUSES = new Set(['running', 'pending'])
+
+// At most this many trials in one comparison. The ceiling is the palette's:
+// EMPHASIS_THRESHOLD marks where METRIC_PALETTE runs out of hues, so a wider
+// selection would have to draw two curves in the same colour — and ten
+// overlapping curves is already about the limit for reading a line chart.
+//
+// This caps the *selection*, which is a different question from the one
+// EMPHASIS_THRESHOLD answers. That one counts every trial in the job, because
+// colour follows the run and not its rank among the ticked ones, so a job with
+// more trials than this still de-emphasises however few are ticked. Capping the
+// selection does not make those runs distinctly coloured.
+const MAX_SELECTED = EMPHASIS_THRESHOLD
 
 function toFeatureLabel(name: string): string {
   return name.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())
@@ -264,6 +276,7 @@ export function TrialsTable({ job }: Props) {
   const canShowRadar = comparableTrials.length >= 2 && axisCount >= 2
   // The diff-table only needs 2+ completed trials with a score — no axis constraint.
   const canOpenCompare = comparableTrials.length >= 2
+  const atSelectionCap = selectedIds.length >= MAX_SELECTED
 
   const trialsById = new Map(trials.map((t) => [t.id, t]))
 
@@ -306,6 +319,24 @@ export function TrialsTable({ job }: Props) {
                   onChange={onInputChange}
                   aria-label="Search trials"
                 />
+                {trials.length > MAX_SELECTED && (
+                  // Explains both disabled states below — the capped row
+                  // checkboxes and the withheld select-all — neither of which
+                  // Carbon can annotate itself.
+                  <span
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '0 1rem',
+                      fontSize: '0.75rem',
+                      color: 'var(--cds-text-secondary)',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {selectedIds.length} of {MAX_SELECTED} selected
+                    {atSelectionCap && ' — clear one to pick another'}
+                  </span>
+                )}
                 {selectedIds.length > 0 && (
                   <Button
                     kind="ghost"
@@ -341,6 +372,15 @@ export function TrialsTable({ job }: Props) {
                   <TableExpandHeader aria-label="Expand row" />
                   <TableSelectAll
                     {...getSelectionProps()}
+                    // Carbon's handleSelectAll ticks every filtered row in one
+                    // go, which would sail past MAX_SELECTED and leave Carbon's
+                    // own list holding rows the mirror refused — exactly the
+                    // desync the comment below is written to avoid. So it is
+                    // offered only when it cannot overshoot. Clearing stays
+                    // available: Carbon deselects whenever anything is already
+                    // selected (DataTable.js:303), so a non-empty selection
+                    // makes this click a clear rather than an add.
+                    disabled={selectedIds.length === 0 && tableRows.length > MAX_SELECTED}
                     onSelect={(e) => {
                       getSelectionProps().onSelect(e)
                       // Mirror Carbon's own scope, which is the *filtered* rows:
@@ -433,6 +473,13 @@ export function TrialsTable({ job }: Props) {
                       >
                         <TableSelectRow
                           {...selectionProps}
+                          // Nothing left to give: at the cap an unticked row
+                          // cannot be added, so the checkbox says so rather
+                          // than swallowing the click. Ticked rows stay live or
+                          // the reader would be stuck at ten with no way down.
+                          // Carbon puts no tooltip on a disabled checkbox, so
+                          // the toolbar carries the reason.
+                          disabled={atSelectionCap && !selectedIds.includes(row.id)}
                           onSelect={(e) => {
                             selectionProps.onSelect(e)
                             const checked = (e.target as HTMLInputElement).checked
@@ -494,6 +541,13 @@ export function TrialsTable({ job }: Props) {
                 title: 'Trial comparison',
                 radar: { axes: { angle: 'feature', value: 'score' } },
                 data: { groupMapsTo: 'product' },
+                // The same map the line charts and the row checkboxes use, so a
+                // trial reads as one colour across all three. Carbon resolves a
+                // radar blob's fill through model.getFillColor, which is what
+                // reads this scale; without it the radar picks its own hues by
+                // group order, so a trial changes colour whenever the selection
+                // does.
+                color: { scale: colorScale },
                 theme,
                 height: '420px',
               }}
