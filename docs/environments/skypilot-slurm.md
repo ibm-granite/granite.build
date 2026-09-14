@@ -94,6 +94,37 @@ environment (BlueVela's `gpu-mid` partition, reached at `login1`).
 > fixture's environment name differs from this asset and `bluevela` isn't found in this tree.
 > Unifying the two behind a single shared asset is a possible follow-up.
 
+#### Override the partition (`zone`) per build
+
+To run a target on a different partition than its environment declares, set `zone` in the build's
+step `config` — no `environment.yaml` change needed. Either build-level layer above works. Because a
+`zone` without a `cluster` is rejected (see above), also supply a `cluster` unless the environment
+already sets one (it does for `bluevela` / `ibm-bluevela`).
+
+Layer 2 — under `launcher_config.resources` (wins over a top-level `zone`):
+
+```yaml
+# build.yaml
+targets:
+  my-target:
+    environment_uri: space://environments/skypilot/slurm/bluevela
+    steps:
+      - step_uri: space://steps/command
+        config:
+          launcher_config:
+            resources:
+              zone: gpu-high        # override the env's gpu-mid partition
+              # cluster: bluevela   # only if the environment doesn't already set one
+```
+
+Layer 3 — a plain top-level `zone` in the step `config` (shorter; overridden by any
+`launcher_config.resources.zone`):
+
+```yaml
+        config:
+          zone: gpu-high            # override the partition
+```
+
 ### Autostop is ignored
 
 SLURM does not support cluster autostop, so gbserver forces `idle_minutes_to_autostop=None` on the
@@ -221,24 +252,15 @@ environment_configs:
           run: |
             {{ config.command_config.command }}
     monitors:
+      # References the shipped monitor library (builtins/monitors/skypilot) as-is —
+      # no inline event rules to maintain. It carries the standard GB_ARTIFACT_*
+      # convention (GB_ markers, with the legacy LLMB_ prefix dual-accepted, and the
+      # `binding` field) plus the default poll/log_retrieval profile; a build.yaml step
+      # `config.poll_interval_seconds` flows through the monitor's own `| default(...)`
+      # template (see the `command` step at
+      # src/gbserver/builtins/steps/skypilot/command/step.yaml).
       skypilot_monitor:
-        type: skypilot_monitor
-        config:
-          poll_interval_seconds: 5
-          event_configs:
-            # Markers standardized on GB_; the legacy LLMB_ prefix is dual-accepted.
-            - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-              line_regex: "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*"
-              is_json: false
-              event_fields:
-                - field_name: binding_id
-                  field_regex: "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+"
-                - field_name: path
-                  field_regex: "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*"
-                  is_data: true
-                - field_name: binding
-                  field_value_template: '{ "path": "{{ fields.data.path }}" }'
-                  is_json: true
+        ref: space://monitors/skypilot
 ```
 
 ## See also
