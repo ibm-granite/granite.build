@@ -154,13 +154,35 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`
 }
 
+// "1 hyperparameter is" / "3 hyperparameters are" — count, noun and copula all
+// agreeing. The section subtitles are present tense, so the verb has to be
+// inflected by the same count `plural` inflects the noun by. It lives in one
+// helper because getting it wrong stays invisible until a section holds exactly
+// one key, and Differences holds one as soon as two trials differ in a single
+// hyperparameter — routine for a narrow search space.
+function pluralIs(count: number, noun: string): string {
+  return `${plural(count, noun)} ${count === 1 ? 'is' : 'are'}`
+}
+
 interface Props {
   trials: Trial[]
   /** Drop one trial from the comparison. */
   onRemove: (trialId: string) => void
+  /**
+   * The job's winning trial, or undefined when no trial reported a usable metric.
+   *
+   * It is decided over every trial in the job, which is why it arrives as a prop
+   * instead of being read off `trials`: this component only ever sees the
+   * compared subset, and the lower loss of two arbitrary trials is not the
+   * winner. So a comparison that leaves the winner out carries no tag at all
+   * rather than crowning whichever of the two happened to score better. It is
+   * also the same id that colours the winning run in the charts, so the tag and
+   * that colour cannot disagree.
+   */
+  bestTrialId?: string
 }
 
-export function TrialCompare({ trials, onRemove }: Props) {
+export function TrialCompare({ trials, onRemove, bestTrialId }: Props) {
   // Shared hyperparameters are collapsed by default so the parameters that
   // actually varied occupy the visible page.
   const [sharedExpanded, setSharedExpanded] = useState(false)
@@ -189,20 +211,16 @@ export function TrialCompare({ trials, onRemove }: Props) {
   // splits evenly. Only explain it when it is actually on screen.
   const showLegend = Object.keys(oddOnes).length > 0
 
-  // Only crown a leading column when its loss is genuinely ahead of the next one;
-  // a tie or missing losses would make the tag arbitrary.
-  const bestLoss = lossOf(sortedTrials[0])
-  const runnerUpLoss = sortedTrials.length > 1 ? lossOf(sortedTrials[1]) : null
-  const showBestTag =
-    sortedTrials.length > 1 && bestLoss !== null && (runnerUpLoss === null || bestLoss < runnerUpLoss)
-
   // A comparison needs two columns to be a comparison, so removal stops at two.
-  // The reason rides in the caption below rather than in a tooltip on the
-  // disabled buttons: Carbon sets `pointer-events: none` on a disabled
-  // icon-only button (_button.scss, the #13815 workaround) and binds the
-  // tooltip's mouseenter to the button element itself, so a disabled
-  // IconButton's tooltip never opens — nor can a disabled button be focused
-  // into, which would leave a keyboard reader with no explanation at all.
+  //
+  // The disabled buttons say nothing about why, by request. If that is ever
+  // revisited, do not reach for a tooltip on them: Carbon sets
+  // `pointer-events: none` on a disabled icon-only button (_button.scss, the
+  // #13815 workaround) and binds the tooltip's mouseenter to the button element
+  // itself, so a disabled IconButton's tooltip never opens — nor can a disabled
+  // button be focused into, so a keyboard reader would get nothing either. Any
+  // explanation has to be always-rendered text somewhere else, or the buttons
+  // have to be hidden at the floor rather than disabled.
   const atRemovalFloor = rows.length <= 2
 
   // Fixed label column + data columns split evenly across the available width.
@@ -249,7 +267,7 @@ export function TrialCompare({ trials, onRemove }: Props) {
         <StructuredListHead>
           <StructuredListRow head>
             <StructuredListCell head style={labelCellStyle} />
-            {rows.map((row, i) => (
+            {rows.map((row) => (
               <StructuredListCell key={row.id} head style={dataCellStyle}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                   <span>{row.id}</span>
@@ -266,10 +284,10 @@ export function TrialCompare({ trials, onRemove }: Props) {
                 {/* Own block below the id, so a long tag never squeezes the id's
                     column or wraps beside it. Carbon's .cds--tag carries its own
                     margin; the wrapper owns the spacing instead. */}
-                {i === 0 && showBestTag && (
+                {row.id === bestTrialId && (
                   <div style={{ marginTop: '0.25rem' }}>
                     <Tag type="gray" size="sm" style={{ margin: 0 }}>
-                      Best eval loss
+                      Winning trial
                     </Tag>
                   </div>
                 )}
@@ -279,15 +297,9 @@ export function TrialCompare({ trials, onRemove }: Props) {
         </StructuredListHead>
       </StructuredListWrapper>
 
-      {atRemovalFloor && (
-        <p style={{ ...HEADING_SUBTITLE, padding: '0.25rem 0 0' }}>
-          A comparison needs two trials — use Back to Hyperparameters to pick a different pair.
-        </p>
-      )}
-
       {resultKeys.length > 0 && (
         <>
-          <SectionHeading title="Results" subtitle="How each trial performed" />
+          <SectionHeading title="Results" subtitle="Trial performance metrics" />
           {renderList(resultKeys, 'Trial results')}
         </>
       )}
@@ -296,7 +308,7 @@ export function TrialCompare({ trials, onRemove }: Props) {
         <>
           <SectionHeading
             title="Differences"
-            subtitle={`${plural(differingKeys.length, 'hyperparameter')} varied across these trials`}
+            subtitle={`${pluralIs(differingKeys.length, 'hyperparameter')} varied across the selected trials`}
           />
           {renderList(differingKeys, 'Differing hyperparameters')}
         </>
@@ -331,7 +343,7 @@ export function TrialCompare({ trials, onRemove }: Props) {
               <span style={{ display: 'flex', alignItems: 'baseline', gap: '0.75rem' }}>
                 <span style={HEADING_TITLE}>Similarities</span>
                 <span style={HEADING_SUBTITLE}>
-                  {`${plural(sameKeys.length, 'hyperparameter')} identical across all ${rows.length} trials`}
+                  {`${pluralIs(sameKeys.length, 'hyperparameter')} identical across the selected trials`}
                 </span>
               </span>
             </Button>

@@ -42,6 +42,7 @@ import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
 import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, bestTrialId, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
+import styles from './TrialsTable.module.scss'
 import type { JobDetail, Trial } from '../types'
 
 const HEADERS = [
@@ -150,12 +151,16 @@ export function TrialsTable({ job }: Props) {
   // charts above and a row's own Metrics tab agree — and so hiding a series in
   // the chart legend never repaints the others. Built here rather than in either
   // consumer because both need the identical map.
+  // Computed once and shared: the palette accents this run, and the compare view
+  // tags it. Reading it twice would let the tag crown a trial the charts colour
+  // as an also-ran if the two ever fell out of step.
+  const bestId = bestTrialId(trials)
   const colorScale = useMemo(() => {
     const ordered = [...trials]
       .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
       .map((t) => t.id)
-    return trialColorScale(ordered, bestTrialId(trials), theme)
-  }, [trials, theme])
+    return trialColorScale(ordered, bestId, theme)
+  }, [trials, bestId, theme])
 
   if (isLoading) {
     return <InlineLoading description="Loading trials…" />
@@ -234,6 +239,9 @@ export function TrialsTable({ job }: Props) {
           // TrialCompare stops offering removal at two, so this can never empty
           // the view out from under the reader.
           onRemove={(id) => setSelectedIds((prev) => prev.filter((selected) => selected !== id))}
+          // The job's winner, not the leading column — a comparison that leaves
+          // it out shows no tag rather than promoting the better of two.
+          bestTrialId={bestId}
         />
       </div>
     )
@@ -534,7 +542,7 @@ export function TrialsTable({ job }: Props) {
         </div>
 
         {canShowRadar && (
-          <div style={{ flex: '0 0 26rem', maxWidth: '100%', height: '420px' }}>
+          <div className={styles.radar} style={{ flex: '0 0 26rem', maxWidth: '100%', height: '420px' }}>
             <RadarChart
               data={radarData}
               options={{
