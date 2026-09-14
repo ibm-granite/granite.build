@@ -1,0 +1,29 @@
+# YAML-driven spec for test_skypilot_aws_dpk_pii.py (located by the test/ <-> test-data/
+# helper, so this pairing holds in both test modes).
+#
+# PII redaction through the SAME dpk step as aws-tok — the generality proof on aws.
+# Reaching SUCCESS proves a second, unrelated DPK transform runs with no change to
+# step-template.yaml — only `transform`, `args`, and the artifact names differ.
+targets:
+  - redact
+target_expectations:
+  - target_name: redact
+    # step_count 1: aws hf pull is inline (injected into setup), so no separate
+    # download step. The env:// output moves no bytes and queues no push step.
+    # CALIBRATE against the first green EC2 run.
+    step_count: 1
+    input_artifact_count: 1     # docs
+    output_artifact_count: 1    # clean (env://, registered inline from the marker)
+    jobstats_count: 1
+    expected_steps:
+      - step_uri: space://steps/dpk
+        config:
+          dpk_config:
+            transform: pii_redactor
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# The [pii-redactor] extra installs ~125 packages (torch, flair, presidio) and the
+# transform downloads a flair NER model on first use — slow on a cold EC2 node.
+timeout_minutes: 75
