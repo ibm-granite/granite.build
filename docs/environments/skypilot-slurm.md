@@ -148,7 +148,8 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 A containerized step (`command_config.image` set) runs its `run:` inside an enroot container whose
 filesystem is **not** the compute node's. The SkyPilot SLURM backend bind-mounts only three host paths
 into that container — the account home, the ccache dir, and the SkyPilot **`workdir`**
-([`sky/provision/slurm/instance.py`](../../.venv/lib/python3.13/site-packages/sky/provision/slurm/instance.py)
+([`sky/provision/slurm/instance.py`](https://github.com/cmadam/skypilot/blob/5f18669dc9985f0649147dbcc6bb79d89aeb428d/sky/provision/slurm/instance.py)
+in the granite-build SkyPilot fork pinned by `pyproject.toml`
 builds `--container-mounts` as `home:home`, `ccache:ccache`, and `workdir:workdir`, the last only when
 `workdir` is set and differs from home). It does **not** identity-mount `/proj` (that is the LSF
 backend, not this one). So unless `shared_workdir` falls under a mounted path, the per-run
