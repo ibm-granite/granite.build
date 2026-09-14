@@ -818,15 +818,21 @@ class RetryHandler:
             # LSF (plain `error`, no appwrapper): surface the real error rather
             # than the AppWrapper wording, which doesn't apply here.
             error = data.get("error")
+            prefix = f"[RetryHandler launch_id {self.launch_id}]"
             if error:
                 job_id = data.get("job_id")
-                prefix = f"[RetryHandler launch_id {self.launch_id}]"
                 if job_id is not None:
                     return f"{prefix} LSF job {job_id} failed: {error}"
                 return f"{prefix} {error}"
+            # Parseable JSON with neither an appwrapper nor an error: still name the
+            # state, so any terminal `{"state": ...}` event keeps concrete wording
+            # rather than degrading to the generic fallback below.
+            state = data.get("state")
+            if state:
+                return f"{prefix} workload is in a {state} state."
 
-        # No parseable JSON (or JSON without appwrapper/error): original wording,
-        # distinguishing "no message at all" from "message present but not JSON".
+        # No parseable JSON (or JSON with no appwrapper/error/state): original
+        # wording, distinguishing "no message" from "message present but not JSON".
         msg = getattr(event.payload, "msg", None) if event.payload else None
         if not msg:
             return f"Workload failed for launch_id {self.launch_id}"

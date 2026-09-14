@@ -832,8 +832,16 @@ class TestExtractFailureMessage:
         )
         assert "pod OOMKilled" not in msg
 
-    def test_json_without_error_or_appwrapper_falls_back(self: Self) -> None:
+    def test_json_with_only_state_names_the_state(self: Self) -> None:
+        # Neither appwrapper nor error, but a parseable state -> keep concrete
+        # wording (name the state) rather than degrade to the generic fallback.
         event = create_test_event('\n```json\n{"state": "Failed"}\n```\n')
+        msg = self._handler()._extract_failure_message(event)
+        assert msg == "[RetryHandler launch_id 2c26a9c0] workload is in a Failed state."
+
+    def test_non_json_message_falls_back_to_generic(self: Self) -> None:
+        # A message with no ```json``` block at all -> the generic fallback.
+        event = create_test_event("some plain failure text, not json")
         msg = self._handler()._extract_failure_message(event)
         assert msg == (
             "[RetryHandler launch_id 2c26a9c0] Workload failed. "

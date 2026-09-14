@@ -61,6 +61,9 @@ JOB_LOG_STDOUT_FILENAME = "job_log.out"
 # compute-side error (e.g. a Python traceback) reaches the PR rather than only
 # LSF's scheduler-level exit reason.
 _FAILURE_LOG_TAIL_LINES = 40
+# Hard bound on the (best-effort) tail read: it sits on the failure-emission path,
+# so a wedged SSH must not delay the Failed event beyond this.
+_FAILURE_LOG_TAIL_TIMEOUT_S = 30
 
 
 class LsfStateClass(StrEnum):
@@ -508,32 +511,23 @@ class LSFBsubMonitor(MonitorBase):
     async def _read_log_tail(self: Self, path: str, max_lines: int) -> Optional[str]:
         """Best-effort tail of the workload's log file (over SSH when enabled).
 
-        Used to attach the actual compute-side failure (e.g. a Python traceback)
-        to the terminal failure event, which otherwise carries only LSF's
-        scheduler-level exit reason. Returns None on any read failure -- the
-        failure event is still emitted without the tail."""
+        Attaches the actual compute-side failure (e.g. a Python traceback) to the
+        terminal failure event, which otherwise carries only LSF's scheduler-level
+        exit reason. Returns None on any failure -- the event is still emitted
+        without the tail.
+
+        Sits on the critical failure-emission path, so it must not hang: it prefers
+        the reused SSH tunnel (like monitor(), inheriting its connect/login/command
+        timeouts) and bounds the whole read with wait_for, so a wedged bluevela
+        banner/login can't block the Failed event (see the SSH banner-timeout work)."""
         if not path:
             return None
-        read_cmd = f"tail -n {max_lines} {shlex.quote(path)}"
-        if self.lsf.use_ssh:
-            from gbserver.environment.lsf import Lsf
-
-            assert isinstance(self.lsf, Lsf)
-            ssh_cmd = await self.lsf.create_ssh_base_cmd()
-            ssh_cmd.append(shlex.quote(read_cmd))
-            read_cmd = " ".join(ssh_cmd)
+        tail_cmd = f"tail -n {max_lines} {shlex.quote(path)}"
         try:
-            proc = await asyncio.create_subprocess_shell(
-                read_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            return await asyncio.wait_for(
+                self._run_log_tail_cmd(tail_cmd), timeout=_FAILURE_LOG_TAIL_TIMEOUT_S
             )
-            stdout, _ = await proc.communicate()
-            if proc.returncode != 0:
-                return None
-            content = stdout.decode("utf-8", errors="replace").strip()
-            return content or None
-        except Exception as e:  # best-effort: never mask the real failure
+        except (Exception, asyncio.TimeoutError) as e:  # best-effort; never mask
             logger.warning(
                 "[LSFBsubMonitor %s] could not read log tail from %s: %s",
                 self.launch_id,
@@ -541,6 +535,28 @@ class LSFBsubMonitor(MonitorBase):
                 e,
             )
             return None
+
+    async def _run_log_tail_cmd(self: Self, tail_cmd: str) -> Optional[str]:
+        """Run the tail command over the reused tunnel, else a fresh SSH subprocess."""
+        ssh_tunnel = self.lsf.get_ssh_tunnel() if self.lsf.use_ssh else None
+        if ssh_tunnel:
+            rc, stdout, _ = await ssh_tunnel.run_remote(tail_cmd, raise_on_error=False)
+            return (stdout.strip() or None) if rc == 0 else None
+
+        cmd = tail_cmd
+        if self.lsf.use_ssh:
+            ssh_cmd = await self.lsf.create_ssh_base_cmd()
+            ssh_cmd.append(shlex.quote(tail_cmd))
+            cmd = " ".join(ssh_cmd)
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        return stdout.decode("utf-8", errors="replace").strip() or None
 
     async def monitor(self: Self) -> None:
         bare_bjobs_command = " ".join(

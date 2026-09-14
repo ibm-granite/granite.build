@@ -174,7 +174,7 @@ class Run(ABC):
                 raise asyncio.CancelledError() from eg
         except Exception as e:
             err_stack = traceback.format_exc()
-            if isinstance(e, RunFailed) and getattr(e, "status_updated", False):
+            if _already_reported([e]):
                 # Inner layer already reported the detailed body; stay concise.
                 self.update_status(Status.FAILED, extra_msg=format_failure_reason(e))
                 logger.debug("%s", err_stack)

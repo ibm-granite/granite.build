@@ -314,6 +314,30 @@ async def test_workload_log_tail_is_attached_to_the_failure_message():
     assert "RuntimeError: Engine core initialization failed." in joined
 
 
+@pytest.mark.asyncio
+async def test_read_log_tail_is_bounded_and_never_hangs():
+    """The tail read sits on the failure-emission path, so a wedged SSH must not
+    block it: a stuck read is abandoned (returns None) within the timeout, not
+    awaited forever."""
+    monitor, _, _ = _make_monitor([_bjobs_json("RUN")])
+    # _make_monitor stubs _read_log_tail; restore the real one under test.
+    monitor._read_log_tail = types.MethodType(  # type: ignore[method-assign]
+        LSFBsubMonitor._read_log_tail, monitor
+    )
+
+    async def _hang(_cmd):  # noqa: ANN001 - never completes
+        await asyncio.Event().wait()
+
+    monitor._run_log_tail_cmd = _hang  # type: ignore[method-assign]
+    with patch(
+        "gbserver.monitoring.lsf_bsub_monitor._FAILURE_LOG_TAIL_TIMEOUT_S", 0.05
+    ):
+        result = await asyncio.wait_for(
+            monitor._read_log_tail("/tmp/job.log", 40), timeout=5
+        )
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # Case F / G -- suspended and unknown states are NOT terminal
 # ---------------------------------------------------------------------------
