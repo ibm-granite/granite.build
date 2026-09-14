@@ -10,7 +10,7 @@ target_expectations:
   - target_name: redact
     # step_count 1: aws hf pull is inline (injected into setup), so no separate
     # download step. The env:// output moves no bytes and queues no push step.
-    # CALIBRATE against the first green EC2 run.
+    # These counts were validated against a green EC2 run (the build reached SUCCESS).
     step_count: 1
     input_artifact_count: 1     # docs
     output_artifact_count: 1    # clean (env://, registered inline from the marker)

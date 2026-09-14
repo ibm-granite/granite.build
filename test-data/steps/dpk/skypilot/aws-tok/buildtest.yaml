@@ -14,7 +14,9 @@ target_expectations:
     # moves no bytes, so it queues no push step.
     #
     # jobstats_count is not asserted under standalone's NoopLineageStore but is kept
-    # accurate. CALIBRATE all four numbers against the first green EC2 run.
+    # accurate. All four numbers were validated against a green EC2 run
+    # (GB_ENVIRONMENT=DEV, which populates lineage counts): the build reached SUCCESS
+    # with these exact values.
     step_count: 1
     input_artifact_count: 1     # docs
     output_artifact_count: 1    # tokens (env://, registered inline from the marker)
