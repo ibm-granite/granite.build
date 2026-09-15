@@ -9,7 +9,7 @@ import type { JobRead } from '@granite-build/ui-core/types'
 import { TuningLogViewer } from '@granite-build/ui-core/components/autotunex/tunings/TuningLogViewer'
 import { TrialsTable } from '@granite-build/ui-core/components/autotunex/trials/TrialsTable'
 import { TuningResultsPanel } from '@granite-build/ui-core/components/autotunex/tunings/TuningResultsPanel'
-import { ConfigDisplay } from '@granite-build/ui-core/components/ConfigDisplay'
+import { ConfigDisplay } from '@granite-build/ui-core/components/autotunex/shared/ConfigDisplay'
 import { modelSourceLabel } from '../modelSources'
 import { SettingsDatasetView } from '@granite-build/ui-core/components/autotunex/settings/SettingsDatasetView'
 

@@ -7,10 +7,10 @@ import { Add, Settings, Edit } from '@carbon/icons-react'
 import type { Configuration, ConfigData, ConfigForm, ListResult, PendingConfigData, PendingConfigUpdate, TuningGoal } from '@granite-build/ui-core/types'
 import { getConfiguration, getConfigurations, getConfigurationTemplate } from '@granite-build/ui-core/api/autotunex'
 import { ALGORITHM_DETAILS } from '@granite-build/ui-core/config/autotunexAlgorithms'
-import { ConfigDisplay } from '@granite-build/ui-core/components/ConfigDisplay'
+import { ConfigDisplay } from '@granite-build/ui-core/components/autotunex/shared/ConfigDisplay'
 import { CreateConfigForm } from '@granite-build/ui-core/components/autotunex/settings/CreateConfigForm'
 import styles from './Step2Configure.module.scss'
-import layoutStyles from '@granite-build/ui-core/components/layout.module.scss'
+import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
 
 const SFT_ALGORITHMS = ['lora', 'sft', 'alora', 'lokr', 'loha', 'vera']
 const RL_ALGORITHMS = ['dpo', 'kto', 'ppo', 'grpo', 'dapo']

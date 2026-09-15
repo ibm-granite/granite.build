@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { NumberInput, Select, SelectItem } from '@carbon/react'
-import type { NumberInputColumn } from '../types'
-import { toUpperCase } from '../lib/autotunex/wizardUtils'
+import type { NumberInputColumn } from '../../../types'
+import { toUpperCase } from '../../../lib/autotunex/wizardUtils'
 
 type TimeUnit = 'seconds' | 'minutes' | 'hours' | 'days'
 
