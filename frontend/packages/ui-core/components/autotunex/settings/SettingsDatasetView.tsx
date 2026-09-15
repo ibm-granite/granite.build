@@ -18,8 +18,8 @@ import {
   InlineNotification,
 } from '@carbon/react'
 import { useQuery } from '@tanstack/react-query'
-import { getDataset } from '../api/autotunex'
-import type { Dataset } from '../types'
+import { getDataset } from '../../../api/autotunex'
+import type { Dataset } from '../../../types'
 
 interface Props {
   open: boolean

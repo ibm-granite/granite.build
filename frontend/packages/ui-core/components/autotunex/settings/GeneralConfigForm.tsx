@@ -1,10 +1,10 @@
 'use client'
 
 import { NumberInput, Tile } from '@carbon/react'
-import type { ConfigData } from '../types'
-import { maxConcurrentTrialsCap } from '../lib/autotunex/hyperparamValues'
-import { TimeInput } from './TimeInput'
-import layoutStyles from './layout.module.scss'
+import type { ConfigData } from '../../../types'
+import { maxConcurrentTrialsCap } from '../../../lib/autotunex/hyperparamValues'
+import { TimeInput } from '../../TimeInput'
+import layoutStyles from '../../layout.module.scss'
 
 interface GeneralConfigFormProps {
   config: ConfigData

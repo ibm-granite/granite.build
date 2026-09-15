@@ -2,8 +2,8 @@
 
 import { PageHeader } from '@granite-build/ui-core/components/PageHeader'
 import { AutotunexTabs } from '@granite-build/ui-core/components/AutotunexTabs'
-import { ConfigurationsTable } from '@granite-build/ui-core/components/ConfigurationsTable'
-import { DatasetsTable } from '@granite-build/ui-core/components/DatasetsTable'
+import { ConfigurationsTable } from '@granite-build/ui-core/components/autotunex/settings/ConfigurationsTable'
+import { DatasetsTable } from '@granite-build/ui-core/components/autotunex/settings/DatasetsTable'
 import styles from './Settings.module.scss'
 
 export default function SettingsPage() {

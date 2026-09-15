@@ -7,7 +7,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getConfiguration, getJobByBuildId } from '@granite-build/ui-core/api/autotunex'
 import { listSpaces } from '@granite-build/ui-core/api/gbserver'
 import { ConfigDisplay } from '@granite-build/ui-core/components/ConfigDisplay'
-import { SettingsDatasetView } from '@granite-build/ui-core/components/SettingsDatasetView'
+import { SettingsDatasetView } from '@granite-build/ui-core/components/autotunex/settings/SettingsDatasetView'
 import styles from './DetailsPanel.module.scss'
 
 interface DetailFieldProps {

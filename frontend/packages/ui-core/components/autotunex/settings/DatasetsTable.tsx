@@ -22,34 +22,36 @@ import {
   Button,
   Toggle,
   Link as CarbonLink,
-  Modal,
   InlineNotification,
-  InlineLoading,
 } from '@carbon/react'
 import { Add, TrashCan } from '@carbon/icons-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
-import type { Configuration } from '../types'
-import { getConfigurations, deleteConfiguration, getConfiguration } from '../api/autotunex'
-import { deleteEach, isBulkDeleteError } from '../lib/autotunex/bulkDelete'
-import { listSpaces } from '../api/gbserver'
-import { SettingsDeleteModal } from './SettingsDeleteModal'
-import { SettingsConfigCreate } from './SettingsConfigCreate'
-import { ConfigDisplay } from './ConfigDisplay'
-
-const SYSTEM_CONFIG_USER_ID = '00000000-0000-0000-0000-000000000001'
+import type { Dataset } from '../../../types'
+import { getDatasets, deleteDataset } from '../../../api/autotunex'
+import { deleteEach, isBulkDeleteError } from '../../../lib/autotunex/bulkDelete'
+import { listSpaces } from '../../../api/gbserver'
+import { SettingsDeleteModal } from '../../SettingsDeleteModal'
+import { SettingsDatasetView } from './SettingsDatasetView'
+import { SettingsDatasetCreate } from './SettingsDatasetCreate'
 
 const HEADERS = [
   { key: 'name', header: 'Name' },
-  { key: 'tunings', header: 'Tunings' },
+  { key: 'train_records', header: 'Training samples' },
+  { key: 'validation_records', header: 'Validation samples' },
   { key: 'created_at', header: 'Created on' },
 ]
 
-function isUndeletable(c: Configuration): boolean {
-  return (c.associated_jobs?.length ?? 0) > 0 || c.user_id === SYSTEM_CONFIG_USER_ID
+function formatCompact(n: number): string {
+  if (n == null || Number.isNaN(n)) return '0'
+  return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 }
 
-export function ConfigurationsTable() {
+function isUndeletable(d: Dataset): boolean {
+  return (d.associated_jobs?.length ?? 0) > 0
+}
+
+export function DatasetsTable() {
   const queryClient = useQueryClient()
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -75,7 +77,7 @@ export function ConfigurationsTable() {
   // checkboxes from whatever rows it is handed. A selection left over from a
   // previous page/size/search/scope would therefore stay in `selectedIds`
   // while disappearing from the UI — the batch bar and the confirmation count
-  // would disagree, and the delete would remove configurations the user can no longer
+  // would disagree, and the delete would remove datasets the user can no longer
   // see. It also keeps `anyUndeletable` honest, since `byId` only holds the
   // current page. Clear it whenever the visible set changes.
   useEffect(() => {
@@ -98,25 +100,19 @@ export function ConfigurationsTable() {
   // refetch after a delete -- `placeholderData` keeps the previous page on screen,
   // so a failed refetch would otherwise leave deleted rows showing silently.
   const { data, isLoading, error } = useQuery({
-    queryKey: ['autotunex', 'configurations', page, pageSize, q, scope],
-    queryFn: () => getConfigurations({ page, pageSize, q: q || undefined, scope }),
+    queryKey: ['autotunex', 'datasets', page, pageSize, q, scope],
+    queryFn: () => getDatasets({ page, pageSize, q: q || undefined, scope }),
     placeholderData: (prev) => prev,
   })
   const items = data?.items ?? []
   const total = data?.total ?? 0
 
-  const { data: viewedConfig, isLoading: isViewLoading, isError: isViewError } = useQuery({
-    queryKey: ['autotunex-config', viewId, scope],
-    queryFn: () => getConfiguration(viewId as string, scope),
-    enabled: viewId != null,
-  })
-
-  const byId = useMemo(() => new Map(items.map((c) => [c.id, c])), [items])
-  const selectedConfigs = selectedIds.map((id) => byId.get(id)).filter(Boolean) as Configuration[]
-  const anyUndeletable = selectedConfigs.some(isUndeletable)
+  const byId = useMemo(() => new Map(items.map((d) => [d.id, d])), [items])
+  const selectedDatasets = selectedIds.map((id) => byId.get(id)).filter(Boolean) as Dataset[]
+  const anyUndeletable = selectedDatasets.some(isUndeletable)
 
   const deleteMutation = useMutation({
-    mutationFn: (ids: string[]) => deleteEach(ids, (id) => deleteConfiguration(id, scope)),
+    mutationFn: (ids: string[]) => deleteEach(ids, (id) => deleteDataset(id, scope)),
     onSuccess: (_data, ids) => {
       setSelectedIds([])
       setDeleteOpen(false)
@@ -135,7 +131,7 @@ export function ConfigurationsTable() {
       if (isBulkDeleteError(err)) setSelectedIds(err.failedIds)
       const cause = isBulkDeleteError(err) ? err.firstError : err
       if (axios.isAxiosError(cause) && cause.response?.status === 409) {
-        setDeleteError('This configuration is in use by a running job and cannot be deleted.')
+        setDeleteError('This dataset is in use by a running job and cannot be deleted.')
       } else {
         setDeleteError('Something went wrong while deleting. Please try again.')
       }
@@ -143,15 +139,20 @@ export function ConfigurationsTable() {
     // onSettled, not onSuccess: a partially-failed delete still removed rows, and
     // without a refetch the table keeps rendering them.
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['autotunex', 'configurations'] })
+      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
     },
   })
 
-  const rows = items.map((c) => ({
-    id: c.id,
-    name: c.name,
-    tunings: c.associated_jobs?.length ?? 0,
-    created_at: c.created_at ?? '',
+  const rows = items.map((d) => ({
+    id: d.id,
+    name: d.name,
+    // Raw numbers, not formatCompact strings: Carbon's isSortable compares
+    // numbers numerically but falls back to localeCompare for strings, where
+    // parseFloat('1.2K') is 1.2 — so "1.2K" sorted before "980". The compact
+    // form is applied at render instead.
+    train_records: d.train_records,
+    validation_records: d.validation_records,
+    created_at: d.created_at ?? '',
   }))
 
   if (isLoading) {
@@ -163,7 +164,7 @@ export function ConfigurationsTable() {
       {error && (
         <InlineNotification
           kind="error"
-          title="Failed to load configurations"
+          title="Failed to load datasets"
           subtitle={String(error)}
           style={{ marginBottom: '1rem' }}
         />
@@ -173,8 +174,8 @@ export function ConfigurationsTable() {
           const batchActionProps = getBatchActionProps()
           return (
             <TableContainer
-              title="Configurations"
-              description="Reusable tuning configurations you can select when starting a new tuning."
+              title="Data sets"
+              description="Uploaded data sets available for tuning, with their training and validation sample counts."
             >
               <TableToolbar>
                 <TableBatchActions {...batchActionProps} onCancel={() => setSelectedIds([])}>
@@ -189,12 +190,12 @@ export function ConfigurationsTable() {
                 <TableToolbarContent>
                   <TableToolbarSearch
                     persistent
-                    placeholder="Search configurations…"
+                    placeholder="Search datasets…"
                     onChange={(_e, value) => setSearchInput(value ?? '')}
                   />
                   {isSpaceAdmin && (
                     <Toggle
-                      id="configurations-scope-toggle"
+                      id="datasets-scope-toggle"
                       labelText=""
                       labelA="Mine"
                       labelB="All"
@@ -204,7 +205,7 @@ export function ConfigurationsTable() {
                     />
                   )}
                   <Button renderIcon={Add} onClick={() => setCreateOpen(true)}>
-                    Create New Configuration
+                    Create New Dataset
                   </Button>
                 </TableToolbarContent>
               </TableToolbar>
@@ -246,6 +247,9 @@ export function ConfigurationsTable() {
                               </CarbonLink>
                             ) : cell.info.header === 'created_at' ? (
                               cell.value ? new Date(cell.value as string).toLocaleString() : '—'
+                            ) : cell.info.header === 'train_records' ||
+                              cell.info.header === 'validation_records' ? (
+                              formatCompact(cell.value as number)
                             ) : (
                               (cell.value as React.ReactNode)
                             )}
@@ -271,8 +275,8 @@ export function ConfigurationsTable() {
       {anyUndeletable && selectedIds.length > 0 && (
         <InlineNotification
           kind="info"
-          title="Some selected configurations can't be deleted"
-          subtitle="Configurations in use by a tuning, or the built-in system configuration, cannot be deleted."
+          title="Some selected datasets can't be deleted"
+          subtitle="Datasets in use by a tuning cannot be deleted."
           lowContrast
           hideCloseButton
           style={{ marginTop: '0.5rem' }}
@@ -282,40 +286,20 @@ export function ConfigurationsTable() {
       <SettingsDeleteModal
         open={deleteOpen}
         count={selectedIds.length}
-        itemLabel="configuration"
+        itemLabel="dataset"
         isDeleting={deleteMutation.isPending}
         errorMessage={deleteError}
         onClose={() => { setDeleteOpen(false); setDeleteError(undefined) }}
         onConfirm={() => deleteMutation.mutate(selectedIds)}
       />
 
-      <SettingsConfigCreate
+      <SettingsDatasetCreate
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={() => setCreateOpen(false)}
       />
 
-      <Modal
-        open={viewId != null}
-        passiveModal
-        modalHeading={viewedConfig ? `Configuration: ${viewedConfig.name}` : 'Configuration'}
-        size="lg"
-        onRequestClose={() => setViewId(null)}
-      >
-        {isViewError ? (
-          <InlineNotification
-            kind="error"
-            title="Couldn't load this configuration"
-            subtitle="It may have been deleted, or you may not have access to it."
-            lowContrast
-            hideCloseButton
-          />
-        ) : isViewLoading || !viewedConfig ? (
-          <InlineLoading description="Loading configuration…" />
-        ) : (
-          <ConfigDisplay configuration={viewedConfig} />
-        )}
-      </Modal>
+      <SettingsDatasetView open={viewId != null} datasetId={viewId} onClose={() => setViewId(null)} scope={scope} />
     </>
   )
 }

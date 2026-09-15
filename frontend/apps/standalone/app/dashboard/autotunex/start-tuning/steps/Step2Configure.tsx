@@ -8,7 +8,7 @@ import type { Configuration, ConfigData, ConfigForm, ListResult, PendingConfigDa
 import { getConfiguration, getConfigurations, getConfigurationTemplate } from '@granite-build/ui-core/api/autotunex'
 import { ALGORITHM_DETAILS } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import { ConfigDisplay } from '@granite-build/ui-core/components/ConfigDisplay'
-import { CreateConfigForm } from '@granite-build/ui-core/components/CreateConfigForm'
+import { CreateConfigForm } from '@granite-build/ui-core/components/autotunex/settings/CreateConfigForm'
 import styles from './Step2Configure.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/layout.module.scss'
 
