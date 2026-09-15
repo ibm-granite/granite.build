@@ -8,7 +8,7 @@
 //   1. Three different kinds of row share one stream (see `splitMetricRows`).
 //   2. Two incomparable training phases share one job (see `derivePhases`).
 
-import type { MetricPoint, Trial } from '../types'
+import type { MetricPoint, Trial } from '../../../types'
 
 export interface MetricSplit {
   /** Per-step rows: `loss`/`grad_norm`/`learning_rate` all carry values. */

@@ -1,4 +1,4 @@
-import type { Trial } from '../types'
+import type { Trial } from '../../../types'
 
 /** Carbon's radar row shape: one score per (trial, axis) pair. */
 export interface RadarPoint {

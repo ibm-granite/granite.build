@@ -2,7 +2,7 @@
 
 import { ProgressBar } from '@carbon/react'
 import { computeTrialProgress } from './trialProgress'
-import type { JobDetail, Trial } from '../types'
+import type { JobDetail, Trial } from '../../../types'
 
 function formatDuration(seconds: number): string {
   if (seconds <= 0) return '0s'
