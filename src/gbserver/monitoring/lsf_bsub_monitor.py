@@ -64,6 +64,26 @@ _FAILURE_LOG_TAIL_LINES = 40
 # Hard bound on the (best-effort) tail read: it sits on the failure-emission path,
 # so a wedged SSH must not delay the Failed event beyond this.
 _FAILURE_LOG_TAIL_TIMEOUT_S = 30
+# Byte cap on the attached tail: line count alone doesn't bound width, and this
+# text rides into the event, failure_reason, and the PR body. Keep the tail end
+# (where the traceback is).
+_FAILURE_LOG_TAIL_MAX_BYTES = 8192
+
+
+def _sanitize_log_tail(content: Optional[str]) -> Optional[str]:
+    """Make a raw log tail safe to embed in an event/PR markdown code block.
+
+    Caps the byte width (keeping the tail end, where the traceback is) and
+    neutralizes triple-backticks so remote log content can't break the ```` ``` ````
+    fence in the failure ``<details>`` block. Display-only; nothing parses this."""
+    if not content:
+        return None
+    encoded = content.encode("utf-8", errors="replace")
+    if len(encoded) > _FAILURE_LOG_TAIL_MAX_BYTES:
+        content = "...[truncated]...\n" + encoded[-_FAILURE_LOG_TAIL_MAX_BYTES:].decode(
+            "utf-8", errors="replace"
+        )
+    return content.replace("```", "``​`")
 
 
 class LsfStateClass(StrEnum):
@@ -524,10 +544,13 @@ class LSFBsubMonitor(MonitorBase):
             return None
         tail_cmd = f"tail -n {max_lines} {shlex.quote(path)}"
         try:
-            return await asyncio.wait_for(
+            content = await asyncio.wait_for(
                 self._run_log_tail_cmd(tail_cmd), timeout=_FAILURE_LOG_TAIL_TIMEOUT_S
             )
-        except (Exception, asyncio.TimeoutError) as e:  # best-effort; never mask
+            return _sanitize_log_tail(content)
+        except Exception as e:  # best-effort; never mask the real failure
+            # (TimeoutError from wait_for is an Exception on 3.11+; CancelledError
+            # is a BaseException and still propagates.)
             logger.warning(
                 "[LSFBsubMonitor %s] could not read log tail from %s: %s",
                 self.launch_id,
@@ -553,7 +576,12 @@ class LSFBsubMonitor(MonitorBase):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
+        try:
+            stdout, _ = await proc.communicate()
+        finally:
+            # If the read was cancelled (wait_for timeout), don't orphan the ssh/tail.
+            if proc.returncode is None:
+                proc.kill()
         if proc.returncode != 0:
             return None
         return stdout.decode("utf-8", errors="replace").strip() or None

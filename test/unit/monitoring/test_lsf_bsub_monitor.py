@@ -37,11 +37,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gbserver.monitoring.lsf_bsub_monitor import (
+    _FAILURE_LOG_TAIL_MAX_BYTES,
     LSF_ACTIVE_STATE_TO_GB_STATUS,
     LSF_STATE_CLASS,
     BJobRecord,
     LSFBsubMonitor,
     LsfStateClass,
+    _sanitize_log_tail,
 )
 from gbserver.resilience.retry_handler import RetryHandler
 from gbserver.types.buildevent import (
@@ -336,6 +338,25 @@ async def test_read_log_tail_is_bounded_and_never_hangs():
             monitor._read_log_tail("/tmp/job.log", 40), timeout=5
         )
     assert result is None
+
+
+def test_sanitize_log_tail_caps_bytes_and_neutralizes_fences():
+    """The attached tail is display-only, but rides into the PR markdown: cap its
+    width and defuse triple-backticks so it can't break the code fence."""
+    assert _sanitize_log_tail(None) is None
+    assert _sanitize_log_tail("") is None
+
+    # A stray ``` in remote content must not survive to break the fence.
+    assert "```" not in _sanitize_log_tail("boom ``` still going")
+
+    # Oversized input is capped (keeping the tail) and marked truncated.
+    huge = "A" * (_FAILURE_LOG_TAIL_MAX_BYTES * 2) + "REAL_ERROR_AT_END"
+    out = _sanitize_log_tail(huge)
+    assert len(out.encode("utf-8")) <= _FAILURE_LOG_TAIL_MAX_BYTES + len(
+        "...[truncated]...\n"
+    )
+    assert "REAL_ERROR_AT_END" in out
+    assert "truncated" in out
 
 
 # ---------------------------------------------------------------------------
