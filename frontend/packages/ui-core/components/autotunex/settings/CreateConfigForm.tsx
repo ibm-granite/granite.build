@@ -2,14 +2,14 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Checkbox, ContentSwitcher, Dropdown, FormLabel, MultiSelect, NumberInput, Select, SelectItem, Switch, TextInput, Toggle } from '@carbon/react'
-import type { Configuration, ConfigForm, TuningGoal } from '../types'
-import { getOption, parseCommaList, toUpperCase } from '../lib/autotunex/wizardUtils'
-import { computeSectionNames } from '../lib/autotunex/configSections'
-import { formatValues, maxConcurrentTrialsCap, parseValuesInput } from '../lib/autotunex/hyperparamValues'
+import type { Configuration, ConfigForm, TuningGoal } from '../../../types'
+import { getOption, parseCommaList, toUpperCase } from '../../../lib/autotunex/wizardUtils'
+import { computeSectionNames } from '../../../lib/autotunex/configSections'
+import { formatValues, maxConcurrentTrialsCap, parseValuesInput } from '../../../lib/autotunex/hyperparamValues'
 import { GeneralConfigForm } from './GeneralConfigForm'
-import { TimeInput } from './TimeInput'
+import { TimeInput } from '../../TimeInput'
 import styles from './CreateConfigForm.module.scss'
-import layoutStyles from './layout.module.scss'
+import layoutStyles from '../../layout.module.scss'
 
 const SFT_ALGORITHMS = ['lora', 'sft', 'alora', 'lokr', 'loha', 'vera']
 const RL_ALGORITHMS = ['dpo', 'kto', 'ppo', 'grpo', 'dapo']

@@ -19,12 +19,12 @@ import {
 } from '@carbon/react'
 import { MagicWand } from '@carbon/icons-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ColumnMapping, ColumnMetadata, DatasetStatus } from '../types'
-import { createDataset, updateDataset, uploadDataset, getDataset, getAutotuneDatasetTypes, suggestColumnMappingAI } from '../api/autotunex'
-import { DATASET_READY_TIMEOUT_MS } from '../lib/autotunex/datasetReady'
-import { processUploadedFileAsync } from '../lib/autotunex/processUploadedFile'
-import { extractColumnMetadata, getColumnsFromTypes, getRequiredColumnsFromTypes } from '../lib/autotunex/wizardUtils'
-import { ALGORITHM_TO_DATASET_TYPE } from '../config/autotunexAlgorithms'
+import type { ColumnMapping, ColumnMetadata, DatasetStatus } from '../../../types'
+import { createDataset, updateDataset, uploadDataset, getDataset, getAutotuneDatasetTypes, suggestColumnMappingAI } from '../../../api/autotunex'
+import { DATASET_READY_TIMEOUT_MS } from '../../../lib/autotunex/datasetReady'
+import { processUploadedFileAsync } from '../../../lib/autotunex/processUploadedFile'
+import { extractColumnMetadata, getColumnsFromTypes, getRequiredColumnsFromTypes } from '../../../lib/autotunex/wizardUtils'
+import { ALGORITHM_TO_DATASET_TYPE } from '../../../config/autotunexAlgorithms'
 import styles from './SettingsDatasetCreate.module.scss'
 
 interface Props {

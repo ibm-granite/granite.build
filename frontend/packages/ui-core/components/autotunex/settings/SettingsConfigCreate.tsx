@@ -3,11 +3,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Modal, TextInput, Dropdown, InlineLoading, InlineNotification } from '@carbon/react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { ConfigForm, ConfigData, Configuration, PendingConfigData, TuningGoal } from '../types'
-import { getConfigurationTemplate, createConfiguration, getConfigurations } from '../api/autotunex'
-import { ALGORITHM_DETAILS } from '../config/autotunexAlgorithms'
+import type { ConfigForm, ConfigData, Configuration, PendingConfigData, TuningGoal } from '../../../types'
+import { getConfigurationTemplate, createConfiguration, getConfigurations } from '../../../api/autotunex'
+import { ALGORITHM_DETAILS } from '../../../config/autotunexAlgorithms'
 import { CreateConfigForm } from './CreateConfigForm'
-import { normalizeTokenizerListFields } from '../lib/autotunex/wizardUtils'
+import { normalizeTokenizerListFields } from '../../../lib/autotunex/wizardUtils'
 
 interface Props {
   open: boolean
