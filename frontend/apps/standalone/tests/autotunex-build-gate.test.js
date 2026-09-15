@@ -61,4 +61,43 @@ describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
       'BuildDetails should not match hardcoded tag literals',
     )
   })
+
+  it('AutoTuneXPanel takes the job as a prop instead of fetching it', () => {
+    const panel = read(BUILD_PAGE, 'AutoTuneXPanel.tsx')
+    assert.ok(panel, 'AutoTuneXPanel.tsx should exist')
+    assert.ok(
+      !panel.includes('getJobByBuildId'),
+      'BuildDetails owns the lookup; AutoTuneXPanel should not fetch the job',
+    )
+    assert.ok(
+      !panel.includes('listSpaces'),
+      'the scope travels with the job as a prop; AutoTuneXPanel should not resolve its own',
+    )
+  })
+
+  it('the Trials and Logs panels take the job as a prop instead of fetching it', () => {
+    const panels = read(BUILD_PAGE, 'AutoTuneXJobPanels.tsx')
+    assert.ok(panels, 'AutoTuneXJobPanels.tsx should exist')
+    assert.ok(
+      !panels.includes('getJobByBuildId'),
+      'BuildDetails owns the lookup; these panels should not fetch the job',
+    )
+    assert.ok(
+      !panels.includes('listSpaces'),
+      'the scope travels with the job as a prop; these panels should not resolve their own',
+    )
+    assert.ok(
+      !panels.includes('NoJob'),
+      'a panel only mounts when a job exists, so the no-job notice is unreachable',
+    )
+  })
+
+  it('getJobByBuildId no longer documents a tag-gated caller', () => {
+    const api = read(UI_CORE, 'api/autotunex.ts')
+    assert.ok(api, 'packages/ui-core/api/autotunex.ts should exist')
+    assert.ok(
+      !api.includes('merely carry'),
+      "the docstring should not describe callers rendering nothing for builds that 'merely carry' the tag",
+    )
+  })
 })

@@ -2,12 +2,12 @@
 
 import * as React from 'react'
 import { useState } from 'react'
-import { Link as CarbonLink, Modal, InlineLoading, InlineNotification, SkeletonText } from '@carbon/react'
+import { Link as CarbonLink, Modal, InlineLoading, InlineNotification } from '@carbon/react'
 import { useQuery } from '@tanstack/react-query'
-import { getConfiguration, getJobByBuildId } from '@granite-build/ui-core/api/autotunex'
-import { listSpaces } from '@granite-build/ui-core/api/gbserver'
+import { getConfiguration } from '@granite-build/ui-core/api/autotunex'
 import { ConfigDisplay } from '@granite-build/ui-core/components/autotunex/shared/ConfigDisplay'
 import { SettingsDatasetView } from '@granite-build/ui-core/components/autotunex/settings/SettingsDatasetView'
+import type { JobDetail } from '@granite-build/ui-core/types'
 import styles from './DetailsPanel.module.scss'
 
 interface DetailFieldProps {
@@ -27,64 +27,32 @@ function DetailField({ label, column, row, children }: DetailFieldProps) {
 }
 
 interface AutoTuneXPanelProps {
-  buildId: string
+  job: JobDetail
+  scope: 'own' | 'all'
 }
 
 /**
  * Details for the AutoTuneX tuning job linked to a build. Rendered side-by-side
- * with DetailsPanel in the Details tab, only for builds tagged "autotunex".
- * Configuration and Data set names open the existing view modals inline.
+ * with DetailsPanel in the Details tab, only for builds that have a linked tuning
+ * job. Configuration and Data set names open the existing view modals inline.
+ *
+ * BuildDetails owns the linked-job lookup (see useLinkedTuningJob) and only mounts
+ * this once it holds a job, so there is no loading, error or empty state here.
  */
-export function AutoTuneXPanel({ buildId }: AutoTuneXPanelProps) {
+export function AutoTuneXPanel({ job, scope }: AutoTuneXPanelProps) {
   const [configOpen, setConfigOpen] = useState(false)
   const [datasetOpen, setDatasetOpen] = useState(false)
 
-  // Same "admin of at least one space" gate used by the tunings/settings
-  // tables — admins get `scope=all` so this panel can resolve a job linked
-  // to the build even when it doesn't belong to the viewer.
-  const { data: spaces = [] } = useQuery({
-    queryKey: ['spaces'],
-    queryFn: listSpaces,
-  })
-  const isAdmin = spaces.some((s) => s.is_admin)
-
-  const { data: job, isLoading, isError } = useQuery({
-    queryKey: ['autotunex-job-by-build', buildId, isAdmin],
-    queryFn: () => getJobByBuildId(buildId, isAdmin ? 'all' : 'own'),
-  })
-
   // Loaded lazily when the configuration modal is opened (matches TuningDetailTabs).
-  // The job above is fetched with the admin scope; the configuration must use
-  // the same one or an admin viewing another user's build gets the job and then
-  // a permanently-spinning configuration modal.
+  // `scope` is the one the job was resolved under and must be reused: an admin
+  // viewing another user's build otherwise gets the job and then a permanently
+  // spinning configuration modal.
   const { data: configuration, isError: isConfigError } = useQuery({
-    queryKey: ['autotunex-config', job?.config_id, isAdmin],
-    queryFn: () => getConfiguration(job!.config_id, isAdmin ? 'all' : 'own'),
-    enabled: configOpen && !!job?.config_id,
+    queryKey: ['autotunex-config', job.config_id, scope],
+    queryFn: () => getConfiguration(job.config_id, scope),
+    enabled: configOpen && !!job.config_id,
   })
 
-  if (isLoading) {
-    return (
-      <div style={{ padding: '0.5rem 1rem' }}>
-        <h5 style={{ marginBottom: '1rem' }}>Model Customization</h5>
-        <SkeletonText paragraph lineCount={5} />
-      </div>
-    )
-  }
-
-  // A failed lookup also leaves job undefined, and returning null below would
-  // make the panel silently vanish as though the build had no tuning job. Say so
-  // instead, as a field so the two-column grid keeps its shape.
-  if (isError) {
-    return (
-      <DetailField label="Model Customization" column={2} row={1}>
-        <span>Couldn&apos;t load the linked tuning job.</span>
-      </DetailField>
-    )
-  }
-
-  // No tuning job linked to this build — render nothing so DetailsPanel fills the row.
-  if (!job) return null
   return (
     <>
       <DetailField label="Experiment name" column={2} row={1}>
@@ -131,7 +99,7 @@ export function AutoTuneXPanel({ buildId }: AutoTuneXPanelProps) {
         open={datasetOpen}
         datasetId={job.dataset_id}
         onClose={() => setDatasetOpen(false)}
-        scope={isAdmin ? 'all' : 'own'}
+        scope={scope}
       />
     </>
   )

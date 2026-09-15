@@ -114,7 +114,7 @@ export function BuildDetails({
             <TabPanel style={{ overflowY: 'auto', height: '100%' }}>
               <div className={detailStyles.fieldsGrid}>
                 <DetailsPanel build={build} status={status} loading={loadingBuild} />
-                {tuningJob && <AutoTuneXPanel buildId={buildId} />}
+                {tuningJob && <AutoTuneXPanel job={tuningJob} scope={tuningScope} />}
               </div>
               <div style={{ borderTop: '1px solid var(--cds-border-subtle-01)', margin: '1rem 1rem' }} />
               <TargetsPanel targets={mergedTargets} />
@@ -146,10 +146,10 @@ export function BuildDetails({
                 own queries on every build page, linked job or not. Matches how
                 AutoTuneXPanel is gated in the Details panel above. */}
             <TabPanel style={{ display: tuningHide, overflowY: 'auto', height: '100%' }}>
-              {tuningJob && <AutoTuneXTrialsPanel buildId={buildId} />}
+              {tuningJob && <AutoTuneXTrialsPanel job={tuningJob} />}
             </TabPanel>
             <TabPanel style={{ display: tuningHide, overflowY: 'auto', height: '100%' }}>
-              {tuningJob && <AutoTuneXLogsPanel buildId={buildId} />}
+              {tuningJob && <AutoTuneXLogsPanel job={tuningJob} scope={tuningScope} />}
             </TabPanel>
           </TabPanels>
         </TabsVertical>
