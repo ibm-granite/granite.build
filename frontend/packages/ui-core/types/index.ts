@@ -659,7 +659,7 @@ export interface Trial {
 // One `training_metrics` row from GET /jobs/{id}/metrics (and its per-trial
 // sibling). Three different kinds of row share this shape, and which fields
 // carry numbers depends on the kind — see `splitMetricRows` in
-// `@/components/trialMetrics`:
+// `@/components/autotunex/trials/trialMetrics`:
 //
 //   train step  split='train', loss/grad_norm/learning_rate set, `extra` empty
 //   eval        split='eval',  those three null, numbers in `extra.eval_loss` etc
