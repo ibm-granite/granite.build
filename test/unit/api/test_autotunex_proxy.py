@@ -95,6 +95,41 @@ def test_returns_502_when_upstream_unreachable(monkeypatch):
     assert "unreachable" in resp.json()["detail"]
 
 
+def test_warns_once_per_outage_then_debugs(monkeypatch):
+    """A gbserver running without AutoTuneX answers every build page's linked-job
+    lookup from here, so warning per attempt made this the dominant log line. The
+    first attempt of an outage warns, the rest stay at debug, and a success clears
+    the latch so the next outage is warned about too."""
+
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    def up(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jobs": []})
+
+    levels: list[str] = []
+    monkeypatch.setattr(proxy_mod, "AUTOTUNEX_URL", "http://autotunex.test")
+    monkeypatch.setattr(proxy_mod, "_upstream_unreachable_logged", False)
+    monkeypatch.setattr(
+        proxy_mod.logger, "warning", lambda *a: levels.append("warning")
+    )
+    monkeypatch.setattr(proxy_mod.logger, "debug", lambda *a: levels.append("debug"))
+
+    client = TestClient(_make_app())
+
+    monkeypatch.setattr(proxy_mod, "_client", _client_with_handler(down))
+    for _ in range(3):
+        assert client.get("/api/autotunex/jobs").status_code == 502
+    assert levels == ["warning", "debug", "debug"]
+
+    monkeypatch.setattr(proxy_mod, "_client", _client_with_handler(up))
+    assert client.get("/api/autotunex/jobs").status_code == 200
+
+    monkeypatch.setattr(proxy_mod, "_client", _client_with_handler(down))
+    assert client.get("/api/autotunex/jobs").status_code == 502
+    assert levels == ["warning", "debug", "debug", "warning"]
+
+
 def test_forwards_duplicate_query_params(monkeypatch):
     seen = {}
 
