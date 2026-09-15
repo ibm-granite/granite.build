@@ -475,7 +475,7 @@ export async function getTrialLogs(
 // running job cost one small page per tick instead of a full refetch.
 //
 // `limit` is server-capped at 2000 (higher returns 422). Row shaping lives in
-// `@/components/trialMetrics`; these functions only reshape the page envelope.
+// `@/components/autotunex/trials/trialMetrics`; these functions only reshape the page envelope.
 
 export interface MetricPageOptions {
   afterId?: number
