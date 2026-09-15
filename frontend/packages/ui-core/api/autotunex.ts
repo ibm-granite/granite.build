@@ -364,8 +364,8 @@ export async function getJob(id: string, scope: Scope = 'own'): Promise<JobRead>
 
 /**
  * Fetches the tuning job linked to a gbserver build. Returns null when no job
- * is associated with the build (404), so callers can render nothing for builds
- * that merely carry the "autotunex" tag without a real linked job.
+ * is associated with the build (404), so a caller can ask this for any build and
+ * render nothing when there is no linked job.
  *
  * This endpoint returns the leaner `JobDetail` — no `tasks`, no
  * `config_snapshot`. Use `getJob` if you need either.
