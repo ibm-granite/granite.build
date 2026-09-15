@@ -48,4 +48,17 @@ describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
     assert.ok(hook, 'useLinkedTuningJob.ts should exist')
     assert.match(hook, /retry:\s*false/, 'the lookup should not retry')
   })
+
+  it('BuildDetails does not read build tags', () => {
+    const details = read(BUILD_PAGE, 'BuildDetails.tsx')
+    assert.ok(details, 'BuildDetails.tsx should exist')
+    assert.ok(
+      !details.includes('build?.tags'),
+      'BuildDetails should gate the AutoTuneX panels on the linked job, not build tags',
+    )
+    assert.ok(
+      !details.includes('model-customisation'),
+      'BuildDetails should not match hardcoded tag literals',
+    )
+  })
 })

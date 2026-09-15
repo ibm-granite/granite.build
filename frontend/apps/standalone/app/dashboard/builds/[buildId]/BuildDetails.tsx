@@ -17,6 +17,7 @@ import type { Build, BuildEvent, BuildStatusDetail, BuildTargetRun } from '@gran
 import { DetailsPanel } from './DetailsPanel'
 import { AutoTuneXPanel } from './AutoTuneXPanel'
 import { AutoTuneXTrialsPanel, AutoTuneXLogsPanel } from './AutoTuneXJobPanels'
+import { useLinkedTuningJob } from './useLinkedTuningJob'
 import { LogsPanel } from './LogsPanel'
 import { TargetsPanel } from './TargetsPanel'
 import { HistoryPanel } from './HistoryPanel'
@@ -51,8 +52,12 @@ export function BuildDetails({
   const logsHide = hasLogs ? undefined : 'none'
   const aiAnalysisHide = hasLogs ? 'none' : undefined
   const isActive = ACTIVE_STATUSES.has(build?.status ?? '')
-  const isAutotunex = (build?.tags?.includes('autotunex') || build?.tags?.includes('model-customisation') || build?.tags?.includes('model-customization')) ?? false
-  const autotunexHide = isAutotunex ? undefined : 'none'
+  // The linked tuning job decides whether the AutoTuneX panels exist. Build tags
+  // cannot: the tag is AutoTuneX's own `gb_tags` setting, which an operator can
+  // rename or clear — see useLinkedTuningJob. A null job (no link, AutoTuneX not
+  // deployed, or no access) hides all of this silently.
+  const { job: tuningJob, scope: tuningScope } = useLinkedTuningJob(buildId)
+  const tuningHide = tuningJob ? undefined : 'none'
 
 
   // Fetch build archive to extract planned (not-yet-run) targets from the definition
@@ -102,14 +107,14 @@ export function BuildDetails({
             <Tab>Definition</Tab>
             <Tab style={{ display: aiAnalysisHide }}>AI Analysis</Tab>
             <Tab>Lineage</Tab>
-            <Tab style={{ display: autotunexHide }}>Hyperparameters</Tab>
-            <Tab style={{ display: autotunexHide }}>Tuning Logs</Tab>
+            <Tab style={{ display: tuningHide }}>Hyperparameters</Tab>
+            <Tab style={{ display: tuningHide }}>Tuning Logs</Tab>
           </TabListVertical>
           <TabPanels>
             <TabPanel style={{ overflowY: 'auto', height: '100%' }}>
               <div className={detailStyles.fieldsGrid}>
                 <DetailsPanel build={build} status={status} loading={loadingBuild} />
-                {isAutotunex && <AutoTuneXPanel buildId={buildId} />}
+                {tuningJob && <AutoTuneXPanel buildId={buildId} />}
               </div>
               <div style={{ borderTop: '1px solid var(--cds-border-subtle-01)', margin: '1rem 1rem' }} />
               <TargetsPanel targets={mergedTargets} />
@@ -137,14 +142,14 @@ export function BuildDetails({
             </TabPanel>
             {/* Carbon mounts every TabPanel's children regardless of which tab is
                 active (see the same note in TrialsTable), and `display: none` only
-                hides them — so without the isAutotunex gate both panels fire their
-                linked-job query on every build page, tagged or not. Matches how
+                hides them — so without the inner guard both panels fire their
+                own queries on every build page, linked job or not. Matches how
                 AutoTuneXPanel is gated in the Details panel above. */}
-            <TabPanel style={{ display: autotunexHide, overflowY: 'auto', height: '100%' }}>
-              {isAutotunex && <AutoTuneXTrialsPanel buildId={buildId} />}
+            <TabPanel style={{ display: tuningHide, overflowY: 'auto', height: '100%' }}>
+              {tuningJob && <AutoTuneXTrialsPanel buildId={buildId} />}
             </TabPanel>
-            <TabPanel style={{ display: autotunexHide, overflowY: 'auto', height: '100%' }}>
-              {isAutotunex && <AutoTuneXLogsPanel buildId={buildId} />}
+            <TabPanel style={{ display: tuningHide, overflowY: 'auto', height: '100%' }}>
+              {tuningJob && <AutoTuneXLogsPanel buildId={buildId} />}
             </TabPanel>
           </TabPanels>
         </TabsVertical>
