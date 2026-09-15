@@ -42,11 +42,25 @@ describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
 
   it('the lookup does not retry', () => {
     // A deployment without AutoTuneX answers 502 on every build page. Retrying a
-    // 502 that cannot succeed costs three extra requests per page and shows the
-    // user nothing either way, since every failure renders silently.
+    // 502 that cannot succeed costs one extra request per page and shows the user
+    // nothing either way, since every failure renders silently. That's one, not
+    // react-query's library default of three, because this app's own QueryClient
+    // (ClientShell) already sets `retry: 1`.
     const hook = read(BUILD_PAGE, 'useLinkedTuningJob.ts')
     assert.ok(hook, 'useLinkedTuningJob.ts should exist')
     assert.match(hook, /retry:\s*false/, 'the lookup should not retry')
+  })
+
+  it('the lookup waits for spaces before firing', () => {
+    // `isAdmin` is part of the query key and starts false while `listSpaces` is in
+    // flight. Without waiting for it, the lookup fires twice for an admin — once
+    // at scope=own, then again at scope=all under a new key. The bug is invisible
+    // in the UI (identical render, one extra request), so nothing but this
+    // mechanical check catches someone removing `&& !spacesPending` as apparently
+    // redundant.
+    const hook = read(BUILD_PAGE, 'useLinkedTuningJob.ts')
+    assert.ok(hook, 'useLinkedTuningJob.ts should exist')
+    assert.match(hook, /!spacesPending/, 'the lookup must wait for spaces so isAdmin is settled before the key is built')
   })
 
   it('BuildDetails does not read build tags', () => {
@@ -60,6 +74,7 @@ describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
       !details.includes('model-customisation'),
       'BuildDetails should not match hardcoded tag literals',
     )
+    assert.match(details, /useLinkedTuningJob\(buildId\)/, 'BuildDetails should gate on the linked-job lookup')
   })
 
   it('AutoTuneXPanel takes the job as a prop instead of fetching it', () => {
