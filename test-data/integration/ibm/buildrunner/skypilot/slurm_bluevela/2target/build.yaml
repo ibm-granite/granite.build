@@ -1,13 +1,13 @@
 granite.build:
   name: skypilot-bluevela-slurm-hf-2target
   # Two targets on BlueVela SLURM (via Skypilot) running the generic `command`
-  # step: `first` runs DIRECTLY on the allocated compute node (no
-  # `command_config.image`, bare host — no Pyxis plugin needed), while `second`
-  # runs INSIDE a container image (image set → image_id docker:<image>), which
-  # needs the Pyxis SPANK plugin that BlueVela provides. Unlike the env_local
-  # no-op tests, these targets use hf:// URIs for their inputs and outputs, so
-  # buildrunner auto-queues REAL HuggingFace pull/push steps around each command:
-  # the command must write a real file for its output to be pushed.
+  # step: BOTH `first` and `second` run INSIDE a container image
+  # (`command_config.image` set → image_id docker:<image>), the SLURM
+  # containerized path that needs the Pyxis SPANK plugin BlueVela provides.
+  # Unlike the env_local no-op tests, these targets use hf:// URIs for their
+  # inputs and outputs, so buildrunner auto-queues REAL HuggingFace pull/push
+  # steps around each command: the command must write a real file for its output
+  # to be pushed.
   #
   # `first` pulls an hf:// dataset input, writes a real output file, and registers
   # it as artifact `out1` (pushed to an hf:// dataset repo). `second` binds
@@ -36,9 +36,10 @@ granite.build:
             # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
             command_config:
-              # No `image`: image_id resolves to "" so the command runs directly
-              # on the SLURM compute node (bare host — no Pyxis plugin needed).
-              # Writes a REAL file so the hf push has something to upload. The
+              image: quay.io/itsme/debian:slim
+              # Runs INSIDE a container (image set → image_id docker:<image>), the
+              # SLURM containerized path that needs the Pyxis SPANK plugin BlueVela
+              # provides. Writes a REAL file so the hf push has something to upload. The
               # file is written RELATIVE (into the per-run $GB_BUILD_WORKDIR that
               # gbserver cd's every step into on the shared FS), but the
               # GB_ARTIFACT_PATH reported to the separate hfpush job (a different
