@@ -7,7 +7,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getJob } from '@granite-build/ui-core/api/autotunex'
 import { listSpaces } from '@granite-build/ui-core/api/gbserver'
 import { PageHeader } from '@granite-build/ui-core/components/PageHeader'
-import { TuningStatusBadge } from '@granite-build/ui-core/components/TuningStatusBadge'
+import { TuningStatusBadge } from '@granite-build/ui-core/components/autotunex/tunings/TuningStatusBadge'
 import { TuningDetailTabs } from './TuningDetailTabs'
 import styles from './page.module.scss'
 
