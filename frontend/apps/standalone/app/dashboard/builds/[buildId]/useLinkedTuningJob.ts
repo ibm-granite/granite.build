@@ -44,14 +44,16 @@ export function useLinkedTuningJob(buildId: string): {
     // (A failed `listSpaces` also settles, leaving scope=own, so this cannot hang.)
     enabled: Boolean(buildId) && !spacesPending,
     // Nothing is rendered on failure, so a retry buys no visible recovery — and on
-    // a deployment without AutoTuneX every build page would pay three of them for a
-    // 502 that cannot succeed. react-query's default refetchOnWindowFocus still
-    // heals a transient blip.
+    // a deployment without AutoTuneX every build page would pay one extra request
+    // for a 502 that cannot succeed. That's one, not react-query's library default
+    // of three, because this app's own QueryClient (ClientShell) already sets
+    // `retry: 1`. react-query's default refetchOnWindowFocus still heals a
+    // transient blip.
     retry: false,
     // TrialsTable polls trials based on job.status, so a frozen status here means
     // that poll never stops. Moved unchanged from AutoTuneXJobPanels.
     refetchInterval: (query) => {
-      const s = (query.state.data as { status?: string } | undefined)?.status
+      const s = query.state.data?.status
       return s && new Set(['running', 'pending']).has(s) ? 15_000 : false
     },
   })
