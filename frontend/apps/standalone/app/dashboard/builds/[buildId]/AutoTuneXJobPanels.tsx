@@ -1,95 +1,22 @@
 'use client'
 
-import { SkeletonText, InlineNotification } from '@carbon/react'
-import { useQuery } from '@tanstack/react-query'
-import { getJobByBuildId } from '@granite-build/ui-core/api/autotunex'
-import { listSpaces } from '@granite-build/ui-core/api/gbserver'
+import type { JobDetail } from '@granite-build/ui-core/types'
 import { TrialsTable } from '@granite-build/ui-core/components/autotunex/trials/TrialsTable'
 import { TuningLogViewer } from '@granite-build/ui-core/components/autotunex/tunings/TuningLogViewer'
 
 /**
  * Trials & Logs for the AutoTuneX tuning job linked to a build, mirroring the
- * AutoTuneX tuning detail page. Both panels share the linked-job query with
- * AutoTuneXPanel (same query key), so they resolve from cache.
+ * AutoTuneX tuning detail page.
+ *
+ * BuildDetails owns the linked-job lookup (see useLinkedTuningJob) and only mounts
+ * these once it holds a job, so neither panel has a loading, error or empty state.
+ *
+ * The scope travels with the job: anything fetched *about* the job has to use the
+ * same one, or an admin who resolved another user's job then 403s on its logs and
+ * sees an empty pane.
  */
 
-// Shared fetch of the tuning job linked to this build.
-function useLinkedTuningJob(buildId: string) {
-  // Same "admin of at least one space" gate used by the tunings/settings
-  // tables — admins get `scope=all` so these panels can resolve a job linked
-  // to the build even when it doesn't belong to the viewer. Same queryKey
-  // shape as AutoTuneXPanel's job query, so this shares its cache entry.
-  const { data: spaces = [] } = useQuery({
-    queryKey: ['spaces'],
-    queryFn: listSpaces,
-  })
-  const isAdmin = spaces.some((s) => s.is_admin)
-
-  const scope: 'own' | 'all' = isAdmin ? 'all' : 'own'
-
-  const query = useQuery({
-    queryKey: ['autotunex-job-by-build', buildId, isAdmin],
-    queryFn: () => getJobByBuildId(buildId, scope),
-    // TrialsTable polls trials based on job.status, so a frozen status here
-    // means that poll never stops. Refetch every 15s while the job is running
-    // or pending so the UI stays current.
-    refetchInterval: (query) => {
-      const s = (query.state.data as { status?: string } | undefined)?.status
-      return s && new Set(['running', 'pending']).has(s) ? 15_000 : false
-    },
-    enabled: Boolean(buildId),
-  })
-
-  // The scope travels with the job: anything fetched *about* this job has to use
-  // the same one, or an admin who resolved another user's job then 403s on its
-  // logs and sees an empty pane.
-  return { ...query, scope }
-}
-
-function Loading() {
-  return (
-    <div style={{ padding: '1rem 1.5rem' }}>
-      <SkeletonText paragraph lineCount={6} />
-    </div>
-  )
-}
-
-function LookupFailed() {
-  return (
-    <div style={{ padding: '1rem 1.5rem' }}>
-      <InlineNotification
-        kind="error"
-        title="Couldn't check for a linked Model Customization job"
-        subtitle="The request failed. This build may still have one."
-        hideCloseButton
-        lowContrast
-      />
-    </div>
-  )
-}
-
-function NoJob() {
-  return (
-    <div style={{ padding: '1rem 1.5rem' }}>
-      <InlineNotification
-        kind="info"
-        title="No Model Customization job linked to this build"
-        hideCloseButton
-        lowContrast
-      />
-    </div>
-  )
-}
-
-export function AutoTuneXTrialsPanel({ buildId }: { buildId: string }) {
-  const { data: job, isLoading, isError } = useLinkedTuningJob(buildId)
-
-  if (isLoading) return <Loading />
-  // Before !job: a failed lookup also leaves job undefined, and NoJob asserts
-  // there is no linked job, which is a claim this request never established.
-  if (isError) return <LookupFailed />
-  if (!job) return <NoJob />
-
+export function AutoTuneXTrialsPanel({ job }: { job: JobDetail }) {
   return (
     <div style={{ padding: '1rem 1.5rem' }}>
       <TrialsTable job={job} />
@@ -97,13 +24,7 @@ export function AutoTuneXTrialsPanel({ buildId }: { buildId: string }) {
   )
 }
 
-export function AutoTuneXLogsPanel({ buildId }: { buildId: string }) {
-  const { data: job, isLoading, isError, scope } = useLinkedTuningJob(buildId)
-
-  if (isLoading) return <Loading />
-  if (isError) return <LookupFailed />
-  if (!job) return <NoJob />
-
+export function AutoTuneXLogsPanel({ job, scope }: { job: JobDetail; scope: 'own' | 'all' }) {
   return (
     <div style={{ padding: '1rem 1.5rem' }}>
       <TuningLogViewer jobId={job.id} status={job.status} scope={scope} />
