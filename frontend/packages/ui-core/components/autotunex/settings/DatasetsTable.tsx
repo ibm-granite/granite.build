@@ -31,7 +31,7 @@ import type { Dataset } from '../../../types'
 import { getDatasets, deleteDataset } from '../../../api/autotunex'
 import { deleteEach, isBulkDeleteError } from '../../../lib/autotunex/bulkDelete'
 import { listSpaces } from '../../../api/gbserver'
-import { SettingsDeleteModal } from '../shared/SettingsDeleteModal'
+import { SettingsDeleteModal } from './SettingsDeleteModal'
 import { SettingsDatasetView } from './SettingsDatasetView'
 import { SettingsDatasetCreate } from './SettingsDatasetCreate'
 
