@@ -247,13 +247,10 @@ export function TrialsTable({ job }: Props) {
   return (
     <div>
       <TrialProgressSummary job={job} trials={trials} />
-      {/* Table left, radar right once a plottable trial is ticked. `flexWrap` drops
-          the radar under the table when the viewport can't seat both, and
-          `minWidth: 0` lets the table column actually shrink — without it a flex
-          item refuses to go below its content width and overflows the row. With
-          no radar the table is the only child and takes the full width. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'flex-start' }}>
-        <div style={{ flex: '1 1 32rem', minWidth: 0, overflowX: 'auto' }}>
+      {/* Table first, radar stacked under it once a plottable trial is ticked, so
+          each one gets the row's full width. `overflowX: 'auto'` keeps a wide
+          table scrolling inside its own box rather than stretching the page. */}
+      <div style={{ overflowX: 'auto' }}>
       <DataTable
         rows={rows}
         headers={HEADERS}
@@ -495,30 +492,29 @@ export function TrialsTable({ job }: Props) {
           </TableContainer>
         )}
       </DataTable>
-        </div>
-
-        {canShowRadar && (
-          <div className={styles.radar} style={{ flex: '0 0 26rem', maxWidth: '100%', height: '420px' }}>
-            <RadarChart
-              data={radarData}
-              options={{
-                title: comparableTrials.length > 1 ? 'Trial comparison' : 'Trial metrics',
-                radar: { axes: { angle: 'feature', value: 'score' } },
-                data: { groupMapsTo: 'product' },
-                // The same map the line charts and the row checkboxes use, so a
-                // trial reads as one colour across all three. Carbon resolves a
-                // radar blob's fill through model.getFillColor, which is what
-                // reads this scale; without it the radar picks its own hues by
-                // group order, so a trial changes colour whenever the selection
-                // does.
-                color: { scale: colorScale },
-                theme,
-                height: '420px',
-              }}
-            />
-          </div>
-        )}
       </div>
+
+      {canShowRadar && (
+        <div className={styles.radar} style={{ marginTop: '2rem', height: '420px' }}>
+          <RadarChart
+            data={radarData}
+            options={{
+              title: comparableTrials.length > 1 ? 'Trial comparison' : 'Trial metrics',
+              radar: { axes: { angle: 'feature', value: 'score' } },
+              data: { groupMapsTo: 'product' },
+              // The same map the line charts and the row checkboxes use, so a
+              // trial reads as one colour across all three. Carbon resolves a
+              // radar blob's fill through model.getFillColor, which is what
+              // reads this scale; without it the radar picks its own hues by
+              // group order, so a trial changes colour whenever the selection
+              // does.
+              color: { scale: colorScale },
+              theme,
+              height: '420px',
+            }}
+          />
+        </div>
+      )}
 
       <TrialMetricsCharts
         job={job}
