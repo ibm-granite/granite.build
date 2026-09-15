@@ -33,7 +33,7 @@ import type { Configuration } from '../../../types'
 import { getConfigurations, deleteConfiguration, getConfiguration } from '../../../api/autotunex'
 import { deleteEach, isBulkDeleteError } from '../../../lib/autotunex/bulkDelete'
 import { listSpaces } from '../../../api/gbserver'
-import { SettingsDeleteModal } from '../shared/SettingsDeleteModal'
+import { SettingsDeleteModal } from './SettingsDeleteModal'
 import { SettingsConfigCreate } from './SettingsConfigCreate'
 import { ConfigDisplay } from '../shared/ConfigDisplay'
 
