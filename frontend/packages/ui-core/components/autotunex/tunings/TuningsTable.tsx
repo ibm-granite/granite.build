@@ -28,7 +28,7 @@ import {
 import { Compare, Launch, Rocket, TrashCan } from '@carbon/icons-react'
 import { Fragment } from 'react'
 import { TuningLogViewer } from './TuningLogViewer'
-import type { TuningJob } from '../types'
+import type { TuningJob } from '../../../types'
 import { TuningStatusBadge } from './TuningStatusBadge'
 import Link from 'next/link'
 

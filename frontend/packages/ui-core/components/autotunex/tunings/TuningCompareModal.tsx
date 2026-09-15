@@ -1,7 +1,7 @@
 'use client'
 
 import { Modal, StructuredListWrapper, StructuredListHead, StructuredListRow, StructuredListCell, StructuredListBody } from '@carbon/react'
-import type { TuningJob } from '../types'
+import type { TuningJob } from '../../../types'
 
 interface Props {
   open: boolean

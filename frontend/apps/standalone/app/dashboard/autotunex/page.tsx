@@ -9,9 +9,9 @@ import { getJobs, deleteJob } from '@granite-build/ui-core/api/autotunex'
 import { deleteEach, isBulkDeleteError } from '@granite-build/ui-core/lib/autotunex/bulkDelete'
 import { listSpaces } from '@granite-build/ui-core/api/gbserver'
 import { AutotunexTabs } from '@granite-build/ui-core/components/AutotunexTabs'
-import { TuningsTable } from '@granite-build/ui-core/components/TuningsTable'
-import { TuningDeleteModal } from '@granite-build/ui-core/components/TuningDeleteModal'
-import { TuningCompareModal } from '@granite-build/ui-core/components/TuningCompareModal'
+import { TuningsTable } from '@granite-build/ui-core/components/autotunex/tunings/TuningsTable'
+import { TuningDeleteModal } from '@granite-build/ui-core/components/autotunex/tunings/TuningDeleteModal'
+import { TuningCompareModal } from '@granite-build/ui-core/components/autotunex/tunings/TuningCompareModal'
 
 export default function AutoTuneXPage() {
   const router = useRouter()
