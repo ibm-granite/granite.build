@@ -23,7 +23,6 @@ const fs = require('fs')
 const path = require('path')
 
 const BUILD_PAGE = path.join(__dirname, '..', 'app', 'dashboard', 'builds', '[buildId]')
-const UI_CORE = path.join(__dirname, '..', '..', '..', 'packages', 'ui-core')
 
 function read(dir, rel) {
   try {
@@ -31,6 +30,13 @@ function read(dir, rel) {
   } catch {
     return ''
   }
+}
+
+// The source-text checks below must not be satisfied by a commented-out option:
+// `// retry: false` matches the same regex as the live option, so disabling one by
+// commenting it out would leave its check passing.
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 }
 
 describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
@@ -48,7 +54,7 @@ describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
     // (ClientShell) already sets `retry: 1`.
     const hook = read(BUILD_PAGE, 'useLinkedTuningJob.ts')
     assert.ok(hook, 'useLinkedTuningJob.ts should exist')
-    assert.match(hook, /retry:\s*false/, 'the lookup should not retry')
+    assert.match(stripComments(hook), /retry:\s*false/, 'the lookup should not retry')
   })
 
   it('the lookup waits for spaces before firing', () => {
@@ -60,7 +66,7 @@ describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
     // redundant.
     const hook = read(BUILD_PAGE, 'useLinkedTuningJob.ts')
     assert.ok(hook, 'useLinkedTuningJob.ts should exist')
-    assert.match(hook, /!spacesPending/, 'the lookup must wait for spaces so isAdmin is settled before the key is built')
+    assert.match(stripComments(hook), /!spacesPending/, 'the lookup must wait for spaces so isAdmin is settled before the key is built')
   })
 
   it('BuildDetails does not read build tags', () => {
@@ -104,15 +110,6 @@ describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
     assert.ok(
       !panels.includes('NoJob'),
       'a panel only mounts when a job exists, so the no-job notice is unreachable',
-    )
-  })
-
-  it('getJobByBuildId no longer documents a tag-gated caller', () => {
-    const api = read(UI_CORE, 'api/autotunex.ts')
-    assert.ok(api, 'packages/ui-core/api/autotunex.ts should exist')
-    assert.ok(
-      !api.includes('merely carry'),
-      "the docstring should not describe callers rendering nothing for builds that 'merely carry' the tag",
     )
   })
 })

@@ -37,10 +37,14 @@ function DetailsPanel({ job }: { job: JobRead }) {
     queryFn: listSpaces,
   })
   const isAdmin = spaces.some((s) => s.is_admin)
+  // The scope, not `isAdmin`, keys the config query: AutoTuneXPanel on the build
+  // page keys the same configuration on its scope, and two different keys for one
+  // configuration meant opening the modal in both places fetched it twice.
+  const scope: 'own' | 'all' = isAdmin ? 'all' : 'own'
 
   const { data: configuration, isError: isConfigError } = useQuery({
-    queryKey: ['autotunex-config', job.config_id, isAdmin],
-    queryFn: () => getConfiguration(job.config_id, isAdmin ? 'all' : 'own'),
+    queryKey: ['autotunex-config', job.config_id, scope],
+    queryFn: () => getConfiguration(job.config_id, scope),
     // Same guard as AutoTuneXPanel: without it a job with no config_id fetches
     // /configurations/undefined, so the modal shows an error for what is really
     // just an absent id.

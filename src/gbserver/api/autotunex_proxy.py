@@ -76,6 +76,11 @@ router = APIRouter()
 
 _client: "httpx.AsyncClient | None" = None
 
+# Warn on the first outage, then drop to debug until one succeeds again. A gbserver
+# running without AutoTuneX answers every build page's linked-job lookup from here,
+# so warning per attempt made this the dominant line in the log.
+_upstream_unreachable_logged = False
+
 
 def _get_client() -> httpx.AsyncClient:
     """Return the shared AsyncClient, creating it on first use."""
@@ -191,14 +196,18 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
         params=tuple(request.query_params.multi_items()),
         content=content,
     )
+    global _upstream_unreachable_logged
     try:
         upstream = await client.send(upstream_request, stream=True)
     except httpx.RequestError:
-        logger.warning("AutoTuneX upstream unreachable at %s", AUTOTUNEX_URL)
+        log = logger.debug if _upstream_unreachable_logged else logger.warning
+        log("AutoTuneX upstream unreachable at %s", AUTOTUNEX_URL)
+        _upstream_unreachable_logged = True
         return JSONResponse(
             {"detail": f"AutoTuneX server unreachable at {AUTOTUNEX_URL}"},
             status_code=502,
         )
+    _upstream_unreachable_logged = False
 
     # Built from the upstream's raw bytes, and built *before* the response object
     # exists. Decoding each value to str and re-encoding it as latin-1 raised
