@@ -151,10 +151,14 @@ function MyBuildsTile() {
 }
 // ── AutoTuneX tiles ─────────────────────────────────────────────────────
 
-// A build counts as model-customisation activity under any of these tags — the
-// same three spellings BuildDetails.tsx gates its AutoTuneX tabs on. Keep the two
-// lists in step: a tag only one of them knows about makes the tile disagree with
-// the build page.
+// A build counts as model-customisation activity under any of these tags. This
+// tile stays tag-based on purpose: it's a system-wide aggregate (the three
+// listBuilds calls below, deduped by uuid), and asking the authoritative
+// per-build endpoint instead would mean one request per build rather than three
+// total. The build page itself no longer uses tags — it asks
+// GET /jobs/by-build-id — so the two can legitimately disagree when an operator
+// customises AutoTuneX's `gb_tags` setting, with this tile being the one that
+// undercounts.
 const MODEL_CUSTOMISATION_TAGS = [
   "model-customization",
   "model-customisation",
