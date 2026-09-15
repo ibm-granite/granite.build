@@ -3,8 +3,8 @@
 import { NumberInput, Tile } from '@carbon/react'
 import type { ConfigData } from '../../../types'
 import { maxConcurrentTrialsCap } from '../../../lib/autotunex/hyperparamValues'
-import { TimeInput } from '../../TimeInput'
-import layoutStyles from '../../layout.module.scss'
+import { TimeInput } from '../shared/TimeInput'
+import layoutStyles from '../shared/layout.module.scss'
 
 interface GeneralConfigFormProps {
   config: ConfigData

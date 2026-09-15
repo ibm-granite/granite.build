@@ -6,7 +6,7 @@ import type { ColumnMetadata, Configuration, Dataset, DatasetForm, LaunchPhase, 
 import { getConfigSummary } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { MODEL_SOURCE_LABELS } from '../../modelSources'
 import styles from './Step3ReviewLaunch.module.scss'
-import layoutStyles from '@granite-build/ui-core/components/layout.module.scss'
+import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
 
 function formatFileSize(bytes: number): string {
   if (!bytes || bytes <= 0) return ''

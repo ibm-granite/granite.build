@@ -2,8 +2,8 @@
 
 import { FormLabel, ProgressBar, Tooltip } from '@carbon/react'
 import { Information } from '@carbon/icons-react'
-import type { Configuration } from '../types'
-import { toUpperCase } from '../lib/autotunex/wizardUtils'
+import type { Configuration } from '../../../types'
+import { toUpperCase } from '../../../lib/autotunex/wizardUtils'
 import styles from './ConfigDisplay.module.scss'
 
 const GENERAL_CONFIG_KEYS = [

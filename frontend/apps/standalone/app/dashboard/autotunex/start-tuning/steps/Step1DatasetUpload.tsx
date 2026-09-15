@@ -52,7 +52,7 @@ import {
 } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { ALGORITHM_DETAILS, ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import styles from './Step1DatasetUpload.module.scss'
-import layoutStyles from '@granite-build/ui-core/components/layout.module.scss'
+import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
 
 const ACCEPTED_TYPES = ['.jsonl', '.json', '.csv', '.parquet']
 

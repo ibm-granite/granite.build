@@ -1,7 +1,7 @@
 'use client'
 
 import { PageHeader } from '@granite-build/ui-core/components/PageHeader'
-import { AutotunexTabs } from '@granite-build/ui-core/components/AutotunexTabs'
+import { AutotunexTabs } from '@granite-build/ui-core/components/autotunex/shared/AutotunexTabs'
 import { ConfigurationsTable } from '@granite-build/ui-core/components/autotunex/settings/ConfigurationsTable'
 import { DatasetsTable } from '@granite-build/ui-core/components/autotunex/settings/DatasetsTable'
 import styles from './Settings.module.scss'

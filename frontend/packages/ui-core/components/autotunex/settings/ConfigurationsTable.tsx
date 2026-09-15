@@ -33,9 +33,9 @@ import type { Configuration } from '../../../types'
 import { getConfigurations, deleteConfiguration, getConfiguration } from '../../../api/autotunex'
 import { deleteEach, isBulkDeleteError } from '../../../lib/autotunex/bulkDelete'
 import { listSpaces } from '../../../api/gbserver'
-import { SettingsDeleteModal } from '../../SettingsDeleteModal'
+import { SettingsDeleteModal } from '../shared/SettingsDeleteModal'
 import { SettingsConfigCreate } from './SettingsConfigCreate'
-import { ConfigDisplay } from '../../ConfigDisplay'
+import { ConfigDisplay } from '../shared/ConfigDisplay'
 
 const SYSTEM_CONFIG_USER_ID = '00000000-0000-0000-0000-000000000001'
 
