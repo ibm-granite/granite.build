@@ -11,7 +11,7 @@ import { TrialsTable } from '@granite-build/ui-core/components/autotunex/trials/
 import { TuningResultsPanel } from '@granite-build/ui-core/components/autotunex/tunings/TuningResultsPanel'
 import { ConfigDisplay } from '@granite-build/ui-core/components/ConfigDisplay'
 import { modelSourceLabel } from '../modelSources'
-import { SettingsDatasetView } from '@granite-build/ui-core/components/SettingsDatasetView'
+import { SettingsDatasetView } from '@granite-build/ui-core/components/autotunex/settings/SettingsDatasetView'
 
 function formatTime(seconds: number): string {
   if (seconds <= 0) return '0 s'
