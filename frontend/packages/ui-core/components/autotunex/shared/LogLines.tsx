@@ -1,8 +1,8 @@
 'use client'
 
 import { InlineLoading, InlineNotification, ProgressBar } from '@carbon/react'
-import type { LogEntry } from '../types'
-import styles from './TuningLogViewer.module.scss'
+import type { LogEntry } from '../../../types'
+import styles from './LogLines.module.scss'
 
 interface Props {
   logs: LogEntry[]
