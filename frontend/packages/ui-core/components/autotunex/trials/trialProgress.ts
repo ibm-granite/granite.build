@@ -1,7 +1,7 @@
 // Progress of a tuning run, derived from the job's planned trial count and the
 // trials it has produced so far. Kept free of React so it can be unit-tested.
 
-import type { TuningStatus } from '../types'
+import type { TuningStatus } from '../../../types'
 
 interface ProgressTrial {
   status: TuningStatus

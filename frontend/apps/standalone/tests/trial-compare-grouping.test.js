@@ -24,7 +24,7 @@ const {
   findDifferingKeys,
   getOddOnesOut,
   labelForCompareKey,
-} = require('../../../packages/ui-core/components/trialCompareGrouping.ts')
+} = require('../../../packages/ui-core/components/autotunex/trials/trialCompareGrouping.ts')
 
 // Three flattened compare rows, shaped like toCompareRow() output: id +
 // flattened config + rounded metrics. Ordered best-loss-first as the view does.

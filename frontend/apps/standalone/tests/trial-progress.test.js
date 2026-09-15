@@ -17,7 +17,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 
-const { computeTrialProgress } = require('../../../packages/ui-core/components/trialProgress.ts')
+const { computeTrialProgress } = require('../../../packages/ui-core/components/autotunex/trials/trialProgress.ts')
 
 const T0 = Date.parse('2026-08-26T10:00:00Z')
 const NOW = T0 + 10 * 60_000 // 10 minutes into the run

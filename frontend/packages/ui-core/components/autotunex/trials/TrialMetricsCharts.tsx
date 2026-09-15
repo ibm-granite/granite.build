@@ -12,9 +12,9 @@ import {
   InlineNotification,
 } from '@carbon/react'
 import { LineChart } from '@carbon/charts-react'
-import { useChartsTheme } from '../hooks/useTheme'
-import { useMetricStream } from '../hooks/useMetricStream'
-import { getJobMetrics } from '../api/autotunex'
+import { useChartsTheme } from '../../../hooks/useTheme'
+import { useMetricStream } from '../../../hooks/useMetricStream'
+import { getJobMetrics } from '../../../api/autotunex'
 import { metricChartOptions } from './metricChartOptions'
 import styles from './TrialMetricsCharts.module.scss'
 import {
@@ -27,7 +27,7 @@ import {
   toChartRows,
 } from './trialMetrics'
 import type { MetricXKey } from './trialMetrics'
-import type { JobDetail, Trial } from '../types'
+import type { JobDetail, Trial } from '../../../types'
 
 type Scope = 'own' | 'all'
 
