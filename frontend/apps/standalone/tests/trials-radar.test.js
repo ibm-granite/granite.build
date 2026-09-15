@@ -22,7 +22,7 @@ const {
   toRadarData,
   isLowerBetter,
   toFeatureLabel,
-} = require('../../../packages/ui-core/components/trialsRadar.ts')
+} = require('../../../packages/ui-core/components/autotunex/trials/trialsRadar.ts')
 
 const trial = (id, metrics) => ({ id, status: 'completed', metrics })
 const scoreOf = (rows, id, feature) =>

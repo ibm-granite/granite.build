@@ -18,7 +18,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 
-const { formatCell, formatTime } = require('../../../packages/ui-core/components/trialsTableFormat.ts')
+const { formatCell, formatTime } = require('../../../packages/ui-core/components/autotunex/trials/trialsTableFormat.ts')
 
 describe('formatTime', () => {
   it('renders minutes and seconds past a minute', () => {

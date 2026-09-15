@@ -43,7 +43,7 @@ const {
   METRIC_PALETTE,
   METRIC_DE_EMPHASIS,
   EMPHASIS_THRESHOLD,
-} = require('../../../packages/ui-core/components/trialMetrics.ts')
+} = require('../../../packages/ui-core/components/autotunex/trials/trialMetrics.ts')
 
 const SEARCH_IDS = ['491c7_00000', '491c7_00001', '491c7_00002', '491c7_00003']
 const FINAL_ID = '11517_00000'

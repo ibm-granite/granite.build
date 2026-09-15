@@ -3,12 +3,12 @@
 import { useMemo } from 'react'
 import { InlineLoading, InlineNotification } from '@carbon/react'
 import { LineChart } from '@carbon/charts-react'
-import { useChartsTheme } from '../hooks/useTheme'
-import { useMetricStream } from '../hooks/useMetricStream'
-import { getTrialMetrics } from '../api/autotunex'
+import { useChartsTheme } from '../../../hooks/useTheme'
+import { useMetricStream } from '../../../hooks/useMetricStream'
+import { getTrialMetrics } from '../../../api/autotunex'
 import { metricChartOptions } from './metricChartOptions'
 import { METRIC_PALETTE, positiveRows, splitMetricRows, toChartRows } from './trialMetrics'
-import type { TuningStatus } from '../types'
+import type { TuningStatus } from '../../../types'
 
 type Scope = 'own' | 'all'
 

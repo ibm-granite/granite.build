@@ -32,9 +32,9 @@ import {
 import { ArrowLeft, Compare } from '@carbon/icons-react'
 import { RadarChart } from '@carbon/charts-react'
 import { useQuery } from '@tanstack/react-query'
-import { useChartsTheme } from '../hooks/useTheme'
-import { getJobTrials } from '../api/autotunex'
-import { listSpaces } from '../api/gbserver'
+import { useChartsTheme } from '../../../hooks/useTheme'
+import { getJobTrials } from '../../../api/autotunex'
+import { listSpaces } from '../../../api/gbserver'
 import { TrialLogViewer } from './TrialLogViewer'
 import { TrialCompare } from './TrialCompare'
 import { TrialProgressSummary } from './TrialProgressSummary'
@@ -44,7 +44,7 @@ import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, bestTrialId, trialColorScale } 
 import { formatCell } from './trialsTableFormat'
 import styles from './TrialsTable.module.scss'
 import { toRadarData } from './trialsRadar'
-import type { JobDetail, Trial } from '../types'
+import type { JobDetail, Trial } from '../../../types'
 
 const HEADERS = [
   { key: 'created_at', header: 'Created on' },
