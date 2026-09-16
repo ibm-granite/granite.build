@@ -2,7 +2,7 @@
 
 import { NumberInput, Tile } from '@carbon/react'
 import type { ConfigData } from '../../../types'
-import { maxConcurrentTrialsCap } from '../../../lib/autotunex/hyperparamValues'
+import { clampConcurrentTrials, maxConcurrentTrialsCap } from '../../../lib/autotunex/hyperparamValues'
 import { TimeInput } from '../shared/TimeInput'
 import layoutStyles from '../shared/layout.module.scss'
 
@@ -56,18 +56,13 @@ export function GeneralConfigForm({ config, onConfigChange }: GeneralConfigFormP
                 ...prev.tune_config,
                 max_concurrent_trials: {
                   ...prev.tune_config.max_concurrent_trials,
-                  // Clamp to the new ceiling rather than assign it. Raising GPUs per
-                  // trial lowers how many can run at once, but a deliberately smaller
-                  // choice below that ceiling has to stand -- assigning the cap
-                  // silently raised a chosen 2 to 4 and submitted that. The Math.max
-                  // mirrors maxConcurrentTrialsCap's own floor, so a field cleared to
-                  // 0 cannot survive into a saved config.
-                  default: Math.max(
-                    1,
-                    Math.min(
-                      prev.tune_config.max_concurrent_trials.default,
-                      maxConcurrentTrialsCap(prev.training_config.num_gpus_per_trial.max_val, num)
-                    )
+                  // A cleared "Num GPUs per trial" reports 0 and the clamp is
+                  // monotonically downward, so the mid-edit guard lives in
+                  // clampConcurrentTrials -- see it for why.
+                  default: clampConcurrentTrials(
+                    prev.tune_config.max_concurrent_trials.default,
+                    prev.training_config.num_gpus_per_trial.max_val,
+                    num
                   ),
                 },
               },

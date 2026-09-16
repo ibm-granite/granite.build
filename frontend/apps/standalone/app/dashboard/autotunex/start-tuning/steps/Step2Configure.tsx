@@ -114,6 +114,11 @@ export function Step2Configure({
   const [isLoadingCreateConfig, setIsLoadingCreateConfig] = useState(false)
 
   // Config editing state
+  // Reported up by CreateConfigForm: "Values" lists the field has already flagged
+  // are never committed to the config, so outOfRangeMessage cannot see them.
+  const [newConfigInvalidFields, setNewConfigInvalidFields] = useState<string[]>([])
+  const [editConfigInvalidFields, setEditConfigInvalidFields] = useState<string[]>([])
+
   const [editableConfig, setEditableConfig] = useState<ConfigForm | null>(null)
   const [editSaveError, setEditSaveError] = useState('')
   const [needsSaveAs, setNeedsSaveAs] = useState(false)
@@ -267,7 +272,7 @@ export function Step2Configure({
       ...(editableConfig.tuners_rl_config ? { tuners_rl_config: editableConfig.tuners_rl_config } : {}),
     }
 
-    const rangeMessage = outOfRangeMessage(configData)
+    const rangeMessage = outOfRangeMessage(configData) ?? invalidValuesMessage(editConfigInvalidFields)
     if (rangeMessage) {
       setEditSaveError(rangeMessage)
       return
@@ -401,6 +406,14 @@ export function Step2Configure({
     return `Some values are outside their allowed range: ${offenders.join(', ')}. Correct the highlighted fields and try again.`
   }
 
+  // A "Values" list that failed to parse is not written into the config at all, so
+  // findOutOfRangeFields never sees it -- Confirm used to accept the edit and keep
+  // the previous values with no notification at all.
+  function invalidValuesMessage(fieldIds: string[]): string | null {
+    if (fieldIds.length === 0) return null
+    return `Some candidate value lists are invalid: ${fieldIds.join(', ')}. Correct the highlighted fields and try again.`
+  }
+
   function confirmNewConfig() {
     if (!newConfigName.trim()) {
       setSaveError('Please enter a configuration name.')
@@ -414,7 +427,7 @@ export function Step2Configure({
 
     const { name: _name, tuner_type, rl_tuner_type, ...configSections } = newConfigForm
 
-    const rangeMessage = outOfRangeMessage(configSections)
+    const rangeMessage = outOfRangeMessage(configSections) ?? invalidValuesMessage(newConfigInvalidFields)
     if (rangeMessage) {
       setSaveError(rangeMessage)
       return
@@ -550,6 +563,7 @@ export function Step2Configure({
                       presetGoal={presetGoal}
                       presetAlgorithm={selectedAlgorithm}
                       hpoEnabled={autotuneEnabled}
+                      onInvalidFieldsChange={setEditConfigInvalidFields}
                     />
                   )
                 )
@@ -567,6 +581,7 @@ export function Step2Configure({
                     presetGoal={presetGoal}
                     presetAlgorithm={selectedAlgorithm}
                     hpoEnabled={autotuneEnabled}
+                    onInvalidFieldsChange={setNewConfigInvalidFields}
                   />
                 )
               )}
