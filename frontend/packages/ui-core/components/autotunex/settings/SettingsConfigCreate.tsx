@@ -25,6 +25,7 @@ export function SettingsConfigCreate({ open, onClose, onCreated }: Props) {
   const [configForm, setConfigForm] = useState<ConfigForm | null>(null)
   const [nameError, setNameError] = useState('')
   const [rangeError, setRangeError] = useState('')
+  const [invalidValueFields, setInvalidValueFields] = useState<string[]>([])
 
   const presetGoal = useMemo<TuningGoal | null>(
     () => (ALGORITHM_DETAILS.find((a) => a.id === selectedAlgorithm)?.category ?? null) as TuningGoal | null,
@@ -92,6 +93,15 @@ export function SettingsConfigCreate({ open, onClose, onCreated }: Props) {
       )
       return
     }
+    // A rejected "Values" list is never written into the config, so
+    // findOutOfRangeFields cannot see it -- without this the modal created the
+    // configuration with the previous values and reported success.
+    if (invalidValueFields.length > 0) {
+      setRangeError(
+        `Some candidate value lists are invalid: ${invalidValueFields.join(', ')}. Correct the highlighted fields and try again.`
+      )
+      return
+    }
     setRangeError('')
     const pendingData: PendingConfigData = {
       name: trimmed,
@@ -145,6 +155,7 @@ export function SettingsConfigCreate({ open, onClose, onCreated }: Props) {
             presetGoal={presetGoal}
             presetAlgorithm={selectedAlgorithm}
             hideNameField
+            onInvalidFieldsChange={setInvalidValueFields}
           />
           {rangeError && (
             <InlineNotification

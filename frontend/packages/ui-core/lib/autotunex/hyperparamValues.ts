@@ -36,6 +36,46 @@ export function formatValues(values: unknown): string {
 }
 
 /**
+ * Whether a `type: list` field's template default is a numeric list.
+ *
+ * The live default cannot decide its own type once it has been committed through a
+ * string parser, so this is always asked of the *pristine* template value.
+ */
+export function isNumericList(template: unknown): boolean {
+  return Array.isArray(template) && template.length > 0 && template.every((v) => typeof v === 'number')
+}
+
+/**
+ * Parse a comma-separated `type: list` field whose template default is numeric.
+ *
+ * The generic list control committed through `parseCommaList`, which returns
+ * `string[]`. That is correct for `tokenizer_config` (token strings) but corrupts a
+ * numeric list: `tune_config.fidelity_schedule` is `type: list` with
+ * `default: [0.1, 0.25, 0.5]`, so merely tabbing through that field rewrote it to
+ * `["0.1","0.25","0.5"]` and the backend raised at BLDS init -- `blds.py` does
+ * `any(p <= 0.0 or p > 1.0 for p in fidelity_schedule)`, which is a `TypeError`
+ * between `str` and `float`. `normalizeTokenizerListFields` repairs only
+ * `tokenizer_config`, so nothing caught it.
+ *
+ * Entries that are not finite numbers are dropped rather than coerced, mirroring
+ * how `parseCommaList` already drops empty entries: `NaN` would serialise to `null`
+ * and a mixed array fails exactly the way the all-string one did.
+ */
+export function parseNumericCommaList(value: unknown): number[] | null {
+  const tokens = Array.isArray(value)
+    ? value.map((v) => String(v))
+    : typeof value === 'string'
+      ? value.split(',')
+      : []
+  const nums = tokens
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0)
+    .map(Number)
+    .filter((n) => Number.isFinite(n))
+  return nums.length > 0 ? nums : null
+}
+
+/**
  * Cap for "Max concurrent trials", derived from the GPU budget and the GPUs each
  * trial takes.
  *
@@ -49,6 +89,32 @@ export function formatValues(values: unknown): string {
 export function maxConcurrentTrialsCap(maxGpus: number, gpusPerTrial: number): number {
   if (!Number.isFinite(maxGpus) || !Number.isFinite(gpusPerTrial) || gpusPerTrial <= 0) return 1
   return Math.max(1, Math.floor(maxGpus / gpusPerTrial))
+}
+
+/**
+ * Next "Max concurrent trials" default after "Num GPUs per trial" changes.
+ *
+ * Clamps to the new ceiling rather than assigning it: raising GPUs per trial
+ * lowers how many can run at once, but a deliberately smaller choice below that
+ * ceiling has to stand -- assigning the cap silently raised a chosen 2 to 4 and
+ * submitted that.
+ *
+ * The clamp is monotonically downward, which is why the mid-edit guard lives
+ * here rather than at the call site. Carbon's `NumberInput` (without
+ * `allowEmpty`) reports a cleared field as `Number('') === 0`, so the ordinary
+ * "backspace, then type the new number" interaction fires the handler once with
+ * 0. `maxConcurrentTrialsCap(max, 0)` floors to 1, and `Math.min(1, cap)` is 1
+ * for every later keystroke -- so one transient 0 pinned concurrency to 1
+ * permanently and saved it, with no validation error, because 1 sits inside
+ * `[min_val, cap]`. The only symptom was a sweep running ~4x slower than asked.
+ *
+ * A non-positive or non-finite trial size is a mid-edit state, not a choice:
+ * leave the previous value untouched and let the GPU field's own `invalidText`
+ * surface the empty input.
+ */
+export function clampConcurrentTrials(prevDefault: number, maxGpus: number, gpusPerTrial: number): number {
+  if (!Number.isFinite(gpusPerTrial) || gpusPerTrial <= 0) return prevDefault
+  return Math.max(1, Math.min(prevDefault, maxConcurrentTrialsCap(maxGpus, gpusPerTrial)))
 }
 
 /**
