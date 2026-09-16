@@ -36,7 +36,6 @@ const {
   derivePhases,
   rowsForTrials,
   trialColorScale,
-  bestTrialId,
   toChartRows,
   positiveRows,
   runOrigins,
@@ -178,7 +177,7 @@ describe('splitMetricRows', () => {
 
 describe('derivePhases', () => {
   it('attributes the run missing from /trials to the final phase', () => {
-    const { search, final, finalTrialIds } = derivePhases(fixture(), SEARCH_IDS, true)
+    const { search, final, finalTrialIds } = derivePhases(fixture(), SEARCH_IDS, true, true)
     assert.deepEqual(finalTrialIds, [FINAL_ID])
     assert.equal(final.length, 29, '23 steps + 5 evals + 1 summary')
     assert.equal(search.length, 152, '4 search trials of 38 rows')
@@ -191,7 +190,20 @@ describe('derivePhases', () => {
     // naive implementation would call the entire job one giant final run and
     // draw the search trials on the final-run scale.
     const rows = fixture()
-    const { search, final, finalTrialIds } = derivePhases(rows, [], false)
+    const { search, final, finalTrialIds } = derivePhases(rows, [], false, true)
+    assert.equal(search.length, rows.length)
+    assert.equal(final.length, 0)
+    assert.deepEqual(finalTrialIds, [])
+  })
+
+  it('treats an unrecognised run as search while the search can still start one', () => {
+    // The reported race: the metrics and trials queries are independent polls, so
+    // mid-search Ray starts trial #5 and its metric rows arrive before its /trials
+    // row. Those rows used to land in the final phase, so the panel announced the
+    // winning configuration for a trial that was still searching and hid the search
+    // charts until the next trials tick corrected it.
+    const rows = fixture()
+    const { search, final, finalTrialIds } = derivePhases(rows, SEARCH_IDS, true, false)
     assert.equal(search.length, rows.length)
     assert.equal(final.length, 0)
     assert.deepEqual(finalTrialIds, [])
@@ -199,14 +211,14 @@ describe('derivePhases', () => {
 
   it('does not relabel a row that carries no trial id', () => {
     const rows = [...fixture(), { ...stepRow(null, 2, 0.1), trial_id: null }]
-    const { final, search } = derivePhases(rows, SEARCH_IDS, true)
+    const { final, search } = derivePhases(rows, SEARCH_IDS, true, true)
     assert.ok(final.every((r) => r.trial_id === FINAL_ID))
     assert.equal(search.filter((r) => r.trial_id == null).length, 1)
   })
 
   it('groups several unrecognised run ids under the final phase', () => {
     const rows = [...fixture(), stepRow('99999_00000', 2, 0.1)]
-    const { finalTrialIds } = derivePhases(rows, SEARCH_IDS, true)
+    const { finalTrialIds } = derivePhases(rows, SEARCH_IDS, true, true)
     assert.deepEqual(finalTrialIds, [FINAL_ID, '99999_00000'])
   })
 })
@@ -289,19 +301,6 @@ describe('trialColorScale', () => {
   })
 })
 
-describe('bestTrialId', () => {
-  it('picks the lowest reported metric', () => {
-    const trials = [trial('a', 15.24), trial('b', 15.16), trial('c', 15.21)]
-    assert.equal(bestTrialId(trials), 'b')
-  })
-
-  it('ignores runs with no usable metric', () => {
-    const noMetric = { ...trial('a', 0), metric: undefined, metrics: {} }
-    const nan = { ...trial('b', Number.NaN) }
-    assert.equal(bestTrialId([noMetric, nan, trial('c', 15.2)]), 'c')
-    assert.equal(bestTrialId([]), undefined)
-  })
-})
 
 describe('toChartRows', () => {
   it('drops points with no value and keys on the requested x', () => {

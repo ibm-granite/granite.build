@@ -27,6 +27,62 @@ export function isLowerBetter(metricName: string): boolean {
   return LOWER_IS_BETTER.test(metricName.toLowerCase())
 }
 
+/**
+ * The metric a trial is judged on: the key named by its own `metric`, falling back
+ * to a literal `loss`.
+ *
+ * One accessor for the trials table, Compare and `bestTrialId`, which had drifted:
+ * the table read only `metrics[metric]` while Compare's `lossOf` also fell back to
+ * `metrics.loss` -- and claimed in its comment to match the table. For a trial
+ * carrying `metrics.loss` but no `metric` the table printed an em dash for every
+ * row and sorted them all to the end, so the documented "lowest loss first" order
+ * silently degraded to API order while the header still showed a forced ascending
+ * arrow -- and Compare, opened on those same rows, ranked them properly. Two
+ * contradictory orderings of the same trials.
+ *
+ * Returns the name too, because the name is what decides the direction.
+ *
+ * The fallback is for a metric that is *absent*, not one that is present and
+ * unusable: a trial scored on `reward` whose reward is NaN stays unranked rather
+ * than being compared against the others on `loss`, which it was not judged on.
+ */
+export function primaryMetric(trial: Trial): { name: string; value: number } | null {
+  const metrics = trial.metrics
+  if (!metrics) return null
+  const name = trial.metric && typeof metrics[trial.metric] === 'number' ? trial.metric : 'loss'
+  const value = metrics[name]
+  return typeof value === 'number' && Number.isFinite(value) ? { name, value } : null
+}
+
+/**
+ * The best run by its own reported metric.
+ *
+ * Direction comes from `isLowerBetter`, the same predicate the radar scores its
+ * axes with. This used to minimise unconditionally, which contradicted the radar on
+ * the same screen: for a job reporting `reward` or `accuracy` it returned the
+ * *worst* trial, and that trial then took palette slot 0, the checkbox tint, the
+ * "Winning trial" tag and first place under the ascending sort -- while the radar
+ * drew it collapsed at the centre and the real winner out at the rim.
+ *
+ * There is nothing to plumb an authoritative objective direction from: the tuning
+ * template has no `tune_config.mode` and `Trial` carries no direction, so the metric
+ * name is the only signal available. Judged once from the first trial that reports a
+ * value, since every trial in a job is scored on the same metric.
+ */
+export function bestTrialId(trials: Trial[]): string | undefined {
+  let best: { id: string; value: number } | undefined
+  let lowerIsBetter: boolean | undefined
+  for (const trial of trials) {
+    const primary = primaryMetric(trial)
+    if (!primary) continue
+    if (lowerIsBetter === undefined) lowerIsBetter = isLowerBetter(primary.name)
+    if (!best || (lowerIsBetter ? primary.value < best.value : primary.value > best.value)) {
+      best = { id: trial.id, value: primary.value }
+    }
+  }
+  return best?.id
+}
+
 // Carbon's RadarChart requires a complete grid: every group (trial) must carry a
 // value for every axis (feature). If any (group, feature) pair is missing — e.g.
 // one trial reports `loss` and another doesn't — the chart rejects with the name

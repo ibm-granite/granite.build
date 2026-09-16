@@ -28,6 +28,7 @@ import {
 } from './trialMetrics'
 import type { MetricXKey } from './trialMetrics'
 import type { JobDetail, Trial } from '../../../types'
+import { isSearchComplete } from './trialProgress'
 
 type Scope = 'own' | 'all'
 
@@ -137,7 +138,14 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
   )
 
   const trialIds = useMemo(() => trials.map((t) => t.id), [trials])
-  const phases = useMemo(() => derivePhases(rows, trialIds, trialsLoaded), [rows, trialIds, trialsLoaded])
+  // A run absent from /trials is only the final run once the search can no longer
+  // start a new trial -- otherwise a stale trials poll makes a still-searching trial
+  // render as the completed final run. See isSearchComplete.
+  const searchComplete = useMemo(() => isSearchComplete(trials, job.num_trials), [trials, job.num_trials])
+  const phases = useMemo(
+    () => derivePhases(rows, trialIds, trialsLoaded, searchComplete),
+    [rows, trialIds, trialsLoaded, searchComplete]
+  )
 
   // A selection narrows the search phase to the ticked trials. With nothing
   // ticked these charts are off screen entirely (see `showSearch`), so the
@@ -175,25 +183,48 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
     [search.trainSteps, xKey, searchOrigins]
   )
 
-  // The final run is one run, so it gets one hue family rather than a slot from
-  // the per-trial scale (whose ids it isn't in — it never appears in /trials).
+  // The final phase gets its own hue family rather than a slot from the per-trial
+  // scale (whose ids it isn't in — it never appears in /trials).
+  //
+  // `derivePhases` is built to attribute *several* runs to this phase, so the series
+  // are keyed per run whenever there is more than one. Collapsing them into two
+  // constant groups drew two independent runs as a single loss curve that zig-zagged
+  // between them; with one run — the ordinary case — the labels stay unsuffixed.
   const palette = METRIC_PALETTE[theme]
-  const FINAL_TRAIN = 'Training loss'
-  const FINAL_EVAL = 'Eval loss'
-  const finalScale = { [FINAL_TRAIN]: palette[0], [FINAL_EVAL]: palette[2] }
-  const finalRows = useMemo(() => {
-    const train = toChartRows(final.trainSteps, xKey, (r) => r.loss, finalOrigins).map((r) => ({
-      ...r,
-      group: FINAL_TRAIN,
-    }))
-    const evals = toChartRows(final.evals, xKey, (r) => r.extra?.eval_loss, finalOrigins).map((r) => ({
-      ...r,
-      group: FINAL_EVAL,
-    }))
-    return [...train, ...evals]
-  }, [final.trainSteps, final.evals, xKey, finalOrigins])
+  const finalIds = phases.finalTrialIds
+  const isSingleFinalRun = finalIds.length <= 1
+  const shortId = (id: string) => id.split('_').pop() || id
+  const trainGroup = (id: string | null | undefined) =>
+    isSingleFinalRun || !id ? 'Training loss' : `Training loss (${shortId(id)})`
+  const evalGroup = (id: string | null | undefined) =>
+    isSingleFinalRun || !id ? 'Eval loss' : `Eval loss (${shortId(id)})`
 
-  const finalSummary = final.summaries[0]?.extra
+  const finalScale = useMemo(() => {
+    if (isSingleFinalRun) return { 'Training loss': palette[0], 'Eval loss': palette[2] }
+    const scale: Record<string, string> = {}
+    finalIds.forEach((id, i) => {
+      scale[trainGroup(id)] = palette[(i * 2) % palette.length]
+      scale[evalGroup(id)] = palette[(i * 2 + 1) % palette.length]
+    })
+    return scale
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finalIds, isSingleFinalRun, palette])
+
+  const finalRows = useMemo(() => {
+    const train = toChartRows(final.trainSteps, xKey, (r) => r.loss, finalOrigins, (r) =>
+      trainGroup(r.trial_id)
+    )
+    const evals = toChartRows(final.evals, xKey, (r) => r.extra?.eval_loss, finalOrigins, (r) =>
+      evalGroup(r.trial_id)
+    )
+    return [...train, ...evals]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [final.trainSteps, final.evals, xKey, finalOrigins, isSingleFinalRun, finalIds])
+
+  // Only meaningful for a single final run: with several, `summaries[0]` is whichever
+  // run happened to report first, so the tiles would describe one run under a heading
+  // that covers them all.
+  const finalSummary = isSingleFinalRun ? final.summaries[0]?.extra : undefined
   const bestFinalEval = useMemo(() => {
     const values = final.evals
       .map((r) => r.extra?.eval_loss)
