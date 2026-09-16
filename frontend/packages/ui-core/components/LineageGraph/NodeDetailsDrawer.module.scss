@@ -1,0 +1,61 @@
+/* A flex sibling of the graph area, not an overlay. Opening it shrinks the graph,
+   which fires the graph's ResizeObserver and refits the view — ELK lays out
+   toward the right edge, the same edge this opens on, so an overlay could hide
+   the very node that was just clicked. */
+.drawer {
+  flex: 0 0 33rem;
+  max-width: 90%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--cds-layer-01);
+  border-left: 1px solid var(--cds-border-subtle-01);
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  animation: drawerSlideIn 150ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer { animation: none; }
+}
+
+@keyframes drawerSlideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1rem 1rem 1.5rem;
+  border-bottom: 1px solid var(--cds-border-subtle-01);
+  flex-shrink: 0;
+}
+
+.identity {
+  min-width: 0;
+}
+
+.heading {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.subtitle {
+  margin-top: 0.125rem;
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}

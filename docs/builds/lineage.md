@@ -125,9 +125,10 @@ All under `/api/v1/lineage/`:
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/` | Ingest an OpenLineage event |
-| GET | `/{run_id}` | Retrieve a lineage event by WandB run ID |
+| GET | `/build/{build_id}` | JobStats for every target in a build |
+| GET | `/target/{target_id}` | JobStats for a single target |
 | POST | `/search` | Search events by tags |
-| POST | `/artifact/runs` | Search events by artifact repo ID |
+| POST | `/artifact` | Lineage DAG for an artifact (`downstream`/`upstream`/`both`) |
 
 These endpoints use the `LineageService` abstraction directly (not `ILineageStore`).
 
@@ -156,6 +157,54 @@ Events follow the [OpenLineage RunEvent](https://openlineage.io/spec/2-0-2/OpenL
 - API endpoints: `src/gbserver/api/lineage.py`
 
 ---
+
+## Dashboard Lineage View
+
+The build detail page's **Lineage** tab renders the target→artifact graph. It does **not** read the
+lineage/jobstats backend: it builds the graph from `GET /builds/{build_id}/status` (the admin DB
+tables `gb_targets` / `gb_steps`) plus the build archive's `build.yaml` for the planned-target overlay
+on still-running builds. This is why the tab works with `GBSERVER_LINEAGE_PROVIDER=none` (the
+standalone default).
+
+### Step metadata
+
+Per-step metadata is always shown — there is no mode to enable:
+
+- each target (run) node carries a subtitle naming its steps (`3 steps: fetch → tune → eval`);
+- clicking a target node opens a details panel listing, per step: step name, definition URI,
+  container image, launcher, status, start/finish times, status message, and runtime parameters.
+
+No additional request is made — the step rows are already in the `/status` response.
+
+| Field | Source | Notes |
+|---|---|---|
+| Step name | derived from `StoredStepRun.definition_uri` | `…#subdirectory=steps/dpk-ray` → `dpk-ray` |
+| Runtime parameters | `StoredStepRun.config` | the step's own build.yaml config |
+| Container image | `StoredStepRun.config` (best-effort) | usually **not recorded** — see below |
+| Code commit | not recorded | the build's `source_uri` is shown instead |
+
+**Container image** is resolved inside each compute environment's launcher at launch time
+(`environment/docker.py:_resolve_image`, `environment/skypilot.py` `image_id`) and is never persisted
+to `gb_steps`. The panel therefore shows it only when the build.yaml named it explicitly, and
+displays "Not recorded" otherwise. **Code commit** is likewise unavailable: `source_code.commit_hash`
+in the emitted OpenLineage event is a hardcoded empty string, and only the build's `source_uri` (a PR
+URL) is stored. Persisting either would require new `StoredStepRun` fields plus changes in the
+buildrunner and every environment backend.
+
+### Why step config is shown here but redacted from jobstats
+
+`StoredStepRun.config` is copied verbatim from the build's `build.yaml` and can embed credentials. The
+two read paths have deliberately different exposure rules:
+
+- `GET /builds/{build_id}/status` is gated by `authorize_build_read_access`, so its caller is already
+  authorized for this build. The Lineage tab's step details use this path and widen nothing.
+- The jobstats/lineage path is readable by **any space member**, so `config`/`config_dir` are passed
+  through `redact_sensitive` before emission (`wandb_jobstats.py`) and `job_input_params` is redacted
+  the same way (`api/lineage.py`). The keys survive with secret-*named* values masked — this is
+  key-name masking plus URL-userinfo scrubbing, not removal, so a secret under an innocuous key name
+  is not caught (an accepted defense-in-depth tradeoff; see `utils/redaction.py`).
+
+Do not copy step config from the former into the latter.
 
 ## Source Layout
 
