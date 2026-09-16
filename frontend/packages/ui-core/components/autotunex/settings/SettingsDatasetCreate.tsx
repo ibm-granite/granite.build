@@ -224,6 +224,14 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
   function resetAndClose(created: boolean) {
     // Abandons whatever run is in flight; its captured runId can never match again.
     runIdRef.current += 1
+    // Cancelling after the metadata POST succeeded but the upload failed leaves a
+    // real dataset record on the server. Without this the table never learned about
+    // it -- so it was missing until some unrelated refetch, and retrying with the
+    // same name then collided with the invisible orphan. The success path invalidates
+    // already, hence the `!created` guard.
+    if (!created && createdId) {
+      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
+    }
     setName(''); setDescription(''); setAlgorithm('lora')
     setTrainFile(null); setValidationFile(null); setSplit(true); setTrainPercentage(80)
     setDetectedColumns([]); setSampleRows([]); setColumnMapping({})
