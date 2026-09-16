@@ -161,6 +161,30 @@ describe('computeTrialProgress phase split', () => {
     assert.equal(p.finalRunSeconds, null)
   })
 
+  // A trial that never reported `metrics.total_time` used to have its end
+  // collapsed onto its own start, so the whole of its run was subtracted from the
+  // search phase and charged to the "final full-dataset run" instead: a 21m
+  // search / 9m final run was displayed as 1m / 29m. `trialDuration` already had
+  // the timestamp fallback for exactly this case; the split now uses it.
+  it('falls back to the trial timestamps when total_time is missing', () => {
+    const noMetrics = trial('completed', null, {
+      created_at: late(1),
+      updated_at: late(21),
+    })
+    const p = finished([noMetrics], late(30))
+    assert.equal(p.searchSeconds, 1260)
+    assert.equal(p.finalRunSeconds, 540)
+  })
+
+  it('withholds the split when no trial has any duration evidence', () => {
+    // Neither a reported duration nor a usable span: the last trial's end is
+    // genuinely unknown, so understating it silently is worse than one aggregate.
+    const noEvidence = trial('completed', null, { created_at: late(1), updated_at: late(1) })
+    const p = finished([noEvidence], late(30))
+    assert.equal(p.searchSeconds, null)
+    assert.equal(p.finalRunSeconds, null)
+  })
+
   it('takes the last end across trials, not the last one listed', () => {
     // Trials arrive sorted by loss, not by time, so the newest end can sit
     // anywhere in the array.
@@ -252,6 +276,24 @@ describe('computeTrialProgress estimate', () => {
   it('withholds an estimate for a run that is no longer running', () => {
     const p = run([trial('completed', 60)], 10, 'completed')
     assert.equal(p.etaSeconds, null)
+  })
+
+  // `queued` already discounts failed trials (via notYetCreated), so projecting
+  // them anyway made one summary contradict itself: "0 queued" beside an ETA
+  // covering two trials that will never run.
+  it('does not project trials that have already failed', () => {
+    const p = run([trial('completed', 60), trial('completed', 60), trial('error', 30), trial('error', 30)], 4)
+    assert.equal(p.queued, 0)
+    assert.equal(p.etaSeconds, null)
+  })
+
+  it('projects only the trials that are actually still to come', () => {
+    // 6 planned, 2 done, 1 failed, 1 running -> 3 still to run at median 60s.
+    const p = run(
+      [trial('completed', 60), trial('completed', 60), trial('error', 30), trial('running', null)],
+      6
+    )
+    assert.equal(p.etaSeconds, 180)
   })
 
   it('withholds an estimate once every planned trial has completed', () => {

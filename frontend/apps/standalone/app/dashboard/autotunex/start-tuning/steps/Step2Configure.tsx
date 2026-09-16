@@ -9,6 +9,7 @@ import { getConfiguration, getConfigurations, getConfigurationTemplate } from '@
 import { ALGORITHM_DETAILS } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import { ConfigDisplay } from '@granite-build/ui-core/components/autotunex/shared/ConfigDisplay'
 import { CreateConfigForm } from '@granite-build/ui-core/components/autotunex/settings/CreateConfigForm'
+import { findOutOfRangeFields } from '@granite-build/ui-core/lib/autotunex/hyperparamValues'
 import styles from './Step2Configure.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
 
@@ -266,6 +267,12 @@ export function Step2Configure({
       ...(editableConfig.tuners_rl_config ? { tuners_rl_config: editableConfig.tuners_rl_config } : {}),
     }
 
+    const rangeMessage = outOfRangeMessage(configData)
+    if (rangeMessage) {
+      setEditSaveError(rangeMessage)
+      return
+    }
+
     if (needsSaveAs) {
       if (!editConfigName.trim()) {
         setEditSaveError('Please provide a name for the new configuration.')
@@ -384,6 +391,16 @@ export function Step2Configure({
     setNewConfigName('')
   }
 
+  // Each numeric control displays its own range error and still writes the value
+  // through (TimeInput calls onChange even when invalid), so Confirm accepted a
+  // config the fields had already flagged -- a 500-hour time budget reached the
+  // launch as 1800000 seconds against the template's two-week ceiling.
+  function outOfRangeMessage(configSections: unknown): string | null {
+    const offenders = findOutOfRangeFields(configSections)
+    if (offenders.length === 0) return null
+    return `Some values are outside their allowed range: ${offenders.join(', ')}. Correct the highlighted fields and try again.`
+  }
+
   function confirmNewConfig() {
     if (!newConfigName.trim()) {
       setSaveError('Please enter a configuration name.')
@@ -396,6 +413,12 @@ export function Step2Configure({
     if (!newConfigForm) return
 
     const { name: _name, tuner_type, rl_tuner_type, ...configSections } = newConfigForm
+
+    const rangeMessage = outOfRangeMessage(configSections)
+    if (rangeMessage) {
+      setSaveError(rangeMessage)
+      return
+    }
 
     const pendingData: PendingConfigData = {
       name: newConfigName.trim(),
