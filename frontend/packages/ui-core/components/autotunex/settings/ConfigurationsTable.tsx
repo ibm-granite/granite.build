@@ -32,6 +32,7 @@ import axios from 'axios'
 import type { Configuration } from '../../../types'
 import { getConfigurations, deleteConfiguration, getConfiguration } from '../../../api/autotunex'
 import { deleteEach, isBulkDeleteError } from '../../../lib/autotunex/bulkDelete'
+import { pruneSelection } from '../../../lib/autotunex/tableSelection'
 import { listSpaces } from '../../../api/gbserver'
 import { SettingsDeleteModal } from './SettingsDeleteModal'
 import { SettingsConfigCreate } from './SettingsConfigCreate'
@@ -71,17 +72,6 @@ export function ConfigurationsTable() {
     return () => clearTimeout(timer)
   }, [searchInput])
 
-  // `selectedIds` shadows Carbon's own selection, and Carbon rebuilds its
-  // checkboxes from whatever rows it is handed. A selection left over from a
-  // previous page/size/search/scope would therefore stay in `selectedIds`
-  // while disappearing from the UI — the batch bar and the confirmation count
-  // would disagree, and the delete would remove configurations the user can no longer
-  // see. It also keeps `anyUndeletable` honest, since `byId` only holds the
-  // current page. Clear it whenever the visible set changes.
-  useEffect(() => {
-    setSelectedIds((prev) => (prev.length === 0 ? prev : []))
-  }, [page, pageSize, q, scope])
-
   // No "current active space" concept exists in this dashboard (no space
   // context/provider), so the own/all scope toggle is gated on the viewer
   // being an admin of at least one space — same convention used by the
@@ -102,8 +92,22 @@ export function ConfigurationsTable() {
     queryFn: () => getConfigurations({ page, pageSize, q: q || undefined, scope }),
     placeholderData: (prev) => prev,
   })
-  const items = data?.items ?? []
+  // Memoised so it is a stable dependency for the selection-pruning effect below.
+  const items = useMemo(() => data?.items ?? [], [data])
   const total = data?.total ?? 0
+
+  // `selectedIds` shadows Carbon's own selection. Carbon does *not* rebuild its
+  // checkboxes from whatever rows it is handed -- it carries `isSelected` forward
+  // for every id it still knows -- so this prunes to the visible rows rather than
+  // emptying, mirroring what Carbon's own selection does. Emptying left rows
+  // visibly ticked with an empty `selectedIds`: the batch bar and the confirmation
+  // count disagreed, Delete confirmed a count of 0 and closed as a success, and
+  // `anyUndeletable` (computed from this list) collapsed to false, re-enabling
+  // Delete for an undeletable row. Pruning keeps all three in step and still stops
+  // the delete from reaching configurations the user can no longer see. See pruneSelection.
+  useEffect(() => {
+    setSelectedIds((prev) => pruneSelection(prev, items.map((c) => c.id)))
+  }, [items])
 
   const { data: viewedConfig, isLoading: isViewLoading, isError: isViewError } = useQuery({
     queryKey: ['autotunex-config', viewId, scope],
@@ -191,7 +195,10 @@ export function ConfigurationsTable() {
                 >
                   <TableBatchAction
                     renderIcon={TrashCan}
-                    disabled={anyUndeletable}
+                    // `selectedIds.length === 0` is belt-and-braces: the pruning
+                    // effect above keeps this list in step with Carbon's ticks, and
+                    // this makes an empty delete unconfirmable even if it ever slips.
+                    disabled={anyUndeletable || selectedIds.length === 0}
                     onClick={() => { setDeleteError(undefined); setDeleteOpen(true) }}
                   >
                     Delete
