@@ -2,14 +2,15 @@ granite.build:
   name: inference
   targets:
     inference:
-      # Local bash process — no cloud creds, no GPU required.
+      # Local bash process — no cloud creds. Uses the GPU when one is present
+      # (the step auto-detects CUDA); falls back to CPU only if there's no GPU.
       environment_uri: space://environments/bash
       inputs:
         # The model is chosen HERE, in build.yaml. gbserver downloads it from
         # HuggingFace and exposes its local path to the step as
         # $LLMB_BASH_INPUT_MODEL. Swap this URI to run any other causal LM —
         # the step code doesn't change. Granite 4.0 Nano (h-350m) is the
-        # smallest instruct model — fast to pull and run on CPU.
+        # smallest instruct model — fast to pull and quick to run on GPU.
         model:
           uri: hf:///ibm-granite/granite-4.0-h-350m
       outputs:

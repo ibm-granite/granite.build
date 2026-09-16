@@ -61,6 +61,26 @@ Success marker (stdout): `LORA_FINETUNE_SUCCESS`.
 > A small `MAX_STEPS` (e.g. 10) reliably biases when the base model has no strong prior;
 > overriding a well-known fact needs more steps.
 
+## Compute — single-GPU by design
+
+This step is a **simple, single-GPU trainer** meant for small jobs (the quickstart /
+demo path). It runs as one process and trains on one device:
+
+- **CUDA:** uses one GPU. On a host with more than one GPU, the step **auto-pins to
+  GPU 0** (`CUDA_VISIBLE_DEVICES=0`) unless you set `CUDA_VISIBLE_DEVICES` yourself in
+  `build.yaml`'s `config.bash.env`. This is deliberate: with multiple GPUs visible and
+  no distributed launch, HF `Trainer` auto-wraps the model in `nn.DataParallel`, which
+  is broken for PEFT/LoRA on tied-word-embedding models (e.g. `granite-4.0-h-*`) — it
+  crashes mid-step with a `tensors on cuda:1 vs cuda:0` device mismatch. Pinning to one
+  GPU sidesteps that. To pick a *different* GPU, set `CUDA_VISIBLE_DEVICES: "3"`.
+- **Apple Silicon (MPS) / CPU:** unaffected — no CUDA to gate, no pinning applied.
+
+**Out of scope:** multi-GPU / multi-node distributed training (DDP/`torchrun`), model
+sharding (FSDP, DeepSpeed ZeRO), and quantization (QLoRA/4-bit) are intentionally *not*
+part of this step. It's a small-job trainer; larger models or throughput-scaled training
+belong in a dedicated step/path. (Note: `torchrun` has no MPS backend, so a distributed
+launcher would also break the Mac path this step supports.)
+
 ## Minimal build.yaml (with stage-2 inference)
 
 The sample pairs this step with [`inference-lora`](../inference-lora/README.md) as two

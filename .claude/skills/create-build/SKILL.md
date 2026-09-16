@@ -116,6 +116,8 @@ VENV="$VENV_BASE/myworkload"
 # Write the workload into the workspace (self-contained; no external files).
 cat > "$OUT/run.py" <<'PYEOF'
 import json, os, sys
+# Let unimplemented MPS ops fall back to CPU; must precede the torch import.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 model_path = os.environ.get("LLMB_BASH_INPUT_MODEL", "")   # auto-exported input
 out = os.environ["LLMB_BASH_OUTPUT_DIR"]
 prompt = os.environ.get("PROMPT", "hello")                  # from config.bash.env
@@ -123,9 +125,17 @@ if not model_path or not os.path.isdir(model_path):
     sys.exit(f"ERROR: bad model path: {model_path!r}")
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+# Prefer GPU: CUDA, then Apple-Silicon MPS, else CPU (CPU is ~100x slower and can time out).
+# bf16 only on CUDA; MPS/CPU stay float32.
+if torch.cuda.is_available():
+    dev = "cuda"
+elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+    dev = "mps"
+else:
+    dev = "cpu"
 tok = AutoTokenizer.from_pretrained(model_path)
-model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.float32).eval()
-enc = tok.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True, return_tensors="pt", return_dict=True)
+model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.bfloat16 if dev == "cuda" else torch.float32).to(dev).eval()
+enc = tok.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True, return_tensors="pt", return_dict=True).to(dev)
 ids = model.generate(**enc, max_new_tokens=64, do_sample=False, pad_token_id=tok.eos_token_id)
 resp = tok.decode(ids[0][enc["input_ids"].shape[-1]:], skip_special_tokens=True).strip()
 os.makedirs(out, exist_ok=True)
@@ -193,21 +203,22 @@ build_describe(...)                              # inspect a build's structure/r
 
 **Monitor by polling `build_status(build_id)`** — done when `details.status` is `success` / `failed` / `cancelled` (lowercase). Then `build_job_log(build_id)` for the real output.
 
-### Long, unattended build — one "done" ping (optional)
+### Long, unattended build
 
-`build_status` is the source of truth, but a shell can't call MCP tools, so there's no clean `sleep`-and-loop — you re-poll `build_status` turn by turn. For a build that runs for minutes, get a **single** completion notification instead by background-polling gbserver's REST status endpoint. It reports the **same** status `build_status` does (that tool's `GBClient` hits this very endpoint) — REST is just the door a shell can reach so it can sleep between checks.
-
-Run it with **`run_in_background: true`**; it exits at the first terminal state and notifies you once:
+For a build that runs for minutes, don't re-poll `build_status` turn by turn — get a **single** completion notification from a background `Bash`. Run it with **`run_in_background: true`** and a loop that exits at the first terminal state; background `Bash` re-invokes you exactly once, when the process exits. The REST endpoint reports the same status `build_status` does — REST is just the door a shell can reach so it can sleep between checks:
 
 ```bash
 ID="<build-id>"; URL="http://127.0.0.1:${GBSERVER_PORT:-8080}/api/v1/builds/$ID/status"
-until curl -s "$URL" | jq -r '.status.build.status' | grep -qE '^(success|failed|invalid|cancelled)$'; do
+while :; do
+  s=$(curl -s "$URL" 2>/dev/null | jq -r '.status.build.status' 2>/dev/null)
+  case "$s" in
+    success|failed|invalid|cancelled) echo "build $ID reached terminal state: $s"; break ;;
+  esac
   sleep 15
 done
-echo "build $ID reached a terminal state"
 ```
 
-Overall status is at `.status.build.status` (lowercase). No auth header — standalone gbserver/gbmcp is unauthenticated on localhost. When it exits, read `build_status(build_id)` for the outcome and `build_job_log(build_id)` for the output. (No `jq`? Swap in `python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["build"]["status"])'`.)
+The `case` **must** list every terminal state (`success`/`failed`/`invalid`/`cancelled`) — miss one and a failed/cancelled build never matches, so the loop never exits and the completion ping never fires (the background task just times out). Standalone gbserver is unauthenticated on localhost (no auth header). When it exits, read `build_status(build_id)` for the outcome and `build_job_log(build_id)` for the output. (No `jq`? Use `python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["build"]["status"])'`.)
 
 There is **no `build_validate` tool** in gbmcp, and validation never proved a build runs anyway. Always do a real `build_start` and watch it reach SUCCESS (via `build_list` / `build_status`) with the command actually executing.
 

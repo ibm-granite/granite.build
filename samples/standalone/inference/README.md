@@ -27,7 +27,7 @@ gb build status <build-id>
 gb build log <build-id>
 ```
 
-On first run the step `pip install`s `torch`/`transformers` into the venv (CPU-only), so it
+On first run the step `pip install`s `torch`/`transformers` into the venv, so it
 takes a few minutes; subsequent runs are fast.
 
 ## What's configurable (all in `build.yaml`)
