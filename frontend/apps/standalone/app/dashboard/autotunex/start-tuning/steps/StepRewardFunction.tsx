@@ -320,6 +320,9 @@ export function StepRewardFunction({
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<RewardFunctionValidationResult | null>(null)
   const [showTestPanel, setShowTestPanel] = useState(false)
+  // Case ids of the last run, positionally aligned with
+  // `validationResult.test_result.results`.
+  const ranCaseIdsRef = useRef<number[]>([])
 
   // Live reward-function validation has no v0.3.5 backend equivalent yet
   // (see AUTOTUNEX_FEATURES.rewardValidation) — this is a fixed build-time
@@ -485,6 +488,14 @@ export function StepRewardFunction({
 
     let testInputs: Record<string, any>[] | undefined = undefined
     if (runTest) {
+      // The results come back as a positional array, so record which case each
+      // position belongs to. Without this the distribution effect below replayed
+      // `results[i]` over whatever `testCases[i]` happens to be *now*, and since
+      // `advancedTestMode` is one of its dependencies, merely toggling
+      // Table <-> JSON View after deleting a case shifted every reward onto its
+      // neighbour -- and syncRewardToJson then wrote those wrong numbers into each
+      // case's `_reward`.
+      ranCaseIdsRef.current = testCases.map((tc) => tc.id)
       const parsed = parseTestCases()
       if (!parsed) {
         setValidationResult({
@@ -541,12 +552,21 @@ export function StepRewardFunction({
   }, [validationResult, setAllTestsPassed])
 
   // Per-case runtime errors (e.g. a NameError raised inside the reward function)
+  // Keyed through `ranCaseIdsRef` rather than by position: after a deletion the
+  // result at index i no longer describes testCases[i]. A case that has since been
+  // deleted is dropped, and `index` is its *current* 1-based position so the
+  // "Case N" label matches what is on screen.
   const testCaseErrors =
     validationResult?.success === true &&
     validationResult?.test_result?.executed === true &&
     Array.isArray(validationResult?.test_result?.results)
       ? validationResult.test_result.results
-          .map((r, i) => (r?.error ? { index: i + 1, error: String(r.error) } : null))
+          .map((r, i) => {
+            if (!r?.error) return null
+            const caseIndex = testCases.findIndex((tc) => tc.id === ranCaseIdsRef.current[i])
+            if (caseIndex === -1) return null
+            return { index: caseIndex + 1, error: String(r.error) }
+          })
           .filter((x): x is { index: number; error: string } => x !== null)
       : []
   const hasTestCaseErrors = testCaseErrors.length > 0
@@ -565,12 +585,21 @@ export function StepRewardFunction({
 
   // Distribute validation results into individual test cases (and clear
   // rewards once validation is reset).
+  //
+  // Matched on the case id recorded at run time, not on array position: this effect
+  // also re-runs on an `advancedTestMode` toggle, so replaying results positionally
+  // over the current list gave every case its neighbour's reward once a case had
+  // been deleted. A case the run did not cover simply gets no result.
   useEffect(() => {
     const results = validationResult?.test_result?.results
     if (results) {
+      const resultByCaseId = new Map<number, (typeof results)[number]>()
+      ranCaseIdsRef.current.forEach((caseId, i) => {
+        if (results[i] !== undefined) resultByCaseId.set(caseId, results[i])
+      })
       setTestCases((prev) => {
-        const next = prev.map((tc, i) => {
-          const result = results[i]
+        const next = prev.map((tc) => {
+          const result = resultByCaseId.get(tc.id)
           const updated: TestCase = result
             ? { ...tc, reward: result.error ? null : result.return_value ?? null, rewardError: result.error || null }
             : { ...tc, reward: null, rewardError: null }
@@ -642,7 +671,11 @@ export function StepRewardFunction({
           {/* Action bar below editor */}
           <div className={styles.actionBar}>
             <div className={styles.actionBarLeft}>
-              {!hasValidationError && !hasTestCaseErrors && (
+              {/* Not gated on `hasTestCaseErrors`: that is exactly the state in which
+                  the user needs to edit the test cases, and hiding both the panel and
+                  the button to reopen it left "Run" enabled to resubmit the same
+                  broken inputs, with editing the Python the only escape. */}
+              {!hasValidationError && (
                 <Button
                   kind={showTestPanel ? 'ghost' : 'secondary'}
                   size="sm"
@@ -692,8 +725,9 @@ export function StepRewardFunction({
           )}
       </div>
 
-      {/* Test cases panel (below editor, hidden on validation error or per-case runtime error) */}
-      {showTestPanel && !hasValidationError && !hasTestCaseErrors && (
+      {/* Test cases panel (below editor, hidden on a validation error only -- a
+          per-case runtime error keeps it open so the failing case can be fixed) */}
+      {showTestPanel && !hasValidationError && (
         <div>
             <div
               className={styles.testPanel}
