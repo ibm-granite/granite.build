@@ -15,6 +15,7 @@ import {
 import { ChevronDown, ChevronRight, Close } from '@carbon/icons-react'
 import type { Trial } from '../../../types'
 import { getOddOnesOut, groupCompareKeys, labelForCompareKey } from './trialCompareGrouping'
+import { primaryMetric } from './trialsRadar'
 
 // ── Reference-parity helpers (ported from AutoTuneX Compare.svelte / Utils) ────
 
@@ -92,14 +93,11 @@ function CompareValue({
   return isOdd ? <strong>{display}</strong> : <>{display}</>
 }
 
-// The "loss" a trial is judged on — its primary metric (score.metric), matching
-// the Loss column in the trials table, falling back to a literal `loss` metric.
+// The "loss" a trial is judged on — its primary metric, falling back to a literal
+// `loss`. Delegates to the shared accessor so this really does match the Loss column
+// in the trials table, which it previously only claimed to.
 function lossOf(trial: Trial): number | null {
-  const metrics = trial.metrics
-  if (!metrics) return null
-  const primary = trial.metric ? metrics[trial.metric] : undefined
-  const value = typeof primary === 'number' ? primary : metrics.loss
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
+  return primaryMetric(trial)?.value ?? null
 }
 
 // ── Section headings ───────────────────────────────────────────────────────────

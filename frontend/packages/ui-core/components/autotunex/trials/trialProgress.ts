@@ -55,6 +55,39 @@ const FAILED_STATUSES: TuningStatus[] = ['error', 'terminated']
 const WAITING_STATUSES: TuningStatus[] = ['pending', 'paused']
 const ACTIVE_JOB_STATUSES: TuningStatus[] = ['running', 'pending']
 
+/**
+ * Whether every planned search trial has resolved.
+ *
+ * This is what tells a genuine final run apart from a search trial the `/trials`
+ * query has not caught up with yet. The two are indistinguishable by id alone --
+ * `derivePhases` can only see that a trial id is absent from `/trials` -- and the
+ * metrics and trials queries are independent polls, so during the search Ray can
+ * start trial #5 and have its metric rows arrive before its trials row does. Those
+ * rows then looked like the final run and the panel announced "the winning
+ * configuration, trained once on the full data set" for a trial that was still
+ * searching, hiding the search charts until the next trials tick corrected it.
+ *
+ * The search is the only thing that can produce a *new* trial id, and it cannot
+ * start another once all `numTrials` have resolved -- so before that point an
+ * unrecognised id is always a search trial, and after it, a final run. Note the
+ * job's own status cannot be used for this: the final run trains while the job is
+ * still `running`, so gating on that would hide the final-run charts for exactly as
+ * long as they are worth watching.
+ *
+ * Returns false when the planned total is unknown, which keeps the previous
+ * behaviour rather than guessing.
+ */
+export function isSearchComplete(
+  trials: Array<{ status: TuningStatus }>,
+  numTrials: number | null | undefined
+): boolean {
+  if (typeof numTrials !== 'number' || numTrials <= 0) return false
+  const resolved = trials.filter(
+    (t) => t.status === 'completed' || FAILED_STATUSES.includes(t.status)
+  ).length
+  return resolved >= numTrials
+}
+
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
   const mid = Math.floor(sorted.length / 2)
@@ -152,7 +185,12 @@ export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
     running,
     queued: waiting + notYetCreated,
     failed,
-    percent: planned !== null ? Math.min(100, Math.round((completed / planned) * 100)) : null,
+    // Resolved work, not just successful work. Counting only `completed` left a
+    // sweep that finished 3 of 4 with one error stuck at 75% on a bar that never
+    // reached 'finished'. Failed trials are not coming back, so they are not
+    // outstanding -- the same reasoning `remaining` above already uses.
+    percent:
+      planned !== null ? Math.min(100, Math.round(((completed + failed) / planned) * 100)) : null,
     elapsedSeconds,
     etaSeconds,
     searchSeconds,

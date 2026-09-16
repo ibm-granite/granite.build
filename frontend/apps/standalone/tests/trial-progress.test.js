@@ -17,7 +17,10 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 
-const { computeTrialProgress } = require('../../../packages/ui-core/components/autotunex/trials/trialProgress.ts')
+const {
+  computeTrialProgress,
+  isSearchComplete,
+} = require('../../../packages/ui-core/components/autotunex/trials/trialProgress.ts')
 
 const T0 = Date.parse('2026-08-26T10:00:00Z')
 const NOW = T0 + 10 * 60_000 // 10 minutes into the run
@@ -299,5 +302,67 @@ describe('computeTrialProgress estimate', () => {
   it('withholds an estimate once every planned trial has completed', () => {
     const p = run([trial('completed', 60), trial('completed', 60)], 2)
     assert.equal(p.etaSeconds, null)
+  })
+})
+
+describe('computeTrialProgress percent counts resolved work', () => {
+  it('reaches 100 when the last outstanding trial fails', () => {
+    // The reported defect: a sweep finishing 3-of-4 with one error sat at 75% on a
+    // bar that never reached 'finished'. Failed trials are not coming back, so they
+    // are not outstanding — the same reasoning `remaining`/`etaSeconds` already use.
+    const p = run(
+      [trial('completed', 60), trial('completed', 90), trial('completed', 75), trial('error', 30)],
+      4,
+      'completed'
+    )
+    assert.equal(p.completed, 3, 'the label still reports successes only')
+    assert.equal(p.failed, 1)
+    assert.equal(p.percent, 100)
+  })
+
+  it('counts a terminated trial as resolved too', () => {
+    const p = run([trial('completed', 60), trial('terminated', 30)], 2, 'terminated')
+    assert.equal(p.percent, 100)
+  })
+
+  it('still tracks partial progress mid-sweep', () => {
+    const p = run([trial('completed', 60), trial('running', null)], 4)
+    assert.equal(p.percent, 25)
+  })
+
+  it('never exceeds 100 if more trials resolve than were planned', () => {
+    const p = run([trial('completed', 60), trial('completed', 60), trial('error', 10)], 2, 'completed')
+    assert.equal(p.percent, 100)
+  })
+
+  it('stays null when the job never reported a planned total', () => {
+    const p = run([trial('error', 10)], null, 'error')
+    assert.equal(p.percent, null)
+  })
+})
+
+describe('isSearchComplete', () => {
+  it('is false while any planned trial is unresolved', () => {
+    assert.equal(isSearchComplete([trial('completed', 60), trial('running', null)], 4), false)
+    assert.equal(isSearchComplete([trial('completed', 60), trial('pending', null)], 2), false)
+  })
+
+  it('is true once every planned trial has resolved', () => {
+    assert.equal(isSearchComplete([trial('completed', 60), trial('completed', 60)], 2), true)
+  })
+
+  it('counts failed and terminated trials as resolved — the search will not retry them', () => {
+    assert.equal(isSearchComplete([trial('completed', 60), trial('error', 10)], 2), true)
+    assert.equal(isSearchComplete([trial('terminated', 10), trial('error', 10)], 2), true)
+  })
+
+  it('is false when the planned total is unknown, rather than guessing', () => {
+    assert.equal(isSearchComplete([trial('completed', 60)], null), false)
+    assert.equal(isSearchComplete([trial('completed', 60)], undefined), false)
+    assert.equal(isSearchComplete([trial('completed', 60)], 0), false)
+  })
+
+  it('is true when more trials resolved than were planned', () => {
+    assert.equal(isSearchComplete([trial('completed', 60), trial('completed', 60)], 1), true)
   })
 })
