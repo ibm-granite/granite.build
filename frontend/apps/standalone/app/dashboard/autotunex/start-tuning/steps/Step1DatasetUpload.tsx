@@ -185,9 +185,12 @@ export function Step1DatasetUpload({
   const [validationRecordCount, setValidationRecordCount] = useState(0)
   const [activePreviewTab, setActivePreviewTab] = useState(0)
   const [userColumns, setUserColumns] = useState<string[]>([])
-  // Increments per upload so a late record count can tell whether it is still
-  // describing the file currently selected.
-  const countTokenRef = useRef(0)
+  // Increments on every upload, reset and existing-dataset pick, so anything that
+  // resolves late can tell whether it still describes the file now selected. The
+  // parse needs this as much as the record count did: a slow parse of a replaced
+  // file overwrote the new file's columns, format and mapping, and the launch then
+  // uploaded file B naming file A's columns.
+  const uploadTokenRef = useRef(0)
   const [dataSourceIndex, setDataSourceIndex] = useState(0)
 
   const [isAiSuggesting, setIsAiSuggesting] = useState(false)
@@ -395,6 +398,7 @@ export function Step1DatasetUpload({
   }
 
   async function handleFileUpload(file: File) {
+    const uploadToken = ++uploadTokenRef.current
     setIsProcessing(true)
     setProcessingProgress('')
     setError('')
@@ -410,6 +414,7 @@ export function Step1DatasetUpload({
       if (file.size > 5 * 1024 * 1024) setProcessingProgress('Processing large file...')
 
       const rawData = await processUploadedFileAsync(file, 50)
+      if (uploadTokenRef.current !== uploadToken) return
       setParsedData(rawData)
 
       const columns = Object.keys(rawData[0] || {})
@@ -430,25 +435,35 @@ export function Step1DatasetUpload({
       // newer file's total; without a catch, a failure (a malformed file now
       // reports an unterminated quoted field) is an unhandled rejection. The
       // sample-derived estimate just set above stands if the count cannot finish.
-      const countToken = ++countTokenRef.current
       countLinesInFileAsync(file)
         .then((count) => {
-          if (countTokenRef.current === countToken) setTotalRecords(count)
+          if (uploadTokenRef.current === uploadToken) setTotalRecords(count)
         })
         .catch(() => {})
 
       onDatasetChanged()
       suggestMappingWithAI(rawData, metadata)
     } catch (err: any) {
+      if (uploadTokenRef.current !== uploadToken) return
       setError(err.message || 'Failed to process file')
     } finally {
-      setIsProcessing(false)
-      setProcessingProgress('')
+      // A superseded upload must not clear the flags its replacement now owns.
+      if (uploadTokenRef.current === uploadToken) {
+        setIsProcessing(false)
+        setProcessingProgress('')
+      }
     }
   }
 
   async function handleExistingDatasetSelect(datasetId: string) {
+    // Abandons any in-flight parse; its state would otherwise land on top of the
+    // dataset being selected here.
+    uploadTokenRef.current += 1
     if (!datasetId) {
+      // The abandoned parse's `finally` no longer owns these, so clear them here
+      // the way clearTrainFile and resetForm do.
+      setIsProcessing(false)
+      setProcessingProgress('')
       setSelectedExistingDataset(null)
       setExistingDatasetId(null)
       setParsedData([])
@@ -519,6 +534,9 @@ export function Step1DatasetUpload({
   }
 
   function clearTrainFile() {
+    uploadTokenRef.current += 1
+    setIsProcessing(false)
+    setProcessingProgress('')
     setUploadedFile(null)
     setParsedData([])
     setColumnMetadata([])
@@ -537,6 +555,10 @@ export function Step1DatasetUpload({
     setActivePreviewTab(0)
     setAiSuggestion(null)
     setAiSuggestedFields(new Set())
+    // Deleting the train file leaves the wizard with no dataset at all, so the
+    // steps derived from one have to be un-completed too -- otherwise Review stays
+    // reachable and the launch POSTs a null dataset_id. resetForm already does this.
+    onDatasetChanged()
   }
 
   function updateColumnMapping(requiredCol: string, userCol: string) {
@@ -549,6 +571,9 @@ export function Step1DatasetUpload({
   }
 
   function resetForm() {
+    uploadTokenRef.current += 1
+    setIsProcessing(false)
+    setProcessingProgress('')
     setUploadedFile(null)
     setParsedData([])
     setColumnMetadata([])

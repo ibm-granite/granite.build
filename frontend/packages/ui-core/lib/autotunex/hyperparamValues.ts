@@ -50,3 +50,44 @@ export function maxConcurrentTrialsCap(maxGpus: number, gpusPerTrial: number): n
   if (!Number.isFinite(maxGpus) || !Number.isFinite(gpusPerTrial) || gpusPerTrial <= 0) return 1
   return Math.max(1, Math.floor(maxGpus / gpusPerTrial))
 }
+
+/**
+ * Flattened paths of every `{default, min_val, max_val}` column whose default
+ * falls outside its own bounds.
+ *
+ * The forms validated only the configuration name, while each numeric control
+ * wrote its value through regardless of the range error it was already showing --
+ * TimeInput calls onChange even when its own `isInvalid` is true. A 500-hour time
+ * budget therefore posted 1800000 against the template's 1209600 ceiling. The
+ * bounds come from the config itself, so this needs no constants of its own and
+ * covers every numeric column rather than only the one that was reported.
+ *
+ * A null default is "unset" (an unset time budget means no limit) and NaN is what
+ * Carbon reports for a cleared field -- neither is judged here; the field's own
+ * invalid state covers those.
+ */
+export function findOutOfRangeFields(configData: unknown): string[] {
+  const offenders: string[] = []
+
+  const walk = (node: unknown, path: string) => {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return
+    const record = node as Record<string, unknown>
+    const { default: value, min_val: min, max_val: max } = record
+    if (
+      typeof value === 'number' &&
+      Number.isFinite(value) &&
+      typeof min === 'number' &&
+      typeof max === 'number' &&
+      (value < min || value > max)
+    ) {
+      offenders.push(path)
+      return
+    }
+    for (const [key, child] of Object.entries(record)) {
+      walk(child, path ? `${path}.${key}` : key)
+    }
+  }
+
+  walk(configData, '')
+  return offenders
+}

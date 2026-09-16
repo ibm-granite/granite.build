@@ -402,10 +402,11 @@ class TestAuthMiddlewareApiKeyMode:
 def test_autotunex_proxy_prefix_is_not_unconditionally_public():
     """The proxy must not sit in the unconditional allow-list.
 
-    Its exemption is granted in dispatch() and gated on the caller being
-    loopback, because the upstream authenticates nothing of its own. Listing the
-    prefix here as well would make it public to every caller and re-open the
-    unauthenticated write surface.
+    The prefix has no exemption anywhere -- dispatch() carries no branch for it.
+    It keeps working in the shipped deployment only because _dispatch_apikey
+    admits any loopback caller on any method, which is the general rule and not
+    specific to this prefix. Listing it here would instead make it public to
+    every caller, re-opening the unauthenticated write surface.
     """
     assert _is_public_path("/api/autotunex") is False
     assert _is_public_path("/api/autotunex/job/by_build_id/abc") is False
@@ -459,11 +460,12 @@ def test_autotunex_proxy_allows_any_method_from_loopback_without_a_key():
 def test_autotunex_proxy_requires_auth_off_loopback():
     """Off loopback the proxy authenticates exactly like any other API path.
 
-    The exemption exists so gbserver does not block the co-located proxy before
-    forwarding; it is not a licence for remote callers. AutoTuneX defaults to
-    auth_providers=["disabled"], so without this gate a gbserver with
-    GBSERVER_API_KEY set still let anyone who could reach the port POST
-    /api/autotunex/jobs (launching a real build) or DELETE datasets.
+    The co-located proxy keeps working because its own caller is loopback, which
+    _dispatch_apikey admits on any method -- not because the prefix has an
+    exemption of its own. Nothing about that is a licence for remote callers:
+    AutoTuneX defaults to auth_providers=["disabled"], so without this gate a
+    gbserver with GBSERVER_API_KEY set still let anyone who could reach the port
+    POST /api/autotunex/jobs (launching a real build) or DELETE datasets.
     """
     app = FastAPI()
     app.add_middleware(AuthMiddleware)

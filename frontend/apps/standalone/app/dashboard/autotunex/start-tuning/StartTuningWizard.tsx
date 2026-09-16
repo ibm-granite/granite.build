@@ -50,6 +50,12 @@ import { Step3ReviewLaunch } from './steps/Step3ReviewLaunch'
 import styles from './StartTuningWizard.module.scss'
 
 const DRAFT_DEBOUNCE_MS = 500
+
+// Draft autosave and the "Resume your previous setup?" notification are deferred
+// for this release: nothing is written to localStorage and no offer is made. The
+// draft code (wizardDraft.ts, resumeDraft, resolveDraft and their tests) is kept
+// intact -- set this back to true to switch the feature on.
+const DRAFT_ENABLED = false
 const DATASET_READY_POLL_MS = 1500
 
 /**
@@ -87,7 +93,9 @@ export function StartTuningWizard() {
   // Read synchronously at first render because the debounced autosave below would
   // otherwise overwrite the stored draft with this session's empty state within
   // DRAFT_DEBOUNCE_MS, before the user could answer.
-  const [draftOffer, setDraftOffer] = useState<WizardDraft | null>(() => loadDraft())
+  const [draftOffer, setDraftOffer] = useState<WizardDraft | null>(() =>
+    DRAFT_ENABLED ? loadDraft() : null
+  )
   const [draftNotes, setDraftNotes] = useState<string[]>([])
   const [isResumingDraft, setIsResumingDraft] = useState(false)
   // A restore jumps straight to the saved step, so it skips `handleNext` and with it
@@ -157,6 +165,7 @@ export function StartTuningWizard() {
 
   const [resourceEstimation, setResourceEstimation] = useState<Resources | null>(null)
   const [estimationUnavailable, setEstimationUnavailable] = useState(false)
+  const estimationTokenRef = useRef(0)
 
   // Pre-fetch parallel API calls on wizard open — same cache keys the step
   // components consume via useQuery, so this just primes the cache.
@@ -309,8 +318,14 @@ export function StartTuningWizard() {
 
   // Debounced draft autosave to localStorage
   const saveDraftTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Set once the job is away. handleLaunch marks the last step complete before
+  // clearing the draft, and that state change re-runs this effect -- so the debounce
+  // fired *after* clearDraft() and wrote the draft back. The component stays mounted
+  // across router.push, which is longer than the debounce, so unmount did not cancel
+  // it: the next visit offered to resume a run that had already launched.
+  const launchedRef = useRef(false)
   useEffect(() => {
-    if (!selectedGoal) return
+    if (!DRAFT_ENABLED || !selectedGoal || launchedRef.current) return
     clearTimeout(saveDraftTimeout.current)
     saveDraftTimeout.current = setTimeout(() => {
       const draft: WizardDraft = {
@@ -441,6 +456,9 @@ export function StartTuningWizard() {
   }
 
   function prepareReviewStep() {
+    // Review can be re-entered after editing the config, so an earlier estimate can
+    // still be in flight and would otherwise land under the newly chosen config.
+    const estimationToken = ++estimationTokenRef.current
     setExperimentName((prev) => {
       if (prev) return prev
       const modelShort = selectedModel.split('/').pop() || selectedModel
@@ -466,6 +484,7 @@ export function StartTuningWizard() {
       if (estimation) {
         estimateUsage(estimation)
           .then((result) => {
+            if (estimationTokenRef.current !== estimationToken) return
             if (result && 'unavailable' in result) {
               setResourceEstimation(null)
               setEstimationUnavailable(true)
@@ -474,7 +493,13 @@ export function StartTuningWizard() {
               setEstimationUnavailable(false)
             }
           })
-          .catch(() => setResourceEstimation(null))
+          .catch(() => {
+            if (estimationTokenRef.current !== estimationToken) return
+            // Without the flag, Step 3 has neither an estimate to show nor a reason
+            // to explain, so the whole Estimated Resources section silently vanished.
+            setResourceEstimation(null)
+            setEstimationUnavailable(true)
+          })
       } else {
         setResourceEstimation(null)
       }
@@ -525,7 +550,10 @@ export function StartTuningWizard() {
     setExperimentName('')
     setResourceEstimation(null)
     setEstimationUnavailable(false)
-    setCompletedSteps((prev) => prev.map((v, i) => (i === 2 || i === 3 ? false : v)))
+    // Step 1 too, not just what follows it: `clearTrainFile` leaves no dataset at
+    // all, and leaving step 1 marked complete kept Review reachable (goToStep only
+    // checks the preceding step) with nothing to train on.
+    setCompletedSteps((prev) => prev.map((v, i) => (i >= 1 && i <= 3 ? false : v)))
   }
 
   async function handleLaunch() {
@@ -594,9 +622,17 @@ export function StartTuningWizard() {
 
       setLaunchPhase('launching_job')
 
+      // Deleting the train file after reaching Review used to arrive here with
+      // nothing selected, and the non-null assertion sent `dataset_id: null` past
+      // the type checker to fail server-side mid-launch.
+      const launchDatasetId = finalDatasetId ?? datasetId ?? existingDatasetId
+      if (!launchDatasetId) {
+        throw new Error('No dataset selected. Go back to Upload Dataset and choose or upload a file.')
+      }
+
       const tuningForm: TuningForm = {
         config_id: finalConfigId!,
-        dataset_id: (finalDatasetId ?? datasetId ?? existingDatasetId)!,
+        dataset_id: launchDatasetId,
         model: selectedModel.trim(),
         model_source: modelSource,
         experiment_name: experimentName.trim().replace(/\s+/g, '_'),
@@ -609,7 +645,9 @@ export function StartTuningWizard() {
       }
 
       const { id: jobId } = await startJob(tuningForm)
+      launchedRef.current = true
       setCompletedSteps((prev) => prev.map((v, i) => (i === lastStepIndex ? true : v)))
+      clearTimeout(saveDraftTimeout.current)
       clearDraft()
       router.push(`/dashboard/autotunex/_/?id=${jobId}`)
     } catch (err: any) {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { LogEntry } from '../types'
 
@@ -47,6 +47,11 @@ export function useScrollingLogs({
   // Done during render rather than in an effect so no frame ever paints job A's
   // logs under job B's heading.
   const subject = JSON.stringify(queryKey)
+  // The current subject, readable from a callback that has already been created:
+  // loadMore's closure captures the subject of the render it came from, so it
+  // needs this to notice that the reset below has since run.
+  const subjectRef = useRef(subject)
+  subjectRef.current = subject
   const [prevSubject, setPrevSubject] = useState(subject)
   if (subject !== prevSubject) {
     setPrevSubject(subject)
@@ -75,19 +80,27 @@ export function useScrollingLogs({
 
   async function loadMore() {
     if (isLoadingMore || !hasMore || logs.length === 0) return
+    // The request can outlive the subject it was issued for -- the viewer is not
+    // remounted when the page moves to another job -- and applying it anyway
+    // merged the old job's lines into the new panel and, if the old job had no
+    // more history, latched the new one's pagination off for good. That is exactly
+    // what the render-phase reset above exists to prevent.
+    const issuedFor = subject
     setIsLoadingMore(true)
     try {
       const oldestId = logs[logs.length - 1].id
       const next = await fetchLogs({ beforeId: oldestId, limit: pageSize })
+      if (subjectRef.current !== issuedFor) return
       setLogs((prev) => mergeLogs(prev, next.logs))
       if (!next.hasMore) setOlderExhausted(true)
     } catch {
       // Stop paginating instead of retrying on every scroll event: handleScroll
       // fires near the bottom, so an endpoint that 403s would otherwise be re-hit
       // for as long as the user keeps scrolling, one unhandled rejection each.
-      setLoadMoreFailed(true)
+      if (subjectRef.current === issuedFor) setLoadMoreFailed(true)
     } finally {
-      setIsLoadingMore(false)
+      // A stale run must not clear the flag a newer load is using.
+      if (subjectRef.current === issuedFor) setIsLoadingMore(false)
     }
   }
 

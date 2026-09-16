@@ -137,7 +137,23 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
     }
   }
 
-  const canSubmit = name.trim().length > 0 && !!trainFile && (split || !!validationFile) && progress == null && !polling
+  // The backend applies a column mapping as a PROJECTION (remap_records keeps only
+  // the mapped targets), so a PARTIAL mapping silently drops every column it omits
+  // -- including ones the uploaded file already carried correctly. Map all the
+  // required columns or none: the same rule Step 1 of the wizard enforces before
+  // Next. Selecting a column and then resetting it to the placeholder leaves an
+  // empty string behind, which is why this tests the values rather than the keys.
+  const mappedColumns = Object.entries(columnMapping).filter(([, source]) => !!source)
+  const mappingComplete =
+    mappedColumns.length === 0 || requiredColumns.every((column) => columnMapping[column])
+
+  const canSubmit =
+    name.trim().length > 0 &&
+    !!trainFile &&
+    (split || !!validationFile) &&
+    mappingComplete &&
+    progress == null &&
+    !polling
 
   // Polls GET /datasets/{id} every ~3s until the server-side processing
   // triggered by the multipart upload settles into 'ready' or 'error'.
@@ -186,7 +202,7 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
           trainFile,
           validationFile: split ? null : validationFile,
           validationPercentage: split ? 100 - trainPercentage : null,
-          columnMapping: Object.keys(columnMapping).length > 0 ? columnMapping : null,
+          columnMapping: mappedColumns.length > 0 ? Object.fromEntries(mappedColumns) : null,
         },
         (p) => { if (runId === runIdRef.current) setProgress(p) }
       )
