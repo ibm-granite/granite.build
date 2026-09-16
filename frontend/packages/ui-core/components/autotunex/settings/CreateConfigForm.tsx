@@ -5,7 +5,7 @@ import { Checkbox, ContentSwitcher, Dropdown, FormLabel, MultiSelect, NumberInpu
 import type { Configuration, ConfigForm, TuningGoal } from '../../../types'
 import { getOption, parseCommaList, toUpperCase } from '../../../lib/autotunex/wizardUtils'
 import { computeSectionNames } from '../../../lib/autotunex/configSections'
-import { formatValues, maxConcurrentTrialsCap, parseValuesInput } from '../../../lib/autotunex/hyperparamValues'
+import { clampConcurrentTrials, formatValues, isNumericList, maxConcurrentTrialsCap, parseNumericCommaList, parseValuesInput } from '../../../lib/autotunex/hyperparamValues'
 import { GeneralConfigForm } from './GeneralConfigForm'
 import { TimeInput } from '../shared/TimeInput'
 import styles from './CreateConfigForm.module.scss'
@@ -27,7 +27,17 @@ function isObject(item: any): boolean {
   return item && typeof item === 'object' && !Array.isArray(item)
 }
 
-/** Hides fields explicitly marked `required: false`, or gated by a non-matching search_alg/scheduler selector. */
+/**
+ * Hides fields explicitly marked `required: false`, or gated by a non-matching
+ * search_alg/scheduler/train_implementation selector.
+ *
+ * All three gates have the same shape in the template: an array of the selector
+ * values the field applies to. `train_implementation` was missing, so
+ * `ds_strategy` (`train_implementation: ["DeepSpeed"]`) and `fsdp_strategy`
+ * (`["FSDP"]`) both rendered whichever implementation was chosen, and a value set
+ * for the inactive one was saved and then silently ignored by the trainer --
+ * Step3ReviewLaunch hides it correctly, so nothing told the user it was inert.
+ */
 function shouldShowField(section: any, value: any): boolean {
   if (!isObject(value)) return true
   if (value.required === false) return false
@@ -38,6 +48,10 @@ function shouldShowField(section: any, value: any): boolean {
   if (Array.isArray(value.scheduler)) {
     const current = section?.scheduler?.default
     if (!current || !value.scheduler.includes(current)) return false
+  }
+  if (Array.isArray(value.train_implementation)) {
+    const current = section?.train_implementation?.default
+    if (!current || !value.train_implementation.includes(current)) return false
   }
   return true
 }
@@ -53,6 +67,11 @@ interface CreateConfigFormProps {
   presetAlgorithm?: string | null
   /** When false (HPO off), the search-space controls (Strategy/Values/Min/Max) are disabled — only Default is used. */
   hpoEnabled?: boolean
+  /**
+   * Ids of the "Values" fields currently showing a parse/range error, so the submit
+   * paths can refuse them. Must be a stable callback (e.g. a setState function).
+   */
+  onInvalidFieldsChange?: (fieldIds: string[]) => void
 }
 
 /**
@@ -67,7 +86,7 @@ interface CreateConfigFormProps {
  * Mode" radio group from the source is also dropped: this wizard always
  * supplies a `presetGoal` (from Step 0), so that branch is unreachable here.
  */
-export function CreateConfigForm({ config, setConfig, configurations, editMode = false, existingConfig, presetGoal, presetAlgorithm, hpoEnabled = true }: CreateConfigFormProps) {
+export function CreateConfigForm({ config, setConfig, configurations, editMode = false, existingConfig, presetGoal, presetAlgorithm, hpoEnabled = true, onInvalidFieldsChange }: CreateConfigFormProps) {
   const trainingMode: 'offline_tuning' | 'online_tuning' = presetGoal === 'online_rl' ? 'online_tuning' : 'offline_tuning'
   const [mode, setMode] = useState(false) // false = Basic, true = Advanced
 
@@ -148,6 +167,23 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
   // read-only. An entry lives here only while a field is being edited; on a
   // successful commit it is dropped so the canonical (sorted) values show again.
   const [valueDrafts, setValueDrafts] = useState<Record<string, string>>({})
+
+  // `errorFields` drove only each field's own `invalid`/`invalidText`; nothing
+  // consulted it before submit, so a "Values" list the field had already flagged
+  // red was dropped and the *previous* values were saved with no notification --
+  // the user believed the edit took effect. `findOutOfRangeFields` cannot catch
+  // this: it inspects `default` against min_val/max_val and never a `values` array,
+  // and a rejected list is never committed to the config at all. Report the
+  // offending field ids so the submit paths can refuse them, the same way they
+  // already refuse out-of-range numeric columns.
+  const invalidValueKey = Object.entries(errorFields)
+    .filter(([, entry]) => entry.error)
+    .map(([fieldId]) => fieldId)
+    .sort()
+    .join(',')
+  useEffect(() => {
+    onInvalidFieldsChange?.(invalidValueKey ? invalidValueKey.split(',') : [])
+  }, [invalidValueKey, onInvalidFieldsChange])
 
   // Pristine copy of the template, mirroring the source form's `configCopy`.
   // A hyperparameter's MultiSelect needs the *full* original option list for its
@@ -422,13 +458,11 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
                     const num = typeof v === 'number' ? v : Number(v)
                     updateGenericField(sectionKey, key, { default: num })
                     if (config.tune_config?.max_concurrent_trials) {
-                      // Clamp to the new ceiling rather than assign it -- see the same
-                      // handler in GeneralConfigForm for why.
+                      // Clamp to the new ceiling rather than assign it, and ignore a
+                      // mid-edit 0 -- see clampConcurrentTrials for why the guard has
+                      // to be there and not here.
                       updateGenericField('tune_config', 'max_concurrent_trials', {
-                        default: Math.max(
-                          1,
-                          Math.min(config.tune_config.max_concurrent_trials.default, maxConcurrentTrialsCap(value.max_val, num))
-                        ),
+                        default: clampConcurrentTrials(config.tune_config.max_concurrent_trials.default, value.max_val, num),
                       })
                     }
                   }}
@@ -437,16 +471,30 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
             } else if (key === 'time_budget_s') {
               control = <TimeInput label={key} value={value} onChange={(next) => updateGenericField(sectionKey, key, next)} />
             } else if (value.type === 'int' || value.type === 'float') {
+              // A null default is a documented "unset" state (e.g.
+              // training_rl_config.tensor_model_parallel_size, "null=auto-detect
+              // from model size"), not an error. Carbon derives its own validity and
+              // only short-circuits on `value === ""`, so a null value fell through
+              // to `numericValue < min` -- `null < 1` is true -- and rendered the
+              // field permanently red with an empty message before the user touched
+              // it, plus React's "value prop on input should not be null" warning.
+              // `allowEmpty` with conditional bounds is the pattern TimeInput
+              // already uses for exactly this case.
+              const isUnset = value.default === null || value.default === undefined
               control = (
                 <NumberInput
                   id={fieldId}
                   label={toUpperCase(key) ?? key}
                   helperText={value.description}
-                  value={value.default}
-                  min={value.min_val}
-                  max={value.max_val}
+                  allowEmpty
+                  value={isUnset ? '' : value.default}
+                  min={isUnset ? undefined : value.min_val}
+                  max={isUnset ? undefined : value.max_val}
+                  invalidText={`Value must be between ${value.min_val} and ${value.max_val}`}
                   step={value.type === 'float' ? 0.01 : 1}
-                  onChange={(_e, { value: v }) => updateGenericField(sectionKey, key, { default: typeof v === 'number' ? v : Number(v) })}
+                  onChange={(_e, { value: v }) =>
+                    updateGenericField(sectionKey, key, { default: v === '' ? null : typeof v === 'number' ? v : Number(v) })
+                  }
                 />
               )
             } else if (value.type === 'str' && value.values?.length > 0) {
@@ -466,7 +514,17 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
                   placeholder="tok_a, tok_b, tok_c"
                   value={Array.isArray(value.default) ? value.default.join(', ') : value.default ?? ''}
                   onChange={(e) => updateGenericField(sectionKey, key, { default: e.target.value })}
-                  onBlur={(e) => updateGenericField(sectionKey, key, { default: parseCommaList(e.target.value) })}
+                  // Typed against the *pristine* template, not the live default: a
+                  // numeric list (tune_config.fidelity_schedule) must stay numeric or
+                  // the trainer raises, and the live default is already rewritten
+                  // after the first commit so it cannot decide its own type.
+                  onBlur={(e) =>
+                    updateGenericField(sectionKey, key, {
+                      default: isNumericList((pristineConfig.current as any)?.[sectionKey]?.[key]?.default)
+                        ? parseNumericCommaList(e.target.value)
+                        : parseCommaList(e.target.value),
+                    })
+                  }
                 />
               )
             } else {
