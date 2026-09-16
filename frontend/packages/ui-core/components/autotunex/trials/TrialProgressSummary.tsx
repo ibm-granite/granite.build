@@ -38,6 +38,9 @@ export function TrialProgressSummary({ job, trials }: Props) {
   // caller's "no trial data" notice says it better.
   if (progress.planned === null && trials.length === 0) return null
 
+  const jobStatus = job.status
+  const isJobActive = jobStatus === 'running' || jobStatus === 'pending' || jobStatus === 'paused'
+
   const parts: string[] = []
   if (progress.running > 0) parts.push(`${progress.running} running`)
   if (progress.queued > 0) parts.push(`${progress.queued} queued`)
@@ -74,7 +77,10 @@ export function TrialProgressSummary({ job, trials }: Props) {
         value={progress.percent ?? undefined}
         max={100}
         size="small"
-        status={progress.planned !== null && progress.percent === 100 ? 'finished' : 'active'}
+        // `job.status` is authoritative: a job can stop without every planned trial
+        // resolving (terminated, or an error that ended the sweep), and deriving this
+        // from the percentage alone left the bar spinning as 'active' forever.
+        status={jobStatus === 'error' || jobStatus === 'terminated' ? 'error' : isJobActive ? 'active' : 'finished'}
       />
     </div>
   )

@@ -8,7 +8,7 @@
 //   1. Three different kinds of row share one stream (see `splitMetricRows`).
 //   2. Two incomparable training phases share one job (see `derivePhases`).
 
-import type { MetricPoint, Trial } from '../../../types'
+import type { MetricPoint } from '../../../types'
 
 export interface MetricSplit {
   /** Per-step rows: `loss`/`grad_norm`/`learning_rate` all carry values. */
@@ -73,13 +73,21 @@ export interface MetricPhases {
  * @param trialsLoaded whether GET /trials has actually resolved. Without this
  *   guard an in-flight trials query yields an empty id set, every row looks
  *   unrecognised, and the entire job misclassifies as one giant final run.
+ * @param searchComplete whether every planned search trial has resolved (see
+ *   `isSearchComplete`). `trialsLoaded` only covers a trials query that has never
+ *   resolved, not a *stale* one: the metrics and trials queries are independent
+ *   polls, so mid-search a newly started trial's metric rows can arrive before its
+ *   trials row and look exactly like a final run. Only the search can mint a new
+ *   trial id, and it cannot start one once all planned trials have resolved -- so
+ *   until then an unrecognised id is a search trial, not a final run.
  */
 export function derivePhases(
   rows: MetricPoint[],
   trialIds: string[],
-  trialsLoaded: boolean
+  trialsLoaded: boolean,
+  searchComplete: boolean
 ): MetricPhases {
-  if (!trialsLoaded) return { search: rows, final: [], finalTrialIds: [] }
+  if (!trialsLoaded || !searchComplete) return { search: rows, final: [], finalTrialIds: [] }
 
   const known = new Set(trialIds)
   const search: MetricPoint[] = []
@@ -206,20 +214,12 @@ export function trialColorScale(
   return scale
 }
 
-/**
- * The best (lowest) run by its own reported metric. `metric` names which key of
- * `metrics` the run was scored on — AutoTuneX minimises it, matching
- * `tune_config.mode`.
- */
-export function bestTrialId(trials: Trial[]): string | undefined {
-  let best: { id: string; value: number } | undefined
-  for (const trial of trials) {
-    const value = trial.metric ? trial.metrics?.[trial.metric] : undefined
-    if (typeof value !== 'number' || !Number.isFinite(value)) continue
-    if (!best || value < best.value) best = { id: trial.id, value }
-  }
-  return best?.id
-}
+// `primaryMetric` and `bestTrialId` live in `trialsRadar.ts`, beside the
+// `isLowerBetter` predicate they have to agree with. Keeping the direction rule and
+// its only consumers in one module is what stops them drifting apart again -- and a
+// runtime import between these two modules is not available, because both are
+// require()d directly by their unit tests, which resolve extensionless relative
+// specifiers only for type-only imports.
 
 /** Carbon's tabular row shape for an axis chart with a numeric x scale. */
 export interface ChartRow {
@@ -291,7 +291,13 @@ export function toChartRows(
   rows: MetricPoint[],
   xKey: MetricXKey,
   valueOf: (row: MetricPoint) => number | null | undefined,
-  origins?: Map<string, number>
+  origins?: Map<string, number>,
+  /**
+   * Series name for a row. Defaults to the run it belongs to. The final-run charts
+   * override it to label by measure ("Training loss" / "Eval loss") instead, and to
+   * suffix the run id when the phase holds more than one run.
+   */
+  groupName: (row: MetricPoint) => string = groupOf
 ): ChartRow[] {
   const out: ChartRow[] = []
   for (const row of rows) {
@@ -299,7 +305,7 @@ export function toChartRows(
     const value = valueOf(row)
     if (typeof key !== 'number' || typeof value !== 'number') continue
     if (!Number.isFinite(key) || !Number.isFinite(value)) continue
-    out.push({ group: groupOf(row), key, value })
+    out.push({ group: groupName(row), key, value })
   }
   return out.sort((a, b) => (a.group === b.group ? a.key - b.key : a.group < b.group ? -1 : 1))
 }

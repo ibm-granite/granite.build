@@ -40,10 +40,10 @@ import { TrialCompare } from './TrialCompare'
 import { TrialProgressSummary } from './TrialProgressSummary'
 import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
-import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, bestTrialId, trialColorScale } from './trialMetrics'
+import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import styles from './TrialsTable.module.scss'
-import { toRadarData } from './trialsRadar'
+import { bestTrialId, primaryMetric, toRadarData } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
 
 const HEADERS = [
@@ -214,7 +214,9 @@ export function TrialsTable({ job }: Props) {
       id: t.id,
       created_at: t.created_at,
       status: t.status,
-      loss: (t.metric ? t.metrics?.[t.metric] : undefined) ?? undefined,
+      // Shared with Compare and bestTrialId so the same trials cannot be ordered two
+      // different ways -- see primaryMetric.
+      loss: primaryMetric(t)?.value,
       total_time: t.metrics?.total_time,
       isSelected: selectedIds.includes(t.id),
     }))
