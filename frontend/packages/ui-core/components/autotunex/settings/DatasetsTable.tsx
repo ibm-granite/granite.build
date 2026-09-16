@@ -178,7 +178,18 @@ export function DatasetsTable() {
               description="Uploaded data sets available for tuning, with their training and validation sample counts."
             >
               <TableToolbar>
-                <TableBatchActions {...batchActionProps} onCancel={() => setSelectedIds([])}>
+                {/* Carbon's own `onCancel` (handleOnCancel) is what unticks every row and
+                    hides the bar; overriding it left the checkboxes ticked and the bar
+                    reading "N items selected" while `selectedIds` was empty, so the next
+                    Delete confirmed a count of 0, deleted nothing, and closed the modal
+                    as a success. Chain both instead of replacing Carbon's. */}
+                <TableBatchActions
+                  {...batchActionProps}
+                  onCancel={() => {
+                    batchActionProps.onCancel?.()
+                    setSelectedIds([])
+                  }}
+                >
                   <TableBatchAction
                     renderIcon={TrashCan}
                     disabled={anyUndeletable}

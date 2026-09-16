@@ -143,6 +143,19 @@ describe('getOddOnesOut', () => {
     const oddOnes = getOddOnesOut(THREE_TRIALS.slice(0, 2), ['training_config.r'])
     assert.deepEqual(Object.keys(oddOnes), [])
   })
+
+  // Rows are built per-trial, so one trial can simply lack a key the others have.
+  // Skipping those rows meant an absent value could never be the minority: the
+  // odd trial was not bolded, and because the legend is gated on this map being
+  // non-empty, a comparison whose only difference was a missing key explained
+  // nothing at all. Absent counts as its own value -- `String(undefined)`, which
+  // is what TrialCompare compares each cell against.
+  it('treats a missing value as the minority', () => {
+    const rows = [{ id: 't1' }, { id: 't2', wd: 0.01 }, { id: 't3', wd: 0.01 }]
+    assert.deepEqual([...findDifferingKeys(rows)], ['id', 'wd'])
+    const oddOnes = getOddOnesOut(rows, ['wd'])
+    assert.deepEqual([...oddOnes.wd], ['undefined'])
+  })
 })
 
 

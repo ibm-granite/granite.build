@@ -37,6 +37,16 @@ export function parseCsvLine(line: string): string[] {
   const result: string[] = []
   let current = ''
   let inQuotes = false
+  // Whether this field was quoted, which decides whether it may be trimmed.
+  // Trimming unconditionally rewrote the data: whitespace a dataset quotes on
+  // purpose (an SFT `output` ending in a newline, a value that is deliberately
+  // padded) was stripped before upload. Unquoted padding still goes, so `a, b`
+  // parses as it always did.
+  let quoted = false
+  // Padding seen after a closing quote, held aside rather than appended: it is
+  // layout if the field ends there (`"a" ,b`), but data if content follows it
+  // (`"a" b`, malformed but previously kept as `a b`).
+  let pendingPad = ''
   // A quote only opens a quoted field at the START of that field; anywhere else
   // it is literal text. Toggling on any quote meant one stray quote
   // (`He said "hi, there`) made every following comma look quoted and merged the
@@ -61,6 +71,10 @@ export function parseCsvLine(line: string): string[] {
       if (atFieldStart) {
         inQuotes = true
         atFieldStart = false
+        quoted = true
+        // Drop the padding accepted before the opening quote (`a, "b"`); the
+        // quoted content itself is kept verbatim.
+        current = ''
         i++
         continue
       }
@@ -69,18 +83,29 @@ export function parseCsvLine(line: string): string[] {
       continue
     }
     if (char === ',' && !inQuotes) {
-      result.push(current.trim())
+      result.push(quoted ? current : current.trim())
       current = ''
       atFieldStart = true
+      quoted = false
+      pendingPad = ''
       i++
       continue
+    }
+    if (quoted && !inQuotes) {
+      if (isCsvPadding(char)) {
+        pendingPad += char
+        i++
+        continue
+      }
+      current += pendingPad
+      pendingPad = ''
     }
     current += char
     // Padding keeps the field "not yet started", so `a, "b"` still quotes.
     if (!inQuotes && !isCsvPadding(char)) atFieldStart = false
     i++
   }
-  result.push(current.trim())
+  result.push(quoted ? current : current.trim())
   return result
 }
 
@@ -206,9 +231,14 @@ export function parseCsv(content: string, maxLines?: number): ParseResult {
 
   const headers = parseCsvLine(records[0])
   const result: ParseResult = []
-  const end = maxLines ? Math.min(records.length, maxLines + 1) : records.length
 
-  for (let i = 1; i < end; i++) {
+  for (let i = 1; i < records.length; i++) {
+    if (maxLines && result.length >= maxLines) break
+    // A blank line is not a record. countRecordsInBlob's tally has always skipped
+    // it, so emitting a row here made the two paths disagree: an all-empty junk
+    // record was previewed and uploaded while `totalRecords` -- which the
+    // train/validation split maths reads -- reported one fewer than was sent.
+    if (records[i].trim() === '') continue
     const values = parseCsvLine(records[i])
     const obj: Record<string, any> = {}
     headers.forEach((header, index) => {

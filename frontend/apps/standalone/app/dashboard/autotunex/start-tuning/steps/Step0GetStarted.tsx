@@ -89,6 +89,9 @@ export function Step0GetStarted({
   const [comboBoxReady, setComboBoxReady] = useState(false)
   const [showModelCardModal, setShowModelCardModal] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Suggestion requests are not ordered, so a slow earlier query used to replace a
+  // newer term's results. Only the most recent one may write.
+  const suggestTokenRef = useRef(0)
   const previousModelSource = useRef(modelSource)
 
   // Must not be derived from `suggestions` — see resolveModelComboItem.
@@ -100,15 +103,17 @@ export function Step0GetStarted({
   }
 
   async function fetchSuggestions(term: string) {
+    const suggestToken = ++suggestTokenRef.current
     if (!term.trim()) {
       setSuggestions(models.map((m) => ({ id: m.id, text: m.id })))
       return
     }
     try {
       const response = await getHFModels(term.replace(/(\w+)[-/]\1(?=[-/])/g, '$1'))
+      if (suggestTokenRef.current !== suggestToken) return
       setSuggestions(response.map((model) => ({ id: model.id, text: model.id })))
     } catch {
-      setSuggestions([])
+      if (suggestTokenRef.current === suggestToken) setSuggestions([])
     }
   }
 
@@ -192,6 +197,11 @@ export function Step0GetStarted({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // The typing debounce outlives this step otherwise: typing and clicking Next
+  // within 500 ms fired the fetch against an unmounted component. The initial-load
+  // effect above already clears its own timer this way.
+  useEffect(() => () => clearTimeout(debounceRef.current), [])
 
   function handleComboBoxInputChange(inputValue: string) {
     clearTimeout(debounceRef.current)

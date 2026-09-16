@@ -99,17 +99,24 @@ export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
   // can lack durations, which would silently understate the last trial's end and
   // charge the difference to the final run.
   //
-  // A trial's end is its start plus its own reported duration rather than its
-  // `updated_at`, for the same reason the job uses `finished_at` — any later
-  // write to the row moves `updated_at`.
+  // A trial's end is its start plus its own duration rather than its `updated_at`,
+  // for the same reason the job uses `finished_at` — any later write to the row
+  // moves `updated_at`. Treating a missing duration as zero collapsed that trial's
+  // end onto its own start, so its whole run was taken off the search phase and
+  // charged to the final run instead; `trialDuration` falls back to the trial's
+  // own span, and a trial with no evidence either way contributes no end at all
+  // rather than a wrong one.
   let searchSeconds: number | null = null
   let finalRunSeconds: number | null = null
   if (jobStatus === 'completed' && trials.length > 0) {
     const startMs = Date.parse(jobCreatedAt)
-    const trialEnds = trials.map(
-      (t) => Date.parse(t.created_at) + (t.metrics?.total_time ?? 0) * 1000
-    )
-    const lastEndMs = Math.max(...trialEnds)
+    const trialEnds = trials
+      .map((t) => {
+        const duration = trialDuration(t)
+        return duration === null ? null : Date.parse(t.created_at) + duration * 1000
+      })
+      .filter((end): end is number => end !== null)
+    const lastEndMs = trialEnds.length > 0 ? Math.max(...trialEnds) : NaN
     const searchMs = lastEndMs - startMs
     const finalMs = stoppedMs - lastEndMs
     // Every timestamp has to parse and the phases have to be ordered, or the
@@ -125,7 +132,10 @@ export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
   // Only project when the run is live, the total is known, work remains, and at
   // least one finished trial gives a duration to extrapolate from.
   let etaSeconds: number | null = null
-  const remaining = planned !== null ? planned - completed : 0
+  // Failed trials are not coming back, so they are not work remaining. Counting
+  // them projected time for trials that will never run, next to a `queued` figure
+  // that already discounts them — one summary contradicting itself.
+  const remaining = planned !== null ? Math.max(0, planned - completed - failed) : 0
   if (jobStatus === 'running' && planned !== null && remaining > 0) {
     const durations = completedTrials
       .map(trialDuration)

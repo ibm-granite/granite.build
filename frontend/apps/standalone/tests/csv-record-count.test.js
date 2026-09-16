@@ -150,7 +150,7 @@ describe('countRecordsInBlob — CSV', () => {
   })
 
   it('agrees with parseCsv().length — the two paths must not diverge', async () => {
-    for (const text of [MULTILINE_CSV, 'a,b\n1,2\n3,4\n', 'only,headers\n']) {
+    for (const text of [MULTILINE_CSV, 'a,b\n1,2\n3,4\n', 'only,headers\n', 'a,b\n1,2\n\n3,4\n']) {
       assert.equal(
         await countRecordsInBlob(blob(text), 'd.csv'),
         parseCsv(text).length,
@@ -161,6 +161,17 @@ describe('countRecordsInBlob — CSV', () => {
 
   it('reports 0, not -1, for an empty file', async () => {
     assert.equal(await countRecordsInBlob(blob(''), 'd.csv'), 0)
+  })
+
+  // A blank interior line is not a record. The streaming tally always skipped it
+  // while parseCsv emitted a row for it, so an all-empty junk record was
+  // previewed and uploaded, and `totalRecords` -- which drives the
+  // train/validation split maths -- came back one lower than what was sent.
+  it('ignores a blank interior line, and parseCsv agrees', async () => {
+    const text = 'a,b\n1,2\n\n3,4\n'
+    assert.equal(await countRecordsInBlob(blob(text), 'd.csv'), 2)
+    assert.equal(parseCsv(text).length, 2)
+    assert.deepEqual(parseCsv(text), [{ a: '1', b: '2' }, { a: '3', b: '4' }])
   })
 })
 
@@ -208,6 +219,22 @@ describe('parseCsvLine — a quote only opens a field at the field start', () =>
 
   it('keeps an empty trailing field', () => {
     assert.deepEqual(parseCsvLine('a,b,'), ['a', 'b', ''])
+  })
+
+  // Trimming every field, quoted ones included, silently rewrote training data:
+  // an SFT `output` whose leading/trailing whitespace is deliberately quoted was
+  // stripped before upload. Unquoted padding must still go (`a, b`).
+  it('preserves whitespace inside a quoted field', () => {
+    assert.deepEqual(parseCsvLine('"Q","  Answer:  "'), ['Q', '  Answer:  '])
+    assert.deepEqual(parseCsv('instruction,output\n"Q","  Answer:  "')[0], {
+      instruction: 'Q',
+      output: '  Answer:  ',
+    })
+  })
+
+  it('still trims an unquoted field, and padding around a quoted one', () => {
+    assert.deepEqual(parseCsvLine('a, b'), ['a', 'b'])
+    assert.deepEqual(parseCsvLine('a, "b" '), ['a', 'b'])
   })
 })
 

@@ -105,32 +105,6 @@ export function extractColumnMetadata(rows: ParsedDataRow[], maxSampleRows = 100
   })
 }
 
-export function getCompatibleMethods(format: DatasetFormatType): string[] {
-  switch (format) {
-    case 'preference_pairs':
-      return ['DPO']
-    case 'kto_format':
-      return ['KTO']
-    case 'standard_pairs':
-      return ['SFT', 'LoRA', 'aLoRA', 'LoKR', 'LoHA', 'VeRA']
-    case 'prompt_only':
-      return ['PPO', 'GRPO', 'DAPO']
-    default:
-      return ['All methods']
-  }
-}
-
-/** Normalize raw parsed rows for upload: standard pairs collapse to {input, output}; RL formats pass through. */
-export function formatDatasetForUpload(rows: ParsedDataRow[], format: DatasetFormatType): any[] {
-  if (format === 'standard_pairs') {
-    return rows.map((row) => ({
-      input: row.input ?? row.prompt ?? row.question ?? row.instruction ?? '',
-      output: row.output ?? row.response ?? row.answer ?? row.completion ?? row.target ?? '',
-    }))
-  }
-  return rows
-}
-
 export function getRequiredColumns(algorithmId: string): string[] {
   const detail = ALGORITHM_DETAILS.find((a) => a.id === algorithmId)
   if (detail) return detail.requiredColumns

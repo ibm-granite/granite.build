@@ -87,6 +87,12 @@ export function findDifferingKeys(rows: Record<string, any>[]): Set<string> {
 // A key whose values split evenly (notably any differing key in a two-trial
 // comparison) has no minority and is omitted, which is what gates the legend
 // explaining the bold convention.
+//
+// A row that lacks the key counts as carrying `String(undefined)`, which is what
+// TrialCompare compares each cell against. Skipping those rows instead meant an
+// absent value could never be the minority: the one trial missing a parameter was
+// not bolded, and a comparison whose only difference was a missing key rendered
+// no legend at all.
 export function getOddOnesOut(
   rows: Record<string, any>[],
   keys: string[]
@@ -95,7 +101,6 @@ export function getOddOnesOut(
   for (const key of keys) {
     const counts = new Map<string, number>()
     for (const row of rows) {
-      if (!Object.prototype.hasOwnProperty.call(row, key)) continue
       const v = String(row[key])
       counts.set(v, (counts.get(v) ?? 0) + 1)
     }

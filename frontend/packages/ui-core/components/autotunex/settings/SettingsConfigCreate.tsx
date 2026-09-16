@@ -8,6 +8,7 @@ import { getConfigurationTemplate, createConfiguration, getConfigurations } from
 import { ALGORITHM_DETAILS } from '../../../config/autotunexAlgorithms'
 import { CreateConfigForm } from './CreateConfigForm'
 import { normalizeTokenizerListFields } from '../../../lib/autotunex/wizardUtils'
+import { findOutOfRangeFields } from '../../../lib/autotunex/hyperparamValues'
 
 interface Props {
   open: boolean
@@ -23,6 +24,7 @@ export function SettingsConfigCreate({ open, onClose, onCreated }: Props) {
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<string>('lora')
   const [configForm, setConfigForm] = useState<ConfigForm | null>(null)
   const [nameError, setNameError] = useState('')
+  const [rangeError, setRangeError] = useState('')
 
   const presetGoal = useMemo<TuningGoal | null>(
     () => (ALGORITHM_DETAILS.find((a) => a.id === selectedAlgorithm)?.category ?? null) as TuningGoal | null,
@@ -53,6 +55,7 @@ export function SettingsConfigCreate({ open, onClose, onCreated }: Props) {
       setConfigForm(null)
       setName('')
       setNameError('')
+      setRangeError('')
       setSelectedAlgorithm('lora')
       createMutation.reset()
     }
@@ -77,6 +80,19 @@ export function SettingsConfigCreate({ open, onClose, onCreated }: Props) {
     setNameError('')
 
     const { name: _name, tuner_type, rl_tuner_type, ...configSections } = configForm
+
+    // Each numeric control shows its own range error but still writes the value
+    // through -- TimeInput calls onChange even when it is displaying one -- so
+    // without this the modal happily created a configuration the fields had
+    // already flagged as invalid.
+    const outOfRange = findOutOfRangeFields(configSections)
+    if (outOfRange.length > 0) {
+      setRangeError(
+        `Some values are outside their allowed range: ${outOfRange.join(', ')}. Correct the highlighted fields and try again.`
+      )
+      return
+    }
+    setRangeError('')
     const pendingData: PendingConfigData = {
       name: trimmed,
       tuner_type: presetGoal === 'online_rl' ? null : (tuner_type || 'lora'),
@@ -130,6 +146,15 @@ export function SettingsConfigCreate({ open, onClose, onCreated }: Props) {
             presetAlgorithm={selectedAlgorithm}
             hideNameField
           />
+          {rangeError && (
+            <InlineNotification
+              kind="error"
+              title="Invalid values"
+              subtitle={rangeError}
+              lowContrast
+              onClose={() => setRangeError('')}
+            />
+          )}
           {createMutation.isError && (
             <InlineNotification
               kind="error"
