@@ -133,7 +133,6 @@ export function StartTuningWizard() {
   const [validationFile, setValidationFile] = useState<File | null>(null)
   const [isSplitEnabled, setIsSplitEnabled] = useState(true)
   const [columnMapping, setColumnMapping] = useState<ColumnMapping>({})
-  const [isDatasetCompatible, setIsDatasetCompatible] = useState(true)
 
   // Step 2: Config
   const [selectedConfigId, setSelectedConfigId] = useState<string | null>(null)
@@ -197,6 +196,10 @@ export function StartTuningWizard() {
     setTotalRecords(0)
     setDatasetId(null)
     setExistingDatasetId(null)
+    // Cleared alongside `existingDatasetId`: leaving the object behind showed step 1
+    // with no dataset while Step1DatasetUpload still read the stale one and rendered
+    // null in place of the "Expected Dataset Format" panel.
+    setSelectedExistingDataset(null)
     setValidationFile(null)
     setIsSplitEnabled(true)
     setColumnMapping({})
@@ -244,7 +247,14 @@ export function StartTuningWizard() {
         // could do about it. Same bypass the adjacent hasValidation check uses.
         const allMapped = existingDatasetId !== null || requiredCols.every((c) => columnMapping[c])
         const hasValidation = existingDatasetId !== null || isSplitEnabled || validationFile !== null
-        return hasDataset && hasName && allMapped && hasValidation && isDatasetCompatible
+        // The dataset-format check is deliberately *not* a term here. It is a
+        // heuristic over the file's raw column names, its own message only says the
+        // format "appears to be" one "typically" used for another approach and asks
+        // the user to verify the mapping, and remapping cannot change it -- so as a
+        // gate it forbade a legitimate setup (SFT from a preference dataset) with
+        // nothing the user could do, exactly the dead end the allMapped bypass above
+        // exists to avoid. Step 1 renders it as a warning instead.
+        return hasDataset && hasName && allMapped && hasValidation
       }
       case 2: {
         // A pending config's name now goes straight into the payload
@@ -287,7 +297,6 @@ export function StartTuningWizard() {
     datasetTypes,
     isSplitEnabled,
     validationFile,
-    isDatasetCompatible,
     selectedConfigId,
     pendingNewConfig,
     isEditingConfig,
@@ -427,7 +436,17 @@ export function StartTuningWizard() {
 
   function goToStep(step: number) {
     if (step < 0 || step > lastStepIndex) return
-    if (step <= currentStep || completedSteps[step - 1]) setCurrentStep(step)
+    if (step <= currentStep || completedSteps[step - 1]) {
+      setCurrentStep(step)
+      // Every other route into the review step calls this (handleNext and the
+      // post-restore effect), and nothing else recomputes `resourceEstimation` -- it
+      // is written only in prepareReviewStep and cleared on a dataset change, never
+      // on a config change. So jumping straight to Review from the ProgressIndicator
+      // after picking a different configuration showed the previous config's GPU
+      // count and memory for a launch that would use the new one. Step3ReviewLaunch's
+      // own Edit links share this handler.
+      if (step === lastStepIndex) prepareReviewStep()
+    }
   }
 
   async function handleNext() {
@@ -554,6 +573,26 @@ export function StartTuningWizard() {
     // all, and leaving step 1 marked complete kept Review reachable (goToStep only
     // checks the preceding step) with nothing to train on.
     setCompletedSteps((prev) => prev.map((v, i) => (i >= 1 && i <= 3 ? false : v)))
+  }
+
+  /**
+   * The split ratio and a separate validation file change what gets uploaded but not
+   * which dataset the user picked, so this deliberately does less than
+   * `handleDatasetChanged`: it drops only the ids that would skip the re-upload, plus
+   * the now-stale estimate. It must not clear the chosen configuration or experiment
+   * name, which the split has no bearing on.
+   *
+   * Without it, after a failed launch (`datasetId` already set) the user could go
+   * back to step 1, turn the split off and add a validation file, see Review render
+   * the new file and recomputed counts, and launch -- and `handleLaunch`'s
+   * `if (!finalDatasetId && uploadedFile)` skipped the whole upload branch, so the
+   * server-side dataset kept its previous auto-split with no validation file.
+   */
+  function handleDatasetSplitChanged() {
+    setDatasetId(null)
+    createdDatasetIdRef.current = null
+    uploadedDatasetIdRef.current = null
+    setResourceEstimation(null)
   }
 
   async function handleLaunch() {
@@ -791,10 +830,10 @@ export function StartTuningWizard() {
             selectedGoal={selectedGoal}
             columnMapping={columnMapping}
             setColumnMapping={setColumnMapping}
-            setIsDatasetCompatible={setIsDatasetCompatible}
             selectedExistingDataset={selectedExistingDataset}
             setSelectedExistingDataset={setSelectedExistingDataset}
             onDatasetChanged={handleDatasetChanged}
+            onDatasetSplitChanged={handleDatasetSplitChanged}
           />
         )}
         {currentStep === 2 && (
