@@ -139,10 +139,15 @@ interface Step1DatasetUploadProps {
   selectedGoal: TuningGoal | null
   columnMapping: ColumnMapping
   setColumnMapping: (m: ColumnMapping) => void
-  setIsDatasetCompatible: (b: boolean) => void
   selectedExistingDataset: Dataset | null
   setSelectedExistingDataset: (d: Dataset | null) => void
   onDatasetChanged: () => void
+  /**
+   * The train/validation split changed. Narrower than `onDatasetChanged`: it
+   * invalidates the uploaded-dataset ids so the launch re-uploads, without
+   * discarding the chosen configuration.
+   */
+  onDatasetSplitChanged: () => void
 }
 
 export function Step1DatasetUpload({
@@ -170,10 +175,10 @@ export function Step1DatasetUpload({
   selectedGoal,
   columnMapping,
   setColumnMapping,
-  setIsDatasetCompatible,
   selectedExistingDataset,
   setSelectedExistingDataset,
   onDatasetChanged,
+  onDatasetSplitChanged,
 }: Step1DatasetUploadProps) {
   const [isProcessing, setIsProcessing] = useState(false)
   const [processingProgress, setProcessingProgress] = useState('')
@@ -223,10 +228,6 @@ export function Step1DatasetUpload({
     () => (selectedGoal && detectedFormat !== 'unknown' ? validateDatasetForGoal(detectedFormat, selectedGoal) : { valid: true, message: '' }),
     [selectedGoal, detectedFormat]
   )
-
-  useEffect(() => {
-    setIsDatasetCompatible(datasetGoalWarning.valid)
-  }, [datasetGoalWarning.valid, setIsDatasetCompatible])
 
   // Heuristic column-mapping suggestion when the algorithm changes (skipped once AI has suggested)
   useEffect(() => {
@@ -311,8 +312,18 @@ export function Step1DatasetUpload({
       ? Math.floor((totalRecords * splitRatio) / 100)
       : totalRecords
 
-  async function suggestMappingWithAI(data: ParsedDataRow[], metadata: ColumnMetadata[]) {
+  /**
+   * `uploadToken` is the token of the upload this suggestion describes. Every write
+   * below is derived from that file's `colNames`/`metadata`, and the LLM call takes
+   * seconds, so a superseded response would otherwise commit file A's column
+   * mapping and algorithm for file B -- and the wizard's own gate
+   * (`requiredCols.every(c => columnMapping[c])`) would then pass, uploading B
+   * under A's column names. The two other async writers in handleFileUpload are
+   * tokenized for exactly this reason; this one was not.
+   */
+  async function suggestMappingWithAI(data: ParsedDataRow[], metadata: ColumnMetadata[], uploadToken: number) {
     if (data.length === 0 || metadata.length === 0) return
+    const isCurrent = () => uploadTokenRef.current === uploadToken
 
     setIsAiSuggesting(true)
     setAiSuggestion(null)
@@ -331,6 +342,8 @@ export function Step1DatasetUpload({
         column_samples: colSamples,
         target_format: targetType,
       })
+
+      if (!isCurrent()) return
 
       setAiSuggestion({ confidence: result.confidence, reasoning: result.reasoning ?? '', algorithm: result.tuning_type })
 
@@ -354,6 +367,7 @@ export function Step1DatasetUpload({
         const newSuggested = new Set<string>()
 
         const types = hasDatasetTypes ? datasetTypes : await getAutotuneDatasetTypes()
+        if (!isCurrent()) return
         const algo = effectiveAlgorithm
         const aiAllCols = hasDatasetTypes || Object.keys(types).length > 0 ? getColumnsFromTypes(algo, types).map((c) => c.name) : getRequiredColumns(algo)
 
@@ -393,7 +407,9 @@ export function Step1DatasetUpload({
     } catch {
       // Heuristic mapping already applied by the effect above; nothing else to do.
     } finally {
-      setIsAiSuggesting(false)
+      // A superseded suggestion must not clear the flag its replacement now owns,
+      // matching handleFileUpload's own `finally`.
+      if (isCurrent()) setIsAiSuggesting(false)
     }
   }
 
@@ -442,7 +458,7 @@ export function Step1DatasetUpload({
         .catch(() => {})
 
       onDatasetChanged()
-      suggestMappingWithAI(rawData, metadata)
+      suggestMappingWithAI(rawData, metadata, uploadToken)
     } catch (err: any) {
       if (uploadTokenRef.current !== uploadToken) return
       setError(err.message || 'Failed to process file')
@@ -522,14 +538,25 @@ export function Step1DatasetUpload({
   }
 
   async function loadExistingDataset(datasetId: string, opts: { suggestAlgorithm: boolean }) {
+    // handleExistingDatasetSelect bumps the token precisely to abandon in-flight
+    // work, but nothing checked it here: of two overlapping picks the slower,
+    // *earlier* one won. The Select stays mounted and enabled during the fetch, so
+    // a user on a slow backend picks A, sees nothing, picks B -- B resolved first,
+    // then A overwrote everything and the wizard launched against A. The captured
+    // token also stops a superseded load from clearing the spinner its replacement
+    // owns, or posting a stale error over it.
+    const loadToken = uploadTokenRef.current
     setIsProcessing(true)
     setError('')
     try {
-      applyExistingDataset(await getDataset(datasetId, { preview: true, previewRows: 50 }), opts)
+      const dataset = await getDataset(datasetId, { preview: true, previewRows: 50 })
+      if (uploadTokenRef.current !== loadToken) return
+      applyExistingDataset(dataset, opts)
     } catch (err: any) {
+      if (uploadTokenRef.current !== loadToken) return
       setError(err.message || 'Failed to load dataset')
     } finally {
-      setIsProcessing(false)
+      if (uploadTokenRef.current === loadToken) setIsProcessing(false)
     }
   }
 
@@ -636,6 +663,9 @@ export function Step1DatasetUpload({
                     onToggle={(checked) => {
                       setIsSplitEnabled(checked)
                       if (checked) setValidationFile(null)
+                      // Changes what gets uploaded, so the launch must not reuse an
+                      // already-uploaded dataset id -- see onDatasetSplitChanged.
+                      onDatasetSplitChanged()
                     }}
                     size="sm"
                   />
@@ -681,7 +711,15 @@ export function Step1DatasetUpload({
 
             {existingDatasetId ? (
               <FileUploaderItem name={`${selectedExistingDataset?.name || ''} (${totalRecords.toLocaleString()} records)`} status="edit" onDelete={resetForm} />
-            ) : uploadedFile && !isSplitEnabled ? (
+            ) : uploadedFile ? (
+              /* Not gated on `!isSplitEnabled`: the split defaults to on and the drop
+                 zone hides once a file exists, so in the default state an uploaded
+                 file was neither shown nor removable -- `clearTrainFile` was
+                 unreachable unless the user first turned the split off, though its own
+                 comment and handleDatasetChanged's both describe deleting the train
+                 file as a supported flow. The only escape was "Reset All", which also
+                 discards the name, description and split setting. The `!isSplitEnabled`
+                 gate is still right for the validation block below. */
               <div className={styles.fileRow}>
                 <span className={styles.fileLabel}>
                   Train file
@@ -699,6 +737,28 @@ export function Step1DatasetUpload({
 
             {error && <InlineNotification kind="error" title="Error" subtitle={error} style={{ marginTop: '0.5rem' }} />}
 
+            {/* `datasetGoalWarning.message` was computed and never rendered while
+                `.valid` hard-disabled Next, so a format mismatch was a dead end with
+                nothing on screen to explain it. It is advisory, not a blocker: the
+                message itself only says the format "appears to be" one "typically"
+                used elsewhere and asks the user to verify the mapping, and
+                `detectedFormat` is a heuristic over the file's raw column names that
+                remapping cannot change -- so blocking on it forbade a legitimate
+                setup (SFT from a preference dataset by mapping prompt -> input,
+                chosen -> output) and no action could clear it. The authoritative gate
+                is `allMapped`. Rendered outside the mapping block so it also reaches
+                an existing dataset, which renders no mapping controls at all. */}
+            {!datasetGoalWarning.valid && (
+              <InlineNotification
+                kind="warning"
+                title="Dataset format may not match your goal"
+                subtitle={datasetGoalWarning.message}
+                lowContrast
+                hideCloseButton
+                style={{ marginTop: '0.5rem' }}
+              />
+            )}
+
             {uploadedFile && !existingDatasetId && !isSplitEnabled && (
               <div style={{ marginTop: '0.75rem' }}>
                 {!validationFile ? (
@@ -709,7 +769,10 @@ export function Step1DatasetUpload({
                     accept={ACCEPTED_TYPES}
                     onChange={(e) => {
                       const file = e.target.files?.[0]
-                      if (file) setValidationFile(file)
+                      if (file) {
+                        setValidationFile(file)
+                        onDatasetSplitChanged()
+                      }
                     }}
                   />
                 ) : (
@@ -718,7 +781,14 @@ export function Step1DatasetUpload({
                       Validation file
                       <InfoTooltip label="A separate dataset used to evaluate model performance during training. Helps detect overfitting." />
                     </span>
-                    <FileUploaderItem name={validationFile.name} status="edit" onDelete={() => setValidationFile(null)} />
+                    <FileUploaderItem
+                      name={validationFile.name}
+                      status="edit"
+                      onDelete={() => {
+                        setValidationFile(null)
+                        onDatasetSplitChanged()
+                      }}
+                    />
                   </div>
                 )}
               </div>

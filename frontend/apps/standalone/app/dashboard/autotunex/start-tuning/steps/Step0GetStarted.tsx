@@ -92,6 +92,8 @@ export function Step0GetStarted({
   // Suggestion requests are not ordered, so a slow earlier query used to replace a
   // newer term's results. Only the most recent one may write.
   const suggestTokenRef = useRef(0)
+  // Same purpose as suggestTokenRef, for the model-card fetch.
+  const modelCardTokenRef = useRef(0)
   const previousModelSource = useRef(modelSource)
 
   // Must not be derived from `suggestions` — see resolveModelComboItem.
@@ -118,6 +120,10 @@ export function Step0GetStarted({
   }
 
   async function fetchModelCard(modelId: string) {
+    // Tokenized like fetchSuggestions: without it two overlapping fetches could
+    // leave model A's card under model B's heading, and the button's own
+    // `modelCardStatus !== 'ready'` guard then refused to refetch.
+    const cardToken = ++modelCardTokenRef.current
     // Model cards are a HuggingFace-only concept — neither a registry entry
     // nor a filesystem path has one.
     if (modelSource !== 'huggingface' || !modelId) {
@@ -128,9 +134,11 @@ export function Step0GetStarted({
     setModelCardStatus('loading')
     try {
       const rawContent = await getHFModelCard(modelId)
+      if (modelCardTokenRef.current !== cardToken) return
       setModelCard(stripFrontMatter(rawContent))
       setModelCardStatus('ready')
     } catch {
+      if (modelCardTokenRef.current !== cardToken) return
       setModelCard(null)
       setModelCardStatus('error')
     }
