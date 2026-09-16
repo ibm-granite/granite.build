@@ -1,18 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { LogEntry } from '../types'
+import { gapReconciled, logGapCursor, mergeLogs } from '../lib/autotunex/logStream'
 
 const DEFAULT_PAGE_SIZE = 200
 const DEFAULT_POLL_MS = 10_000
 const SCROLL_THRESHOLD_PX = 48
-
-// Newest-first, deduped by id — merges a polled "latest" page with
-// scroll-loaded older pages without disturbing already-loaded history.
-function mergeLogs(existing: LogEntry[], incoming: LogEntry[]): LogEntry[] {
-  const byId = new Map(existing.map((log) => [log.id, log]))
-  for (const log of incoming) byId.set(log.id, log)
-  return [...byId.values()].sort((a, b) => b.id - a.id)
-}
+// Pages fetched per tick while closing a gap. Bounded so a very chatty job cannot
+// turn one poll into an unbounded request storm; an unfinished walk resumes on the
+// next tick, so the bound delays reconciliation rather than abandoning it.
+const MAX_BACKFILL_PAGES_PER_TICK = 10
 
 interface UseScrollingLogsOptions {
   queryKey: unknown[]
@@ -41,6 +38,17 @@ export function useScrollingLogs({
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [loadMoreFailed, setLoadMoreFailed] = useState(false)
 
+  // The history held as of the last commit, mirrored into a ref so the poll effect
+  // can compare the incoming page against the *pre-merge* state without taking
+  // `logs` as a dependency (which would re-run it on every merge).
+  const heldRef = useRef<LogEntry[]>([])
+
+  // An unfinished gap walk: where to keep fetching from, and the id that marks
+  // reconnection with the history held when the gap was found. Survives across ticks
+  // so the per-tick page bound only delays the repair.
+  const pendingGapRef = useRef<{ beforeId: number; downTo: number } | null>(null)
+  const backfillingRef = useRef(false)
+
   // Reset when the caller switches subject. TuningDetailPageClient navigates from
   // one tuning to another *without* remounting (both are the same Next route), so
   // without this the previous job's lines stay merged into the next job's panel.
@@ -60,6 +68,9 @@ export function useScrollingLogs({
     setOlderExhausted(false)
     setIsLoadingMore(false)
     setLoadMoreFailed(false)
+    // A gap belongs to the subject it was found in.
+    pendingGapRef.current = null
+    heldRef.current = []
   }
 
   // Polls the newest page and merges it in; does not affect older pages
@@ -72,9 +83,52 @@ export function useScrollingLogs({
 
   useEffect(() => {
     if (!data) return
+    const held = heldRef.current
     setLogs((prev) => mergeLogs(prev, data.logs))
     setPollHasMore(data.hasMore)
+
+    // The poll only asks for the newest page, so a job that emitted more than one
+    // page between ticks leaves a hole that `loadMore` can never reach — it walks
+    // back from the oldest held id, not into the middle. Close it here instead.
+    if (!pendingGapRef.current) {
+      const cursor = logGapCursor(held, data.logs)
+      if (cursor !== null) {
+        pendingGapRef.current = { beforeId: cursor, downTo: Math.max(...held.map((l) => l.id)) }
+      }
+    }
+    if (pendingGapRef.current) void closeGap(subjectRef.current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
+
+  useEffect(() => {
+    heldRef.current = logs
+  }, [logs])
+
+  // Walks older pages from the gap's leading edge until it reconnects with the
+  // history that was held when the gap was found. A failure leaves the gap in place
+  // rather than retrying per scroll event; the next poll tick tries again.
+  async function closeGap(issuedFor: string) {
+    if (backfillingRef.current) return
+    backfillingRef.current = true
+    try {
+      for (let page = 0; page < MAX_BACKFILL_PAGES_PER_TICK; page++) {
+        const gap = pendingGapRef.current
+        if (!gap) return
+        const next = await fetchLogs({ beforeId: gap.beforeId, limit: pageSize })
+        if (subjectRef.current !== issuedFor) return
+        if (next.logs.length > 0) setLogs((prev) => mergeLogs(prev, next.logs))
+        if (gapReconciled(next.logs, gap.downTo) || !next.hasMore) {
+          pendingGapRef.current = null
+          return
+        }
+        pendingGapRef.current = { ...gap, beforeId: Math.min(...next.logs.map((l) => l.id)) }
+      }
+    } catch {
+      // Leave the gap pending; the next tick retries.
+    } finally {
+      backfillingRef.current = false
+    }
+  }
 
   const hasMore = pollHasMore && !olderExhausted && !loadMoreFailed
 
