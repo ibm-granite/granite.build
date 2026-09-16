@@ -1,12 +1,13 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { InlineNotification } from '@carbon/react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import { getJobs, deleteJob } from '@granite-build/ui-core/api/autotunex'
 import { deleteEach, isBulkDeleteError } from '@granite-build/ui-core/lib/autotunex/bulkDelete'
+import { pruneSelection } from '@granite-build/ui-core/lib/autotunex/tableSelection'
 import { listSpaces } from '@granite-build/ui-core/api/gbserver'
 import { AutotunexTabs } from '@granite-build/ui-core/components/autotunex/shared/AutotunexTabs'
 import { TuningsTable } from '@granite-build/ui-core/components/autotunex/tunings/TuningsTable'
@@ -47,7 +48,8 @@ export default function AutoTuneXPage() {
     placeholderData: (prev) => prev,
   })
 
-  const items = data?.items ?? []
+  // Memoised so it is a stable dependency for the selection-pruning effect below.
+  const items = useMemo(() => data?.items ?? [], [data])
   const total = data?.total ?? 0
 
   const deleteMutation = useMutation({
@@ -100,15 +102,18 @@ export default function AutoTuneXPage() {
     setPage(1)
   }, [])
 
-  // `selectedIds` shadows the table's own selection, which TuningsTable
-  // rebuilds from the rows it is handed. A selection left over from a previous
-  // page/size/search/scope would stay here while vanishing from the UI, so the
-  // delete would permanently remove jobs the user can no longer see and the
-  // compare modal would receive fewer jobs than the count shown. Clear it
-  // whenever the visible set changes.
+  // `selectedIds` shadows the table's own selection. Carbon does not rebuild its
+  // checkboxes from the rows it is handed -- it carries `isSelected` forward for
+  // every id it still knows -- so this prunes to the visible rows rather than
+  // emptying, which is exactly what Carbon's own selection does. Emptying left
+  // rows ticked with an empty shadow, and Delete then confirmed a count of 0,
+  // removed nothing and closed as a success. Pruning keeps the two in step: a job
+  // that leaves the page/search/scope drops out of both, so the delete can still
+  // never reach a job the user cannot see, and the compare modal can never receive
+  // fewer jobs than the count shown. See pruneSelection.
   useEffect(() => {
-    setSelectedIds((prev) => (prev.length === 0 ? prev : []))
-  }, [page, pageSize, q, scope])
+    setSelectedIds((prev) => pruneSelection(prev, items.map((j) => j.id)))
+  }, [items])
 
   const selectedJobs = items.filter((j) => selectedIds.includes(j.id))
 

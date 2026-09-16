@@ -178,7 +178,10 @@ export function TuningsTable({
                   onSelectedIdsChange([])
                 }}
               >
-                <TableBatchAction renderIcon={TrashCan} onClick={onDeleteSelected}>
+                {/* Guard against confirming a delete with nothing selected: the
+                    parent prunes `selectedIds` to the visible rows, and this makes
+                    a count-of-0 confirmation unreachable if the two ever diverge. */}
+                <TableBatchAction renderIcon={TrashCan} disabled={currentSelectedIds.length === 0} onClick={onDeleteSelected}>
                   Delete
                 </TableBatchAction>
                 {currentSelectedIds.length > 1 && (
