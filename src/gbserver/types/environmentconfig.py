@@ -154,3 +154,42 @@ class EnvironmentConfig(Config):
     config: Dict = Field(default_factory=dict)
     assetstores: List[AssetStoreEnvironmentConfig] = Field(default_factory=list)
     subtype: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _gate_shared_filesystem(self) -> "EnvironmentConfig":
+        cfg = self.config or {}
+        sf = cfg.get("shared_filesystem")
+        if not sf:
+            return self
+        if self.type != "Skypilot" or self.subtype != "aws":
+            raise ValueError(
+                "shared_filesystem is only supported on a Skypilot/aws environment "
+                f"(got type={self.type!r}, subtype={self.subtype!r})"
+            )
+        if cfg.get("shared_workdir"):
+            raise ValueError(
+                "set exactly one of 'shared_filesystem' or 'shared_workdir', not both"
+            )
+        mount_point = sf.get("mount_point") if isinstance(sf, dict) else None
+        for store in self.assetstores:
+            if "hf" not in (store.store_uri or ""):
+                continue
+            for pull in store.pull:
+                pcfg = pull.config or {}
+                cache_path = pcfg.get("cache_path")
+                local_cache = cache_path and not (
+                    mount_point and str(cache_path).startswith(mount_point)
+                )
+                if pcfg.get("inline") or local_cache:
+                    logger.warning(
+                        "environment '%s': shared_filesystem is set but the hf assetstore "
+                        "uses %s; hfpull will not cache to the shared filesystem. Remove "
+                        "'inline: true' and any instance-local 'cache_path'.",
+                        self.name,
+                        (
+                            "inline: true"
+                            if pcfg.get("inline")
+                            else f"cache_path={cache_path!r}"
+                        ),
+                    )
+        return self
