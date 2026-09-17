@@ -1624,7 +1624,12 @@ class Skypilot(Environment):
             env["GB_SHARED_WORKDIR"] = shared_workdir
             # Instance-local NVMe scratch for hot IO; steps stage here and copy
             # only artifacts to $GB_BUILD_WORKDIR (EFS is slower + bills per byte).
-            env["GB_LOCAL_SCRATCH"] = "/tmp/gb-scratch"
+            # Only export when a shared_filesystem provider is active: the launcher
+            # prologue never creates GB_LOCAL_SCRATCH, only the provider prologue
+            # does (mkdir -p "$GB_LOCAL_SCRATCH"). Plain shared_workdir envs
+            # (bluevela/SLURM/k8s) have no provider, so must not see it.
+            if build_provider(self.config) is not None:
+                env["GB_LOCAL_SCRATCH"] = "/tmp/gb-scratch"
         if build_workdir:
             env["GB_BUILD_WORKDIR"] = build_workdir
         return env

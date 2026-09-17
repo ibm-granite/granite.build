@@ -85,3 +85,55 @@ def test_hf_inline_coexist_warns(caplog):
             }
         )
     assert "will not cache to the shared filesystem" in caplog.text
+
+
+def test_hf_local_cache_path_coexist_warns(caplog):
+    with caplog.at_level(logging.WARNING):
+        EnvironmentConfig.model_validate(
+            {
+                "name": "e",
+                "type": "Skypilot",
+                "subtype": "aws",
+                "config": {"shared_filesystem": _sf()},
+                "assetstores": [
+                    {
+                        "store_uri": "space://assetstores/hf",
+                        "pull": [
+                            {
+                                "mode": "default",
+                                "config": {
+                                    "cache_path": "/tmp/hf_cache",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    assert "will not cache to the shared filesystem" in caplog.text
+
+
+def test_hf_cache_path_under_mount_point_no_warn(caplog):
+    with caplog.at_level(logging.WARNING):
+        EnvironmentConfig.model_validate(
+            {
+                "name": "e",
+                "type": "Skypilot",
+                "subtype": "aws",
+                "config": {"shared_filesystem": _sf()},
+                "assetstores": [
+                    {
+                        "store_uri": "space://assetstores/hf",
+                        "pull": [
+                            {
+                                "mode": "default",
+                                "config": {
+                                    "cache_path": "/mnt/gb-shared/hf_cache",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    assert "will not cache to the shared filesystem" not in caplog.text

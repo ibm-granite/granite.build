@@ -359,10 +359,38 @@ class TestTeardownWithProvider:
 
 
 class TestWorkdirLauncherEnvVars:
-    def test_gb_local_scratch_exported_when_shared_workdir_active(self):
+    def test_gb_local_scratch_exported_when_provider_active(self):
+        # GB_LOCAL_SCRATCH is only exported when a shared_filesystem provider is
+        # active (the provider prologue creates it); a Skypilot/aws env with an
+        # efs shared_filesystem block makes build_provider() return a provider.
         event_q = asyncio.Queue()
         ec = EnvironmentConfig(
             name="test-scratch",
+            type="Skypilot",
+            subtype="aws",
+            config={
+                "shared_filesystem": {
+                    "provider": "efs",
+                    "mount_point": "/mnt/gb-shared",
+                    "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
+                }
+            },
+        )
+        env = Skypilot(event_q=event_q, environment_config=ec)
+        env_vars = env._skypilot_builtin_env(
+            launch_id="L1",
+            cluster_name="gb-c",
+            build_workdir="/mnt/gb-shared/builds/b/runs/r",
+        )
+        assert env_vars["GB_LOCAL_SCRATCH"] == "/tmp/gb-scratch"
+        assert env_vars["GB_SHARED_WORKDIR"] == "/mnt/gb-shared"
+
+    def test_gb_local_scratch_absent_for_plain_shared_workdir(self):
+        # A plain shared_workdir env (no provider) must NOT export
+        # GB_LOCAL_SCRATCH: nothing creates it (only the provider prologue does).
+        event_q = asyncio.Queue()
+        ec = EnvironmentConfig(
+            name="test-plain-scratch",
             type="Skypilot",
             config={"default_cloud": "k8s", "shared_workdir": "/shared"},
         )
@@ -372,7 +400,7 @@ class TestWorkdirLauncherEnvVars:
             cluster_name="gb-c",
             build_workdir="/shared/builds/b/runs/r",
         )
-        assert env_vars["GB_LOCAL_SCRATCH"] == "/tmp/gb-scratch"
+        assert "GB_LOCAL_SCRATCH" not in env_vars
         assert env_vars["GB_SHARED_WORKDIR"] == "/shared"
 
     def test_gb_local_scratch_absent_without_shared_workdir(self):
