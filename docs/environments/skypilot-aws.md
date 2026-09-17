@@ -122,9 +122,10 @@ time.
 
 ### aws-only gate
 
-`shared_filesystem` is honored only when the resolved cloud is `aws`. On any other backend gbserver
-does not attempt an EFS mount — use an operator-mounted [`shared_workdir`](skypilot.md#shared_workdir)
-there instead.
+`shared_filesystem` is supported only on a `Skypilot`/`aws` environment. A `shared_filesystem` block on
+any non-`aws` (or non-`Skypilot`) environment is **rejected at config load** — `EnvironmentConfig`
+validation raises a `ValueError` rather than silently ignoring it at runtime. On other backends use an
+operator-mounted [`shared_workdir`](skypilot.md#shared_workdir) instead.
 
 ### Per-run workdir and permissions (`1777`)
 
@@ -164,8 +165,10 @@ it when the default placement might pick an AZ without one.
 
 ### GC / quota / cost
 
-- **What teardown reaps.** gbserver `rm -rf`'s the per-run dir on target-run teardown and the parent
-  `builds/<build_id>/` tree when the build completes; retries get a fresh dir. Crashes or killed
+- **What teardown reaps.** Teardown runs **per target-run**: gbserver `rm -rf`'s that run's per-run dir,
+  then does a best-effort `rmdir` of the now-empty `runs/` and `builds/<build_id>/` parents — a parent
+  is removed **only if it is now empty** (never a build-completion `rm -rf` of the whole build tree), so
+  concurrent runs under the same build are left intact. Retries get a fresh dir. Crashes or killed
   servers can still orphan trees, and `hf_cache/` is intentionally **not** reaped (it is a shared
   cache), so it grows unbounded.
 - **Operator hygiene.** Run a **TTL sweeper** over `builds/<id>/` for crash-orphans, cap per-space
