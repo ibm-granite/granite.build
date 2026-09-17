@@ -88,6 +88,165 @@ container's ephemeral layer and the downstream `hfpush` can't see it (the genera
 Ensure the EFS/FSx mount is exposed to the container (e.g. as a Docker bind/volume) so the per-run
 workdir resolves the same path on the host and in the container.
 
+## Runbook: provision a shared EFS filesystem
+
+A one-time, **bring-your-own** setup that creates the EFS the workers mount for cross-step state.
+gbserver does **not** create or mount the filesystem — this is admin infra you provision once and then
+reference from `environment.yaml`. It is the prerequisite for an EFS-backed `shared_workdir` (and for
+the auto-mounting `shared_filesystem` provider, [issue #378](https://github.com/ibm-granite/granite.build/issues/378)).
+
+**Prerequisites.** The AWS CLI configured with an identity that can create EFS + EC2 networking
+resources — `elasticfilesystem:{Create,Describe}FileSystem/MountTarget`, `ec2:CreateSecurityGroup`,
+`ec2:AuthorizeSecurityGroupIngress`, `ec2:Describe{Vpcs,Subnets}`. This is heavier than the build-time
+mount (a plain NFS mount needs **no** AWS creds), so use an operator/admin identity. Pick the region
+your workers run in and pin it:
+
+```bash
+export REGION=us-east-1 PROFILE=gb-skypilot   # PROFILE = an identity with the perms above
+```
+
+> **The EFS is region- and VPC-scoped.** An instance can only mount a target in **its own AZ**, and
+> the mount targets live in one VPC. So the workers must launch in the *same region and VPC* — pin the
+> env to `$REGION` (SkyPilot is otherwise unpinned and may pick another region, where the mount targets
+> are unreachable).
+
+### 1. Find the worker VPC + one subnet per AZ
+
+```bash
+aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" --filters Name=isDefault,Values=true \
+  --query 'Vpcs[].{VpcId:VpcId,Cidr:CidrBlock}' --output table
+aws ec2 describe-subnets --region "$REGION" --profile "$PROFILE" \
+  --filters Name=vpc-id,Values=vpc-XXXX \
+  --query 'Subnets[].{SubnetId:SubnetId,AZ:AvailabilityZone}' --output table
+```
+
+### 2. Create a security group allowing NFS (TCP 2049)
+
+The EFS mount-target SG must accept 2049 from the workers. SkyPilot creates its own per-launch SG we
+can't predict, so allow the VPC CIDR (simple, VPC-scoped):
+
+```bash
+SG=$(aws ec2 create-security-group --region "$REGION" --profile "$PROFILE" \
+       --group-name gb-efs-sg --description "granite.build shared EFS (NFS 2049)" \
+       --vpc-id vpc-XXXX --query GroupId --output text)
+aws ec2 authorize-security-group-ingress --region "$REGION" --profile "$PROFILE" \
+  --group-id "$SG" --protocol tcp --port 2049 --cidr 172.31.0.0/16      # <- your VPC CIDR
+```
+
+### 3. Create the EFS filesystem
+
+Use **elastic** throughput so an idle FS has no standing throughput charge (never
+`--throughput-mode provisioned` for this use); encrypt at rest:
+
+```bash
+FS=$(aws efs create-file-system --region "$REGION" --profile "$PROFILE" \
+       --performance-mode generalPurpose --throughput-mode elastic --encrypted \
+       --tags Key=Name,Value=gb-shared Key=app,Value=granite.build \
+       --query FileSystemId --output text)
+# wait until available (a few seconds)
+until [ "$(aws efs describe-file-systems --file-system-id "$FS" --region "$REGION" --profile "$PROFILE" \
+             --query 'FileSystems[0].LifeCycleState' --output text)" = available ]; do sleep 3; done
+```
+
+### 4. Create one mount target per worker AZ
+
+Mount targets are free; covering all AZs means any worker AZ can mount (no AZ pinning needed):
+
+```bash
+for s in subnet-AZ1 subnet-AZ2 subnet-AZ3 ... ; do
+  aws efs create-mount-target --region "$REGION" --profile "$PROFILE" \
+    --file-system-id "$FS" --subnet-id "$s" --security-groups "$SG" \
+    --query '[MountTargetId,AvailabilityZoneName,LifeCycleState]' --output text
+done
+```
+
+### 5. Wait until every mount target is `available` (async, ~1–2 min)
+
+```bash
+aws efs describe-mount-targets --file-system-id "$FS" --region "$REGION" --profile "$PROFILE" \
+  --query 'MountTargets[].[AvailabilityZoneName,LifeCycleState]' --output text
+```
+
+### 6. Bootstrap the root permissions to `1777`
+
+A fresh EFS root is `root:root 0755`, so a non-root step's `mkdir` of the per-run workdir would fail
+with `EACCES`. Fix it once by mounting from an **in-VPC instance** and `chmod 1777` (like `/tmp`: any
+uid can create the per-run dir, the sticky bit prevents cross-deletion). Your laptop can't reach the
+mount target, so use a one-off `sky launch` (auto-terminates):
+
+```bash
+sky launch -c gb-efs-bootstrap --cloud aws --region "$REGION" --instance-type t3.small -y --down \
+  "sudo mkdir -p /mnt/gb-shared \
+   && { command -v mount.nfs4 >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq nfs-common; }; } \
+   && sudo mount -t nfs4 -o nfsvers=4.1 ${FS}.efs.${REGION}.amazonaws.com:/ /mnt/gb-shared \
+   && sudo chmod 1777 /mnt/gb-shared \
+   && ls -ld /mnt/gb-shared"          # expect: drwxrwxrwt
+```
+
+### 7. Validate cross-instance access (optional but recommended)
+
+Prove the hand-off works across *separate* instances — write on one, read on another:
+
+```bash
+sky launch -c gb-efs-w --cloud aws --region "$REGION" --instance-type t3.small -y --down \
+  "sudo mkdir -p /mnt/gb-shared && sudo mount -t nfs4 -o nfsvers=4.1 ${FS}.efs.${REGION}.amazonaws.com:/ /mnt/gb-shared \
+   && echo hello | tee /mnt/gb-shared/probe"
+sky launch -c gb-efs-r --cloud aws --region "$REGION" --instance-type t3.small -y --down \
+  "sudo mkdir -p /mnt/gb-shared && { command -v mount.nfs4 || { sudo apt-get update -qq && sudo apt-get install -y -qq nfs-common; }; } \
+   && sudo mount -t nfs4 -o nfsvers=4.1 ${FS}.efs.${REGION}.amazonaws.com:/ /mnt/gb-shared \
+   && test \"\$(cat /mnt/gb-shared/probe)\" = hello && echo CROSS_INSTANCE_OK"
+sky status --refresh    # confirm no clusters remain (each used --down); sky down <name> if any linger
+```
+
+> **Watch for leaked EC2.** The `--down` flag terminates each probe cluster after its job; still run
+> `sky status --refresh` and `sky down <name>` for any that linger — a leaked instance bills per hour
+> (far more than the near-$0 empty EFS).
+
+### 8. Reference it from `environment.yaml`
+
+- **EFS-backed `shared_workdir`** (today): mount the EFS on every worker at, say, `/mnt/gb-shared`, and
+  set `shared_workdir: /mnt/gb-shared` (see the [`shared_workdir`](#shared_workdir) note above).
+- **Auto-mounting `shared_filesystem`** (issue #378): once landed, reference the FS directly and drop
+  the instance-local hf cache so `hfpull` caches to the shared FS:
+
+  ```yaml
+  config:
+    shared_filesystem:
+      provider: efs
+      mount_point: /mnt/gb-shared
+      efs: { file_system_id: fs-XXXX, region: us-east-1, tls: true }
+  assetstores:
+    - store_uri: space://assetstores/hf
+      pull:  [{ mode: default, config: {} }]   # no cache_path/inline: cache on the shared FS
+      push:  [{ mode: default, config: {} }]
+  ```
+
+### Decommission
+
+Delete mount targets first, then the filesystem (also delete `gb-efs-sg` if unused):
+
+```bash
+for mt in $(aws efs describe-mount-targets --file-system-id "$FS" --region "$REGION" --profile "$PROFILE" \
+              --query 'MountTargets[].MountTargetId' --output text); do
+  aws efs delete-mount-target --region "$REGION" --profile "$PROFILE" --mount-target-id "$mt"
+done
+aws efs delete-file-system --region "$REGION" --profile "$PROFILE" --file-system-id "$FS"
+```
+
+### Notes
+
+- **Cost.** Empty ≈ $0. EFS bills per **GB stored** (~$0.30/GB-mo Standard; ~$0.016/GB-mo IA) and
+  Elastic throughput bills **per byte moved** (~$0.03/GB read, ~$0.06/GB write). Mount targets are
+  free. Keep hot IO (checkpoints, scratch) on instance-local NVMe and use EFS only for the durable
+  hand-off; set a lifecycle policy (`put-lifecycle-configuration TransitionToIA=AFTER_30_DAYS`) and
+  sweep stale `builds/<id>/` trees to avoid a leaked large tree costing indefinitely.
+- **Containerized steps just work.** SkyPilot runs containers with `--net=host --cap-add=SYS_ADMIN
+  --device=/dev/fuse`, so an in-container `mount -t nfs4` reaches the mount target as the host IP
+  (covered by the VPC-CIDR SG rule). The image needs an NFS client (`nfs-common`/`nfs-utils`).
+- **uid stability.** With a `1777` root, producer→consumer works (outputs are world-readable via the
+  default umask; sticky prevents cross-delete). If two steps *rewrite the same file* as different uids,
+  run them under a shared uid/gid.
+
 ## Runbook: use a non-default AWS profile via the local secret store
 
 Use this when the gbserver host **already has a working `~/.aws/credentials` `[default]`** whose
