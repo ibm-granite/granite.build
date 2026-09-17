@@ -1,0 +1,28 @@
+/* Fill the tab, and let the snippet itself own the scrolling. */
+.definitionLayer {
+  block-size: 95%;
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  margin: 1rem;
+}
+
+.definitionSnippet {
+  flex: 1;
+  min-block-size: 0;
+  max-inline-size: none;
+
+  /* With the row cap disabled, Carbon leaves the container unsized; give it the
+     panel's height so a long definition scrolls inside the tab rather than
+     stretching the page. */
+  :global(.cds--snippet-container) {
+    block-size: 100%;
+    max-block-size: none;
+    overflow: auto;
+  }
+
+  :global(pre) {
+    font-size: 0.8125rem;
+    line-height: 1.6;
+  }
+}

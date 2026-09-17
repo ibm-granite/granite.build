@@ -4,11 +4,18 @@ import { useState } from "react";
 import type { CSSProperties } from "react";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import Link from "next/link";
-import { Button, InlineNotification, Modal, SkeletonText } from "@carbon/react";
+import {
+  Button,
+  InlineNotification,
+  Layer,
+  Modal,
+  SkeletonText,
+} from "@carbon/react";
 import { Document } from "@carbon/icons-react";
-import { BuildStatusBadge } from "@granite-build/ui-core/components/BuildStatusBadge";
-import { getArtifact, getBuildStepLog } from "@granite-build/ui-core/api/gbserver";
-import type { Artifact, BuildTargetRun, BuildStatus } from "@granite-build/ui-core/types";
+import { BuildStatusBadge } from "./BuildStatusBadge";
+import { useRoutes } from "../config/routes";
+import { getArtifact, getBuildStepLog } from "../api/gbserver";
+import type { Artifact, BuildTargetRun, BuildStatus } from "../types";
 
 interface Props {
   targets?: Record<string, BuildTargetRun> | BuildTargetRun[];
@@ -71,21 +78,28 @@ function StepLogModal({
         />
       )}
       {data != null && (
-        <pre
-          style={{
-            background: "var(--cds-layer, #f4f4f4)",
-            padding: "1rem",
-            overflowX: "auto",
-            margin: 0,
-            fontFamily: "IBM Plex Mono, monospace",
-            fontSize: "0.75rem",
-            lineHeight: "1.5",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
-          }}
-        >
-          {data}
-        </pre>
+        // <Layer> so `--cds-layer` below resolves to layer-02 rather than
+        // layer-01, which is #ffffff in the g10 theme this app uses. Dropping the
+        // old `var(--cds-layer, #f4f4f4)` fallback alone changed nothing: Carbon
+        // always defines the token, so the fallback never applied and the surface
+        // was already white. The wrapper is what actually recesses it.
+        <Layer>
+          <pre
+            style={{
+              background: "var(--cds-layer)",
+              padding: "1rem",
+              overflowX: "auto",
+              margin: 0,
+              fontFamily: "IBM Plex Mono, monospace",
+              fontSize: "0.75rem",
+              lineHeight: "1.5",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+            }}
+          >
+            {data}
+          </pre>
+        </Layer>
       )}
     </Modal>
   );
@@ -100,6 +114,8 @@ function ArtifactTable({
   entries: [string, string][];
   artifactMap: Map<string, Artifact | undefined>;
 }) {
+  const routes = useRoutes();
+
   return (
     <div style={{ marginBottom: "1.25rem" }}>
       <strong
@@ -127,7 +143,7 @@ function ArtifactTable({
                 <td style={{ ...tdStyle, wordBreak: "break-all" }}>
                   {linked ? (
                     <Link
-                      href={`/dashboard/artifacts/_/?id=${artifactId}`}
+                      href={routes.artifactHref(artifactId)}
                       style={{
                         color: "var(--cds-link-primary)",
                         fontSize: "0.75rem",
@@ -280,8 +296,12 @@ export function TargetsPanel({ targets }: Props) {
                       </tr>
                     </thead>
                     <tbody>
-                      {target.steps.map((step) => (
-                        <tr key={step.step_name}>
+                      {/* A target can legitimately run the same step name twice,
+                          and key={step.step_name} then collides — React reuses
+                          the wrong row. Index disambiguates within a stable list.
+                          When PR #331 lands `uuid` on BuildStepRun, prefer it. */}
+                      {target.steps.map((step, i) => (
+                        <tr key={`${step.step_name}-${i}`}>
                           <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
                             {step.step_name}
                           </td>

@@ -12,7 +12,7 @@
  *   GET  /spaces/           → { spaces: StoredSpace[] }
  */
 import axios from 'axios'
-import { apiBase } from './client'
+import { apiBase, gbserverClientOverrides } from './client'
 import type {
   Build,
   BuildStatus,
@@ -25,6 +25,27 @@ import type {
 } from '../types'
 
 const client = axios.create({ baseURL: apiBase('/api/v1') })
+
+// Consult the host's overrides on every request rather than at module load, so a
+// changing token or a switched environment is picked up without a reload. With
+// no overrides installed this leaves the request exactly as it was.
+client.interceptors.request.use((config) => {
+  const { resolveBaseUrl, resolveHeaders } = gbserverClientOverrides()
+  if (resolveBaseUrl) config.baseURL = resolveBaseUrl()
+  const extra = resolveHeaders?.()
+  if (extra) Object.assign(config.headers, extra)
+  return config
+})
+
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if ((error as { response?: { status?: number } })?.response?.status === 401) {
+      gbserverClientOverrides().onUnauthorized?.(error)
+    }
+    return Promise.reject(error)
+  },
+)
 
 // ── Response adapters ─────────────────────────────────────────────────────────
 // gbserver returns StoredBuild which uses uppercase Status enums and slightly

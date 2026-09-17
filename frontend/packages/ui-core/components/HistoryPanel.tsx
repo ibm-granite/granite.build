@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  Layer,
   StructuredListWrapper,
   StructuredListBody,
   StructuredListRow,
@@ -10,7 +11,7 @@ import { ChevronDown } from '@carbon/icons-react'
 import { Children, isValidElement, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
-import type { BuildEvent } from '@granite-build/ui-core/types'
+import type { BuildEvent } from '../types'
 
 interface Props {
   events: BuildEvent[]
@@ -26,9 +27,14 @@ function CollapsiblePre({ content }: { content: string }) {
   const [hovered, setHovered] = useState(false)
 
   return (
-    <div style={{ position: 'relative', margin: '0.5rem 0' }}>
+    // <Layer> so `--cds-layer` below resolves to layer-02 rather than layer-01,
+    // which is #ffffff in the g10 theme this app uses. The old code spelled these
+    // `var(--cds-layer, #f4f4f4)`, a fallback that documented the intended gray
+    // while the token itself delivered white — the same cause as the "all-white
+    // background" finding on the Definition tab.
+    <Layer style={{ position: 'relative', margin: '0.5rem 0' }}>
       <pre style={{
-        background: 'var(--cds-layer, #f4f4f4)',
+        background: 'var(--cds-layer)',
         padding: '1rem',
         overflowX: 'auto',
         overflowY: 'hidden',
@@ -53,7 +59,7 @@ function CollapsiblePre({ content }: { content: string }) {
             left: 0,
             right: 0,
             height: '3rem',
-            background: 'linear-gradient(to bottom, transparent, var(--cds-layer, #f4f4f4) 55%)',
+            background: 'linear-gradient(to bottom, transparent, var(--cds-layer) 55%)',
             pointerEvents: 'none',
           }}
         />
@@ -75,8 +81,8 @@ function CollapsiblePre({ content }: { content: string }) {
             padding: '0 1rem',
             border: 0,
             background: hovered
-              ? 'var(--cds-layer-hover, #e8e8e8)'
-              : 'var(--cds-layer, #f4f4f4)',
+              ? 'var(--cds-layer-hover)'
+              : 'var(--cds-layer)',
             color: 'var(--cds-text-primary)',
             fontSize: '0.875rem',
             lineHeight: '1.25rem',
@@ -97,7 +103,7 @@ function CollapsiblePre({ content }: { content: string }) {
           />
         </button>
       )}
-    </div>
+    </Layer>
   )
 }
 
@@ -139,7 +145,7 @@ export function HistoryPanel({ events }: Props) {
                       <code style={{
                         fontFamily: '"IBM Plex Mono", "Menlo", monospace',
                         fontSize: '0.875em',
-                        background: 'var(--cds-layer-accent, #e0e0e0)',
+                        background: 'var(--cds-layer-accent)',
                         padding: '0 0.25rem',
                         borderRadius: '2px',
                       }}>
