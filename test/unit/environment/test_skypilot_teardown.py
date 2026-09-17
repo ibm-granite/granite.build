@@ -204,3 +204,186 @@ class TestMonitorTreatsTeardownAsSuccess:
             pytest.raises(WorkloadFailedException),
         ):
             await lsf_env._poll_skypilot_job(launch_id=launch_id, poll_interval=0)
+
+
+def make_skypilot_env(config):
+    """Build a Skypilot env whose ``shared_filesystem`` block passes the
+    EnvironmentConfig gate (Skypilot/aws)."""
+    event_q = asyncio.Queue()
+    ec = EnvironmentConfig(
+        name="test-shared-fs",
+        type="Skypilot",
+        subtype="aws",
+        config=config,
+    )
+    return Skypilot(event_q=event_q, environment_config=ec)
+
+
+class TestTeardownWithProvider:
+    @pytest.mark.asyncio
+    async def test_teardown_runs_cleanup_script_and_warns_on_failure(
+        self, monkeypatch, caplog
+    ):
+        env = make_skypilot_env(
+            {
+                "shared_filesystem": {
+                    "provider": "efs",
+                    "mount_point": "/mnt/gb-shared",
+                    "efs": {
+                        "file_system_id": "fs-1",
+                        "region": "us-east-1",
+                        "cleanup_zone": "us-east-1a",
+                    },
+                }
+            }
+        )
+
+        class _Prov:
+            mount_point = "/mnt/gb-shared"
+
+            def cleanup_run_script(self, workdir):
+                return f"rm -rf {workdir}"
+
+            def cleanup_zone(self):
+                return "us-east-1a"
+
+        monkeypatch.setattr(
+            "gbserver.environment.skypilot.build_provider", lambda cfg: _Prov()
+        )
+
+        # Force the throwaway launch to fail, assert it is logged (not swallowed).
+        def _boom(*a, **k):
+            raise RuntimeError("no capacity in us-east-1a")
+
+        monkeypatch.setattr(
+            "gbserver.environment.skypilot.sky.launch", _boom, raising=False
+        )
+
+        env._setup_workdirs["sid"] = "/mnt/gb-shared/builds/b1/runs/r1"
+        env._setup_run_meta["sid"] = {
+            "target_name": "t",
+            "build_id": "b1",
+            "build_config_name": "c",
+        }
+
+        with caplog.at_level("WARNING"):
+            await env.teardown_skypilot("sid")
+        assert "/mnt/gb-shared/builds/b1/runs/r1" in caplog.text  # orphan surfaced
+
+    @pytest.mark.asyncio
+    async def test_teardown_runs_cleanup_run_script_and_pins_zone(self, monkeypatch):
+        env = make_skypilot_env(
+            {
+                "shared_filesystem": {
+                    "provider": "efs",
+                    "mount_point": "/mnt/gb-shared",
+                    "efs": {
+                        "file_system_id": "fs-1",
+                        "region": "us-east-1",
+                        "cleanup_zone": "us-east-1a",
+                    },
+                }
+            }
+        )
+
+        class _Prov:
+            mount_point = "/mnt/gb-shared"
+
+            def cleanup_run_script(self, workdir):
+                return f"CLEANUP {workdir}"
+
+            def cleanup_zone(self):
+                return "us-east-1a"
+
+        monkeypatch.setattr(
+            "gbserver.environment.skypilot.build_provider", lambda cfg: _Prov()
+        )
+
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-td")
+        mock_sky.stream_and_get = MagicMock(return_value=None)
+
+        env._setup_workdirs["sid"] = "/mnt/gb-shared/builds/b1/runs/r1"
+        env._setup_run_meta["sid"] = {
+            "target_name": "t",
+            "build_id": "b1",
+            "build_config_name": "c",
+        }
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await env.teardown_skypilot("sid")
+
+        # cleanup_run_script drove the throwaway VM's run script.
+        run_script = mock_sky.Task.call_args.kwargs["run"]
+        assert run_script == "CLEANUP /mnt/gb-shared/builds/b1/runs/r1"
+        # Zone pinned onto the resources for the AZ with a mount target.
+        assert mock_sky.Resources.call_args.kwargs.get("zone") == "us-east-1a"
+
+    @pytest.mark.asyncio
+    async def test_teardown_no_provider_uses_plain_rm_rf(self):
+        # No shared_filesystem/shared_workdir -> no provider -> legacy rm -rf path.
+        event_q = asyncio.Queue()
+        ec = EnvironmentConfig(
+            name="test-plain",
+            type="Skypilot",
+            config={"default_cloud": "k8s"},
+        )
+        env = Skypilot(event_q=event_q, environment_config=ec)
+
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-td")
+        mock_sky.stream_and_get = MagicMock(return_value=None)
+
+        env._setup_workdirs["sid"] = "/shared/builds/b1/runs/r1"
+        env._setup_run_meta["sid"] = {
+            "target_name": "t",
+            "build_id": "b1",
+            "build_config_name": "c",
+        }
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await env.teardown_skypilot("sid")
+
+        run_script = mock_sky.Task.call_args.kwargs["run"]
+        assert run_script == "rm -rf /shared/builds/b1/runs/r1"
+
+
+class TestWorkdirLauncherEnvVars:
+    def test_gb_local_scratch_exported_when_shared_workdir_active(self):
+        event_q = asyncio.Queue()
+        ec = EnvironmentConfig(
+            name="test-scratch",
+            type="Skypilot",
+            config={"default_cloud": "k8s", "shared_workdir": "/shared"},
+        )
+        env = Skypilot(event_q=event_q, environment_config=ec)
+        env_vars = env._skypilot_builtin_env(
+            launch_id="L1",
+            cluster_name="gb-c",
+            build_workdir="/shared/builds/b/runs/r",
+        )
+        assert env_vars["GB_LOCAL_SCRATCH"] == "/tmp/gb-scratch"
+        assert env_vars["GB_SHARED_WORKDIR"] == "/shared"
+
+    def test_gb_local_scratch_absent_without_shared_workdir(self):
+        event_q = asyncio.Queue()
+        ec = EnvironmentConfig(
+            name="test-noscratch",
+            type="Skypilot",
+            config={"default_cloud": "k8s"},
+        )
+        env = Skypilot(event_q=event_q, environment_config=ec)
+        env_vars = env._skypilot_builtin_env(
+            launch_id="L1", cluster_name="gb-c", build_workdir=None
+        )
+        assert "GB_LOCAL_SCRATCH" not in env_vars

@@ -42,6 +42,7 @@ from tenacity import (
 
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
+from gbserver.environment.shared_fs import build_provider, resolve_shared_workdir
 from gbserver.spaces.hf_push_config import (
     apply_hf_step_overlay,
     resolve_hfpush_resource_group_id,
@@ -867,6 +868,24 @@ def _get_cli_prefix(build_workdir: Optional[str]) -> str:
     return prefix
 
 
+def _compose_step_prologue(provider, build_workdir):
+    """Prologue prepended to setup and run. Without a provider this is exactly
+    ``_get_cli_prefix(build_workdir)`` (unchanged). With a provider: ``set -eu``,
+    the idempotent mount, then create the per-run workdir 1777 (so cross-image/uid
+    steps can write) and ``cd`` into it."""
+    if provider is None:
+        return _get_cli_prefix(build_workdir)
+    prologue = "set -eu\n" + provider.mount_prologue()
+    if build_workdir:
+        prologue += (
+            'mkdir -p "$GB_LOCAL_SCRATCH"\n'
+            'mkdir -p "$GB_BUILD_WORKDIR"\n'
+            'chmod 1777 "$GB_BUILD_WORKDIR"\n'
+            'cd "$GB_BUILD_WORKDIR"\n'
+        )
+    return prologue
+
+
 def _build_skypilot_mounts(
     file_mounts_raw: dict,
     asset_dir: Union[Path, str, None],
@@ -1292,9 +1311,7 @@ class Skypilot(Environment):
         # Materialize inline config as early as possible (before the
         # shared_workdir early-return below).
         self._ensure_inline_configs_materialized()
-        shared_workdir = (
-            self.config.config.get("shared_workdir") if self.config else None
-        )
+        shared_workdir = resolve_shared_workdir(self.config)
         if not shared_workdir:
             return {}
         workdir = os.path.join(
@@ -1332,6 +1349,52 @@ class Skypilot(Environment):
         run_meta = self._setup_run_meta.pop(setup_id, {})
         if not workdir:
             return
+        provider = build_provider(self.config)
+        if provider is not None:
+            _require_skypilot()
+            cluster_name = self._cluster_name_for(
+                f"td-{setup_id}",
+                target_name=run_meta.get("target_name", ""),
+                build_id=run_meta.get("build_id", ""),
+                build_config_name=run_meta.get("build_config_name", ""),
+            )
+            zone = provider.cleanup_zone()
+            res_kwargs = {"infra": self._get_cloud()}
+            if zone:
+                res_kwargs["zone"] = zone  # land where a mount target exists
+            logger.info(
+                "teardown_skypilot: cleaning per-run workdir %s via provider "
+                "(setup_id=%s, zone=%s)",
+                workdir,
+                setup_id,
+                zone,
+            )
+            try:
+                task = sky.Task(
+                    name=cluster_name,
+                    run=provider.cleanup_run_script(workdir),
+                    resources=sky.Resources(**res_kwargs),
+                )
+                request_id = await asyncio.to_thread(
+                    sky.launch,
+                    task,
+                    cluster_name=cluster_name,
+                    idle_minutes_to_autostop=0,
+                    down=True,
+                )
+                await asyncio.to_thread(sky.stream_and_get, request_id)
+            except Exception as e:
+                # Do not fail a finished build, but make the leak visible
+                # (Constantine #3).
+                logger.warning(
+                    "teardown cleanup failed; per-run tree may be ORPHANED at %s "
+                    "(setup_id=%s): %s",
+                    workdir,
+                    setup_id,
+                    e,
+                )
+            return
+        # No provider: existing plain rm -rf throwaway launch (unchanged below).
         _require_skypilot()
         cluster_name = self._cluster_name_for(
             f"td-{setup_id}",
@@ -1556,11 +1619,12 @@ class Skypilot(Environment):
             "GB_SKYPILOT_LAUNCH_ID": launch_id,
             "GB_SKYPILOT_CLUSTER_NAME": cluster_name,
         }
-        shared_workdir = (
-            self.config.config.get("shared_workdir") if self.config else None
-        )
+        shared_workdir = resolve_shared_workdir(self.config)
         if shared_workdir:
             env["GB_SHARED_WORKDIR"] = shared_workdir
+            # Instance-local NVMe scratch for hot IO; steps stage here and copy
+            # only artifacts to $GB_BUILD_WORKDIR (EFS is slower + bills per byte).
+            env["GB_LOCAL_SCRATCH"] = "/tmp/gb-scratch"
         if build_workdir:
             env["GB_BUILD_WORKDIR"] = build_workdir
         return env
@@ -1829,7 +1893,8 @@ class Skypilot(Environment):
             # scripts stay in SkyPilot's default ~/sky_workdir, where relative
             # file_mounts land. Only prefix setup when there is a setup script, so
             # steps without one don't acquire a spurious setup phase.
-            cli_prefix = _get_cli_prefix(build_workdir)
+            provider = build_provider(self.config)
+            cli_prefix = _compose_step_prologue(provider, build_workdir)
             run_script = cli_prefix + launcher_config.get("run", "")
             if setup_script:
                 setup_script = cli_prefix + setup_script
@@ -3033,9 +3098,7 @@ class Skypilot(Environment):
         self._warn_non_default_mode(storeload_config, uri)
 
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
-        shared_workdir = (
-            self.config.config.get("shared_workdir") if self.config else None
-        )
+        shared_workdir = resolve_shared_workdir(self.config)
         cache_dir = Path(
             get_hf_cache_dir(storeload_config, default_workdir=shared_workdir)
         )

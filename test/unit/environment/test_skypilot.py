@@ -1940,3 +1940,38 @@ class TestInlineConfigMaterialization:
             with pytest.raises(RuntimeError):
                 await env._launch_skypilot_inner(launch_id="L1", launcher_config={})
         assert calls[:2] == ["materialize", "api"]
+
+
+from gbserver.environment import skypilot as skymod
+
+
+class _FakeProvider:
+    mount_point = "/mnt/gb-shared"
+
+    def mount_prologue(self):
+        return "echo MOUNT_HERE\n"
+
+    def cleanup_run_script(self, workdir):
+        return f"echo CLEAN {workdir}\n"
+
+    def cleanup_zone(self):
+        return "us-east-1a"
+
+
+def test_prologue_orders_mount_before_cd_and_chmods_1777():
+    prologue = skymod._compose_step_prologue(
+        _FakeProvider(), "/mnt/gb-shared/builds/b/runs/r"
+    )
+    assert prologue.startswith("set -eu")
+    assert prologue.index("MOUNT_HERE") < prologue.index(
+        'chmod 1777 "$GB_BUILD_WORKDIR"'
+    )
+    assert prologue.index('chmod 1777 "$GB_BUILD_WORKDIR"') < prologue.index(
+        'cd "$GB_BUILD_WORKDIR"'
+    )
+
+
+def test_prologue_no_provider_is_plain_cli_prefix():
+    assert skymod._compose_step_prologue(None, "/mnt/x") == skymod._get_cli_prefix(
+        "/mnt/x"
+    )
