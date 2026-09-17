@@ -88,6 +88,93 @@ container's ephemeral layer and the downstream `hfpush` can't see it (the genera
 Ensure the EFS/FSx mount is exposed to the container (e.g. as a Docker bind/volume) so the per-run
 workdir resolves the same path on the host and in the container.
 
+## `shared_filesystem` (auto-mounting EFS)
+
+`shared_workdir` above assumes *you* mount the EFS on every worker. `shared_filesystem` (issue #378)
+instead has **gbserver mount** a BYO, pre-provisioned EFS at launch and use it as the `shared_workdir`
+root — the per-step EC2 instances SkyPilot allocates then share state with no manual mount. It is
+**aws-only** and **mutually exclusive** with `shared_workdir` (set one or the other; when
+`shared_filesystem` is set it *is* the shared workdir). For the common-schema view see
+[skypilot.md](skypilot.md#shared_filesystem).
+
+```yaml
+config:
+  default_cloud: aws
+  shared_filesystem:
+    provider: efs
+    mount_point: /mnt/gb-shared   # Mounted on each worker; becomes the shared_workdir root.
+    efs:
+      file_system_id: fs-0abc123
+      region: us-east-1           # Must match the workers' region (mount targets are AZ-scoped).
+      tls: true
+      # cleanup_zone: us-east-1a  # Optional. Pin the teardown VM to a mount-target AZ.
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:  [{ mode: default, config: {} }]   # no cache_path/inline: cache on the shared FS
+    push:  [{ mode: default, config: {} }]
+```
+
+The filesystem itself is **bring-your-own** — provision it *once* with the
+[runbook below](#runbook-provision-a-shared-efs-filesystem) (SG for NFS 2049, elastic-throughput
+`create-file-system`, a mount target per worker AZ, and the one-time `chmod 1777` root bootstrap).
+gbserver never creates or deletes the filesystem; this section covers only how it is *used* at build
+time.
+
+### aws-only gate
+
+`shared_filesystem` is honored only when the resolved cloud is `aws`. On any other backend gbserver
+does not attempt an EFS mount — use an operator-mounted [`shared_workdir`](skypilot.md#shared_workdir)
+there instead.
+
+### Per-run workdir and permissions (`1777`)
+
+gbserver mounts the EFS at `mount_point` on every worker and creates the same per-target-run subdir it
+would under `shared_workdir` — `${mount_point}/builds/<build_id>/runs/<targetrun_id>/` — as the CWD of
+each step's `setup`/`run`. Because steps run as a non-root user, the **EFS root must be `chmod 1777`**
+(sticky, like `/tmp`); gbserver also creates each per-run dir `1777`. A producer step's output is then
+world-readable to the consumer (default umask), and the sticky bit prevents cross-deletion. Two steps
+that *rewrite the same file* as different uids still need a shared uid/gid.
+
+### Containerized steps
+
+A step with an `image_id` runs in a container on the EC2 host, yet still sees the EFS mount because
+SkyPilot launches containers with `--net=host --cap-add=SYS_ADMIN --device=/dev/fuse` by default — so
+an in-container NFS mount reaches the mount target as the host IP (covered by the VPC-CIDR SG rule).
+The **image must ship an NFS client** (`nfs-common`/`nfs-utils`); gbserver installs it best-effort, so
+prefer an image that already has it for offline/locked-down bases.
+
+### `GB_LOCAL_SCRATCH` and hot-path staging
+
+EFS is the durable **hand-off medium** between steps, not fast scratch — every byte read/written bills
+under elastic throughput. Each step also gets an instance-local `GB_LOCAL_SCRATCH` on the worker's
+NVMe: **stage hot paths (checkpoints, decompress/scratch) there** and copy only the durable result
+back to the per-run workdir. Keeping churn off EFS bounds both latency and cost.
+
+### hf cache
+
+When `shared_filesystem` is enabled, drop `cache_path: /tmp/hf_cache` and `inline: true` from the hf
+assetstore (use `config: {}`, as above), so `hfpull` runs as its own step and caches to
+`${mount_point}/hf_cache` — otherwise it caches instance-locally and the model never reaches EFS.
+
+### Cleanup-zone pinning (`efs.cleanup_zone`)
+
+At target-run teardown gbserver launches a small VM to `rm -rf` the per-run tree. That VM must land in
+an AZ that has a mount target; set `efs.cleanup_zone` to a mount-target AZ (e.g. `us-east-1a`) to pin
+it when the default placement might pick an AZ without one.
+
+### GC / quota / cost
+
+- **What teardown reaps.** gbserver `rm -rf`'s the per-run dir on target-run teardown and the parent
+  `builds/<build_id>/` tree when the build completes; retries get a fresh dir. Crashes or killed
+  servers can still orphan trees, and `hf_cache/` is intentionally **not** reaped (it is a shared
+  cache), so it grows unbounded.
+- **Operator hygiene.** Run a **TTL sweeper** over `builds/<id>/` for crash-orphans, cap per-space
+  usage, and **monitor `hf_cache/`** size — none of these are automatic.
+- **Cost.** Empty ≈ $0, but Elastic throughput bills **per byte moved** (~$0.03/GB read, ~$0.06/GB
+  write) on top of per-GB storage, so a leaked ~200 GB tree runs roughly **$60/mo** until swept. This
+  is why hot IO belongs on `GB_LOCAL_SCRATCH`, not EFS. See the runbook's
+  [Notes](#notes) for storage/throughput rates and the lifecycle-policy knob.
+
 ## Runbook: provision a shared EFS filesystem
 
 A one-time, **bring-your-own** setup that creates the EFS the workers mount for cross-step state.

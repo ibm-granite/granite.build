@@ -123,6 +123,48 @@ How the shared filesystem is exposed to a container differs by backend:
 - **AWS** — EFS/FSx is mounted on the VM; a bare step sees it directly, a containerized step needs the
   mount visible inside the container. See [skypilot-aws.md](skypilot-aws.md#shared_workdir).
 
+### `shared_filesystem`
+
+`shared_workdir` above assumes the operator has *already* mounted a shared filesystem on every worker.
+`shared_filesystem` closes that gap on **Skypilot/aws only**: gbserver mounts a BYO, pre-provisioned
+EFS filesystem on each worker at launch and **produces the `shared_workdir` root** from it, so
+cross-step state flows across the separate EC2 instances SkyPilot allocates per step with no manual
+mount step. It is **mutually exclusive with `shared_workdir`** — set one or the other, never both (when
+`shared_filesystem` is set it *is* the shared workdir).
+
+```yaml
+config:
+  default_cloud: aws
+  shared_filesystem:
+    provider: efs                 # Only `efs` today (BYO, pre-provisioned — gbserver does not create it).
+    mount_point: /mnt/gb-shared   # Where the FS is mounted on each worker; becomes the shared_workdir root.
+    efs:
+      file_system_id: fs-0abc123
+      region: us-east-1           # Must match the region the workers launch in (mount targets are AZ-scoped).
+      tls: true
+      # cleanup_zone: us-east-1a  # Optional. Pin the teardown VM to a mount-target AZ.
+```
+
+- **Provider `efs`** — a bring-your-own, pre-provisioned EFS filesystem (with mount targets per worker
+  AZ and an SG allowing NFS 2049). gbserver mounts it; it never creates or deletes the filesystem. See
+  the [provisioning runbook](skypilot-aws.md#runbook-provision-a-shared-efs-filesystem).
+- **Bare *and* containerized steps** — the mount reaches inside a step's container too, via SkyPilot's
+  default container capabilities, so both step shapes see the same per-run workdir. See
+  [skypilot-aws.md](skypilot-aws.md#shared_filesystem-auto-mounting-efs).
+- **`1777` root requirement** — the EFS root must be `chmod 1777` (sticky, like `/tmp`) so a non-root
+  step can `mkdir` its per-run workdir; gbserver creates each per-run dir `1777` as well. This is a
+  one-time bootstrap on the filesystem (see the runbook).
+- **`GB_LOCAL_SCRATCH`** — the shared FS is the durable **hand-off medium** between steps, not fast
+  scratch. Each step also gets an instance-local `GB_LOCAL_SCRATCH` dir on the worker's NVMe; **stage
+  hot paths (checkpoints, working scratch) there** and copy only the durable result back to the shared
+  workdir, so per-byte EFS throughput charges stay on the hand-off, not on churn.
+- **hf cache** — when `shared_filesystem` is enabled, drop `cache_path: /tmp/hf_cache` and
+  `inline: true` from the hf assetstore (use `config: {}`) so `hfpull` runs as its own step and caches
+  to `${mount_point}/hf_cache`; otherwise it caches instance-locally and the model never reaches EFS.
+
+Full AWS admin runbook, container internals, and GC/cost guidance:
+[skypilot-aws.md](skypilot-aws.md#shared_filesystem-auto-mounting-efs).
+
 ## `step.yaml` — launcher and monitor types
 
 | `type` | Method | Notes |
