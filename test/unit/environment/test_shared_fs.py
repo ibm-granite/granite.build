@@ -169,3 +169,29 @@ def test_efs_cleanup_zone_from_config():
         EfsConfig(file_system_id="fs-1", region="us-east-1", cleanup_zone="us-east-1a"),
     )
     assert p.cleanup_zone() == "us-east-1a"
+
+
+from gbserver.environment.shared_fs import build_provider
+from gbserver.environment.shared_fs.efs import EfsProvider as _Efs
+
+
+def test_build_provider_none_when_absent():
+    assert build_provider(_env({})) is None
+    assert build_provider(_env({"shared_workdir": "/proj/x"})) is None
+    assert build_provider(None) is None
+
+
+def test_build_provider_returns_efs():
+    prov = build_provider(
+        _env(
+            {
+                "shared_filesystem": {
+                    "provider": "efs",
+                    "mount_point": "/mnt/gb-shared",
+                    "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
+                }
+            }
+        )
+    )
+    assert isinstance(prov, _Efs)
+    assert prov.mount_point == "/mnt/gb-shared"
