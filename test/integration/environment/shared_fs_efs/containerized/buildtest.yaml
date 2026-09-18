@@ -1,0 +1,20 @@
+# YAML spec for the CONTAINERIZED shared-fs EFS E2E (test_shared_fs_efs_e2e.py).
+# Same 2-step producer->consumer flow as ../bare/buildtest.yaml, but each byoc step
+# sets an image (image_id: docker:<image>), so the commands run inside the container
+# against the in-container NFS mount. Reaching SUCCESS proves that in-container mount
+# + the 1777/uid path carried step 1's bytes across instances.
+#
+# expected_steps omitted for the same reason as the bare variant (both steps share
+# space://steps/byoc); step_count + output_artifact_count carry the assertions.
+targets:
+  - efs-producer-consumer
+target_expectations:
+  - target_name: efs-producer-consumer
+    step_count: 2
+    input_artifact_count: 1
+    output_artifact_count: 2
+space_uri: ../space
+tests:
+  - runner
+simulate_step_failure: false
+timeout_minutes: 40

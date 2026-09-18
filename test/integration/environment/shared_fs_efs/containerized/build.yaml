@@ -1,0 +1,59 @@
+granite.build:
+  name: skypilot-aws-shared-fs-e2e-containerized
+  targets:
+    efs-producer-consumer:
+      # Same 2-step producer->consumer flow as ../bare/build.yaml, but each byoc step
+      # sets an image, so byoc renders SkyPilot image_id: docker:<image> and the
+      # commands run INSIDE the container against the in-container NFS mount (SkyPilot's
+      # default SYS_ADMIN/--net=host/fuse) and the 1777/uid path.
+      environment_uri: space://environments/skypilot/aws-shared-fs
+      inputs:
+        seed:
+          uri: "env:///tmp/gb-seed.txt"
+      outputs:
+        produced:
+          uri: "env:///tmp/gb-produced.txt"
+          type: fileset
+        consumed:
+          uri: "env:///tmp/gb-consumed.txt"
+          type: fileset
+      steps:
+        # Step 1 (producer), containerized: writes the sentinel under $GB_BUILD_WORKDIR
+        # from inside the container, then emits the `produced` marker.
+        - step_uri: space://steps/byoc
+          config:
+            poll_interval_seconds: 5
+            byoc_config:
+              # A Debian-based image that ships git (byoc git-clones the repo in its
+              # setup phase, which runs INSIDE the container) and apt (the shared-fs
+              # mount prologue installs nfs-common). byoc renders
+              # image_id: docker:buildpack-deps:bookworm-scm.
+              image: "buildpack-deps:bookworm-scm"
+              repo: "https://github.com/octocat/Hello-World.git"
+              ref: ""
+              workdir: "code"
+              command: >-
+                echo "hello-from-efs-378" > "$GB_BUILD_WORKDIR/sentinel";
+                echo "wrote sentinel to $GB_BUILD_WORKDIR/sentinel";
+                echo "GB_ARTIFACT_ID:produced GB_ARTIFACT_PATH:/tmp/gb-produced.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi
+        # Step 2 (consumer), containerized: on a SEPARATE instance's container, reads
+        # the sentinel back and asserts it, then emits the `consumed` marker. SUCCESS
+        # proves the in-container NFS mount + 1777/uid path carried step 1's bytes.
+        - step_uri: space://steps/byoc
+          config:
+            poll_interval_seconds: 5
+            byoc_config:
+              image: "buildpack-deps:bookworm-scm"
+              repo: "https://github.com/octocat/Hello-World.git"
+              ref: ""
+              workdir: "code"
+              command: >-
+                test "$(cat "$GB_BUILD_WORKDIR/sentinel")" = "hello-from-efs-378";
+                echo "consumer read sentinel OK from a separate instance";
+                echo "GB_ARTIFACT_ID:consumed GB_ARTIFACT_PATH:/tmp/gb-consumed.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

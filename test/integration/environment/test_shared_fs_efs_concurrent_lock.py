@@ -38,18 +38,23 @@ the observed serialization:
 It COSTS MONEY (provisions EC2) and MUST NEVER run in CI. It self-skips unless:
 
 * ``GB_RUN_SHARED_FS_E2E=1``   -- the explicit opt-in gate (spins up EC2; $);
-* ``GB_TEST_EFS_FS_ID``        -- a validated BYO EFS filesystem id (fs-...);
-* ``GB_TEST_EFS_REGION``       -- that filesystem's region (e.g. us-east-1);
-* AWS credentials in the environment (``aws_credentials_present()``).
+* AWS credentials in the environment (``aws_credentials_present()``);
+* the committed fixture ``environment.yaml`` points at a REAL BYO EFS (its efs
+  ``file_system_id`` is no longer the shipped placeholder).
+
+The EFS coordinates come from the ``shared_filesystem`` efs block of the committed
+fixture ``environment.yaml`` (the SAME file ``test_shared_fs_efs_e2e.py`` drives),
+NOT from ``GB_TEST_*`` env vars. To run for real, edit
+``shared_fs_efs/space/environments/skypilot/aws-shared-fs/environment.yaml``'s efs
+``file_system_id`` / ``region`` to your validated BYO EFS; until then it ships the
+placeholder and this test self-skips.
 
 Everything past the gate lives inside the test body, so a normal collection run
 imports cleanly and reports SKIPPED without touching AWS.
 
-Run it (opt-in, real AWS):
+Run it (opt-in, real AWS), after editing the fixture environment.yaml:
 
     GB_RUN_SHARED_FS_E2E=1 \\
-    GB_TEST_EFS_FS_ID=fs-03bbdc96a5fdcb873 \\
-    GB_TEST_EFS_REGION=us-east-1 \\
     AWS_PROFILE=gb-skypilot \\
     PYTEST_ADDOPTS=-s \\
     .venv/bin/python -m pytest \\
@@ -67,10 +72,24 @@ import re
 import shutil
 import subprocess
 import uuid
+from pathlib import Path
 
 import pytest
+from libgbtest.shared_fs import EfsCoords, efs_coords_from_environment_yaml
 
 _GATE_ENV = "GB_RUN_SHARED_FS_E2E"
+
+# EFS coordinates come from the committed fixture environment.yaml (the same file
+# test_shared_fs_efs_e2e.py drives), not GB_TEST_* env vars.
+_ENV_YAML = (
+    Path(__file__).parent
+    / "shared_fs_efs"
+    / "space"
+    / "environments"
+    / "skypilot"
+    / "aws-shared-fs"
+    / "environment.yaml"
+)
 
 pytestmark = [
     pytest.mark.skypilot_integration,
@@ -78,7 +97,7 @@ pytestmark = [
         os.environ.get(_GATE_ENV) != "1",
         reason=(
             f"real-infra lock test: set {_GATE_ENV}=1 (spins up EC2; costs $). "
-            "Also requires GB_TEST_EFS_FS_ID, GB_TEST_EFS_REGION and AWS creds."
+            "Also requires AWS creds and a real BYO EFS in the fixture environment.yaml."
         ),
     ),
 ]
@@ -158,15 +177,27 @@ echo "[$(TS)] NODE=$NODE DONE"
 """
 
 
-def _require_efs_fixture() -> tuple[str, str]:
-    fs_id = os.environ.get("GB_TEST_EFS_FS_ID")
-    region = os.environ.get("GB_TEST_EFS_REGION")
-    if not fs_id or not region:
+def _require_efs_fixture() -> EfsCoords:
+    """Return the EFS coordinates from the committed fixture environment.yaml, or skip.
+
+    The coordinates live in the shared_filesystem.efs block of the fixture
+    environment.yaml (the same file test_shared_fs_efs_e2e.py drives), not in
+    GB_TEST_* env vars. Skip when it still ships the placeholder id (so a gated
+    run never provisions EC2 against a bogus filesystem), or when no region is
+    set — this test's `sky launch` needs an explicit --region.
+    """
+    coords = efs_coords_from_environment_yaml(_ENV_YAML)
+    if coords.is_placeholder:
         pytest.skip(
-            "lock test opted in but GB_TEST_EFS_FS_ID / GB_TEST_EFS_REGION are "
-            "not both set (need a validated BYO EFS fixture)."
+            "lock test opted in but the fixture still ships the placeholder EFS id "
+            f"({coords.file_system_id}). Edit {_ENV_YAML} shared_filesystem.efs with "
+            "your validated BYO EFS file_system_id/region."
         )
-    return fs_id, region
+    if not coords.region:
+        pytest.skip(
+            f"lock test needs efs.region set in {_ENV_YAML} (sky launch --region)."
+        )
+    return coords
 
 
 def _require_aws_credentials() -> None:
@@ -195,9 +226,10 @@ def _run(argv: list[str], timeout: int) -> subprocess.CompletedProcess:
 def test_concurrent_hfpull_mkdir_lock_over_efs():
     """N nodes contend on the hfpull mkdir lock over EFS; assert clean serialization."""
     _require_aws_credentials()
-    fs_id, region = _require_efs_fixture()
+    coords = _require_efs_fixture()
 
-    fs_dns = f"{fs_id}.efs.{region}.amazonaws.com"
+    fs_dns = coords.dns_name
+    region = coords.region
     runtag = uuid.uuid4().hex[:8]
     cluster = f"gb-efs-locktest-{runtag}"
     workdir = os.path.join("/tmp", f"gb-efs-locktest-{runtag}")

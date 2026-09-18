@@ -1,0 +1,29 @@
+# YAML spec for the BARE shared-fs EFS E2E (test_shared_fs_efs_e2e.py).
+# Two byoc steps in one target: step 1 writes a sentinel under $GB_BUILD_WORKDIR
+# (the shared_filesystem per-target-run prefix on EFS), step 2 reads it back on a
+# SEPARATE EC2 instance. Reaching SUCCESS (the consumer's `test ... =` gates it)
+# proves EFS carried step 1's bytes across instances.
+#
+# expected_steps is intentionally omitted: both steps share space://steps/byoc, so
+# a per-step assertion keyed by step_uri cannot uniquely match. step_count == 2 and
+# output_artifact_count == 2 (only checked on SUCCESS) already prove both byoc steps
+# ran and each registered its env:// output.
+targets:
+  - efs-producer-consumer
+target_expectations:
+  - target_name: efs-producer-consumer
+    step_count: 2
+    input_artifact_count: 1
+    output_artifact_count: 2
+# The committed Space (../space) carries environments/skypilot/aws-shared-fs and
+# chains base_uris to configurations/assets (for the published space://steps/byoc).
+space_uri: ../space
+# Only the basic build; the commands finish near-instantly once nodes are up, so
+# there is no stable RUNNING window to cancel in.
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: a failed clone/command
+# fails the build, so reaching SUCCESS proves both steps ran on real EC2 over EFS.
+simulate_step_failure: false
+# EC2 cold-start + SkyPilot setup for two sequential instances plus EFS mount.
+timeout_minutes: 40

@@ -1979,22 +1979,32 @@ def test_prologue_no_provider_is_plain_cli_prefix():
 
 def test_container_mount_options_appended_to_empty_docker_config():
     out = skymod._with_container_mount_options({})
+    # NOTE: --net=host is deliberately NOT pinned here. SkyPilot's
+    # docker_start_cmds unconditionally adds --net=host to every container, and
+    # docker rejects a duplicate --network ("network host is specified multiple
+    # times"), unlike --cap-add/--device which it tolerates. So we pin only the
+    # FUSE cap/device and rely on SkyPilot for host networking.
     assert out["run_options"] == [
-        "--net=host",
         "--cap-add=SYS_ADMIN",
         "--device=/dev/fuse",
     ]
 
 
+def test_container_mount_options_omit_net_host():
+    """Regression (#393): never pin --net=host — SkyPilot always adds it and a
+    duplicate --network makes ``docker run`` fail with rc 125."""
+    assert "--net=host" not in skymod._CONTAINER_SHARED_FS_RUN_OPTIONS
+    assert "--net=host" not in skymod._with_container_mount_options({})["run_options"]
+
+
 def test_container_mount_options_preserve_and_dedupe_existing_run_options():
     out = skymod._with_container_mount_options(
-        {"run_options": ["--shm-size=1g", "--net=host"]}
+        {"run_options": ["--shm-size=1g", "--cap-add=SYS_ADMIN"]}
     )
-    # user options kept, order preserved, no duplicate --net=host, the two
-    # missing mount flags appended.
+    # user options kept, order preserved, no duplicate --cap-add=SYS_ADMIN, the
+    # missing mount flag appended.
     assert out["run_options"] == [
         "--shm-size=1g",
-        "--net=host",
         "--cap-add=SYS_ADMIN",
         "--device=/dev/fuse",
     ]

@@ -152,6 +152,28 @@ def test_efs_mount_prologue_installs_nfs_client_and_falls_back_to_nfs4():
     _bash_ok(shell)
 
 
+def test_efs_mount_prologue_is_root_safe_no_bare_sudo():
+    """Regression (#393): a containerized step runs as root in a minimal image
+    (e.g. debian:12-slim) that has NO `sudo`; the prologue must gate sudo on the
+    effective uid ($SUDO) rather than calling bare `sudo`, else the in-container
+    EFS mount dies with 'sudo: not found' and the workload fails."""
+    p = EfsProvider(
+        "/mnt/gb-shared",
+        EfsConfig(file_system_id="fs-0abc", region="us-east-1", tls=True),
+    )
+    shell = p.mount_prologue()
+    # Defines a uid-gated $SUDO and uses it for the privileged commands...
+    assert "id -u" in shell and "SUDO=" in shell
+    assert "$SUDO mount" in shell
+    assert "$SUDO mkdir" in shell
+    assert "$SUDO apt-get" in shell
+    # ...and never calls bare `sudo` (absent when running as root in a container).
+    assert "sudo mount" not in shell
+    assert "sudo mkdir" not in shell
+    assert "sudo apt-get" not in shell
+    _bash_ok(shell)
+
+
 def test_efs_cleanup_run_script_mounts_then_reaps():
     p = EfsProvider(
         "/mnt/gb-shared", EfsConfig(dns_name="fs-0abc.efs.eu-west-1.amazonaws.com")

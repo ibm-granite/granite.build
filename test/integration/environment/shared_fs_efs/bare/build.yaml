@@ -1,0 +1,61 @@
+granite.build:
+  name: skypilot-aws-shared-fs-e2e
+  targets:
+    efs-producer-consumer:
+      # The shared-fs aws environment (shared_filesystem efs block) carried by the
+      # committed Space at ../space; PRODUCES the per-target-run shared_workdir on EFS.
+      environment_uri: space://environments/skypilot/aws-shared-fs
+      inputs:
+        # env:// input: a no-op binding (pullasset_envstore) so the target has one
+        # input artifact; the path need not exist (EnvURI.pull is a stub).
+        seed:
+          uri: "env:///tmp/gb-seed.txt"
+      outputs:
+        # Each step registers one env:// output from the GB_ARTIFACT marker it echoes.
+        produced:
+          uri: "env:///tmp/gb-produced.txt"
+          type: fileset
+        consumed:
+          uri: "env:///tmp/gb-consumed.txt"
+          type: fileset
+      steps:
+        # Step 1 (producer): writes a sentinel under $GB_BUILD_WORKDIR (the CWD both
+        # steps start in — the shared_filesystem per-target-run prefix on EFS), then
+        # emits the `produced` artifact marker. byoc requires a non-empty repo (it
+        # git-clones in setup); the clone is incidental — the sentinel uses the
+        # absolute $GB_BUILD_WORKDIR path, not the cloned code/ dir.
+        - step_uri: space://steps/byoc
+          config:
+            poll_interval_seconds: 5
+            byoc_config:
+              # Empty image => run on the bare EC2 instance (no container).
+              image: ""
+              repo: "https://github.com/octocat/Hello-World.git"
+              ref: ""
+              workdir: "code"
+              command: >-
+                echo "hello-from-efs-378" > "$GB_BUILD_WORKDIR/sentinel";
+                echo "wrote sentinel to $GB_BUILD_WORKDIR/sentinel";
+                echo "GB_ARTIFACT_ID:produced GB_ARTIFACT_PATH:/tmp/gb-produced.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi
+        # Step 2 (consumer): on a SEPARATE EC2 instance, reads the sentinel back from
+        # $GB_BUILD_WORKDIR and asserts its value (set -eu fails the step otherwise),
+        # then emits the `consumed` marker. Reaching SUCCESS proves EFS carried step
+        # 1's bytes across instances.
+        - step_uri: space://steps/byoc
+          config:
+            poll_interval_seconds: 5
+            byoc_config:
+              image: ""
+              repo: "https://github.com/octocat/Hello-World.git"
+              ref: ""
+              workdir: "code"
+              command: >-
+                test "$(cat "$GB_BUILD_WORKDIR/sentinel")" = "hello-from-efs-378";
+                echo "consumer read sentinel OK from a separate instance";
+                echo "GB_ARTIFACT_ID:consumed GB_ARTIFACT_PATH:/tmp/gb-consumed.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

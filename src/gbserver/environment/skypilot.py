@@ -958,13 +958,14 @@ def aws_credentials_present() -> bool:
 _PROVIDER_UNSET = object()
 
 # docker run options an in-container shared_filesystem (EFS/NFS) mount needs:
-# --net=host so the mount-target IP is reachable via the host network, plus
-# SYS_ADMIN + /dev/fuse for mount(2)/FUSE. SkyPilot injects exactly these in its
-# own default container run options (sky/provision/docker_utils.py), but we pin
-# them so gbserver owns the requirement rather than inheriting a default that a
-# future SkyPilot bump could drop.
+# SYS_ADMIN + /dev/fuse for mount(2)/FUSE. SkyPilot's docker_start_cmds
+# (sky/provision/docker_utils.py) unconditionally injects these AND --net=host on
+# every container; docker tolerates a repeated --cap-add/--device (they union), so
+# pinning those defensively is harmless. We must NOT pin --net=host, though:
+# docker rejects a duplicate --network ("network host is specified multiple
+# times", rc 125), so re-adding SkyPilot's guaranteed --net=host breaks the
+# container launch (#393). Host networking is therefore left to SkyPilot.
 _CONTAINER_SHARED_FS_RUN_OPTIONS = (
-    "--net=host",
     "--cap-add=SYS_ADMIN",
     "--device=/dev/fuse",
 )

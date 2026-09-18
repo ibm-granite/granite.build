@@ -11,11 +11,16 @@ from gbserver.environment.shared_fs.config import EfsConfig
 _NFS_OPTS = (
     "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport"
 )
+# Privileged commands need `sudo` on the bare host (SkyPilot runs steps as a
+# non-root user with passwordless sudo), but a containerized step runs as root in
+# a minimal image (e.g. debian:12-slim) that has NO `sudo` at all — calling it
+# there dies with "sudo: not found". Gate on the effective uid: root -> no sudo.
+_SUDO_SETUP = 'SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"\n'
 # Best-effort NFS client install (SkyPilot's container setup already assumes debian).
 _INSTALL_NFS = (
     "command -v mount.nfs4 >/dev/null 2>&1 || "
-    "{ sudo apt-get update -qq && sudo apt-get install -y -qq nfs-common; } || "
-    "{ command -v yum >/dev/null 2>&1 && sudo yum install -y -q nfs-utils; } || true"
+    "{ $SUDO apt-get update -qq && $SUDO apt-get install -y -qq nfs-common; } || "
+    "{ command -v yum >/dev/null 2>&1 && $SUDO yum install -y -q nfs-utils; } || true"
 )
 
 
@@ -30,12 +35,12 @@ class EfsProvider(SharedFilesystemProvider):
         tls = " -o tls" if self.cfg.tls else ""
         fsid = self.cfg.file_system_id
         efs_cmd = (
-            f"sudo mount -t efs{tls} {shlex.quote(fsid + ':/')} {mp_quoted}"
+            f"$SUDO mount -t efs{tls} {shlex.quote(fsid + ':/')} {mp_quoted}"
             if fsid
             else None
         )
         nfs_cmd = (
-            f"sudo mount -t nfs4 -o {_NFS_OPTS} {shlex.quote(dns + ':/')} {mp_quoted}"
+            f"$SUDO mount -t nfs4 -o {_NFS_OPTS} {shlex.quote(dns + ':/')} {mp_quoted}"
         )
         if efs_cmd:
             # Prefer amazon-efs-utils on bare hosts; fall back to nfs4 (containers).
@@ -46,9 +51,10 @@ class EfsProvider(SharedFilesystemProvider):
         mp = shlex.quote(self.mount_point)
         fail = f'echo "shared_filesystem: EFS mount at {self.mount_point} failed" >&2; exit 1'
         return (
+            f"{_SUDO_SETUP}"
             f"{_INSTALL_NFS}\n"
             f"if ! mountpoint -q {mp}; then\n"
-            f"  sudo mkdir -p {mp}\n"
+            f"  $SUDO mkdir -p {mp}\n"
             f"  {self._mount_line(mp)} || {{ {fail}; }}\n"
             f"fi\n"
         )

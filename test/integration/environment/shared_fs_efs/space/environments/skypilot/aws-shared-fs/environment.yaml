@@ -1,0 +1,59 @@
+# skypilot/aws environment for the gated shared-fs EFS E2E tests (#378/#393).
+#
+# This is the SINGLE source of truth for the EFS coordinates the gated tests use
+# (both test_shared_fs_efs_e2e.py and test_shared_fs_efs_concurrent_lock.py read
+# the shared_filesystem.efs block below via libgbtest.shared_fs) — there are no
+# GB_TEST_* env vars. It ships the documented PLACEHOLDER file_system_id, so the
+# tests self-skip until you point it at a real, pre-provisioned BYO EFS:
+#
+#   * set efs.file_system_id to your fs-... id and efs.region to its region;
+#   * that EFS needs mount targets per worker AZ, an SG allowing NFS 2049, and
+#     its root chmod'd 1777 (see docs/environments/skypilot-aws.md);
+#   * then run with GB_RUN_SHARED_FS_E2E=1 + AWS creds (spins up EC2/EFS; $).
+name: skypilot-aws-shared-fs-e2e
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  idle_minutes_to_autostop: 5
+  # AWS credentials materialized from the space secret manager into a NON-default
+  # profile in ~/.aws/credentials. The values are secret NAMES resolved by the
+  # space's secret_manager — never literals (mirrors the shipped aws environment).
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  # Issue #378: a BYO pre-provisioned EFS so multi-step data flow works across the
+  # separate EC2 instances SkyPilot allocates per step. Setting shared_filesystem
+  # PRODUCES the shared_workdir root (do NOT also set shared_workdir).
+  shared_filesystem:
+    provider: efs
+    mount_point: /mnt/gb-shared
+    efs:
+      # PLACEHOLDER — replace with your BYO EFS to run the gated tests for real.
+      file_system_id: fs-0abc123
+      region: us-east-1
+      tls: true
+assetstores:
+  - store_uri: space://assetstores/s3/
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}
+  # With shared_filesystem set, hfpull runs as its own step and caches to
+  # ${mount_point}/hf_cache (config: {}) rather than instance-locally, so a pulled
+  # model actually reaches EFS (see the shipped aws environment's guidance).
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}
