@@ -333,6 +333,16 @@ describe('mappedPreviewKey', () => {
   it('differs when the config differs', () => {
     assert.notEqual(mappedPreviewKey(base), mappedPreviewKey({ ...base, config: 'other' }))
   })
+
+  it('differs when the repoId differs', () => {
+    // Dropping repoId from the key is exactly the stale-read bug this key exists
+    // to prevent: two repos sharing a config/split/mapping would otherwise collide.
+    assert.notEqual(mappedPreviewKey(base), mappedPreviewKey({ ...base, repoId: 'other/repo' }))
+  })
+
+  it('differs when the trainSplit differs', () => {
+    assert.notEqual(mappedPreviewKey(base), mappedPreviewKey({ ...base, trainSplit: 'test' }))
+  })
 })
 
 describe('canImport', () => {
@@ -374,6 +384,10 @@ describe('canImport', () => {
 
   it('blocks an out-of-range validation percentage when splitting from train', () => {
     assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 0 }), false)
+    // Pins the upper boundary at 50: an implementation that let it drift to 51
+    // (e.g. `<= 51`) would pass every other assertion in this file and only this
+    // one would catch it.
+    assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 51 }), false)
     assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 99 }), false)
   })
 

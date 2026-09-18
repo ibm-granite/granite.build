@@ -191,13 +191,17 @@ export function HfImportModal({
   useEffect(() => {
     if (!open || !repoId || !config || !trainSplit || !mappingComplete) {
       setMappedPreview(null)
+      setMappedPreviewError('')
       return
     }
     // Same guard as the probe, and for the same reason: on switching datasets
     // `splits` briefly holds the new repo's data while `config`/`trainSplit` still
     // hold the previous repo's, which would fire a mapped request for a config the
     // new repo does not have.
-    if (!splits || !splits.configs[config]?.includes(trainSplit)) return
+    if (!splits || !splits.configs[config]?.includes(trainSplit)) {
+      setMappedPreviewError('')
+      return
+    }
     const key = mappedPreviewKey({ repoId, config, trainSplit, mappingKey })
     const token = ++mappedTokenRef.current
     setPreviewLoading(true)
@@ -383,16 +387,27 @@ export function HfImportModal({
       // modal while polling starts), so the list must learn about it either way.
       queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
       const ready = await pollUntilReady(created.id, runId)
+      // Also unconditional, and in addition to the invalidate above rather than
+      // instead of it: that one only makes an abandoned run's row visible while it
+      // is still `importing`. Because the datasets list is an active query while
+      // this modal is open, it refetches immediately and caches that snapshot; with
+      // no second invalidate here, nothing ever told it the row reached `ready`, so
+      // it stayed missing from Step 1's existing-dataset dropdown for the rest of
+      // the wizard session.
+      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
       if (runId !== runIdRef.current) return
       onImported(ready.id)
       resetState()
       onClose()
     } catch (err) {
-      if (runId !== runIdRef.current) return
-      // The record may already exist server-side whatever went wrong after the
-      // POST, so make it visible either way rather than leaving an orphan the
-      // user cannot see and whose name then collides on retry.
+      // Unconditional and ahead of the runId check, mirroring the invalidate above:
+      // the record may already exist server-side whatever went wrong after the
+      // POST -- including a client-side timeout or dropped connection after the
+      // server had already committed the row -- so make it visible either way
+      // rather than leaving an orphan the user cannot see and whose name then
+      // collides on retry, even if this run has since been abandoned.
       queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
+      if (runId !== runIdRef.current) return
       const status = hfErrorStatus(err)
       if (status === 409) {
         // The same repo at a pinned revision is a legitimate second dataset, so the
