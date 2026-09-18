@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Callout,
   ComboBox,
@@ -10,12 +10,39 @@ import {
   Modal,
   Select,
   SelectItem,
+  TextInput,
 } from '@carbon/react'
-import type { HfImportConfig, HfImportPreview } from '@granite-build/ui-core/types'
-import { getHfSplits, previewHfDataset, searchHfDatasets } from '@granite-build/ui-core/api/autotunex'
+import type {
+  ColumnMapping,
+  Dataset,
+  HfImportConfig,
+  HfImportPreview,
+} from '@granite-build/ui-core/types'
+import {
+  getDataset,
+  getHfSplits,
+  importHfDataset,
+  previewHfDataset,
+  searchHfDatasets,
+} from '@granite-build/ui-core/api/autotunex'
 import { PreviewTable } from '@granite-build/ui-core/components/autotunex/shared/PreviewTable'
 import { formatBytes } from '@granite-build/ui-core/lib/autotunex/formatBytes'
-import { defaultConfig, defaultTrainSplit, hfErrorStatus, probeMapping, problemDetail } from './hfImport'
+import {
+  HF_IMPORT_POLL_MS,
+  HF_IMPORT_READY_TIMEOUT_MS,
+} from '@granite-build/ui-core/lib/autotunex/datasetReady'
+import {
+  defaultConfig,
+  defaultTrainSplit,
+  deriveDatasetName,
+  hfErrorStatus,
+  isDatasetNameValid,
+  isMappingComplete,
+  probeMapping,
+  problemDetail,
+  suffixWithRevision,
+  survivalSummary,
+} from './hfImport'
 import styles from './HfImportModal.module.scss'
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -28,11 +55,19 @@ const NO_VALIDATION = '__none__'
 interface HfImportModalProps {
   open: boolean
   onClose: () => void
+  onImported: (datasetId: string) => void
   requiredColumns: string[]
   hfConfig: HfImportConfig
 }
 
-export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfImportModalProps) {
+export function HfImportModal({
+  open,
+  onClose,
+  onImported,
+  requiredColumns,
+  hfConfig,
+}: HfImportModalProps) {
+  const queryClient = useQueryClient()
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [repoId, setRepoId] = useState<string | null>(null)
   const [config, setConfig] = useState('')
@@ -42,10 +77,24 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
   const [preview, setPreview] = useState<HfImportPreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
+  const [mapping, setMapping] = useState<ColumnMapping>({})
+  const [mappedPreview, setMappedPreview] = useState<HfImportPreview | null>(null)
+  const [validationPercentage, setValidationPercentage] = useState(10)
+  const [name, setName] = useState('')
+  const [error, setError] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [importStatus, setImportStatus] = useState('')
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const suggestTokenRef = useRef(0)
   const previewTokenRef = useRef(0)
+  // Every import run captures the id it started with and compares before writing
+  // state; bumping the counter abandons all prior runs for good. Same guard as
+  // SettingsDatasetCreate's, and it is what makes closing mid-import safe.
+  const runIdRef = useRef(0)
+
+  const mappingComplete = isMappingComplete(mapping, requiredColumns)
+  const mappingKey = JSON.stringify(mapping)
 
   // `requiredColumns` is a fresh array on every parent render, so it cannot be an
   // effect dependency directly -- the probe effect would refire forever. This
@@ -79,6 +128,7 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
     setConfig(nextConfig)
     setTrainSplit(defaultTrainSplit(splits.configs[nextConfig] ?? []))
     setValidationSplit(NO_VALIDATION)
+    setName(deriveDatasetName(splits.repo_id))
   }, [splits])
 
   // The probe. Its only job is to fetch `columns` and `raw_rows`; `sampled` and
@@ -95,6 +145,7 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
     setPreviewLoading(true)
     setPreviewError('')
     setPreview(null)
+    setMapping({})
     previewHfDataset({
       repo_id: repoId,
       config,
@@ -119,7 +170,40 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
       })
   }, [open, repoId, splits, config, trainSplit, requiredKey])
 
+  // The second preview: the real one. Fires only once every required column has a
+  // source, because the server counts survivors over the mapping's own keys -- a
+  // partial mapping would return a high number describing only the columns chosen
+  // so far. validation_split is null here for the same reason as in the probe.
+  useEffect(() => {
+    if (!open || !repoId || !config || !trainSplit || !mappingComplete) {
+      setMappedPreview(null)
+      return
+    }
+    const token = ++previewTokenRef.current
+    setPreviewLoading(true)
+    setPreviewError('')
+    previewHfDataset({
+      repo_id: repoId,
+      config,
+      train_split: trainSplit,
+      validation_split: null,
+      column_mapping: mapping,
+    })
+      .then((result) => {
+        if (previewTokenRef.current !== token) return
+        setMappedPreview(result)
+      })
+      .catch((err) => {
+        if (previewTokenRef.current !== token) return
+        setPreviewError(problemDetail(err, 'Could not preview this mapping.'))
+      })
+      .finally(() => {
+        if (previewTokenRef.current === token) setPreviewLoading(false)
+      })
+  }, [open, repoId, config, trainSplit, mappingComplete, mappingKey])
+
   function resetState() {
+    runIdRef.current += 1
     previewTokenRef.current += 1
     suggestTokenRef.current += 1
     if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -131,9 +215,22 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
     setPreview(null)
     setPreviewLoading(false)
     setPreviewError('')
+    setMapping({})
+    setMappedPreview(null)
+    setValidationPercentage(10)
+    setName('')
+    setError('')
+    setImporting(false)
+    setImportStatus('')
   }
 
   function handleClose() {
+    // Closing mid-import abandons the poll (the runIdRef bump in resetState) but
+    // not the server-side import, which keeps running. The invalidate is the point:
+    // without it that dataset is missing from the table until an unrelated refetch,
+    // and retrying the same name then collides with a row the user cannot see. Same
+    // failure the upload modal had before commit ca3565b.
+    if (importing) queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
     resetState()
     onClose()
   }
@@ -169,12 +266,118 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
 
   const splitsErrorStatus = hfErrorStatus(splitsError)
 
+  const survival = survivalSummary({
+    sampled: mappedPreview?.sampled ?? 0,
+    survived: mappedPreview?.survived ?? 0,
+    // Not just mappingComplete: until the mapped preview has come back there is no
+    // count to describe, and the probe's own numbers must never be shown.
+    mappingComplete: mappingComplete && mappedPreview !== null,
+  })
+
+  const nameValid = isDatasetNameValid(name)
+  const canImport =
+    !!repoId &&
+    !!config &&
+    !!trainSplit &&
+    mappingComplete &&
+    nameValid &&
+    (survival.kind === 'ok' || survival.kind === 'warning') &&
+    !importing
+
+  async function pollUntilReady(datasetId: string, runId: number): Promise<Dataset> {
+    const deadline = Date.now() + HF_IMPORT_READY_TIMEOUT_MS
+    while (runId === runIdRef.current) {
+      let dataset: Dataset | null = null
+      try {
+        dataset = await getDataset(datasetId)
+      } catch (err) {
+        // A failed poll is just a poll to retry: the import is already running
+        // server-side, and one transient GET blip must not abandon it.
+        if (Date.now() > deadline) throw err
+      }
+      if (runId !== runIdRef.current) throw new Error('superseded')
+      if (dataset) {
+        setImportStatus(dataset.status)
+        if (dataset.status === 'ready') return dataset
+        if (dataset.status === 'error') {
+          throw new Error(dataset.status_detail || 'Import failed.')
+        }
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          'Import timed out while processing. It may still finish -- check Settings > Datasets.'
+        )
+      }
+      await new Promise((resolve) => setTimeout(resolve, HF_IMPORT_POLL_MS))
+    }
+    throw new Error('superseded')
+  }
+
+  async function handleImport() {
+    if (!repoId || !canImport) return
+    const runId = ++runIdRef.current
+    setImporting(true)
+    setError('')
+    setImportStatus('importing')
+    try {
+      const created = await importHfDataset({
+        name: name.trim(),
+        // Not required by the server. Set because the dataset otherwise reaches the
+        // table and the wizard's own name/description form with an empty
+        // description; strike this line if that is not wanted.
+        description: `Imported from HuggingFace ${repoId}`,
+        repo_id: repoId,
+        config,
+        train_split: trainSplit,
+        validation_split: validationSplit === NO_VALIDATION ? null : validationSplit,
+        validation_percentage: validationSplit === NO_VALIDATION ? validationPercentage : null,
+        column_mapping: mapping,
+      })
+      const ready = await pollUntilReady(created.id, runId)
+      if (runId !== runIdRef.current) return
+      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
+      onImported(ready.id)
+      resetState()
+      onClose()
+    } catch (err) {
+      if (runId !== runIdRef.current) return
+      // The record may already exist server-side whatever went wrong after the
+      // POST, so make it visible either way rather than leaving an orphan the
+      // user cannot see and whose name then collides on retry.
+      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
+      const status = hfErrorStatus(err)
+      if (status === 409) {
+        // The same repo at a pinned revision is a legitimate second dataset, so the
+        // revision is what distinguishes it. Suffix and stop -- the second POST is
+        // the user's to make, not ours to fire silently.
+        setName((current) => suffixWithRevision(current, splits?.revision ?? ''))
+        setError(
+          problemDetail(
+            err,
+            'A dataset with that name already exists. A revision suffix has been added -- review the name and import again.'
+          )
+        )
+      } else {
+        setError(problemDetail(err, (err as Error)?.message || 'Import failed.'))
+      }
+    } finally {
+      if (runId === runIdRef.current) {
+        setImporting(false)
+        setImportStatus('')
+      }
+    }
+  }
+
   return (
     <Modal
       open={open}
-      passiveModal
       modalHeading="Import a HuggingFace dataset"
+      primaryButtonText={importing ? 'Importing...' : 'Import'}
+      secondaryButtonText="Cancel"
+      primaryButtonDisabled={!canImport}
+      onRequestSubmit={handleImport}
       onRequestClose={handleClose}
+      onSecondarySubmit={handleClose}
       size="lg"
     >
       <ComboBox
@@ -307,7 +510,98 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
         <>
           <p className={styles.subheading}>Sample rows</p>
           <PreviewTable rows={preview.raw_rows} maxRows={PREVIEW_ROWS} maxCellChars={CELL_MAX} />
+
+          <p className={styles.subheading}>Column mapping</p>
+          <div className={styles.row}>
+            {requiredColumns.map((required) => (
+              <div className={styles.rowItem} key={required}>
+                <Select
+                  id={`hf-mapping-${required}`}
+                  labelText={required}
+                  value={mapping[required] ?? ''}
+                  onChange={(event) =>
+                    setMapping({ ...mapping, [required]: event.target.value })
+                  }
+                >
+                  <SelectItem value="" text="Choose a column..." />
+                  {preview.columns.map((column) => (
+                    <SelectItem key={column} value={column} text={column} />
+                  ))}
+                </Select>
+              </div>
+            ))}
+          </div>
+
+          {survival.kind !== 'hidden' && (
+            <InlineNotification
+              kind={
+                survival.kind === 'blocked'
+                  ? 'error'
+                  : survival.kind === 'warning'
+                    ? 'warning'
+                    : 'success'
+              }
+              title={survival.kind === 'blocked' ? 'This mapping keeps no rows' : 'Mapped rows'}
+              subtitle={survival.text}
+              lowContrast
+              hideCloseButton
+              className={styles.section}
+            />
+          )}
+
+          {mappedPreview && (
+            <>
+              <p className={styles.subheading}>Mapped rows</p>
+              <PreviewTable rows={mappedPreview.mapped_rows} maxRows={PREVIEW_ROWS} maxCellChars={CELL_MAX} />
+            </>
+          )}
+
+          <div className={styles.row}>
+            <div className={styles.rowItem}>
+              <TextInput
+                id="hf-dataset-name"
+                labelText="Dataset name"
+                value={name}
+                invalid={name.length > 0 && !nameValid}
+                invalidText={"Use up to 255 characters, without '/', '\\' or '..'."}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </div>
+            {validationSplit === NO_VALIDATION && (
+              <div className={styles.rowItem}>
+                <TextInput
+                  id="hf-validation-percentage"
+                  labelText="Validation split (%)"
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={String(validationPercentage)}
+                  onChange={(event) => setValidationPercentage(Number(event.target.value))}
+                  invalid={validationPercentage < 1 || validationPercentage > 50}
+                  invalidText="Choose between 1 and 50."
+                />
+              </div>
+            )}
+          </div>
         </>
+      )}
+
+      {importing && (
+        <InlineLoading
+          description={`Importing from HuggingFace (${importStatus || 'importing'})... this can take several minutes.`}
+          className={styles.section}
+        />
+      )}
+
+      {!!error && (
+        <InlineNotification
+          kind="error"
+          title="Import failed"
+          subtitle={error}
+          lowContrast
+          hideCloseButton
+          className={styles.section}
+        />
       )}
     </Modal>
   )

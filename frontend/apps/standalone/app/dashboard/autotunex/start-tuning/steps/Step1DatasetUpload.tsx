@@ -47,6 +47,7 @@ import {
   validateDatasetForGoal,
 } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { HfImportModal } from './HfImportModal'
+import { truncationNotice } from './hfImport'
 import { ALGORITHM_DETAILS, ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import styles from './Step1DatasetUpload.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
@@ -242,6 +243,13 @@ export function Step1DatasetUpload({
   const datasetGoalWarning = useMemo(
     () => (selectedGoal && detectedFormat !== 'unknown' ? validateDatasetForGoal(detectedFormat, selectedGoal) : { valid: true, message: '' }),
     [selectedGoal, detectedFormat]
+  )
+  // Above max_rows the server imports the first N rather than refusing. The
+  // frontend cannot know the total in advance -- the preview samples 100 rows -- so
+  // this reads it back out of the provenance the import wrote.
+  const truncationMessage = useMemo(
+    () => (hfConfig ? truncationNotice(selectedExistingDataset?.hf_provenance, hfConfig.max_rows) : null),
+    [selectedExistingDataset, hfConfig]
   )
 
   // Heuristic column-mapping suggestion when the algorithm changes (skipped once AI has suggested)
@@ -507,6 +515,18 @@ export function Step1DatasetUpload({
     await loadExistingDataset(datasetId, { suggestAlgorithm: true })
   }
 
+  async function handleHfImported(datasetId: string) {
+    // Same order as handleExistingDatasetSelect: bump the token so any in-flight
+    // parse or load is abandoned, tell the wizard the dataset changed, then let the
+    // existing loader apply it -- preview rows, column metadata, format detection,
+    // algorithm suggestion and record counts all come from there. An imported
+    // dataset is just a saved dataset, which is why nothing downstream changes.
+    uploadTokenRef.current += 1
+    setHfModalOpen(false)
+    onDatasetChanged()
+    await loadExistingDataset(datasetId, { suggestAlgorithm: true })
+  }
+
   // Applies a fetched dataset -- preview included -- to this step's state.
   //
   // `suggestAlgorithm` is for an explicit pick only, where the columns are new
@@ -738,6 +758,7 @@ export function Step1DatasetUpload({
               <HfImportModal
                 open={hfModalOpen}
                 onClose={() => setHfModalOpen(false)}
+                onImported={handleHfImported}
                 requiredColumns={requiredColumns}
                 hfConfig={hfConfig}
               />
@@ -770,6 +791,17 @@ export function Step1DatasetUpload({
             {isProcessing && <InlineLoading description={processingProgress || 'Processing...'} style={{ marginTop: '0.5rem' }} />}
 
             {error && <InlineNotification kind="error" title="Error" subtitle={error} style={{ marginTop: '0.5rem' }} />}
+
+            {truncationMessage && (
+              <InlineNotification
+                kind="info"
+                title="Row cap applied"
+                subtitle={truncationMessage}
+                lowContrast
+                hideCloseButton
+                style={{ marginTop: '0.5rem' }}
+              />
+            )}
 
             {/* `datasetGoalWarning.message` was computed and never rendered while
                 `.valid` hard-disabled Next, so a format mismatch was a dead end with
