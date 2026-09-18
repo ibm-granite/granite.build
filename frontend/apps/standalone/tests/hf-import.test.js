@@ -30,6 +30,9 @@ const {
   truncationNotice,
   problemDetail,
   hfErrorStatus,
+  pollStep,
+  mappedPreviewKey,
+  canImport,
 } = require('../app/dashboard/autotunex/start-tuning/steps/hfImport.ts')
 
 describe('deriveDatasetName', () => {
@@ -291,5 +294,97 @@ describe('hfErrorStatus', () => {
     // A string '503' would make `=== 503` silently false, so the Retry button
     // would never appear for a real Axios error carrying this shape.
     assert.equal(hfErrorStatus({ response: { status: '503' } }), undefined)
+  })
+})
+
+describe('pollStep', () => {
+  it('is ready when the status says ready, expired or not', () => {
+    assert.equal(pollStep({ status: 'ready', expired: false }), 'ready')
+    assert.equal(pollStep({ status: 'ready', expired: true }), 'ready')
+  })
+
+  it('is error when the status says error, expired or not', () => {
+    assert.equal(pollStep({ status: 'error', expired: false }), 'error')
+    assert.equal(pollStep({ status: 'error', expired: true }), 'error')
+  })
+
+  it('times out on an expired deadline with no terminal status', () => {
+    assert.equal(pollStep({ status: undefined, expired: true }), 'timeout')
+    assert.equal(pollStep({ status: 'importing', expired: true }), 'timeout')
+  })
+
+  it('waits while there is time left and no terminal status', () => {
+    assert.equal(pollStep({ status: 'importing', expired: false }), 'wait')
+    assert.equal(pollStep({ status: undefined, expired: false }), 'wait')
+  })
+})
+
+describe('mappedPreviewKey', () => {
+  const base = { repoId: 'vicgalle/alpaca-gpt4', config: 'default', trainSplit: 'train', mappingKey: '{"input":"instruction"}' }
+
+  it('is identical for identical inputs', () => {
+    assert.equal(mappedPreviewKey(base), mappedPreviewKey({ ...base }))
+  })
+
+  it('differs when the mapping differs', () => {
+    assert.notEqual(mappedPreviewKey(base), mappedPreviewKey({ ...base, mappingKey: '{"input":"text"}' }))
+  })
+
+  it('differs when the config differs', () => {
+    assert.notEqual(mappedPreviewKey(base), mappedPreviewKey({ ...base, config: 'other' }))
+  })
+})
+
+describe('canImport', () => {
+  const base = {
+    hasRepo: true,
+    hasConfig: true,
+    hasTrainSplit: true,
+    mappingComplete: true,
+    nameValid: true,
+    survivalKind: 'ok',
+    importing: false,
+    splitFromTrain: false,
+    validationPercentage: 10,
+  }
+
+  it('allows an ok or a warning survival', () => {
+    assert.equal(canImport({ ...base, survivalKind: 'ok' }), true)
+    assert.equal(canImport({ ...base, survivalKind: 'warning' }), true)
+  })
+
+  it('blocks a hidden or a blocked survival', () => {
+    assert.equal(canImport({ ...base, survivalKind: 'hidden' }), false)
+    assert.equal(canImport({ ...base, survivalKind: 'blocked' }), false)
+  })
+
+  it('blocks while a run is already importing', () => {
+    assert.equal(canImport({ ...base, importing: true }), false)
+  })
+
+  it('blocks an invalid name', () => {
+    assert.equal(canImport({ ...base, nameValid: false }), false)
+  })
+
+  it('blocks a missing repo, config or train split', () => {
+    assert.equal(canImport({ ...base, hasRepo: false }), false)
+    assert.equal(canImport({ ...base, hasConfig: false }), false)
+    assert.equal(canImport({ ...base, hasTrainSplit: false }), false)
+  })
+
+  it('blocks an out-of-range validation percentage when splitting from train', () => {
+    assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 0 }), false)
+    assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 99 }), false)
+  })
+
+  it('allows the boundary and mid-range percentages when splitting from train', () => {
+    assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 1 }), true)
+    assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 10 }), true)
+    assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 50 }), true)
+  })
+
+  it('ignores the percentage when a separate validation split is chosen', () => {
+    assert.equal(canImport({ ...base, splitFromTrain: false, validationPercentage: 0 }), true)
+    assert.equal(canImport({ ...base, splitFromTrain: false, validationPercentage: 99 }), true)
   })
 })

@@ -32,12 +32,15 @@ import {
   HF_IMPORT_READY_TIMEOUT_MS,
 } from '@granite-build/ui-core/lib/autotunex/datasetReady'
 import {
+  canImport as canImportGate,
   defaultConfig,
   defaultTrainSplit,
   deriveDatasetName,
   hfErrorStatus,
   isDatasetNameValid,
   isMappingComplete,
+  mappedPreviewKey,
+  pollStep,
   probeMapping,
   problemDetail,
   suffixWithRevision,
@@ -78,7 +81,11 @@ export function HfImportModal({
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [mapping, setMapping] = useState<ColumnMapping>({})
-  const [mappedPreview, setMappedPreview] = useState<HfImportPreview | null>(null)
+  // Tagged with the key it was fetched for (repo/config/split/mapping), so a
+  // stale result from a since-changed selection is never mistaken for a fresh
+  // one -- see `freshMappedPreview` below.
+  const [mappedPreview, setMappedPreview] = useState<{ key: string; preview: HfImportPreview } | null>(null)
+  const [mappedPreviewError, setMappedPreviewError] = useState('')
   const [validationPercentage, setValidationPercentage] = useState(10)
   const [name, setName] = useState('')
   const [error, setError] = useState('')
@@ -87,7 +94,14 @@ export function HfImportModal({
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const suggestTokenRef = useRef(0)
+  // Exclusive to the probe. The mapped-preview effect has always fired in the
+  // same commit as the probe on a repo/config/split change (it just went from
+  // incomplete to complete, or vice versa), so a shared counter let the mapped
+  // effect's token bump win and made the probe's own response fail its own
+  // staleness check -- see mappedTokenRef.
   const previewTokenRef = useRef(0)
+  // Exclusive to the mapped-preview effect, for the same reason in reverse.
+  const mappedTokenRef = useRef(0)
   // Every import run captures the id it started with and compares before writing
   // state; bumping the counter abandons all prior runs for good. Same guard as
   // SettingsDatasetCreate's, and it is what makes closing mid-import safe.
@@ -179,9 +193,15 @@ export function HfImportModal({
       setMappedPreview(null)
       return
     }
-    const token = ++previewTokenRef.current
+    // Same guard as the probe, and for the same reason: on switching datasets
+    // `splits` briefly holds the new repo's data while `config`/`trainSplit` still
+    // hold the previous repo's, which would fire a mapped request for a config the
+    // new repo does not have.
+    if (!splits || !splits.configs[config]?.includes(trainSplit)) return
+    const key = mappedPreviewKey({ repoId, config, trainSplit, mappingKey })
+    const token = ++mappedTokenRef.current
     setPreviewLoading(true)
-    setPreviewError('')
+    setMappedPreviewError('')
     previewHfDataset({
       repo_id: repoId,
       config,
@@ -190,21 +210,22 @@ export function HfImportModal({
       column_mapping: mapping,
     })
       .then((result) => {
-        if (previewTokenRef.current !== token) return
-        setMappedPreview(result)
+        if (mappedTokenRef.current !== token) return
+        setMappedPreview({ key, preview: result })
       })
       .catch((err) => {
-        if (previewTokenRef.current !== token) return
-        setPreviewError(problemDetail(err, 'Could not preview this mapping.'))
+        if (mappedTokenRef.current !== token) return
+        setMappedPreviewError(problemDetail(err, 'Could not preview this mapping.'))
       })
       .finally(() => {
-        if (previewTokenRef.current === token) setPreviewLoading(false)
+        if (mappedTokenRef.current === token) setPreviewLoading(false)
       })
-  }, [open, repoId, config, trainSplit, mappingComplete, mappingKey])
+  }, [open, repoId, splits, config, trainSplit, mappingComplete, mappingKey])
 
   function resetState() {
     runIdRef.current += 1
     previewTokenRef.current += 1
+    mappedTokenRef.current += 1
     suggestTokenRef.current += 1
     if (debounceRef.current) clearTimeout(debounceRef.current)
     setSuggestions([])
@@ -217,6 +238,7 @@ export function HfImportModal({
     setPreviewError('')
     setMapping({})
     setMappedPreview(null)
+    setMappedPreviewError('')
     setValidationPercentage(10)
     setName('')
     setError('')
@@ -225,12 +247,13 @@ export function HfImportModal({
   }
 
   function handleClose() {
-    // Closing mid-import abandons the poll (the runIdRef bump in resetState) but
-    // not the server-side import, which keeps running. The invalidate is the point:
-    // without it that dataset is missing from the table until an unrelated refetch,
-    // and retrying the same name then collides with a row the user cannot see. Same
-    // failure the upload modal had before commit ca3565b.
-    if (importing) queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
+    // The dataset row, once the POST resolves, is made visible by the
+    // unconditional invalidate in handleImport -- right after importHfDataset
+    // resolves, regardless of whether this run is later abandoned. Gating an
+    // invalidate here on `importing` fired before that POST had resolved, which
+    // was too early for the row to exist yet. Closing only abandons this run's own
+    // polling loop (the runIdRef bump below); the server-side import, once
+    // started, keeps running either way.
     resetState()
     onClose()
   }
@@ -266,23 +289,36 @@ export function HfImportModal({
 
   const splitsErrorStatus = hfErrorStatus(splitsError)
 
+  // `mappedPreview` is tagged with the key it was fetched for; a mismatch means
+  // the selection has since moved on (repo, config, split, or mapping) and the
+  // stored result describes a mapping that is no longer the current one. Reading
+  // through this rather than the raw state makes a stale survival count or a
+  // stale mapped-rows table structurally impossible, not merely cleared on one
+  // particular transition.
+  const currentMappedKey = mappedPreviewKey({ repoId: repoId ?? '', config, trainSplit, mappingKey })
+  const freshMappedPreview = mappedPreview?.key === currentMappedKey ? mappedPreview.preview : null
+
   const survival = survivalSummary({
-    sampled: mappedPreview?.sampled ?? 0,
-    survived: mappedPreview?.survived ?? 0,
+    sampled: freshMappedPreview?.sampled ?? 0,
+    survived: freshMappedPreview?.survived ?? 0,
     // Not just mappingComplete: until the mapped preview has come back there is no
     // count to describe, and the probe's own numbers must never be shown.
-    mappingComplete: mappingComplete && mappedPreview !== null,
+    mappingComplete: mappingComplete && freshMappedPreview !== null,
   })
 
   const nameValid = isDatasetNameValid(name)
-  const canImport =
-    !!repoId &&
-    !!config &&
-    !!trainSplit &&
-    mappingComplete &&
-    nameValid &&
-    (survival.kind === 'ok' || survival.kind === 'warning') &&
-    !importing
+  const splitFromTrain = validationSplit === NO_VALIDATION
+  const canSubmit = canImportGate({
+    hasRepo: !!repoId,
+    hasConfig: !!config,
+    hasTrainSplit: !!trainSplit,
+    mappingComplete,
+    nameValid,
+    survivalKind: survival.kind,
+    importing,
+    splitFromTrain,
+    validationPercentage,
+  })
 
   async function pollUntilReady(datasetId: string, runId: number): Promise<Dataset> {
     const deadline = Date.now() + HF_IMPORT_READY_TIMEOUT_MS
@@ -290,20 +326,24 @@ export function HfImportModal({
       let dataset: Dataset | null = null
       try {
         dataset = await getDataset(datasetId)
-      } catch (err) {
+      } catch {
         // A failed poll is just a poll to retry: the import is already running
-        // server-side, and one transient GET blip must not abandon it.
-        if (Date.now() > deadline) throw err
+        // server-side, and one transient GET blip must not abandon it. Whatever
+        // this rejection was, `pollStep` below decides purely from the deadline,
+        // not from this error -- so a post-deadline network blip surfaces the
+        // authored timeout copy rather than an unrelated transport error.
       }
       if (runId !== runIdRef.current) throw new Error('superseded')
-      if (dataset) {
-        setImportStatus(dataset.status)
-        if (dataset.status === 'ready') return dataset
-        if (dataset.status === 'error') {
-          throw new Error(dataset.status_detail || 'Import failed.')
-        }
+      if (dataset) setImportStatus(dataset.status)
+      const decision = pollStep({ status: dataset?.status, expired: Date.now() > deadline })
+      if (decision === 'ready') {
+        // Only reachable when `dataset.status === 'ready'`, which requires `dataset`.
+        return dataset as Dataset
       }
-      if (Date.now() > deadline) {
+      if (decision === 'error') {
+        throw new Error(dataset?.status_detail || 'Import failed.')
+      }
+      if (decision === 'timeout') {
         throw new Error(
           'Import timed out while processing. It may still finish -- check Settings > Datasets.'
         )
@@ -314,8 +354,13 @@ export function HfImportModal({
   }
 
   async function handleImport() {
-    if (!repoId || !canImport) return
+    if (!repoId || !canSubmit) return
     const runId = ++runIdRef.current
+    // Captured now, not read from `splits` inside the catch below: changing the
+    // repo mid-import re-fires the splits query, so by the time a 409 lands
+    // `splits` may briefly be undefined and `suffixWithRevision` would silently
+    // leave the name unchanged while the error text claims a suffix was added.
+    const revision = splits?.revision ?? ''
     setImporting(true)
     setError('')
     setImportStatus('importing')
@@ -333,9 +378,12 @@ export function HfImportModal({
         validation_percentage: validationSplit === NO_VALIDATION ? validationPercentage : null,
         column_mapping: mapping,
       })
+      // Unconditional and ahead of the runId check: the row exists server-side now,
+      // whether or not this run gets abandoned next (e.g. the user closes the
+      // modal while polling starts), so the list must learn about it either way.
+      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
       const ready = await pollUntilReady(created.id, runId)
       if (runId !== runIdRef.current) return
-      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
       onImported(ready.id)
       resetState()
       onClose()
@@ -349,13 +397,12 @@ export function HfImportModal({
       if (status === 409) {
         // The same repo at a pinned revision is a legitimate second dataset, so the
         // revision is what distinguishes it. Suffix and stop -- the second POST is
-        // the user's to make, not ours to fire silently.
-        setName((current) => suffixWithRevision(current, splits?.revision ?? ''))
+        // the user's to make, not ours to fire silently. The server's own detail is
+        // rendered too: problemDetail alone would show only "already exists" and
+        // never tell the user the name changed underneath them.
+        setName((current) => suffixWithRevision(current, revision))
         setError(
-          problemDetail(
-            err,
-            'A dataset with that name already exists. A revision suffix has been added -- review the name and import again.'
-          )
+          `${problemDetail(err, 'A dataset with that name already exists.')} A revision suffix has been added -- review the name and import again.`
         )
       } else {
         setError(problemDetail(err, (err as Error)?.message || 'Import failed.'))
@@ -374,7 +421,7 @@ export function HfImportModal({
       modalHeading="Import a HuggingFace dataset"
       primaryButtonText={importing ? 'Importing...' : 'Import'}
       secondaryButtonText="Cancel"
-      primaryButtonDisabled={!canImport}
+      primaryButtonDisabled={!canSubmit}
       onRequestSubmit={handleImport}
       onRequestClose={handleClose}
       onSecondarySubmit={handleClose}
@@ -392,6 +439,7 @@ export function HfImportModal({
         shouldFilterItem={() => true}
         onInputChange={handleSearchInput}
         onChange={({ selectedItem }) => setRepoId(selectedItem ?? null)}
+        disabled={importing}
       />
       <p className={styles.limits}>
         Up to {hfConfig.max_rows.toLocaleString('en-US')} rows and {formatBytes(hfConfig.max_bytes)}{' '}
@@ -454,6 +502,7 @@ export function HfImportModal({
                 itemToString={(item) => item ?? ''}
                 selectedItem={config || null}
                 onChange={({ selectedItem }) => handleConfigChange(selectedItem ?? '')}
+                disabled={importing}
               />
             </div>
             <div className={styles.rowItem}>
@@ -462,6 +511,7 @@ export function HfImportModal({
                 labelText="Train split"
                 value={trainSplit}
                 onChange={(event) => setTrainSplit(event.target.value)}
+                disabled={importing}
               >
                 {splitNames.map((split) => (
                   <SelectItem key={split} value={split} text={split} />
@@ -474,6 +524,7 @@ export function HfImportModal({
                 labelText="Validation split"
                 value={validationSplit}
                 onChange={(event) => setValidationSplit(event.target.value)}
+                disabled={importing}
               >
                 {/* Defaults to none rather than guessing at a split named
                     "validation" or "test" -- see the comment on the preselect
@@ -506,6 +557,20 @@ export function HfImportModal({
         />
       )}
 
+      {/* Own state and own title: this error is about the mapped re-preview, not
+          the probe above, and sharing `previewError` made "Could not preview this
+          mapping." render under the title "Could not preview this dataset". */}
+      {!!mappedPreviewError && (
+        <InlineNotification
+          kind="error"
+          title="Could not preview this mapping"
+          subtitle={mappedPreviewError}
+          lowContrast
+          hideCloseButton
+          className={styles.section}
+        />
+      )}
+
       {preview && (
         <>
           <p className={styles.subheading}>Sample rows</p>
@@ -522,6 +587,7 @@ export function HfImportModal({
                   onChange={(event) =>
                     setMapping({ ...mapping, [required]: event.target.value })
                   }
+                  disabled={importing}
                 >
                   <SelectItem value="" text="Choose a column..." />
                   {preview.columns.map((column) => (
@@ -549,10 +615,10 @@ export function HfImportModal({
             />
           )}
 
-          {mappedPreview && (
+          {freshMappedPreview && (
             <>
               <p className={styles.subheading}>Mapped rows</p>
-              <PreviewTable rows={mappedPreview.mapped_rows} maxRows={PREVIEW_ROWS} maxCellChars={CELL_MAX} />
+              <PreviewTable rows={freshMappedPreview.mapped_rows} maxRows={PREVIEW_ROWS} maxCellChars={CELL_MAX} />
             </>
           )}
 
@@ -565,6 +631,7 @@ export function HfImportModal({
                 invalid={name.length > 0 && !nameValid}
                 invalidText={"Use up to 255 characters, without '/', '\\' or '..'."}
                 onChange={(event) => setName(event.target.value)}
+                disabled={importing}
               />
             </div>
             {validationSplit === NO_VALIDATION && (
@@ -579,6 +646,7 @@ export function HfImportModal({
                   onChange={(event) => setValidationPercentage(Number(event.target.value))}
                   invalid={validationPercentage < 1 || validationPercentage > 50}
                   invalidText="Choose between 1 and 50."
+                  disabled={importing}
                 />
               </div>
             )}

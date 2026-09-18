@@ -201,3 +201,56 @@ export function hfErrorStatus(err: unknown): number | undefined {
   const status = (err as { response?: { status?: unknown } } | null | undefined)?.response?.status
   return typeof status === 'number' ? status : undefined
 }
+
+export type PollDecision = 'ready' | 'error' | 'wait' | 'timeout'
+
+/**
+ * What the import poll should do this tick.
+ *
+ * `ready` and `error` outrank an expired deadline: a run that finished on the
+ * same tick it timed out has finished. A tick with no status (the GET failed)
+ * waits while there is time left and times out afterwards — which is also why a
+ * post-deadline fetch rejection surfaces the authored timeout copy rather than a
+ * transport error the user cannot act on.
+ */
+export function pollStep(input: { status: string | undefined; expired: boolean }): PollDecision {
+  if (input.status === 'ready') return 'ready'
+  if (input.status === 'error') return 'error'
+  if (input.expired) return 'timeout'
+  return 'wait'
+}
+
+/** Identity of a mapped preview: which repo, config, split and mapping produced it. */
+export function mappedPreviewKey(input: {
+  repoId: string
+  config: string
+  trainSplit: string
+  mappingKey: string
+}): string {
+  return [input.repoId, input.config, input.trainSplit, input.mappingKey].join('|')
+}
+
+/**
+ * Whether the import may be submitted. Every clause is a way to ship a lossy or
+ * impossible import, which is why this lives here rather than inline in the modal.
+ */
+export function canImport(input: {
+  hasRepo: boolean
+  hasConfig: boolean
+  hasTrainSplit: boolean
+  mappingComplete: boolean
+  nameValid: boolean
+  survivalKind: SurvivalKind
+  importing: boolean
+  /** True when no separate validation split is chosen, so the percentage applies. */
+  splitFromTrain: boolean
+  validationPercentage: number
+}): boolean {
+  if (!input.hasRepo || !input.hasConfig || !input.hasTrainSplit) return false
+  if (!input.mappingComplete || !input.nameValid || input.importing) return false
+  if (input.survivalKind !== 'ok' && input.survivalKind !== 'warning') return false
+  if (input.splitFromTrain && !(input.validationPercentage >= 1 && input.validationPercentage <= 50)) {
+    return false
+  }
+  return true
+}
