@@ -1,10 +1,10 @@
 /**
  * Tests for the trials table's hyperparameter columns.
  *
- * Columns come from each trial's `config.tuner_flags` — the tuner's own record of
- * which hyperparameters it searched (`for_tuner` in autotune.yaml, see
- * autotunex/src/fm-tune/autotune/config.py:152) — rather than from guessing which
- * config values differ across trials.
+ * Columns are every top-level hyperparameter on each trial's `config` —
+ * `config.tuner_flags` is ignored entirely, because production data showed its
+ * flags do not track which values actually vary (see hyperparamColumns's doc
+ * comment).
  *
  * Kept in a pure module because the frontend test harness has no jsdom and cannot
  * render Carbon components, the same split trialMetrics.ts, trialsRadar.ts,
@@ -19,7 +19,7 @@ const assert = require('node:assert/strict')
 const {
   formatHyperparamValue,
   hyperparamColumnLabel,
-  searchedHyperparams,
+  hyperparamColumns,
 } = require('../../../packages/ui-core/components/autotunex/trials/trialHyperparams.ts')
 
 describe('formatHyperparamValue', () => {
@@ -122,49 +122,77 @@ const trial = (id, hyperparams, flags) => ({
   },
 })
 
-describe('searchedHyperparams', () => {
-  it('returns only the keys tuner_flags marks true', () => {
+describe('hyperparamColumns', () => {
+  it('returns the full real-payload column set in priority + first-seen order', () => {
+    // The regression this whole change fixes: learning_rate, per_device_train_batch_size,
+    // alpha_ratio, lr_scheduler_type and warmup_ratio are all flagged false in real
+    // tuner_flags payloads yet vary across trials, while bias is flagged true yet is
+    // constant. The new rule shows every top-level hyperparameter regardless.
     const t = trial(
       'a',
-      { r: 8, learning_rate: 0.000001, bias: 'none' },
-      { r: true, learning_rate: false, bias: true }
-    )
-    assert.deepEqual(searchedHyperparams([t]), ['r', 'bias'])
-  })
-
-  it('works from a single trial — it needs no cross-trial comparison', () => {
-    // This is why tuner_flags beats "which values differ": a one-trial job still
-    // knows what the tuner searched.
-    const t = trial('a', { r: 8 }, { r: true })
-    assert.deepEqual(searchedHyperparams([t]), ['r'])
-  })
-
-  it('unions across trials so a partial config cannot drop a column', () => {
-    // Both keys are ranked, so the priority order decides: r (rank 3) before
-    // warmup_ratio (rank 5), regardless of which trial contributed which.
-    const a = trial('a', { r: 8 }, { r: true })
-    const b = trial('b', { warmup_ratio: 0.1 }, { warmup_ratio: true })
-    assert.deepEqual(searchedHyperparams([a, b]), ['r', 'warmup_ratio'])
-  })
-
-  it('keeps unranked keys in first-seen order behind the ranked ones', () => {
-    const t = trial('a', {}, { zeta: true, alpha: true, r: true })
-    assert.deepEqual(searchedHyperparams([t]), ['r', 'zeta', 'alpha'])
-  })
-
-  it('applies the priority order, with unranked keys after it', () => {
-    const t = trial(
-      'a',
-      {},
       {
-        some_new_knob: true,
-        r: true,
-        learning_rate: true,
-        warmup_ratio: true,
-        per_device_train_batch_size: true,
-      }
+        alpha_ratio: 0.5,
+        bias: 'none',
+        gradient_accumulation_steps: 4,
+        learning_rate: 0.00001,
+        lora_dropout: 0.1,
+        lr_scheduler_type: 'linear',
+        per_device_train_batch_size: 8,
+        r: 16,
+        warmup_ratio: 0.03,
+      },
+      { learning_rate: false, per_device_train_batch_size: false, alpha_ratio: false, lr_scheduler_type: false, warmup_ratio: false, bias: true }
     )
-    assert.deepEqual(searchedHyperparams([t]), [
+    assert.deepEqual(hyperparamColumns([t]), [
+      'learning_rate',
+      'per_device_train_batch_size',
+      'r',
+      'alpha_ratio',
+      'warmup_ratio',
+      'lr_scheduler_type',
+      'bias',
+      'gradient_accumulation_steps',
+      'lora_dropout',
+    ])
+  })
+
+  it('excludes the nested config sections, including training_rl_config', () => {
+    const t = trial('a', { r: 8 }, { r: true })
+    t.config.training_rl_config = { kl_coef: 0.1 }
+    assert.deepEqual(hyperparamColumns([t]), ['r'])
+  })
+
+  it('ignores tuner_flags values — a flag of false still yields the column', () => {
+    // This is the bug being fixed: tuner_flags does not track which values vary,
+    // so a hyperparameter flagged false must still show up as a column.
+    const t = trial('a', { learning_rate: 0.00001 }, { learning_rate: false })
+    assert.deepEqual(hyperparamColumns([t]), ['learning_rate'])
+  })
+
+  it('treats a top-level array value as a hyperparameter column', () => {
+    const t = trial('a', { target_modules: ['q_proj', 'v_proj'] }, undefined)
+    assert.deepEqual(hyperparamColumns([t]), ['target_modules'])
+  })
+
+  it('unions across trials so a key present on only one trial still yields a column', () => {
+    const a = trial('a', { r: 8 }, undefined)
+    const b = trial('b', { warmup_ratio: 0.1 }, undefined)
+    assert.deepEqual(hyperparamColumns([a, b]), ['r', 'warmup_ratio'])
+  })
+
+  it('applies the priority order, with unranked keys after it in first-seen order', () => {
+    const t = trial(
+      'a',
+      {
+        some_new_knob: 1,
+        r: 8,
+        learning_rate: 0.1,
+        warmup_ratio: 0.1,
+        per_device_train_batch_size: 8,
+      },
+      undefined
+    )
+    assert.deepEqual(hyperparamColumns([t]), [
       'learning_rate',
       'per_device_train_batch_size',
       'r',
@@ -174,39 +202,26 @@ describe('searchedHyperparams', () => {
   })
 
   it('is unaffected by the order of the trials it is given', () => {
-    const a = trial('a', {}, { r: true })
-    const b = trial('b', {}, { learning_rate: true })
-    assert.deepEqual(searchedHyperparams([a, b]), searchedHyperparams([b, a]))
+    const a = trial('a', { r: 8 }, undefined)
+    const b = trial('b', { learning_rate: 0.1 }, undefined)
+    assert.deepEqual(hyperparamColumns([a, b]), hyperparamColumns([b, a]))
   })
 
-  it('ignores a truthy-but-not-true flag', () => {
-    // The contract is boolean; a strict check stops a malformed payload inventing
-    // columns.
-    const t = trial('a', { r: 8 }, { r: 1, bias: 'yes', warmup_ratio: true })
-    assert.deepEqual(searchedHyperparams([t]), ['warmup_ratio'])
-  })
-
-  it('returns an empty list when nothing is flagged or tuner_flags is absent', () => {
-    assert.deepEqual(searchedHyperparams([trial('a', { r: 8 }, { r: false })]), [])
-    assert.deepEqual(searchedHyperparams([trial('a', { r: 8 }, undefined)]), [])
-    assert.deepEqual(searchedHyperparams([]), [])
-  })
-
-  it('tolerates a malformed trial rather than throwing', () => {
-    assert.deepEqual(searchedHyperparams([{ id: 'a', status: 'error', metrics: {} }]), [])
-    assert.deepEqual(searchedHyperparams([{ id: 'a', status: 'error', metrics: {}, config: null }]), [])
-    assert.deepEqual(searchedHyperparams([trial('a', {}, null)]), [])
-    assert.deepEqual(searchedHyperparams([trial('a', {}, 'nope')]), [])
-  })
-
-  it('never returns a key that would overwrite a real table column', () => {
-    // The row object spreads hyperparameters after the fixed keys, so a tuner
+  it('never returns a reserved row key that would overwrite a real table column', () => {
+    // The row object spreads hyperparameters after the fixed keys, so a config
     // naming a hyperparameter `loss` or `status` would silently replace that column.
     const t = trial(
       'a',
-      {},
-      { loss: true, status: true, id: true, created_at: true, total_time: true, isSelected: true, r: true }
+      { loss: 1, status: 'x', id: 'y', created_at: 'z', total_time: 1, isSelected: true, r: 8 },
+      undefined
     )
-    assert.deepEqual(searchedHyperparams([t]), ['r'])
+    assert.deepEqual(hyperparamColumns([t]), ['r'])
+  })
+
+  it('returns an empty list for degenerate inputs rather than throwing', () => {
+    assert.deepEqual(hyperparamColumns([]), [])
+    assert.deepEqual(hyperparamColumns([{ id: 'a', status: 'error', metrics: {} }]), [])
+    assert.deepEqual(hyperparamColumns([{ id: 'a', status: 'error', metrics: {}, config: null }]), [])
+    assert.deepEqual(hyperparamColumns([{ id: 'a', status: 'error', metrics: {}, config: 'nope' }]), [])
   })
 })

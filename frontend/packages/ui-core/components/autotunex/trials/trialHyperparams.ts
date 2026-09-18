@@ -90,35 +90,44 @@ const COLUMN_PRIORITY = [
 // replace a real column — exclude them rather than let that happen.
 const RESERVED_ROW_KEYS = ['created_at', 'id', 'status', 'loss', 'total_time', 'isSelected']
 
+// Nested config sections, excluded explicitly as a belt-and-braces guard in case
+// one of them ever arrives as a scalar — the structural check below already
+// excludes every plain-object value, which is how these normally show up.
+const EXCLUDED_SECTIONS = ['training_config', 'training_rl_config', 'tune_config', 'tuner_flags']
+
 /**
- * Hyperparameter keys the tuner searched, in display order.
+ * Hyperparameter keys to show as table columns, in display order.
  *
- * Read from each trial's `config.tuner_flags`, which is the tuner's own record of
- * which hyperparameters it varied — built from the template's `for_tuner` field
- * (`autotune.yaml`, see `autotune/config.py:152`) and used by every driver to
- * "separate tunable params (tuner_flags[k]=True) from fixed (False)".
+ * Every top-level scalar or array value on `trial.config` is a hyperparameter
+ * column; a plain-object value is a nested config section and is excluded. The
+ * four known section names are excluded again explicitly, in case one ever
+ * arrives as something other than an object.
  *
- * This is authoritative rather than inferred. The alternative — showing the keys
- * whose values differ across trials — is an empirical proxy that cannot work on a
- * single-trial job and that would add and remove columns as a run progresses.
+ * This replaces the earlier rule of reading `config.tuner_flags` and keeping the
+ * keys flagged `true`. Real production data showed those flags do not track which
+ * hyperparameters actually vary: `learning_rate`, `per_device_train_batch_size`,
+ * `alpha_ratio`, `lr_scheduler_type` and `warmup_ratio` are all flagged `false` yet
+ * vary across trials, while `bias` is flagged `true` and is constant. Trusting the
+ * flags hid the most useful columns and showed a useless one, so this ignores
+ * `tuner_flags` entirely and shows every top-level hyperparameter instead.
  *
  * Unions across every trial, not just the first: trials in a job share a search
  * space, so in practice the sets agree, but a trial arriving with a partial config
  * must not drop a column another trial justifies.
  */
-export function searchedHyperparams(trials: Trial[]): string[] {
+export function hyperparamColumns(trials: Trial[]): string[] {
   const found: string[] = []
   const seen = new Set<string>()
 
   for (const trial of trials) {
     const config = trial?.config
     if (!config || typeof config !== 'object') continue
-    const flags = (config as Record<string, unknown>).tuner_flags
-    if (!flags || typeof flags !== 'object' || Array.isArray(flags)) continue
 
-    for (const [key, isSearched] of Object.entries(flags as Record<string, unknown>)) {
-      if (isSearched !== true) continue
-      if (seen.has(key) || RESERVED_ROW_KEYS.includes(key)) continue
+    for (const [key, value] of Object.entries(config as Record<string, unknown>)) {
+      const isPlainObject = typeof value === 'object' && value !== null && !Array.isArray(value)
+      if (isPlainObject) continue
+      if (EXCLUDED_SECTIONS.includes(key) || RESERVED_ROW_KEYS.includes(key)) continue
+      if (seen.has(key)) continue
       seen.add(key)
       found.push(key)
     }

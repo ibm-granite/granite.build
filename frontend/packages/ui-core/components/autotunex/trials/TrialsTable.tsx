@@ -42,7 +42,7 @@ import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
 import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
-import { formatHyperparamValue, hyperparamColumnLabel, searchedHyperparams } from './trialHyperparams'
+import { formatHyperparamValue, hyperparamColumnLabel, hyperparamColumns } from './trialHyperparams'
 import styles from './TrialsTable.module.scss'
 import { bestTrialId, isLowerBetter, jobMetric, rankBestFirst, scoreOn, toFeatureLabel, toRadarData } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
@@ -121,10 +121,11 @@ export function TrialsTable({ job }: Props) {
     return trialColorScale(ordered, bestId, theme)
   }, [trials, bestId, theme])
 
-  // Columns for the hyperparameters the tuner actually searched — see
-  // searchedHyperparams. Empty for a job whose trials carry no tuner_flags, in which
-  // case the table renders exactly as it did before this feature.
-  const hyperparamKeys = useMemo(() => searchedHyperparams(trials), [trials])
+  // Every top-level hyperparameter on a trial's config, ignoring tuner_flags — see
+  // hyperparamColumns. Empty for a job whose trials carry no top-level
+  // hyperparameters, in which case the table renders exactly as it did before this
+  // feature.
+  const hyperparamKeys = useMemo(() => hyperparamColumns(trials), [trials])
   // The column is keyed `loss` for formatCell and the default sort, but holds the
   // job's metric, so it is labelled with it: a reward job's 0.91 under "Loss"
   // read as a bad loss.
@@ -252,7 +253,7 @@ export function TrialsTable({ job }: Props) {
       // for two numbers (DataTable/tools/sorting.js), so `r: 16` sorts after
       // `r: 8`; handed strings it would fall back to localeCompare. Same reason
       // `loss` and `total_time` are raw. Spread last, which is safe because
-      // searchedHyperparams excludes the keys above.
+      // hyperparamColumns excludes the keys above.
       ...Object.fromEntries(hyperparamKeys.map((key) => [key, ((t.config ?? {}) as Record<string, unknown>)[key]])),
     }))
 
