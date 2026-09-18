@@ -318,7 +318,7 @@ export interface DatasetForm {
   trainSetPercentage?: number
 }
 
-export type DatasetStatus = 'empty' | 'uploading' | 'ready' | 'error'
+export type DatasetStatus = 'empty' | 'uploading' | 'importing' | 'ready' | 'error'
 
 export interface Dataset {
   id: string
@@ -340,12 +340,73 @@ export interface Dataset {
   // Only present on single-dataset fetches (GET /datasets/{id}), not on GET /datasets.
   data_format?: 'jsonl' | 'parquet'
   associated_jobs?: unknown[]
+  // HuggingFace import provenance, set by POST /datasets/hf/import. Present only
+  // on imported datasets, and only on single-dataset fetches (GET /datasets/{id}).
+  hf_repo_id?: string
+  hf_revision?: string
+  hf_config?: string
+  hf_split?: string
+  hf_provenance?: HfProvenance
   // Small preview slices, populated when a single dataset is fetched with
   // ?preview=true (GET /datasets/{id}?preview=true&preview_rows=N).
   preview?: {
     train: Record<string, any>[]
     validation: Record<string, any>[]
   }
+}
+
+/** The `hf_provenance` blob written by the import service. All fields optional:
+ *  it is stored as free-form JSON, and the validation pair is absent when the
+ *  import had no validation split. */
+export interface HfProvenance {
+  column_mapping?: Record<string, string>
+  train_original_rows?: number
+  train_retained_rows?: number
+  validation_original_rows?: number
+  validation_retained_rows?: number
+}
+
+export interface HfImportConfig {
+  available: boolean
+  max_bytes: number
+  max_rows: number
+}
+
+/** GET /app-config. Only the group this frontend consumes is typed — the endpoint
+ *  also returns a `dataset_upload` group that nothing here reads. */
+export interface AppConfig {
+  hf_import: HfImportConfig
+}
+
+export interface HfDatasetSplits {
+  repo_id: string
+  revision: string
+  /** Config name -> split names. */
+  configs: Record<string, string[]>
+}
+
+export interface HfImportPreview {
+  columns: string[]
+  raw_rows: ParsedDataRow[]
+  mapped_rows: ParsedDataRow[]
+  sampled: number
+  survived: number
+}
+
+/** Both HF request bodies are `extra="forbid"` server-side: an unknown key is a
+ *  422, so these are built field by field and never spread from component state. */
+export interface HfPreviewRequestPayload {
+  repo_id: string
+  config: string
+  train_split: string
+  validation_split?: string | null
+  column_mapping: Record<string, string>
+}
+
+export interface HfImportRequestPayload extends HfPreviewRequestPayload {
+  name: string
+  description?: string | null
+  validation_percentage?: number | null
 }
 
 export interface DatasetInfo {

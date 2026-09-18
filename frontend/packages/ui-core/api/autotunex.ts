@@ -18,12 +18,18 @@
  */
 import type {
   AiMappingSuggestion,
+  AppConfig,
   Configuration,
   ConfigData,
   Dataset,
   DatasetStatus,
   Estimation,
   GbTask,
+  HfDatasetSplits,
+  HfImportPreview,
+  HfImportRequestPayload,
+  HfPreviewRequestPayload,
+  HfProvenance,
   HuggingFaceModel,
   JobDetail,
   JobRead,
@@ -174,6 +180,11 @@ export function adaptDataset(raw: Record<string, unknown>): Dataset {
     updated_at: raw.updated_at as string,
     data_format: raw.data_format as Dataset['data_format'],
     associated_jobs: (raw.associated_jobs as unknown[]) ?? [],
+    hf_repo_id: raw.hf_repo_id as string | undefined,
+    hf_revision: raw.hf_revision as string | undefined,
+    hf_config: raw.hf_config as string | undefined,
+    hf_split: raw.hf_split as string | undefined,
+    hf_provenance: raw.hf_provenance as HfProvenance | undefined,
     // Coerce json.dumps'd verl fields (prompt/reward_model/extra_info) back to
     // native array/object so downstream consumers — notably the Reward Function
     // step's verl-strict test-case pre-fill — see the declared types. No-op for
@@ -253,6 +264,44 @@ export async function uploadDataset(
   const { data } = await client.post<Record<string, unknown>>(`/datasets/${datasetId}/upload`, fd, {
     onUploadProgress: (e) => onProgress?.(e.total ? Math.round((e.loaded / e.total) * 100) : 0),
   })
+  return adaptDataset(data)
+}
+
+// ── App configuration ─────────────────────────────────────────────────────────
+// Unauthenticated, like /health. The frontend needs the HF ingest limits and the
+// availability flag before (and independent of) any dataset request.
+
+export async function getAppConfig(): Promise<AppConfig> {
+  const { data } = await client.get<AppConfig>('/app-config')
+  return data
+}
+
+// ── HuggingFace dataset import ────────────────────────────────────────────────
+// Unlike getHFModels/getHFModelCard above, these are the AutoTuneX service's own
+// endpoints, so they go through the proxied `client` rather than bare axios at
+// huggingface.co.
+
+export async function searchHfDatasets(query: string, limit = 20): Promise<string[]> {
+  const { data } = await client.get<string[]>('/datasets/hf/search', { params: { query, limit } })
+  return data
+}
+
+export async function getHfSplits(repoId: string): Promise<HfDatasetSplits> {
+  const { data } = await client.get<HfDatasetSplits>('/datasets/hf/splits', {
+    params: { repo_id: repoId },
+  })
+  return data
+}
+
+export async function previewHfDataset(payload: HfPreviewRequestPayload): Promise<HfImportPreview> {
+  const { data } = await client.post<HfImportPreview>('/datasets/hf/preview', payload)
+  return data
+}
+
+// Returns 202 with status "importing"; the caller polls GET /datasets/{id} until
+// it settles, exactly as the multipart upload path does.
+export async function importHfDataset(payload: HfImportRequestPayload): Promise<Dataset> {
+  const { data } = await client.post<Record<string, unknown>>('/datasets/hf/import', payload)
   return adaptDataset(data)
 }
 
