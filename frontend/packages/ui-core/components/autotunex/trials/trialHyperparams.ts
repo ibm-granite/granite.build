@@ -103,6 +103,16 @@ const EXCLUDED_SECTIONS = ['training_config', 'training_rl_config', 'tune_config
  * four known section names are excluded again explicitly, in case one ever
  * arrives as something other than an object.
  *
+ * A key whose value is identical, by `JSON.stringify`, across every trial is then
+ * dropped: a column that repeats one value on every row costs horizontal width and
+ * conveys nothing. `JSON.stringify` rather than `formatHyperparamValue` because two
+ * distinct values could format alike; a trial missing the key entirely compares as
+ * `undefined`, which differs from any present value, so a key absent on one trial
+ * but present on another counts as varying. With fewer than two trials this filter
+ * is skipped and every key is kept — with a single trial every value is trivially
+ * identical to itself, so applying the filter there would empty the column list
+ * instead of just leaving it unfiltered.
+ *
  * This replaces the earlier rule of reading `config.tuner_flags` and keeping the
  * keys flagged `true`. Real production data showed those flags do not track which
  * hyperparameters actually vary: `learning_rate`, `per_device_train_batch_size`,
@@ -133,13 +143,30 @@ export function hyperparamColumns(trials: Trial[]): string[] {
     }
   }
 
+  const valueForKey = (trial: Trial, key: string): unknown => {
+    const config = trial?.config
+    return config && typeof config === 'object' ? (config as Record<string, unknown>)[key] : undefined
+  }
+
+  // Drop any key whose value is the same across every trial — it repeats one
+  // value on every row and conveys nothing. Skipped below two trials: a single
+  // trial's value is trivially identical to itself, so the filter would empty
+  // the list instead of leaving it unfiltered.
+  const varying =
+    trials.length < 2
+      ? found
+      : found.filter((key) => {
+          const values = new Set(trials.map((trial) => JSON.stringify(valueForKey(trial, key))))
+          return values.size > 1
+        })
+
   // First-seen order captured before sorting. `sort` mutates in place, so a
   // comparator that called `found.indexOf` would be reading the array it is
   // reordering — it happens to survive V8's TimSort today, but it should not depend
   // on engine internals.
   const firstSeen = new Map(found.map((key, index) => [key, index]))
 
-  return [...found].sort((a, b) => {
+  return [...varying].sort((a, b) => {
     const rankA = COLUMN_PRIORITY.indexOf(a)
     const rankB = COLUMN_PRIORITY.indexOf(b)
     if (rankA !== -1 && rankB !== -1) return rankA - rankB

@@ -224,4 +224,123 @@ describe('hyperparamColumns', () => {
     assert.deepEqual(hyperparamColumns([{ id: 'a', status: 'error', metrics: {}, config: null }]), [])
     assert.deepEqual(hyperparamColumns([{ id: 'a', status: 'error', metrics: {}, config: 'nope' }]), [])
   })
+
+  it('drops hyperparameters that are constant across all trials, on the real production payload', () => {
+    // Verified against the live API: bias renders "none" on every trial and
+    // gradient_accumulation_steps renders "1" on every trial — a column that
+    // repeats one value on every row costs width and says nothing.
+    const trials = [
+      trial('491c7_00000', {
+        alpha_ratio: 1,
+        bias: 'none',
+        gradient_accumulation_steps: 1,
+        learning_rate: 0.000001,
+        lora_dropout: 0,
+        lr_scheduler_type: 'linear',
+        per_device_train_batch_size: 8,
+        r: 8,
+        warmup_ratio: 0.1,
+      }),
+      trial('491c7_00001', {
+        alpha_ratio: 1,
+        bias: 'none',
+        gradient_accumulation_steps: 1,
+        learning_rate: 0.000003,
+        lora_dropout: 0,
+        lr_scheduler_type: 'linear',
+        per_device_train_batch_size: 4,
+        r: 8,
+        warmup_ratio: 0.2,
+      }),
+      trial('491c7_00002', {
+        alpha_ratio: 1,
+        bias: 'none',
+        gradient_accumulation_steps: 1,
+        learning_rate: 0.000005,
+        lora_dropout: 0.05,
+        lr_scheduler_type: 'linear',
+        per_device_train_batch_size: 8,
+        r: 16,
+        warmup_ratio: 0.2,
+      }),
+      trial('491c7_00003', {
+        alpha_ratio: 2,
+        bias: 'none',
+        gradient_accumulation_steps: 1,
+        learning_rate: 0.000003,
+        lora_dropout: 0.05,
+        lr_scheduler_type: 'cosine',
+        per_device_train_batch_size: 8,
+        r: 8,
+        warmup_ratio: 0.1,
+      }),
+    ]
+    assert.deepEqual(hyperparamColumns(trials), [
+      'learning_rate',
+      'per_device_train_batch_size',
+      'r',
+      'alpha_ratio',
+      'warmup_ratio',
+      'lr_scheduler_type',
+      'lora_dropout',
+    ])
+  })
+
+  it('drops a key whose value is identical across every trial', () => {
+    const a = trial('a', { bias: 'none', r: 8 })
+    const b = trial('b', { bias: 'none', r: 16 })
+    assert.deepEqual(hyperparamColumns([a, b]), ['r'])
+  })
+
+  it('keeps a key that varies between only two of several trials', () => {
+    const a = trial('a', { bias: 'none', r: 8 })
+    const b = trial('b', { bias: 'none', r: 8 })
+    const c = trial('c', { bias: 'none', r: 16 })
+    assert.deepEqual(hyperparamColumns([a, b, c]), ['r'])
+  })
+
+  it('treats a key absent on one trial but present on another as varying, even if the shared key is constant', () => {
+    const a = trial('a', { r: 8 })
+    const b = trial('b', { r: 8, warmup_ratio: 0.1 })
+    assert.deepEqual(hyperparamColumns([a, b]), ['warmup_ratio'])
+  })
+
+  it('returns every hyperparameter for a single trial, since a lone value cannot be compared for variance', () => {
+    // Guard: with fewer than two trials every value is trivially identical to
+    // itself, so the varies-filter would empty the list. A single trial must
+    // return every hyperparameter instead of none.
+    const t = trial('a', {
+      alpha_ratio: 1,
+      bias: 'none',
+      learning_rate: 0.00001,
+      r: 8,
+    })
+    assert.deepEqual(hyperparamColumns([t]), ['learning_rate', 'r', 'alpha_ratio', 'bias'])
+  })
+
+  it('compares array values by JSON.stringify: a differing array is kept, an identical one is dropped', () => {
+    const a = trial('a', { target_modules: ['q_proj', 'v_proj'], seed_list: [1, 2] })
+    const b = trial('b', { target_modules: ['q_proj', 'k_proj'], seed_list: [1, 2] })
+    assert.deepEqual(hyperparamColumns([a, b]), ['target_modules'])
+  })
+
+  it('orders the surviving columns by priority, then by first-seen, once constant keys are dropped', () => {
+    const a = trial('a', {
+      some_new_knob: 1,
+      bias: 'none',
+      r: 8,
+      learning_rate: 0.1,
+      warmup_ratio: 0.1,
+      per_device_train_batch_size: 8,
+    })
+    const b = trial('b', {
+      some_new_knob: 2,
+      bias: 'none',
+      r: 16,
+      learning_rate: 0.2,
+      warmup_ratio: 0.1,
+      per_device_train_batch_size: 8,
+    })
+    assert.deepEqual(hyperparamColumns([a, b]), ['learning_rate', 'r', 'some_new_knob'])
+  })
 })
