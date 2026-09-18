@@ -1,0 +1,41 @@
+.section {
+  margin-top: 1rem;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.rowItem {
+  flex: 1 1 14rem;
+  min-width: 14rem;
+}
+
+.previewScroll {
+  overflow-x: auto;
+  max-height: 18rem;
+  overflow-y: auto;
+  margin-top: 0.5rem;
+}
+
+.revision {
+  font-family: var(--cds-code-01-font-family, monospace);
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+  margin-top: 0.25rem;
+}
+
+.limits {
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+  margin-top: 0.25rem;
+}
+
+.subheading {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
+}
