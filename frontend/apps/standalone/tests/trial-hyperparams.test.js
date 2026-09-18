@@ -19,6 +19,7 @@ const assert = require('node:assert/strict')
 const {
   formatHyperparamValue,
   hyperparamColumnLabel,
+  searchedHyperparams,
 } = require('../../../packages/ui-core/components/autotunex/trials/trialHyperparams.ts')
 
 describe('formatHyperparamValue', () => {
@@ -101,5 +102,111 @@ describe('hyperparamColumnLabel', () => {
 
   it('returns an empty string for an empty key rather than throwing', () => {
     assert.equal(hyperparamColumnLabel(''), '')
+  })
+})
+
+// A trial shaped like the real payload: hyperparameters at the TOP LEVEL of config,
+// with the fixed run config in nested sections. The driver contract
+// (autotunex/src/fm-tune/CLAUDE.md:79) pops training_config, training_rl_config,
+// tuner_flags and tune_config, and what remains at the top level is the
+// hyperparameter set.
+const trial = (id, hyperparams, flags) => ({
+  id,
+  status: 'completed',
+  metrics: {},
+  config: {
+    ...hyperparams,
+    training_config: { output_dir: '/tmp/x', model_name_or_path: '/models/m' },
+    tune_config: { metric: 'loss', mode: 'min' },
+    ...(flags === undefined ? {} : { tuner_flags: flags }),
+  },
+})
+
+describe('searchedHyperparams', () => {
+  it('returns only the keys tuner_flags marks true', () => {
+    const t = trial(
+      'a',
+      { r: 8, learning_rate: 0.000001, bias: 'none' },
+      { r: true, learning_rate: false, bias: true }
+    )
+    assert.deepEqual(searchedHyperparams([t]), ['r', 'bias'])
+  })
+
+  it('works from a single trial — it needs no cross-trial comparison', () => {
+    // This is why tuner_flags beats "which values differ": a one-trial job still
+    // knows what the tuner searched.
+    const t = trial('a', { r: 8 }, { r: true })
+    assert.deepEqual(searchedHyperparams([t]), ['r'])
+  })
+
+  it('unions across trials so a partial config cannot drop a column', () => {
+    // Both keys are ranked, so the priority order decides: r (rank 3) before
+    // warmup_ratio (rank 5), regardless of which trial contributed which.
+    const a = trial('a', { r: 8 }, { r: true })
+    const b = trial('b', { warmup_ratio: 0.1 }, { warmup_ratio: true })
+    assert.deepEqual(searchedHyperparams([a, b]), ['r', 'warmup_ratio'])
+  })
+
+  it('keeps unranked keys in first-seen order behind the ranked ones', () => {
+    const t = trial('a', {}, { zeta: true, alpha: true, r: true })
+    assert.deepEqual(searchedHyperparams([t]), ['r', 'zeta', 'alpha'])
+  })
+
+  it('applies the priority order, with unranked keys after it', () => {
+    const t = trial(
+      'a',
+      {},
+      {
+        some_new_knob: true,
+        r: true,
+        learning_rate: true,
+        warmup_ratio: true,
+        per_device_train_batch_size: true,
+      }
+    )
+    assert.deepEqual(searchedHyperparams([t]), [
+      'learning_rate',
+      'per_device_train_batch_size',
+      'r',
+      'warmup_ratio',
+      'some_new_knob',
+    ])
+  })
+
+  it('is unaffected by the order of the trials it is given', () => {
+    const a = trial('a', {}, { r: true })
+    const b = trial('b', {}, { learning_rate: true })
+    assert.deepEqual(searchedHyperparams([a, b]), searchedHyperparams([b, a]))
+  })
+
+  it('ignores a truthy-but-not-true flag', () => {
+    // The contract is boolean; a strict check stops a malformed payload inventing
+    // columns.
+    const t = trial('a', { r: 8 }, { r: 1, bias: 'yes', warmup_ratio: true })
+    assert.deepEqual(searchedHyperparams([t]), ['warmup_ratio'])
+  })
+
+  it('returns an empty list when nothing is flagged or tuner_flags is absent', () => {
+    assert.deepEqual(searchedHyperparams([trial('a', { r: 8 }, { r: false })]), [])
+    assert.deepEqual(searchedHyperparams([trial('a', { r: 8 }, undefined)]), [])
+    assert.deepEqual(searchedHyperparams([]), [])
+  })
+
+  it('tolerates a malformed trial rather than throwing', () => {
+    assert.deepEqual(searchedHyperparams([{ id: 'a', status: 'error', metrics: {} }]), [])
+    assert.deepEqual(searchedHyperparams([{ id: 'a', status: 'error', metrics: {}, config: null }]), [])
+    assert.deepEqual(searchedHyperparams([trial('a', {}, null)]), [])
+    assert.deepEqual(searchedHyperparams([trial('a', {}, 'nope')]), [])
+  })
+
+  it('never returns a key that would overwrite a real table column', () => {
+    // The row object spreads hyperparameters after the fixed keys, so a tuner
+    // naming a hyperparameter `loss` or `status` would silently replace that column.
+    const t = trial(
+      'a',
+      {},
+      { loss: true, status: true, id: true, created_at: true, total_time: true, isSelected: true, r: true }
+    )
+    assert.deepEqual(searchedHyperparams([t]), ['r'])
   })
 })

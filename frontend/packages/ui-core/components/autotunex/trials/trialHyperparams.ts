@@ -11,6 +11,8 @@
 // allowImportingTsExtensions. trialsRadar.ts carries primaryMetric/bestTrialId for
 // this same reason.
 
+import type { Trial } from '../../../types'
+
 // Below this magnitude, or at/above the upper bound, a number reads better in
 // exponential form: a learning-rate column of 0.000001 vs 0.000003 is far harder to
 // scan than 1e-6 vs 3e-6.
@@ -69,4 +71,71 @@ export function hyperparamColumnLabel(key: string): string {
   const text = key.replaceAll('_', ' ').trim()
   if (!text) return ''
   return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+// Display order for the hyperparameter columns. A fixed list, not derived from
+// variance: a variance-derived order would reshuffle the columns as new trials
+// arrive mid-run. Keys not listed follow in first-seen order.
+const COLUMN_PRIORITY = [
+  'learning_rate',
+  'per_device_train_batch_size',
+  'r',
+  'alpha_ratio',
+  'warmup_ratio',
+  'lr_scheduler_type',
+]
+
+// Row keys TrialsTable builds itself. The row object spreads hyperparameters after
+// these, so a tuner naming a hyperparameter `loss` or `status` would silently
+// replace a real column — exclude them rather than let that happen.
+const RESERVED_ROW_KEYS = ['created_at', 'id', 'status', 'loss', 'total_time', 'isSelected']
+
+/**
+ * Hyperparameter keys the tuner searched, in display order.
+ *
+ * Read from each trial's `config.tuner_flags`, which is the tuner's own record of
+ * which hyperparameters it varied — built from the template's `for_tuner` field
+ * (`autotune.yaml`, see `autotune/config.py:152`) and used by every driver to
+ * "separate tunable params (tuner_flags[k]=True) from fixed (False)".
+ *
+ * This is authoritative rather than inferred. The alternative — showing the keys
+ * whose values differ across trials — is an empirical proxy that cannot work on a
+ * single-trial job and that would add and remove columns as a run progresses.
+ *
+ * Unions across every trial, not just the first: trials in a job share a search
+ * space, so in practice the sets agree, but a trial arriving with a partial config
+ * must not drop a column another trial justifies.
+ */
+export function searchedHyperparams(trials: Trial[]): string[] {
+  const found: string[] = []
+  const seen = new Set<string>()
+
+  for (const trial of trials) {
+    const config = trial?.config
+    if (!config || typeof config !== 'object') continue
+    const flags = (config as Record<string, unknown>).tuner_flags
+    if (!flags || typeof flags !== 'object' || Array.isArray(flags)) continue
+
+    for (const [key, isSearched] of Object.entries(flags as Record<string, unknown>)) {
+      if (isSearched !== true) continue
+      if (seen.has(key) || RESERVED_ROW_KEYS.includes(key)) continue
+      seen.add(key)
+      found.push(key)
+    }
+  }
+
+  // First-seen order captured before sorting. `sort` mutates in place, so a
+  // comparator that called `found.indexOf` would be reading the array it is
+  // reordering — it happens to survive V8's TimSort today, but it should not depend
+  // on engine internals.
+  const firstSeen = new Map(found.map((key, index) => [key, index]))
+
+  return [...found].sort((a, b) => {
+    const rankA = COLUMN_PRIORITY.indexOf(a)
+    const rankB = COLUMN_PRIORITY.indexOf(b)
+    if (rankA !== -1 && rankB !== -1) return rankA - rankB
+    if (rankA !== -1) return -1
+    if (rankB !== -1) return 1
+    return (firstSeen.get(a) ?? 0) - (firstSeen.get(b) ?? 0)
+  })
 }
