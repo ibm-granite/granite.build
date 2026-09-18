@@ -21,6 +21,8 @@ the build while a retry is in flight must stop the active run, mark the one buil
 CANCELLED, and prevent any further retries. There is no retry chain to walk.
 """
 
+import os
+import signal
 import threading
 from time import sleep, time
 
@@ -49,6 +51,12 @@ _IN_FLIGHT = {
     Status.CANCEL_REQUESTED,
 }
 
+# The workload in test-data/.../retry-cancel/build-orphan.yaml writes its own
+# shell PID to this file, then sleeps. The test reads the PID and asserts it is
+# reaped after cancellation via os.kill(pid, 0) — no argv reading, so it works on
+# both Linux and macOS. Keep this path in sync with that build.yaml command.
+_ORPHAN_PID_FILE = "/tmp/gborphan-5f3a9c2e-orphan-reap.pid"
+
 
 @pytest.mark.xdist_group(name="buildwatcher_bash_cancel")
 class TestInPlaceRetryCancellation(AbstractBuildTest):
@@ -61,6 +69,11 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
     def _get_spec(self) -> BuildTestSpecification:
         return BuildTestSpecification.from_yaml(
             get_test_data_dir_for(__file__) / "retry-cancel" / "buildtest.yaml"
+        )
+
+    def _get_orphan_spec(self) -> BuildTestSpecification:
+        return BuildTestSpecification.from_yaml(
+            get_test_data_dir_for(__file__) / "retry-cancel" / "buildtest-orphan.yaml"
         )
 
     def _make_build(self, status, retry_count) -> StoredBuild:
@@ -209,3 +222,112 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
                 return
             sleep(poll)
         assert False, f"Build {build_id} did not settle within {timeout_seconds}s."
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        """True if pid is a live process. os.kill(pid, 0) is OS-agnostic and needs
+        no argv reading (unlike psutil cmdline, which is unreliable on macOS)."""
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # Exists but owned by another user — still alive for our purposes.
+            return True
+
+    def _read_workload_pid(self, timeout_seconds: float):
+        """Poll for the PID file the workload writes; return its pid, or None."""
+        start = time()
+        while time() - start <= timeout_seconds:
+            try:
+                with open(_ORPHAN_PID_FILE, encoding="utf-8") as f:
+                    text = f.read().strip()
+                if text:
+                    return int(text)
+            except (FileNotFoundError, ValueError):
+                pass
+            sleep(0.5)
+        return None
+
+    def test_cancel_reaps_workload_child(self):
+        """Cancelling a build reaps the bash workload process (no orphan).
+
+        Regression for the SIGTERM shutdown flake: without cleanup_nohup the
+        cancelled build's workload (a session leader via start_new_session) was
+        never killed, so shutdown could wait out the workload and the process
+        leaked. The workload records its PID; after cancellation that PID must be
+        dead.
+        """
+        # Start from a clean slate so we never read a stale PID from a prior run.
+        try:
+            os.remove(_ORPHAN_PID_FILE)
+        except FileNotFoundError:
+            pass
+
+        spec = self._get_orphan_spec()
+        space = self._check_and_setup_space(spec)
+
+        stored_build = StoredBuild.create(
+            name="test",
+            space_name=space.name,
+            source_uri="",
+            username=GBTEST_USER_NAME,
+            build_yaml_path=spec.build_yaml,
+            status=Status.SUBMITTED,
+        )
+        build_id = stored_build.uuid
+        self.storage.build_storage.add(stored_build)
+
+        watcher = BuildWatcher(gh_token="", all_build_space_uri=spec.space_uri)
+        watcher.config.buildrunner_type = "thread"
+        watcher.config.monitoring_interval = 1
+
+        thread = ExceptionRaisingThread(
+            name="BuildWatcher", target=watcher.start_and_wait, args=()
+        )
+        thread.start()
+        workload_pid = None
+        try:
+            timeout = spec.timeout_minutes * 60
+            # The workload must actually be running before we cancel (sanity).
+            # Bound this independently of the (much longer) build timeout so a
+            # miss fails fast instead of burning the whole budget.
+            workload_pid = self._read_workload_pid(timeout_seconds=90)
+            assert workload_pid is not None, "workload never wrote its PID file"
+            assert self._pid_alive(workload_pid), "workload PID not alive after launch"
+
+            build = self.storage.build_storage.get_by_uuid(build_id)
+            request_cancellation(self.storage.build_storage, build)
+            self._wait_until_settled(build_id, timeout)
+
+            # cleanup_nohup allows a 5s SIGTERM grace + SIGKILL; give ample margin.
+            deadline = time() + 30
+            while time() < deadline and self._pid_alive(workload_pid):
+                sleep(0.5)
+            assert not self._pid_alive(workload_pid), (
+                f"workload pid {workload_pid} still alive after cancellation "
+                "(cleanup_nohup did not reap it)"
+            )
+        finally:
+            watcher.stop()
+            thread.join(timeout=60)
+            # Belt-and-suspenders: never let a failing test leak a 600s sleep.
+            if workload_pid is not None and self._pid_alive(workload_pid):
+                try:
+                    os.killpg(os.getpgid(workload_pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        os.kill(workload_pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+            try:
+                os.remove(_ORPHAN_PID_FILE)
+            except FileNotFoundError:
+                pass
+
+        builds = self.storage.build_storage.get_by_uuid(None) or []
+        assert (
+            len(builds) == 1
+        ), f"In-place retry must reuse one build id, found {len(builds)}"
+        assert builds[0].status == Status.CANCELLED

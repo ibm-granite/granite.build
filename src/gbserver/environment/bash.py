@@ -20,6 +20,7 @@ Run user provided bash scripts in the local filesystem.
 
 import asyncio
 import os
+import signal
 import sys
 from asyncio.subprocess import Process
 from pathlib import Path
@@ -275,6 +276,90 @@ class Bash(Environment):
                 f"bash launch {launch_id} exited with code {returncode}",
                 build_id=build_id,
             )
+
+    async def cleanup_nohup(self: Self, launch_id: str, **kwargs) -> None:
+        """Reap the workload process on step finish or cancellation.
+
+        Auto-registered as the ``nohup`` launch type's cleanup (Environment
+        discovers ``cleanup_*`` methods) and invoked by ``TargetStepRun._cleanup``
+        under ``Run.run``'s ``uncancel()`` guard, so it runs on both the success
+        and the cancellation paths and may ``await``.
+
+        On a normal finish ``launch_nohup`` already awaited ``process.wait()``, so
+        the child has exited (returncode set) and this is a no-op beyond clearing
+        state. On cancellation, ``await process.wait()`` was unwound by
+        ``CancelledError`` without reaping the child — which was launched with
+        ``start_new_session=True`` and so is its own process-group leader — leaving
+        the whole workload tree (jobsub wrapper + the user command) orphaned. Here
+        we SIGTERM the process group, allow a short grace, then SIGKILL, so build
+        shutdown cannot wait out the workload (the flake behind the SIGTERM e2e
+        test) and no process leaks.
+
+        Always sets the launch-stopped event (via ``_monitoring_cleanup``) so the
+        log monitor's tail loop exits promptly, and drops the tracked process.
+        """
+        proc = self._launched_processes.get(launch_id)
+        try:
+            if proc is None:
+                logger.debug(
+                    "cleanup_nohup: no process to clean up for launch_id %s", launch_id
+                )
+                return
+            if proc.returncode is not None:
+                logger.debug(
+                    "cleanup_nohup: launch %s already exited (rc=%s); nothing to reap",
+                    launch_id,
+                    proc.returncode,
+                )
+                return
+            try:
+                pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                logger.debug(
+                    "cleanup_nohup: launch %s pid %s already gone", launch_id, proc.pid
+                )
+                return
+            logger.info(
+                "cleanup_nohup: terminating workload process group %s (launch_id=%s)",
+                pgid,
+                launch_id,
+            )
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError) as e:
+                logger.debug("cleanup_nohup: SIGTERM on pgid %s: %s", pgid, e)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+                logger.info("cleanup_nohup: launch %s exited after SIGTERM", launch_id)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "cleanup_nohup: launch %s did not exit within grace period; "
+                    "sending SIGKILL to process group %s",
+                    launch_id,
+                    pgid,
+                )
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError) as e:
+                    logger.debug("cleanup_nohup: SIGKILL on pgid %s: %s", pgid, e)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                    logger.info(
+                        "cleanup_nohup: launch %s reaped after SIGKILL", launch_id
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "cleanup_nohup: launch %s still not reaped after SIGKILL",
+                        launch_id,
+                    )
+        except Exception as e:  # noqa: BLE001 - cleanup must never raise
+            logger.error(
+                "cleanup_nohup: failed to clean up launch %s: %s", launch_id, e
+            )
+        finally:
+            # Unblock the log monitor's tail loop and drop the tracked process.
+            self._monitoring_cleanup(launch_id=launch_id)
+            self._launched_processes.pop(launch_id, None)
 
     async def monitor_log_monitor(
         self: Self,
