@@ -39,7 +39,13 @@ describe('formatBytes', () => {
   })
 
   it('formats the HF import size limit', () => {
-    // 5 GiB, the hf_import.max_bytes the modal displays.
+    // 5 GiB, the hf_import.max_bytes the modal displays. Strictly dominated
+    // by the 1024 ** 3 boundary test above -- this pins nothing new; it's
+    // here as documentation of the hf_import.max_bytes tie-in.
     assert.equal(formatBytes(5 * 1024 ** 3), '5.0 GB')
+  })
+
+  it('rounds to one decimal place off an exact boundary', () => {
+    assert.equal(formatBytes(1536), '1.5 KB')
   })
 })
