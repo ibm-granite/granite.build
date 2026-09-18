@@ -39,11 +39,23 @@ class EfsProvider(SharedFilesystemProvider):
             if fsid
             else None
         )
+        # Plain nfs4 cannot encrypt to EFS (that needs amazon-efs-utils' stunnel via
+        # `mount -t efs -o tls`). When tls was requested and we fall back to nfs4,
+        # warn loudly rather than mount in cleartext while the config says tls: true.
+        tls_warn = (
+            'echo "shared_filesystem: WARNING tls=true but amazon-efs-utils '
+            "(mount.efs) is absent; mounting EFS over nfs4 WITHOUT encryption in "
+            'transit" >&2; '
+            if self.cfg.tls
+            else ""
+        )
         nfs_cmd = (
-            f"$SUDO mount -t nfs4 -o {_NFS_OPTS} {shlex.quote(dns + ':/')} {mp_quoted}"
+            f"{tls_warn}$SUDO mount -t nfs4 -o {_NFS_OPTS} "
+            f"{shlex.quote(dns + ':/')} {mp_quoted}"
         )
         if efs_cmd:
-            # Prefer amazon-efs-utils on bare hosts; fall back to nfs4 (containers).
+            # Prefer amazon-efs-utils on bare hosts (honors -o tls); fall back to
+            # nfs4 (containers / stock images), warning if tls was requested.
             return f"if command -v mount.efs >/dev/null 2>&1; then {efs_cmd}; else {nfs_cmd}; fi"
         return nfs_cmd
 

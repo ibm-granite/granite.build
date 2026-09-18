@@ -135,26 +135,40 @@ mount never targets a cloud without a mount target. On other backends use an ope
 gbserver mounts the EFS at `mount_point` on every worker and creates the same per-target-run subdir it
 would under `shared_workdir` — `${mount_point}/builds/<build_id>/runs/<targetrun_id>/` — as the CWD of
 each step's `setup`/`run`. Because steps run as a non-root user, the **EFS root must be `chmod 1777`**
-(sticky, like `/tmp`); gbserver also creates each per-run dir `1777`. A producer step's output is then
-world-readable to the consumer (default umask), and the sticky bit prevents cross-deletion. Two steps
-that *rewrite the same file* as different uids still need a shared uid/gid.
+(sticky, like `/tmp`); gbserver then makes every level from the root down to the per-run dir `1777` too
+(guarded, so a step running as a different uid than the one that created a parent does not EPERM/abort),
+so a later step on a separate instance — as any uid — can create and traverse its own per-run dir. A
+producer step's output is world-readable to the consumer (default umask), and the sticky bit prevents
+cross-deletion. Two steps that *rewrite the same file* as different uids still need a shared uid/gid.
+
+> **Trust boundary.** A `1777` root plus a `1777` per-run tree means every concurrent build on this
+> filesystem can **read and write** every other build's per-run tree; the sticky bit stops only
+> cross-*deletion*, not cross-read/write. That is a shared-scratch model appropriate for a single trusted
+> team/space. For stronger isolation, provision the EFS with **access points** (`PosixUser` +
+> `RootDirectory` per space), which also removes the `chmod` bootstrap entirely.
 
 ### Containerized steps
 
-A step with an `image_id` runs in a container on the EC2 host, yet still sees the EFS mount because the
-container is launched with `--net=host --cap-add=SYS_ADMIN --device=/dev/fuse` — so an in-container NFS
-mount reaches the mount target as the host IP (covered by the VPC-CIDR SG rule). SkyPilot already sets
-these in its default container run options, but for a shared-filesystem step gbserver **pins them
-explicitly** (into `docker.run_options`) so it owns the requirement rather than inheriting a SkyPilot
-default that a future bump could drop. The **image must ship an NFS client** (`nfs-common`/`nfs-utils`);
-gbserver installs it best-effort, so prefer an image that already has it for offline/locked-down bases.
+A step with an `image_id` runs in a container on the EC2 host, yet still sees the EFS mount because
+SkyPilot launches its containers with host networking, `--cap-add=SYS_ADMIN`, `--device=/dev/fuse`, and
+`--security-opt apparmor:unconfined` — so an in-container `mount -t nfs4` is permitted (past both seccomp
+*and* AppArmor) and reaches the mount target as the host IP (covered by the VPC-CIDR SG rule). gbserver
+additionally pins `--cap-add=SYS_ADMIN` into `docker.run_options` as belt-and-suspenders; it does **not**
+pin `--net=host` (SkyPilot always adds it, and a duplicate `--network` makes `docker run` fail) nor
+`--device=/dev/fuse` (irrelevant to NFS). The in-container mount runs sudo-free as root. Image
+requirements: an **NFS client** (`nfs-common`/`nfs-utils`) and `mountpoint` (util-linux) — gbserver
+installs the NFS client best-effort via the image's package manager (using `sudo` only when not root),
+so a slim image needs a package manager; prefer an image that already ships the client for
+offline/locked-down bases. **Validated on real AWS** (a 2-step producer→consumer build in a container).
 
 ### `GB_LOCAL_SCRATCH` and hot-path staging
 
 EFS is the durable **hand-off medium** between steps, not fast scratch — every byte read/written bills
-under elastic throughput. Each step also gets an instance-local `GB_LOCAL_SCRATCH` on the worker's
-NVMe: **stage hot paths (checkpoints, decompress/scratch) there** and copy only the durable result
-back to the per-run workdir. Keeping churn off EFS bounds both latency and cost.
+under elastic throughput. Each step also gets an instance-local `GB_LOCAL_SCRATCH`: **stage hot paths
+(checkpoints, decompress/scratch) there** and copy only the durable result back to the per-run workdir.
+It defaults to `/tmp/gb-scratch`, which on stock AWS/DLAMI images is the **EBS root volume, not
+instance-store NVMe** — set the environment's `local_scratch` to the image's NVMe mount (e.g.
+`/opt/dlami/nvme/...`) if you want true local-NVMe scratch. Keeping churn off EFS bounds latency and cost.
 
 ### hf cache
 
@@ -332,15 +346,21 @@ aws efs delete-file-system --region "$REGION" --profile "$PROFILE" --file-system
 
 - **Cost.** Empty ≈ $0. EFS bills per **GB stored** (~$0.30/GB-mo Standard; ~$0.016/GB-mo IA) and
   Elastic throughput bills **per byte moved** (~$0.03/GB read, ~$0.06/GB write). Mount targets are
-  free. Keep hot IO (checkpoints, scratch) on instance-local NVMe and use EFS only for the durable
-  hand-off; set a lifecycle policy (`put-lifecycle-configuration TransitionToIA=AFTER_30_DAYS`) and
-  sweep stale `builds/<id>/` trees to avoid a leaked large tree costing indefinitely.
-- **Containerized steps just work.** SkyPilot runs containers with `--net=host --cap-add=SYS_ADMIN
-  --device=/dev/fuse`, so an in-container `mount -t nfs4` reaches the mount target as the host IP
-  (covered by the VPC-CIDR SG rule). The image needs an NFS client (`nfs-common`/`nfs-utils`).
-- **uid stability.** With a `1777` root, producer→consumer works (outputs are world-readable via the
-  default umask; sticky prevents cross-delete). If two steps *rewrite the same file* as different uids,
-  run them under a shared uid/gid.
+  free. Keep hot IO (checkpoints, scratch) on instance-local scratch (`GB_LOCAL_SCRATCH`; the EBS root
+  volume by default, configurable via `local_scratch`) and use EFS only for the durable hand-off; set a
+  lifecycle policy (`put-lifecycle-configuration TransitionToIA=AFTER_30_DAYS`) and sweep stale
+  `builds/<id>/` trees to avoid a leaked large tree costing indefinitely.
+- **Containerized steps: validated on real AWS.** SkyPilot runs containers with host networking,
+  `--cap-add=SYS_ADMIN`, `--device=/dev/fuse`, and `apparmor:unconfined`, so an in-container
+  `mount -t nfs4` is permitted and reaches the mount target as the host IP (covered by the VPC-CIDR SG
+  rule). The image needs an NFS client (`nfs-common`/`nfs-utils`) + `mountpoint`; the mount runs
+  sudo-free as root.
+- **uid stability & trust.** gbserver makes the per-run tree `1777` from the EFS root down, so a
+  different-uid step on a separate instance can create/traverse its own per-run dir; producer→consumer
+  works (outputs world-readable via the default umask; sticky prevents cross-delete). Two steps that
+  *rewrite the same file* as different uids still need a shared uid/gid. Trust boundary: every build on
+  the filesystem can read/write every other's per-run tree — use EFS **access points** per space for
+  stronger isolation.
 
 ## Runbook: use a non-default AWS profile via the local secret store
 

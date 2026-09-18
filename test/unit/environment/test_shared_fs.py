@@ -1,6 +1,12 @@
+import subprocess
+from types import SimpleNamespace
+
 import pytest
 
+from gbserver.environment.shared_fs import build_provider
+from gbserver.environment.shared_fs.base import resolve_shared_workdir
 from gbserver.environment.shared_fs.config import EfsConfig, SharedFilesystemConfig
+from gbserver.environment.shared_fs.efs import EfsProvider
 
 
 def test_efs_config_valid_with_fsid_and_region():
@@ -74,9 +80,34 @@ def test_efs_fsid_requires_region_for_nfs_fallback():
         )
 
 
-from types import SimpleNamespace
+def test_efs_cleanup_zone_must_be_in_region():
+    with pytest.raises(ValueError, match="cleanup_zone"):
+        SharedFilesystemConfig.model_validate(
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/x",
+                "efs": {
+                    "file_system_id": "fs-1",
+                    "region": "us-east-1",
+                    "cleanup_zone": "us-west-2a",
+                },
+            }
+        )
 
-from gbserver.environment.shared_fs.base import resolve_shared_workdir
+
+def test_efs_cleanup_zone_in_region_ok():
+    sf = SharedFilesystemConfig.model_validate(
+        {
+            "provider": "efs",
+            "mount_point": "/mnt/x",
+            "efs": {
+                "file_system_id": "fs-1",
+                "region": "us-east-1",
+                "cleanup_zone": "us-east-1a",
+            },
+        }
+    )
+    assert sf.efs.cleanup_zone == "us-east-1a"
 
 
 def _env(cfg: dict):
@@ -126,12 +157,6 @@ def test_resolve_both_set_defensive_error():
         )
 
 
-import subprocess
-
-from gbserver.environment.shared_fs.config import EfsConfig
-from gbserver.environment.shared_fs.efs import EfsProvider
-
-
 def _bash_ok(script: str):
     proc = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
     assert proc.returncode == 0, proc.stderr
@@ -174,6 +199,34 @@ def test_efs_mount_prologue_is_root_safe_no_bare_sudo():
     _bash_ok(shell)
 
 
+def test_efs_mount_prologue_warns_when_tls_requested_but_efs_utils_absent():
+    """Regression (Constantine): `-o tls` only encrypts on the mount.efs path;
+    plain nfs4 (the common fallback on stock images) cannot do EFS TLS, so a
+    tls=true config that falls back must warn loudly rather than silently mount in
+    cleartext while claiming encryption in transit."""
+    p = EfsProvider(
+        "/mnt/gb-shared",
+        EfsConfig(file_system_id="fs-0abc", region="us-east-1", tls=True),
+    )
+    shell = p.mount_prologue()
+    # tls is honored only on the mount.efs branch...
+    assert "mount -t efs -o tls" in shell
+    # ...and the nfs4 fallback emits a visible unencrypted-transit warning.
+    assert "WITHOUT encryption" in shell
+    _bash_ok(shell)
+
+
+def test_efs_mount_prologue_no_tls_and_no_warning_when_tls_false():
+    p = EfsProvider(
+        "/mnt/gb-shared",
+        EfsConfig(file_system_id="fs-0abc", region="us-east-1", tls=False),
+    )
+    shell = p.mount_prologue()
+    assert "-o tls" not in shell
+    assert "WITHOUT encryption" not in shell
+    _bash_ok(shell)
+
+
 def test_efs_cleanup_run_script_mounts_then_reaps():
     p = EfsProvider(
         "/mnt/gb-shared", EfsConfig(dns_name="fs-0abc.efs.eu-west-1.amazonaws.com")
@@ -191,10 +244,6 @@ def test_efs_cleanup_zone_from_config():
         EfsConfig(file_system_id="fs-1", region="us-east-1", cleanup_zone="us-east-1a"),
     )
     assert p.cleanup_zone() == "us-east-1a"
-
-
-from gbserver.environment.shared_fs import build_provider
-from gbserver.environment.shared_fs.efs import EfsProvider as _Efs
 
 
 def test_build_provider_none_when_absent():
@@ -215,5 +264,5 @@ def test_build_provider_returns_efs():
             }
         )
     )
-    assert isinstance(prov, _Efs)
+    assert isinstance(prov, EfsProvider)
     assert prov.mount_point == "/mnt/gb-shared"

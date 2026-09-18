@@ -871,16 +871,27 @@ def _get_cli_prefix(build_workdir: Optional[str]) -> str:
 def _compose_step_prologue(provider, build_workdir):
     """Prologue prepended to setup and run. Without a provider this is exactly
     ``_get_cli_prefix(build_workdir)`` (unchanged). With a provider: ``set -eu``,
-    the idempotent mount, then create the per-run workdir 1777 (so cross-image/uid
-    steps can write) and ``cd`` into it."""
+    the idempotent mount, then make every level from the shared-fs mount root down
+    to the per-run workdir world-writable + sticky (1777) so a later step running
+    as a different uid can create and traverse its own per-run dir, and ``cd`` in.
+
+    The chmod walk is GUARDED: a level a prior step's uid created is not ours to
+    ``chmod`` (that EPERMs, and under ``set -eu`` would abort the step in the
+    prologue), and it is already 1777, so ignoring the failure is safe. Bounded by
+    the mount root, which the admin runbook chmods 1777 out of band."""
     if provider is None:
         return _get_cli_prefix(build_workdir)
     prologue = "set -eu\n" + provider.mount_prologue()
     if build_workdir:
+        mount_root = shlex.quote(provider.mount_point)
         prologue += (
             'mkdir -p "$GB_LOCAL_SCRATCH"\n'
             'mkdir -p "$GB_BUILD_WORKDIR"\n'
-            'chmod 1777 "$GB_BUILD_WORKDIR"\n'
+            '__gb_d="$GB_BUILD_WORKDIR"\n'
+            f'while [ "$__gb_d" != {mount_root} ] && [ "$__gb_d" != "/" ]; do\n'
+            '  chmod 1777 "$__gb_d" 2>/dev/null || true\n'
+            '  __gb_d="$(dirname "$__gb_d")"\n'
+            "done\n"
             'cd "$GB_BUILD_WORKDIR"\n'
         )
     return prologue
@@ -957,18 +968,16 @@ def aws_credentials_present() -> bool:
 # computed None (no provider). See Skypilot._shared_fs_provider.
 _PROVIDER_UNSET = object()
 
-# docker run options an in-container shared_filesystem (EFS/NFS) mount needs:
-# SYS_ADMIN + /dev/fuse for mount(2)/FUSE. SkyPilot's docker_start_cmds
-# (sky/provision/docker_utils.py) unconditionally injects these AND --net=host on
-# every container; docker tolerates a repeated --cap-add/--device (they union), so
-# pinning those defensively is harmless. We must NOT pin --net=host, though:
-# docker rejects a duplicate --network ("network host is specified multiple
-# times", rc 125), so re-adding SkyPilot's guaranteed --net=host breaks the
-# container launch (#393). Host networking is therefore left to SkyPilot.
-_CONTAINER_SHARED_FS_RUN_OPTIONS = (
-    "--cap-add=SYS_ADMIN",
-    "--device=/dev/fuse",
-)
+# docker run option an in-container shared_filesystem (EFS/NFS) mount needs:
+# --cap-add=SYS_ADMIN so mount(2) is permitted inside the container. SkyPilot's
+# docker_start_cmds (sky/provision/docker_utils.py) also injects this by default;
+# docker tolerates a repeated --cap-add (caps union), so pinning it defensively is
+# harmless. Deliberately NOT pinned:
+#   * --net=host -- SkyPilot always injects it and docker rejects a duplicate
+#     --network ("network host is specified multiple times", rc 125) (#393);
+#   * --device=/dev/fuse -- irrelevant to an NFS mount (a leftover from the dropped
+#     S3/FUSE design; SkyPilot adds it by default regardless).
+_CONTAINER_SHARED_FS_RUN_OPTIONS = ("--cap-add=SYS_ADMIN",)
 
 
 def _with_container_mount_options(docker_config: dict) -> dict:
@@ -1395,69 +1404,60 @@ class Skypilot(Environment):
         run_meta = self._setup_run_meta.pop(setup_id, {})
         if not workdir:
             return
+        _require_skypilot()
         provider = self._shared_fs_provider()
-        if provider is not None:
-            _require_skypilot()
-            cluster_name = self._cluster_name_for(
-                f"td-{setup_id}",
-                target_name=run_meta.get("target_name", ""),
-                build_id=run_meta.get("build_id", ""),
-                build_config_name=run_meta.get("build_config_name", ""),
-            )
-            zone = provider.cleanup_zone()
-            res_kwargs = {"infra": self._get_cloud()}
-            if zone:
-                res_kwargs["zone"] = zone  # land where a mount target exists
+        # A shared_filesystem provider cleans the whole per-run tree via its own
+        # shell (and may pin the throwaway VM to an AZ that has a mount target);
+        # without a provider a plain rm -rf of the workdir suffices. Only the run
+        # script and the optional zone differ.
+        run_script = (
+            provider.cleanup_run_script(workdir)
+            if provider is not None
+            else f"rm -rf {shlex.quote(workdir)}"
+        )
+        if provider is not None and run_script is None:
+            # A non-mount backend (e.g. object-store / stage-out) reaps its per-run
+            # state server-side, with no throwaway VM to launch.
             logger.info(
-                "teardown_skypilot: cleaning per-run workdir %s via provider "
-                "(setup_id=%s, zone=%s)",
+                "teardown_skypilot: provider reaps per-run workdir %s server-side "
+                "(setup_id=%s)",
                 workdir,
                 setup_id,
-                zone,
             )
-            try:
-                task = sky.Task(
-                    name=cluster_name,
-                    run=provider.cleanup_run_script(workdir),
-                    resources=sky.Resources(**res_kwargs),
-                )
-                request_id = await asyncio.to_thread(
-                    sky.launch,
-                    task,
-                    cluster_name=cluster_name,
-                    idle_minutes_to_autostop=0,
-                    down=True,
-                )
-                await asyncio.to_thread(sky.stream_and_get, request_id)
-            except Exception as e:
-                # Do not fail a finished build, but make the leak visible
-                # (Constantine #3).
-                logger.warning(
-                    "teardown cleanup failed; per-run tree may be ORPHANED at %s "
-                    "(setup_id=%s): %s",
-                    workdir,
-                    setup_id,
-                    e,
-                )
+            await provider.cleanup()
             return
-        # No provider: existing plain rm -rf throwaway launch (unchanged below).
-        _require_skypilot()
         cluster_name = self._cluster_name_for(
             f"td-{setup_id}",
             target_name=run_meta.get("target_name", ""),
             build_id=run_meta.get("build_id", ""),
             build_config_name=run_meta.get("build_config_name", ""),
         )
+        res_kwargs = {"infra": self._get_cloud()}
+        zone = provider.cleanup_zone() if provider is not None else None
+        if zone:
+            res_kwargs["zone"] = zone  # land where a mount target exists
+        elif provider is not None:
+            # Context for the orphan WARNING below: with no pinned zone the
+            # throwaway VM lands in the cloud's default AZ, which may lack an EFS
+            # mount target and fail the cleanup.
+            logger.info(
+                "teardown_skypilot: efs.cleanup_zone unset; the cleanup VM lands "
+                "in the default AZ, which may lack a mount target (set "
+                "efs.cleanup_zone, or ensure a mount target in every worker AZ)"
+            )
         logger.info(
-            "teardown_skypilot: removing per-run workdir %s (setup_id=%s)",
+            "teardown_skypilot: cleaning per-run workdir %s "
+            "(setup_id=%s, provider=%s, zone=%s)",
             workdir,
             setup_id,
+            provider is not None,
+            zone,
         )
         try:
             task = sky.Task(
                 name=cluster_name,
-                run=f"rm -rf {shlex.quote(workdir)}",
-                resources=sky.Resources(infra=self._get_cloud()),
+                run=run_script,
+                resources=sky.Resources(**res_kwargs),
             )
             request_id = await asyncio.to_thread(
                 sky.launch,
@@ -1467,8 +1467,16 @@ class Skypilot(Environment):
                 down=True,
             )
             await asyncio.to_thread(sky.stream_and_get, request_id)
-        except Exception as e:  # don't fail the build for cleanup
-            logger.warning("teardown_skypilot rm -rf %s failed: %s", workdir, e)
+        except Exception as e:  # don't fail an already-finished build for cleanup
+            # Make an orphaned per-run tree visible so it can be reaped (see the
+            # teardown notes in docs/environments/skypilot-aws.md).
+            logger.warning(
+                "teardown cleanup failed; per-run tree may be ORPHANED at %s "
+                "(setup_id=%s): %s",
+                workdir,
+                setup_id,
+                e,
+            )
 
     @staticmethod
     def _parse_memory_gib(memory_str: str) -> Optional[float]:
@@ -1668,14 +1676,19 @@ class Skypilot(Environment):
         shared_workdir = resolve_shared_workdir(self.config)
         if shared_workdir:
             env["GB_SHARED_WORKDIR"] = shared_workdir
-            # Instance-local NVMe scratch for hot IO; steps stage here and copy
-            # only artifacts to $GB_BUILD_WORKDIR (EFS is slower + bills per byte).
-            # Only export when a shared_filesystem provider is active: the launcher
-            # prologue never creates GB_LOCAL_SCRATCH, only the provider prologue
-            # does (mkdir -p "$GB_LOCAL_SCRATCH"). Plain shared_workdir envs
+            # Instance-local scratch for hot IO: steps may stage here and copy only
+            # artifacts to $GB_BUILD_WORKDIR (EFS is slower + bills per byte). The
+            # path is configurable via the environment's `local_scratch` and defaults
+            # to /tmp/gb-scratch -- which on stock AWS/DLAMI images is the EBS root
+            # volume, NOT instance-store NVMe (point local_scratch at the image's
+            # NVMe mount, e.g. /opt/dlami/nvme/..., if you want that). Only exported
+            # when a shared_filesystem provider is active: the provider prologue
+            # creates it (mkdir -p "$GB_LOCAL_SCRATCH"); plain shared_workdir envs
             # (bluevela/SLURM/k8s) have no provider, so must not see it.
             if self._shared_fs_provider() is not None:
-                env["GB_LOCAL_SCRATCH"] = "/tmp/gb-scratch"
+                env["GB_LOCAL_SCRATCH"] = (self.config.config or {}).get(
+                    "local_scratch", "/tmp/gb-scratch"
+                )
         if build_workdir:
             env["GB_BUILD_WORKDIR"] = build_workdir
         return env

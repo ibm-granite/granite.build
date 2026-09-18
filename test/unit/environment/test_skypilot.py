@@ -1959,16 +1959,29 @@ class _FakeProvider:
 
 
 def test_prologue_orders_mount_before_cd_and_chmods_1777():
+    import subprocess
+
     prologue = skymod._compose_step_prologue(
         _FakeProvider(), "/mnt/gb-shared/builds/b/runs/r"
     )
     assert prologue.startswith("set -eu")
-    assert prologue.index("MOUNT_HERE") < prologue.index(
-        'chmod 1777 "$GB_BUILD_WORKDIR"'
+    # Mount, then chmod, then cd.
+    assert prologue.index("MOUNT_HERE") < prologue.index("chmod 1777")
+    assert prologue.rindex("chmod 1777") < prologue.index('cd "$GB_BUILD_WORKDIR"')
+    # Regression (Constantine): the chmod must be GUARDED so a step 2 running as a
+    # different uid than step 1 (which owns the pre-created dir) does not EPERM and
+    # abort under `set -eu`; and it must cover the builds/<id>/runs parents (created
+    # 0755 by mkdir -p) up to the shared-fs mount root, so a different-uid step can
+    # create its own per-run dir. So: no UNGUARDED chmod of the workdir, a guard is
+    # present, and the mount root bounds the walk.
+    assert 'chmod 1777 "$GB_BUILD_WORKDIR"\n' not in prologue
+    assert "2>/dev/null || true" in prologue
+    assert "/mnt/gb-shared" in prologue
+    # The emitted shell must be syntactically valid.
+    proc = subprocess.run(
+        ["bash", "-n"], input=prologue, text=True, capture_output=True
     )
-    assert prologue.index('chmod 1777 "$GB_BUILD_WORKDIR"') < prologue.index(
-        'cd "$GB_BUILD_WORKDIR"'
-    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_prologue_no_provider_is_plain_cli_prefix():
@@ -1979,35 +1992,30 @@ def test_prologue_no_provider_is_plain_cli_prefix():
 
 def test_container_mount_options_appended_to_empty_docker_config():
     out = skymod._with_container_mount_options({})
-    # NOTE: --net=host is deliberately NOT pinned here. SkyPilot's
-    # docker_start_cmds unconditionally adds --net=host to every container, and
-    # docker rejects a duplicate --network ("network host is specified multiple
-    # times"), unlike --cap-add/--device which it tolerates. So we pin only the
-    # FUSE cap/device and rely on SkyPilot for host networking.
-    assert out["run_options"] == [
-        "--cap-add=SYS_ADMIN",
-        "--device=/dev/fuse",
-    ]
+    # Only --cap-add=SYS_ADMIN is pinned (mount(2) in the container needs it).
+    # --net=host is NOT pinned: SkyPilot's docker_start_cmds unconditionally adds
+    # it and docker rejects a duplicate --network (rc 125). --device=/dev/fuse is
+    # NOT pinned either: it is an NFS-irrelevant leftover from the dropped S3/FUSE
+    # design (and SkyPilot already adds it by default anyway).
+    assert out["run_options"] == ["--cap-add=SYS_ADMIN"]
 
 
-def test_container_mount_options_omit_net_host():
-    """Regression (#393): never pin --net=host — SkyPilot always adds it and a
-    duplicate --network makes ``docker run`` fail with rc 125."""
+def test_container_mount_options_omit_net_host_and_fuse():
+    """Regression (#393): never pin --net=host (SkyPilot always adds it -> duplicate
+    --network fails rc 125) and don't pin --device=/dev/fuse (irrelevant to NFS)."""
     assert "--net=host" not in skymod._CONTAINER_SHARED_FS_RUN_OPTIONS
-    assert "--net=host" not in skymod._with_container_mount_options({})["run_options"]
+    assert "--device=/dev/fuse" not in skymod._CONTAINER_SHARED_FS_RUN_OPTIONS
+    opts = skymod._with_container_mount_options({})["run_options"]
+    assert "--net=host" not in opts
+    assert "--device=/dev/fuse" not in opts
 
 
 def test_container_mount_options_preserve_and_dedupe_existing_run_options():
     out = skymod._with_container_mount_options(
         {"run_options": ["--shm-size=1g", "--cap-add=SYS_ADMIN"]}
     )
-    # user options kept, order preserved, no duplicate --cap-add=SYS_ADMIN, the
-    # missing mount flag appended.
-    assert out["run_options"] == [
-        "--shm-size=1g",
-        "--cap-add=SYS_ADMIN",
-        "--device=/dev/fuse",
-    ]
+    # user options kept, order preserved, no duplicate --cap-add=SYS_ADMIN.
+    assert out["run_options"] == ["--shm-size=1g", "--cap-add=SYS_ADMIN"]
 
 
 def test_container_mount_options_does_not_mutate_input():
