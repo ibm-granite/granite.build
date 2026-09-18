@@ -29,6 +29,7 @@ const {
   defaultTrainSplit,
   truncationNotice,
   problemDetail,
+  hfErrorStatus,
 } = require('../app/dashboard/autotunex/start-tuning/steps/hfImport.ts')
 
 describe('deriveDatasetName', () => {
@@ -270,5 +271,25 @@ describe('problemDetail', () => {
     assert.equal(problemDetail({ response: { data: {} } }, 'fallback'), 'fallback')
     assert.equal(problemDetail({ response: { data: { detail: '   ' } } }, 'fallback'), 'fallback')
     assert.equal(problemDetail({ response: { data: { detail: { a: 1 } } } }, 'fallback'), 'fallback')
+  })
+})
+
+describe('hfErrorStatus', () => {
+  it('round-trips the statuses callers branch on', () => {
+    assert.equal(hfErrorStatus({ response: { status: 503 } }), 503)
+    assert.equal(hfErrorStatus({ response: { status: 422 } }), 422)
+    assert.equal(hfErrorStatus({ response: { status: 409 } }), 409)
+  })
+
+  it('is undefined when there is no usable status', () => {
+    assert.equal(hfErrorStatus({}), undefined)
+    assert.equal(hfErrorStatus(null), undefined)
+    assert.equal(hfErrorStatus(undefined), undefined)
+  })
+
+  it('is undefined for a non-number status, not the string itself', () => {
+    // A string '503' would make `=== 503` silently false, so the Retry button
+    // would never appear for a real Axios error carrying this shape.
+    assert.equal(hfErrorStatus({ response: { status: '503' } }), undefined)
   })
 })

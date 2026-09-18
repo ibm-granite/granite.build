@@ -188,3 +188,16 @@ export function problemDetail(err: unknown, fallback: string): string {
     ?.response?.data?.detail
   return typeof detail === 'string' && detail.trim() !== '' ? detail : fallback
 }
+
+/**
+ * The HTTP status of a failed request, or undefined when there is none.
+ *
+ * Read structurally rather than via `axios.isAxiosError`, for the same reason as
+ * `problemDetail`: keeping this module free of value imports is what lets
+ * `node --test` load it. Callers branch on this — 503 is retryable, 422 is not,
+ * 409 means a duplicate dataset name — so it is worth a test.
+ */
+export function hfErrorStatus(err: unknown): number | undefined {
+  const status = (err as { response?: { status?: unknown } } | null | undefined)?.response?.status
+  return typeof status === 'number' ? status : undefined
+}

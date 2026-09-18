@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  ActionableNotification,
+  Callout,
   ComboBox,
   InlineLoading,
   InlineNotification,
@@ -15,7 +15,7 @@ import type { HfImportConfig, HfImportPreview } from '@granite-build/ui-core/typ
 import { getHfSplits, previewHfDataset, searchHfDatasets } from '@granite-build/ui-core/api/autotunex'
 import { PreviewTable } from '@granite-build/ui-core/components/autotunex/shared/PreviewTable'
 import { formatBytes } from '@granite-build/ui-core/lib/autotunex/formatBytes'
-import { defaultConfig, defaultTrainSplit, probeMapping, problemDetail } from './hfImport'
+import { defaultConfig, defaultTrainSplit, hfErrorStatus, probeMapping, problemDetail } from './hfImport'
 import styles from './HfImportModal.module.scss'
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -84,7 +84,13 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
   // The probe. Its only job is to fetch `columns` and `raw_rows`; `sampled` and
   // `survived` are meaningless for a blank-source mapping and are not read here.
   useEffect(() => {
-    if (!open || !repoId || !config || !trainSplit) return
+    if (!open || !repoId || !splits || !config || !trainSplit) return
+    // The chosen pair must exist in the splits currently loaded. On switching
+    // datasets, `splits` briefly holds the new repo's data while `config`/`trainSplit`
+    // still hold the previous repo's (the preselect effect's setState only lands on the
+    // next render), which would fire a probe for a config the new repo does not have
+    // and flash its error before the real config arrives.
+    if (!splits.configs[config]?.includes(trainSplit)) return
     const token = ++previewTokenRef.current
     setPreviewLoading(true)
     setPreviewError('')
@@ -111,7 +117,7 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
       .finally(() => {
         if (previewTokenRef.current === token) setPreviewLoading(false)
       })
-  }, [open, repoId, config, trainSplit, requiredKey])
+  }, [open, repoId, splits, config, trainSplit, requiredKey])
 
   function resetState() {
     previewTokenRef.current += 1
@@ -161,8 +167,7 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
     setValidationSplit(NO_VALIDATION)
   }
 
-  const splitsErrorStatus = (splitsError as { response?: { status?: number } } | null)?.response
-    ?.status
+  const splitsErrorStatus = hfErrorStatus(splitsError)
 
   return (
     <Modal
@@ -196,20 +201,25 @@ export function HfImportModal({ open, onClose, requiredColumns, hfConfig }: HfIm
           `InlineNotification` in @carbon/react 1.108 has NO `actions` prop: its
           implementation destructures title/subtitle/kind/lowContrast/hideCloseButton
           and spreads the rest onto a div, so an `actions` prop would silently become
-          a DOM attribute instead of rendering a button. `ActionableNotification` is
-          Carbon's notification-with-an-action-button, and `inline` gives it the
-          inline styling. Only a 503 is worth retrying: a 422 means the dataset has no
-          tabular data at all, which waiting cannot change, so a Retry button there
-          would promise something it cannot deliver. */}
+          a DOM attribute instead of rendering a button.
+          `Callout` — not `ActionableNotification` — is the component that carries an
+          action button without alertdialog semantics. `ActionableNotification`
+          defaults to `role="alertdialog"` with `hasFocus`, which focuses its action
+          button on mount AND wraps Tab inside the notification while it is open
+          (Notification.js:315,334,352), so on a 503 the user could not reach this
+          modal's own Close button by keyboard — while the 503's message is precisely
+          "Try again later, or upload a file", i.e. it recommends leaving. Carbon's own
+          `@deprecated` note on `hasFocus` points at `Callout` for this case.
+          Only a 503 is worth retrying: a 422 means the dataset has no tabular data at
+          all, which waiting cannot change, so a Retry button there would promise
+          something it cannot deliver. */}
       {!!splitsError &&
         (splitsErrorStatus === 503 ? (
-          <ActionableNotification
-            inline
+          <Callout
             kind="error"
             title="Could not read this dataset"
             subtitle={problemDetail(splitsError, 'Could not read this dataset.')}
             lowContrast
-            hideCloseButton
             className={styles.section}
             actionButtonLabel="Retry"
             onActionButtonClick={() => refetchSplits()}
