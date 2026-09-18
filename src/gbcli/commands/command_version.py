@@ -6,12 +6,10 @@ import click
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
+from gbcli.utils import versionutil
 from gbcli.utils.gbconstants import gb_environment
 from gbcli.utils.gbcredentials import get_user_token
-from gbcli.utils.versionutil import (
-    check_current_and_latest_versions,
-    get_current_version,
-)
+from gbcli.utils.versionutil import get_current_version
 
 
 @click.command()
@@ -50,15 +48,14 @@ def cli(ctx, check_updates, client, format, quiet):
     erase_sequence = "\r\033[K"
 
     if check_updates:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
+        result = versionutil.evaluate_version_status()
+        if result.status is versionutil.VersionStatus.BELOW_FLOOR:
+            # Below the min-supported floor: mandatory upgrade, non-zero exit.
+            click.echo(result.message, err=True)
             ctx.exit(1)  # Exit with a non-zero status
-
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+        elif result.status is versionutil.VersionStatus.OUTDATED_WARN:
+            # A newer version exists but we're still supported: notify, exit 0.
+            click.echo(result.message, err=True)
         else:
             click.echo(
                 f"The current client version ({get_current_version('granite.build')}) is up to date."

@@ -1,4 +1,6 @@
 import logging
+from dataclasses import dataclass
+from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 
 from packaging.version import InvalidVersion, Version
@@ -9,25 +11,86 @@ from gbcommon.types.constants import GB_PUBLIC_REPO_NAME, GB_PUBLIC_REPO_ORG
 
 logger = logging.getLogger(__name__)
 
+# The moving tag marking the oldest client we still support. A client at or above this
+# floor is allowed to run (with a warning if a newer version exists); a client below it
+# is blocked. It shares a commit with the vX.Y.Z tag it points at, so we can resolve the
+# floor version by matching object SHAs in a single tags response.
+MIN_SUPPORTED_TAG = "min-supported"
+
+# Shown to users who need to upgrade. Pins the rolling `stable` tag rather than the
+# `granite.build` PyPI name (the project isn't published to PyPI).
+_UPGRADE_CMD = (
+    "pip install --upgrade "
+    "'git+https://github.com/ibm-granite/granite.build.git@stable'"
+)
+
+
+class VersionStatus(Enum):
+    UP_TO_DATE = "up_to_date"
+    OUTDATED_WARN = "outdated_warn"  # at/above floor, newer available -> warn, proceed
+    BELOW_FLOOR = "below_floor"  # below min-supported -> hard block
+    UNKNOWN = "unknown"  # check couldn't complete -> proceed silently
+
+
+@dataclass
+class VersionCheckResult:
+    """Outcome of the version check. Pure data — the command layer decides how to act.
+
+    ``message`` holds the fully-formed stderr text for OUTDATED_WARN / BELOW_FLOOR and is
+    empty otherwise, so every user-facing string stays in this click-free module.
+    """
+
+    status: VersionStatus
+    current_version: str = ""
+    latest_version: str = ""
+    floor_version: str = ""
+    message: str = ""
+
 
 def get_latest_version(repo_org: str, repo_name: str) -> str:
     logger.debug(
         "Checking latest CLI version from public repo %s/%s", repo_org, repo_name
     )
     tags = run_github_command(lambda: get_public_repo_tags(repo_org, repo_name))
-
-    versions = []
-    for tag in tags:
-        raw = str(tag["ref"]).split("/")[-1].lstrip("v")
-        try:
-            versions.append(Version(raw))
-        except InvalidVersion:
-            logger.debug("Skipping non-PEP440 tag: %s", tag.get("ref"))
-            continue  # skip non-PEP440 tags rather than failing the whole check
-
-    latest = str(max(versions)) if versions else "0.0.0"
+    latest, _ = _resolve_versions_from_tags(tags)
     logger.debug("Latest CLI version resolved to %s", latest)
     return latest
+
+
+def _resolve_versions_from_tags(tags) -> tuple[str, str]:
+    """From one ``/git/refs/tags`` response return ``(latest_version, floor_version)``.
+
+    latest: ``str(max)`` of the vX.Y.Z PEP 440 tags, or "0.0.0" if none are valid.
+    floor:  the vX.Y.Z tag sharing ``min-supported``'s target object SHA, or "" when
+            ``min-supported`` is absent or unresolvable (e.g. an annotated tag whose
+            SHA is the tag object, not the shared commit). An unresolved floor means
+            "no known floor" — warn-only, never a false block.
+    """
+    versions = []
+    sha_to_version: dict[str, Version] = {}
+    min_supported_sha = None
+
+    for tag in tags:
+        ref = str(tag["ref"])
+        name = ref.split("/")[-1]
+        sha = (tag.get("object") or {}).get("sha")
+        if name == MIN_SUPPORTED_TAG:
+            min_supported_sha = sha
+            continue
+        try:
+            parsed = Version(name.lstrip("v"))
+        except InvalidVersion:
+            logger.debug("Skipping non-PEP440 tag: %s", ref)
+            continue  # skip non-PEP440 tags rather than failing the whole check
+        versions.append(parsed)
+        if sha:
+            sha_to_version[sha] = parsed
+
+    latest = str(max(versions)) if versions else "0.0.0"
+    floor = ""
+    if min_supported_sha and min_supported_sha in sha_to_version:
+        floor = str(sha_to_version[min_supported_sha])
+    return latest, floor
 
 
 def get_current_version(package_name: str) -> str:
@@ -37,29 +100,78 @@ def get_current_version(package_name: str) -> str:
         return "unknown"
 
 
-def check_current_and_latest_versions() -> str:
-    # The version check queries the public granite.build repo over unauthenticated
-    # HTTPS, so it needs no GitHub credentials, SSH keys, or login. It therefore works
-    # everywhere, including standalone mode.
-    #
-    # This is a best-effort notice, not a gate: if the check can't complete (offline,
-    # rate-limited, or the installed version can't be parsed — e.g. "unknown" from a
-    # non-pip-installed source checkout) we silently skip it rather than blocking the
-    # command the user actually ran. The whole comparison runs inside the try so a
-    # parse failure on either side never escapes.
+def warn_message(current: str, latest: str) -> str:
+    return (
+        f"A new version of {PROJECT_NAME} CLI ({latest}) is available. "
+        f"You are currently running version {current}. "
+        f"Run `{_UPGRADE_CMD}` or a command suitable to your environment to upgrade."
+    )
+
+
+def below_floor_message(current: str, floor: str) -> str:
+    return (
+        f"Your {PROJECT_NAME} CLI version ({current}) is no longer supported. "
+        f"The minimum supported version is {floor}. You must upgrade to continue. "
+        f"Run `{_UPGRADE_CMD}` or a command suitable to your environment to upgrade."
+    )
+
+
+def evaluate_version_status(package_name: str = "granite.build") -> VersionCheckResult:
+    """Resolve the CLI's version status against the public repo. Click-free, best-effort.
+
+    The check queries the public granite.build repo over unauthenticated HTTPS, so it
+    needs no GitHub credentials, SSH keys, or login and works everywhere (including
+    standalone mode).
+
+    It is a best-effort notice, not a hard gate: any failure (offline, rate-limited, an
+    unparseable installed version such as "unknown" from a non-pip source checkout)
+    yields ``UNKNOWN`` so the caller proceeds.
+
+    The floor loosens the check only when it is known. When ``min-supported`` resolves to
+    a floor version, a client at or above it is merely warned about a newer release
+    (OUTDATED_WARN) and only a client below it is blocked (BELOW_FLOOR). When the floor is
+    unknown (no ``min-supported`` tag, or it can't be resolved) we fall back to the
+    pre-floor behavior and mandate the upgrade for any outdated client, so a missing tag
+    never silently downgrades a block to a warning.
+    """
     try:
-        latest_version = get_latest_version(GB_PUBLIC_REPO_ORG, GB_PUBLIC_REPO_NAME)
-        current_version = get_current_version("granite.build")
-        is_outdated = Version(current_version) < Version(latest_version)
+        tags = run_github_command(
+            lambda: get_public_repo_tags(GB_PUBLIC_REPO_ORG, GB_PUBLIC_REPO_NAME)
+        )
+        latest, floor = _resolve_versions_from_tags(tags)
+        current = get_current_version(package_name)
+        current_v = Version(current)
+        latest_v = Version(latest)
     except Exception as e:
         logger.debug("Skipping version check: %s", e)
-        return ""
+        return VersionCheckResult(VersionStatus.UNKNOWN)
 
-    if is_outdated:
-        return (
-            f"A new version of {PROJECT_NAME} CLI ({latest_version}) is available. "
-            f"You are currently running version {current_version}. "
-            "Run `pip install --upgrade granite.build` or a command suitable to your environment to upgrade."
+    # Whether we know a floor to compare against. An unparseable floor is treated as
+    # unknown so it can't accidentally suppress the mandatory-upgrade fallback below.
+    floor_v = None
+    if floor:
+        try:
+            floor_v = Version(floor)
+        except InvalidVersion:
+            floor = ""  # unresolvable floor -> treat as no floor
+
+    if current_v >= latest_v:
+        return VersionCheckResult(VersionStatus.UP_TO_DATE, current, latest, floor)
+
+    # Outdated. Warn only when we know a floor and the client is at/above it; otherwise
+    # (below a known floor, or no floor known at all) block with a mandatory upgrade.
+    if floor_v is not None and current_v >= floor_v:
+        return VersionCheckResult(
+            VersionStatus.OUTDATED_WARN,
+            current,
+            latest,
+            floor,
+            message=warn_message(current, latest),
         )
-    else:
-        return ""
+
+    message = (
+        below_floor_message(current, floor) if floor else warn_message(current, latest)
+    )
+    return VersionCheckResult(
+        VersionStatus.BELOW_FLOOR, current, latest, floor, message=message
+    )
