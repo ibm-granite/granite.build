@@ -17,6 +17,20 @@ import type { Dataset } from '../../../types'
 import { PreviewTable } from '../shared/PreviewTable'
 import { formatBytes } from '../../../lib/autotunex/formatBytes'
 
+function formatAppliedMapping(mapping: Record<string, string> | undefined): string {
+  if (!mapping || Object.keys(mapping).length === 0) return '—'
+  return Object.entries(mapping)
+    .map(([target, source]) => `${target} ← ${source}`)
+    .join(', ')
+}
+
+/** Retained versus original, flagged when the import hit the row cap. */
+function formatRowsKept(retained: number | undefined, original: number | undefined): string {
+  if (typeof retained !== 'number' || typeof original !== 'number') return '—'
+  const capped = retained < original ? ' (capped)' : ''
+  return `${retained.toLocaleString()} of ${original.toLocaleString()}${capped}`
+}
+
 interface Props {
   open: boolean
   datasetId: string | null
@@ -81,6 +95,50 @@ export function SettingsDatasetView({ open, datasetId, onClose, scope = 'own' }:
               </div>
             ))}
           </div>
+
+          {dataset.hf_repo_id && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', marginBottom: '1.5rem' }}>
+              <div style={{ minWidth: '10rem' }}>
+                <FormLabel>HuggingFace repo</FormLabel>
+                <div style={{ fontFamily: 'monospace' }}>
+                  <a
+                    href={`https://huggingface.co/datasets/${dataset.hf_repo_id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {dataset.hf_repo_id}
+                  </a>
+                </div>
+              </div>
+              {([
+                ['Revision', dataset.hf_revision ? dataset.hf_revision.slice(0, 7) : '—'],
+                ['Config', dataset.hf_config ?? '—'],
+                ['Split', dataset.hf_split ?? '—'],
+                ['Applied mapping', formatAppliedMapping(dataset.hf_provenance?.column_mapping)],
+                [
+                  'Train rows kept',
+                  formatRowsKept(
+                    dataset.hf_provenance?.train_retained_rows,
+                    dataset.hf_provenance?.train_original_rows
+                  ),
+                ],
+                [
+                  'Validation rows kept',
+                  formatRowsKept(
+                    dataset.hf_provenance?.validation_retained_rows,
+                    dataset.hf_provenance?.validation_original_rows
+                  ),
+                ],
+              ] as [string, string][]).map(([label, value]) => (
+                <div key={label} style={{ minWidth: '10rem' }}>
+                  <FormLabel>{label}</FormLabel>
+                  <div style={{ fontFamily: 'monospace' }} title={label === 'Revision' ? dataset.hf_revision : undefined}>
+                    {value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           <Tabs>
             <TabList aria-label="Dataset preview">
