@@ -9,6 +9,8 @@
  * resolution in Node). See wizardDraft.ts for the same constraint.
  */
 
+import type { HfProvenance } from '@granite-build/ui-core/types'
+
 // Matches the server's DatasetName: max 255, and no '/', '\' or '..' because the
 // name becomes a filesystem path segment.
 const NAME_MAX = 255
@@ -79,4 +81,110 @@ export function isMappingComplete(
 ): boolean {
   if (requiredColumns.length === 0) return false
   return requiredColumns.every((column) => Boolean(mapping[column]))
+}
+
+export type SurvivalKind = 'hidden' | 'blocked' | 'warning' | 'ok'
+
+export interface SurvivalSummary {
+  kind: SurvivalKind
+  text: string
+}
+
+/**
+ * What to tell the user about a mapping's survival count, and whether to block.
+ *
+ * `hidden` before the mapping is complete: the server counts survivors over the
+ * mapping's own keys, so a half-filled mapping yields a high number describing
+ * only the columns chosen so far -- reassuring and close to meaningless.
+ *
+ * Zero survivors blocks (the mapping is simply wrong); anything else warns and
+ * allows, because real Hub datasets are legitimately ragged and an 85%-clean one
+ * may be exactly what someone wants.
+ */
+export function survivalSummary(input: {
+  sampled: number
+  survived: number
+  mappingComplete: boolean
+}): SurvivalSummary {
+  const { sampled, survived, mappingComplete } = input
+  if (!mappingComplete) return { kind: 'hidden', text: '' }
+  if (sampled === 0) return { kind: 'blocked', text: 'The selected split returned no rows.' }
+  if (survived === 0) {
+    return {
+      kind: 'blocked',
+      text: `No rows survived this mapping (0 of ${sampled} sampled rows). Check the column mapping.`,
+    }
+  }
+  if (survived < sampled) {
+    return {
+      kind: 'warning',
+      text: `${survived} of ${sampled} sampled rows have every mapped column filled.`,
+    }
+  }
+  return { kind: 'ok', text: `All ${sampled} sampled rows have every mapped column filled.` }
+}
+
+/** Preselect a config, still explicitly shown: a silently wrong pick is only
+ *  discovered after a multi-hour tuning run. */
+export function defaultConfig(configNames: string[]): string {
+  if (configNames.includes('default')) return 'default'
+  return configNames[0] ?? ''
+}
+
+/** Same contract as defaultConfig, for the train split. */
+export function defaultTrainSplit(splitNames: string[]): string {
+  if (splitNames.includes('train')) return 'train'
+  return splitNames[0] ?? ''
+}
+
+// Pinned locale: the default is the host's, which would make both this copy and
+// its tests machine-dependent.
+function formatCount(value: number): string {
+  return value.toLocaleString('en-US')
+}
+
+/**
+ * Whether the import hit the row cap, and what to say about it.
+ *
+ * Above `max_rows` the server takes the first N rather than refusing. The
+ * frontend cannot know the total beforehand -- the preview samples 100 rows -- so
+ * this reads it back out of the provenance the import wrote. Both splits are
+ * checked: a truncated validation split with an untouched train split is a real
+ * outcome that a train-only check would report as clean.
+ */
+export function truncationNotice(
+  provenance: HfProvenance | null | undefined,
+  maxRows: number
+): string | null {
+  if (!provenance) return null
+  const pairs: [string, number | undefined, number | undefined][] = [
+    ['train', provenance.train_original_rows, provenance.train_retained_rows],
+    ['validation', provenance.validation_original_rows, provenance.validation_retained_rows],
+  ]
+  const parts: string[] = []
+  for (const [label, original, retained] of pairs) {
+    if (typeof original !== 'number' || typeof retained !== 'number') continue
+    if (retained >= original) continue
+    parts.push(
+      `Imported the first ${formatCount(retained)} of ${formatCount(original)} ${label} rows (capped at ${formatCount(maxRows)}).`
+    )
+  }
+  return parts.length > 0 ? parts.join(' ') : null
+}
+
+/**
+ * The user-facing message for a failed request.
+ *
+ * Every backend error is an RFC 9457 problem detail whose `detail` is authored,
+ * user-safe copy, so rendering it verbatim beats deriving a message from the
+ * status code -- and it is the only way to distinguish the two 503s, which share
+ * `title: "Service Unavailable"` and differ only in `detail`.
+ *
+ * Read structurally rather than via `axios.isAxiosError`, because keeping this
+ * module free of value imports is what lets `node --test` load it.
+ */
+export function problemDetail(err: unknown, fallback: string): string {
+  const detail = (err as { response?: { data?: { detail?: unknown } } } | null | undefined)
+    ?.response?.data?.detail
+  return typeof detail === 'string' && detail.trim() !== '' ? detail : fallback
 }

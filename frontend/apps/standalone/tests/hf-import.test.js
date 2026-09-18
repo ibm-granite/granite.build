@@ -24,6 +24,11 @@ const {
   suffixWithRevision,
   probeMapping,
   isMappingComplete,
+  survivalSummary,
+  defaultConfig,
+  defaultTrainSplit,
+  truncationNotice,
+  problemDetail,
 } = require('../app/dashboard/autotunex/start-tuning/steps/hfImport.ts')
 
 describe('deriveDatasetName', () => {
@@ -128,5 +133,142 @@ describe('isMappingComplete', () => {
     // Not vacuously true: with no known targets there is no valid import request
     // to build (column_mapping is min_length=1), so the import must stay blocked.
     assert.equal(isMappingComplete({}, []), false)
+  })
+})
+
+describe('survivalSummary', () => {
+  it('shows nothing at all until the mapping is complete', () => {
+    // A partial mapping's survival count is computed over the mapping's own keys,
+    // so it reports a high number for the columns filled in so far. Showing it
+    // would undo the reason the mapping screen cannot be skipped.
+    const summary = survivalSummary({ sampled: 100, survived: 98, mappingComplete: false })
+    assert.equal(summary.kind, 'hidden')
+    assert.equal(summary.text, '')
+  })
+
+  it('blocks when no row survives the mapping', () => {
+    const summary = survivalSummary({ sampled: 100, survived: 0, mappingComplete: true })
+    assert.equal(summary.kind, 'blocked')
+    assert.match(summary.text, /0 of 100/)
+  })
+
+  it('blocks with its own message when the split returned no rows', () => {
+    const summary = survivalSummary({ sampled: 0, survived: 0, mappingComplete: true })
+    assert.equal(summary.kind, 'blocked')
+    assert.match(summary.text, /no rows/i)
+  })
+
+  it('warns but allows a partially surviving mapping', () => {
+    // The alpaca-gpt4 case: its own column named `input` is empty in 54 of 100
+    // rows, so an identity mapping retains 46. This number is the only thing that
+    // reveals it, so it must be present and must not read as success.
+    const summary = survivalSummary({ sampled: 100, survived: 46, mappingComplete: true })
+    assert.equal(summary.kind, 'warning')
+    assert.match(summary.text, /46 of 100/)
+  })
+
+  it('confirms a fully surviving mapping', () => {
+    const summary = survivalSummary({ sampled: 100, survived: 100, mappingComplete: true })
+    assert.equal(summary.kind, 'ok')
+    assert.match(summary.text, /100/)
+  })
+})
+
+describe('defaultConfig', () => {
+  it('prefers the config named "default"', () => {
+    assert.equal(defaultConfig(['en', 'default', 'fr']), 'default')
+  })
+
+  it('falls back to the first config', () => {
+    assert.equal(defaultConfig(['en', 'fr']), 'en')
+  })
+
+  it('returns empty for no configs', () => {
+    assert.equal(defaultConfig([]), '')
+  })
+})
+
+describe('defaultTrainSplit', () => {
+  it('prefers the split named "train"', () => {
+    assert.equal(defaultTrainSplit(['test', 'train']), 'train')
+  })
+
+  it('falls back to the first split', () => {
+    assert.equal(defaultTrainSplit(['test', 'validation']), 'test')
+  })
+
+  it('returns empty for no splits', () => {
+    assert.equal(defaultTrainSplit([]), '')
+  })
+})
+
+describe('truncationNotice', () => {
+  it('is silent when nothing was truncated', () => {
+    assert.equal(truncationNotice(null, 50000), null)
+    assert.equal(truncationNotice(undefined, 50000), null)
+    assert.equal(
+      truncationNotice({ train_original_rows: 100, train_retained_rows: 100 }, 50000),
+      null
+    )
+  })
+
+  it('is silent when the counts are absent', () => {
+    assert.equal(truncationNotice({ column_mapping: { input: 'instruction' } }, 50000), null)
+  })
+
+  it('reports a truncated train split with both counts and the cap', () => {
+    const notice = truncationNotice(
+      { train_original_rows: 120000, train_retained_rows: 50000 },
+      50000
+    )
+    assert.match(notice, /50,000/)
+    assert.match(notice, /120,000/)
+    assert.match(notice, /train/)
+  })
+
+  it('reports a truncated validation split even when train was untouched', () => {
+    // Checking only the train pair would stay silent here.
+    const notice = truncationNotice(
+      {
+        train_original_rows: 100,
+        train_retained_rows: 100,
+        validation_original_rows: 80000,
+        validation_retained_rows: 50000,
+      },
+      50000
+    )
+    assert.match(notice, /validation/)
+    assert.ok(!notice.includes('train'))
+  })
+
+  it('reports both splits when both were truncated', () => {
+    const notice = truncationNotice(
+      {
+        train_original_rows: 120000,
+        train_retained_rows: 50000,
+        validation_original_rows: 80000,
+        validation_retained_rows: 50000,
+      },
+      50000
+    )
+    assert.match(notice, /train/)
+    assert.match(notice, /validation/)
+  })
+})
+
+describe('problemDetail', () => {
+  it('returns the backend authored detail', () => {
+    // The two 503s share a title and differ only here, so this string is the only
+    // thing that tells "not converted yet" from "disabled in this deployment".
+    const err = { response: { data: { detail: 'HuggingFace has not converted x/y yet.' } } }
+    assert.equal(problemDetail(err, 'fallback'), 'HuggingFace has not converted x/y yet.')
+  })
+
+  it('falls back when there is no usable detail', () => {
+    assert.equal(problemDetail(null, 'fallback'), 'fallback')
+    assert.equal(problemDetail({}, 'fallback'), 'fallback')
+    assert.equal(problemDetail({ response: { data: {} } }, 'fallback'), 'fallback')
+    assert.equal(problemDetail({ response: { data: { detail: '   ' } } }, 'fallback'), 'fallback')
+    assert.equal(problemDetail({ response: { data: { detail: { a: 1 } } } }, 'fallback'), 'fallback')
   })
 })
