@@ -249,7 +249,14 @@ export function canImport(input: {
   if (!input.hasRepo || !input.hasConfig || !input.hasTrainSplit) return false
   if (!input.mappingComplete || !input.nameValid || input.importing) return false
   if (input.survivalKind !== 'ok' && input.survivalKind !== 'warning') return false
-  if (input.splitFromTrain && !(input.validationPercentage >= 1 && input.validationPercentage <= 50)) {
+  if (
+    input.splitFromTrain &&
+    !(
+      Number.isInteger(input.validationPercentage) &&
+      input.validationPercentage >= 1 &&
+      input.validationPercentage <= 50
+    )
+  ) {
     return false
   }
   return true

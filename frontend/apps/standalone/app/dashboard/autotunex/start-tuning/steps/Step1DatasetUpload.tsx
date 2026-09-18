@@ -1023,7 +1023,7 @@ function ExpectedFormatPanel({ selectedAlgorithm, datasetTypes }: { selectedAlgo
         </TabPanels>
       </Tabs>
 
-      <p className={styles.emptyStateHint}>Upload a dataset or select an existing one to get started.</p>
+      <p className={styles.emptyStateHint}>Choose a dataset to get started.</p>
     </Tile>
   )
 }

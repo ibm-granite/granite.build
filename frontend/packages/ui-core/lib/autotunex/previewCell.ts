@@ -5,8 +5,8 @@ export interface PreviewTableHeader {
 
 /**
  * Rendered text for one preview cell. A null/undefined value renders empty --
- * see PreviewTable's comment for why (typeof null === 'object' would
- * otherwise route it into JSON.stringify as the literal text "null").
+ * this needs saying because typeof null === 'object', which would otherwise
+ * route it into JSON.stringify and print the literal text "null".
  */
 export function previewCellText(value: unknown, maxCellChars?: number): string {
   const text = value == null ? '' : typeof value === 'string' ? value : JSON.stringify(value)

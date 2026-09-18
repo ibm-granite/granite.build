@@ -397,6 +397,13 @@ describe('canImport', () => {
     assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 50 }), true)
   })
 
+  it('blocks a non-integer validation percentage within range', () => {
+    // Pins integrality: 10.5 satisfies `>= 1 && <= 50` on its own, so without the
+    // Number.isInteger guard it would pass canImport and reach the server's
+    // `int | None` field as a 422.
+    assert.equal(canImport({ ...base, splitFromTrain: true, validationPercentage: 10.5 }), false)
+  })
+
   it('ignores the percentage when a separate validation split is chosen', () => {
     assert.equal(canImport({ ...base, splitFromTrain: false, validationPercentage: 0 }), true)
     assert.equal(canImport({ ...base, splitFromTrain: false, validationPercentage: 99 }), true)

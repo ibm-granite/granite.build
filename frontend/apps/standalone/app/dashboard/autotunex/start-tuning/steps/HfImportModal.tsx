@@ -78,7 +78,12 @@ export function HfImportModal({
   const [validationSplit, setValidationSplit] = useState(NO_VALIDATION)
 
   const [preview, setPreview] = useState<HfImportPreview | null>(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
+  // Two independent booleans, each set and cleared by exactly one effect below --
+  // sharing one meant whichever request resolved first cleared the spinner while
+  // the other was still in flight. Both feed the same loading indicator in the
+  // JSX (`probeLoading || mappedLoading`); there is still only one render site.
+  const [probeLoading, setProbeLoading] = useState(false)
+  const [mappedLoading, setMappedLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [mapping, setMapping] = useState<ColumnMapping>({})
   // Tagged with the key it was fetched for (repo/config/split/mapping), so a
@@ -141,6 +146,7 @@ export function HfImportModal({
     const nextConfig = defaultConfig(Object.keys(splits.configs))
     setConfig(nextConfig)
     setTrainSplit(defaultTrainSplit(splits.configs[nextConfig] ?? []))
+    setMapping({})
     setValidationSplit(NO_VALIDATION)
     setName(deriveDatasetName(splits.repo_id))
   }, [splits])
@@ -156,7 +162,7 @@ export function HfImportModal({
     // and flash its error before the real config arrives.
     if (!splits.configs[config]?.includes(trainSplit)) return
     const token = ++previewTokenRef.current
-    setPreviewLoading(true)
+    setProbeLoading(true)
     setPreviewError('')
     setPreview(null)
     setMapping({})
@@ -180,7 +186,7 @@ export function HfImportModal({
         setPreviewError(problemDetail(err, 'Could not preview this dataset.'))
       })
       .finally(() => {
-        if (previewTokenRef.current === token) setPreviewLoading(false)
+        if (previewTokenRef.current === token) setProbeLoading(false)
       })
   }, [open, repoId, splits, config, trainSplit, requiredKey])
 
@@ -204,7 +210,7 @@ export function HfImportModal({
     }
     const key = mappedPreviewKey({ repoId, config, trainSplit, mappingKey })
     const token = ++mappedTokenRef.current
-    setPreviewLoading(true)
+    setMappedLoading(true)
     setMappedPreviewError('')
     previewHfDataset({
       repo_id: repoId,
@@ -222,7 +228,7 @@ export function HfImportModal({
         setMappedPreviewError(problemDetail(err, 'Could not preview this mapping.'))
       })
       .finally(() => {
-        if (mappedTokenRef.current === token) setPreviewLoading(false)
+        if (mappedTokenRef.current === token) setMappedLoading(false)
       })
   }, [open, repoId, splits, config, trainSplit, mappingComplete, mappingKey])
 
@@ -238,7 +244,8 @@ export function HfImportModal({
     setTrainSplit('')
     setValidationSplit(NO_VALIDATION)
     setPreview(null)
-    setPreviewLoading(false)
+    setProbeLoading(false)
+    setMappedLoading(false)
     setPreviewError('')
     setMapping({})
     setMappedPreview(null)
@@ -288,6 +295,7 @@ export function HfImportModal({
   function handleConfigChange(nextConfig: string) {
     setConfig(nextConfig)
     setTrainSplit(defaultTrainSplit(splits?.configs?.[nextConfig] ?? []))
+    setMapping({})
     setValidationSplit(NO_VALIDATION)
   }
 
@@ -525,7 +533,10 @@ export function HfImportModal({
                 id="hf-train-split"
                 labelText="Train split"
                 value={trainSplit}
-                onChange={(event) => setTrainSplit(event.target.value)}
+                onChange={(event) => {
+                  setTrainSplit(event.target.value)
+                  setMapping({})
+                }}
                 disabled={importing}
               >
                 {splitNames.map((split) => (
@@ -559,7 +570,7 @@ export function HfImportModal({
         </>
       )}
 
-      {previewLoading && <InlineLoading description="Loading sample rows..." />}
+      {(probeLoading || mappedLoading) && <InlineLoading description="Loading sample rows..." />}
 
       {!!previewError && (
         <InlineNotification
@@ -589,7 +600,28 @@ export function HfImportModal({
       {preview && (
         <>
           <p className={styles.subheading}>Sample rows</p>
-          <PreviewTable rows={preview.raw_rows} maxRows={PREVIEW_ROWS} maxCellChars={CELL_MAX} />
+          <PreviewTable
+            rows={preview.raw_rows}
+            maxRows={PREVIEW_ROWS}
+            maxCellChars={CELL_MAX}
+            emptyMessage="This split returned no rows."
+          />
+
+          {/* Independent of mappingComplete and survivalSummary: with zero raw
+              rows there are no columns, so the mapping below can never complete
+              and survivalSummary's own zero-sampled branch is unreachable. This
+              is the only thing that tells the user why, before they hit a
+              disabled Import button with no explanation. */}
+          {preview.sampled === 0 && (
+            <InlineNotification
+              kind="info"
+              title="No rows in this split"
+              subtitle="This split returned no rows. Choose a different split."
+              lowContrast
+              hideCloseButton
+              className={styles.section}
+            />
+          )}
 
           <p className={styles.subheading}>Column mapping</p>
           <div className={styles.row}>
@@ -659,7 +691,11 @@ export function HfImportModal({
                   max={50}
                   value={String(validationPercentage)}
                   onChange={(event) => setValidationPercentage(Number(event.target.value))}
-                  invalid={validationPercentage < 1 || validationPercentage > 50}
+                  invalid={
+                    !Number.isInteger(validationPercentage) ||
+                    validationPercentage < 1 ||
+                    validationPercentage > 50
+                  }
                   invalidText="Choose between 1 and 50."
                   disabled={importing}
                 />
