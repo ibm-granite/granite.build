@@ -1975,3 +1975,32 @@ def test_prologue_no_provider_is_plain_cli_prefix():
     assert skymod._compose_step_prologue(None, "/mnt/x") == skymod._get_cli_prefix(
         "/mnt/x"
     )
+
+
+def test_container_mount_options_appended_to_empty_docker_config():
+    out = skymod._with_container_mount_options({})
+    assert out["run_options"] == [
+        "--net=host",
+        "--cap-add=SYS_ADMIN",
+        "--device=/dev/fuse",
+    ]
+
+
+def test_container_mount_options_preserve_and_dedupe_existing_run_options():
+    out = skymod._with_container_mount_options(
+        {"run_options": ["--shm-size=1g", "--net=host"]}
+    )
+    # user options kept, order preserved, no duplicate --net=host, the two
+    # missing mount flags appended.
+    assert out["run_options"] == [
+        "--shm-size=1g",
+        "--net=host",
+        "--cap-add=SYS_ADMIN",
+        "--device=/dev/fuse",
+    ]
+
+
+def test_container_mount_options_does_not_mutate_input():
+    original = {"run_options": ["--shm-size=1g"]}
+    skymod._with_container_mount_options(original)
+    assert original == {"run_options": ["--shm-size=1g"]}

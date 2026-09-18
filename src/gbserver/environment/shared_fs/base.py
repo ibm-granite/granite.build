@@ -1,9 +1,12 @@
 """SharedFilesystemProvider contract + the shared_workdir resolver."""
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from gbserver.environment.shared_fs.config import SharedFilesystemConfig
+
+if TYPE_CHECKING:
+    from gbserver.types.environmentconfig import EnvironmentConfig
 
 
 class SharedFilesystemProvider(ABC):
@@ -29,7 +32,7 @@ class SharedFilesystemProvider(ABC):
         return None
 
 
-def resolve_shared_workdir(config) -> Optional[str]:
+def resolve_shared_workdir(config: Optional["EnvironmentConfig"]) -> Optional[str]:
     """Resolve the shared_workdir root from an EnvironmentConfig (only ``.config``
     is read). shared_filesystem -> mount_point; else shared_workdir; else None.
     Both set -> ValueError (defensive; EnvironmentConfig also rejects this)."""

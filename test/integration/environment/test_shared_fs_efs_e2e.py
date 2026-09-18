@@ -321,7 +321,8 @@ def _write_spec_dir(tmp_path: Path, image: str) -> Path:
 async def _submit_and_wait(spec_dir: Path) -> None:
     """Submit the materialized 2-step build to the real SkyPilot/aws harness.
 
-    SCAFFOLD -- FINAL HARNESS WIRING TODO (do NOT run for real until wired):
+    SCAFFOLD -- FINAL HARNESS WIRING TRACKED IN #393 (do NOT run for real until
+    wired):
 
     The shipped skypilot-aws step tests submit via
     ``libgbtest.buildrunner.buildtest.AbstractYamlBuildRunnerTest`` +
@@ -353,9 +354,10 @@ async def _submit_and_wait(spec_dir: Path) -> None:
     """
     raise NotImplementedError(
         "shared-fs EFS E2E: final SkyPilot/aws build-submission wiring is a "
-        "scaffold. Render a Space exposing the materialized environment.yaml as "
-        "space://environments/skypilot/aws-shared-fs and drive the build via "
-        "AbstractYamlBuildRunnerTest / BuildTestSpecification.from_yaml"
+        "scaffold (tracked in #393). Render a Space exposing the materialized "
+        "environment.yaml as space://environments/skypilot/aws-shared-fs and "
+        "drive the build via AbstractYamlBuildRunnerTest / "
+        "BuildTestSpecification.from_yaml"
         f"({spec_dir / 'buildtest.yaml'}), asserting SUCCESS + the "
         "target_expectations. See this function's docstring."
     )

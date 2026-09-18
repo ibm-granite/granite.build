@@ -58,7 +58,11 @@ class EfsProvider(SharedFilesystemProvider):
         # shell-safe paths) so the emitted paths are unambiguous.
         pr = "'" + per_run_workdir.replace("'", "'\\''") + "'"
         return (
-            self.mount_prologue()
+            # Fail-fast like the step prologue. The mount line already aborts
+            # (|| exit 1) before any rm if the mount fails; `set -eu` is
+            # defense-in-depth so nothing runs after a silent failure.
+            "set -eu\n"
+            + self.mount_prologue()
             + f"rm -rf {pr}\n"
             + f'rmdir --ignore-fail-on-non-empty "$(dirname {pr})" 2>/dev/null || true\n'
             + f'rmdir --ignore-fail-on-non-empty "$(dirname "$(dirname {pr})")" 2>/dev/null || true\n'

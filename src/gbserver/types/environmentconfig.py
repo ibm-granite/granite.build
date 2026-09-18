@@ -170,6 +170,20 @@ class EnvironmentConfig(Config):
             raise ValueError(
                 "set exactly one of 'shared_filesystem' or 'shared_workdir', not both"
             )
+        # The EFS mount targets and the teardown VM are AWS-only, and both the
+        # per-run mount and teardown launch key on ``default_cloud`` (skypilot's
+        # ``_get_cloud``, which defaults to ``k8s`` when unset) -- NOT on
+        # ``subtype``. A ``subtype: aws`` env whose ``default_cloud`` is anything
+        # other than aws (including unset -> k8s) would pass the subtype gate yet
+        # mount/teardown on the wrong cloud, where no mount target exists. Require
+        # them to agree so the misconfiguration is caught at config load.
+        default_cloud = cfg.get("default_cloud")
+        if default_cloud != "aws":
+            raise ValueError(
+                "shared_filesystem requires 'default_cloud: aws' (the EFS mount "
+                "targets and the teardown VM are AWS-only); got "
+                f"default_cloud={default_cloud!r}"
+            )
         mount_point = sf.get("mount_point") if isinstance(sf, dict) else None
         for store in self.assetstores:
             if "hf" not in (store.store_uri or ""):

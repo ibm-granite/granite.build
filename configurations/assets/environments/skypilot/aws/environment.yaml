@@ -36,8 +36,9 @@ config:
   # Optional: a BYO pre-provisioned EFS filesystem so multi-step data flow works
   # across the separate EC2 instances SkyPilot allocates per step. Opt-in; when
   # set it PRODUCES the shared_workdir root (do NOT also set shared_workdir).
-  # Requires: EFS + mount targets per worker AZ + an SG allowing NFS 2049, and the
-  # EFS root chmod'd 1777 (see docs/environments/skypilot-aws.md).
+  # Requires: default_cloud: aws (rejected otherwise — the mount targets and
+  # teardown VM are AWS-only), EFS + mount targets per worker AZ + an SG allowing
+  # NFS 2049, and the EFS root chmod'd 1777 (see docs/environments/skypilot-aws.md).
   # shared_filesystem:
   #   provider: efs
   #   mount_point: /mnt/gb-shared

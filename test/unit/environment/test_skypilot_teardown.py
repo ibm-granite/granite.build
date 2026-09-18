@@ -208,13 +208,14 @@ class TestMonitorTreatsTeardownAsSuccess:
 
 def make_skypilot_env(config):
     """Build a Skypilot env whose ``shared_filesystem`` block passes the
-    EnvironmentConfig gate (Skypilot/aws)."""
+    EnvironmentConfig gate (Skypilot/aws). Injects ``default_cloud: aws`` (which
+    the gate requires) unless the caller set it."""
     event_q = asyncio.Queue()
     ec = EnvironmentConfig(
         name="test-shared-fs",
         type="Skypilot",
         subtype="aws",
-        config=config,
+        config={"default_cloud": "aws", **config},
     )
     return Skypilot(event_q=event_q, environment_config=ec)
 
@@ -369,11 +370,12 @@ class TestWorkdirLauncherEnvVars:
             type="Skypilot",
             subtype="aws",
             config={
+                "default_cloud": "aws",
                 "shared_filesystem": {
                     "provider": "efs",
                     "mount_point": "/mnt/gb-shared",
                     "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
-                }
+                },
             },
         )
         env = Skypilot(event_q=event_q, environment_config=ec)

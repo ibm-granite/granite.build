@@ -953,6 +953,33 @@ def aws_credentials_present() -> bool:
     return has_key_pair or bool(os.environ.get("AWS_PROFILE"))
 
 
+# Sentinel distinguishing "shared_filesystem provider not yet computed" from a
+# computed None (no provider). See Skypilot._shared_fs_provider.
+_PROVIDER_UNSET = object()
+
+# docker run options an in-container shared_filesystem (EFS/NFS) mount needs:
+# --net=host so the mount-target IP is reachable via the host network, plus
+# SYS_ADMIN + /dev/fuse for mount(2)/FUSE. SkyPilot injects exactly these in its
+# own default container run options (sky/provision/docker_utils.py), but we pin
+# them so gbserver owns the requirement rather than inheriting a default that a
+# future SkyPilot bump could drop.
+_CONTAINER_SHARED_FS_RUN_OPTIONS = (
+    "--net=host",
+    "--cap-add=SYS_ADMIN",
+    "--device=/dev/fuse",
+)
+
+
+def _with_container_mount_options(docker_config: dict) -> dict:
+    """Return ``docker_config`` with the shared-fs container mount run options
+    appended (idempotent — existing entries are not duplicated)."""
+    run_opts = list(docker_config.get("run_options") or [])
+    for opt in _CONTAINER_SHARED_FS_RUN_OPTIONS:
+        if opt not in run_opts:
+            run_opts.append(opt)
+    return {**docker_config, "run_options": run_opts}
+
+
 class Skypilot(Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
 
@@ -1030,6 +1057,11 @@ class Skypilot(Environment):
         # periodic/startup pull resumes after the lines it last emitted events
         # for instead of re-emitting from the top each time.
         self._log_lines_parsed: Dict[str, int] = {}
+        # Lazily-memoized shared_filesystem provider. Left UNSET here (not
+        # computed) so build_provider still runs on first use — preserving the
+        # pre-memoization validation timing and letting tests monkeypatch
+        # build_provider after construction. See _shared_fs_provider.
+        self._shared_fs_provider_cache: Any = _PROVIDER_UNSET
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -1123,6 +1155,19 @@ class Skypilot(Environment):
         if self.config is None:
             return "k8s"
         return self.config.config.get("default_cloud", "k8s")
+
+    def _shared_fs_provider(self: Self):
+        """The shared_filesystem provider for this env (or None), memoized.
+
+        ``build_provider`` re-validates the ``shared_filesystem`` block, and
+        launch, the built-in launcher env, and teardown all consult it — so
+        compute it at most once per environment instance. Lazy rather than in
+        ``__init__`` so the (potentially raising) validation still happens on
+        first use, matching the pre-memoization timing.
+        """
+        if self._shared_fs_provider_cache is _PROVIDER_UNSET:
+            self._shared_fs_provider_cache = build_provider(self.config)
+        return self._shared_fs_provider_cache
 
     def _get_idle_minutes(self: Self) -> int:
         """Get idle_minutes_to_autostop from environment.yaml config."""
@@ -1349,7 +1394,7 @@ class Skypilot(Environment):
         run_meta = self._setup_run_meta.pop(setup_id, {})
         if not workdir:
             return
-        provider = build_provider(self.config)
+        provider = self._shared_fs_provider()
         if provider is not None:
             _require_skypilot()
             cluster_name = self._cluster_name_for(
@@ -1628,7 +1673,7 @@ class Skypilot(Environment):
             # prologue never creates GB_LOCAL_SCRATCH, only the provider prologue
             # does (mkdir -p "$GB_LOCAL_SCRATCH"). Plain shared_workdir envs
             # (bluevela/SLURM/k8s) have no provider, so must not see it.
-            if build_provider(self.config) is not None:
+            if self._shared_fs_provider() is not None:
                 env["GB_LOCAL_SCRATCH"] = "/tmp/gb-scratch"
         if build_workdir:
             env["GB_BUILD_WORKDIR"] = build_workdir
@@ -1789,8 +1834,6 @@ class Skypilot(Environment):
                 **launcher_config.get("docker", {}),
                 **config.get("launcher_config", {}).get("docker", {}),
             }
-            if docker_config:
-                cluster_config_overrides["docker"] = docker_config
 
             # Trailing `or None` maps an empty image_id to None: the merged
             # `command` step renders image_id to "" when no image is given, and
@@ -1799,6 +1842,18 @@ class Skypilot(Environment):
                 config.get("launcher_config", {}).get("image_id")
                 or launcher_config.get("image_id")
             ) or None
+
+            # When a shared_filesystem provider is active AND the step runs in a
+            # container (image_id set), pin the run options the in-container
+            # EFS/NFS mount needs so gbserver owns the requirement rather than
+            # inheriting a SkyPilot default (see _CONTAINER_SHARED_FS_RUN_OPTIONS).
+            # Output would otherwise vanish into the ephemeral container layer if a
+            # future SkyPilot bump dropped a default.
+            if self._shared_fs_provider() is not None and image_id:
+                docker_config = _with_container_mount_options(docker_config)
+
+            if docker_config:
+                cluster_config_overrides["docker"] = docker_config
 
             logger.info(
                 "SkyPilot resources: accelerators=%s, image_id=%s, "
@@ -1898,7 +1953,7 @@ class Skypilot(Environment):
             # scripts stay in SkyPilot's default ~/sky_workdir, where relative
             # file_mounts land. Only prefix setup when there is a setup script, so
             # steps without one don't acquire a spurious setup phase.
-            provider = build_provider(self.config)
+            provider = self._shared_fs_provider()
             cli_prefix = _compose_step_prologue(provider, build_workdir)
             run_script = cli_prefix + launcher_config.get("run", "")
             if setup_script:

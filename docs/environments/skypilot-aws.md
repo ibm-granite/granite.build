@@ -124,8 +124,11 @@ time.
 
 `shared_filesystem` is supported only on a `Skypilot`/`aws` environment. A `shared_filesystem` block on
 any non-`aws` (or non-`Skypilot`) environment is **rejected at config load** — `EnvironmentConfig`
-validation raises a `ValueError` rather than silently ignoring it at runtime. On other backends use an
-operator-mounted [`shared_workdir`](skypilot.md#shared_workdir) instead.
+validation raises a `ValueError` rather than silently ignoring it at runtime. It also requires
+`config.default_cloud: aws` (the value the per-run mount and teardown VM actually key on, defaulting to
+`k8s` when unset) — a `subtype: aws` env whose `default_cloud` is anything else is rejected too, so the
+mount never targets a cloud without a mount target. On other backends use an operator-mounted
+[`shared_workdir`](skypilot.md#shared_workdir) instead.
 
 ### Per-run workdir and permissions (`1777`)
 
@@ -138,11 +141,13 @@ that *rewrite the same file* as different uids still need a shared uid/gid.
 
 ### Containerized steps
 
-A step with an `image_id` runs in a container on the EC2 host, yet still sees the EFS mount because
-SkyPilot launches containers with `--net=host --cap-add=SYS_ADMIN --device=/dev/fuse` by default — so
-an in-container NFS mount reaches the mount target as the host IP (covered by the VPC-CIDR SG rule).
-The **image must ship an NFS client** (`nfs-common`/`nfs-utils`); gbserver installs it best-effort, so
-prefer an image that already has it for offline/locked-down bases.
+A step with an `image_id` runs in a container on the EC2 host, yet still sees the EFS mount because the
+container is launched with `--net=host --cap-add=SYS_ADMIN --device=/dev/fuse` — so an in-container NFS
+mount reaches the mount target as the host IP (covered by the VPC-CIDR SG rule). SkyPilot already sets
+these in its default container run options, but for a shared-filesystem step gbserver **pins them
+explicitly** (into `docker.run_options`) so it owns the requirement rather than inheriting a SkyPilot
+default that a future bump could drop. The **image must ship an NFS client** (`nfs-common`/`nfs-utils`);
+gbserver installs it best-effort, so prefer an image that already has it for offline/locked-down bases.
 
 ### `GB_LOCAL_SCRATCH` and hot-path staging
 

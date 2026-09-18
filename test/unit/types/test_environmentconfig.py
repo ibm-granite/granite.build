@@ -35,7 +35,7 @@ def test_shared_filesystem_allowed_on_skypilot_aws():
             "name": "e",
             "type": "Skypilot",
             "subtype": "aws",
-            "config": {"shared_filesystem": _sf()},
+            "config": {"default_cloud": "aws", "shared_filesystem": _sf()},
         }
     )
     assert cfg.config["shared_filesystem"]["mount_point"] == "/mnt/gb-shared"
@@ -45,6 +45,37 @@ def test_shared_filesystem_rejected_off_aws():
     with pytest.raises(ValueError, match="only supported on a Skypilot/aws"):
         EnvironmentConfig.model_validate(
             {"name": "e", "type": "K8s", "config": {"shared_filesystem": _sf()}}
+        )
+
+
+def test_shared_filesystem_rejected_when_default_cloud_not_aws():
+    # subtype gate passes but default_cloud (what mount/teardown actually key on)
+    # is non-aws -> reject at load rather than mounting/tearing down on k8s.
+    with pytest.raises(ValueError, match="requires 'default_cloud: aws'"):
+        EnvironmentConfig.model_validate(
+            {
+                "name": "e",
+                "type": "Skypilot",
+                "subtype": "aws",
+                "config": {
+                    "default_cloud": "kubernetes",
+                    "shared_filesystem": _sf(),
+                },
+            }
+        )
+
+
+def test_shared_filesystem_rejected_when_default_cloud_unset():
+    # Unset default_cloud => skypilot _get_cloud() falls back to k8s, so the
+    # gate must reject it too (not just an explicit non-aws value).
+    with pytest.raises(ValueError, match="requires 'default_cloud: aws'"):
+        EnvironmentConfig.model_validate(
+            {
+                "name": "e",
+                "type": "Skypilot",
+                "subtype": "aws",
+                "config": {"shared_filesystem": _sf()},
+            }
         )
 
 
@@ -67,7 +98,7 @@ def test_hf_inline_coexist_warns(caplog):
                 "name": "e",
                 "type": "Skypilot",
                 "subtype": "aws",
-                "config": {"shared_filesystem": _sf()},
+                "config": {"default_cloud": "aws", "shared_filesystem": _sf()},
                 "assetstores": [
                     {
                         "store_uri": "space://assetstores/hf",
@@ -94,7 +125,7 @@ def test_hf_local_cache_path_coexist_warns(caplog):
                 "name": "e",
                 "type": "Skypilot",
                 "subtype": "aws",
-                "config": {"shared_filesystem": _sf()},
+                "config": {"default_cloud": "aws", "shared_filesystem": _sf()},
                 "assetstores": [
                     {
                         "store_uri": "space://assetstores/hf",
@@ -120,7 +151,7 @@ def test_hf_cache_path_under_mount_point_no_warn(caplog):
                 "name": "e",
                 "type": "Skypilot",
                 "subtype": "aws",
-                "config": {"shared_filesystem": _sf()},
+                "config": {"default_cloud": "aws", "shared_filesystem": _sf()},
                 "assetstores": [
                     {
                         "store_uri": "space://assetstores/hf",
