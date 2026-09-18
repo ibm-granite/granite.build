@@ -2,11 +2,9 @@
 
 import { useMemo } from 'react'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@carbon/react'
+import { derivePreviewHeaders, previewCellText, type PreviewTableHeader } from '../../../lib/autotunex/previewCell'
 
-export interface PreviewTableHeader {
-  key: string
-  header: string
-}
+export type { PreviewTableHeader }
 
 interface PreviewTableProps {
   rows: Record<string, any>[]
@@ -33,8 +31,7 @@ export function PreviewTable({
 }: PreviewTableProps) {
   const resolvedHeaders = useMemo<PreviewTableHeader[]>(() => {
     if (headers) return headers
-    const keys = Array.from(new Set(rows.flatMap((row) => Object.keys(row))))
-    return keys.map((key) => ({ key, header: key }))
+    return derivePreviewHeaders(rows)
   }, [headers, rows])
 
   if (rows.length === 0 || resolvedHeaders.length === 0) {
@@ -60,18 +57,7 @@ export function PreviewTable({
             <TableRow key={index}>
               {resolvedHeaders.map((header) => {
                 const value = row[header.key]
-                // A null cell renders empty. One of the two original copies rendered
-                // the literal text "null" here, because typeof null === 'object'
-                // routed it into JSON.stringify.
-                const text =
-                  value == null ? '' : typeof value === 'string' ? value : JSON.stringify(value)
-                return (
-                  <TableCell key={header.key}>
-                    {maxCellChars != null && text.length > maxCellChars
-                      ? `${text.slice(0, maxCellChars)}...`
-                      : text}
-                  </TableCell>
-                )
+                return <TableCell key={header.key}>{previewCellText(value, maxCellChars)}</TableCell>
               })}
             </TableRow>
           ))}
