@@ -42,11 +42,16 @@ import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
 import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
+import { formatHyperparamValue, hyperparamColumnLabel, searchedHyperparams } from './trialHyperparams'
 import styles from './TrialsTable.module.scss'
 import { bestTrialId, isLowerBetter, jobMetric, rankBestFirst, scoreOn, toFeatureLabel, toRadarData } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
 
-const HEADERS = [
+// Hyperparameter columns are appended to these at render time. Appended, not
+// inserted: cause-then-effect would read more naturally, but on a wide sweep it
+// pushes Loss and Total time off the right edge — losing the comparison the columns
+// exist for. These five keep their positions and the rest scroll.
+const BASE_HEADERS = [
   { key: 'created_at', header: 'Created on' },
   { key: 'id', header: 'Trial id' },
   { key: 'status', header: 'Status' },
@@ -205,7 +210,6 @@ export function TrialsTable({ job }: Props) {
   // job's metric, so it is labelled with it: a reward job's 0.91 under "Loss"
   // read as a bad loss.
   const metric = jobMetric(trials)
-  const headers = HEADERS.map((h) => (h.key === 'loss' ? { ...h, header: toFeatureLabel(metric) } : h))
 
   // Default order: lowest loss first — trials without a loss sink to the end.
   //
@@ -215,6 +219,23 @@ export function TrialsTable({ job }: Props) {
   // selection across a remount without contesting ownership of it afterwards.
   // That is what lets Back keep the selection: the compare view unmounts this
   // table, so returning mounts a fresh one that would come up unticked.
+  // Columns for the hyperparameters the tuner actually searched — see
+  // searchedHyperparams. Empty for a job whose trials carry no tuner_flags, in which
+  // case the table renders exactly as it did before this feature.
+  const hyperparamKeys = useMemo(() => searchedHyperparams(trials), [trials])
+  const tableHeaders = useMemo(
+    () => [
+      ...BASE_HEADERS.map((h) => (h.key === 'loss' ? { ...h, header: toFeatureLabel(metric) } : h)),
+      ...hyperparamKeys.map((key) => ({ key, header: hyperparamColumnLabel(key) })),
+    ],
+    [hyperparamKeys, metric]
+  )
+
+  // The cell render and the toolbar filter must agree, or search matches text the
+  // cells do not show. Both go through this.
+  const cellText = (key: string, value: unknown) =>
+    hyperparamKeys.includes(key) ? formatHyperparamValue(value) : formatCell(key, value)
+
   // Best first on the job's metric -- the same ranking bestTrialId and Compare use.
   const rows = rankBestFirst(trials)
     .map((t) => ({
@@ -227,6 +248,12 @@ export function TrialsTable({ job }: Props) {
       loss: scoreOn(t, metric) ?? undefined,
       total_time: t.metrics?.total_time,
       isSelected: selectedIds.includes(t.id),
+      // Raw values, not formatted text: Carbon's default comparator does `a - b`
+      // for two numbers (DataTable/tools/sorting.js), so `r: 16` sorts after
+      // `r: 8`; handed strings it would fall back to localeCompare. Same reason
+      // `loss` and `total_time` are raw. Spread last, which is safe because
+      // searchedHyperparams excludes the keys above.
+      ...Object.fromEntries(hyperparamKeys.map((key) => [key, ((t.config ?? {}) as Record<string, unknown>)[key]])),
     }))
 
   // Only completed trials with metrics can be plotted — the radar needs a full
@@ -257,7 +284,7 @@ export function TrialsTable({ job }: Props) {
       <div style={{ overflowX: 'auto' }}>
       <DataTable
         rows={rows}
-        headers={headers}
+        headers={tableHeaders}
         isSortable
         // Carbon's default filter matches String(cell.value), but these cells
         // render formatted text — so "5m 20" would miss the row showing
@@ -269,7 +296,7 @@ export function TrialsTable({ job }: Props) {
           if (!query) return rowIds
           return rowIds.filter((rowId) =>
             headers.some(({ key }) =>
-              formatCell(key, cellsById[getCellId(rowId, key)].value).toLowerCase().includes(query)
+              cellText(key, cellsById[getCellId(rowId, key)].value).toLowerCase().includes(query)
             )
           )
         }}
@@ -452,7 +479,7 @@ export function TrialsTable({ job }: Props) {
                           }}
                         />
                         {row.cells.map((cell) => (
-                          <TableCell key={cell.id}>{formatCell(cell.info.header, cell.value)}</TableCell>
+                          <TableCell key={cell.id}>{cellText(cell.info.header, cell.value)}</TableCell>
                         ))}
                       </TableExpandRow>
                       {row.isExpanded && trial && (
