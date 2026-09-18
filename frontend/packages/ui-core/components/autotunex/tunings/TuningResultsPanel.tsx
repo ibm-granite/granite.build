@@ -17,18 +17,7 @@ import axios from 'axios'
 import { getJobAssets, resultArchiveUrl, resultFileUrl } from '../../../api/autotunex'
 import { listSpaces } from '../../../api/gbserver'
 import type { TuningStatus } from '../../../types'
-
-function formatBytes(bytes: number): string {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let i = 0
-  let v = bytes
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v.toFixed(1)} ${units[i]}`
-}
+import { formatBytes } from '../../../lib/autotunex/formatBytes'
 
 function formatModified(modified: string | null): string {
   if (!modified) return '—'
