@@ -1,9 +1,19 @@
 
 # Not ignoring the Dockerfile for clean git status
 # /Dockerfile
-# Not ignoring the git repo because we want to be able
-# to pull the latest changes from main/forks/branches
-#/.git/
+# .git is deliberately NOT ignored: the builder copies it for setuptools_scm to derive
+# the version, then removes it before the runner copies /app. Ignoring it here would
+# break version derivation.
+
+# Non-runtime trees the Dockerfile no longer copies — excluded to shrink the context.
+frontend/
+autotunex/
+docs/
+recipes/
+samples/
+k8s/
+.github/
+.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
