@@ -44,6 +44,10 @@ class MetricName(StrEnum):
     EXP_MOV_AVG_PROCESSING_DELAY = auto()
     APPWRAPPER_STATUS_CHANGE_TIMESTAMP = auto()
     BUILD_STATUS_RACE_DETECTED = auto()
+    # A stuck build (PENDING with no live runner) was cleaned up and re-dispatched.
+    STUCK_BUILD_REDISPATCHED = auto()
+    # A stuck build exhausted its re-dispatch budget and was marked FAILED.
+    STUCK_BUILD_FAILED = auto()
 
 
 class MetricMetadata(BaseModel):

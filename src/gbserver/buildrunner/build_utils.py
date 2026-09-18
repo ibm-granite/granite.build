@@ -266,3 +266,25 @@ def push_failed_status_update_metric(build_id: str, status_list: list[Status]):
             )
         ]
     )
+
+
+def push_stuck_build_metric(
+    build_id: str, metric_name: MetricName, prior_status: Status
+) -> None:
+    """Record that the watcher acted on a build stuck with no live runner.
+
+    metric_name is STUCK_BUILD_REDISPATCHED (cleaned up and re-dispatched) or
+    STUCK_BUILD_FAILED (re-dispatch budget exhausted, marked FAILED).
+    """
+    push_metrics(
+        metrics=[
+            Metric(
+                name=metric_name,
+                value=1,
+                metadata=MetricMetadata(
+                    build_id=build_id,
+                    expected_status=str(prior_status),
+                ),
+            )
+        ]
+    )

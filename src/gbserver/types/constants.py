@@ -902,6 +902,21 @@ GBSERVER_CLEANUP_MAX_RETRIES = int(
 GBSERVER_CLEANUP_RETRY_BASE_DELAY = int(
     os.getenv(ENV_VAR_PREFIX + "_CLEANUP_RETRY_BASE_DELAY", "10"), base=10
 )
+# How long (seconds) a build may sit PENDING with no live runner thread before the
+# BuildWatcher treats it as stuck and cleans/re-dispatches it. Must be comfortably
+# larger than the worst-case pod-startup-to-RUNNING time (image pull + schedule) so a
+# slow-but-healthy build is never mistaken for stuck. Default 15 min.
+GBSERVER_STUCK_BUILD_TIMEOUT_SECONDS = int(
+    os.getenv(ENV_VAR_PREFIX + "_STUCK_BUILD_TIMEOUT", "900"), base=10
+)
+# How many times the BuildWatcher will clean up and re-dispatch a build that keeps
+# failing to start / stay running, before giving up and marking it FAILED. This bounds
+# recovery from infrastructure failures (dead pod, orphaned job) and is deliberately
+# separate from the build.yaml `max_retries` (which counts workload failures and
+# defaults to 0). Default 3.
+GBSERVER_MAX_STUCK_REDISPATCHES = int(
+    os.getenv(ENV_VAR_PREFIX + "_MAX_STUCK_REDISPATCHES", "3"), base=10
+)
 USE_LESS_COMPUTE_ON_DRY_RUN = (
     os.getenv(ENV_VAR_USE_LESS_COMPUTE_ON_DRY_RUN, "True").lower() == "true"
 )

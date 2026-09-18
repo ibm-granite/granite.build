@@ -33,7 +33,9 @@ from gbcommon.uri.git import get_uri_parts
 from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
 from gbserver.buildrunner.build_setup import BuildSetup
 from gbserver.buildrunner.build_utils import (
+    finalize_build_status,
     push_failed_status_update_metric,
+    push_stuck_build_metric,
     update_stored_build_status,
 )
 from gbserver.buildrunner.buildrunner import BuildRunner
@@ -103,11 +105,12 @@ class BuildWatcher:
     watch_for_config_changes: bool
     config: BuildWatcherConfig
 
-    # list of build ids we've seen as pending.
-    active_pending_builds: List[str]
-    # list of build ids we've seen as cancelled.
-    active_cancelled_builds: List[str]
-    # build_id -> thread for a running build
+    # build_id -> thread for a running build. This IS the authoritative "a runner is
+    # in flight for this build" record: a PENDING build is (re-)dispatched only when it
+    # has no live thread here, so a failed dispatch or a dead runner self-corrects on
+    # the next poll. (Replaces the old active_pending_builds "seen" list, whose
+    # set-early / clear-on-status-change lifecycle could strand a build in PENDING
+    # forever.)
     build_threads: Dict[str, threading.Thread]
     # build_id -> thread for a creating a PR for a build
     build_pr_threads: Dict[str, threading.Thread]
@@ -135,7 +138,17 @@ class BuildWatcher:
     # workspace dir used by the build watcher
     watcher_workspace_dir: Path
 
-    active_submitted_builds: List[str]
+    # build ids whose SUBMITTED->PENDING flip is currently running on a daemon thread.
+    # Prevents spawning a duplicate flip thread on the next poll while one is in flight.
+    # Cleared when the flip thread finishes (in a finally), NEVER on DB status change —
+    # so, unlike the old "seen" lists, it cannot strand a build.
+    submitted_in_flight: set[str]
+
+    # build_id -> number of times the watcher has cleaned up and re-dispatched this
+    # build after finding it stuck (PENDING with no live runner). Bounds infrastructure
+    # recovery; at config.max_stuck_redispatches the build is marked FAILED. In-memory
+    # (resets on watcher restart, which grants a fresh attempt) to avoid a schema change.
+    stuck_redispatch_counts: Dict[str, int]
 
     def __init__(
         self: Self,
@@ -150,11 +163,11 @@ class BuildWatcher:
         self.all_build_space_uri = all_build_space_uri
         self.watch_for_config_changes = watch_for_config_changes
 
-        self.active_cancelled_builds = []
-        self.active_pending_builds = []
         self.build_threads = {}
         self.build_pr_threads = {}
         self.build_runners = {}
+        self.submitted_in_flight = set()
+        self.stuck_redispatch_counts = {}
         self.stop_event = threading.Event()
         self._builds_lock = threading.Lock()
         self._wait_lock = threading.Lock()
@@ -168,7 +181,6 @@ class BuildWatcher:
         # This is good at least for parallel test runs.
         work_dir = create_temp_subdir(self.config.watcher_workspace_dir)
         self.watcher_workspace_dir = work_dir.resolve()
-        self.active_submitted_builds = []
 
     def __reload_config_file(self: Self, first: bool = False) -> None:
         """If the config file is provided, reload it"""
@@ -281,8 +293,10 @@ class BuildWatcher:
             )
 
     def _cleanup_orphaned_k8s_resources(self, build_id: str) -> None:
-        """Best-effort cleanup of K8s resources (AppWrappers, RayClusters) for an orphaned build.
-        Uses the granite-dot-build/build-id label to find resources."""
+        """Best-effort cleanup of K8s resources (AppWrappers, RayClusters, the
+        build-runner Job and its pods) for an orphaned build. Uses the
+        granite-dot-build/build-id label (and the deterministic job name) to find them.
+        """
         try:
             import asyncio
 
@@ -360,6 +374,60 @@ class BuildWatcher:
                                 build_id,
                                 e,
                             )
+
+                        # Delete the build-runner Job (and its pods). The job name is
+                        # deterministic (see BuildRunnerJob.__get_batchv1job_body); a
+                        # leftover job would otherwise collide on a re-dispatch by name.
+                        try:
+                            batchv1 = k8s_client.BatchV1Api(api_client=api)
+                            job_name = f"gb-build-runner-{build_id}"
+                            logger.info(
+                                "Deleting orphaned Job %s for build %s",
+                                job_name,
+                                build_id,
+                            )
+                            await batchv1.delete_namespaced_job(
+                                name=job_name,
+                                namespace=namespace,
+                                body=k8s_client.V1DeleteOptions(
+                                    propagation_policy="Foreground"
+                                ),
+                            )
+                        except Exception as e:
+                            # Usually a 404 (no such job) — fine, nothing to clean up.
+                            logger.info(
+                                "No build-runner Job to clean up for build %s (or delete failed): %s",
+                                build_id,
+                                e,
+                            )
+
+                        # Safety net: delete pods by label in case job cascade didn't.
+                        try:
+                            core_v1 = k8s_client.CoreV1Api(api_client=api)
+                            pods = await core_v1.list_namespaced_pod(
+                                namespace=namespace, label_selector=label_selector
+                            )
+                            for pod in pods.items:
+                                pod_name = pod.metadata.name
+                                logger.info(
+                                    "Deleting orphaned pod %s for build %s",
+                                    pod_name,
+                                    build_id,
+                                )
+                                await core_v1.delete_namespaced_pod(
+                                    name=pod_name,
+                                    namespace=namespace,
+                                    body=k8s_client.V1DeleteOptions(
+                                        propagation_policy="Foreground",
+                                        grace_period_seconds=5,
+                                    ),
+                                )
+                        except Exception as e:
+                            logger.error(
+                                "Failed to clean up pods for build %s: %s",
+                                build_id,
+                                e,
+                            )
                 except Exception as e:
                     logger.error(
                         "Failed to connect to K8s for orphan cleanup of build %s: %s",
@@ -389,11 +457,14 @@ class BuildWatcher:
                     self.build_pr_threads.pop(build_id, None)
 
     def __process_cancel_requested_builds(self: Self) -> None:
+        # Fresh poll each loop; __process_cancel_requested_build is idempotent (guarded
+        # dict membership + a should_update=CANCEL_REQUESTED transition that no longer
+        # matches once applied), so re-seeing the same build is safe.
         cancelled_builds = []
         try:
             logger.info("fetching cancelled builds...")
-            cancelled_builds = (
-                self.__get_newly_cancelled_builds()
+            cancelled_builds = self.__get_builds_matching_status(
+                Status.CANCEL_REQUESTED
             )  # only those from the assigned space(s)
         except Exception as e:
             logger.error("%s", traceback.format_exc())
@@ -439,31 +510,56 @@ class BuildWatcher:
         )
 
     def __process_submitted_build(self: Self, stored_build: StoredBuild) -> None:
-        """Update the status of the build to PENDING"""
+        """Update the status of the build to PENDING.
+
+        Runs on a short-lived daemon thread. On any failure the build simply stays
+        SUBMITTED and is retried on the next poll — the finally clause always clears
+        submitted_in_flight so a crash here can never strand the build.
+        """
+        build_id = stored_build.uuid
         logger.info(
-            f"Enter process_submitted_build({stored_build.uuid}, status={stored_build.status})"
+            f"Enter process_submitted_build({build_id}, status={stored_build.status})"
         )
+        try:
+            # 0. Log the time it took between the build creation in the DB and the time to get there.
+            self.__log_submission_delay(stored_build=stored_build)
 
-        # 0. Log the time it took between the build creation in the DB and the time to get there.
-        self.__log_submission_delay(stored_build=stored_build)
-
-        # Make this the last thing we do to signal that we're done and ready for processing a PENDING build.
-        # Require the build to be SUBMITTED and not some other state before moving to PENDING state
-        valid_status = lambda item: item.status == Status.SUBMITTED
-        build = update_stored_build_status(
-            stored_build.uuid,
-            Status.PENDING,
-            failure_reason="",
-            should_update=valid_status,
-        )
-        if not build:
-            logger.warning(
-                "Build %s status update from SUBMITTED to PENDING failed (may have been cancelled or deleted)",
-                stored_build.uuid,
+            # Make this the last thing we do to signal that we're done and ready for processing a PENDING build.
+            # Require the build to be SUBMITTED and not some other state before moving to PENDING state
+            valid_status = lambda item: item.status == Status.SUBMITTED
+            build = update_stored_build_status(
+                build_id,
+                Status.PENDING,
+                failure_reason="",
+                should_update=valid_status,
             )
-            push_failed_status_update_metric(stored_build.uuid, [Status.SUBMITTED])
-
-        logger.info(f"Exit process_submitted_build({stored_build.uuid})")
+            if not build:
+                # The compare-and-set was rejected: the build is no longer SUBMITTED.
+                # If it's already PENDING that's benign — a prior poll's flip won a
+                # race — so don't cry wolf. Only warn / push the race metric for a
+                # genuinely unexpected status (cancelled, deleted, ...).
+                current: Optional[StoredBuild] = self.storage.build_storage.get_by_uuid(build_id)  # type: ignore[assignment]
+                current_status = current.status if current is not None else None
+                if current_status == Status.PENDING:
+                    logger.debug(
+                        "Build %s already PENDING; SUBMITTED->PENDING flip was a no-op",
+                        build_id,
+                    )
+                else:
+                    logger.warning(
+                        "Build %s status update from SUBMITTED to PENDING failed "
+                        "(status is now %s; may have been cancelled or deleted)",
+                        build_id,
+                        current_status,
+                    )
+                    push_failed_status_update_metric(build_id, [Status.SUBMITTED])
+        except Exception as e:
+            # Leave the build SUBMITTED; the next poll re-processes it (finally clears
+            # the in-flight guard so a new flip thread is allowed).
+            logger.error("failed to process submitted build %s, error: %s", build_id, e)
+        finally:
+            self.submitted_in_flight.discard(build_id)
+            logger.info(f"Exit process_submitted_build({build_id})")
 
     def __update_existing_repo_clone(
         self: Self,
@@ -564,8 +660,8 @@ class BuildWatcher:
         submitted_builds = []
         try:
             logger.info("fetching submitted builds...")
-            submitted_builds = (
-                self.__get_newly_submitted_builds()
+            submitted_builds = self.__get_builds_matching_status(
+                Status.SUBMITTED
             )  # only those from the assigned space(s)
         except Exception as e:
             logger.error("failed to fetch the submitted builds error: %s", e)
@@ -573,6 +669,16 @@ class BuildWatcher:
         logger.info("submitted builds: %d", len(submitted_builds))
         for submitted_build in submitted_builds:
             build_id = submitted_build.uuid
+            # Skip if a flip thread for this build is already running (from a prior
+            # poll whose SUBMITTED->PENDING update hasn't propagated yet); avoids
+            # spawning duplicate daemon threads for the same build.
+            if build_id in self.submitted_in_flight:
+                logger.debug(
+                    "SUBMITTED->PENDING flip already in flight for %s, skipping",
+                    build_id,
+                )
+                continue
+            self.submitted_in_flight.add(build_id)
             # Do the processing, especially build long-running validation, in threads so we don't
             # 1) hold up other main event loop processing or
             # 2) serialize build submission processing (i.e. let them be processed independent of each other)
@@ -584,12 +690,24 @@ class BuildWatcher:
             thread.daemon = True
             thread.start()
 
+    def __is_build_in_flight(self: Self, build_id: str) -> bool:
+        """True if a live runner thread exists for this build.
+
+        This is the authoritative "already being run" check for a PENDING build,
+        replacing the old active_pending_builds "seen" list. Dead threads are reaped
+        by __clean_finished_builds (called first each loop), so a build whose runner
+        died reads as not-in-flight and is re-dispatched. Takes _builds_lock.
+        """
+        with self._builds_lock:
+            thread = self.build_threads.get(build_id)
+            return thread is not None and thread.is_alive()
+
     def __process_pending_builds(self: Self) -> None:
         pending_builds = []
         try:
             logger.info("fetching pending builds...")
-            pending_builds = (
-                self.__get_newly_pending_builds()
+            pending_builds = self.__get_builds_matching_status(
+                Status.PENDING
             )  # only those from the assigned space(s)
             logger.info(
                 f"Found {len(pending_builds)} pending builds in our managed spaces"
@@ -600,12 +718,116 @@ class BuildWatcher:
             return
 
         for b in pending_builds:
+            # A PENDING build with a live runner thread is already being handled; only
+            # (re-)dispatch one that has no live thread (never dispatched, dispatch
+            # threw, or the runner died before leaving PENDING).
+            if self.__is_build_in_flight(b.uuid):
+                logger.debug("build %s already has a live runner, skipping", b.uuid)
+                continue
             try:
                 # Start the build
                 logger.info("starting build id %s", b.uuid)
                 self.__start_build(b)
             except Exception as e:
+                # Dispatch failed before a runner was in flight (e.g. a bad/missing
+                # deployment template). Count it against the re-dispatch budget so a
+                # build that throws on every poll converges to FAILED within a few
+                # polls instead of thrashing (or, historically, sitting PENDING
+                # forever). The build stays PENDING, so the next poll retries it.
                 logger.error("failed to start build %s, error: %s", b.uuid, e)
+                self.__record_stuck_build_attempt(
+                    b.uuid,
+                    Status.PENDING,
+                    failure_reason=f"failed to start build: {e}",
+                )
+
+    def __record_stuck_build_attempt(
+        self: Self, build_id: str, prior_status: Status, failure_reason: str
+    ) -> bool:
+        """Count a failed start/recovery attempt against the re-dispatch budget.
+
+        Returns True if the build was given up on (budget exhausted -> marked FAILED),
+        False if it is left in place for another attempt. The count is shared by the
+        immediate dispatch-failure path and the staleness watchdog so a build that
+        keeps failing to start converges to FAILED under one bound rather than looping
+        forever.
+        """
+        count = self.stuck_redispatch_counts.get(build_id, 0) + 1
+        self.stuck_redispatch_counts[build_id] = count
+        if count >= self.config.max_stuck_redispatches:
+            logger.error(
+                "Build %s exhausted %d stuck re-dispatch attempts; marking FAILED",
+                build_id,
+                count,
+            )
+            finalize_build_status(
+                build_id,
+                Status.FAILED,
+                failure_reason=(
+                    f"{failure_reason} (gave up after {count} watcher re-dispatch attempts)"
+                ),
+            )
+            push_stuck_build_metric(
+                build_id, MetricName.STUCK_BUILD_FAILED, prior_status
+            )
+            # Build is now FAILED; drop the counter so a future resubmit starts fresh.
+            self.stuck_redispatch_counts.pop(build_id, None)
+            return True
+        return False
+
+    def __reconcile_stuck_builds(self: Self) -> None:
+        """Recover builds stuck PENDING with no live runner past the staleness timeout.
+
+        A PENDING build whose runner never started, or died before reporting RUNNING,
+        has no live thread and would otherwise sit PENDING indefinitely. When such a
+        build has been PENDING (measured from updated_time, which is stamped on the
+        SUBMITTED->PENDING flip) for longer than the configured timeout, clean up any
+        stale K8s resources and let the next poll re-dispatch it — bounded by the same
+        re-dispatch budget as the dispatch-failure path, after which it is FAILED.
+        """
+        try:
+            pending_builds = self.__get_builds_matching_status(Status.PENDING)
+        except Exception as e:
+            logger.error("failed to fetch pending builds for reconcile: %s", e)
+            return
+
+        now = get_utc_time()
+        threshold = self.config.stuck_build_timeout_seconds
+        for b in pending_builds:
+            age = (now - b.updated_time).total_seconds()
+            if age < threshold:
+                continue
+            if self.__is_build_in_flight(b.uuid):
+                # A live runner is still working (e.g. the job runner's thread is
+                # polling a slow-to-start K8s job). Leave it alone.
+                logger.debug(
+                    "build %s PENDING for %.0fs but has a live runner; leaving it",
+                    b.uuid,
+                    age,
+                )
+                continue
+            logger.warning(
+                "build %s stuck PENDING for %.0fs with no live runner; recovering",
+                b.uuid,
+                age,
+            )
+            reason = f"build stuck PENDING for {age:.0f}s with no live runner"
+            if self.__record_stuck_build_attempt(b.uuid, Status.PENDING, reason):
+                # Budget exhausted; build was marked FAILED. Best-effort clean up so no
+                # zombie K8s resources are left behind.
+                self._cleanup_orphaned_k8s_resources(b.uuid)
+                continue
+            # Under budget: clean stale K8s resources (so a re-dispatch gets a fresh job
+            # name, avoiding a collision with a zombie job) and drop any dead thread
+            # refs so the next poll re-dispatches. The build stays PENDING.
+            self._cleanup_orphaned_k8s_resources(b.uuid)
+            with self._builds_lock:
+                self.build_runners.pop(b.uuid, None)
+                self.build_threads.pop(b.uuid, None)
+                self.build_pr_threads.pop(b.uuid, None)
+            push_stuck_build_metric(
+                b.uuid, MetricName.STUCK_BUILD_REDISPATCHED, Status.PENDING
+            )
 
     def __worker_thread_run(self: Self) -> None:
         """
@@ -625,6 +847,10 @@ class BuildWatcher:
                 self.__process_cancel_requested_builds()
                 self.__process_submitted_builds()
                 self.__process_pending_builds()
+                # Safety net: recover builds that have sat PENDING with no live runner
+                # for too long (e.g. their pod died before reporting RUNNING). Runs
+                # after __clean_finished_builds has reaped dead threads.
+                self.__reconcile_stuck_builds()
                 if not self.stop_event.is_set():
                     logger.info("End processing loop. Sleeping...")
                     # monitoring_interval is floored to a sane minimum by
@@ -638,85 +864,37 @@ class BuildWatcher:
 
         logger.info("BuildWatcher.__worker_thread_run end")
 
-    def __get_newly_submitted_builds(self: Self) -> List[StoredBuild]:
-        """Get a list of builds that are new and in pending state."""
-        return self.__get_unseen_builds_matching_status(
-            Status.SUBMITTED, self.active_submitted_builds
-        )
-
-    def __get_newly_cancelled_builds(self: Self) -> List[StoredBuild]:
-        """Get a list of builds that are new and in pending state."""
-        return self.__get_unseen_builds_matching_status(
-            Status.CANCEL_REQUESTED, self.active_cancelled_builds
-        )
-
-    def __get_newly_pending_builds(self: Self) -> List[StoredBuild]:
-        """Get a list of builds that are new and in pending state."""
-        return self.__get_unseen_builds_matching_status(
-            Status.PENDING, self.active_pending_builds
-        )
-
-    def __get_unseen_builds_matching_status(
-        self: Self, status: Status, active_build_ids: list[str]
-    ) -> List[StoredBuild]:
-        """Get a list of builds that are not yet currently active and have the given status.
-        Also remove any builds that no longer have the given status from the active_build_ids list.
-        """
-        logger.debug(
-            "BuildWatcher.__get_unseen_builds_matching_status status={status} start"
-        )
-        builds = self.__get_builds_matching_status(status)
-        new_builds = []
-        for b in builds:
-            build_id = b.uuid
-            if build_id in active_build_ids:
-                logger.debug("already seen build: %s , skipping", b)
-                continue
-            active_build_ids.append(build_id)
-            if b.name == COMMAND_RUN_BUILD_WATCH_BUILD_NAME:
-                logger.info("local build: %s , skipping", b)
-                continue
-            new_builds.append(b)
-
-        # Do some garbage collection on the list of active builds.
-        build_ids_with_status = []
-        for b in builds:
-            build_ids_with_status.append(b.uuid)
-        to_remove = []
-        for build_id in active_build_ids:
-            if (
-                not build_id in build_ids_with_status
-            ):  # active build no longer has the requested state, so we can stop tracking it.
-                to_remove.append(build_id)
-        for build_id in to_remove:
-            active_build_ids.remove(build_id)
-
-        logger.debug(
-            "BuildWatcher.__get_unseen_builds_matching_status status={status} end"
-        )
-        return new_builds
-
     def __get_builds_matching_status(self: Self, status: Status) -> List[StoredBuild]:
-        """Get a sorted list of builds that are in the given state and in one of the spaces we're assigned to watch
-        Sorting is by creation time with oldest first.
+        """Get a sorted list of builds in the given state and in one of the spaces we
+        watch, oldest first. Local (in-process `gb build run`) builds are skipped.
+
+        This is a fresh DB poll on every call — there is no "seen" cache. De-duping of
+        actual work is the caller's job: PENDING dispatch is gated on the live-thread
+        record (build_threads), SUBMITTED on submitted_in_flight, and the per-build
+        actions for CANCEL_REQUESTED are idempotent. That keeps liveness the single
+        source of truth and removes the stale-"seen"-list class of stuck builds.
         """
         where = {"status": status.name}
         sort_order = SortOrder(column=CREATED_TIME_FIELD_NAME, ascending=True)
         query_control = QueryControl(pagination=None, sort_orders=[sort_order])
-        pending_builds = cast(
+        matching_builds = cast(
             List[StoredBuild],
             self.storage.build_storage.get_by_where(
                 where=where, query_control=query_control
             ),
         )
-        our_pending_builds = []
-        for b in pending_builds:  # TODO: should really do this in the query above
-            if b.space_name in self.config._spaces.keys():
-                our_pending_builds.append(b)
+        our_builds = []
+        for b in matching_builds:  # TODO: should really do this in the query above
+            if b.space_name not in self.config._spaces.keys():
+                continue
+            if b.name == COMMAND_RUN_BUILD_WATCH_BUILD_NAME:
+                logger.info("local build: %s , skipping", b)
+                continue
+            our_builds.append(b)
         if BUILD_ONLY_THIS_NAME == "":
-            return our_pending_builds
+            return our_builds
         logger.info("filtering by BUILD_ONLY_THIS_NAME: %s", BUILD_ONLY_THIS_NAME)
-        return [b for b in pending_builds if b.name == BUILD_ONLY_THIS_NAME]
+        return [b for b in our_builds if b.name == BUILD_ONLY_THIS_NAME]
 
     def __start_build(self: Self, build: StoredBuild) -> None:
         build_id = build.uuid
