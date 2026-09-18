@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 # The moving tag marking the oldest client we still support. A client at or above this
 # floor is allowed to run (with a warning if a newer version exists); a client below it
-# is blocked. It shares a commit with the vX.Y.Z tag it points at, so we can resolve the
-# floor version by matching object SHAs in a single tags response.
+# is blocked. It shares a commit with the vX.Y.Z tag it points at, so we resolve the
+# floor version by matching the commit SHAs reported by the /repos/.../tags endpoint.
 MIN_SUPPORTED_TAG = "min-supported"
 
 # Shown to users who need to upgrade. Pins the rolling `stable` tag rather than the
@@ -58,29 +58,33 @@ def get_latest_version(repo_org: str, repo_name: str) -> str:
 
 
 def _resolve_versions_from_tags(tags) -> tuple[str, str]:
-    """From one ``/git/refs/tags`` response return ``(latest_version, floor_version)``.
+    """From a ``/repos/.../tags`` response return ``(latest_version, floor_version)``.
+
+    Each tag is expected as ``{"name": ..., "commit": {"sha": ...}}`` — the list
+    endpoint's shape, where ``commit.sha`` is already peeled to the underlying commit for
+    both lightweight and annotated tags. The floor is resolved by finding the ``vX.Y.Z``
+    tag sharing ``min-supported``'s commit SHA.
 
     latest: ``str(max)`` of the vX.Y.Z PEP 440 tags, or "0.0.0" if none are valid.
-    floor:  the vX.Y.Z tag sharing ``min-supported``'s target object SHA, or "" when
-            ``min-supported`` is absent or unresolvable (e.g. an annotated tag whose
-            SHA is the tag object, not the shared commit). An unresolved floor means
-            "no known floor" — warn-only, never a false block.
+    floor:  the vX.Y.Z tag sharing ``min-supported``'s commit SHA, or "" when
+            ``min-supported`` is absent or its commit matches no version tag. An
+            unresolved floor means "no known floor" — the caller then mandates the
+            upgrade for an outdated client rather than silently softening the block.
     """
     versions = []
     sha_to_version: dict[str, Version] = {}
     min_supported_sha = None
 
     for tag in tags:
-        ref = str(tag["ref"])
-        name = ref.split("/")[-1]
-        sha = (tag.get("object") or {}).get("sha")
+        name = str(tag["name"])
+        sha = (tag.get("commit") or {}).get("sha")
         if name == MIN_SUPPORTED_TAG:
             min_supported_sha = sha
             continue
         try:
             parsed = Version(name.lstrip("v"))
         except InvalidVersion:
-            logger.debug("Skipping non-PEP440 tag: %s", ref)
+            logger.debug("Skipping non-PEP440 tag: %s", name)
             continue  # skip non-PEP440 tags rather than failing the whole check
         versions.append(parsed)
         if sha:
@@ -112,6 +116,20 @@ def below_floor_message(current: str, floor: str) -> str:
     return (
         f"Your {PROJECT_NAME} CLI version ({current}) is no longer supported. "
         f"The minimum supported version is {floor}. You must upgrade to continue. "
+        f"Run `{_UPGRADE_CMD}` or a command suitable to your environment to upgrade."
+    )
+
+
+def mandatory_upgrade_message(current: str, latest: str) -> str:
+    """Block message used when a newer version exists and no floor is known.
+
+    Distinct from ``warn_message`` (which only notifies): this says the command was
+    refused, so the user isn't left wondering why an "upgrade available" notice aborted
+    their command.
+    """
+    return (
+        f"A new version of {PROJECT_NAME} CLI ({latest}) is available and an upgrade is "
+        f"required to continue (you are running {current}). "
         f"Run `{_UPGRADE_CMD}` or a command suitable to your environment to upgrade."
     )
 
@@ -170,7 +188,9 @@ def evaluate_version_status(package_name: str = "granite.build") -> VersionCheck
         )
 
     message = (
-        below_floor_message(current, floor) if floor else warn_message(current, latest)
+        below_floor_message(current, floor)
+        if floor
+        else mandatory_upgrade_message(current, latest)
     )
     return VersionCheckResult(
         VersionStatus.BELOW_FLOOR, current, latest, floor, message=message

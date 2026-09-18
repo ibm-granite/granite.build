@@ -56,6 +56,15 @@ def cli(ctx, check_updates, client, format, quiet):
         elif result.status is versionutil.VersionStatus.OUTDATED_WARN:
             # A newer version exists but we're still supported: notify, exit 0.
             click.echo(result.message, err=True)
+        elif result.status is versionutil.VersionStatus.UNKNOWN:
+            # The check couldn't complete (offline, rate-limited, unparseable version).
+            # An explicit --check-updates shouldn't claim "up to date" when it verified
+            # nothing; say so on stderr and still exit 0 (best-effort, not a failure).
+            click.echo(
+                f"Could not verify whether {get_current_version('granite.build')} is the "
+                "latest version (version check unavailable).",
+                err=True,
+            )
         else:
             click.echo(
                 f"The current client version ({get_current_version('granite.build')}) is up to date."

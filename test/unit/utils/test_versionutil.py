@@ -32,10 +32,13 @@ from gbcli.utils.versionutil import VersionStatus
 
 
 def _tag(name, sha=None):
-    """Build one entry of a ``/git/refs/tags`` response."""
-    entry = {"ref": f"refs/tags/{name}"}
+    """Build one entry of a ``/repos/.../tags`` response.
+
+    ``commit.sha`` is the endpoint's commit SHA (already peeled for annotated tags).
+    """
+    entry = {"name": name}
     if sha is not None:
-        entry["object"] = {"sha": sha}
+        entry["commit"] = {"sha": sha}
     return entry
 
 
@@ -141,6 +144,8 @@ class TestEvaluateVersionStatus:
         assert result.status is VersionStatus.BELOW_FLOOR
         assert result.floor_version == ""
         assert "granite.build.git@stable" in result.message
+        # The block message says the upgrade is required, not just "available".
+        assert "required" in result.message
 
     def test_missing_min_supported_tag_up_to_date_ok(self, monkeypatch):
         """No floor, but the client is current -> still UP_TO_DATE (no false block)."""
@@ -150,14 +155,33 @@ class TestEvaluateVersionStatus:
 
         assert versionutil.evaluate_version_status().status is VersionStatus.UP_TO_DATE
 
-    def test_annotated_min_supported_sha_mismatch_mandates_upgrade(self, monkeypatch):
-        """An annotated min-supported (its SHA is the tag object, not the shared commit)
-        won't match any version tag's SHA, so the floor is unresolved -> treated as no
-        floor -> outdated client is blocked (not silently downgraded to a warning)."""
+    def test_annotated_min_supported_resolves_via_commit_sha(self, monkeypatch):
+        """Regression: min-supported and its vX.Y.Z tag are both *annotated* and point at
+        the same commit. The /repos/.../tags endpoint reports each tag's peeled commit
+        SHA, so they match and the floor resolves (with /git/refs/tags they would not,
+        because annotated tags expose their tag-object SHA instead)."""
+        tags = [
+            _tag("v2.0.0", "sha-latest-commit"),
+            _tag("v1.5.0", "sha-floor-commit"),
+            _tag("min-supported", "sha-floor-commit"),  # same commit as v1.5.0
+        ]
+        monkeypatch.setattr(versionutil, "get_public_repo_tags", lambda *_: tags)
+        monkeypatch.setattr(versionutil, "get_current_version", lambda _: "1.6.0")
+
+        result = versionutil.evaluate_version_status()
+        assert result.floor_version == "1.5.0"
+        assert result.status is VersionStatus.OUTDATED_WARN
+
+    def test_min_supported_commit_matches_no_version_tag_mandates_upgrade(
+        self, monkeypatch
+    ):
+        """If min-supported's commit matches no vX.Y.Z tag, the floor is unresolved ->
+        treated as no floor -> an outdated client is blocked, not softened to a warning.
+        """
         tags = [
             _tag("v2.0.0", "sha-latest"),
             _tag("v1.5.0", "sha-floor-commit"),
-            _tag("min-supported", "sha-annotated-tag-object"),  # no match
+            _tag("min-supported", "sha-orphan-commit"),  # matches no version tag
         ]
         monkeypatch.setattr(versionutil, "get_public_repo_tags", lambda *_: tags)
         monkeypatch.setattr(versionutil, "get_current_version", lambda _: "1.0.0")

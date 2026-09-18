@@ -27,8 +27,10 @@ git tag
 git tag $tag
 git push origin $tag
 
-# Advance the rolling `stable` tag to this release. Force re-point + force push so
-# re-running the script is idempotent. Lightweight tag => shares this commit's SHA.
+# Advance the rolling `stable` tag to this release. Force re-point + force push so these
+# moving-tag updates themselves can be re-applied safely. (Note: a full re-run of the
+# script still aborts earlier at `git tag $tag` above, since the immutable vX.Y.Z tag
+# already exists — re-point the moving tags by hand if you need to after that.)
 git tag -f stable "$tag"
 git push -f origin stable
 
