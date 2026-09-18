@@ -41,3 +41,32 @@ export function formatHyperparamValue(value: unknown): string {
   }
   return String(value)
 }
+
+// Column headers, curated because a header wants shorter text than the raw key
+// gives — "Per device train batch size" is a very wide column for "Batch size".
+// Anything not listed falls back to the generic form, so a hyperparameter added
+// upstream still gets a readable header without a code change.
+//
+// Not shared with `labelForCompareKey` in trialCompareGrouping.ts: that renders a
+// whole dotted compare path, it cannot be imported here (see the note at the top of
+// this file), and compare rows have room for longer labels than columns do.
+const COLUMN_LABELS: Record<string, string> = {
+  learning_rate: 'Learning rate',
+  per_device_train_batch_size: 'Batch size',
+  gradient_accumulation_steps: 'Grad accum steps',
+  lr_scheduler_type: 'LR scheduler',
+  lora_dropout: 'LoRA dropout',
+  alpha_ratio: 'Alpha ratio',
+  warmup_ratio: 'Warmup ratio',
+  r: 'Rank (r)',
+  bias: 'Bias',
+}
+
+/** Column header for a hyperparameter key. */
+export function hyperparamColumnLabel(key: string): string {
+  const curated = COLUMN_LABELS[key]
+  if (curated) return curated
+  const text = key.replaceAll('_', ' ').trim()
+  if (!text) return ''
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}

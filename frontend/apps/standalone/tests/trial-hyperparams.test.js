@@ -18,6 +18,7 @@ const assert = require('node:assert/strict')
 
 const {
   formatHyperparamValue,
+  hyperparamColumnLabel,
 } = require('../../../packages/ui-core/components/autotunex/trials/trialHyperparams.ts')
 
 describe('formatHyperparamValue', () => {
@@ -74,5 +75,31 @@ describe('formatHyperparamValue', () => {
     // other column. A data problem should look like one, not like "not reported".
     assert.equal(formatHyperparamValue(Number.NaN), 'NaN')
     assert.equal(formatHyperparamValue(Number.POSITIVE_INFINITY), 'Infinity')
+  })
+})
+
+describe('hyperparamColumnLabel', () => {
+  it('uses the curated header for each known hyperparameter', () => {
+    // Curated because column headers want shorter text than the raw key gives:
+    // "Per device train batch size" is a very wide column for "Batch size".
+    assert.equal(hyperparamColumnLabel('learning_rate'), 'Learning rate')
+    assert.equal(hyperparamColumnLabel('per_device_train_batch_size'), 'Batch size')
+    assert.equal(hyperparamColumnLabel('gradient_accumulation_steps'), 'Grad accum steps')
+    assert.equal(hyperparamColumnLabel('lr_scheduler_type'), 'LR scheduler')
+    assert.equal(hyperparamColumnLabel('lora_dropout'), 'LoRA dropout')
+    assert.equal(hyperparamColumnLabel('alpha_ratio'), 'Alpha ratio')
+    assert.equal(hyperparamColumnLabel('warmup_ratio'), 'Warmup ratio')
+    assert.equal(hyperparamColumnLabel('r'), 'Rank (r)')
+    assert.equal(hyperparamColumnLabel('bias'), 'Bias')
+  })
+
+  it('falls back to a readable form for a key added upstream', () => {
+    // So a new hyperparameter in autotune.yaml gets a sane header with no code change.
+    assert.equal(hyperparamColumnLabel('some_new_knob'), 'Some new knob')
+    assert.equal(hyperparamColumnLabel('beta'), 'Beta')
+  })
+
+  it('returns an empty string for an empty key rather than throwing', () => {
+    assert.equal(hyperparamColumnLabel(''), '')
   })
 })
