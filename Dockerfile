@@ -34,13 +34,15 @@ RUN echo "extra-index-url = https://${ARTIFACTORY_USER}:${ARTIFACTORY_API_KEY}@n
 # Copy only what the editable install + running server need (the runner copies /app
 # from here, so anything here ships). setuptools discovers src/, test/, and repo-root
 # configurations/ (see [tool.setuptools.packages.find]); pyproject/README/constraints
-# are read at install; .git lets setuptools_scm derive the version (dropped just below).
+# are read at install; k8s/ holds dep-build-runner.yaml the buildrunner loads at runtime
+# (relative to /app); .git lets setuptools_scm derive the version (dropped just below).
 # The built UI ships under src/gbserver/static/ui/, so frontend/ sources aren't needed.
 COPY pyproject.toml README.md constraints.txt ./
 COPY .git/ ./.git/
 COPY src/ ./src/
 COPY test/ ./test/
 COPY configurations/ ./configurations/
+COPY k8s/ ./k8s/
 # PIP_CONSTRAINT pins the AWS SDK cluster (boto3/botocore/awscli/aiobotocore) to
 # avoid multi-hour pip resolver backtracking. Applied to every pip invocation in
 # this stage. See constraints.txt for details.
