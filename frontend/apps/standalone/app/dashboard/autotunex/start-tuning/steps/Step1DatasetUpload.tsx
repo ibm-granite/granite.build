@@ -26,7 +26,7 @@ import {
 } from '@carbon/react'
 import { Reset, Information } from '@carbon/icons-react'
 import type { ColumnMapping, ColumnMetadata, Dataset, DatasetForm, DatasetFormatType, ParsedDataRow, TuningGoal } from '@granite-build/ui-core/types'
-import { getAutotuneDatasetTypes, getDataset, getDatasets, suggestColumnMappingAI } from '@granite-build/ui-core/api/autotunex'
+import { getAppConfig, getAutotuneDatasetTypes, getDataset, getDatasets, suggestColumnMappingAI } from '@granite-build/ui-core/api/autotunex'
 import { countLinesInFileAsync, processUploadedFileAsync } from '@granite-build/ui-core/lib/autotunex/processUploadedFile'
 import { splitCounts } from '@granite-build/ui-core/lib/autotunex/splitCounts'
 import { PreviewTable } from '@granite-build/ui-core/components/autotunex/shared/PreviewTable'
@@ -46,11 +46,23 @@ import {
   toUpperCase,
   validateDatasetForGoal,
 } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
+import { HfImportModal } from './HfImportModal'
 import { ALGORITHM_DETAILS, ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import styles from './Step1DatasetUpload.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
 
 const ACCEPTED_TYPES = ['.jsonl', '.json', '.csv', '.parquet']
+
+// Named rather than indexed: the switcher's third tab is conditional on the
+// backend's hf_import.available, so `selectedIndex === 0 ? upload : existing`
+// arithmetic no longer identifies a source.
+type DataSource = 'upload' | 'existing' | 'hf'
+
+const SOURCE_LABELS: Record<DataSource, string> = {
+  upload: 'Upload',
+  existing: 'Select Existing',
+  hf: 'HuggingFace',
+}
 
 type PreviewHeader = { key: string; header: string }
 
@@ -167,7 +179,8 @@ export function Step1DatasetUpload({
   // file overwrote the new file's columns, format and mapping, and the launch then
   // uploaded file B naming file A's columns.
   const uploadTokenRef = useRef(0)
-  const [dataSourceIndex, setDataSourceIndex] = useState(0)
+  const [dataSource, setDataSource] = useState<DataSource>('upload')
+  const [hfModalOpen, setHfModalOpen] = useState(false)
 
   const [isAiSuggesting, setIsAiSuggesting] = useState(false)
   const [aiSuggestion, setAiSuggestion] = useState<{ confidence: number; reasoning: string; algorithm: string } | null>(null)
@@ -178,7 +191,38 @@ export function Step1DatasetUpload({
     queryKey: ['autotunex', 'datasets'],
     queryFn: () => getDatasets({ page: 1, pageSize: 100 }),
   })
-  const existingDatasets = existingDatasetsResult?.items ?? []
+  // GET /datasets returns every status. A dataset still uploading or importing has
+  // no rows or preview behind it yet, and an errored one never will, so offering
+  // one sets existingDatasetId with nothing behind it. Pre-existing gap, but every
+  // abandoned HF import adds an `importing` row, so it stops being theoretical.
+  const existingDatasets = useMemo(
+    () => (existingDatasetsResult?.items ?? []).filter((ds) => ds.status === 'ready'),
+    [existingDatasetsResult]
+  )
+
+  // A failed fetch is treated exactly like unavailable: without it the ingest
+  // limits are unknown, and a flow that cannot state its own bounds should not
+  // open. retry: false for the same reason the tab is hidden -- one clear failure
+  // beats a slower one.
+  const { data: appConfig } = useQuery({
+    queryKey: ['autotunex', 'appConfig'],
+    queryFn: getAppConfig,
+    retry: false,
+  })
+  const hfConfig = appConfig?.hf_import?.available ? appConfig.hf_import : undefined
+
+  const availableSources = useMemo<DataSource[]>(() => {
+    const sources: DataSource[] = ['upload']
+    if (existingDatasets.length > 0) sources.push('existing')
+    if (hfConfig) sources.push('hf')
+    return sources
+  }, [existingDatasets.length, hfConfig])
+
+  // The saved-dataset list and the HF flag both arrive asynchronously, so a source
+  // can disappear after being selected.
+  useEffect(() => {
+    if (!availableSources.includes(dataSource)) setDataSource('upload')
+  }, [availableSources, dataSource])
   const { data: datasetTypes = {} } = useQuery({
     queryKey: ['autotunex', 'datasetTypes'],
     queryFn: getAutotuneDatasetTypes,
@@ -647,14 +691,19 @@ export function Step1DatasetUpload({
 
             {!uploadedFile && !existingDatasetId && (
               <>
-                {existingDatasets.length > 0 && (
-                  <ContentSwitcher selectedIndex={dataSourceIndex} onChange={({ index }) => setDataSourceIndex(index ?? 0)} style={{ marginBottom: '0.75rem' }}>
-                    <Switch name="upload" text="Upload" />
-                    <Switch name="existing" text="Select Existing" />
+                {availableSources.length > 1 && (
+                  <ContentSwitcher
+                    selectedIndex={availableSources.indexOf(dataSource)}
+                    onChange={({ index }) => setDataSource(availableSources[index ?? 0])}
+                    style={{ marginBottom: '0.75rem' }}
+                  >
+                    {availableSources.map((source) => (
+                      <Switch key={source} name={source} text={SOURCE_LABELS[source]} />
+                    ))}
                   </ContentSwitcher>
                 )}
 
-                {dataSourceIndex === 0 || existingDatasets.length === 0 ? (
+                {dataSource === 'upload' ? (
                   <div className={styles.dropZone}>
                     <FileUploaderDropContainer
                       labelText="Drag and drop a file here or click to upload"
@@ -665,7 +714,7 @@ export function Step1DatasetUpload({
                     />
                     <p className={styles.dropZoneHint}>Accepted formats: .jsonl, .json, .csv, .parquet</p>
                   </div>
-                ) : (
+                ) : dataSource === 'existing' ? (
                   <Select
                     id="existing-dataset-select"
                     labelText=""
@@ -677,8 +726,21 @@ export function Step1DatasetUpload({
                       <SelectItem key={ds.id} value={ds.id} text={`${ds.name} (${(ds.train_records || 0) + (ds.validation_records || 0)} records)`} />
                     ))}
                   </Select>
+                ) : (
+                  <Button kind="tertiary" size="sm" onClick={() => setHfModalOpen(true)}>
+                    Browse HuggingFace datasets
+                  </Button>
                 )}
               </>
+            )}
+
+            {hfConfig && (
+              <HfImportModal
+                open={hfModalOpen}
+                onClose={() => setHfModalOpen(false)}
+                requiredColumns={requiredColumns}
+                hfConfig={hfConfig}
+              />
             )}
 
             {existingDatasetId ? (
