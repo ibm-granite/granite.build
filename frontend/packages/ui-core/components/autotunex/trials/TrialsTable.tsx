@@ -121,6 +121,27 @@ export function TrialsTable({ job }: Props) {
     return trialColorScale(ordered, bestId, theme)
   }, [trials, bestId, theme])
 
+  // Columns for the hyperparameters the tuner actually searched — see
+  // searchedHyperparams. Empty for a job whose trials carry no tuner_flags, in which
+  // case the table renders exactly as it did before this feature.
+  const hyperparamKeys = useMemo(() => searchedHyperparams(trials), [trials])
+  // The column is keyed `loss` for formatCell and the default sort, but holds the
+  // job's metric, so it is labelled with it: a reward job's 0.91 under "Loss"
+  // read as a bad loss.
+  const metric = jobMetric(trials)
+  const tableHeaders = useMemo(
+    () => [
+      ...BASE_HEADERS.map((h) => (h.key === 'loss' ? { ...h, header: toFeatureLabel(metric) } : h)),
+      ...hyperparamKeys.map((key) => ({ key, header: hyperparamColumnLabel(key) })),
+    ],
+    [hyperparamKeys, metric]
+  )
+
+  // The cell render and the toolbar filter must agree, or search matches text the
+  // cells do not show. Both go through this.
+  const cellText = (key: string, value: unknown) =>
+    hyperparamKeys.includes(key) ? formatHyperparamValue(value) : formatCell(key, value)
+
   if (isLoading) {
     return <InlineLoading description="Loading trials…" />
   }
@@ -206,11 +227,6 @@ export function TrialsTable({ job }: Props) {
     )
   }
 
-  // The column is keyed `loss` for formatCell and the default sort, but holds the
-  // job's metric, so it is labelled with it: a reward job's 0.91 under "Loss"
-  // read as a bad loss.
-  const metric = jobMetric(trials)
-
   // Default order: lowest loss first — trials without a loss sink to the end.
   //
   // `isSelected` seeds Carbon's own checkbox state. Carbon reads it off the row
@@ -219,22 +235,6 @@ export function TrialsTable({ job }: Props) {
   // selection across a remount without contesting ownership of it afterwards.
   // That is what lets Back keep the selection: the compare view unmounts this
   // table, so returning mounts a fresh one that would come up unticked.
-  // Columns for the hyperparameters the tuner actually searched — see
-  // searchedHyperparams. Empty for a job whose trials carry no tuner_flags, in which
-  // case the table renders exactly as it did before this feature.
-  const hyperparamKeys = useMemo(() => searchedHyperparams(trials), [trials])
-  const tableHeaders = useMemo(
-    () => [
-      ...BASE_HEADERS.map((h) => (h.key === 'loss' ? { ...h, header: toFeatureLabel(metric) } : h)),
-      ...hyperparamKeys.map((key) => ({ key, header: hyperparamColumnLabel(key) })),
-    ],
-    [hyperparamKeys, metric]
-  )
-
-  // The cell render and the toolbar filter must agree, or search matches text the
-  // cells do not show. Both go through this.
-  const cellText = (key: string, value: unknown) =>
-    hyperparamKeys.includes(key) ? formatHyperparamValue(value) : formatCell(key, value)
 
   // Best first on the job's metric -- the same ranking bestTrialId and Compare use.
   const rows = rankBestFirst(trials)
