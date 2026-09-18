@@ -81,7 +81,7 @@ k8s:
   volumes:
     {%- set env_config_volumes = environment_config.volumes if environment_config.volumes is defined else {} %}
     {{ env_config_volumes | to_yaml | indent(4) }}
-  image: registry.access.redhat.com/ubi9/python-312:latest
+  image: registry.access.redhat.com/ubi10/python-312-minimal:latest
   
   # Placeholder: Comes from user specified secret in build.yaml -> launch_helm() 
   # via self.full_config in TargetStepRun.__init() using helm --set 

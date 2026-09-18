@@ -1,7 +1,7 @@
 
 k8s:
   use_monitoring_sidecar: True
-  image: registry.access.redhat.com/ubi9/python-312:latest
+  image: registry.access.redhat.com/ubi10/python-312-minimal:latest
   env:
     gb_build_id:
       value: {{ run_metadata.build_id }}

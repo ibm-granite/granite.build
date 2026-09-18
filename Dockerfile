@@ -13,13 +13,18 @@
 #   limitations under the License.
 
 # Builder image
-FROM registry.access.redhat.com/ubi9/python-312:9.7@sha256:a0a5885769d5a8c5123d3b15d5135b254541d4da8e7bc445d95e1c90595de470 AS builder
+FROM registry.access.redhat.com/ubi10/python-312-minimal:10.2 AS builder
 # Artifactory creds for installing dmf library
 ARG ARTIFACTORY_USER
 ARG ARTIFACTORY_API_KEY
 USER root
 # Working directory
 WORKDIR /app
+# The ubi10 python-312-minimal base ships microdnf (no dnf) and no git. pip needs
+# git to install the git-sourced skypilot dependency in ".[thirdparty]"/".[all]"
+# (skypilot@ git+https://github.com/cmadam/skypilot.git). Install it in the builder.
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 git && \
+    microdnf clean all
 # Custom artifactory for DMF library. Taking this approach as fetching from IBM GitHub in Dockerfile is an extra pain...
 RUN mkdir -p /opt/app-root/src/.pip
 RUN echo "[global]" >> /opt/app-root/src/.pip/pip.conf
@@ -38,7 +43,7 @@ RUN pip install --upgrade -e ".[all]"
 # ENV PYTHONDONTWRITEBYTECODE=1
 
 # Runner image
-FROM registry.access.redhat.com/ubi9/python-312:9.7@sha256:a0a5885769d5a8c5123d3b15d5135b254541d4da8e7bc445d95e1c90595de470 AS runner
+FROM registry.access.redhat.com/ubi10/python-312-minimal:10.2 AS runner
 # Non-root user
 ARG USER=gbserver
 # Current image tag
@@ -56,12 +61,17 @@ EXPOSE 8080
 ENV PYTHONUNBUFFERED=1
 # Working directory
 WORKDIR /app
+# Install useful tools. The ubi10 python-312-minimal base ships microdnf (no dnf)
+# and omits shadow-utils/git/vim/rsync/tar/openssl, so install them explicitly.
+# shadow-utils provides useradd (needed by the next step); openssl is required by
+# the helm install script's checksum verification below.
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+        shadow-utils git vim-minimal rsync tar openssl && \
+    microdnf clean all
 # Add the non-root user
 RUN useradd -ms /bin/bash ${USER}
 RUN chown ${USER}:root /app
 RUN chmod 775 /app
-# Install useful tools
-RUN dnf install -y git vim rsync
 # install kubectl
 RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 RUN install -o ${USER} -g root -m 0775 kubectl /usr/local/bin/kubectl && rm kubectl
