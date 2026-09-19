@@ -24,6 +24,8 @@ CANCELLED, and prevent any further retries. There is no retry chain to walk.
 import os
 import signal
 import threading
+import uuid
+from pathlib import Path
 from time import sleep, time
 
 import pytest
@@ -51,11 +53,12 @@ _IN_FLIGHT = {
     Status.CANCEL_REQUESTED,
 }
 
-# The workload in test-data/.../retry-cancel/build-orphan.yaml writes its own
-# shell PID to this file, then sleeps. The test reads the PID and asserts it is
-# reaped after cancellation via os.kill(pid, 0) — no argv reading, so it works on
-# both Linux and macOS. Keep this path in sync with that build.yaml command.
-_ORPHAN_PID_FILE = "/tmp/gborphan-5f3a9c2e-orphan-reap.pid"
+# The orphan-reap test generates its build.yaml at run time (see
+# _write_orphan_build_yaml): the workload writes its own shell PID to a per-run
+# unique file, then sleeps. The test reads that PID and asserts it is reaped
+# after cancellation via os.kill(pid, 0) — no argv reading, so it works on both
+# Linux and macOS. The build.yaml and PID path are generated per run (not a fixed
+# /tmp path) so concurrent pytest sessions on a shared host cannot collide.
 
 
 @pytest.mark.xdist_group(name="buildwatcher_bash_cancel")
@@ -236,13 +239,13 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
             # Exists but owned by another user — still alive for our purposes.
             return True
 
-    def _read_workload_pid(self, timeout_seconds: float):
+    @staticmethod
+    def _read_workload_pid(pid_file: Path, timeout_seconds: float):
         """Poll for the PID file the workload writes; return its pid, or None."""
         start = time()
         while time() - start <= timeout_seconds:
             try:
-                with open(_ORPHAN_PID_FILE, encoding="utf-8") as f:
-                    text = f.read().strip()
+                text = pid_file.read_text(encoding="utf-8").strip()
                 if text:
                     return int(text)
             except (FileNotFoundError, ValueError):
@@ -250,7 +253,38 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
             sleep(0.5)
         return None
 
-    def test_cancel_reaps_workload_child(self):
+    @staticmethod
+    def _write_orphan_build_yaml(dest_dir: Path, pid_file: Path) -> Path:
+        """Write a per-run orphan build.yaml whose workload records its PID.
+
+        The command writes its shell PID to ``pid_file`` then sleeps far longer
+        than the test. Generating this per run (unique pid_file) rather than using
+        a fixed path keeps concurrent pytest sessions on a shared host from
+        colliding. retries.max_retries has headroom so the chain would keep going
+        if cancellation didn't stop it.
+        """
+        build_yaml = dest_dir / "build-orphan.yaml"
+        build_yaml.write_text(
+            "granite.build:\n"
+            "  name: bash-retry-cancel-orphan-test\n"
+            "  retries:\n"
+            "    max_retries: 5\n"
+            "  targets:\n"
+            "    orphan-target:\n"
+            "      allow_unknown: true\n"
+            "      environment_uri: space://environments/bash\n"
+            "      steps:\n"
+            "        - step_uri: space://steps/command\n"
+            "          config:\n"
+            "            command_config:\n"
+            f"              command: 'echo $$ > {pid_file}; sleep 600'\n"
+            "            compute_config:\n"
+            "              num_nodes: 1\n",
+            encoding="utf-8",
+        )
+        return build_yaml
+
+    def test_cancel_reaps_workload_child(self, tmp_path):
         """Cancelling a build reaps the bash workload process (no orphan).
 
         Regression for the SIGTERM shutdown flake: without cleanup_nohup the
@@ -259,13 +293,12 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
         leaked. The workload records its PID; after cancellation that PID must be
         dead.
         """
-        # Start from a clean slate so we never read a stale PID from a prior run.
-        try:
-            os.remove(_ORPHAN_PID_FILE)
-        except FileNotFoundError:
-            pass
+        # Per-run unique PID file + generated build.yaml (no shared /tmp path), so
+        # concurrent pytest sessions on the same host cannot collide.
+        pid_file = tmp_path / f"gborphan-{uuid.uuid4().hex}.pid"
 
         spec = self._get_orphan_spec()
+        spec.build_yaml = str(self._write_orphan_build_yaml(tmp_path, pid_file))
         space = self._check_and_setup_space(spec)
 
         stored_build = StoredBuild.create(
@@ -293,7 +326,7 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
             # The workload must actually be running before we cancel (sanity).
             # Bound this independently of the (much longer) build timeout so a
             # miss fails fast instead of burning the whole budget.
-            workload_pid = self._read_workload_pid(timeout_seconds=90)
+            workload_pid = self._read_workload_pid(pid_file, timeout_seconds=90)
             assert workload_pid is not None, "workload never wrote its PID file"
             assert self._pid_alive(workload_pid), "workload PID not alive after launch"
 
@@ -313,18 +346,16 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
             watcher.stop()
             thread.join(timeout=60)
             # Belt-and-suspenders: never let a failing test leak a 600s sleep.
+            # Only kill the pid itself (not its group): after a reap the pid may
+            # be gone and its number reused, so signalling a whole group by pgid
+            # could hit an unrelated process. os.kill of a stale pid is a no-op
+            # error we swallow.
             if workload_pid is not None and self._pid_alive(workload_pid):
                 try:
-                    os.killpg(os.getpgid(workload_pid), signal.SIGKILL)
+                    os.kill(workload_pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError, OSError):
-                    try:
-                        os.kill(workload_pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError, OSError):
-                        pass
-            try:
-                os.remove(_ORPHAN_PID_FILE)
-            except FileNotFoundError:
-                pass
+                    pass
+            # pid_file lives under pytest's tmp_path, cleaned up automatically.
 
         builds = self.storage.build_storage.get_by_uuid(None) or []
         assert (

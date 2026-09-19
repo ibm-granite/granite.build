@@ -1267,9 +1267,12 @@ class Environment(ABC):
         return task
 
     def _monitoring_cleanup(self: Self, launch_id: str):
-        """
-        NOTE: this seems deprecated as it is never called from anywhere.
-        Make sure the monitoring task is cleaned up.
+        """Set the launch-stopped event so the launch's log monitor stops.
+
+        Called from environment cleanup handlers (e.g. Bash.cleanup_nohup,
+        Docker.cleanup_docker) so the monitor's tail loop exits promptly on step
+        finish or cancellation instead of waiting on a launch that will never
+        report done.
         """
         logger.info(
             "Setting the stop_event to cleanup monitoring for launch_id %s", launch_id

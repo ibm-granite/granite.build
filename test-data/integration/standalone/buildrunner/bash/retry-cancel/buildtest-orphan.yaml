@@ -1,10 +1,10 @@
 # Fixture for test_cancel_reaps_workload_child in
 # test/integration/standalone/buildrunner/bash/test_buildrunner_retry_cancellation.py.
 #
-# Points at build-orphan.yaml, whose workload sleeps 600s with a unique sentinel
-# token so the test can assert (via psutil) that cancelling the build reaps the
-# workload process group and leaves no orphan.
-build_yaml: build-orphan.yaml
+# Supplies space_uri + expected_status. The test overrides `build_yaml` with a
+# per-run generated build.yaml (unique PID file), so `build_yaml` here is only a
+# placeholder pointing at the sibling build.yaml.
+build_yaml: build.yaml
 expected_status: cancelled
 simulate_step_failure: false
 space_uri: ../../../../../../configurations/spaces/local

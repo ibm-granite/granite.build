@@ -53,6 +53,12 @@ logger = get_logger(__name__)
 BASH_SCRIPTS = "bash_scripts"
 JOB_SUB_SH = "llmb_bash_jobsub.sh"
 
+# cleanup_nohup grace windows (seconds). Kept short so build shutdown does not
+# wait out the workload: SIGTERM lets the workload exit cleanly, then SIGKILL is
+# forced. These run serially per outstanding launch on the cancellation path.
+_NOHUP_SIGTERM_GRACE_S = 3.0
+_NOHUP_SIGKILL_GRACE_S = 2.0
+
 
 class Bash(Environment):
     """
@@ -312,6 +318,12 @@ class Bash(Environment):
                     proc.returncode,
                 )
                 return
+            # Only signal the child's *own* process group. launch_nohup used
+            # start_new_session=True, so the child is its group leader and
+            # pgid == pid. If they differ (e.g. a very early cancel racing the
+            # child's setsid, so the kernel still reports the server's group), a
+            # killpg would hit the gbserver's own group — so fall back to killing
+            # just the child pid in that case.
             try:
                 pgid = os.getpgid(proc.pid)
             except ProcessLookupError:
@@ -319,31 +331,45 @@ class Bash(Environment):
                     "cleanup_nohup: launch %s pid %s already gone", launch_id, proc.pid
                 )
                 return
+            own_group = pgid == proc.pid
+
+            def _terminate(sig: int) -> None:
+                target = "process group" if own_group else "pid"
+                try:
+                    if own_group:
+                        os.killpg(pgid, sig)
+                    else:
+                        os.kill(proc.pid, sig)
+                except (ProcessLookupError, PermissionError) as exc:
+                    logger.debug("cleanup_nohup: signal %s on %s: %s", sig, target, exc)
+
+            if not own_group:
+                logger.warning(
+                    "cleanup_nohup: launch %s pid %s is not its own group leader "
+                    "(pgid=%s); killing the pid only to avoid signalling the "
+                    "server's group",
+                    launch_id,
+                    proc.pid,
+                    pgid,
+                )
             logger.info(
-                "cleanup_nohup: terminating workload process group %s (launch_id=%s)",
-                pgid,
+                "cleanup_nohup: terminating workload (launch_id=%s, pid=%s)",
                 launch_id,
+                proc.pid,
             )
+            _terminate(signal.SIGTERM)
             try:
-                os.killpg(pgid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError) as e:
-                logger.debug("cleanup_nohup: SIGTERM on pgid %s: %s", pgid, e)
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
+                await asyncio.wait_for(proc.wait(), timeout=_NOHUP_SIGTERM_GRACE_S)
                 logger.info("cleanup_nohup: launch %s exited after SIGTERM", launch_id)
             except asyncio.TimeoutError:
                 logger.warning(
                     "cleanup_nohup: launch %s did not exit within grace period; "
-                    "sending SIGKILL to process group %s",
+                    "sending SIGKILL",
                     launch_id,
-                    pgid,
                 )
+                _terminate(signal.SIGKILL)
                 try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError) as e:
-                    logger.debug("cleanup_nohup: SIGKILL on pgid %s: %s", pgid, e)
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                    await asyncio.wait_for(proc.wait(), timeout=_NOHUP_SIGKILL_GRACE_S)
                     logger.info(
                         "cleanup_nohup: launch %s reaped after SIGKILL", launch_id
                     )
