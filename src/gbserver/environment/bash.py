@@ -284,99 +284,102 @@ class Bash(Environment):
             )
 
     async def cleanup_nohup(self: Self, launch_id: str, **kwargs) -> None:
-        """Reap the workload process on step finish or cancellation.
+        """Reap the whole workload process group on step finish or cancellation.
 
-        Auto-registered as the ``nohup`` launch type's cleanup (Environment
-        discovers ``cleanup_*`` methods) and invoked by ``TargetStepRun._cleanup``
-        under ``Run.run``'s ``uncancel()`` guard, so it runs on both the success
-        and the cancellation paths and may ``await``.
+        Auto-discovered as the ``nohup`` cleanup and run by ``TargetStepRun.
+        _cleanup`` under ``Run.run``'s ``uncancel()`` guard, on both the success
+        and cancel paths. On cancel, ``launch_nohup``'s ``await process.wait()``
+        was unwound without reaping the child (launched ``start_new_session=True``,
+        so its own group leader), orphaning the tree (jobsub -> wrapper -> ``sh -c``
+        -> ``sleep``).
 
-        On a normal finish ``launch_nohup`` already awaited ``process.wait()``, so
-        the child has exited (returncode set) and this is a no-op beyond clearing
-        state. On cancellation, ``await process.wait()`` was unwound by
-        ``CancelledError`` without reaping the child — which was launched with
-        ``start_new_session=True`` and so is its own process-group leader — leaving
-        the whole workload tree (jobsub wrapper + the user command) orphaned. Here
-        we SIGTERM the process group, allow a short grace, then SIGKILL, so build
-        shutdown cannot wait out the workload (the flake behind the SIGTERM e2e
-        test) and no process leaks.
-
-        Always sets the launch-stopped event (via ``_monitoring_cleanup``) so the
-        log monitor's tail loop exits promptly, and drops the tracked process.
+        SIGTERM the group, poll until it is empty, then SIGKILL if the grace
+        elapses. The group emptiness — not ``proc.wait()`` — is the signal: the
+        leader dies first, but deeper members can outlive one SIGTERM, so waiting
+        only on the leader would leak them (the SIGTERM e2e flake). Also sets the
+        launch-stopped event so the log monitor stops, and drops the process.
         """
         proc = self._launched_processes.get(launch_id)
         try:
             if proc is None:
-                logger.debug(
-                    "cleanup_nohup: no process to clean up for launch_id %s", launch_id
-                )
+                logger.debug("cleanup_nohup: nothing to reap for %s", launch_id)
                 return
-            if proc.returncode is not None:
-                logger.debug(
-                    "cleanup_nohup: launch %s already exited (rc=%s); nothing to reap",
-                    launch_id,
-                    proc.returncode,
-                )
-                return
-            # Only signal the child's *own* process group. launch_nohup used
-            # start_new_session=True, so the child is its group leader and
-            # pgid == pid. If they differ (e.g. a very early cancel racing the
-            # child's setsid, so the kernel still reports the server's group), a
-            # killpg would hit the gbserver's own group — so fall back to killing
-            # just the child pid in that case.
+            # Only signal the child's own group: with start_new_session the child
+            # leads its group (pgid == pid). If they differ (an early cancel racing
+            # the child's setsid), killpg would hit the server's group — signal the
+            # pid alone instead.
             try:
                 pgid = os.getpgid(proc.pid)
             except ProcessLookupError:
                 logger.debug(
-                    "cleanup_nohup: launch %s pid %s already gone", launch_id, proc.pid
+                    "cleanup_nohup: %s pid %s already gone", launch_id, proc.pid
                 )
                 return
             own_group = pgid == proc.pid
+            if not own_group:
+                logger.warning(
+                    "cleanup_nohup: %s pid %s not its own group leader (pgid=%s); "
+                    "signalling the pid only",
+                    launch_id,
+                    proc.pid,
+                    pgid,
+                )
 
-            def _terminate(sig: int) -> None:
-                target = "process group" if own_group else "pid"
+            def _signal_group(sig: int) -> bool:
+                """Signal the group (or lone pid); False once nothing is left."""
                 try:
                     if own_group:
                         os.killpg(pgid, sig)
                     else:
                         os.kill(proc.pid, sig)
-                except (ProcessLookupError, PermissionError) as exc:
-                    logger.debug("cleanup_nohup: signal %s on %s: %s", sig, target, exc)
+                    return True
+                except ProcessLookupError:
+                    return False
+                except PermissionError as exc:
+                    logger.debug("cleanup_nohup: signal %s: %s", sig, exc)
+                    return True
 
-            if not own_group:
-                logger.warning(
-                    "cleanup_nohup: launch %s pid %s is not its own group leader "
-                    "(pgid=%s); killing the pid only to avoid signalling the "
-                    "server's group",
-                    launch_id,
-                    proc.pid,
-                    pgid,
-                )
+            async def _wait_group_gone(grace: float) -> bool:
+                """Poll (signal 0) until the group is empty or ``grace`` elapses."""
+                deadline = asyncio.get_event_loop().time() + grace
+                while asyncio.get_event_loop().time() < deadline:
+                    if not _signal_group(0):
+                        return True
+                    await asyncio.sleep(0.2)
+                return not _signal_group(0)
+
             logger.info(
-                "cleanup_nohup: terminating workload (launch_id=%s, pid=%s)",
+                "cleanup_nohup: terminating %s (pid=%s, pgid=%s)",
                 launch_id,
                 proc.pid,
+                pgid if own_group else "n/a",
             )
-            _terminate(signal.SIGTERM)
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=_NOHUP_SIGTERM_GRACE_S)
-                logger.info("cleanup_nohup: launch %s exited after SIGTERM", launch_id)
-            except asyncio.TimeoutError:
+            # No-op if the workload already finished (empty group).
+            _signal_group(signal.SIGTERM)
+            if await _wait_group_gone(_NOHUP_SIGTERM_GRACE_S):
+                logger.info("cleanup_nohup: launch %s stopped after SIGTERM", launch_id)
+            else:
                 logger.warning(
-                    "cleanup_nohup: launch %s did not exit within grace period; "
+                    "cleanup_nohup: launch %s still alive after SIGTERM grace; "
                     "sending SIGKILL",
                     launch_id,
                 )
-                _terminate(signal.SIGKILL)
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=_NOHUP_SIGKILL_GRACE_S)
+                _signal_group(signal.SIGKILL)
+                if await _wait_group_gone(_NOHUP_SIGKILL_GRACE_S):
                     logger.info(
                         "cleanup_nohup: launch %s reaped after SIGKILL", launch_id
                     )
-                except asyncio.TimeoutError:
+                else:
                     logger.error(
-                        "cleanup_nohup: launch %s still not reaped after SIGKILL",
-                        launch_id,
+                        "cleanup_nohup: launch %s still alive after SIGKILL", launch_id
+                    )
+            # Reap the leader so it isn't left a zombie (the poll doesn't waitpid).
+            if proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=_NOHUP_SIGKILL_GRACE_S)
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        "cleanup_nohup: launch %s leader wait timed out", launch_id
                     )
         except Exception as e:  # noqa: BLE001 - cleanup must never raise
             logger.error(
