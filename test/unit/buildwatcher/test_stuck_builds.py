@@ -25,6 +25,8 @@ import datetime
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from libgbtest.constants import requires_k8s
+
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.status import Status
 
@@ -346,8 +348,13 @@ class TestSubmittedProcessing:
         metric.assert_called_once()
 
 
+@requires_k8s
 class TestCleanupExtendedToJobAndPods:
-    """_cleanup_orphaned_k8s_resources now also reaps the build-runner Job and pods."""
+    """_cleanup_orphaned_k8s_resources now also reaps the build-runner Job and pods.
+
+    _cleanup_orphaned_k8s_resources imports kubernetes_asyncio (optional 'ibm' extra),
+    so these are skipped when that extra is not installed (e.g. the default CI test job).
+    """
 
     def test_deletes_job_and_pods_alongside_aw_and_rc(self):
         watcher = _make_watcher()
