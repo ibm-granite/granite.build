@@ -105,12 +105,10 @@ class BuildWatcher:
     watch_for_config_changes: bool
     config: BuildWatcherConfig
 
-    # build_id -> thread for a running build. This IS the authoritative "a runner is
-    # in flight for this build" record: a PENDING build is (re-)dispatched only when it
-    # has no live thread here, so a failed dispatch or a dead runner self-corrects on
-    # the next poll. (Replaces the old active_pending_builds "seen" list, whose
-    # set-early / clear-on-status-change lifecycle could strand a build in PENDING
-    # forever.)
+    # build_id -> runner thread. The authoritative "in flight" record: a PENDING build
+    # is (re-)dispatched only when it has no live thread here, so a failed dispatch or
+    # dead runner self-corrects next poll. Replaces the old active_pending_builds "seen"
+    # list, whose clear-on-status-change lifecycle could strand a build PENDING forever.
     build_threads: Dict[str, threading.Thread]
     # build_id -> thread for a creating a PR for a build
     build_pr_threads: Dict[str, threading.Thread]
@@ -138,16 +136,14 @@ class BuildWatcher:
     # workspace dir used by the build watcher
     watcher_workspace_dir: Path
 
-    # build ids whose SUBMITTED->PENDING flip is currently running on a daemon thread.
-    # Prevents spawning a duplicate flip thread on the next poll while one is in flight.
-    # Cleared when the flip thread finishes (in a finally), NEVER on DB status change —
-    # so, unlike the old "seen" lists, it cannot strand a build.
+    # build ids whose SUBMITTED->PENDING flip is running on a daemon thread; blocks a
+    # duplicate flip thread next poll. Cleared when that thread finishes (in a finally),
+    # never on DB status change, so it cannot strand a build.
     submitted_in_flight: set[str]
 
-    # build_id -> number of times the watcher has cleaned up and re-dispatched this
-    # build after finding it stuck (PENDING with no live runner). Bounds infrastructure
-    # recovery; at config.max_stuck_redispatches the build is marked FAILED. In-memory
-    # (resets on watcher restart, which grants a fresh attempt) to avoid a schema change.
+    # build_id -> clean-and-re-dispatch count for a stuck build (PENDING, no live
+    # runner). Bounds infra recovery; at config.max_stuck_redispatches the build is
+    # FAILED. In-memory (a restart grants a fresh attempt) to avoid a schema change.
     stuck_redispatch_counts: Dict[str, int]
 
     def __init__(
@@ -729,11 +725,10 @@ class BuildWatcher:
                 logger.info("starting build id %s", b.uuid)
                 self.__start_build(b)
             except Exception as e:
-                # Dispatch failed before a runner was in flight (e.g. a bad/missing
-                # deployment template). Count it against the re-dispatch budget so a
-                # build that throws on every poll converges to FAILED within a few
-                # polls instead of thrashing (or, historically, sitting PENDING
-                # forever). The build stays PENDING, so the next poll retries it.
+                # Dispatch failed before a runner started (e.g. bad deployment
+                # template). Count it against the budget so a build that throws every
+                # poll converges to FAILED instead of retrying forever; it stays PENDING
+                # so the next poll retries.
                 logger.error("failed to start build %s, error: %s", b.uuid, e)
                 self.__record_stuck_build_attempt(
                     b.uuid,
@@ -791,6 +786,12 @@ class BuildWatcher:
             logger.error("failed to fetch pending builds for reconcile: %s", e)
             return
 
+        # Prune counters for builds no longer PENDING (recovered or deleted) so the
+        # dict doesn't grow unbounded over the watcher's lifetime.
+        pending_ids = {b.uuid for b in pending_builds}
+        for bid in [b for b in self.stuck_redispatch_counts if b not in pending_ids]:
+            del self.stuck_redispatch_counts[bid]
+
         now = get_utc_time()
         threshold = self.config.stuck_build_timeout_seconds
         for b in pending_builds:
@@ -813,14 +814,13 @@ class BuildWatcher:
             )
             reason = f"build stuck PENDING for {age:.0f}s with no live runner"
             if self.__record_stuck_build_attempt(b.uuid, Status.PENDING, reason):
-                # Budget exhausted; build was marked FAILED. Best-effort clean up so no
-                # zombie K8s resources are left behind.
-                self._cleanup_orphaned_k8s_resources(b.uuid)
+                # Budget exhausted (now FAILED); clean up so no zombie resources linger.
+                self.__cleanup_stale_runner_resources(b.uuid)
                 continue
-            # Under budget: clean stale K8s resources (so a re-dispatch gets a fresh job
-            # name, avoiding a collision with a zombie job) and drop any dead thread
-            # refs so the next poll re-dispatches. The build stays PENDING.
-            self._cleanup_orphaned_k8s_resources(b.uuid)
+            # Under budget: clean stale resources (a re-dispatch then gets a fresh job
+            # name, no zombie-job collision) and drop dead refs so the next poll
+            # re-dispatches. Stays PENDING.
+            self.__cleanup_stale_runner_resources(b.uuid)
             with self._builds_lock:
                 self.build_runners.pop(b.uuid, None)
                 self.build_threads.pop(b.uuid, None)
@@ -828,6 +828,16 @@ class BuildWatcher:
             push_stuck_build_metric(
                 b.uuid, MetricName.STUCK_BUILD_REDISPATCHED, Status.PENDING
             )
+
+    def __cleanup_stale_runner_resources(self: Self, build_id: str) -> None:
+        """Reap leftover runner resources for a stuck build before re-dispatch.
+
+        Only the "job" runner leaves external K8s resources that could collide with a
+        re-dispatch. The "thread"/"process" runners (standalone) have none, and the K8s
+        call there is a wasted asyncio/kubernetes_asyncio import (absent without 'ibm').
+        """
+        if self.config.buildrunner_type == "job":
+            self._cleanup_orphaned_k8s_resources(build_id)
 
     def __worker_thread_run(self: Self) -> None:
         """
@@ -909,7 +919,10 @@ class BuildWatcher:
         with self._builds_lock:
             self.build_runners[build_id] = build_runner
             self.build_threads[build_id] = build_thread
-        build_thread.start()
+            # Start under the lock: a tracked thread before start() reports
+            # is_alive()==False, which the in-flight guard would misread as "not
+            # running" and re-dispatch. Moot while the worker loop is single-threaded.
+            build_thread.start()
 
     def __warn_space_uri_not_supported(self: Self, runner_type: str) -> None:
         """Log a warning when all_build_space_uri is set but the runner type does not support it."""

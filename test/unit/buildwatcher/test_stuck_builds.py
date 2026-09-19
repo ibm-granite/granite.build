@@ -31,7 +31,9 @@ from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.status import Status
 
 
-def _make_watcher(max_stuck_redispatches=3, stuck_build_timeout_seconds=900):
+def _make_watcher(
+    max_stuck_redispatches=3, stuck_build_timeout_seconds=900, buildrunner_type="job"
+):
     """Build a BuildWatcher instance without running its real __init__."""
     from gbserver.buildwatcher.buildwatcher import BuildWatcher
 
@@ -48,6 +50,7 @@ def _make_watcher(max_stuck_redispatches=3, stuck_build_timeout_seconds=900):
     config = MagicMock()
     config.max_stuck_redispatches = max_stuck_redispatches
     config.stuck_build_timeout_seconds = stuck_build_timeout_seconds
+    config.buildrunner_type = buildrunner_type
     watcher.config = config
     return watcher
 
@@ -260,6 +263,46 @@ class TestReconcileStuckBuilds:
             watcher._BuildWatcher__reconcile_stuck_builds()
         cleanup.assert_not_called()
         finalize.assert_not_called()
+
+    def test_thread_runner_skips_k8s_cleanup(self):
+        # standalone/thread mode has no external K8s resources to reap
+        watcher = _make_watcher(
+            max_stuck_redispatches=3,
+            stuck_build_timeout_seconds=900,
+            buildrunner_type="thread",
+        )
+        build = self._stale_build()
+        with (
+            patch.object(
+                watcher,
+                "_BuildWatcher__get_builds_matching_status",
+                return_value=[build],
+            ),
+            patch.object(watcher, "_cleanup_orphaned_k8s_resources") as cleanup,
+            patch(f"{BW}.finalize_build_status"),
+            patch(f"{BW}.push_stuck_build_metric"),
+        ):
+            watcher._BuildWatcher__reconcile_stuck_builds()
+        cleanup.assert_not_called()
+        # still re-dispatched (counter bumped), just without the K8s call
+        assert watcher.stuck_redispatch_counts[build.uuid] == 1
+
+    def test_recovered_build_counter_pruned(self):
+        # a build with a lingering counter that is no longer PENDING gets pruned
+        watcher = _make_watcher()
+        watcher.stuck_redispatch_counts = {"gone": 2, "still-pending": 1}
+        still = _mock_build(uuid="still-pending")  # fresh, stays PENDING
+        with (
+            patch.object(
+                watcher,
+                "_BuildWatcher__get_builds_matching_status",
+                return_value=[still],
+            ),
+            patch.object(watcher, "_cleanup_orphaned_k8s_resources"),
+        ):
+            watcher._BuildWatcher__reconcile_stuck_builds()
+        assert "gone" not in watcher.stuck_redispatch_counts
+        assert watcher.stuck_redispatch_counts["still-pending"] == 1
 
 
 class TestSubmittedProcessing:
