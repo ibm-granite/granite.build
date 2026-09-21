@@ -43,6 +43,7 @@ import {
   pollStep,
   probeMapping,
   problemDetail,
+  pruneMapping,
   suffixWithRevision,
   survivalSummary,
 } from './hfImport'
@@ -120,6 +121,16 @@ export function HfImportModal({
   // string stands in for it, and changes exactly when its contents do.
   const requiredKey = requiredColumns.join(',')
 
+  // The probe's request body needs the current required columns, but its RESPONSE
+  // does not depend on them: the server returns source-side `columns` and
+  // `raw_rows`, and the payload carries no target_format for it to validate keys
+  // against. Reading them through a ref keeps `requiredKey` out of the probe's
+  // dependency array below -- otherwise an AI-suggested algorithm change refires
+  // the probe, whose body calls setMapping({}), wiping the mapping the AI just
+  // wrote.
+  const requiredColumnsRef = useRef(requiredColumns)
+  requiredColumnsRef.current = requiredColumns
+
   const {
     data: splits,
     isFetching: splitsFetching,
@@ -175,7 +186,7 @@ export function HfImportModal({
       // cannot change `columns` or `raw_rows`. Including it would re-probe (and, in
       // the next commit, discard the user's mapping) every time they change it.
       validation_split: null,
-      column_mapping: probeMapping(requiredColumns),
+      column_mapping: probeMapping(requiredColumnsRef.current),
     })
       .then((result) => {
         if (previewTokenRef.current !== token) return
@@ -188,7 +199,19 @@ export function HfImportModal({
       .finally(() => {
         if (previewTokenRef.current === token) setProbeLoading(false)
       })
-  }, [open, repoId, splits, config, trainSplit, requiredKey])
+  }, [open, repoId, splits, config, trainSplit])
+
+  // The required columns changed -- an AI-suggested algorithm, or the user
+  // changing it. The mapping still holds the previous algorithm's targets, which
+  // would be sent in the import body. Prune rather than clear: a target that is
+  // still required keeps the source the user (or the AI) chose for it.
+  //
+  // `requiredKey` stands in for `requiredColumns`, which is a fresh array on every
+  // parent render. pruneMapping returns its argument when nothing is dropped, so
+  // this cannot loop.
+  useEffect(() => {
+    setMapping((current) => pruneMapping(current, requiredColumnsRef.current))
+  }, [requiredKey])
 
   // The second preview: the real one. Fires only once every required column has a
   // source, because the server counts survivors over the mapping's own keys -- a
