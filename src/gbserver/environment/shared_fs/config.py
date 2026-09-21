@@ -61,13 +61,26 @@ class SharedFilesystemConfig(Config):
     provider: Literal["efs"]
     mount_point: str
     efs: Optional[EfsConfig] = None
+    local_scratch: Optional[str] = None
+    """Instance-local scratch dir exported as ``GB_LOCAL_SCRATCH`` (defaults to
+    ``/tmp/gb-scratch`` when unset). Must be absolute. Point it at the image's
+    instance-store NVMe mount (e.g. ``/opt/dlami/nvme/...``) for true local scratch;
+    ``/tmp`` is the EBS root volume on stock AWS/DLAMI images."""
 
     @model_validator(mode="after")
     def _check(self) -> "SharedFilesystemConfig":
+        # Normalize a trailing slash so the chmod-walk's mount-root sentinel
+        # matches (else the walk climbs past the root to /).
+        self.mount_point = self.mount_point.rstrip("/") or "/"
         if not os.path.isabs(self.mount_point):
             raise ValueError(
                 f"shared_filesystem.mount_point must be absolute, got {self.mount_point!r}"
             )
         if self.efs is None:
             raise ValueError("provider 'efs' requires an 'efs' block")
+        if self.local_scratch is not None and not os.path.isabs(self.local_scratch):
+            raise ValueError(
+                "shared_filesystem.local_scratch must be absolute, got "
+                f"{self.local_scratch!r}"
+            )
         return self

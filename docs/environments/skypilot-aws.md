@@ -153,9 +153,11 @@ A step with an `image_id` runs in a container on the EC2 host, yet still sees th
 SkyPilot launches its containers with host networking, `--cap-add=SYS_ADMIN`, `--device=/dev/fuse`, and
 `--security-opt apparmor:unconfined` — so an in-container `mount -t nfs4` is permitted (past both seccomp
 *and* AppArmor) and reaches the mount target as the host IP (covered by the VPC-CIDR SG rule). gbserver
-additionally pins `--cap-add=SYS_ADMIN` into `docker.run_options` as belt-and-suspenders; it does **not**
-pin `--net=host` (SkyPilot always adds it, and a duplicate `--network` makes `docker run` fail) nor
-`--device=/dev/fuse` (irrelevant to NFS). The in-container mount runs sudo-free as root. Image
+does **not** add any container `run_options` of its own — it relies on those SkyPilot defaults (pinning
+`--net=host` would duplicate SkyPilot's and make `docker run` fail; the flag that actually clears the
+mount, `--security-opt apparmor:unconfined`, is SkyPilot's too). If a future SkyPilot bump drops them,
+pin the needed dup-tolerant ones (not `--net=host`) in `docker.run_options`. The in-container mount runs
+sudo-free as root. Image
 requirements: an **NFS client** (`nfs-common`/`nfs-utils`) and `mountpoint` (util-linux) — gbserver
 installs the NFS client best-effort via the image's package manager (using `sudo` only when not root),
 so a slim image needs a package manager; prefer an image that already ships the client for
@@ -167,8 +169,9 @@ EFS is the durable **hand-off medium** between steps, not fast scratch — every
 under elastic throughput. Each step also gets an instance-local `GB_LOCAL_SCRATCH`: **stage hot paths
 (checkpoints, decompress/scratch) there** and copy only the durable result back to the per-run workdir.
 It defaults to `/tmp/gb-scratch`, which on stock AWS/DLAMI images is the **EBS root volume, not
-instance-store NVMe** — set the environment's `local_scratch` to the image's NVMe mount (e.g.
-`/opt/dlami/nvme/...`) if you want true local-NVMe scratch. Keeping churn off EFS bounds latency and cost.
+instance-store NVMe** — set `shared_filesystem.local_scratch` (validated, must be absolute) to the
+image's NVMe mount (e.g. `/opt/dlami/nvme/...`) if you want true local-NVMe scratch. Keeping churn off
+EFS bounds latency and cost.
 
 ### hf cache
 

@@ -46,6 +46,12 @@ class SharedFilesystemProvider(ABC):
         """AZ to pin the cleanup VM to (must have a mount target), or None."""
         return None
 
+    def transit_encryption_note(self) -> Optional[str]:
+        """A one-line note logged server-side (gbserver) at launch about transit
+        encryption — e.g. that a fallback mount may be cleartext — so an operator
+        watching gbserver logs (not just the per-step log) sees it. Default None."""
+        return None
+
 
 def resolve_shared_workdir(config: Optional["EnvironmentConfig"]) -> Optional[str]:
     """Resolve the shared_workdir root from an EnvironmentConfig (only ``.config``
@@ -63,3 +69,15 @@ def resolve_shared_workdir(config: Optional["EnvironmentConfig"]) -> Optional[st
     if sf_raw:
         return SharedFilesystemConfig.model_validate(sf_raw).mount_point
     return workdir
+
+
+def resolve_local_scratch(config: Optional["EnvironmentConfig"]) -> Optional[str]:
+    """Return the ``shared_filesystem.local_scratch`` dir, or None when there is no
+    ``shared_filesystem`` block (the caller applies the ``/tmp/gb-scratch`` default).
+    Read through the typed config so an invalid (e.g. relative) value is rejected."""
+    if config is None:
+        return None
+    sf_raw = (config.config or {}).get("shared_filesystem")
+    if not sf_raw:
+        return None
+    return SharedFilesystemConfig.model_validate(sf_raw).local_scratch

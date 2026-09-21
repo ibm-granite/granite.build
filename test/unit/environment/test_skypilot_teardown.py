@@ -441,10 +441,10 @@ class TestWorkdirLauncherEnvVars:
             subtype="aws",
             config={
                 "default_cloud": "aws",
-                "local_scratch": "/opt/dlami/nvme/gb-scratch",
                 "shared_filesystem": {
                     "provider": "efs",
                     "mount_point": "/mnt/gb-shared",
+                    "local_scratch": "/opt/dlami/nvme/gb-scratch",
                     "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
                 },
             },

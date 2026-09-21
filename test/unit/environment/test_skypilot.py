@@ -1968,7 +1968,7 @@ def test_prologue_orders_mount_before_cd_and_chmods_1777():
     # Mount, then chmod, then cd.
     assert prologue.index("MOUNT_HERE") < prologue.index("chmod 1777")
     assert prologue.rindex("chmod 1777") < prologue.index('cd "$GB_BUILD_WORKDIR"')
-    # Regression (Constantine): the chmod must be GUARDED so a step 2 running as a
+    # Regression (#389 review): the chmod must be GUARDED so a step 2 running as a
     # different uid than step 1 (which owns the pre-created dir) does not EPERM and
     # abort under `set -eu`; and it must cover the builds/<id>/runs parents (created
     # 0755 by mkdir -p) up to the shared-fs mount root, so a different-uid step can
@@ -1977,6 +1977,10 @@ def test_prologue_orders_mount_before_cd_and_chmods_1777():
     assert 'chmod 1777 "$GB_BUILD_WORKDIR"\n' not in prologue
     assert "2>/dev/null || true" in prologue
     assert "/mnt/gb-shared" in prologue
+    # Race-safety (#389 review): the per-run tree is created world-writable
+    # atomically (umask 000) so a concurrent different-uid step never sees a 0755
+    # parent between mkdir and the sticky-bit chmod.
+    assert "umask 000" in prologue
     # The emitted shell must be syntactically valid.
     proc = subprocess.run(
         ["bash", "-n"], input=prologue, text=True, capture_output=True
@@ -1990,35 +1994,11 @@ def test_prologue_no_provider_is_plain_cli_prefix():
     )
 
 
-def test_container_mount_options_appended_to_empty_docker_config():
-    out = skymod._with_container_mount_options({})
-    # Only --cap-add=SYS_ADMIN is pinned (mount(2) in the container needs it).
-    # --net=host is NOT pinned: SkyPilot's docker_start_cmds unconditionally adds
-    # it and docker rejects a duplicate --network (rc 125). --device=/dev/fuse is
-    # NOT pinned either: it is an NFS-irrelevant leftover from the dropped S3/FUSE
-    # design (and SkyPilot already adds it by default anyway).
-    assert out["run_options"] == ["--cap-add=SYS_ADMIN"]
-
-
-def test_container_mount_options_omit_net_host_and_fuse():
-    """Regression (#393): never pin --net=host (SkyPilot always adds it -> duplicate
-    --network fails rc 125) and don't pin --device=/dev/fuse (irrelevant to NFS)."""
-    assert "--net=host" not in skymod._CONTAINER_SHARED_FS_RUN_OPTIONS
-    assert "--device=/dev/fuse" not in skymod._CONTAINER_SHARED_FS_RUN_OPTIONS
-    opts = skymod._with_container_mount_options({})["run_options"]
-    assert "--net=host" not in opts
-    assert "--device=/dev/fuse" not in opts
-
-
-def test_container_mount_options_preserve_and_dedupe_existing_run_options():
-    out = skymod._with_container_mount_options(
-        {"run_options": ["--shm-size=1g", "--cap-add=SYS_ADMIN"]}
-    )
-    # user options kept, order preserved, no duplicate --cap-add=SYS_ADMIN.
-    assert out["run_options"] == ["--shm-size=1g", "--cap-add=SYS_ADMIN"]
-
-
-def test_container_mount_options_does_not_mutate_input():
-    original = {"run_options": ["--shm-size=1g"]}
-    skymod._with_container_mount_options(original)
-    assert original == {"run_options": ["--shm-size=1g"]}
+def test_no_gbserver_pinned_container_run_options():
+    """Regression (#389 review): gbserver must NOT pin any docker run options for a
+    containerized shared_filesystem step -- SkyPilot's docker_start_cmds already
+    provides --net=host / SYS_ADMIN / fuse / apparmor:unconfined, and pinning
+    --net=host duplicated fails ``docker run`` (rc 125). The pinning helper and its
+    constant were removed; assert they no longer exist."""
+    assert not hasattr(skymod, "_with_container_mount_options")
+    assert not hasattr(skymod, "_CONTAINER_SHARED_FS_RUN_OPTIONS")

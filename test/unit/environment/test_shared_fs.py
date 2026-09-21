@@ -51,6 +51,20 @@ def test_efs_block_required():
         )
 
 
+def test_mount_point_trailing_slash_normalized():
+    # A trailing slash would otherwise never match the chmod-walk's mount-root
+    # sentinel, so the loop would climb to / and chmod /mnt and / (harmless but
+    # sloppy). Normalize it in the validator.
+    sf = SharedFilesystemConfig.model_validate(
+        {
+            "provider": "efs",
+            "mount_point": "/mnt/gb-shared/",
+            "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
+        }
+    )
+    assert sf.mount_point == "/mnt/gb-shared"
+
+
 def test_mount_point_must_be_absolute():
     with pytest.raises(ValueError, match="must be absolute"):
         SharedFilesystemConfig.model_validate(
@@ -93,6 +107,38 @@ def test_efs_cleanup_zone_must_be_in_region():
                 },
             }
         )
+
+
+def test_local_scratch_must_be_absolute():
+    with pytest.raises(ValueError, match="local_scratch"):
+        SharedFilesystemConfig.model_validate(
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/x",
+                "local_scratch": "rel/scratch",
+                "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
+            }
+        )
+
+
+def test_local_scratch_absolute_ok_and_default_none():
+    sf = SharedFilesystemConfig.model_validate(
+        {
+            "provider": "efs",
+            "mount_point": "/mnt/x",
+            "local_scratch": "/opt/dlami/nvme/gb-scratch",
+            "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
+        }
+    )
+    assert sf.local_scratch == "/opt/dlami/nvme/gb-scratch"
+    sf2 = SharedFilesystemConfig.model_validate(
+        {
+            "provider": "efs",
+            "mount_point": "/mnt/x",
+            "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
+        }
+    )
+    assert sf2.local_scratch is None
 
 
 def test_efs_cleanup_zone_in_region_ok():
@@ -200,7 +246,7 @@ def test_efs_mount_prologue_is_root_safe_no_bare_sudo():
 
 
 def test_efs_mount_prologue_warns_when_tls_requested_but_efs_utils_absent():
-    """Regression (Constantine): `-o tls` only encrypts on the mount.efs path;
+    """Regression (#389 review): `-o tls` only encrypts on the mount.efs path;
     plain nfs4 (the common fallback on stock images) cannot do EFS TLS, so a
     tls=true config that falls back must warn loudly rather than silently mount in
     cleartext while claiming encryption in transit."""
@@ -236,6 +282,25 @@ def test_efs_cleanup_run_script_mounts_then_reaps():
     assert "rm -rf '/mnt/gb-shared/builds/b1/runs/r1'" in script
     assert "rmdir" in script  # parent reap
     _bash_ok(script)
+
+
+def test_efs_transit_encryption_note_when_tls():
+    """Regression (#389 review): a server-side note so an operator watching gbserver
+    logs learns the mount may be cleartext (the step-log warning alone isn't seen)."""
+    p = EfsProvider(
+        "/mnt/gb-shared",
+        EfsConfig(file_system_id="fs-0abc", region="us-east-1", tls=True),
+    )
+    note = p.transit_encryption_note()
+    assert note is not None and "nfs4" in note.lower()
+
+
+def test_efs_transit_encryption_note_none_when_tls_false():
+    p = EfsProvider(
+        "/mnt/gb-shared",
+        EfsConfig(file_system_id="fs-0abc", region="us-east-1", tls=False),
+    )
+    assert p.transit_encryption_note() is None
 
 
 def test_efs_cleanup_zone_from_config():

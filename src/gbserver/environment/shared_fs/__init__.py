@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Optional
 
 from gbserver.environment.shared_fs.base import (
     SharedFilesystemProvider,
+    resolve_local_scratch,
     resolve_shared_workdir,
 )
 from gbserver.environment.shared_fs.config import SharedFilesystemConfig
@@ -12,7 +13,12 @@ from gbserver.environment.shared_fs.efs import EfsProvider
 if TYPE_CHECKING:
     from gbserver.types.environmentconfig import EnvironmentConfig
 
-__all__ = ["SharedFilesystemProvider", "resolve_shared_workdir", "build_provider"]
+__all__ = [
+    "SharedFilesystemProvider",
+    "resolve_shared_workdir",
+    "resolve_local_scratch",
+    "build_provider",
+]
 
 
 def build_provider(

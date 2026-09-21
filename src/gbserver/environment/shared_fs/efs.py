@@ -1,6 +1,7 @@
-"""EFS provider: BYO pre-provisioned NFS filesystem, mounted on host or inside
-a containerized step (SkyPilot containers already grant SYS_ADMIN + /dev/fuse +
---net=host, so an in-container mount works)."""
+"""EFS provider: BYO pre-provisioned NFS filesystem, mounted on host or inside a
+containerized step. SkyPilot's container run options already permit the in-container
+mount -- ``--cap-add=SYS_ADMIN`` for mount(2) and ``--security-opt=apparmor:unconfined``
+to clear AppArmor (plus host networking to reach the mount target)."""
 
 import shlex
 from typing import Optional
@@ -88,3 +89,12 @@ class EfsProvider(SharedFilesystemProvider):
 
     def cleanup_zone(self) -> Optional[str]:
         return self.cfg.cleanup_zone
+
+    def transit_encryption_note(self) -> Optional[str]:
+        if not self.cfg.tls:
+            return None
+        return (
+            "shared_filesystem: tls=true requested, but EFS TLS needs "
+            "amazon-efs-utils (mount.efs); if it is absent on the worker/image the "
+            "mount falls back to UNENCRYPTED nfs4 (the step log records which path ran)."
+        )

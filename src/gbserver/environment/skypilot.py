@@ -42,7 +42,11 @@ from tenacity import (
 
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
-from gbserver.environment.shared_fs import build_provider, resolve_shared_workdir
+from gbserver.environment.shared_fs import (
+    build_provider,
+    resolve_local_scratch,
+    resolve_shared_workdir,
+)
 from gbserver.spaces.hf_push_config import (
     apply_hf_step_overlay,
     resolve_hfpush_resource_group_id,
@@ -886,7 +890,12 @@ def _compose_step_prologue(provider, build_workdir):
         mount_root = shlex.quote(provider.mount_point)
         prologue += (
             'mkdir -p "$GB_LOCAL_SCRATCH"\n'
-            'mkdir -p "$GB_BUILD_WORKDIR"\n'
+            # Create the per-run tree world-writable ATOMICALLY (umask 000 in a
+            # subshell, so mkdir -p makes every new level 0777 with no 0755 gap) —
+            # a concurrent different-uid step in the same build can then create its
+            # own per-run dir immediately. The guarded chmod walk below adds the
+            # sticky bit (1777) and fixes any pre-existing level.
+            '(umask 000 && mkdir -p "$GB_BUILD_WORKDIR")\n'
             '__gb_d="$GB_BUILD_WORKDIR"\n'
             f'while [ "$__gb_d" != {mount_root} ] && [ "$__gb_d" != "/" ]; do\n'
             '  chmod 1777 "$__gb_d" 2>/dev/null || true\n'
@@ -967,27 +976,6 @@ def aws_credentials_present() -> bool:
 # Sentinel distinguishing "shared_filesystem provider not yet computed" from a
 # computed None (no provider). See Skypilot._shared_fs_provider.
 _PROVIDER_UNSET = object()
-
-# docker run option an in-container shared_filesystem (EFS/NFS) mount needs:
-# --cap-add=SYS_ADMIN so mount(2) is permitted inside the container. SkyPilot's
-# docker_start_cmds (sky/provision/docker_utils.py) also injects this by default;
-# docker tolerates a repeated --cap-add (caps union), so pinning it defensively is
-# harmless. Deliberately NOT pinned:
-#   * --net=host -- SkyPilot always injects it and docker rejects a duplicate
-#     --network ("network host is specified multiple times", rc 125) (#393);
-#   * --device=/dev/fuse -- irrelevant to an NFS mount (a leftover from the dropped
-#     S3/FUSE design; SkyPilot adds it by default regardless).
-_CONTAINER_SHARED_FS_RUN_OPTIONS = ("--cap-add=SYS_ADMIN",)
-
-
-def _with_container_mount_options(docker_config: dict) -> dict:
-    """Return ``docker_config`` with the shared-fs container mount run options
-    appended (idempotent — existing entries are not duplicated)."""
-    run_opts = list(docker_config.get("run_options") or [])
-    for opt in _CONTAINER_SHARED_FS_RUN_OPTIONS:
-        if opt not in run_opts:
-            run_opts.append(opt)
-    return {**docker_config, "run_options": run_opts}
 
 
 class Skypilot(Environment):
@@ -1678,16 +1666,16 @@ class Skypilot(Environment):
             env["GB_SHARED_WORKDIR"] = shared_workdir
             # Instance-local scratch for hot IO: steps may stage here and copy only
             # artifacts to $GB_BUILD_WORKDIR (EFS is slower + bills per byte). The
-            # path is configurable via the environment's `local_scratch` and defaults
-            # to /tmp/gb-scratch -- which on stock AWS/DLAMI images is the EBS root
-            # volume, NOT instance-store NVMe (point local_scratch at the image's
-            # NVMe mount, e.g. /opt/dlami/nvme/..., if you want that). Only exported
-            # when a shared_filesystem provider is active: the provider prologue
-            # creates it (mkdir -p "$GB_LOCAL_SCRATCH"); plain shared_workdir envs
-            # (bluevela/SLURM/k8s) have no provider, so must not see it.
+            # path is the typed, validated `shared_filesystem.local_scratch` and
+            # defaults to /tmp/gb-scratch -- which on stock AWS/DLAMI images is the
+            # EBS root volume, NOT instance-store NVMe (point local_scratch at the
+            # image's NVMe mount, e.g. /opt/dlami/nvme/..., if you want that). Only
+            # exported when a shared_filesystem provider is active: the provider
+            # prologue creates it (mkdir -p "$GB_LOCAL_SCRATCH"); plain shared_workdir
+            # envs (bluevela/SLURM/k8s) have no provider, so must not see it.
             if self._shared_fs_provider() is not None:
-                env["GB_LOCAL_SCRATCH"] = (self.config.config or {}).get(
-                    "local_scratch", "/tmp/gb-scratch"
+                env["GB_LOCAL_SCRATCH"] = (
+                    resolve_local_scratch(self.config) or "/tmp/gb-scratch"
                 )
         if build_workdir:
             env["GB_BUILD_WORKDIR"] = build_workdir
@@ -1857,15 +1845,16 @@ class Skypilot(Environment):
                 or launcher_config.get("image_id")
             ) or None
 
-            # When a shared_filesystem provider is active AND the step runs in a
-            # container (image_id set), pin the run options the in-container
-            # EFS/NFS mount needs so gbserver owns the requirement rather than
-            # inheriting a SkyPilot default (see _CONTAINER_SHARED_FS_RUN_OPTIONS).
-            # Output would otherwise vanish into the ephemeral container layer if a
-            # future SkyPilot bump dropped a default.
-            if self._shared_fs_provider() is not None and image_id:
-                docker_config = _with_container_mount_options(docker_config)
-
+            # A containerized shared_filesystem step relies on SkyPilot's own
+            # container run options for the in-container mount: docker_start_cmds
+            # (sky/provision/docker_utils.py) adds --net=host, --cap-add=SYS_ADMIN,
+            # --device=/dev/fuse and --security-opt=apparmor:unconfined -- which is
+            # what actually permits `mount -t nfs4` inside the container (SYS_ADMIN
+            # for mount(2), apparmor:unconfined to clear AppArmor). gbserver does NOT
+            # pin any of these: --net=host duplicated fails `docker run` (#393), and
+            # pinning only SYS_ADMIN was both redundant (SkyPilot provides it) and
+            # missed the apparmor flag that matters. If a future SkyPilot bump drops
+            # them, pin the needed dup-tolerant ones (not --net=host) here.
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
 
@@ -1968,6 +1957,12 @@ class Skypilot(Environment):
             # file_mounts land. Only prefix setup when there is a setup script, so
             # steps without one don't acquire a spurious setup phase.
             provider = self._shared_fs_provider()
+            if provider is not None:
+                # Surface a transit-encryption caveat in the gbserver log at launch
+                # (the mount prologue also warns, but only in the step log).
+                note = provider.transit_encryption_note()
+                if note:
+                    logger.warning(note)
             cli_prefix = _compose_step_prologue(provider, build_workdir)
             run_script = cli_prefix + launcher_config.get("run", "")
             if setup_script:
