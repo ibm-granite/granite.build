@@ -261,3 +261,26 @@ export function canImport(input: {
   }
   return true
 }
+
+/**
+ * Drop mapping entries whose target is no longer required.
+ *
+ * The AI suggestion may change the selected algorithm, which changes the required
+ * columns. The mapping then still holds the previous algorithm's targets, and
+ * those stale keys would ride along in the import request body -- the server
+ * would receive a projection mixing both algorithms' columns.
+ *
+ * Returns the same object when nothing needs dropping, so the effect that calls
+ * this can run on every required-columns change without looping.
+ */
+export function pruneMapping(
+  mapping: Record<string, string>,
+  requiredColumns: string[]
+): Record<string, string> {
+  const keys = Object.keys(mapping)
+  const kept = keys.filter((key) => requiredColumns.includes(key))
+  if (kept.length === keys.length) return mapping
+  const next: Record<string, string> = {}
+  for (const key of kept) next[key] = mapping[key]
+  return next
+}

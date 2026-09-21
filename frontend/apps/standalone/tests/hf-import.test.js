@@ -33,6 +33,7 @@ const {
   pollStep,
   mappedPreviewKey,
   canImport,
+  pruneMapping,
 } = require('../app/dashboard/autotunex/start-tuning/steps/hfImport.ts')
 
 describe('deriveDatasetName', () => {
@@ -407,5 +408,43 @@ describe('canImport', () => {
   it('ignores the percentage when a separate validation split is chosen', () => {
     assert.equal(canImport({ ...base, splitFromTrain: false, validationPercentage: 0 }), true)
     assert.equal(canImport({ ...base, splitFromTrain: false, validationPercentage: 99 }), true)
+  })
+})
+
+describe('pruneMapping', () => {
+  it('drops targets that are no longer required', () => {
+    assert.deepEqual(
+      pruneMapping({ input: 'instruction', output: 'response' }, ['prompt', 'chosen']),
+      {}
+    )
+  })
+
+  it('keeps the targets that survive, with their sources', () => {
+    assert.deepEqual(
+      pruneMapping({ input: 'instruction', output: 'response' }, ['input']),
+      { input: 'instruction' }
+    )
+  })
+
+  it('returns the SAME object when nothing needs dropping', () => {
+    // The prune effect depends on this: a fresh object every render would set
+    // state on every commit and loop forever.
+    const mapping = { input: 'instruction' }
+    assert.equal(pruneMapping(mapping, ['input', 'output']), mapping)
+  })
+
+  it('returns the same object for an empty mapping', () => {
+    const mapping = {}
+    assert.equal(pruneMapping(mapping, ['input']), mapping)
+  })
+
+  it('drops everything when there are no required columns', () => {
+    assert.deepEqual(pruneMapping({ input: 'instruction' }, []), {})
+  })
+
+  it('preserves an empty-string source for a still-required target', () => {
+    // An empty source is an incomplete mapping, not a stale key -- dropping it
+    // would silently reset a select the user is part-way through.
+    assert.deepEqual(pruneMapping({ input: '' }, ['input']), { input: '' })
   })
 })
