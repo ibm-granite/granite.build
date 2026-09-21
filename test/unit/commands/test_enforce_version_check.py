@@ -147,3 +147,21 @@ class TestVersionCheckUpdatesCommand:
             result = self.runner.invoke(version_cli, ["--check-updates"])
         assert result.exit_code == 0
         assert "up to date" in result.output
+
+    def test_unknown_reports_could_not_verify_and_exits_zero(self):
+        """An UNKNOWN result (offline/rate-limited/unparseable) must NOT claim "up to
+        date" — it reports it could not verify and still exits 0 (best-effort)."""
+        with (
+            patch(
+                "gbcli.commands.command_version.versionutil.evaluate_version_status",
+                return_value=self._result(VersionStatus.UNKNOWN),
+            ),
+            patch(
+                "gbcli.commands.command_version.get_current_version",
+                return_value="1.0.0",
+            ),
+        ):
+            result = self.runner.invoke(version_cli, ["--check-updates"])
+        assert result.exit_code == 0
+        assert "could not verify" in result.output.lower()
+        assert "up to date" not in result.output

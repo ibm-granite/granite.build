@@ -35,9 +35,11 @@ git tag -f stable "$tag"
 git push -f origin stable
 
 # `min-supported` marks the floor below which the CLI refuses to run. Advance it only
-# when explicitly requested, since moving it drops support for older clients. As a
-# lightweight tag it shares the vX.Y.Z commit SHA, which is how the CLI resolves the
-# floor version from the tags listing.
+# when explicitly requested, since moving it drops support for older clients. `git tag -f`
+# here creates it lightweight, but that doesn't matter to the CLI: it resolves the floor
+# via each tag's peeled commit SHA (the /repos/.../tags endpoint), so a `min-supported`
+# created either lightweight or annotated (`git tag -a`) resolves to the vX.Y.Z it shares
+# a commit with.
 if [ "${2:-}" = "--move-min-supported" ]; then
     echo "Advancing min-supported floor to $tag"
     git tag -f min-supported "$tag"

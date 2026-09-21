@@ -283,9 +283,13 @@ def get_public_repo_tags(space_org: str, space_name: str) -> Any:
     breaking SHA-based floor resolution.
 
     Returns tag objects shaped ``{"name": ..., "commit": {"sha": ...}}``. Follows
-    ``Link`` pagination so repos with more than one page of tags are covered, but caps
-    the total wait: this runs at the top of most commands, so a blackholed network must
-    not hang the CLI on a courtesy version check.
+    ``Link`` pagination so repos with more than one page of tags are covered. This runs
+    at the top of most commands, so it bounds the wait: no further page is requested once
+    the ``PUBLIC_REPO_TAGS_TIMEOUT_S`` deadline passes, and each request's connect and
+    read phases are each capped at the smaller of the remaining budget and that timeout
+    (``requests`` applies the timeout per phase, so a single hung page cannot exceed
+    roughly 2x the per-request cap — enough to keep a blackholed network from wedging the
+    CLI on a courtesy check).
     """
     url: Optional[str] = f"https://api.github.com/repos/{space_org}/{space_name}/tags"
     headers = {
@@ -302,8 +306,12 @@ def get_public_repo_tags(space_org: str, space_name: str) -> Any:
             # Budget spent mid-pagination: return what we have rather than hang or fail.
             logger.debug("Public repo tags fetch hit time budget; stopping pagination")
             break
+        # (connect, read) tuple so neither phase can outlast the remaining budget.
+        phase_timeout = min(remaining, PUBLIC_REPO_TAGS_TIMEOUT_S)
         logger.debug("Fetching public repo tags (unauthenticated) from %s", url)
-        response = requests.get(url, headers=headers, params=params, timeout=remaining)
+        response = requests.get(
+            url, headers=headers, params=params, timeout=(phase_timeout, phase_timeout)
+        )
         response.raise_for_status()
         tags.extend(response.json())
         # After the first request the `next` URL already carries the query params.

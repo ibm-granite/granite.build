@@ -67,3 +67,14 @@ class TestGetPublicRepoTags:
             gh_clone.get_public_repo_tags("ibm-granite", "granite.build")
         url = get.call_args_list[0].args[0]
         assert url == "https://api.github.com/repos/ibm-granite/granite.build/tags"
+
+    def test_timeout_is_bounded_connect_read_tuple(self):
+        """Each request caps connect and read phases at the budget, so a hung page can't
+        stall the CLI indefinitely."""
+        with patch.object(gh_clone.requests, "get", return_value=_resp([])) as get:
+            gh_clone.get_public_repo_tags("ibm-granite", "granite.build")
+        timeout = get.call_args_list[0].kwargs["timeout"]
+        assert isinstance(timeout, tuple) and len(timeout) == 2
+        connect, read = timeout
+        assert 0 < connect <= gh_clone.PUBLIC_REPO_TAGS_TIMEOUT_S
+        assert 0 < read <= gh_clone.PUBLIC_REPO_TAGS_TIMEOUT_S

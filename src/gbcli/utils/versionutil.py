@@ -88,6 +88,9 @@ def _resolve_versions_from_tags(tags) -> tuple[str, str]:
             continue  # skip non-PEP440 tags rather than failing the whole check
         versions.append(parsed)
         if sha:
+            # If two version tags share a commit (e.g. a re-tag), last one wins. Which
+            # one is irrelevant: the floor only needs *a* version at that commit, and
+            # `latest` comes from max(versions), not this map.
             sha_to_version[sha] = parsed
 
     latest = str(max(versions)) if versions else "0.0.0"
