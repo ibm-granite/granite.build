@@ -50,6 +50,23 @@ The run failed due to exception(s):
     return body
 
 
+def format_oserror(e: OSError) -> str:
+    """Render an OSError as ``OSError [Errno N] strerror: 'filename'``.
+
+    Includes filename/filename2 when set so the failing path is visible.
+    """
+    parts = ["OSError"]
+    if e.errno is not None:
+        parts.append(f"[Errno {e.errno}]")
+    parts.append(e.strerror or str(e))
+    msg = " ".join(parts)
+    if e.filename:
+        msg += f": {e.filename!r}"
+        if e.filename2:
+            msg += f" -> {e.filename2!r}"
+    return msg
+
+
 def format_failure_reason(e: BaseException) -> str:
     """One-line failure reason (no traceback): the same leaf as
     :func:`unwrap_errors`, collapsed to a single line — for a log line or stored
@@ -81,6 +98,8 @@ def unwrap_errors(e: BaseException, fetch_logs: bool = True) -> str:
         return "key error: " + str(e)
     if isinstance(e, ValueError):
         return "value error: " + str(e)
+    if isinstance(e, OSError):
+        return format_oserror(e)
     if isinstance(e, LogMonitoringFailedException):
         build_id = e.build_id
         if not fetch_logs or FETCH_CLOUD_LOGS_MAX_RETRIES <= 0:

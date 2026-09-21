@@ -15,12 +15,14 @@
 # limitations under the License.
 
 import asyncio
+import errno
 import re
 from pathlib import Path
 
 from gbserver.types.errors import LogMonitoringFailedException, WorkloadFailedException
 from gbserver.utils.unwrap_errors import (
     format_failure_reason,
+    format_oserror,
     get_readable_error_message,
     unwrap_errors,
 )
@@ -321,6 +323,15 @@ assert 0 > 0
         assert "<details>" in body
         assert err_stack in body
         assert "workload failed:" in body
+
+    def test_oserror_reason_names_errno_and_path(self):
+        # A bare EROFS OSError must render errno, strerror, and the path so the
+        # PR-facing reason is self-explanatory (not just "[Errno 30] ...").
+        e = OSError(errno.EROFS, "Read-only file system", "/proj/data-eng/builds")
+        for out in (format_oserror(e), unwrap_errors(e)):
+            assert "Errno 30" in out
+            assert "Read-only file system" in out
+            assert "/proj/data-eng/builds" in out
 
 
 # Kubernetes label value validation regex (from the API server rules):

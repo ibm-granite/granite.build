@@ -56,6 +56,7 @@ from gbserver.types.errors import (
     WorkloadFailedException,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.unwrap_errors import format_oserror
 
 if TYPE_CHECKING:
     from gbserver.monitoring.logfile_monitor import LogFileMonitor
@@ -1359,7 +1360,9 @@ class Skypilot(Environment):
             )
             await asyncio.to_thread(sky.stream_and_get, request_id)
         except Exception as e:  # don't fail the build for cleanup
-            logger.warning("teardown_skypilot rm -rf %s failed: %s", workdir, e)
+            detail = format_oserror(e) if isinstance(e, OSError) else str(e)
+            logger.warning("teardown_skypilot rm -rf %s failed: %s", workdir, detail)
+            logger.debug("teardown_skypilot failure trace", exc_info=True)
 
     @staticmethod
     def _parse_memory_gib(memory_str: str) -> Optional[float]:
@@ -1962,7 +1965,13 @@ class Skypilot(Environment):
                 # would surface the opaque stdin error instead of this message.
                 # Implicit __context__ still preserves the original in the trace.
                 raise ErrSkypilotInteractiveAuthFailed(msg)
-            logger.error("Failed to launch SkyPilot cluster for %s: %s", launch_id, e)
+            detail = format_oserror(e) if isinstance(e, OSError) else str(e)
+            logger.error(
+                "Failed to launch SkyPilot cluster for %s: %s",
+                launch_id,
+                detail,
+                exc_info=True,
+            )
             raise
         finally:
             self._release_monitors(launch_id)
@@ -2074,6 +2083,17 @@ class Skypilot(Environment):
                             e,
                         )
                         await self._teardown(cluster_name)
+                    else:
+                        # Non-transient: this frame is closest to the sky call, so
+                        # log the full trace (and the path, for OSError) before the
+                        # bare re-raise that tenacity won't retry.
+                        detail = format_oserror(e) if isinstance(e, OSError) else str(e)
+                        logger.error(
+                            "Non-transient provision failure for %s: %s",
+                            cluster_name,
+                            detail,
+                            exc_info=True,
+                        )
                     raise
         # Unreachable: AsyncRetrying with reraise=True either returns from the
         # `return` above or raises; this satisfies the type checker.
