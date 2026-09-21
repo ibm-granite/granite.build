@@ -232,7 +232,7 @@ export function mappedPreviewKey(input: {
 
 /**
  * Whether the import may be submitted. Every clause is a way to ship a lossy or
- * impossible import, which is why this lives here rather than inline in the modal.
+ * impossible import, which is why this lives here rather than inline in the form.
  */
 export function canImport(input: {
   hasRepo: boolean

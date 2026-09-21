@@ -33,8 +33,9 @@
   margin: 1.25rem 0;
 }
 
-/* Matches Step1DatasetUpload.module.scss's mapping grid so the HuggingFace and
-   Upload column mapping render identically. */
+/* Deliberately narrower than Step1DatasetUpload.module.scss's mapping grid
+   (160px 1fr, 1rem gap): this form sits in a 380px column, so 120px 1fr with a
+   tighter 0.75rem gap is intentional here, not a mismatch to "fix" back. */
 .mappingRow {
   display: grid;
   grid-template-columns: 120px 1fr;

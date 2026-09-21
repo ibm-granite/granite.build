@@ -91,6 +91,7 @@ export interface UseHfImportResult {
   importStatus: string
   error: string
   handleImport: () => Promise<void>
+  resetState: () => void
 }
 
 export function useHfImport({ active, requiredColumns, onImported }: UseHfImportOptions): UseHfImportResult {
@@ -430,17 +431,18 @@ export function useHfImport({ active, requiredColumns, onImported }: UseHfImport
         column_mapping: mapping,
       })
       // Unconditional and ahead of the runId check: the row exists server-side now,
-      // whether or not this run gets abandoned next (e.g. the user closes the
-      // modal while polling starts), so the list must learn about it either way.
+      // whether or not this run gets abandoned next (e.g. the user switches away
+      // from the HuggingFace tab while polling starts), so the list must learn
+      // about it either way.
       queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
       const ready = await pollUntilReady(created.id, runId)
       // Also unconditional, and in addition to the invalidate above rather than
       // instead of it: that one only makes an abandoned run's row visible while it
       // is still `importing`. Because the datasets list is an active query while
-      // this modal is open, it refetches immediately and caches that snapshot; with
-      // no second invalidate here, nothing ever told it the row reached `ready`, so
-      // it stayed missing from Step 1's existing-dataset dropdown for the rest of
-      // the wizard session.
+      // this form is mounted, it refetches immediately and caches that snapshot;
+      // with no second invalidate here, nothing ever told it the row reached
+      // `ready`, so it stayed missing from Step 1's existing-dataset dropdown for
+      // the rest of the wizard session.
       queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
       if (runId !== runIdRef.current) return
       onImported(ready.id)
@@ -518,5 +520,6 @@ export function useHfImport({ active, requiredColumns, onImported }: UseHfImport
     importStatus,
     error,
     handleImport,
+    resetState,
   }
 }

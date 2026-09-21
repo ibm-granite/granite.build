@@ -254,9 +254,10 @@ export function Step1DatasetUpload({
     [selectedExistingDataset, hfConfig]
   )
 
-  // Owns every piece of HuggingFace state. `active` replaces the modal's `open`:
-  // switching away from the HuggingFace tab abandons in-flight requests exactly as
-  // closing the dialog did.
+  // Owns every piece of HuggingFace state. `active` gates the hook's query and
+  // effects, so switching away from the HuggingFace tab stops new requests from
+  // firing -- but, unlike the modal's `handleClose` (which also called
+  // `resetState()`), it does not clear anything already in state.
   const hf = useHfImport({
     active: dataSource === 'hf',
     requiredColumns,

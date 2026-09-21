@@ -4,6 +4,7 @@ import {
   Button,
   Callout,
   ComboBox,
+  FileUploaderItem,
   InlineLoading,
   InlineNotification,
   Select,
@@ -26,24 +27,30 @@ export function HfImportForm({ hf, requiredColumns, hfConfig }: HfImportFormProp
   return (
     <div>
       <div className={styles.field}>
-        <ComboBox
-          id="hf-dataset-search"
-          titleText="HuggingFace dataset"
-          placeholder="Search the Hub, e.g. vicgalle/alpaca-gpt4"
-          items={hf.suggestions}
-          itemToString={(item) => item ?? ''}
-          selectedItem={hf.repoId}
-          // Server-side search, so the local filter must be disabled or it would
-          // filter the results a second time against the same term.
-          shouldFilterItem={() => true}
-          onInputChange={hf.handleSearchInput}
-          onChange={({ selectedItem }) => hf.setRepoId(selectedItem ?? null)}
-          disabled={hf.importing}
-        />
-        <p className={styles.limits}>
-          Up to {hfConfig.max_rows.toLocaleString('en-US')} rows and{' '}
-          {formatBytes(hfConfig.max_bytes)} per import.
-        </p>
+        {hf.repoId ? (
+          <FileUploaderItem name={hf.repoId} status="edit" onDelete={() => hf.resetState()} />
+        ) : (
+          <>
+            <ComboBox
+              id="hf-dataset-search"
+              titleText="HuggingFace dataset"
+              placeholder="Search the Hub, e.g. vicgalle/alpaca-gpt4"
+              items={hf.suggestions}
+              itemToString={(item) => item ?? ''}
+              selectedItem={hf.repoId}
+              // Server-side search, so the local filter must be disabled or it would
+              // filter the results a second time against the same term.
+              shouldFilterItem={() => true}
+              onInputChange={hf.handleSearchInput}
+              onChange={({ selectedItem }) => (selectedItem ? hf.setRepoId(selectedItem) : hf.resetState())}
+              disabled={hf.importing}
+            />
+            <p className={styles.limits}>
+              Up to {hfConfig.max_rows.toLocaleString('en-US')} rows and{' '}
+              {formatBytes(hfConfig.max_bytes)} per import.
+            </p>
+          </>
+        )}
       </div>
 
       {hf.splitsFetching && <InlineLoading description="Resolving configs and splits..." />}
