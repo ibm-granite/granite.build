@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   ColumnMapping,
@@ -41,8 +41,6 @@ import {
 } from './hfImport'
 import {
   extractColumnMetadata,
-  getColumnsFromTypes,
-  getRequiredColumns,
   suggestColumnMapping as suggestColumnMappingHeuristic,
 } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotunexAlgorithms'
@@ -59,6 +57,31 @@ export interface UseHfImportOptions {
   onImported: (datasetId: string) => void
   selectedAlgorithm: string
   datasetTypes: Record<string, any>
+
+  // The chosen selection is WIZARD state, passed in rather than owned here: Step 1
+  // unmounts on wizard navigation, so a user who picked a repo, waited for the
+  // probe and then went Back to check something in Step 0 returned to an empty
+  // HuggingFace tab. Only the selection is lifted -- every transient value
+  // (previews, loading flags, errors, the import status, the AI fields) stays local.
+  //
+  // `mapping` is deliberately NOT lifted: the probe effect calls `setMapping({})`
+  // unconditionally, so a restored mapping would be wiped on remount anyway. The
+  // probe refires on return and the AI re-derives the mapping, which is intended.
+  //
+  // The setters are the raw `useState` dispatchers because `handleImport`'s 409
+  // branch calls `setName` with an updater function.
+  repoId: string | null
+  setRepoId: Dispatch<SetStateAction<string | null>>
+  config: string
+  setConfig: Dispatch<SetStateAction<string>>
+  trainSplit: string
+  setTrainSplit: Dispatch<SetStateAction<string>>
+  validationSplit: string
+  setValidationSplit: Dispatch<SetStateAction<string>>
+  name: string
+  setName: Dispatch<SetStateAction<string>>
+  validationPercentage: number
+  setValidationPercentage: Dispatch<SetStateAction<number>>
 }
 
 export interface UseHfImportResult {
@@ -106,7 +129,6 @@ export interface UseHfImportResult {
   resetState: () => void
 
   aiSuggestion: { confidence: number; reasoning: string } | null
-  aiSuggestedFields: Set<string>
   isAiSuggesting: boolean
   showAiReasoning: boolean
   setShowAiReasoning: (next: boolean) => void
@@ -118,13 +140,24 @@ export function useHfImport({
   onImported,
   selectedAlgorithm,
   datasetTypes,
+  // Local names match the lifted wizard state exactly, so the effects,
+  // `resetState` and the handlers below read no differently than when these were
+  // `useState` pairs owned here.
+  repoId,
+  setRepoId,
+  config,
+  setConfig,
+  trainSplit,
+  setTrainSplit,
+  validationSplit,
+  setValidationSplit,
+  name,
+  setName,
+  validationPercentage,
+  setValidationPercentage,
 }: UseHfImportOptions): UseHfImportResult {
   const queryClient = useQueryClient()
   const [suggestions, setSuggestions] = useState<string[]>([])
-  const [repoId, setRepoId] = useState<string | null>(null)
-  const [config, setConfig] = useState('')
-  const [trainSplit, setTrainSplit] = useState('')
-  const [validationSplit, setValidationSplit] = useState(NO_VALIDATION)
 
   const [preview, setPreview] = useState<HfImportPreview | null>(null)
   // Two independent booleans, each set and cleared by exactly one effect below --
@@ -140,8 +173,6 @@ export function useHfImport({
   // one -- see `freshMappedPreview` below.
   const [mappedPreview, setMappedPreview] = useState<{ key: string; preview: HfImportPreview } | null>(null)
   const [mappedPreviewError, setMappedPreviewError] = useState('')
-  const [validationPercentage, setValidationPercentage] = useState(10)
-  const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [importing, setImporting] = useState(false)
   const [importStatus, setImportStatus] = useState('')
@@ -149,7 +180,6 @@ export function useHfImport({
   const [aiSuggestion, setAiSuggestion] = useState<
     { confidence: number; reasoning: string } | null
   >(null)
-  const [aiSuggestedFields, setAiSuggestedFields] = useState<Set<string>>(new Set())
   const [isAiSuggesting, setIsAiSuggesting] = useState(false)
   const [showAiReasoning, setShowAiReasoning] = useState(false)
 
@@ -207,15 +237,27 @@ export function useHfImport({
   // Preselect a config and train split once the repo resolves. Both stay visible
   // and changeable: a silently auto-picked wrong split is only discovered after a
   // multi-hour tuning run.
+  //
+  // Keyed on the resolved dataset rather than the response object: `getHfSplits`
+  // returns a fresh object per fetch, so a window-focus refetch or a tab
+  // round-trip would otherwise reset the user's config, split and edited name.
+  //
+  // The validity guard covers the other direction: Step 1 unmounts on wizard
+  // navigation, and the selection is restored from wizard state on remount, so a
+  // freshly-mounted effect must not overwrite a restored selection with defaults.
   useEffect(() => {
     if (!splits) return
-    const nextConfig = defaultConfig(Object.keys(splits.configs))
+    const configNames = Object.keys(splits.configs)
+    if (config && configNames.includes(config) && splits.configs[config]?.includes(trainSplit)) {
+      return
+    }
+    const nextConfig = defaultConfig(configNames)
     setConfig(nextConfig)
     setTrainSplit(defaultTrainSplit(splits.configs[nextConfig] ?? []))
     setMapping({})
     setValidationSplit(NO_VALIDATION)
     setName(deriveDatasetName(splits.repo_id))
-  }, [splits])
+  }, [splits?.repo_id, splits?.revision, config, trainSplit])
 
   /**
    * Ask the AI for a column mapping for the probed dataset.
@@ -231,7 +273,6 @@ export function useHfImport({
 
     setIsAiSuggesting(true)
     setAiSuggestion(null)
-    setAiSuggestedFields(new Set())
     setShowAiReasoning(false)
 
     /**
@@ -278,13 +319,21 @@ export function useHfImport({
         return
       }
 
-      const targetColumns =
-        Object.keys(types).length > 0
-          ? getColumnsFromTypes(selectedAlgorithm, types).map((c) => c.name)
-          : getRequiredColumns(selectedAlgorithm)
+      // The vocabulary is exactly the set of rows the form renders, not every
+      // column the format declares. `getColumnsFromTypes` also returns the
+      // OPTIONAL columns (dataset_type_a carries `documents_col` and `tools_col`),
+      // but the form renders `requiredColumns` only -- so an accepted suggestion
+      // for an optional target landed in `mapping` with no select rendered for it.
+      // A sparse source column then dropped `survived`, at zero `survivalSummary`
+      // returned `blocked` and Import was disabled with nothing on screen the user
+      // could change (editing a visible select spreads `...mapping`, so the key
+      // survived). Out-of-range targets are dropped by `aiMappingToColumnMapping`'s
+      // own `targetColumns.includes(...)` check, and if that empties the mapping
+      // the `applyHeuristic()` fallback below takes over.
+      const targetColumns = required
       const typeKey = ALGORITHM_TO_DATASET_TYPE[selectedAlgorithm]
 
-      const { mapping: next, suggestedFields } = aiMappingToColumnMapping(
+      const { mapping: next } = aiMappingToColumnMapping(
         result.column_mapping,
         probe.columns,
         { targetColumns, columnsDict: types[typeKey]?.columns || {} }
@@ -292,7 +341,6 @@ export function useHfImport({
 
       if (Object.keys(next).length > 0) {
         setMapping(next)
-        setAiSuggestedFields(suggestedFields)
       } else {
         // Every entry filtered out -- a key we cannot match, or a source column
         // absent from this split. Leaving `{}` would strand the form with no
@@ -311,8 +359,11 @@ export function useHfImport({
     }
   }
 
-  // The probe. Its only job is to fetch `columns` and `raw_rows`; `sampled` and
-  // `survived` are meaningless for a blank-source mapping and are not read here.
+  // The probe. Its job is to fetch `columns` and `raw_rows`; `survived` is
+  // meaningless for a blank-source mapping and is not read from this response.
+  // `sampled` is read: it counts the rows the server looked at, is independent of
+  // the mapping, and drives both the "N of M sampled rows" line in HfImportPreview
+  // and the zero-rows notice in HfImportForm.
   useEffect(() => {
     if (!active || !repoId || !splits || !config || !trainSplit) return
     // The chosen pair must exist in the splits currently loaded. On switching
@@ -432,7 +483,6 @@ export function useHfImport({
     setImporting(false)
     setImportStatus('')
     setAiSuggestion(null)
-    setAiSuggestedFields(new Set())
     setIsAiSuggesting(false)
     setShowAiReasoning(false)
   }
@@ -656,7 +706,6 @@ export function useHfImport({
     resetState,
 
     aiSuggestion,
-    aiSuggestedFields,
     isAiSuggesting,
     showAiReasoning,
     setShowAiReasoning,

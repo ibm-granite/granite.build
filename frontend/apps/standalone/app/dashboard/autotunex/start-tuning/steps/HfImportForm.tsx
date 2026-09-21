@@ -38,12 +38,17 @@ export function HfImportForm({ hf, requiredColumns, hfConfig }: HfImportFormProp
               placeholder="Search the Hub, e.g. vicgalle/alpaca-gpt4"
               items={hf.suggestions}
               itemToString={(item) => item ?? ''}
-              selectedItem={hf.repoId}
               // Server-side search, so the local filter must be disabled or it would
               // filter the results a second time against the same term.
               shouldFilterItem={() => true}
               onInputChange={hf.handleSearchInput}
-              onChange={({ selectedItem }) => (selectedItem ? hf.setRepoId(selectedItem) : hf.resetState())}
+              // Deliberately uncontrolled: this branch renders only while
+              // `hf.repoId` is falsy (a chosen repo is shown as the
+              // FileUploaderItem above), so there is no selection to feed back in
+              // and a cleared selection is not reachable here.
+              onChange={({ selectedItem }) => {
+                if (selectedItem) hf.setRepoId(selectedItem)
+              }}
               disabled={hf.importing}
             />
             <p className={styles.limits}>
@@ -229,6 +234,10 @@ export function HfImportForm({ hf, requiredColumns, hfConfig }: HfImportFormProp
                 <div className={styles.mappingLabel}>{required}</div>
                 <Select
                   id={`hf-mapping-${required}`}
+                  // The visual label is the div above and `labelText` stays empty
+                  // for the layout, but Carbon renders that as an empty <label for>,
+                  // which leaves the select with no accessible name.
+                  aria-label={required}
                   labelText=""
                   size="sm"
                   value={hf.mapping[required] ?? ''}

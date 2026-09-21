@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   FileUploaderButton,
@@ -135,6 +135,21 @@ interface Step1DatasetUploadProps {
    * re-uploads, without discarding the chosen configuration.
    */
   onDatasetSplitChanged: () => void
+
+  // The HuggingFace selection, owned by the wizard so it survives this step
+  // unmounting on Back. Forwarded straight into `useHfImport` below.
+  hfRepoId: string | null
+  setHfRepoId: Dispatch<SetStateAction<string | null>>
+  hfConfigName: string
+  setHfConfigName: Dispatch<SetStateAction<string>>
+  hfTrainSplit: string
+  setHfTrainSplit: Dispatch<SetStateAction<string>>
+  hfValidationSplit: string
+  setHfValidationSplit: Dispatch<SetStateAction<string>>
+  hfName: string
+  setHfName: Dispatch<SetStateAction<string>>
+  hfValidationPercentage: number
+  setHfValidationPercentage: Dispatch<SetStateAction<number>>
 }
 
 export function Step1DatasetUpload({
@@ -166,6 +181,18 @@ export function Step1DatasetUpload({
   setSelectedExistingDataset,
   onDatasetChanged,
   onDatasetSplitChanged,
+  hfRepoId,
+  setHfRepoId,
+  hfConfigName,
+  setHfConfigName,
+  hfTrainSplit,
+  setHfTrainSplit,
+  hfValidationSplit,
+  setHfValidationSplit,
+  hfName,
+  setHfName,
+  hfValidationPercentage,
+  setHfValidationPercentage,
 }: Step1DatasetUploadProps) {
   const [isProcessing, setIsProcessing] = useState(false)
   const [processingProgress, setProcessingProgress] = useState('')
@@ -254,16 +281,36 @@ export function Step1DatasetUpload({
     [selectedExistingDataset, hfConfig]
   )
 
-  // Owns every piece of HuggingFace state. `active` gates the hook's query and
-  // effects, so switching away from the HuggingFace tab stops new requests from
-  // firing -- but, unlike the modal's `handleClose` (which also called
-  // `resetState()`), it does not clear anything already in state.
+  // Owns the transient HuggingFace state -- the previews, the loading flags, the
+  // errors and the AI suggestion. The selection itself (repo, config, splits, name,
+  // validation percentage) is wizard state passed in below, because this step
+  // unmounts on wizard navigation and anything owned here does not survive a trip
+  // to Step 0 and back.
+  //
+  // `active` gates the hook's query and effects, so switching away from the
+  // HuggingFace tab stops new requests from firing. Unlike the modal's
+  // `handleClose` (which also called `resetState()`), nothing already in state is
+  // cleared -- and switching back no longer discards it either: the preselect effect
+  // is keyed on the resolved dataset rather than on the splits response object, so
+  // the refetch the tab round-trip triggers leaves a still-valid selection alone.
   const hf = useHfImport({
     active: dataSource === 'hf',
     requiredColumns,
     onImported: handleHfImported,
     selectedAlgorithm,
     datasetTypes,
+    repoId: hfRepoId,
+    setRepoId: setHfRepoId,
+    config: hfConfigName,
+    setConfig: setHfConfigName,
+    trainSplit: hfTrainSplit,
+    setTrainSplit: setHfTrainSplit,
+    validationSplit: hfValidationSplit,
+    setValidationSplit: setHfValidationSplit,
+    name: hfName,
+    setName: setHfName,
+    validationPercentage: hfValidationPercentage,
+    setValidationPercentage: setHfValidationPercentage,
   })
 
   // Heuristic column-mapping suggestion when the algorithm changes (skipped once AI has suggested)

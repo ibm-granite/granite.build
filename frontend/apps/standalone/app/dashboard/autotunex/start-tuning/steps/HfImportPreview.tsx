@@ -35,50 +35,60 @@ export function HfImportPreview({ preview, mappedPreview }: HfImportPreviewProps
     />
   )
 
-  // No mapped preview yet: one table, no tab strip. `sampled` is the number of rows
-  // the server read -- no endpoint reports the split's total.
+  // `sampled` is the number of rows the server read -- no endpoint reports the
+  // split's total. Rendered above both branches below: the count describes the
+  // sample the whole panel is built from, so it must not disappear the moment the
+  // mapped preview arrives and the tab strip takes over.
+  const sampleHeader = (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: '0.75rem',
+      }}
+    >
+      <h6 style={{ fontWeight: 600, margin: 0 }}>Sample rows</h6>
+      <span style={{ fontSize: '0.8125rem', color: 'var(--cds-text-secondary, #525252)' }}>
+        {Math.min(preview.raw_rows.length, PREVIEW_ROWS)} of{' '}
+        {preview.sampled.toLocaleString()} sampled rows
+      </span>
+    </div>
+  )
+
+  // No mapped preview yet: one table, no tab strip.
   if (!mappedPreview) {
     return (
       <>
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: '0.75rem',
-          }}
-        >
-          <h6 style={{ fontWeight: 600, margin: 0 }}>Sample rows</h6>
-          <span style={{ fontSize: '0.8125rem', color: 'var(--cds-text-secondary, #525252)' }}>
-            {Math.min(preview.raw_rows.length, PREVIEW_ROWS)} of{' '}
-            {preview.sampled.toLocaleString()} sampled rows
-          </span>
-        </div>
+        {sampleHeader}
         {rawTable}
       </>
     )
   }
 
   return (
-    <Tabs
-      selectedIndex={selectedIndex}
-      onChange={({ selectedIndex: next }) => setSelectedIndex(next)}
-    >
-      <TabList aria-label="HuggingFace dataset preview">
-        <Tab>Raw</Tab>
-        <Tab>Remapped</Tab>
-      </TabList>
-      <TabPanels>
-        <TabPanel style={{ padding: '0.5rem 0' }}>{rawTable}</TabPanel>
-        <TabPanel style={{ padding: '0.5rem 0' }}>
-          <PreviewTable
-            rows={mappedPreview.mapped_rows}
-            maxRows={PREVIEW_ROWS}
-            maxCellChars={CELL_MAX}
-            emptyMessage="This mapping kept no rows."
-          />
-        </TabPanel>
-      </TabPanels>
-    </Tabs>
+    <>
+      {sampleHeader}
+      <Tabs
+        selectedIndex={selectedIndex}
+        onChange={({ selectedIndex: next }) => setSelectedIndex(next)}
+      >
+        <TabList aria-label="HuggingFace dataset preview">
+          <Tab>Raw</Tab>
+          <Tab>Remapped</Tab>
+        </TabList>
+        <TabPanels>
+          <TabPanel style={{ padding: '0.5rem 0' }}>{rawTable}</TabPanel>
+          <TabPanel style={{ padding: '0.5rem 0' }}>
+            <PreviewTable
+              rows={mappedPreview.mapped_rows}
+              maxRows={PREVIEW_ROWS}
+              maxCellChars={CELL_MAX}
+              emptyMessage="This mapping kept no rows."
+            />
+          </TabPanel>
+        </TabPanels>
+      </Tabs>
+    </>
   )
 }

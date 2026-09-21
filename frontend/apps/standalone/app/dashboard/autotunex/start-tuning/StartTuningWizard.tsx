@@ -49,6 +49,7 @@ import { Step1DatasetUpload } from './steps/Step1DatasetUpload'
 import { Step2Configure } from './steps/Step2Configure'
 import { StepRewardFunction } from './steps/StepRewardFunction'
 import { Step3ReviewLaunch } from './steps/Step3ReviewLaunch'
+import { NO_VALIDATION } from './steps/useHfImport'
 import styles from './StartTuningWizard.module.scss'
 
 const DRAFT_DEBOUNCE_MS = 500
@@ -135,6 +136,20 @@ export function StartTuningWizard() {
   const [validationFile, setValidationFile] = useState<File | null>(null)
   const [isSplitEnabled, setIsSplitEnabled] = useState(true)
   const [columnMapping, setColumnMapping] = useState<ColumnMapping>({})
+
+  // Step 1, HuggingFace import: the chosen selection lives here rather than inside
+  // `useHfImport` because Step 1 unmounts on wizard navigation, so a user who
+  // picked a repo, waited for the probe and then went Back to check something in
+  // Step 0 came back to an empty HuggingFace tab. Only the selection is lifted --
+  // the previews, loading flags, errors and AI suggestion stay in the hook, and
+  // `mapping` stays there too (the probe clears it on remount and the AI re-derives
+  // it).
+  const [hfRepoId, setHfRepoId] = useState<string | null>(null)
+  const [hfConfigName, setHfConfigName] = useState('')
+  const [hfTrainSplit, setHfTrainSplit] = useState('')
+  const [hfValidationSplit, setHfValidationSplit] = useState(NO_VALIDATION)
+  const [hfName, setHfName] = useState('')
+  const [hfValidationPercentage, setHfValidationPercentage] = useState(10)
 
   // Step 2: Config
   const [selectedConfigId, setSelectedConfigId] = useState<string | null>(null)
@@ -865,6 +880,18 @@ export function StartTuningWizard() {
             setSelectedExistingDataset={setSelectedExistingDataset}
             onDatasetChanged={handleDatasetChanged}
             onDatasetSplitChanged={handleDatasetSplitChanged}
+            hfRepoId={hfRepoId}
+            setHfRepoId={setHfRepoId}
+            hfConfigName={hfConfigName}
+            setHfConfigName={setHfConfigName}
+            hfTrainSplit={hfTrainSplit}
+            setHfTrainSplit={setHfTrainSplit}
+            hfValidationSplit={hfValidationSplit}
+            setHfValidationSplit={setHfValidationSplit}
+            hfName={hfName}
+            setHfName={setHfName}
+            hfValidationPercentage={hfValidationPercentage}
+            setHfValidationPercentage={setHfValidationPercentage}
           />
         )}
         {currentStep === 2 && (
