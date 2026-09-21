@@ -91,7 +91,6 @@ export interface UseHfImportResult {
   importStatus: string
   error: string
   handleImport: () => Promise<void>
-  resetState: () => void
 }
 
 export function useHfImport({ active, requiredColumns, onImported }: UseHfImportOptions): UseHfImportResult {
@@ -519,6 +518,5 @@ export function useHfImport({ active, requiredColumns, onImported }: UseHfImport
     importStatus,
     error,
     handleImport,
-    resetState,
   }
 }

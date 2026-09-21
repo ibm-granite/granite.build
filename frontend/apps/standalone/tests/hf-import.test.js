@@ -2,8 +2,8 @@
  * Tests for the HuggingFace dataset-import decision logic.
  *
  * These functions exist as a separate module precisely so they can be tested:
- * there is no jsdom harness in this app, so anything left inside
- * HfImportModal.tsx has no automated coverage at all. Each function here is one
+ * there is no jsdom harness in this app, so anything left inside the
+ * HuggingFace import UI has no automated coverage at all. Each function here is one
  * the flow gets silently wrong if it regresses:
  *
  *  - A name that keeps a '/', a '\' or a '..' is a 422 at import time.

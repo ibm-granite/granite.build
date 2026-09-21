@@ -47,7 +47,9 @@ import {
   toUpperCase,
   validateDatasetForGoal,
 } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
-import { HfImportModal } from './HfImportModal'
+import { useHfImport } from './useHfImport'
+import { HfImportForm } from './HfImportForm'
+import { HfImportPreview } from './HfImportPreview'
 import { truncationNotice } from './hfImport'
 import { ALGORITHM_DETAILS, ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import styles from './Step1DatasetUpload.module.scss'
@@ -182,7 +184,6 @@ export function Step1DatasetUpload({
   // uploaded file B naming file A's columns.
   const uploadTokenRef = useRef(0)
   const [dataSource, setDataSource] = useState<DataSource>('upload')
-  const [hfModalOpen, setHfModalOpen] = useState(false)
 
   const [isAiSuggesting, setIsAiSuggesting] = useState(false)
   const [aiSuggestion, setAiSuggestion] = useState<{ confidence: number; reasoning: string; algorithm: string } | null>(null)
@@ -252,6 +253,15 @@ export function Step1DatasetUpload({
     () => (hfConfig ? truncationNotice(selectedExistingDataset?.hf_provenance, hfConfig.max_rows) : null),
     [selectedExistingDataset, hfConfig]
   )
+
+  // Owns every piece of HuggingFace state. `active` replaces the modal's `open`:
+  // switching away from the HuggingFace tab abandons in-flight requests exactly as
+  // closing the dialog did.
+  const hf = useHfImport({
+    active: dataSource === 'hf',
+    requiredColumns,
+    onImported: handleHfImported,
+  })
 
   // Heuristic column-mapping suggestion when the algorithm changes (skipped once AI has suggested)
   useEffect(() => {
@@ -507,7 +517,6 @@ export function Step1DatasetUpload({
     // algorithm suggestion and record counts all come from there. An imported
     // dataset is just a saved dataset, which is why nothing downstream changes.
     uploadTokenRef.current += 1
-    setHfModalOpen(false)
     onDatasetChanged()
     await loadExistingDataset(datasetId, { suggestAlgorithm: true })
   }
@@ -731,22 +740,10 @@ export function Step1DatasetUpload({
                       <SelectItem key={ds.id} value={ds.id} text={`${ds.name} (${(ds.train_records || 0) + (ds.validation_records || 0)} records)`} />
                     ))}
                   </Select>
-                ) : (
-                  <Button kind="tertiary" size="sm" onClick={() => setHfModalOpen(true)}>
-                    Browse HuggingFace datasets
-                  </Button>
-                )}
+                ) : hfConfig ? (
+                  <HfImportForm hf={hf} requiredColumns={requiredColumns} hfConfig={hfConfig} />
+                ) : null}
               </>
-            )}
-
-            {hfConfig && (
-              <HfImportModal
-                open={hfModalOpen}
-                onClose={() => setHfModalOpen(false)}
-                onImported={handleHfImported}
-                requiredColumns={requiredColumns}
-                hfConfig={hfConfig}
-              />
             )}
 
             {existingDatasetId ? (
@@ -926,7 +923,11 @@ export function Step1DatasetUpload({
       </div>
 
         <div className={styles.previewColumn}>
-          {previewRows.length > 0 && previewHeaders.length > 0 ? (
+          {dataSource === 'hf' && !existingDatasetId && hf.preview ? (
+            <Tile className={styles.previewTile}>
+              <HfImportPreview preview={hf.preview} mappedPreview={hf.freshMappedPreview} />
+            </Tile>
+          ) : previewRows.length > 0 && previewHeaders.length > 0 ? (
             <Tile className={styles.previewTile}>
               {valPreviewRows.length > 0 ? (
                 <Tabs selectedIndex={activePreviewTab} onChange={({ selectedIndex }) => setActivePreviewTab(selectedIndex)}>

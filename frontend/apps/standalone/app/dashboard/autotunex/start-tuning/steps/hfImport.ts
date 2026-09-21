@@ -1,7 +1,7 @@
 /**
  * Pure decision logic for the HuggingFace dataset-import flow.
  *
- * Split out of HfImportModal.tsx because `node --test` is the only automated
+ * Split out of the HuggingFace import UI because `node --test` is the only automated
  * coverage this app has -- there is no jsdom harness -- and it can only load a
  * module Node itself can resolve. Every import here must therefore be
  * `import type`: type-stripping erases those before resolution, whereas a value
