@@ -1,15 +1,15 @@
-# skypilot/aws environment for the gated shared-fs EFS E2E tests (#378/#393).
+# skypilot/aws environment for the gated shared-fs EFS build test (#378).
 #
-# This is the SINGLE source of truth for the EFS coordinates the gated tests use
-# (both test_shared_fs_efs_e2e.py and test_shared_fs_efs_concurrent_lock.py read
-# the shared_filesystem.efs block below via libgbtest.shared_fs) — there are no
-# GB_TEST_* env vars. It ships the documented PLACEHOLDER file_system_id, so the
-# tests self-skip until you point it at a real, pre-provisioned BYO EFS:
+# The aws-shared-fs environment (its shared_filesystem efs block) carried by the
+# co-located test Space and referenced by the bare/ and containerized/ build.yaml
+# fixtures. It ships the documented PLACEHOLDER file_system_id, so
+# test_shared_fs.py self-skips (it reads this file's file_system_id) until you
+# point it at a real, pre-provisioned BYO EFS:
 #
 #   * set efs.file_system_id to your fs-... id and efs.region to its region;
 #   * that EFS needs mount targets per worker AZ, an SG allowing NFS 2049, and
 #     its root chmod'd 1777 (see docs/environments/skypilot-aws.md);
-#   * then run with GB_RUN_SHARED_FS_E2E=1 + AWS creds (spins up EC2/EFS; $).
+#   * then run in the extended suite with AWS creds (spins up EC2/EFS; $).
 name: skypilot-aws-shared-fs-e2e
 type: Skypilot
 subtype: aws

@@ -1,4 +1,4 @@
-# YAML spec for the BARE shared-fs EFS E2E (test_shared_fs_efs_e2e.py).
+# YAML spec for the BARE shared-fs EFS build test (test_shared_fs.py).
 # Two byoc steps in one target: step 1 writes a sentinel under $GB_BUILD_WORKDIR
 # (the shared_filesystem per-target-run prefix on EFS), step 2 reads it back on a
 # SEPARATE EC2 instance. Reaching SUCCESS (the consumer's `test ... =` gates it)

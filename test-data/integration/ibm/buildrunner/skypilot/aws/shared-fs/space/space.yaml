@@ -11,6 +11,8 @@ secret_manager:
   type: local
   config: {}
 base_uris:
-  # Relative to this space.yaml's dir: five levels up is the repo root, then
-  # configurations/assets (assetstores, secret bits, and the published byoc step).
-  - file://../../../../../configurations/assets
+  # Pull assetstores, environments, and (published) steps from configurations/assets/.
+  # Relative to this space.yaml's dir: eight `..` reach the repo root (the aws test
+  # tree sits at the same depth as the sibling filemount space), then
+  # configurations/assets — from which space://steps/byoc resolves.
+  - file://../../../../../../../../configurations/assets

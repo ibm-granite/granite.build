@@ -1,4 +1,4 @@
-# YAML spec for the CONTAINERIZED shared-fs EFS E2E (test_shared_fs_efs_e2e.py).
+# YAML spec for the CONTAINERIZED shared-fs EFS build test (test_shared_fs.py).
 # Same 2-step producer->consumer flow as ../bare/buildtest.yaml, but each byoc step
 # sets an image (image_id: docker:<image>), so the commands run inside the container
 # against the in-container NFS mount. Reaching SUCCESS proves that in-container mount
