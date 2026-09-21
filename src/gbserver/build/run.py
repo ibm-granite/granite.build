@@ -152,11 +152,16 @@ class Run(ABC):
             ]
             if failures:
                 primary = failures[0]
-                err_stack = "".join(
-                    traceback.format_exception(
-                        type(primary), primary, primary.__traceback__
+                if primary.__traceback__ is not None:
+                    err_stack = "".join(
+                        traceback.format_exception(
+                            type(primary), primary, primary.__traceback__
+                        )
                     )
-                )
+                else:
+                    # No tb on the primary: format_exception would degrade to a
+                    # single type+message line. Use the live handler trace instead.
+                    err_stack = traceback.format_exc()
                 if _already_reported(failures):
                     # Inner layer already emitted the full body + <details>; stay
                     # concise here (full stack at DEBUG) so the re-wrapped

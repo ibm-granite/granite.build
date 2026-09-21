@@ -13,32 +13,52 @@
 #   limitations under the License.
 
 # Builder image
-FROM registry.access.redhat.com/ubi9/python-312:9.7@sha256:a0a5885769d5a8c5123d3b15d5135b254541d4da8e7bc445d95e1c90595de470 AS builder
+FROM registry.access.redhat.com/ubi10/python-312-minimal:10.2-1789550733@sha256:0f71645815e5e9fa5cbbbba051047fd3a276a45171e591498802a76c156c3a7c AS builder
 # Artifactory creds for installing dmf library
 ARG ARTIFACTORY_USER
 ARG ARTIFACTORY_API_KEY
 USER root
 # Working directory
 WORKDIR /app
+# ubi10-minimal drops git and the C toolchain the full python image had. git installs
+# the git+https SkyPilot dep; gcc/make/python3.12-devel build any dep lacking a wheel.
+# Builder-only stage, so this adds no runner size.
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+        git gcc gcc-c++ make python3.12-devel && \
+    microdnf clean all
 # Custom artifactory for DMF library. Taking this approach as fetching from IBM GitHub in Dockerfile is an extra pain...
 RUN mkdir -p /opt/app-root/src/.pip
 RUN echo "[global]" >> /opt/app-root/src/.pip/pip.conf
 RUN echo "extra-index-url = https://${ARTIFACTORY_USER}:${ARTIFACTORY_API_KEY}@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> /opt/app-root/src/.pip/pip.conf
 
-# Copy the source code and install in editable mode.
-# Static frontend files must be pre-built via `make build-frontend` before
-# running `docker build` — they are committed into src/gbserver/static/ui/.
-COPY . .
+# Copy only what the editable install + running server need (the runner copies /app
+# from here, so anything here ships). setuptools discovers src/, test/, and repo-root
+# configurations/ (see [tool.setuptools.packages.find]); pyproject/README/constraints
+# are read at install; k8s/ holds dep-build-runner.yaml the buildrunner loads at runtime
+# (relative to /app); .git lets setuptools_scm derive the version (dropped just below).
+# The built UI ships under src/gbserver/static/ui/, so frontend/ sources aren't needed.
+COPY pyproject.toml README.md constraints.txt ./
+COPY .git/ ./.git/
+COPY src/ ./src/
+COPY test/ ./test/
+COPY configurations/ ./configurations/
+COPY k8s/ ./k8s/
 # PIP_CONSTRAINT pins the AWS SDK cluster (boto3/botocore/awscli/aiobotocore) to
 # avoid multi-hour pip resolver backtracking. Applied to every pip invocation in
 # this stage. See constraints.txt for details.
 ENV PIP_CONSTRAINT=/app/constraints.txt
-RUN pip install --upgrade -e ".[all]"
+# --timeout/--retries harden large-wheel downloads (pyarrow, torch, …) against pip's
+# 15s socket timeout tripping a ReadTimeoutError mid-download.
+RUN pip install --upgrade --timeout 120 --retries 5 -e ".[all]"
+# Drop .git now that setuptools_scm has derived the version. Removing it here (not in
+# the runner, where it would only add a whiteout over a committed layer) actually
+# shrinks the image; the server needs no git history in /app.
+RUN rm -rf /app/.git
 # Keeps Python from generating .pyc files in the container
 # ENV PYTHONDONTWRITEBYTECODE=1
 
 # Runner image
-FROM registry.access.redhat.com/ubi9/python-312:9.7@sha256:a0a5885769d5a8c5123d3b15d5135b254541d4da8e7bc445d95e1c90595de470 AS runner
+FROM registry.access.redhat.com/ubi10/python-312-minimal:10.2-1789550733@sha256:0f71645815e5e9fa5cbbbba051047fd3a276a45171e591498802a76c156c3a7c AS runner
 # Non-root user
 ARG USER=gbserver
 # Current image tag
@@ -56,12 +76,15 @@ EXPOSE 8080
 ENV PYTHONUNBUFFERED=1
 # Working directory
 WORKDIR /app
+# ubi10-minimal uses microdnf (no dnf) and omits these. shadow-utils provides useradd
+# (used next); openssl/tar/gzip are needed by the helm install script below.
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+        shadow-utils git vim-minimal rsync tar gzip openssl && \
+    microdnf clean all
 # Add the non-root user
 RUN useradd -ms /bin/bash ${USER}
 RUN chown ${USER}:root /app
 RUN chmod 775 /app
-# Install useful tools
-RUN dnf install -y git vim rsync
 # install kubectl
 RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 RUN install -o ${USER} -g root -m 0775 kubectl /usr/local/bin/kubectl && rm kubectl

@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 # Builder image
-FROM registry.access.redhat.com/ubi9/python-312-minimal:9.6-1758216611 AS builder
+FROM registry.access.redhat.com/ubi10/python-312-minimal:10.2-1789550733@sha256:0f71645815e5e9fa5cbbbba051047fd3a276a45171e591498802a76c156c3a7c AS builder
 
 # Build arguments
 ARG USER=gbserver
@@ -51,7 +51,7 @@ RUN rm src/gbserver/asset/lhstore.py \
 RUN python3 -c "import gbserver.monitoring.sidecar; print('Module found successfully')"
 
 # Runtime image:
-FROM registry.access.redhat.com/ubi9/python-312-minimal:9.6-1758216611
+FROM registry.access.redhat.com/ubi10/python-312-minimal:10.2-1789550733@sha256:0f71645815e5e9fa5cbbbba051047fd3a276a45171e591498802a76c156c3a7c
 
 # Build arguments
 ARG USER=gbserver
@@ -70,8 +70,10 @@ USER root
 # Working directory
 WORKDIR /gbserver
 
-# Add the non-root user
-RUN useradd -ms /bin/bash ${USER} && \
+# Add the non-root user. ubi10-minimal omits shadow-utils (provides useradd).
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 shadow-utils && \
+    microdnf clean all && \
+    useradd -ms /bin/bash ${USER} && \
     chown ${USER}:root /gbserver && \
     chmod 775 /gbserver
 
