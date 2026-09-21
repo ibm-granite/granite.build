@@ -281,159 +281,27 @@ class BuildWatcher:
                 "(buildwatcher may have restarted). Transitioning to CANCELLED.",
                 build.uuid,
             )
-            self._cleanup_orphaned_k8s_resources(build.uuid)
+            self.__cleanup_runner_resources(build.uuid)
             get_admin_storage().build_storage.update_fields(
                 build.uuid,
                 fields={"status": Status.CANCELLED},
                 should_update=lambda item: item.status == Status.CANCEL_REQUESTED,
             )
 
-    def _cleanup_orphaned_k8s_resources(self, build_id: str) -> None:
-        """Best-effort cleanup of K8s resources (AppWrappers, RayClusters, the
-        build-runner Job and its pods) for an orphaned build. Uses the
-        granite-dot-build/build-id label (and the deterministic job name) to find them.
+    def __cleanup_runner_resources(self, build_id: str) -> None:
+        """Reap any external resources left by this build's runner (best-effort).
+
+        Delegates to the runner class for the configured type — a no-op for the
+        in-process thread/process runners, the K8s deletion for the job runner — so no
+        environment-specific code lives here. Keyed on build_id, so it needs no live
+        runner and survives a watcher restart.
         """
         try:
-            import asyncio
-
-            from kubernetes_asyncio import client as k8s_client
-
-            from gbserver.environment.k8s import AtomicApiClient
-            from gbserver.types.constants import BUILDRUNNERJOB_NAMESPACE
-
-            namespace = BUILDRUNNERJOB_NAMESPACE
-
-            async def _do_cleanup():
-                try:
-                    async with await AtomicApiClient.create_api_client(
-                        kube_config_string=None, kube_context=None
-                    ) as api:
-                        custom_api = k8s_client.CustomObjectsApi(api_client=api)
-                        label_selector = f"granite-dot-build/build-id={build_id}"
-
-                        # Delete AppWrappers
-                        try:
-                            aw_list = await custom_api.list_namespaced_custom_object(
-                                group="workload.codeflare.dev",
-                                version="v1beta2",
-                                namespace=namespace,
-                                plural="appwrappers",
-                                label_selector=label_selector,
-                            )
-                            for aw in aw_list.get("items", []):
-                                aw_name = aw["metadata"]["name"]
-                                logger.info(
-                                    "Deleting orphaned AppWrapper %s for build %s",
-                                    aw_name,
-                                    build_id,
-                                )
-                                await custom_api.delete_namespaced_custom_object(
-                                    group="workload.codeflare.dev",
-                                    version="v1beta2",
-                                    namespace=namespace,
-                                    plural="appwrappers",
-                                    name=aw_name,
-                                )
-                        except Exception as e:
-                            logger.error(
-                                "Failed to clean up AppWrappers for build %s: %s",
-                                build_id,
-                                e,
-                            )
-
-                        # Delete RayClusters
-                        try:
-                            rc_list = await custom_api.list_namespaced_custom_object(
-                                group="ray.io",
-                                version="v1",
-                                namespace=namespace,
-                                plural="rayclusters",
-                                label_selector=label_selector,
-                            )
-                            for rc in rc_list.get("items", []):
-                                rc_name = rc["metadata"]["name"]
-                                logger.info(
-                                    "Deleting orphaned RayCluster %s for build %s",
-                                    rc_name,
-                                    build_id,
-                                )
-                                await custom_api.delete_namespaced_custom_object(
-                                    group="ray.io",
-                                    version="v1",
-                                    namespace=namespace,
-                                    plural="rayclusters",
-                                    name=rc_name,
-                                )
-                        except Exception as e:
-                            logger.error(
-                                "Failed to clean up RayClusters for build %s: %s",
-                                build_id,
-                                e,
-                            )
-
-                        # Delete the build-runner Job (and its pods). The job name is
-                        # deterministic (see BuildRunnerJob.__get_batchv1job_body); a
-                        # leftover job would otherwise collide on a re-dispatch by name.
-                        try:
-                            batchv1 = k8s_client.BatchV1Api(api_client=api)
-                            job_name = f"gb-build-runner-{build_id}"
-                            logger.info(
-                                "Deleting orphaned Job %s for build %s",
-                                job_name,
-                                build_id,
-                            )
-                            await batchv1.delete_namespaced_job(
-                                name=job_name,
-                                namespace=namespace,
-                                body=k8s_client.V1DeleteOptions(
-                                    propagation_policy="Foreground"
-                                ),
-                            )
-                        except Exception as e:
-                            # Usually a 404 (no such job) — fine, nothing to clean up.
-                            logger.info(
-                                "No build-runner Job to clean up for build %s (or delete failed): %s",
-                                build_id,
-                                e,
-                            )
-
-                        # Safety net: delete pods by label in case job cascade didn't.
-                        try:
-                            core_v1 = k8s_client.CoreV1Api(api_client=api)
-                            pods = await core_v1.list_namespaced_pod(
-                                namespace=namespace, label_selector=label_selector
-                            )
-                            for pod in pods.items:
-                                pod_name = pod.metadata.name
-                                logger.info(
-                                    "Deleting orphaned pod %s for build %s",
-                                    pod_name,
-                                    build_id,
-                                )
-                                await core_v1.delete_namespaced_pod(
-                                    name=pod_name,
-                                    namespace=namespace,
-                                    body=k8s_client.V1DeleteOptions(
-                                        propagation_policy="Foreground",
-                                        grace_period_seconds=5,
-                                    ),
-                                )
-                        except Exception as e:
-                            logger.error(
-                                "Failed to clean up pods for build %s: %s",
-                                build_id,
-                                e,
-                            )
-                except Exception as e:
-                    logger.error(
-                        "Failed to connect to K8s for orphan cleanup of build %s: %s",
-                        build_id,
-                        e,
-                    )
-
-            asyncio.run(_do_cleanup())
+            self.__runner_class_for_type().cleanup_resources(build_id)
         except Exception as e:
-            logger.error("Orphan K8s cleanup failed for build %s: %s", build_id, e)
+            logger.error(
+                "Failed to clean up runner resources for build %s: %s", build_id, e
+            )
 
     def __clean_finished_builds(self: Self) -> None:
         """See which threads are no longer alive and clean up our references to a) the threads and b) the associated build run.
@@ -815,12 +683,12 @@ class BuildWatcher:
             reason = f"build stuck PENDING for {age:.0f}s with no live runner"
             if self.__record_stuck_build_attempt(b.uuid, Status.PENDING, reason):
                 # Budget exhausted (now FAILED); clean up so no zombie resources linger.
-                self.__cleanup_stale_runner_resources(b.uuid)
+                self.__cleanup_runner_resources(b.uuid)
                 continue
             # Under budget: clean stale resources (a re-dispatch then gets a fresh job
             # name, no zombie-job collision) and drop dead refs so the next poll
             # re-dispatches. Stays PENDING.
-            self.__cleanup_stale_runner_resources(b.uuid)
+            self.__cleanup_runner_resources(b.uuid)
             with self._builds_lock:
                 self.build_runners.pop(b.uuid, None)
                 self.build_threads.pop(b.uuid, None)
@@ -828,16 +696,6 @@ class BuildWatcher:
             push_stuck_build_metric(
                 b.uuid, MetricName.STUCK_BUILD_REDISPATCHED, Status.PENDING
             )
-
-    def __cleanup_stale_runner_resources(self: Self, build_id: str) -> None:
-        """Reap leftover runner resources for a stuck build before re-dispatch.
-
-        Only the "job" runner leaves external K8s resources that could collide with a
-        re-dispatch. The "thread"/"process" runners (standalone) have none, and the K8s
-        call there is a wasted asyncio/kubernetes_asyncio import (absent without 'ibm').
-        """
-        if self.config.buildrunner_type == "job":
-            self._cleanup_orphaned_k8s_resources(build_id)
 
     def __worker_thread_run(self: Self) -> None:
         """
@@ -932,6 +790,20 @@ class BuildWatcher:
                 runner_type,
                 self.all_build_space_uri,
             )
+
+    def __runner_class_for_type(self: Self) -> type[AbstractBuildRunner]:
+        """Map the configured buildrunner_type to its AbstractBuildRunner subclass.
+
+        Used for class-level operations that need no instance (e.g. cleanup_resources).
+        Unknown types default to the job runner, matching __create_build_runner.
+        """
+        if self.config.buildrunner_type == "thread":
+            return BuildRunner
+        if self.config.buildrunner_type == "process":
+            return BuildRunnerProcess
+        from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
+
+        return BuildRunnerJob
 
     def __create_build_runner(self: Self, build: StoredBuild) -> AbstractBuildRunner:
         """Return the AbstractBuildRunner implementation configured for this instance (thread, process, or job)."""

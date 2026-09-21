@@ -112,3 +112,11 @@ class AbstractBuildRunner(ABC):
         Upon completiong the build status is one of SUCCESS, FAILED or CANCELLED.
         raise ValueError("Sub-class must implement this method")
         """
+
+    @classmethod
+    def cleanup_resources(cls, build_id: str) -> None:
+        """Best-effort reap of external resources a runner of this type created for
+        build_id. Keyed on the deterministic resource naming/labels, so it needs no live
+        runner instance or the build's config and works after a watcher restart. Default
+        no-op: in-process (thread) and subprocess (process) runners own no external
+        resources; overridden by runners that do (e.g. the K8s job runner)."""

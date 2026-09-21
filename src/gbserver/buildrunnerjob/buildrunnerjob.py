@@ -152,6 +152,114 @@ class BuildRunnerJob(AbstractBuildRunner):
             #     time.sleep(1)
             # self.is_stop_requested = False
 
+    @classmethod
+    def cleanup_resources(cls, build_id: str) -> None:
+        """Best-effort delete the K8s resources this build's job may have left behind:
+        AppWrapper, RayCluster, the build-runner Job and its pods. Everything is keyed on
+        the deterministic job name (gb-build-runner-<id>) and the
+        granite-dot-build/build-id label, so no live runner or build config is needed —
+        it works after a watcher restart. All failures are logged and swallowed."""
+        namespace = BUILDRUNNERJOB_NAMESPACE
+        label_selector = f"granite-dot-build/build-id={build_id}"
+        job_name = f"gb-build-runner-{build_id}"
+
+        async def _do_cleanup():
+            try:
+                async with await AtomicApiClient.create_api_client(
+                    kube_config_string=None, kube_context=None
+                ) as api:
+                    custom_api = client.CustomObjectsApi(api_client=api)
+
+                    for group, version, plural in (
+                        ("workload.codeflare.dev", "v1beta2", "appwrappers"),
+                        ("ray.io", "v1", "rayclusters"),
+                    ):
+                        try:
+                            listed = await custom_api.list_namespaced_custom_object(
+                                group=group,
+                                version=version,
+                                namespace=namespace,
+                                plural=plural,
+                                label_selector=label_selector,
+                            )
+                            for item in listed.get("items", []):
+                                name = item["metadata"]["name"]
+                                logger.info(
+                                    "Deleting orphaned %s %s for build %s",
+                                    plural,
+                                    name,
+                                    build_id,
+                                )
+                                await custom_api.delete_namespaced_custom_object(
+                                    group=group,
+                                    version=version,
+                                    namespace=namespace,
+                                    plural=plural,
+                                    name=name,
+                                )
+                        except Exception as e:
+                            logger.error(
+                                "Failed to clean up %s for build %s: %s",
+                                plural,
+                                build_id,
+                                e,
+                            )
+
+                    # Delete the build-runner Job; Foreground propagation cascades to pods.
+                    try:
+                        batchv1 = client.BatchV1Api(api_client=api)
+                        logger.info("Deleting orphaned Job %s", job_name)
+                        await batchv1.delete_namespaced_job(
+                            name=job_name,
+                            namespace=namespace,
+                            body=client.V1DeleteOptions(
+                                propagation_policy="Foreground"
+                            ),
+                        )
+                    except Exception as e:
+                        # Usually a 404 (no such job) — nothing to clean up.
+                        logger.info(
+                            "No build-runner Job to clean up for build %s (or delete failed): %s",
+                            build_id,
+                            e,
+                        )
+
+                    # Safety net: delete pods by label in case the cascade didn't.
+                    try:
+                        core_v1 = client.CoreV1Api(api_client=api)
+                        pods = await core_v1.list_namespaced_pod(
+                            namespace=namespace, label_selector=label_selector
+                        )
+                        for pod in pods.items:
+                            logger.info(
+                                "Deleting orphaned pod %s for build %s",
+                                pod.metadata.name,
+                                build_id,
+                            )
+                            await core_v1.delete_namespaced_pod(
+                                name=pod.metadata.name,
+                                namespace=namespace,
+                                body=client.V1DeleteOptions(
+                                    propagation_policy="Foreground",
+                                    grace_period_seconds=5,
+                                ),
+                            )
+                    except Exception as e:
+                        logger.error(
+                            "Failed to clean up pods for build %s: %s", build_id, e
+                        )
+            except Exception as e:
+                logger.error(
+                    "Failed to connect to K8s for orphan cleanup of build %s: %s",
+                    build_id,
+                    e,
+                )
+
+        try:
+            asyncio.run(_do_cleanup())
+        except Exception as e:
+            logger.error("Orphan K8s cleanup failed for build %s: %s", build_id, e)
+
     def start_and_wait(self: Self) -> None:
         """
         Start job/pod running the BuildRunner using the gbserver build-runner CLI.

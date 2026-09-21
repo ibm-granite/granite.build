@@ -197,7 +197,7 @@ class TestReconcileStuckBuilds:
                 "_BuildWatcher__get_builds_matching_status",
                 return_value=[build],
             ),
-            patch.object(watcher, "_cleanup_orphaned_k8s_resources") as cleanup,
+            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
             patch(f"{BW}.finalize_build_status") as finalize,
             patch(f"{BW}.push_stuck_build_metric") as metric,
         ):
@@ -221,7 +221,7 @@ class TestReconcileStuckBuilds:
                 "_BuildWatcher__get_builds_matching_status",
                 return_value=[build],
             ),
-            patch.object(watcher, "_cleanup_orphaned_k8s_resources") as cleanup,
+            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
             patch(f"{BW}.finalize_build_status") as finalize,
             patch(f"{BW}.push_stuck_build_metric"),
         ):
@@ -241,7 +241,7 @@ class TestReconcileStuckBuilds:
                 "_BuildWatcher__get_builds_matching_status",
                 return_value=[build],
             ),
-            patch.object(watcher, "_cleanup_orphaned_k8s_resources") as cleanup,
+            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
             patch(f"{BW}.finalize_build_status") as finalize,
         ):
             watcher._BuildWatcher__reconcile_stuck_builds()
@@ -257,35 +257,28 @@ class TestReconcileStuckBuilds:
                 "_BuildWatcher__get_builds_matching_status",
                 return_value=[build],
             ),
-            patch.object(watcher, "_cleanup_orphaned_k8s_resources") as cleanup,
+            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
             patch(f"{BW}.finalize_build_status") as finalize,
         ):
             watcher._BuildWatcher__reconcile_stuck_builds()
         cleanup.assert_not_called()
         finalize.assert_not_called()
 
-    def test_thread_runner_skips_k8s_cleanup(self):
-        # standalone/thread mode has no external K8s resources to reap
-        watcher = _make_watcher(
-            max_stuck_redispatches=3,
-            stuck_build_timeout_seconds=900,
-            buildrunner_type="thread",
+    def test_thread_runner_cleanup_is_base_noop(self):
+        # standalone/thread mode selects the base-class no-op cleanup (no K8s)
+        watcher = _make_watcher(buildrunner_type="thread")
+        from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
+        from gbserver.buildrunner.buildrunner import BuildRunner
+
+        cls = watcher._BuildWatcher__runner_class_for_type()
+        assert cls is BuildRunner
+        # BuildRunner does not override the no-op cleanup_resources
+        assert (
+            cls.cleanup_resources.__func__
+            is AbstractBuildRunner.cleanup_resources.__func__
         )
-        build = self._stale_build()
-        with (
-            patch.object(
-                watcher,
-                "_BuildWatcher__get_builds_matching_status",
-                return_value=[build],
-            ),
-            patch.object(watcher, "_cleanup_orphaned_k8s_resources") as cleanup,
-            patch(f"{BW}.finalize_build_status"),
-            patch(f"{BW}.push_stuck_build_metric"),
-        ):
-            watcher._BuildWatcher__reconcile_stuck_builds()
-        cleanup.assert_not_called()
-        # still re-dispatched (counter bumped), just without the K8s call
-        assert watcher.stuck_redispatch_counts[build.uuid] == 1
+        # ...and calling it does nothing / does not raise
+        cls.cleanup_resources("any-build-id")
 
     def test_recovered_build_counter_pruned(self):
         # a build with a lingering counter that is no longer PENDING gets pruned
@@ -298,7 +291,7 @@ class TestReconcileStuckBuilds:
                 "_BuildWatcher__get_builds_matching_status",
                 return_value=[still],
             ),
-            patch.object(watcher, "_cleanup_orphaned_k8s_resources"),
+            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources"),
         ):
             watcher._BuildWatcher__reconcile_stuck_builds()
         assert "gone" not in watcher.stuck_redispatch_counts
@@ -391,17 +384,34 @@ class TestSubmittedProcessing:
         metric.assert_called_once()
 
 
-@requires_k8s
-class TestCleanupExtendedToJobAndPods:
-    """_cleanup_orphaned_k8s_resources now also reaps the build-runner Job and pods.
+JOB = "gbserver.buildrunnerjob.buildrunnerjob"
 
-    _cleanup_orphaned_k8s_resources imports kubernetes_asyncio (optional 'ibm' extra),
-    so these are skipped when that extra is not installed (e.g. the default CI test job).
+
+@requires_k8s
+class TestBuildRunnerJobCleanupResources:
+    """BuildRunnerJob.cleanup_resources reaps AppWrapper/RayCluster/Job/pods by name+label.
+
+    It imports kubernetes_asyncio (optional 'ibm' extra), so these are skipped when that
+    extra is not installed (e.g. the default CI test job).
     """
 
-    def test_deletes_job_and_pods_alongside_aw_and_rc(self):
-        watcher = _make_watcher()
+    def _run_cleanup(self, custom_api, batch_api, core_api):
+        from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 
+        with (
+            patch(f"{JOB}.AtomicApiClient.create_api_client") as mock_api_cls,
+            patch(f"{JOB}.BUILDRUNNERJOB_NAMESPACE", "test-ns"),
+            patch(f"{JOB}.client.CustomObjectsApi", return_value=custom_api),
+            patch(f"{JOB}.client.BatchV1Api", return_value=batch_api),
+            patch(f"{JOB}.client.CoreV1Api", return_value=core_api),
+        ):
+            mock_api = AsyncMock()
+            mock_api_cls.return_value = mock_api
+            mock_api.__aenter__ = AsyncMock(return_value=mock_api)
+            mock_api.__aexit__ = AsyncMock(return_value=False)
+            BuildRunnerJob.cleanup_resources("build-xyz")
+
+    def test_deletes_job_and_pods_alongside_aw_and_rc(self):
         custom_api = AsyncMock()
         custom_api.list_namespaced_custom_object = AsyncMock(
             side_effect=[
@@ -420,37 +430,20 @@ class TestCleanupExtendedToJobAndPods:
         core_api.list_namespaced_pod = AsyncMock(return_value=MagicMock(items=[pod]))
         core_api.delete_namespaced_pod = AsyncMock()
 
-        with (
-            patch(
-                "gbserver.environment.k8s.AtomicApiClient.create_api_client"
-            ) as mock_api_cls,
-            patch("gbserver.types.constants.BUILDRUNNERJOB_NAMESPACE", "test-ns"),
-            patch(
-                "kubernetes_asyncio.client.CustomObjectsApi", return_value=custom_api
-            ),
-            patch("kubernetes_asyncio.client.BatchV1Api", return_value=batch_api),
-            patch("kubernetes_asyncio.client.CoreV1Api", return_value=core_api),
-        ):
-            mock_api = AsyncMock()
-            mock_api_cls.return_value = mock_api
-            mock_api.__aenter__ = AsyncMock(return_value=mock_api)
-            mock_api.__aexit__ = AsyncMock(return_value=False)
-            watcher._cleanup_orphaned_k8s_resources("build-xyz")
+        self._run_cleanup(custom_api, batch_api, core_api)
 
-        # AppWrapper + RayCluster deleted (existing behavior)
+        # AppWrapper + RayCluster deleted
         assert custom_api.delete_namespaced_custom_object.await_count == 2
-        # Job deleted by deterministic name (new behavior)
+        # Job deleted by deterministic name
         batch_api.delete_namespaced_job.assert_awaited_once()
         assert (
             batch_api.delete_namespaced_job.await_args.kwargs["name"]
             == "gb-build-runner-build-xyz"
         )
-        # Pods deleted by label (new behavior)
+        # Pods deleted by label
         core_api.delete_namespaced_pod.assert_awaited_once()
 
     def test_job_delete_404_does_not_break_pod_cleanup(self):
-        watcher = _make_watcher()
-
         custom_api = AsyncMock()
         custom_api.list_namespaced_custom_object = AsyncMock(
             side_effect=[{"items": []}, {"items": []}]
@@ -460,22 +453,7 @@ class TestCleanupExtendedToJobAndPods:
         core_api = AsyncMock()
         core_api.list_namespaced_pod = AsyncMock(return_value=MagicMock(items=[]))
 
-        with (
-            patch(
-                "gbserver.environment.k8s.AtomicApiClient.create_api_client"
-            ) as mock_api_cls,
-            patch("gbserver.types.constants.BUILDRUNNERJOB_NAMESPACE", "test-ns"),
-            patch(
-                "kubernetes_asyncio.client.CustomObjectsApi", return_value=custom_api
-            ),
-            patch("kubernetes_asyncio.client.BatchV1Api", return_value=batch_api),
-            patch("kubernetes_asyncio.client.CoreV1Api", return_value=core_api),
-        ):
-            mock_api = AsyncMock()
-            mock_api_cls.return_value = mock_api
-            mock_api.__aenter__ = AsyncMock(return_value=mock_api)
-            mock_api.__aexit__ = AsyncMock(return_value=False)
-            # Must not raise despite the job-delete failure.
-            watcher._cleanup_orphaned_k8s_resources("build-xyz")
+        # Must not raise despite the job-delete failure.
+        self._run_cleanup(custom_api, batch_api, core_api)
 
         core_api.list_namespaced_pod.assert_awaited_once()

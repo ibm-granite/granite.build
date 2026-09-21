@@ -53,13 +53,13 @@ class TestBuildWatcherOrphanCancel:
                 ),
                 patch.object(
                     watcher,
-                    "_cleanup_orphaned_k8s_resources",
+                    "_BuildWatcher__cleanup_runner_resources",
                     create=True,
                 ) as mock_cleanup,
             ):
                 watcher._BuildWatcher__process_cancel_requested_build(mock_build)
 
-            # Verify cleanup was called
+            # Verify runner-resource cleanup was called
             mock_cleanup.assert_called_once_with("orphan-build-uuid")
             # Verify status was updated to CANCELLED
             mock_admin_storage.build_storage.update_fields.assert_called_once()
@@ -95,54 +95,51 @@ class TestBuildWatcherOrphanCancel:
             # Verify status was NOT updated (the runner handles that)
             mock_admin_storage.build_storage.update_fields.assert_not_called()
 
-    def test_cleanup_orphaned_k8s_resources_deletes_aw_and_rc(self):
-        """_cleanup_orphaned_k8s_resources should find and delete AppWrappers and RayClusters by label."""
-        from gbserver.buildwatcher.buildwatcher import BuildWatcher
+    def test_cleanup_resources_deletes_aw_and_rc(self):
+        """BuildRunnerJob.cleanup_resources should delete AppWrappers and RayClusters by label."""
+        from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 
-        with patch.object(BuildWatcher, "__init__", lambda self, *a, **kw: None):
-            watcher = BuildWatcher.__new__(BuildWatcher)
+        mock_custom_api = AsyncMock()
+        mock_custom_api.list_namespaced_custom_object = AsyncMock(
+            side_effect=[
+                # First call: AppWrappers
+                {"items": [{"metadata": {"name": "gb-aw-orphan"}}]},
+                # Second call: RayClusters
+                {"items": [{"metadata": {"name": "r-orphan-ray-cluster"}}]},
+            ]
+        )
+        mock_custom_api.delete_namespaced_custom_object = AsyncMock()
 
-            mock_custom_api = AsyncMock()
-            mock_custom_api.list_namespaced_custom_object = AsyncMock(
-                side_effect=[
-                    # First call: AppWrappers
-                    {"items": [{"metadata": {"name": "gb-aw-orphan"}}]},
-                    # Second call: RayClusters
-                    {"items": [{"metadata": {"name": "r-orphan-ray-cluster"}}]},
-                ]
-            )
-            mock_custom_api.delete_namespaced_custom_object = AsyncMock()
-
-            with (
-                patch(
-                    "gbserver.environment.k8s.AtomicApiClient.create_api_client"
-                ) as mock_api_cls,
-                patch("gbserver.types.constants.BUILDRUNNERJOB_NAMESPACE", "test-ns"),
-            ):
-                mock_api = AsyncMock()
-                mock_api_cls.return_value = mock_api
-                mock_api.__aenter__ = AsyncMock(return_value=mock_api)
-                mock_api.__aexit__ = AsyncMock(return_value=False)
-
-                with patch(
-                    "kubernetes_asyncio.client.CustomObjectsApi",
-                    return_value=mock_custom_api,
-                ):
-                    watcher._cleanup_orphaned_k8s_resources("test-build-id")
-
-            # Should have deleted both an AppWrapper and a RayCluster
-            assert mock_custom_api.delete_namespaced_custom_object.await_count == 2
-
-    def test_cleanup_orphaned_k8s_resources_swallows_exceptions(self):
-        """_cleanup_orphaned_k8s_resources should not raise on K8s connection failure."""
-        from gbserver.buildwatcher.buildwatcher import BuildWatcher
-
-        with patch.object(BuildWatcher, "__init__", lambda self, *a, **kw: None):
-            watcher = BuildWatcher.__new__(BuildWatcher)
+        with (
+            patch(
+                "gbserver.buildrunnerjob.buildrunnerjob.AtomicApiClient.create_api_client"
+            ) as mock_api_cls,
+            patch(
+                "gbserver.buildrunnerjob.buildrunnerjob.BUILDRUNNERJOB_NAMESPACE",
+                "test-ns",
+            ),
+        ):
+            mock_api = AsyncMock()
+            mock_api_cls.return_value = mock_api
+            mock_api.__aenter__ = AsyncMock(return_value=mock_api)
+            mock_api.__aexit__ = AsyncMock(return_value=False)
 
             with patch(
-                "gbserver.environment.k8s.AtomicApiClient.create_api_client",
-                side_effect=ConnectionError("unreachable"),
+                "gbserver.buildrunnerjob.buildrunnerjob.client.CustomObjectsApi",
+                return_value=mock_custom_api,
             ):
-                # Should not raise
-                watcher._cleanup_orphaned_k8s_resources("test-build-id")
+                BuildRunnerJob.cleanup_resources("test-build-id")
+
+        # Should have deleted both an AppWrapper and a RayCluster
+        assert mock_custom_api.delete_namespaced_custom_object.await_count == 2
+
+    def test_cleanup_resources_swallows_exceptions(self):
+        """BuildRunnerJob.cleanup_resources should not raise on K8s connection failure."""
+        from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
+
+        with patch(
+            "gbserver.buildrunnerjob.buildrunnerjob.AtomicApiClient.create_api_client",
+            side_effect=ConnectionError("unreachable"),
+        ):
+            # Should not raise
+            BuildRunnerJob.cleanup_resources("test-build-id")
