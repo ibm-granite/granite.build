@@ -51,11 +51,15 @@ The run failed due to exception(s):
 
 
 def format_oserror(e: OSError) -> str:
-    """Render an OSError as ``OSError [Errno N] strerror: 'filename'``.
+    """Render an OSError as ``[Errno N] strerror: 'filename'``.
 
-    Includes filename/filename2 when set so the failing path is visible.
+    Includes errno and filename/filename2 when set so the failing path is
+    visible. When none are set (e.g. a bare TimeoutError/ConnectionError, both
+    OSError subclasses) falls back to ``str(e)`` to avoid noise.
     """
-    parts = ["OSError"]
+    if e.errno is None and not e.filename:
+        return str(e)
+    parts = []
     if e.errno is not None:
         parts.append(f"[Errno {e.errno}]")
     parts.append(e.strerror or str(e))
