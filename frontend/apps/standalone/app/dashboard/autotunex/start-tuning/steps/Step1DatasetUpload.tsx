@@ -29,6 +29,7 @@ import type { ColumnMapping, ColumnMetadata, Dataset, DatasetForm, DatasetFormat
 import { getAppConfig, getAutotuneDatasetTypes, getDataset, getDatasets, suggestColumnMappingAI } from '@granite-build/ui-core/api/autotunex'
 import { countLinesInFileAsync, processUploadedFileAsync } from '@granite-build/ui-core/lib/autotunex/processUploadedFile'
 import { splitCounts } from '@granite-build/ui-core/lib/autotunex/splitCounts'
+import { aiMappingToColumnMapping } from '@granite-build/ui-core/lib/autotunex/aiColumnMapping'
 import { PreviewTable } from '@granite-build/ui-core/components/autotunex/shared/PreviewTable'
 import {
   applyColumnMapping,
@@ -384,33 +385,17 @@ export function Step1DatasetUpload({
       }
 
       if (result.column_mapping) {
-        const newMapping: ColumnMapping = {}
-        const newSuggested = new Set<string>()
-
         const types = hasDatasetTypes ? datasetTypes : await getAutotuneDatasetTypes()
         if (!isCurrent()) return
         const algo = effectiveAlgorithm
         const aiAllCols = hasDatasetTypes || Object.keys(types).length > 0 ? getColumnsFromTypes(algo, types).map((c) => c.name) : getRequiredColumns(algo)
 
         const typeKey = ALGORITHM_TO_DATASET_TYPE[algo]
-        const columnsDict = types[typeKey]?.columns || {}
-        const dictKeyToName: Record<string, string> = {}
-        for (const [key, col] of Object.entries(columnsDict)) dictKeyToName[key] = (col as any).name
-
-        for (const [aiKey, sourceColumn] of Object.entries(result.column_mapping)) {
-          if (!sourceColumn || !colNames.includes(sourceColumn)) continue
-
-          let matchedCol = dictKeyToName[aiKey]
-          if (!matchedCol) {
-            const normalized = aiKey.replace(/_col$/, '')
-            matchedCol = aiAllCols.find((rc) => rc === aiKey || rc === normalized || rc === sourceColumn) || ''
-          }
-
-          if (matchedCol && aiAllCols.includes(matchedCol)) {
-            newMapping[matchedCol] = sourceColumn
-            newSuggested.add(matchedCol)
-          }
-        }
+        const { mapping: newMapping, suggestedFields: newSuggested } = aiMappingToColumnMapping(
+          result.column_mapping,
+          colNames,
+          { targetColumns: aiAllCols, columnsDict: types[typeKey]?.columns || {} }
+        )
 
         if (Object.keys(newMapping).length > 0) {
           setColumnMapping(newMapping)
