@@ -9,12 +9,15 @@ import type {
   HfImportPreview,
 } from '@granite-build/ui-core/types'
 import {
+  getAutotuneDatasetTypes,
   getDataset,
   getHfSplits,
   importHfDataset,
   previewHfDataset,
   searchHfDatasets,
+  suggestColumnMappingAI,
 } from '@granite-build/ui-core/api/autotunex'
+import { aiMappingToColumnMapping } from '@granite-build/ui-core/lib/autotunex/aiColumnMapping'
 import {
   HF_IMPORT_POLL_MS,
   HF_IMPORT_READY_TIMEOUT_MS,
@@ -36,6 +39,13 @@ import {
   survivalSummary,
   type SurvivalSummary,
 } from './hfImport'
+import {
+  extractColumnMetadata,
+  getColumnsFromTypes,
+  getRequiredColumns,
+  suggestColumnMapping as suggestColumnMappingHeuristic,
+} from '@granite-build/ui-core/lib/autotunex/wizardUtils'
+import { ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotunexAlgorithms'
 
 const SEARCH_DEBOUNCE_MS = 300
 const SEARCH_LIMIT = 20
@@ -47,6 +57,8 @@ export interface UseHfImportOptions {
   active: boolean
   requiredColumns: string[]
   onImported: (datasetId: string) => void
+  selectedAlgorithm: string
+  datasetTypes: Record<string, any>
 }
 
 export interface UseHfImportResult {
@@ -92,9 +104,21 @@ export interface UseHfImportResult {
   error: string
   handleImport: () => Promise<void>
   resetState: () => void
+
+  aiSuggestion: { confidence: number; reasoning: string } | null
+  aiSuggestedFields: Set<string>
+  isAiSuggesting: boolean
+  showAiReasoning: boolean
+  setShowAiReasoning: (next: boolean) => void
 }
 
-export function useHfImport({ active, requiredColumns, onImported }: UseHfImportOptions): UseHfImportResult {
+export function useHfImport({
+  active,
+  requiredColumns,
+  onImported,
+  selectedAlgorithm,
+  datasetTypes,
+}: UseHfImportOptions): UseHfImportResult {
   const queryClient = useQueryClient()
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [repoId, setRepoId] = useState<string | null>(null)
@@ -121,6 +145,13 @@ export function useHfImport({ active, requiredColumns, onImported }: UseHfImport
   const [error, setError] = useState('')
   const [importing, setImporting] = useState(false)
   const [importStatus, setImportStatus] = useState('')
+
+  const [aiSuggestion, setAiSuggestion] = useState<
+    { confidence: number; reasoning: string } | null
+  >(null)
+  const [aiSuggestedFields, setAiSuggestedFields] = useState<Set<string>>(new Set())
+  const [isAiSuggesting, setIsAiSuggesting] = useState(false)
+  const [showAiReasoning, setShowAiReasoning] = useState(false)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const suggestTokenRef = useRef(0)
@@ -186,6 +217,100 @@ export function useHfImport({ active, requiredColumns, onImported }: UseHfImport
     setName(deriveDatasetName(splits.repo_id))
   }, [splits])
 
+  /**
+   * Ask the AI for a column mapping for the probed dataset.
+   *
+   * Tokenized against `previewTokenRef`, the probe's own counter: the response can
+   * outlive the selection it was asked about, and committing a superseded mapping
+   * would pass the import gate against the wrong dataset's columns.
+   */
+  async function suggestMappingWithAI(probe: HfImportPreview, token: number) {
+    if (probe.raw_rows.length === 0 || probe.columns.length === 0) return
+    const isCurrent = () => previewTokenRef.current === token
+    const required = requiredColumnsRef.current
+
+    setIsAiSuggesting(true)
+    setAiSuggestion(null)
+    setAiSuggestedFields(new Set())
+    setShowAiReasoning(false)
+
+    /**
+     * The heuristic guess, applied only when the AI cannot supply a mapping.
+     *
+     * Not applied eagerly, unlike the Upload path's heuristic effect, for two
+     * reasons: the form hides its mapping rows while `isAiSuggesting`, so an eager
+     * guess would never be seen; and here a complete mapping immediately triggers a
+     * mapped-preview request to the backend, so an eager guess would cost a second
+     * round trip that the AI's own answer then invalidates. Observable behaviour
+     * matches Upload either way -- the mapping is never left empty when the
+     * heuristic could fill it.
+     */
+    const applyHeuristic = () => {
+      if (isCurrent()) setMapping(suggestColumnMappingHeuristic(probe.columns, required))
+    }
+
+    try {
+      const metadata = extractColumnMetadata(probe.raw_rows)
+      const colSamples: Record<string, string[]> = {}
+      for (const col of metadata) colSamples[col.name] = col.sampleValues.slice(0, 3)
+
+      const types =
+        Object.keys(datasetTypes).length > 0 ? datasetTypes : await getAutotuneDatasetTypes()
+      if (!isCurrent()) return
+
+      const result = await suggestColumnMappingAI({
+        sample_data: probe.raw_rows.slice(0, 8),
+        column_names: probe.columns,
+        column_samples: colSamples,
+        target_format: ALGORITHM_TO_DATASET_TYPE[selectedAlgorithm],
+      })
+      if (!isCurrent()) return
+
+      setAiSuggestion({ confidence: result.confidence, reasoning: result.reasoning ?? '' })
+
+      // `result.tuning_type` is deliberately NOT read. The endpoint returns a
+      // dataset-type key there ("dataset_type_a"), not an algorithm id, so it can
+      // never name an algorithm to adopt -- confirmed against the live backend. The
+      // selected algorithm stays the user's.
+
+      if (!result.column_mapping) {
+        applyHeuristic()
+        return
+      }
+
+      const targetColumns =
+        Object.keys(types).length > 0
+          ? getColumnsFromTypes(selectedAlgorithm, types).map((c) => c.name)
+          : getRequiredColumns(selectedAlgorithm)
+      const typeKey = ALGORITHM_TO_DATASET_TYPE[selectedAlgorithm]
+
+      const { mapping: next, suggestedFields } = aiMappingToColumnMapping(
+        result.column_mapping,
+        probe.columns,
+        { targetColumns, columnsDict: types[typeKey]?.columns || {} }
+      )
+
+      if (Object.keys(next).length > 0) {
+        setMapping(next)
+        setAiSuggestedFields(suggestedFields)
+      } else {
+        // Every entry filtered out -- a key we cannot match, or a source column
+        // absent from this split. Leaving `{}` would strand the form with no
+        // mapping at all.
+        applyHeuristic()
+      }
+    } catch {
+      // Swallowed, matching the Upload path -- an explicit human ruling, not an
+      // oversight. NOTE: a 502 from an unconfigured LLM provider is
+      // indistinguishable from a no-op here. Surfacing it is user-facing copy and
+      // is tracked separately.
+      applyHeuristic()
+    } finally {
+      // A superseded suggestion must not clear the flag its replacement now owns.
+      if (isCurrent()) setIsAiSuggesting(false)
+    }
+  }
+
   // The probe. Its only job is to fetch `columns` and `raw_rows`; `sampled` and
   // `survived` are meaningless for a blank-source mapping and are not read here.
   useEffect(() => {
@@ -215,6 +340,10 @@ export function useHfImport({ active, requiredColumns, onImported }: UseHfImport
       .then((result) => {
         if (previewTokenRef.current !== token) return
         setPreview(result)
+        // Fire-and-forget: it owns its own staleness check against the same token,
+        // and awaiting it here would hold the probe's loading flag for the LLM's
+        // full round trip.
+        void suggestMappingWithAI(result, token)
       })
       .catch((err) => {
         if (previewTokenRef.current !== token) return
@@ -302,6 +431,10 @@ export function useHfImport({ active, requiredColumns, onImported }: UseHfImport
     setError('')
     setImporting(false)
     setImportStatus('')
+    setAiSuggestion(null)
+    setAiSuggestedFields(new Set())
+    setIsAiSuggesting(false)
+    setShowAiReasoning(false)
   }
 
   // Tokenized exactly like Step0GetStarted's model search: suggestion requests are
@@ -521,5 +654,11 @@ export function useHfImport({ active, requiredColumns, onImported }: UseHfImport
     error,
     handleImport,
     resetState,
+
+    aiSuggestion,
+    aiSuggestedFields,
+    isAiSuggesting,
+    showAiReasoning,
+    setShowAiReasoning,
   }
 }

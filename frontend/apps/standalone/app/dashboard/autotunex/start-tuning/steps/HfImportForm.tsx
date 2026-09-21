@@ -9,6 +9,7 @@ import {
   InlineNotification,
   Select,
   SelectItem,
+  Tag,
   TextInput,
 } from '@carbon/react'
 import type { HfImportConfig } from '@granite-build/ui-core/types'
@@ -186,28 +187,63 @@ export function HfImportForm({ hf, requiredColumns, hfConfig }: HfImportFormProp
           )}
 
           <hr className={styles.sectionDivider} />
-          <p className={styles.subheading}>Column mapping</p>
-
-          {requiredColumns.map((required) => (
-            <div className={styles.mappingRow} key={required}>
-              <div className={styles.mappingLabel}>{required}</div>
-              <Select
-                id={`hf-mapping-${required}`}
-                labelText=""
-                size="sm"
-                value={hf.mapping[required] ?? ''}
-                onChange={(event) =>
-                  hf.setMapping({ ...hf.mapping, [required]: event.target.value })
-                }
-                disabled={hf.importing}
+          <div className={styles.mappingHeaderRow}>
+            <p className={styles.subheading} style={{ margin: 0 }}>
+              Column mapping
+            </p>
+            {hf.isAiSuggesting ? (
+              <InlineLoading description="AI analyzing..." />
+            ) : hf.aiSuggestion ? (
+              <button
+                type="button"
+                className={styles.aiTagButton}
+                onClick={() => hf.setShowAiReasoning(!hf.showAiReasoning)}
               >
-                <SelectItem value="" text="Choose a column..." />
-                {hf.preview!.columns.map((column) => (
-                  <SelectItem key={column} value={column} text={column} />
-                ))}
-              </Select>
-            </div>
-          ))}
+                <Tag type="green" size="sm">
+                  {/* Guarded: the response adapter casts `confidence` without
+                      validating it, so a missing field would render "(NaN%)". */}
+                  AI Suggested
+                  {Number.isFinite(hf.aiSuggestion.confidence)
+                    ? ` (${Math.round(hf.aiSuggestion.confidence * 100)}%)`
+                    : ''}{' '}
+                  {hf.showAiReasoning ? '▴' : '▾'}
+                </Tag>
+              </button>
+            ) : null}
+          </div>
+
+          {hf.aiSuggestion?.reasoning && hf.showAiReasoning && (
+            <InlineNotification
+              kind="info"
+              title="AI Insight"
+              subtitle={hf.aiSuggestion.reasoning}
+              hideCloseButton
+              lowContrast
+              className={styles.section}
+            />
+          )}
+
+          {!hf.isAiSuggesting &&
+            requiredColumns.map((required) => (
+              <div className={styles.mappingRow} key={required}>
+                <div className={styles.mappingLabel}>{required}</div>
+                <Select
+                  id={`hf-mapping-${required}`}
+                  labelText=""
+                  size="sm"
+                  value={hf.mapping[required] ?? ''}
+                  onChange={(event) =>
+                    hf.setMapping({ ...hf.mapping, [required]: event.target.value })
+                  }
+                  disabled={hf.importing}
+                >
+                  <SelectItem value="" text="Choose a column..." />
+                  {hf.preview!.columns.map((column) => (
+                    <SelectItem key={column} value={column} text={column} />
+                  ))}
+                </Select>
+              </div>
+            ))}
 
           {hf.survival.kind !== 'hidden' && (
             <InlineNotification

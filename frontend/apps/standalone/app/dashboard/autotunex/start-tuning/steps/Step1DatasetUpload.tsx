@@ -262,6 +262,8 @@ export function Step1DatasetUpload({
     active: dataSource === 'hf',
     requiredColumns,
     onImported: handleHfImported,
+    selectedAlgorithm,
+    datasetTypes,
   })
 
   // Heuristic column-mapping suggestion when the algorithm changes (skipped once AI has suggested)
