@@ -64,3 +64,30 @@ export function aiMappingToColumnMapping(
 
   return { mapping, suggestedFields }
 }
+
+/**
+ * Which algorithm an AI suggestion should leave selected.
+ *
+ * `POST /datasets/intelligence/suggest-mapping` returns `tuning_type` from the
+ * DATASET-TYPE vocabulary ("dataset_type_a"), not the algorithm-id vocabulary
+ * ("sft", "lora", ...) -- verified against the live backend. So in practice no
+ * suggestion names an algorithm and this returns `current` unchanged.
+ *
+ * Requiring `tuningType` to name a known algorithm is the point. Without that
+ * check a null `selectedGoal` short-circuited the goal test, and a dataset-type
+ * key was written into the selected algorithm; the column lookup then returned
+ * nothing and the mapping came out empty.
+ */
+export function adoptedAlgorithm(input: {
+  tuningType: string | undefined
+  current: string
+  selectedGoal: string | null
+  algorithms: { id: string; category: string }[]
+}): string {
+  const { tuningType, current, selectedGoal, algorithms } = input
+  if (!tuningType) return current
+  const detail = algorithms.find((algorithm) => algorithm.id === tuningType)
+  if (!detail) return current
+  if (selectedGoal && detail.category !== selectedGoal) return current
+  return tuningType
+}

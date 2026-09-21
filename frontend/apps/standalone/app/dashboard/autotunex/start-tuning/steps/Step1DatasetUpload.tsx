@@ -29,7 +29,7 @@ import type { ColumnMapping, ColumnMetadata, Dataset, DatasetForm, DatasetFormat
 import { getAppConfig, getAutotuneDatasetTypes, getDataset, getDatasets, suggestColumnMappingAI } from '@granite-build/ui-core/api/autotunex'
 import { countLinesInFileAsync, processUploadedFileAsync } from '@granite-build/ui-core/lib/autotunex/processUploadedFile'
 import { splitCounts } from '@granite-build/ui-core/lib/autotunex/splitCounts'
-import { aiMappingToColumnMapping } from '@granite-build/ui-core/lib/autotunex/aiColumnMapping'
+import { aiMappingToColumnMapping, adoptedAlgorithm } from '@granite-build/ui-core/lib/autotunex/aiColumnMapping'
 import { PreviewTable } from '@granite-build/ui-core/components/autotunex/shared/PreviewTable'
 import {
   applyColumnMapping,
@@ -382,20 +382,23 @@ export function Step1DatasetUpload({
 
       setAiSuggestion({ confidence: result.confidence, reasoning: result.reasoning ?? '', algorithm: result.tuning_type })
 
-      // Tracks the algorithm this mapping should be filtered against. `setSelectedAlgorithm`
-      // does not update the `selectedAlgorithm` captured by this closure, so reading
-      // that below applied the AI's column mapping against the PREVIOUS algorithm
-      // whenever the AI changed it.
-      let effectiveAlgorithm = selectedAlgorithm
-
-      if (result.tuning_type) {
-        const aiAlgoDetail = ALGORITHM_DETAILS.find((a) => a.id === result.tuning_type)
-        if (!selectedGoal || (aiAlgoDetail && aiAlgoDetail.category === selectedGoal)) {
-          setSelectedAlgorithm(result.tuning_type)
-          // Only when the suggestion is actually adopted.
-          effectiveAlgorithm = result.tuning_type
-        }
-      }
+      // Tracks the algorithm this mapping should be filtered against.
+      // `setSelectedAlgorithm` does not update the `selectedAlgorithm` captured by
+      // this closure, so reading that below would apply the AI's column mapping
+      // against the PREVIOUS algorithm whenever the AI changed it.
+      //
+      // `adoptedAlgorithm` will not adopt a value that does not name a known
+      // algorithm. The endpoint returns a dataset-type key in `tuning_type`, so
+      // today it always returns the current algorithm -- which is the correct
+      // outcome, and no longer depends on `selectedGoal` being non-null to avoid
+      // writing a dataset-type key into the algorithm.
+      const effectiveAlgorithm = adoptedAlgorithm({
+        tuningType: result.tuning_type,
+        current: selectedAlgorithm,
+        selectedGoal,
+        algorithms: ALGORITHM_DETAILS,
+      })
+      if (effectiveAlgorithm !== selectedAlgorithm) setSelectedAlgorithm(effectiveAlgorithm)
 
       if (result.column_mapping) {
         const types = hasDatasetTypes ? datasetTypes : await getAutotuneDatasetTypes()

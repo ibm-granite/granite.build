@@ -16,6 +16,7 @@ const assert = require('node:assert/strict')
 
 const {
   aiMappingToColumnMapping,
+  adoptedAlgorithm,
 } = require('../../../packages/ui-core/lib/autotunex/aiColumnMapping.ts')
 
 // Mirrors the shape of /autotune_dataset_types' `columns` entry for an SFT type.
@@ -123,5 +124,91 @@ describe('aiMappingToColumnMapping', () => {
       columnsDict: SFT_DICT,
     })
     assert.deepEqual(mapping, {})
+  })
+})
+
+describe('adoptedAlgorithm', () => {
+  const ALGOS = [
+    { id: 'lora', category: 'instruction' },
+    { id: 'sft', category: 'instruction' },
+    { id: 'dpo', category: 'preference' },
+  ]
+
+  it('does not adopt a dataset-type key, which is what the endpoint actually returns', () => {
+    // The real regression: with selectedGoal null this used to write
+    // "dataset_type_a" straight into the selected algorithm.
+    assert.equal(
+      adoptedAlgorithm({
+        tuningType: 'dataset_type_a',
+        current: 'lora',
+        selectedGoal: null,
+        algorithms: ALGOS,
+      }),
+      'lora'
+    )
+  })
+
+  it('does not adopt a dataset-type key when a goal is set either', () => {
+    assert.equal(
+      adoptedAlgorithm({
+        tuningType: 'dataset_type_a',
+        current: 'lora',
+        selectedGoal: 'instruction',
+        algorithms: ALGOS,
+      }),
+      'lora'
+    )
+  })
+
+  it('adopts a real algorithm id whose category matches the goal', () => {
+    assert.equal(
+      adoptedAlgorithm({
+        tuningType: 'sft',
+        current: 'lora',
+        selectedGoal: 'instruction',
+        algorithms: ALGOS,
+      }),
+      'sft'
+    )
+  })
+
+  it('refuses a real algorithm id whose category does not match the goal', () => {
+    assert.equal(
+      adoptedAlgorithm({
+        tuningType: 'dpo',
+        current: 'lora',
+        selectedGoal: 'instruction',
+        algorithms: ALGOS,
+      }),
+      'lora'
+    )
+  })
+
+  it('adopts a real algorithm id when no goal constrains it', () => {
+    assert.equal(
+      adoptedAlgorithm({
+        tuningType: 'dpo',
+        current: 'lora',
+        selectedGoal: null,
+        algorithms: ALGOS,
+      }),
+      'dpo'
+    )
+  })
+
+  it('keeps the current algorithm when the suggestion names nothing', () => {
+    assert.equal(
+      adoptedAlgorithm({
+        tuningType: undefined,
+        current: 'lora',
+        selectedGoal: 'instruction',
+        algorithms: ALGOS,
+      }),
+      'lora'
+    )
+    assert.equal(
+      adoptedAlgorithm({ tuningType: '', current: 'lora', selectedGoal: null, algorithms: ALGOS }),
+      'lora'
+    )
   })
 })
