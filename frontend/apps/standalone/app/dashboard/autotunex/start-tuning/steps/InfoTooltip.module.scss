@@ -1,3 +1,10 @@
+/* Narrower than Carbon's 288px default so the bubble fits the 380px settings
+   column it is used in. The content already sets `overflow-wrap: break-word`, so
+   this wraps rather than clipping. */
+.tooltip :global(.cds--tooltip-content) {
+  max-inline-size: 15rem;
+}
+
 .tooltipTrigger {
   background: none;
   border: none;
