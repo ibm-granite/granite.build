@@ -2,14 +2,17 @@
 #
 # The aws-shared-fs environment (its shared_filesystem efs block) carried by the
 # co-located test Space and referenced by the bare/ and containerized/ build.yaml
-# fixtures. It ships the documented PLACEHOLDER file_system_id, so
-# test_shared_fs.py self-skips (it reads this file's file_system_id) until you
-# point it at a real, pre-provisioned BYO EFS:
+# fixtures. The intended fixture is the IBM-research-provisioned EFS in us-east-1;
+# an internal filesystem id is NOT committed to this public repo, so the efs block
+# ships a stand-in id and test_shared_fs.py self-skips (it reads this file's
+# file_system_id) until it is pointed at a real EFS:
 #
-#   * set efs.file_system_id to your fs-... id and efs.region to its region;
-#   * that EFS needs mount targets per worker AZ, an SG allowing NFS 2049, and
-#     its root chmod'd 1777 (see docs/environments/skypilot-aws.md);
+#   * IBM: set efs.file_system_id/region to the ibm-research shared-fs EFS;
+#   * anyone else: point it at your own pre-provisioned EFS instead — it needs
+#     mount targets per worker AZ, an SG allowing NFS 2049, and its root chmod'd
+#     1777 (see docs/environments/skypilot-aws.md);
 #   * then run in the extended suite with AWS creds (spins up EC2/EFS; $).
+#   * #391 will auto-provision an ephemeral EFS so no manual id is needed.
 name: skypilot-aws-shared-fs-e2e
 type: Skypilot
 subtype: aws
@@ -28,14 +31,17 @@ config:
       default:
         aws:
           profile: gb-skypilot
-  # Issue #378: a BYO pre-provisioned EFS so multi-step data flow works across the
+  # Issue #378: a pre-provisioned EFS so multi-step data flow works across the
   # separate EC2 instances SkyPilot allocates per step. Setting shared_filesystem
-  # PRODUCES the shared_workdir root (do NOT also set shared_workdir).
+  # currently PRODUCES the shared_workdir root at mount_point (so shared_workdir is
+  # not set here). Decoupling the two — keeping shared_workdir explicit to support
+  # more than one shared filesystem — is tracked in #404.
   shared_filesystem:
     provider: efs
     mount_point: /mnt/gb-shared
     efs:
-      # PLACEHOLDER — replace with your BYO EFS to run the gated tests for real.
+      # Stand-in id: replace with the ibm-research shared-fs EFS (IBM), or your own
+      # pre-provisioned EFS, to run the gated tests. See the header comment + #391.
       file_system_id: fs-0abc123
       region: us-east-1
       tls: true
