@@ -15,8 +15,11 @@
 # limitations under the License.
 
 import logging
+from pathlib import Path
 
 import pytest
+import yaml
+from pydantic import ValidationError
 
 from gbserver.types.environmentconfig import EnvironmentConfig
 
@@ -29,16 +32,112 @@ def _sf():
     }
 
 
+def _aws_env(config):
+    return {
+        "name": "e",
+        "type": "Skypilot",
+        "subtype": "aws",
+        "config": config,
+        "assetstores": [],
+    }
+
+
+_SF = {
+    "provider": "efs",
+    "mount_point": "/mnt/gb-shared",
+    "efs": {"file_system_id": "fs-0abc123", "region": "us-east-1"},
+}
+
+
 def test_shared_filesystem_allowed_on_skypilot_aws():
     cfg = EnvironmentConfig.model_validate(
         {
             "name": "e",
             "type": "Skypilot",
             "subtype": "aws",
-            "config": {"default_cloud": "aws", "shared_filesystem": _sf()},
+            "config": {
+                "default_cloud": "aws",
+                "shared_workdir": "/mnt/gb-shared/gbroot",
+                "shared_filesystem": _sf(),
+            },
         }
     )
     assert cfg.config["shared_filesystem"]["mount_point"] == "/mnt/gb-shared"
+
+
+def test_shared_filesystem_requires_shared_workdir():
+    cfg = {"default_cloud": "aws", "shared_filesystem": _SF}
+    with pytest.raises(ValidationError, match="requires 'shared_workdir'"):
+        EnvironmentConfig.model_validate(_aws_env(cfg))
+
+
+def test_shared_workdir_must_be_under_mount_point():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "/somewhere/else",
+        "shared_filesystem": _SF,
+    }
+    with pytest.raises(
+        ValidationError, match="must be under shared_filesystem.mount_point"
+    ):
+        EnvironmentConfig.model_validate(_aws_env(cfg))
+
+
+def test_shared_workdir_must_be_absolute():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "gbroot",
+        "shared_filesystem": _SF,
+    }
+    with pytest.raises(
+        ValidationError, match="must be under shared_filesystem.mount_point"
+    ):
+        EnvironmentConfig.model_validate(_aws_env(cfg))
+
+
+def test_valid_shared_filesystem_with_workdir_subdir():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "/mnt/gb-shared/gbroot",
+        "shared_filesystem": _SF,
+    }
+    env = EnvironmentConfig.model_validate(_aws_env(cfg))
+    assert (env.config or {}).get("shared_workdir") == "/mnt/gb-shared/gbroot"
+
+
+def test_shared_workdir_may_equal_mount_point():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "/mnt/gb-shared",
+        "shared_filesystem": _SF,
+    }
+    EnvironmentConfig.model_validate(_aws_env(cfg))  # no raise
+
+
+def test_legacy_shared_workdir_alone_still_valid():
+    env = EnvironmentConfig.model_validate(
+        {
+            "name": "e",
+            "type": "Skypilot",
+            "subtype": "slurm",
+            "config": {"shared_workdir": "/shared"},
+            "assetstores": [],
+        }
+    )
+    assert (env.config or {}).get("shared_workdir") == "/shared"
+
+
+def test_committed_fixture_env_validates():
+    p = (
+        Path(__file__).parents[3]
+        / "test-data/integration/ibm/buildrunner/skypilot/aws/shared-fs/space"
+        / "environments/skypilot/aws-shared-fs/environment.yaml"
+    )
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    env = EnvironmentConfig.model_validate(data)
+    wd = (env.config or {}).get("shared_workdir")
+    mp = env.config["shared_filesystem"]["mount_point"]
+    assert wd and (wd == mp or wd.startswith(mp.rstrip("/") + "/"))
 
 
 def test_shared_filesystem_rejected_off_aws():
@@ -59,6 +158,7 @@ def test_shared_filesystem_rejected_when_default_cloud_not_aws():
                 "subtype": "aws",
                 "config": {
                     "default_cloud": "kubernetes",
+                    "shared_workdir": "/mnt/gb-shared/gbroot",
                     "shared_filesystem": _sf(),
                 },
             }
@@ -74,19 +174,10 @@ def test_shared_filesystem_rejected_when_default_cloud_unset():
                 "name": "e",
                 "type": "Skypilot",
                 "subtype": "aws",
-                "config": {"shared_filesystem": _sf()},
-            }
-        )
-
-
-def test_shared_filesystem_and_shared_workdir_both_set_errors():
-    with pytest.raises(ValueError, match="exactly one"):
-        EnvironmentConfig.model_validate(
-            {
-                "name": "e",
-                "type": "Skypilot",
-                "subtype": "aws",
-                "config": {"shared_filesystem": _sf(), "shared_workdir": "/mnt/x"},
+                "config": {
+                    "shared_workdir": "/mnt/gb-shared/gbroot",
+                    "shared_filesystem": _sf(),
+                },
             }
         )
 
@@ -98,7 +189,11 @@ def test_hf_inline_coexist_warns(caplog):
                 "name": "e",
                 "type": "Skypilot",
                 "subtype": "aws",
-                "config": {"default_cloud": "aws", "shared_filesystem": _sf()},
+                "config": {
+                    "default_cloud": "aws",
+                    "shared_workdir": "/mnt/gb-shared/gbroot",
+                    "shared_filesystem": _sf(),
+                },
                 "assetstores": [
                     {
                         "store_uri": "space://assetstores/hf",
@@ -125,7 +220,11 @@ def test_hf_local_cache_path_coexist_warns(caplog):
                 "name": "e",
                 "type": "Skypilot",
                 "subtype": "aws",
-                "config": {"default_cloud": "aws", "shared_filesystem": _sf()},
+                "config": {
+                    "default_cloud": "aws",
+                    "shared_workdir": "/mnt/gb-shared/gbroot",
+                    "shared_filesystem": _sf(),
+                },
                 "assetstores": [
                     {
                         "store_uri": "space://assetstores/hf",
@@ -151,7 +250,11 @@ def test_hf_cache_path_under_mount_point_no_warn(caplog):
                 "name": "e",
                 "type": "Skypilot",
                 "subtype": "aws",
-                "config": {"default_cloud": "aws", "shared_filesystem": _sf()},
+                "config": {
+                    "default_cloud": "aws",
+                    "shared_workdir": "/mnt/gb-shared/gbroot",
+                    "shared_filesystem": _sf(),
+                },
                 "assetstores": [
                     {
                         "store_uri": "space://assetstores/hf",

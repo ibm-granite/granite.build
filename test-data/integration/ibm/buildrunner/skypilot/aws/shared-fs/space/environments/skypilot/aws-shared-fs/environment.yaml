@@ -32,10 +32,11 @@ config:
         aws:
           profile: gb-skypilot
   # Issue #378: a pre-provisioned EFS so multi-step data flow works across the
-  # separate EC2 instances SkyPilot allocates per step. Setting shared_filesystem
-  # currently PRODUCES the shared_workdir root at mount_point (so shared_workdir is
-  # not set here). Decoupling the two — keeping shared_workdir explicit to support
-  # more than one shared filesystem — is tracked in #404.
+  # separate EC2 instances SkyPilot allocates per step.
+  # shared_filesystem defines only the mount; shared_workdir is the explicit
+  # workdir path under mount_point (decoupled per #404 so more than one shared
+  # filesystem can be added later; the path prefix selects which one).
+  shared_workdir: /mnt/gb-shared/gbroot
   shared_filesystem:
     provider: efs
     mount_point: /mnt/gb-shared

@@ -19,6 +19,7 @@ The environment type.
 """
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from pydantic import Field, model_validator
@@ -166,9 +167,20 @@ class EnvironmentConfig(Config):
                 "shared_filesystem is only supported on a Skypilot/aws environment "
                 f"(got type={self.type!r}, subtype={self.subtype!r})"
             )
-        if cfg.get("shared_workdir"):
+        mount_point = (sf.get("mount_point") if isinstance(sf, dict) else None) or ""
+        mp = mount_point.rstrip("/") or "/"
+        workdir = cfg.get("shared_workdir")
+        if not workdir:
             raise ValueError(
-                "set exactly one of 'shared_filesystem' or 'shared_workdir', not both"
+                "shared_filesystem requires 'shared_workdir' (an absolute path "
+                "under mount_point)"
+            )
+        if not os.path.isabs(workdir) or not (
+            workdir == mp or workdir.startswith(mp.rstrip("/") + "/")
+        ):
+            raise ValueError(
+                f"shared_workdir {workdir!r} must be under "
+                f"shared_filesystem.mount_point {mp!r}"
             )
         # The EFS mount targets and the teardown VM are AWS-only, and both the
         # per-run mount and teardown launch key on ``default_cloud`` (skypilot's
@@ -184,7 +196,6 @@ class EnvironmentConfig(Config):
                 "targets and the teardown VM are AWS-only); got "
                 f"default_cloud={default_cloud!r}"
             )
-        mount_point = sf.get("mount_point") if isinstance(sf, dict) else None
         for store in self.assetstores:
             if "hf" not in (store.store_uri or ""):
                 continue
