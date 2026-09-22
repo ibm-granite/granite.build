@@ -92,9 +92,11 @@ RUN install -o ${USER} -g root -m 0775 kubectl /usr/local/bin/kubectl && rm kube
 RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 # Copy installed package
 COPY --from=builder --chown=${USER}:root --chmod=775 /opt/app-root/lib/python3.12/site-packages /opt/app-root/lib/python3.12/site-packages
-# Copy the executable script
-COPY --from=builder --chown=${USER}:root --chmod=775 /opt/app-root/bin/gbserver /opt/app-root/bin/gbserver
-COPY --from=builder --chown=${USER}:root --chmod=775 /opt/app-root/bin/dmf /opt/app-root/bin/dmf
+# Copy the venv's console scripts. Copying the whole bin/ (rather than naming
+# gbserver and dmf) ships every entry point pyproject declares — `gb`/`gbcli` for
+# in-pod debugging, `gbtest`, `gbmcp` — and stops new ones from silently going
+# missing here. The scripts are thin shebang wrappers, so this costs a few KB.
+COPY --from=builder --chown=${USER}:root --chmod=775 /opt/app-root/bin/ /opt/app-root/bin/
 # Copy the source code
 COPY --from=builder --chown=${USER}:root --chmod=775 /app /app
 # Switch to the non-root user
