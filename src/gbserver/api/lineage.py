@@ -371,6 +371,7 @@ def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
                             name=source_node.get("name", edge["source"]),
                             uri=uri,
                             url=source_meta.get("url"),
+                            artifact_type=source_node.get("artifact_type"),
                         )
                     )
                 elif node_type == "run":
@@ -397,6 +398,7 @@ def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
                             name=target_node.get("name", edge["target"]),
                             uri=uri,
                             url=target_meta.get("url"),
+                            artifact_type=target_node.get("artifact_type"),
                         )
                     )
                 elif node_type == "run":

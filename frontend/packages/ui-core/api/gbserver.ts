@@ -455,6 +455,13 @@ export interface ArtifactLineageNodeRef {
   name: string
   uri?: string
   url?: string
+  /**
+   * Only present when `node_type === 'artifact'`, and only from a gbserver new
+   * enough to send it. Consumers must treat it as optional and fall back to
+   * inferring the type from `uri` — a dashboard talks to several gbserver
+   * deployments at different versions.
+   */
+  artifact_type?: string
 }
 
 export interface ArtifactRunEntry {
