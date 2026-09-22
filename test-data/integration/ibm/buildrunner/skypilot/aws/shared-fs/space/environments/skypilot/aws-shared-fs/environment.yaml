@@ -55,7 +55,7 @@ assetstores:
       - mode: default
         config: {}
   # With shared_filesystem set, hfpull runs as its own step and caches to
-  # ${mount_point}/hf_cache (config: {}) rather than instance-locally, so a pulled
+  # ${shared_workdir}/hf_cache (config: {}) rather than instance-locally, so a pulled
   # model actually reaches EFS (see the shipped aws environment's guidance).
   - store_uri: space://assetstores/hf
     pull:
