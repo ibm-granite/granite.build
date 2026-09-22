@@ -41,28 +41,17 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
 
   return (
     <div>
-      {/* Above the repo row, where the Upload path puts it: the name is the one
-          field the user is most likely to edit, and burying it under the mapping
-          meant scrolling past every other control to reach it. Gated on `splits`
-          rather than on `repoId` so it appears already filled by the preselect
-          effect, instead of flashing empty while the repo resolves. */}
-      {hf.splits && (
-        <div className={styles.field}>
-          <TextInput
-            id="hf-dataset-name"
-            labelText="Dataset Name"
-            value={hf.name}
-            invalid={hf.name.length > 0 && !hf.nameValid}
-            invalidText={"Use up to 255 characters, without '/', '\\' or '..'."}
-            onChange={(event) => hf.setName(event.target.value)}
-            disabled={hf.importing}
-          />
-        </div>
-      )}
-
       <div className={styles.field}>
         {hf.repoId ? (
-          <FileUploaderItem name={hf.repoId} status="edit" onDelete={() => hf.resetState()} />
+          /* Labelled on the left like the Upload path's Train file row: on its own,
+             a bare repo id under the tab strip did not say what it was. */
+          <div className={styles.fileRow}>
+            <span className={styles.fileLabel}>
+              Dataset
+              <InfoTooltip label="The HuggingFace repository this dataset is imported from." />
+            </span>
+            <FileUploaderItem name={hf.repoId} status="edit" onDelete={() => hf.resetState()} />
+          </div>
         ) : (
           <>
             <ComboBox
@@ -91,6 +80,24 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
           </>
         )}
       </div>
+
+      {/* Directly under the selected repo: the name is the field the user is most
+          likely to edit, and it sat below the whole mapping before. Gated on
+          `splits` rather than on `repoId` so it appears already filled by the
+          preselect effect, instead of flashing empty while the repo resolves. */}
+      {hf.splits && (
+        <div className={styles.field}>
+          <TextInput
+            id="hf-dataset-name"
+            labelText="Dataset Name"
+            value={hf.name}
+            invalid={hf.name.length > 0 && !hf.nameValid}
+            invalidText={"Use up to 255 characters, without '/', '\\' or '..'."}
+            onChange={(event) => hf.setName(event.target.value)}
+            disabled={hf.importing}
+          />
+        </div>
+      )}
 
       {hf.splitsFetching && <InlineLoading description="Resolving configs and splits..." />}
 

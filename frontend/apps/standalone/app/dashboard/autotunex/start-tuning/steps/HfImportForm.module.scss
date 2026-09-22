@@ -6,6 +6,26 @@
   margin-top: 1rem;
 }
 
+/* Same grid as Step1DatasetUpload.module.scss's file rows, so the chosen repo
+   reads as the same kind of row as an uploaded train file. */
+.fileRow {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fileLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.32px;
+  color: var(--cds-text-secondary, #525252);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
 .limits {
   font-size: 0.75rem;
   color: var(--cds-text-secondary, #525252);
