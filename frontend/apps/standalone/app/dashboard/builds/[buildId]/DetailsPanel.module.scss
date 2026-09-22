@@ -19,11 +19,32 @@
   margin-bottom: 0.75rem;
 }
 
-.detailsList {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin: 0;
+.fieldsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 2rem;
+  row-gap: 1rem;
+  align-items: start;
+  padding: 0.5rem 1rem;
+}
+
+.col1 {
+  grid-column: 1;
+}
+
+.col2 {
+  grid-column: 2;
+}
+
+@media (max-width: 640px) {
+  .fieldsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .col1,
+  .col2 {
+    grid-column: 1;
+  }
 }
 
 .wordBreakAll {

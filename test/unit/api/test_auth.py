@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from gbserver.api.auth import AuthMiddleware
+from gbserver.api.auth import AuthMiddleware, _is_public_path
 
 
 def _make_app() -> FastAPI:
@@ -36,7 +36,7 @@ def _make_app() -> FastAPI:
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
 
-    @app.get("/test")
+    @app.get("/api/test")
     async def test_endpoint(request: Request):
         user = request.state.data["user"]
         return JSONResponse(content={"login": user.login})
@@ -124,7 +124,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get(
-                "/test", headers={"Authorization": "Bearer test-key-123"}
+                "/api/test", headers={"Authorization": "Bearer test-key-123"}
             )
         assert response.status_code == 200
         assert response.json()["login"] == "standalone"
@@ -139,7 +139,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get(
-                "/test", headers={"Authorization": "Bearer wrong-key"}
+                "/api/test", headers={"Authorization": "Bearer wrong-key"}
             )
         assert response.status_code == 401
 
@@ -154,7 +154,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             response = client.get(
-                "/test", headers={"Authorization": "Bearer test-key-123"}
+                "/api/test", headers={"Authorization": "Bearer test-key-123"}
             )
         assert response.status_code == 200
         assert response.json()["login"] == "myuser"
@@ -169,7 +169,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             client = TestClient(app)
             # TestClient sends from "testclient" which is in the localhost allow list
-            response = client.get("/test")
+            response = client.get("/api/test")
         assert response.status_code == 200
         assert response.json()["login"] == "standalone"
 
@@ -266,7 +266,7 @@ class TestAuthMiddlewareApiKeyMode:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get("/test")
+            response = client.get("/api/test")
         assert response.status_code == 401
 
     def test_localhost_without_auth_header_returns_401_when_api_key_set(self):
@@ -279,7 +279,7 @@ class TestAuthMiddlewareApiKeyMode:
             app = _make_app()
             # TestClient sends from "testclient" (in localhost allow list)
             client = TestClient(app)
-            response = client.get("/test")  # no Authorization header
+            response = client.get("/api/test")  # no Authorization header
         assert response.status_code == 401
 
     def test_analytics_path_requires_api_key(self):
@@ -397,3 +397,153 @@ class TestAuthMiddlewareApiKeyMode:
             client = TestClient(app)
             response = client.post("/dashboard")
         assert response.status_code == 401
+
+
+def test_autotunex_proxy_prefix_is_not_unconditionally_public():
+    """The proxy must not sit in the unconditional allow-list.
+
+    The prefix has no exemption anywhere -- dispatch() carries no branch for it.
+    It keeps working in the shipped deployment only because _dispatch_apikey
+    admits any loopback caller on any method, which is the general rule and not
+    specific to this prefix. Listing it here would instead make it public to
+    every caller, re-opening the unauthenticated write surface.
+    """
+    assert _is_public_path("/api/autotunex") is False
+    assert _is_public_path("/api/autotunex/job/by_build_id/abc") is False
+
+
+def test_other_api_paths_still_require_auth():
+    assert _is_public_path("/api/v1/builds") is False
+    assert _is_public_path("/api/autotunexxx") is False
+
+
+def test_autotunex_proxy_allows_any_method_from_loopback_without_a_key():
+    """The deployment gbserver actually ships must keep working, for every verb.
+
+    standalone (and the all-in-one image, whose co-located Caddy dials 127.0.0.1)
+    runs auth_mode=apikey with no GBSERVER_API_KEY. In that configuration
+    _dispatch_apikey admits any loopback caller on any method, so the proxy needs
+    no prefix-specific exemption to work -- which is why the old
+    `_is_autotunex_proxy` carve-out could be removed rather than narrowed. Asserted
+    alongside a non-public /api/v1 route to show both go through the same door.
+
+    TestClient's peer is "testclient", which counts as loopback.
+    """
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+
+    @app.post("/api/autotunex/{path:path}")
+    async def autotunex_proxy_endpoint(path: str):
+        return JSONResponse(content={"path": path})
+
+    @app.post("/api/v1/thing")
+    async def other_data_endpoint(request: Request):
+        user = request.state.data["user"]
+        return JSONResponse(content={"login": user.login})
+
+    env = {
+        "GBSERVER_AUTH_MODE": "apikey",
+        "GBSERVER_API_KEY": "",
+        # Fixed explicitly so this machine's local .env GBSERVER_API_USER
+        # can't leak in and change the outcome.
+        "GBSERVER_API_USER": "test-user",
+    }
+    with patch.dict(os.environ, env, clear=False):
+        client = TestClient(app)
+        proxy_response = client.post("/api/autotunex/jobs")
+        other_response = client.post("/api/v1/thing")
+
+    assert proxy_response.status_code == 200
+    assert other_response.status_code == 200
+
+
+def test_autotunex_proxy_requires_auth_off_loopback():
+    """Off loopback the proxy authenticates exactly like any other API path.
+
+    The co-located proxy keeps working because its own caller is loopback, which
+    _dispatch_apikey admits on any method -- not because the prefix has an
+    exemption of its own. Nothing about that is a licence for remote callers:
+    AutoTuneX defaults to auth_providers=["disabled"], so without this gate a
+    gbserver with GBSERVER_API_KEY set still let anyone who could reach the port
+    POST /api/autotunex/jobs (launching a real build) or DELETE datasets.
+    """
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+
+    @app.post("/api/autotunex/{path:path}")
+    async def autotunex_post(path: str):
+        return JSONResponse(content={"path": path})
+
+    @app.get("/api/autotunex/{path:path}")
+    async def autotunex_get(path: str):
+        return JSONResponse(content={"path": path})
+
+    env = {
+        "GBSERVER_AUTH_MODE": "apikey",
+        "GBSERVER_API_KEY": "secret",
+        "GBSERVER_API_USER": "test-user",
+    }
+    # A non-loopback peer, the way a request arriving over a published port or a
+    # cluster Route does.
+    with patch.dict(os.environ, env, clear=False):
+        client = TestClient(app, client=("203.0.113.7", 44444))
+        post_response = client.post("/api/autotunex/jobs")
+        get_response = client.get("/api/autotunex/jobs")
+
+    assert post_response.status_code == 401
+    assert get_response.status_code == 401
+
+
+def test_autotunex_proxy_requires_the_api_key_like_any_other_path():
+    """With a key configured the prefix authenticates like /api/v1, even on loopback.
+
+    This inverts the behaviour a previous pass pinned. The old carve-out skipped
+    auth for any method on loopback, and the all-in-one image's Caddy strips
+    X-Forwarded-* and dials 127.0.0.1, so every remote request reaches gbserver
+    looking like loopback -- making the condition always true and the exemption
+    unconditional in the one topology that ships it. An operator who set
+    GBSERVER_API_KEY got 401s on /api/v1 while POST /api/autotunex/jobs still
+    launched real builds and DELETE still destroyed datasets.
+    """
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+
+    @app.post("/api/autotunex/{path:path}")
+    async def autotunex_post(path: str):
+        return JSONResponse(content={"path": path})
+
+    env = {
+        "GBSERVER_AUTH_MODE": "apikey",
+        "GBSERVER_API_KEY": "secret",
+        "GBSERVER_API_USER": "test-user",
+    }
+    with patch.dict(os.environ, env, clear=False):
+        client = TestClient(app, client=("127.0.0.1", 44444))
+        unauthenticated = client.post("/api/autotunex/jobs")
+        authenticated = client.post(
+            "/api/autotunex/jobs", headers={"Authorization": "Bearer secret"}
+        )
+
+    assert unauthenticated.status_code == 401
+    assert authenticated.status_code == 200
+
+
+def test_autotunex_proxy_is_not_exempt_from_oidc_on_loopback():
+    """Under an OIDC auth mode the prefix is authenticated too.
+
+    The old carve-out ran before the auth-mode branch, so it bypassed github /
+    ibmid / multi as well -- not just the apikey path it was justified by.
+    """
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+
+    @app.post("/api/autotunex/{path:path}")
+    async def autotunex_post(path: str):
+        return JSONResponse(content={"path": path})
+
+    env = {"GBSERVER_AUTH_MODE": "github", "GBSERVER_API_KEY": ""}
+    with patch.dict(os.environ, env, clear=False):
+        client = TestClient(app, client=("127.0.0.1", 44444))
+        response = client.post("/api/autotunex/jobs")
+
+    assert response.status_code == 401

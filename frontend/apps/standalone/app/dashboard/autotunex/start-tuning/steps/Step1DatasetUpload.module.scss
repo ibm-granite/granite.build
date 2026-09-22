@@ -1,0 +1,156 @@
+.settingsColumn {
+  flex: 0 0 380px;
+  min-width: 300px;
+}
+
+.previewColumn {
+  flex: 1 1 480px;
+  min-width: 0;
+}
+
+.tileHeading {
+  font-weight: 600;
+  margin: 0 0 1.25rem;
+}
+
+.sectionTitle {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.32px;
+  color: var(--cds-text-secondary, #525252);
+  margin: 0 0 0.5rem;
+}
+
+.nameField {
+  margin-bottom: 0.75rem;
+}
+
+.splitToggleRow {
+  margin-bottom: 1rem;
+}
+
+.toggleLabelRow {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+}
+
+.sectionDivider {
+  border: none;
+  border-top: 1px solid var(--cds-border-subtle, #e0e0e0);
+  margin: 1.25rem 0;
+}
+
+.helperTextInline {
+  font-size: 0.8125rem;
+  color: var(--cds-text-secondary, #525252);
+}
+
+.mappingHeader {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+  padding-bottom: 0.375rem;
+  margin-bottom: 0.5rem;
+}
+
+.mappingRow {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 0.75rem;
+  align-items: end;
+  margin-bottom: 1rem;
+}
+
+.mappingLabel {
+  font-size: 0.875rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 2rem;
+}
+
+.requiredMarker {
+  color: var(--cds-support-error, #da1e28);
+}
+
+.exampleCode {
+  background: var(--cds-background-inverse, #262626);
+  color: var(--cds-text-on-color, #f4f4f4);
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  font-family: 'IBM Plex Mono', monospace;
+  line-height: 1.5;
+  overflow-x: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dropZone {
+  border: 2px dashed var(--cds-icon-disabled, #a8a8a8);
+  border-radius: 4px;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.dropZoneHint {
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+  margin: 0.5rem 0 0;
+}
+
+.emptyStateHint {
+  color: var(--cds-text-secondary, #525252);
+  font-size: 0.8125rem;
+  margin-top: 1rem;
+  text-align: center;
+}
+
+.previewTile {
+  padding: 1.25rem;
+  max-height: calc(100vh - 16rem);
+  overflow: auto;
+}
+
+.fileRow {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fileLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.32px;
+  color: var(--cds-text-secondary, #525252);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.tooltipTrigger {
+  background: none;
+  border: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--cds-icon-secondary, #525252);
+}
+
+.aiTagButton {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
