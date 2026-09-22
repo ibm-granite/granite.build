@@ -17,6 +17,7 @@
 """Utility functions for better errors."""
 
 import asyncio
+from typing import Optional
 
 from gbserver.types.constants import FETCH_CLOUD_LOGS_MAX_RETRIES
 from gbserver.types.errors import LogMonitoringFailedException, WorkloadFailedException
@@ -30,6 +31,15 @@ def get_readable_error_message(e: Exception, err_stack: str) -> str:
     """Get a readable error message to post to the pull request."""
     logger.debug("get_readable_error_message start")
     readable_error = unwrap_errors(e)
+    # For a failure raised inside a remote API server, err_stack is just
+    # "<Type>: <message>" (the re-raised object has no __traceback__), so append
+    # the server-side traceback that does name the failing call/path.
+    server_stack = remote_stacktrace(e)
+    if server_stack is not None and server_stack not in err_stack:
+        err_stack = (
+            f"{err_stack.rstrip()}\n\n"
+            f"--- Traceback from the remote API server ---\n{server_stack}"
+        )
     body = f"""
 The run failed due to exception(s):
 {readable_error}
@@ -69,6 +79,28 @@ def format_oserror(e: OSError) -> str:
         if e.filename2:
             msg += f" -> {e.filename2!r}"
     return msg
+
+
+def remote_stacktrace(e: BaseException) -> Optional[str]:
+    """Return a traceback recorded on a remote server for ``e``, if any.
+
+    SkyPilot's client re-raises the *API server's* exception object on our side
+    (``sky/client/sdk.py:_raise_exception_object_on_client``). The object is
+    unpickled fresh, so ``__traceback__`` and ``__cause__`` are empty and
+    ``logger.exception``/``exc_info=True`` render a single bare line with no
+    frames. The server-side traceback survives as a ``stacktrace`` string
+    attribute (set by ``sky/server/requests/requests.py:set_exception_stacktrace``),
+    which is the only place the failing path appears for errors raised remotely —
+    an ``OSError`` built as ``OSError(errno, strerror)`` carries no ``filename``
+    for :func:`format_oserror` to report.
+
+    Returns None when the attribute is absent or not a non-empty string, so
+    locally-raised exceptions (which have a real traceback) are unaffected.
+    """
+    stacktrace = getattr(e, "stacktrace", None)
+    if isinstance(stacktrace, str) and stacktrace.strip():
+        return stacktrace
+    return None
 
 
 def format_failure_reason(e: BaseException) -> str:

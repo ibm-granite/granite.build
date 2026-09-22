@@ -17,7 +17,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gbserver.environment.skypilot import Skypilot, _is_transient_provision_error
+from gbserver.environment.skypilot import (
+    Skypilot,
+    _is_transient_provision_error,
+    _log_remote_stacktrace,
+)
 from gbserver.types.environmentconfig import EnvironmentConfig
 
 # The verbatim failure from the production runner log (build
@@ -245,3 +249,30 @@ def _spawns(proc):
         return proc
 
     return _inner
+
+
+class TestRemoteStacktraceLogging:
+    """``_log_remote_stacktrace`` surfaces the SkyPilot API server's traceback.
+
+    Regression guard for the bluevela/SLURM failure that reported only
+    ``OSError: [Errno 30] Read-only file system`` with no frames and no path:
+    the exception crossed the API-server boundary, so ``exc_info=True`` had no
+    ``__traceback__`` to render and the errno-only OSError carried no filename.
+    """
+
+    def test_logs_server_traceback_when_present(self):
+        exc = OSError(30, "Read-only file system")
+        setattr(exc, "stacktrace", 'File "/sky/backend.py", line 9\nOSError: ...')
+        with patch("gbserver.environment.skypilot.logger") as mock_logger:
+            _log_remote_stacktrace(exc, "provision test-cluster")
+        assert mock_logger.error.called
+        logged = " ".join(str(a) for a in mock_logger.error.call_args[0])
+        assert "/sky/backend.py" in logged
+        assert "provision test-cluster" in logged
+
+    def test_silent_when_no_server_traceback(self):
+        # Locally-raised exceptions have a real traceback already; adding an
+        # empty "server traceback" line would just be noise.
+        with patch("gbserver.environment.skypilot.logger") as mock_logger:
+            _log_remote_stacktrace(OSError(30, "Read-only file system"), "ctx")
+        mock_logger.error.assert_not_called()

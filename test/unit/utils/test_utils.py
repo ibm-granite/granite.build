@@ -24,6 +24,7 @@ from gbserver.utils.unwrap_errors import (
     format_failure_reason,
     format_oserror,
     get_readable_error_message,
+    remote_stacktrace,
     unwrap_errors,
 )
 from gbserver.utils.utils import (
@@ -339,6 +340,59 @@ assert 0 > 0
         e = TimeoutError("operation timed out")
         assert format_oserror(e) == "operation timed out"
         assert unwrap_errors(e) == "operation timed out"
+
+    def test_oserror_from_remote_server_has_no_path_to_report(self):
+        # Regression guard for the real bluevela/SLURM failure: SkyPilot's API
+        # server raises OSError(errno, strerror) with no filename, so
+        # format_oserror has nothing beyond str(e) to add. The path must come
+        # from the server-side traceback instead (see remote_stacktrace).
+        e = OSError(errno.EROFS, "Read-only file system")
+        assert format_oserror(e) == "[Errno 30] Read-only file system"
+
+    def test_remote_stacktrace_returns_server_traceback(self):
+        # SkyPilot attaches the API server's traceback as a `stacktrace` str.
+        e = OSError(errno.EROFS, "Read-only file system")
+        setattr(e, "stacktrace", 'File "/sky/provision.py", line 1\nOSError: ...')
+        out = remote_stacktrace(e)
+        assert out is not None
+        assert "/sky/provision.py" in out
+
+    def test_remote_stacktrace_absent_or_blank_returns_none(self):
+        # A locally-raised exception has no `stacktrace`; a blank one carries no
+        # information. Both must return None so callers skip the extra log line.
+        assert remote_stacktrace(OSError(errno.EROFS, "Read-only file system")) is None
+        blank = OSError("boom")
+        setattr(blank, "stacktrace", "   \n ")
+        assert remote_stacktrace(blank) is None
+        wrong_type = OSError("boom")
+        setattr(wrong_type, "stacktrace", object())
+        assert remote_stacktrace(wrong_type) is None
+
+    def test_readable_message_appends_remote_traceback(self):
+        # A tb-less remote exception makes err_stack a single bare line; the
+        # <details> block must still carry the server traceback naming the path.
+        e = OSError(errno.EROFS, "Read-only file system")
+        server_tb = 'File "/sky/backend.py", line 9, in _sync\nOSError: [Errno 30] ...'
+        setattr(e, "stacktrace", server_tb)
+        body = get_readable_error_message(
+            e=e, err_stack="OSError: [Errno 30] Read-only file system\n"
+        )
+        assert "Traceback from the remote API server" in body
+        assert "/sky/backend.py" in body
+
+    def test_readable_message_no_duplicate_remote_traceback(self):
+        # When err_stack already contains the server traceback, don't repeat it.
+        e = OSError(errno.EROFS, "Read-only file system")
+        server_tb = 'File "/sky/backend.py", line 9, in _sync'
+        setattr(e, "stacktrace", server_tb)
+        body = get_readable_error_message(e=e, err_stack=f"prefix {server_tb} suffix")
+        assert "Traceback from the remote API server" not in body
+
+    def test_readable_message_without_remote_traceback_unchanged(self):
+        # Locally-raised exceptions must not gain the remote-traceback section.
+        e = OSError(errno.EROFS, "Read-only file system", "/proj/builds")
+        body = get_readable_error_message(e=e, err_stack="Traceback...\nOSError: x")
+        assert "Traceback from the remote API server" not in body
 
 
 # Kubernetes label value validation regex (from the API server rules):

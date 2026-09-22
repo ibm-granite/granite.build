@@ -62,7 +62,7 @@ from gbserver.types.errors import (
     WorkloadFailedException,
 )
 from gbserver.utils.logger import get_logger
-from gbserver.utils.unwrap_errors import format_oserror
+from gbserver.utils.unwrap_errors import format_oserror, remote_stacktrace
 
 if TYPE_CHECKING:
     from gbserver.monitoring.logfile_monitor import LogFileMonitor
@@ -652,6 +652,25 @@ _NON_TRANSIENT_PROVISION_SUBSTRINGS = (
     "invalid privatekey",
     "unprotected private key file",
 )
+
+
+def _log_remote_stacktrace(exc: BaseException, context: str) -> None:
+    """Log the SkyPilot API server's traceback for ``exc``, when it carries one.
+
+    A failure raised inside the API server reaches us as a re-raised, unpickled
+    object with no ``__traceback__``, so the ``exc_info=True`` beside each call
+    to this function can only print ``<Type>: <message>`` — no frames, and for
+    an ``OSError`` no failing path. The server's own traceback rides along as a
+    ``stacktrace`` attribute; SkyPilot prints it only under SKYPILOT_DEBUG, so
+    emit it ourselves. Logged separately rather than folded into the message
+    above to keep the one-line reason greppable.
+    """
+    stacktrace = remote_stacktrace(exc)
+    if stacktrace is None:
+        return
+    logger.error(
+        "Traceback from the SkyPilot API server (%s):\n%s", context, stacktrace
+    )
 
 
 def _is_transient_provision_error(exc: BaseException) -> bool:
@@ -2258,6 +2277,7 @@ class Skypilot(Environment):
                 detail,
                 exc_info=True,
             )
+            _log_remote_stacktrace(e, f"launch {launch_id}")
             raise
         finally:
             self._release_monitors(launch_id)
@@ -2395,6 +2415,7 @@ class Skypilot(Environment):
                             detail,
                             exc_info=True,
                         )
+                        _log_remote_stacktrace(e, f"provision {cluster_name}")
                     raise
         # Unreachable: AsyncRetrying with reraise=True either returns from the
         # `return` above or raises; this satisfies the type checker.
