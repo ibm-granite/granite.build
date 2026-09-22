@@ -235,7 +235,8 @@ class TestTeardownWithProvider:
                         "region": "us-east-1",
                         "cleanup_zone": "us-east-1a",
                     },
-                }
+                },
+                "shared_workdir": "/mnt/gb-shared/gbroot",
             }
         )
 
@@ -260,7 +261,7 @@ class TestTeardownWithProvider:
             "gbserver.environment.skypilot.sky.launch", _boom, raising=False
         )
 
-        env._setup_workdirs["sid"] = "/mnt/gb-shared/builds/b1/runs/r1"
+        env._setup_workdirs["sid"] = "/mnt/gb-shared/gbroot/builds/b1/runs/r1"
         env._setup_run_meta["sid"] = {
             "target_name": "t",
             "build_id": "b1",
@@ -269,7 +270,8 @@ class TestTeardownWithProvider:
 
         with caplog.at_level("WARNING"):
             await env.teardown_skypilot("sid")
-        assert "/mnt/gb-shared/builds/b1/runs/r1" in caplog.text  # orphan surfaced
+        # orphan surfaced (per-run dir under shared_workdir, mount at mount_point)
+        assert "/mnt/gb-shared/gbroot/builds/b1/runs/r1" in caplog.text
 
     @pytest.mark.asyncio
     async def test_teardown_runs_cleanup_run_script_and_pins_zone(self, monkeypatch):
@@ -283,7 +285,8 @@ class TestTeardownWithProvider:
                         "region": "us-east-1",
                         "cleanup_zone": "us-east-1a",
                     },
-                }
+                },
+                "shared_workdir": "/mnt/gb-shared/gbroot",
             }
         )
 
@@ -306,7 +309,7 @@ class TestTeardownWithProvider:
         mock_sky.launch = MagicMock(return_value="req-td")
         mock_sky.stream_and_get = MagicMock(return_value=None)
 
-        env._setup_workdirs["sid"] = "/mnt/gb-shared/builds/b1/runs/r1"
+        env._setup_workdirs["sid"] = "/mnt/gb-shared/gbroot/builds/b1/runs/r1"
         env._setup_run_meta["sid"] = {
             "target_name": "t",
             "build_id": "b1",
@@ -319,9 +322,10 @@ class TestTeardownWithProvider:
         ):
             await env.teardown_skypilot("sid")
 
-        # cleanup_run_script drove the throwaway VM's run script.
+        # cleanup_run_script drove the throwaway VM's run script (per-run dir
+        # under shared_workdir, not the bare mount_point).
         run_script = mock_sky.Task.call_args.kwargs["run"]
-        assert run_script == "CLEANUP /mnt/gb-shared/builds/b1/runs/r1"
+        assert run_script == "CLEANUP /mnt/gb-shared/gbroot/builds/b1/runs/r1"
         # Zone pinned onto the resources for the AZ with a mount target.
         assert mock_sky.Resources.call_args.kwargs.get("zone") == "us-east-1a"
 
@@ -335,7 +339,8 @@ class TestTeardownWithProvider:
                     "provider": "efs",
                     "mount_point": "/mnt/gb-shared",
                     "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
-                }
+                },
+                "shared_workdir": "/mnt/gb-shared/gbroot",
             }
         )
 
@@ -356,7 +361,7 @@ class TestTeardownWithProvider:
             "gbserver.environment.skypilot.build_provider", lambda cfg: _Prov()
         )
         mock_sky = MagicMock()
-        env._setup_workdirs["sid"] = "/mnt/gb-shared/builds/b1/runs/r1"
+        env._setup_workdirs["sid"] = "/mnt/gb-shared/gbroot/builds/b1/runs/r1"
         env._setup_run_meta["sid"] = {"target_name": "t", "build_id": "b1"}
 
         with (
@@ -419,16 +424,18 @@ class TestWorkdirLauncherEnvVars:
                     "mount_point": "/mnt/gb-shared",
                     "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
                 },
+                "shared_workdir": "/mnt/gb-shared/gbroot",
             },
         )
         env = Skypilot(event_q=event_q, environment_config=ec)
         env_vars = env._skypilot_builtin_env(
             launch_id="L1",
             cluster_name="gb-c",
-            build_workdir="/mnt/gb-shared/builds/b/runs/r",
+            build_workdir="/mnt/gb-shared/gbroot/builds/b/runs/r",
         )
         assert env_vars["GB_LOCAL_SCRATCH"] == "/tmp/gb-scratch"
-        assert env_vars["GB_SHARED_WORKDIR"] == "/mnt/gb-shared"
+        # GB_SHARED_WORKDIR is the explicit subdir under mount_point, not the mount.
+        assert env_vars["GB_SHARED_WORKDIR"] == "/mnt/gb-shared/gbroot"
 
     def test_gb_local_scratch_path_is_configurable(self):
         # The scratch path defaults to /tmp/gb-scratch but is configurable via the
@@ -447,13 +454,14 @@ class TestWorkdirLauncherEnvVars:
                     "local_scratch": "/opt/dlami/nvme/gb-scratch",
                     "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
                 },
+                "shared_workdir": "/mnt/gb-shared/gbroot",
             },
         )
         env = Skypilot(event_q=event_q, environment_config=ec)
         env_vars = env._skypilot_builtin_env(
             launch_id="L1",
             cluster_name="gb-c",
-            build_workdir="/mnt/gb-shared/builds/b/runs/r",
+            build_workdir="/mnt/gb-shared/gbroot/builds/b/runs/r",
         )
         assert env_vars["GB_LOCAL_SCRATCH"] == "/opt/dlami/nvme/gb-scratch"
 

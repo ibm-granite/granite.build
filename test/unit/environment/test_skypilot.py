@@ -1961,8 +1961,11 @@ class _FakeProvider:
 def test_prologue_orders_mount_before_cd_and_chmods_1777():
     import subprocess
 
+    # Per-run workdir is under shared_workdir (a subdir of mount_point), while the
+    # mount is still at mount_point (/mnt/gb-shared). The chmod-walk sentinel is
+    # mount_point, so the extra gbroot level is created and chmod'd during the walk.
     prologue = skymod._compose_step_prologue(
-        _FakeProvider(), "/mnt/gb-shared/builds/b/runs/r"
+        _FakeProvider(), "/mnt/gb-shared/gbroot/builds/b/runs/r"
     )
     assert prologue.startswith("set -eu")
     # Mount, then chmod, then cd.
