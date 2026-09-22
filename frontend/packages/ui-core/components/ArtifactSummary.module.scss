@@ -1,0 +1,37 @@
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.fieldLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--cds-text-secondary);
+  margin-bottom: 0.125rem;
+}
+
+.fieldValue {
+  font-size: 0.875rem;
+  color: var(--cds-text-primary);
+  margin: 0;
+}
+
+.mono {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8125rem;
+  word-break: break-all;
+}
+
+/* The id sits next to a CopyButton, which Carbon sizes as a 2rem control; the
+   row is baseline-agnostic so a wrapped id does not drag the button down. */
+.copyRow {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.link {
+  color: var(--cds-link-primary, #0f62fe);
+}

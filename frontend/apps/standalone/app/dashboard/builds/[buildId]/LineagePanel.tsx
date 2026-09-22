@@ -1,12 +1,11 @@
 'use client'
 
 import * as React from 'react'
-import { Button, ComposedModal, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { Button, InlineLoading, Modal, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import {
   ArrowLeft,
   ArrowRight,
   CenterSquare,
-  Launch,
   ZoomFit,
   ZoomIn,
   ZoomOut,
@@ -20,7 +19,9 @@ import type { Build, BuildStatusDetail } from '@granite-build/ui-core/types'
 import { getArtifact } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
-import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
+import { getSubgraph, artifactNodeType } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
+import { ArtifactSummary } from '@granite-build/ui-core/components/ArtifactSummary'
+import { useRoutes } from '@granite-build/ui-core/config/routes'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending'])
 
@@ -63,14 +64,6 @@ interface LineagePanelProps {
   initialFocusNodeId?: string
 }
 
-function artifactTypeToNodeType(artifactType: string): NodeType {
-  switch (artifactType.toUpperCase()) {
-    case 'MODEL': return 'Model'
-    case 'DATASET': return 'Dataset'
-    case 'FILESET': return 'Fileset'
-    default: return 'Fileset'
-  }
-}
 
 function buildGraphData(
   buildStatus: BuildStatusDetail | undefined,
@@ -240,7 +233,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       if (result) {
         artifactMap.set(id, {
           name: result.name,
-          type: artifactTypeToNodeType(result.artifact_type),
+          type: artifactNodeType(result.artifact_type, result.uri),
         })
       }
     })
@@ -263,21 +256,14 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     return map
   }, [artifactQueries, uuidArtifactIds])
 
-  const artifactNavModalHeader = (artifactNavNode: { node: ElkNodeEx; hfUrl: string | null } | null) => {
-    if (artifactNavNode) {
-      return <h4>Would you like to view <code>{artifactNavNode.node?.title || artifactNavNode.node?.id}</code> on HuggingFace or proceed to the artifact page?`</h4>
-    } else {
-      return <h4>Would you like to view this artifact on HuggingFace or proceed to the artifact page?`</h4>
-    }
-  }
-
   // Navigation state
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(initialFocusNodeId ?? null)
   const [upstreamLevels, setUpstreamLevels] = React.useState(Infinity)
   const [downstreamLevels, setDownstreamLevels] = React.useState(Infinity)
   const [partial, setPartial] = React.useState(false)
-  const [artifactNavNode, setArtifactNavNode] = React.useState<{ node: ElkNodeEx; hfUrl: string | null } | null>(null)
+  const [artifactNavNode, setArtifactNavNode] = React.useState<{ node: ElkNodeEx } | null>(null)
   const router = useRouter()
+  const routes = useRoutes()
   const [rendered, setRendered] = React.useState(false)
 
   // The current artifact's node is always highlighted on artifact pages
@@ -302,8 +288,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       setFocusNodeId(node.id)
     }
     if (node.type !== 'Build' && isUUID(node.id)) {
-      const uri = artifactUriMap.get(node.id)
-      setArtifactNavNode({ node, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
+      setArtifactNavNode({ node })
     }
   }
 
@@ -470,70 +455,43 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         )}
       </div>
 
-      {artifactNavNode?.hfUrl ? (
-        <ComposedModal
-          open={artifactNavNode !== null}
-          onClose={() => setArtifactNavNode(null)}
-          size="sm"
-        >
-          <ModalHeader>{artifactNavModalHeader(artifactNavNode)}</ModalHeader>
-          <ModalBody />
-          <ModalFooter className={styles.navModalActions}>
-            <Button
-              kind="secondary"
-              onClick={() => {
-                setArtifactNavNode(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              kind="secondary"
-              onClick={() => {
-                if (artifactNavNode)
-                  router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
-                setArtifactNavNode(null);
-              }}
-            >
-              View artifact page
-            </Button>
+      {/* One modal, not two. It previously branched on whether the artifact had
+          a HuggingFace URL, and the HF branch put three buttons in the footer as
+          children — which is precisely the case Carbon does not size: it applies
+          `cds--modal-footer--three-button` (flex 0 1 25%) only when given the
+          `secondaryButtons` prop, so children each kept the default flex 0 1 50%
+          in a fixed 64px-tall footer and the labels wrapped and clipped.
 
-            <Button
-              kind="secondary"
-              renderIcon={Launch}
-              href={artifactNavNode.hfUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => setArtifactNavNode(null)}
-            >
-              Open on HuggingFace
-            </Button>
-          </ModalFooter>
-        </ComposedModal>
-      ) : (
-        <Modal
-          open={artifactNavNode !== null}
-          onRequestClose={() => setArtifactNavNode(null)}
-          modalHeading="Navigate to artifact"
-          primaryButtonText="Proceed"
-          secondaryButtonText="Cancel"
-          onRequestSubmit={() => {
-            if (artifactNavNode)
-              router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
-            setArtifactNavNode(null);
-          }}
-          onSecondarySubmit={() => setArtifactNavNode(null)}
-          size="sm"
-        >
-          <p>
-            Go to the artifact page for{" "}
-            <strong>
-              {artifactNavNode?.node.title || artifactNavNode?.node.id}
-            </strong>
-            ?
-          </p>
-        </Modal>
-      )}
+          Rather than fight that, the HuggingFace link now lives in the body,
+          where ArtifactSummary already renders the URI as a link. That leaves
+          two footer buttons, which Carbon sizes correctly with no override, and
+          it matches what the review actually asked for: the artifact id, the URI
+          as a link when it is HF, and a way through to the artifact page. */}
+      <Modal
+        open={artifactNavNode !== null}
+        onRequestClose={() => setArtifactNavNode(null)}
+        modalHeading="Artifact"
+        modalLabel="Lineage"
+        primaryButtonText="View artifact page"
+        secondaryButtonText="Cancel"
+        onRequestSubmit={() => {
+          if (artifactNavNode) router.push(routes.artifactHref(artifactNavNode.node.id))
+          setArtifactNavNode(null)
+        }}
+        onSecondarySubmit={() => setArtifactNavNode(null)}
+        size="sm"
+      >
+        {artifactNavNode && (
+          <ArtifactSummary
+            artifact={{
+              id: artifactNavNode.node.id,
+              name: artifactNavNode.node.title,
+              artifactType: artifactNavNode.node.type,
+              uri: artifactUriMap.get(artifactNavNode.node.id),
+            }}
+          />
+        )}
+      </Modal>
     </div>
   );
 })
