@@ -55,20 +55,13 @@ class SharedFilesystemProvider(ABC):
 
 def resolve_shared_workdir(config: Optional["EnvironmentConfig"]) -> Optional[str]:
     """Resolve the shared_workdir root from an EnvironmentConfig (only ``.config``
-    is read). shared_filesystem -> mount_point; else shared_workdir; else None.
-    Both set -> ValueError (defensive; EnvironmentConfig also rejects this)."""
+    is read). ``shared_filesystem`` defines the mount; ``shared_workdir`` is the
+    explicit workdir path (EnvironmentConfig validates it is under mount_point).
+    Legacy environments set only ``shared_workdir``. Returns None when neither is
+    set."""
     if config is None:
         return None
-    cfg = config.config or {}
-    sf_raw = cfg.get("shared_filesystem")
-    workdir = cfg.get("shared_workdir")
-    if sf_raw and workdir:
-        raise ValueError(
-            "environment config sets both 'shared_filesystem' and 'shared_workdir'"
-        )
-    if sf_raw:
-        return SharedFilesystemConfig.model_validate(sf_raw).mount_point
-    return workdir
+    return (config.config or {}).get("shared_workdir")
 
 
 def resolve_local_scratch(config: Optional["EnvironmentConfig"]) -> Optional[str]:

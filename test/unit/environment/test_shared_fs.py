@@ -164,43 +164,28 @@ def test_resolve_none_config():
     assert resolve_shared_workdir(None) is None
 
 
-def test_resolve_plain_shared_workdir():
-    assert resolve_shared_workdir(_env({"shared_workdir": "/proj/x"})) == "/proj/x"
-
-
-def test_resolve_shared_filesystem_mount_point():
-    root = resolve_shared_workdir(
-        _env(
-            {
-                "shared_filesystem": {
-                    "provider": "efs",
-                    "mount_point": "/mnt/gb-shared",
-                    "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
-                }
-            }
-        )
+def test_resolve_returns_explicit_shared_workdir_with_shared_filesystem():
+    env = _env(
+        {
+            "default_cloud": "aws",
+            "shared_workdir": "/mnt/gb-shared/gbroot",
+            "shared_filesystem": {
+                "provider": "efs",
+                "mount_point": "/mnt/gb-shared",
+                "efs": {"file_system_id": "fs-0abc123", "region": "us-east-1"},
+            },
+        }
     )
-    assert root == "/mnt/gb-shared"
+    assert resolve_shared_workdir(env) == "/mnt/gb-shared/gbroot"
 
 
-def test_resolve_neither():
+def test_resolve_returns_legacy_shared_workdir_without_shared_filesystem():
+    env = _env({"shared_workdir": "/shared"})
+    assert resolve_shared_workdir(env) == "/shared"
+
+
+def test_resolve_none_when_neither_set():
     assert resolve_shared_workdir(_env({})) is None
-
-
-def test_resolve_both_set_defensive_error():
-    with pytest.raises(ValueError, match="both"):
-        resolve_shared_workdir(
-            _env(
-                {
-                    "shared_workdir": "/proj/x",
-                    "shared_filesystem": {
-                        "provider": "efs",
-                        "mount_point": "/mnt/y",
-                        "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
-                    },
-                }
-            )
-        )
 
 
 def _bash_ok(script: str):

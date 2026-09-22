@@ -56,7 +56,9 @@ class EfsConfig(Config):
 
 
 class SharedFilesystemConfig(Config):
-    """The `shared_filesystem` block. Produces the `shared_workdir` root."""
+    """The `shared_filesystem` block: defines the mount only (an EFS mounted at
+    `mount_point`). The workdir location is the separate, explicit `shared_workdir`
+    (validated by EnvironmentConfig to be under `mount_point`)."""
 
     provider: Literal["efs"]
     mount_point: str
