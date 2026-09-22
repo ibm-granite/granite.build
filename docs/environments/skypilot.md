@@ -127,17 +127,22 @@ How the shared filesystem is exposed to a container differs by backend:
 
 `shared_workdir` above assumes the operator has *already* mounted a shared filesystem on every worker.
 `shared_filesystem` closes that gap on **Skypilot/aws only**: gbserver mounts a BYO, pre-provisioned
-EFS filesystem on each worker at launch and **produces the `shared_workdir` root** from it, so
-cross-step state flows across the separate EC2 instances SkyPilot allocates per step with no manual
-mount step. It is **mutually exclusive with `shared_workdir`** — set one or the other, never both (when
-`shared_filesystem` is set it *is* the shared workdir).
+EFS filesystem on each worker at launch (at `mount_point`), so cross-step state flows across the
+separate EC2 instances SkyPilot allocates per step with no manual mount step. `shared_filesystem`
+defines **only the mount** — it does *not* imply a workdir. When `shared_filesystem` is set,
+`shared_workdir` is **required** and must be an absolute path equal to `mount_point` or a subdirectory
+of it; it defines where the workdir lives on the mount (and, per
+[#404](https://github.com/ibm-granite/granite.build/issues/404), its path prefix will later select
+which filesystem once multiple are supported). `EnvironmentConfig` validation rejects a
+`shared_filesystem` with no `shared_workdir`, or a `shared_workdir` outside `mount_point`.
 
 ```yaml
 config:
   default_cloud: aws
+  shared_workdir: /mnt/gb-shared/gbroot   # Required with shared_filesystem; must be mount_point or a subdir of it.
   shared_filesystem:
     provider: efs                 # Only `efs` today (BYO, pre-provisioned — gbserver does not create it).
-    mount_point: /mnt/gb-shared   # Where the FS is mounted on each worker; becomes the shared_workdir root.
+    mount_point: /mnt/gb-shared   # Where the FS is mounted on each worker.
     efs:
       file_system_id: fs-0abc123
       region: us-east-1           # Must match the region the workers launch in (mount targets are AZ-scoped).

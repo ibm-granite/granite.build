@@ -91,18 +91,23 @@ workdir resolves the same path on the host and in the container.
 ## `shared_filesystem` (auto-mounting EFS)
 
 `shared_workdir` above assumes *you* mount the EFS on every worker. `shared_filesystem` (issue #378)
-instead has **gbserver mount** a BYO, pre-provisioned EFS at launch and use it as the `shared_workdir`
-root — the per-step EC2 instances SkyPilot allocates then share state with no manual mount. It is
-**aws-only** and **mutually exclusive** with `shared_workdir` (set one or the other; when
-`shared_filesystem` is set it *is* the shared workdir). For the common-schema view see
+instead has **gbserver mount** a BYO, pre-provisioned EFS at launch (at `mount_point`) — the per-step
+EC2 instances SkyPilot allocates then share state with no manual mount. It is **aws-only**.
+`shared_filesystem` defines **only the mount**; you must *also* set `shared_workdir`, which is
+**required** here and must be an absolute path equal to `mount_point` or a subdirectory of it. The
+workdir lives at that path on the mount, and (per
+[#404](https://github.com/ibm-granite/granite.build/issues/404)) its prefix will later select which
+filesystem once multiple are supported. `EnvironmentConfig` validation rejects a `shared_filesystem`
+with no `shared_workdir`, or a `shared_workdir` outside `mount_point`. For the common-schema view see
 [skypilot.md](skypilot.md#shared_filesystem).
 
 ```yaml
 config:
   default_cloud: aws
+  shared_workdir: /mnt/gb-shared/gbroot   # Required with shared_filesystem; must be mount_point or a subdir of it.
   shared_filesystem:
     provider: efs
-    mount_point: /mnt/gb-shared   # Mounted on each worker; becomes the shared_workdir root.
+    mount_point: /mnt/gb-shared   # Mounted on each worker.
     efs:
       file_system_id: fs-0abc123
       region: us-east-1           # Must match the workers' region (mount targets are AZ-scoped).
@@ -133,7 +138,8 @@ mount never targets a cloud without a mount target. On other backends use an ope
 ### Per-run workdir and permissions (`1777`)
 
 gbserver mounts the EFS at `mount_point` on every worker and creates the same per-target-run subdir it
-would under `shared_workdir` — `${mount_point}/builds/<build_id>/runs/<targetrun_id>/` — as the CWD of
+would under any `shared_workdir` — `${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/` (with
+`shared_workdir` under `mount_point`, e.g. `/mnt/gb-shared/gbroot`) — as the CWD of
 each step's `setup`/`run`. Because steps run as a non-root user, the **EFS root must be `chmod 1777`**
 (sticky, like `/tmp`); gbserver then makes every level from the root down to the per-run dir `1777` too
 (guarded, so a step running as a different uid than the one that created a parent does not EPERM/abort),
@@ -323,6 +329,7 @@ sky status --refresh    # confirm no clusters remain (each used --down); sky dow
 
   ```yaml
   config:
+    shared_workdir: /mnt/gb-shared/gbroot   # Required; must be mount_point or a subdir of it.
     shared_filesystem:
       provider: efs
       mount_point: /mnt/gb-shared
