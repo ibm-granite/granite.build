@@ -618,6 +618,9 @@ _TRANSIENT_PROVISION_SUBSTRINGS = (
     # commands over an un-retried `ssh` bounded only by ConnectTimeout (TCP leg),
     # so a slow banner or wedged session fails the launch with exit 255 as a bare
     # ValueError. A blip on a shared login node, not a bad request — retry.
+    # Kept to SSH-specific wording: this text is matched across all clouds, so a
+    # generic phrase like "timed out waiting for" would also retry unrelated
+    # azure/gcp/k8s provisioning timeouts (e.g. k8s "waiting for apt update").
     "banner exchange",  # "Connection timed out during banner exchange"
     "failed to get slurm partitions",
     "failed to get partitions for cluster",
@@ -625,14 +628,15 @@ _TRANSIENT_PROVISION_SUBSTRINGS = (
     "connection timed out",
     "connection closed by remote host",
     "connection reset by peer",
-    "broken pipe",
-    "timed out waiting for",
-    "operation timed out",
     "no route to host",
     "temporary failure in name resolution",
     "kex_exchange_identification",  # ssh key-exchange aborted mid-handshake
     "ssh_exchange_identification",
 )
+
+# Bounds the pre-retry teardown. sky.down talks to the same login node that just
+# failed, so an unbounded call could stall every remaining attempt.
+_PROVISION_RETRY_TEARDOWN_TIMEOUT_S = 300
 
 _NON_TRANSIENT_PROVISION_SUBSTRINGS = (
     "catalog does not contain",  # no matching instance type exists — config error
@@ -2358,13 +2362,28 @@ class Skypilot(Environment):
                     # untouched and tenacity will not retry them.
                     if _is_transient_provision_error(e):
                         logger.warning(
-                            "Transient provision failure for %s (attempt %d): %s "
-                            "— tearing down partial cluster before retry",
+                            "Transient provision failure for %s (attempt %d): %s",
                             cluster_name,
                             attempt.retry_state.attempt_number,
                             e,
                         )
-                        await self._teardown(cluster_name)
+                        # Bound the teardown: sky.down has no timeout of its own and
+                        # talks to the same login node, so on the wedged-SSH failure
+                        # that got us here it could block for the rest of the build.
+                        # A leaked partial cluster is the lesser cost — per-step
+                        # cleanup_skypilot still runs at the end.
+                        try:
+                            await asyncio.wait_for(
+                                self._teardown(cluster_name),
+                                timeout=_PROVISION_RETRY_TEARDOWN_TIMEOUT_S,
+                            )
+                        except (asyncio.TimeoutError, TimeoutError):
+                            logger.warning(
+                                "Teardown of %s did not finish within %ss; retrying "
+                                "the launch anyway",
+                                cluster_name,
+                                _PROVISION_RETRY_TEARDOWN_TIMEOUT_S,
+                            )
                     else:
                         # Non-transient: this frame is closest to the sky call, so
                         # log the full trace (and the path, for OSError) before the

@@ -77,6 +77,72 @@ async def test_connect_phase_retries_then_succeeds():
 
 
 @pytest.mark.asyncio
+async def test_auth_rejection_fails_fast_without_retrying():
+    """A rejected key stays rejected: fail on attempt 1, don't burn the budget."""
+    proc = _proc(rc=255, stderr=b"ubuntu@h: Permission denied (publickey).")
+    slept = []
+
+    async def _sleep(d):
+        slept.append(d)
+
+    with (
+        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)) as spawn,
+        patch("gbserver.types.constants.GBSERVER_SKYPILOT_HOST_SSH_ATTEMPTS", 3),
+        patch("asyncio.sleep", _sleep),
+    ):
+        with pytest.raises(RuntimeError, match="did not accept an SSH login"):
+            await _await_host_reachable("1.2.3.4", "/k/id", 5)
+    assert spawn.call_count == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_spawn_failure_still_backs_off_between_attempts():
+    """A spawn failure must not skip the backoff and blow the budget instantly."""
+    slept = []
+
+    async def _sleep(d):
+        slept.append(d)
+
+    async def _boom(*_a, **_kw):
+        raise OSError("cannot fork")
+
+    with (
+        patch("asyncio.create_subprocess_exec", side_effect=_boom),
+        patch("gbserver.types.constants.GBSERVER_SKYPILOT_HOST_SSH_ATTEMPTS", 3),
+        patch("asyncio.sleep", _sleep),
+    ):
+        with pytest.raises(RuntimeError, match="could not spawn ssh"):
+            await _await_host_reachable("1.2.3.4", "/k/id", 5)
+    # Backoff ran between attempts (2 sleeps for 3 attempts).
+    assert slept == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_io_error_is_not_reported_as_a_timeout():
+    """An IO failure must not be mislabelled 'timed out' (wrong debugging path)."""
+    proc = MagicMock()
+
+    async def _raise(*_a, **_kw):
+        raise OSError("pipe read failed")
+
+    proc.communicate = _raise
+    proc.wait = _async_return(0)
+
+    with (
+        patch(
+            "gbserver.environment._skypilot_ssh._await_host_reachable",
+            _async_return(None),
+        ),
+        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)),
+    ):
+        with pytest.raises(RuntimeError, match="failed while reading output"):
+            await execute_on_host_via_ssh(
+                host_ip="1.2.3.4", ssh_key="/k/id", commands="c"
+            )
+
+
+@pytest.mark.asyncio
 async def test_unreachable_host_fails_before_running_payload():
     """An unreachable host must not get the payload at all."""
     with (

@@ -105,6 +105,27 @@ def _host_ssh_base_cmd(ssh_key: str, host_ip: str, connect_timeout: int) -> List
     ]
 
 
+# SSH failures that never succeed on retry — a rejected key stays rejected, and a
+# missing binary/key stays missing. Mirrors _NON_TRANSIENT_PROVISION_SUBSTRINGS in
+# skypilot.py (kept local: that one is matched against SkyPilot exception text).
+_FATAL_SSH_SUBSTRINGS = (
+    "permission denied",
+    "too many authentication failures",
+    "host key verification failed",
+    "no such identity",
+    "invalid privatekey",
+    "unprotected private key file",
+    "bad configuration option",
+    "no such file or directory",
+)
+
+
+def _is_fatal_ssh_error(stderr_text: str) -> bool:
+    """True if this SSH failure will not be fixed by retrying."""
+    lowered = stderr_text.lower()
+    return any(sub in lowered for sub in _FATAL_SSH_SUBSTRINGS)
+
+
 async def _await_host_reachable(host_ip: str, ssh_key: str, login_timeout: int) -> None:
     """Wait until the host completes an SSH login, retrying the connect phase.
 
@@ -121,36 +142,39 @@ async def _await_host_reachable(host_ip: str, ssh_key: str, login_timeout: int) 
             "echo",
             "gbserver probe",
         ]
+        fatal = False
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmds,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — falls through to warn + backoff
             last = f"could not spawn ssh: {e}"
-            continue
-        try:
-            _, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=login_timeout
-            )
-        except asyncio.CancelledError:
-            await _kill_and_reap(proc)
-            raise
-        except Exception as e:  # noqa: BLE001 — timeout => host not ready
-            # wait_for only cancels the await; kill so a hung ssh can't linger.
-            await _kill_and_reap(proc)
-            last = (
-                f"login did not complete within {login_timeout}s ({type(e).__name__})"
-            )
         else:
-            if proc.returncode == 0:
-                if attempt > 1:
-                    logger.info("host %s reachable on attempt %d", host_ip, attempt)
-                return
-            last = (stderr or b"").decode("utf-8", errors="replace").strip() or (
-                f"ssh exited {proc.returncode}"
-            )
+            try:
+                _, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=login_timeout
+                )
+            except asyncio.CancelledError:
+                await _kill_and_reap(proc)
+                raise
+            except Exception as e:  # noqa: BLE001 — timeout => host not ready
+                # wait_for only cancels the await; kill so a hung ssh can't linger.
+                await _kill_and_reap(proc)
+                last = f"login did not complete within {login_timeout}s ({type(e).__name__})"
+            else:
+                if proc.returncode == 0:
+                    if attempt > 1:
+                        logger.info("host %s reachable on attempt %d", host_ip, attempt)
+                    return
+                last = (stderr or b"").decode("utf-8", errors="replace").strip() or (
+                    f"ssh exited {proc.returncode}"
+                )
+                # A rejected key stays rejected: fail now instead of burning the
+                # budget on identical retries (mirrors the non-transient set in
+                # skypilot.py).
+                fatal = _is_fatal_ssh_error(last)
         logger.warning(
             "host %s not ready for post-launch SSH (attempt %d/%d): %s",
             host_ip,
@@ -158,6 +182,8 @@ async def _await_host_reachable(host_ip: str, ssh_key: str, login_timeout: int) 
             attempts,
             last,
         )
+        if fatal:
+            break
         if attempt < attempts:
             await asyncio.sleep(min(2 ** (attempt - 1), 10))
     raise RuntimeError(
@@ -245,10 +271,17 @@ async def execute_on_host_via_ssh(
     except asyncio.CancelledError:
         await _kill_and_reap(proc)
         raise
-    except Exception as e:  # noqa: BLE001 — timeout or IO error
+    except (asyncio.TimeoutError, TimeoutError) as e:
         await _kill_and_reap(proc)
         raise RuntimeError(
             f"Post-launch task on {host_ip} timed out after {timeout}s"
+        ) from e
+    except Exception as e:  # noqa: BLE001 — IO/decode error, not a timeout
+        # Reported distinctly: labelling an IO failure a timeout sends a debugger
+        # down the wrong path.
+        await _kill_and_reap(proc)
+        raise RuntimeError(
+            f"Post-launch task on {host_ip} failed while reading output: {e}"
         ) from e
 
     stdout_str = (stdout_b or b"").decode("utf-8", errors="replace")

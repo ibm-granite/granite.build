@@ -60,7 +60,6 @@ def test_production_banner_timeout_is_transient():
         "kex_exchange_identification: Connection closed by remote host",
         "ssh_exchange_identification: read: Connection reset by peer",
         "Connection closed by remote host",
-        "Broken pipe",
         "No route to host",
         "Temporary failure in name resolution",
     ],
@@ -87,6 +86,20 @@ def test_ssh_flakiness_is_transient(msg):
     ],
 )
 def test_auth_and_config_failures_stay_fatal(msg):
+    assert _is_transient_provision_error(ValueError(msg)) is False
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        # Generic cloud-provisioning timeouts, not SSH: SkyPilot uses this wording
+        # across azure/gcp/k8s (e.g. k8s "Timed out waiting for apt update"), so
+        # matching it would retry unrelated non-HPC failures.
+        "Timed out waiting for apt update",
+        "Operation timed out while creating disk",
+    ],
+)
+def test_generic_cloud_timeouts_are_not_retried(msg):
     assert _is_transient_provision_error(ValueError(msg)) is False
 
 
