@@ -8,6 +8,7 @@ require it unless a Skypilot environment is actually configured.
 
 import asyncio
 import concurrent.futures
+import contextlib
 import functools
 import glob
 import os
@@ -613,11 +614,39 @@ _TRANSIENT_PROVISION_SUBSTRINGS = (
     "failed to acquire resources",  # slurm: "Failed to acquire resources in normal for ..."
     "resources unavailable",
     "in normal for",  # slurm partition acquisition failure tail
+    # HPC control-plane SSH flakiness (slurm/lsf): SkyPilot runs its precheck
+    # commands over an un-retried `ssh` bounded only by ConnectTimeout (TCP leg),
+    # so a slow banner or wedged session fails the launch with exit 255 as a bare
+    # ValueError. A blip on a shared login node, not a bad request — retry.
+    "banner exchange",  # "Connection timed out during banner exchange"
+    "failed to get slurm partitions",
+    "failed to get partitions for cluster",
+    "failed to query slurm jobs",
+    "connection timed out",
+    "connection closed by remote host",
+    "connection reset by peer",
+    "broken pipe",
+    "timed out waiting for",
+    "operation timed out",
+    "no route to host",
+    "temporary failure in name resolution",
+    "kex_exchange_identification",  # ssh key-exchange aborted mid-handshake
+    "ssh_exchange_identification",
 )
 
 _NON_TRANSIENT_PROVISION_SUBSTRINGS = (
     "catalog does not contain",  # no matching instance type exists — config error
     "no launchable resource",  # similar permanent mismatch
+    # SSH *auth* failures share the exit-255 vocabulary of the transient blips
+    # above but never succeed on retry, so this tuple is checked first. Keep them
+    # specific: anything broader would swallow the banner timeouts we do retry.
+    "permission denied (publickey",
+    "permission denied, please try again",
+    "too many authentication failures",
+    "host key verification failed",
+    "no such identity",
+    "invalid privatekey",
+    "unprotected private key file",
 )
 
 
@@ -628,6 +657,10 @@ def _is_transient_provision_error(exc: BaseException) -> bool:
     conservative fallback for SDK builds that surface the failure as a plain
     Exception. Non-provision failures (auth, image-not-found, config, etc.)
     return False so they propagate without masking.
+
+    Also covers HPC control-plane SSH flakiness (late banner, wedged session),
+    which surfaces as a bare ValueError from SkyPilot's un-retried precheck ssh.
+    Auth rejections are excluded (_NON_TRANSIENT_PROVISION_SUBSTRINGS wins).
 
     Permanent configuration errors (e.g. "Catalog does not contain any
     instances") are excluded even when they raise ResourcesUnavailableError,
@@ -1148,6 +1181,109 @@ class Skypilot(Environment):
         if is_sky_ssh_reset_enabled():
             _clear_skypilot_ssh_control_sockets()
         self._materialize_ssh_for_launch(cloud_group)
+
+    async def _probe_hpc_login_node(self: Self, cloud_group: str, cluster: str) -> None:
+        """Probe the slurm/lsf login node with a trivial `echo` before launching.
+
+        SkyPilot runs its precheck control commands (``scontrol show partitions``)
+        over an `ssh` bounded only by ``ConnectTimeout`` — the TCP leg, not the
+        banner/login phase — with no command timeout and no retry, so a slow-banner
+        login node fails the launch as an opaque ``ValueError: Failed to get
+        partitions for cluster ...``. This names that condition up front, bounded by
+        ``ConnectTimeout`` plus an outer ``wait_for`` (the ``echo`` still incurs the
+        session-setup delay ``ConnectTimeout`` misses). Mirrors
+        ``Lsf.__is_ssh_node_reachable``.
+
+        An ``echo``, not a slurm command: tests SSH only, adds no scheduler load.
+
+        Best-effort — a failure warns and the launch proceeds, so a probe-only quirk
+        can't block a good launch; the retry classifier is the real backstop. Set
+        ``GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0`` to skip.
+
+        :param cloud_group: Normalized target cloud (``"slurm"``/``"lsf"``).
+        :param cluster: Cluster name — the ``Host`` alias in ``~/.<cloud>/config``.
+        """
+        from gbserver.types.constants import GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
+
+        timeout = GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
+        if cloud_group not in _SSH_HPC_CLOUDS or not cluster or timeout <= 0:
+            return
+        # Reuse SkyPilot's own SSH config so the probe follows the same
+        # alias/user/key/ProxyCommand directives the launch will.
+        config_path = Path.home() / f".{cloud_group}" / "config"
+        if not config_path.is_file():
+            return
+        cmds = [
+            "ssh",
+            "-F",
+            str(config_path),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={timeout}",
+            cluster,
+            "echo",
+            "gbserver probe",
+        ]
+        logger.info(
+            "probing %s login node %s for SSH reachability before launch",
+            cloud_group,
+            cluster,
+        )
+        started = time.monotonic()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmds,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as e:  # noqa: BLE001 — probe is best-effort
+            logger.warning("could not spawn SSH probe for %s: %s", cluster, e)
+            return
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.CancelledError:
+            # Don't leak the child when the launch itself is being cancelled.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            raise
+        except Exception as e:  # noqa: BLE001 — timeout => treat as unreachable
+            # wait_for only cancels the await; kill and reap so a hung ssh (the
+            # exact late-banner case) cannot linger for the life of the runner.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            logger.warning(
+                "SSH probe to %s login node %s did not complete within %ss (%s) — "
+                "the login node may be slow to send its SSH banner. Continuing to "
+                "launch anyway; a precheck failure from this will be retried.",
+                cloud_group,
+                cluster,
+                timeout,
+                type(e).__name__,
+            )
+            return
+        elapsed = time.monotonic() - started
+        if proc.returncode == 0:
+            logger.info(
+                "SSH probe to %s login node %s succeeded in %.1fs",
+                cloud_group,
+                cluster,
+                elapsed,
+            )
+            return
+        logger.warning(
+            "SSH probe to %s login node %s failed after %.1fs (rc=%s): %s — "
+            "continuing to launch anyway.",
+            cloud_group,
+            cluster,
+            elapsed,
+            proc.returncode,
+            (stderr or b"").decode("utf-8", errors="replace").strip(),
+        )
 
     def _get_cloud(self: Self) -> str:
         """Get default cloud/infra from environment.yaml config."""
@@ -1792,6 +1928,16 @@ class Skypilot(Environment):
             # is set. Done here — before the non-SSH materialize and the API start
             # below — so the config is in place before sky.launch connects.
             self._prepare_ssh_for_launch(cloud_group)
+
+            # With the SSH config in place, probe the HPC login node with a
+            # trivial `echo` so a wedged/slow-banner node is reported as such
+            # instead of as an opaque SkyPilot precheck error. Best-effort: never
+            # blocks the launch (see _probe_hpc_login_node). The cluster is the
+            # middle infra segment (cloud/cluster[/partition]).
+            infra_parts = str(infra).split("/")
+            await self._probe_hpc_login_node(
+                cloud_group, infra_parts[1] if len(infra_parts) > 1 else ""
+            )
 
             # Materialize non-SSH inline config (cloud_config / AWS creds) before
             # the API server starts / sky.launch builds the per-request config

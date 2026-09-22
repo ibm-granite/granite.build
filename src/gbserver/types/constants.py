@@ -165,6 +165,11 @@ ENV_VAR_SKYPILOT_PROVISION_MAX_ATTEMPTS = (
 ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX = (
     ENV_VAR_PREFIX + "_SKYPILOT_PROVISION_BACKOFF_MAX"
 )
+ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S = ENV_VAR_PREFIX + "_SKYPILOT_SSH_PROBE_TIMEOUT_S"
+ENV_VAR_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S = (
+    ENV_VAR_PREFIX + "_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S"
+)
+ENV_VAR_SKYPILOT_HOST_SSH_ATTEMPTS = ENV_VAR_PREFIX + "_SKYPILOT_HOST_SSH_ATTEMPTS"
 ENV_VAR_METADATA_STORAGE = ENV_VAR_PREFIX + "_METADATA_STORAGE"
 ENV_VAR_UI_DIR = ENV_VAR_PREFIX + "_UI_DIR"
 ENV_VAR_AUTH_MODE = ENV_VAR_PREFIX + "_AUTH_MODE"
@@ -620,6 +625,24 @@ GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS = int(
 )
 GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX = int(
     os.getenv(ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX, "30"), base=10
+)
+# Overall timeout for the `ssh` reachability probe gating an HPC (slurm/lsf)
+# SkyPilot launch. Mirrors GBSERVER_LSF_SSH_PROBE_TIMEOUT_S: SkyPilot's own SSH
+# bounds only the TCP leg, not the banner/login phase, so a wedged login node
+# otherwise surfaces as an opaque precheck ValueError. One probe per launch (not a
+# sweep), so this is the whole cost. 0 disables.
+GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S, "30"), base=10
+)
+# Bounds the banner/login phase of the post-launch host SSH (sidecar tasks), which
+# ConnectTimeout (TCP leg only) leaves unbounded.
+GBSERVER_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S = int(
+    os.getenv(ENV_VAR_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S, "30"), base=10
+)
+# Connect attempts for that SSH. Only the login phase retries; the payload never
+# re-runs (it may not be idempotent).
+GBSERVER_SKYPILOT_HOST_SSH_ATTEMPTS = int(
+    os.getenv(ENV_VAR_SKYPILOT_HOST_SSH_ATTEMPTS, "3"), base=10
 )
 DEFAULT_GH_REQUEST_TIMEOUT = int(
     os.getenv(ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT, "60"), base=10

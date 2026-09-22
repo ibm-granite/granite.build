@@ -67,6 +67,39 @@ class RunFailed(RuntimeError):
         self.exceptions = exceptions
 
 
+# Caps the trace in the single-record log below; guards a runaway recursion trace
+# from flooding the log pipeline.
+_TRACE_LOG_MAX_CHARS = 20000
+
+# Grep-able marker; distinguishes this deliberate trace from a crash dump.
+_TRACE_MARKER = "FAILURE TRACEBACK"
+
+
+def _log_failure_trace(err_stack: Optional[str], entity_id: str) -> None:
+    """Emit the failure traceback as ONE log record at ERROR.
+
+    Not ``exc_info=True``: the log pipeline ingests one record per LINE (gbcli's
+    ``output_format_plain``), so a multi-line trace is split into N records that get
+    reordered and interleaved — which is why traces looked absent in the runner log.
+    Escaping newlines keeps the trace in one record, in order, and reverses trivially.
+
+    Called only from the innermost reporting layer (see ``_already_reported``), so a
+    failure logs its trace exactly once.
+    """
+    trace = err_stack or ""
+    if len(trace) > _TRACE_LOG_MAX_CHARS:
+        trace = (
+            trace[:_TRACE_LOG_MAX_CHARS] + f"... [truncated, {len(trace)} chars total]"
+        )
+    # Collapse to one physical line; "\n" keeps frame boundaries legible.
+    logger.error(
+        "%s [%s]: %s",
+        _TRACE_MARKER,
+        entity_id,
+        trace.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", ""),
+    )
+
+
 def _already_reported(exceptions: List[BaseException]) -> bool:
     """True if an inner Run.run already emitted the detailed failure body (it
     re-raised a RunFailed with status_updated=True), so outer layers can stay
@@ -173,6 +206,8 @@ class Run(ABC):
                 else:
                     body = get_readable_error_message(e=primary, err_stack=err_stack)  # type: ignore[arg-type]
                     self.update_status(Status.FAILED, extra_msg=body)
+                    # Trace once, as one record (survives log ingestion).
+                    _log_failure_trace(err_stack, str(self.id))
                 raise RunFailed(status_updated=True, exceptions=failures) from eg
             else:
                 self.update_status(Status.CANCELLED)
@@ -186,6 +221,7 @@ class Run(ABC):
             else:
                 body = get_readable_error_message(e=e, err_stack=err_stack)
                 self.update_status(Status.FAILED, extra_msg=body)
+                _log_failure_trace(err_stack, str(self.id))
             raise RunFailed(status_updated=True) from e
         finally:
             # == Build Cancellation & Cleanup ==

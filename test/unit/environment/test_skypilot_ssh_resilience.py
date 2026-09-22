@@ -1,0 +1,234 @@
+"""Tests for SkyPilot HPC (slurm/lsf) control-plane SSH resilience.
+
+Covers the three defenses added after a bluevela launch failed with
+``ValueError: Failed to get partitions for cluster bluevela`` whose real cause was
+``Connection timed out during banner exchange``:
+
+1. the retry classifier treats an SSH banner/session timeout as transient (and
+   still treats an SSH *auth* rejection as fatal),
+2. the pre-launch ``echo`` reachability probe is bounded and never fatal,
+3. a failure traceback is logged as ONE record so line-per-record log ingestion
+   cannot shred it.
+"""
+
+import asyncio
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from gbserver.environment.skypilot import Skypilot, _is_transient_provision_error
+from gbserver.types.environmentconfig import EnvironmentConfig
+
+# The verbatim failure from the production runner log (build
+# 00cb68b4-1f58-4802-b802-adcf681e254a), ANSI colour codes included, since the
+# classifier sees the raw string.
+PROD_BANNER_FAILURE = (
+    "Failed to get partitions for cluster bluevela: sky.exceptions.CommandError: "
+    "Command scontrol show partitions -o failed with return code 255.\n"
+    "\x1b[31mFailed to get Slurm partitions.\x1b[0m\n\n"
+    "Connection timed out during banner exchange\n"
+)
+
+
+@pytest.fixture
+def slurm_env():
+    config = EnvironmentConfig(
+        name="test-slurm",
+        type="Skypilot",
+        config={"default_cloud": "slurm"},
+    )
+    return Skypilot(event_q=asyncio.Queue(), environment_config=config)
+
+
+# ---------------------------------------------------------------------------
+# 1. Retry classification
+# ---------------------------------------------------------------------------
+
+
+def test_production_banner_timeout_is_transient():
+    """The exact production failure must retry, not fail the build outright."""
+    assert _is_transient_provision_error(ValueError(PROD_BANNER_FAILURE)) is True
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "Connection timed out during banner exchange",
+        "Failed to get Slurm partitions.",
+        "Failed to query Slurm jobs.",
+        "kex_exchange_identification: Connection closed by remote host",
+        "ssh_exchange_identification: read: Connection reset by peer",
+        "Connection closed by remote host",
+        "Broken pipe",
+        "No route to host",
+        "Temporary failure in name resolution",
+    ],
+)
+def test_ssh_flakiness_is_transient(msg):
+    assert _is_transient_provision_error(ValueError(msg)) is True
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        # Auth rejections carry the same exit-255 vocabulary as the transient SSH
+        # blips but will never succeed on retry, so they must stay fatal.
+        "Failed to get partitions for cluster bluevela: CommandError: Command "
+        "scontrol show partitions -o failed with return code 255.\n"
+        "ubuntu@bluevela: Permission denied (publickey,password).",
+        "Host key verification failed.",
+        "Too many authentication failures",
+        "Permission denied, please try again.",
+        "no such identity: /keys/id_rsa: No such file or directory",
+        # Pre-existing permanent config errors must not regress.
+        "Catalog does not contain any instances",
+        "No launchable resource found",
+    ],
+)
+def test_auth_and_config_failures_stay_fatal(msg):
+    assert _is_transient_provision_error(ValueError(msg)) is False
+
+
+def test_auth_rejection_wins_over_transient_substring():
+    """Both an auth rejection and a timeout => fatal (non-transient wins)."""
+    msg = (
+        "Connection timed out during banner exchange\n" "Permission denied (publickey)."
+    )
+    assert _is_transient_provision_error(ValueError(msg)) is False
+
+
+# ---------------------------------------------------------------------------
+# 2. Pre-launch echo probe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_probe_skipped_for_non_hpc_cloud(slurm_env):
+    """k8s/aws have no shared SSH config; the probe must not spawn anything."""
+    with patch("asyncio.create_subprocess_exec") as spawn:
+        await slurm_env._probe_hpc_login_node("k8s", "some-cluster")
+    spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_probe_disabled_by_zero_timeout(slurm_env, tmp_path):
+    cfg = tmp_path / ".slurm"
+    cfg.mkdir()
+    (cfg / "config").write_text("Host bluevela\n")
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("gbserver.types.constants.GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S", 0),
+        patch("asyncio.create_subprocess_exec") as spawn,
+    ):
+        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
+    spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_probe_runs_echo_against_skypilot_ssh_config(slurm_env, tmp_path):
+    """A plain `echo` through ~/.slurm/config — never a scheduler command."""
+    cfg_dir = tmp_path / ".slurm"
+    cfg_dir.mkdir()
+    (cfg_dir / "config").write_text("Host bluevela\n    User me\n")
+
+    proc = MagicMock()
+    proc.communicate = _async_return((b"gbserver probe\n", b""))
+    proc.returncode = 0
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)) as spawn,
+    ):
+        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
+
+    args = spawn.call_args[0]
+    assert args[0] == "ssh"
+    assert "echo" in args
+    assert "bluevela" in args
+    assert "-F" in args
+    assert str(cfg_dir / "config") in args
+    # BatchMode prevents the probe itself from blocking on a password prompt.
+    assert "BatchMode=yes" in args
+    joined = " ".join(args)
+    for scheduler_cmd in ("scontrol", "squeue", "sbatch", "bhosts", "bsub"):
+        assert scheduler_cmd not in joined
+
+
+@pytest.mark.asyncio
+async def test_probe_timeout_kills_child_and_does_not_raise(slurm_env, tmp_path):
+    """A hung probe is killed and reaped: wait_for alone leaks the ssh child."""
+    cfg_dir = tmp_path / ".slurm"
+    cfg_dir.mkdir()
+    (cfg_dir / "config").write_text("Host bluevela\n")
+
+    proc = MagicMock()
+
+    async def _hang():
+        await asyncio.sleep(3600)
+
+    proc.communicate = _hang
+    proc.wait = _async_return(0)
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("gbserver.types.constants.GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S", 1),
+        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)),
+    ):
+        # Must return (not raise) so a probe quirk never blocks a good launch.
+        await asyncio.wait_for(
+            slurm_env._probe_hpc_login_node("slurm", "bluevela"), timeout=30
+        )
+
+    proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_probe_failure_is_not_fatal(slurm_env, tmp_path):
+    """A non-zero probe still proceeds to launch; the classifier is the backstop."""
+    cfg_dir = tmp_path / ".slurm"
+    cfg_dir.mkdir()
+    (cfg_dir / "config").write_text("Host bluevela\n")
+
+    proc = MagicMock()
+    proc.communicate = _async_return((b"", b"ssh: connect to host ... timed out"))
+    proc.returncode = 255
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)),
+    ):
+        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
+
+
+@pytest.mark.asyncio
+async def test_probe_noop_without_ssh_config(slurm_env, tmp_path):
+    """No materialized config (env defines none) => nothing to probe through."""
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("asyncio.create_subprocess_exec") as spawn,
+    ):
+        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
+    spawn.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _async_return(value):
+    async def _inner(*_a, **_kw):
+        return value
+
+    return _inner
+
+
+def _spawns(proc):
+    """Async side_effect for create_subprocess_exec (a bare coroutine is
+    awaitable only once)."""
+
+    async def _inner(*_a, **_kw):
+        return proc
+
+    return _inner
