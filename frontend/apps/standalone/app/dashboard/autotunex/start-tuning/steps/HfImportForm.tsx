@@ -131,22 +131,29 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
 
       {hf.splits && (
         <>
-          {/* A ComboBox, not a Select: allenai/c4 has 112 configs and
-              HuggingFaceFW/finewiki has 325. The local filter is left ON here
-              (unlike the search box above) because every config arrives in this one
-              response and filtering is client-side. */}
-          <div className={styles.field}>
-            <ComboBox
-              id="hf-config"
-              titleText="Config"
-              placeholder="Select a config"
-              items={hf.configNames}
-              itemToString={(item) => item ?? ''}
-              selectedItem={hf.config || null}
-              onChange={({ selectedItem }) => hf.handleConfigChange(selectedItem ?? '')}
-              disabled={hf.importing}
-            />
-          </div>
+          {/* Hidden for a single config, on the same grounds as the split selects
+              below: most datasets declare none, and the Hub then reports one named
+              "default", so the control offered a choice of one.
+
+              A ComboBox rather than a Select for the datasets that do declare many:
+              allenai/c4 has 112 configs and HuggingFaceFW/finewiki has 325. The
+              local filter is left ON here (unlike the search box above) because
+              every config arrives in this one response and filtering is
+              client-side. */}
+          {hf.configNames.length > 1 && (
+            <div className={styles.field}>
+              <ComboBox
+                id="hf-config"
+                titleText="Config"
+                placeholder="Select a config"
+                items={hf.configNames}
+                itemToString={(item) => item ?? ''}
+                selectedItem={hf.config || null}
+                onChange={({ selectedItem }) => hf.handleConfigChange(selectedItem ?? '')}
+                disabled={hf.importing}
+              />
+            </div>
+          )}
           {/* One split means one possible answer, so the control asks a question the
               user cannot answer differently. `trainSplit` is still set to it by the
               preselect effect -- this hides the select, not the choice. */}
