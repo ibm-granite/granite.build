@@ -156,8 +156,15 @@ class TestPodEvictionRetryStrategy:
 
         assert result is True
 
-    def test_should_not_retry_wrong_object_type(self: Self) -> None:
-        """Test that strategy ignores events from non-monitored object types."""
+    def test_retries_regardless_of_wrapper_object_type(self: Self) -> None:
+        """The preemption decision no longer filters on ``object_types``.
+
+        A preempted/evicted pod is a transient interruption regardless of the
+        object type that wraps it, so a snapshot carrying a Preempted Pod event
+        retries even when the (non-pod) events are reported on a different
+        wrapper type. See the ``should_retry`` docstring for how to re-introduce
+        an object_type gate if a future environment needs one.
+        """
         strategy = PodEvictionRetryStrategy(object_types=["AppWrapper"])
         event = create_eviction_event(
             object_type="Job",
@@ -166,7 +173,7 @@ class TestPodEvictionRetryStrategy:
 
         result = strategy.should_retry(event=event)
 
-        assert result is False
+        assert result is True
 
     def test_should_retry_with_multiple_object_types(self: Self) -> None:
         """Test that strategy works when configured for multiple object types."""
@@ -418,8 +425,13 @@ class TestPodEvictionRetryStrategy:
         result = strategy.should_retry(event=event)
         assert result is True
 
-    def test_ignores_non_eviction_pod_failures(self: Self) -> None:
-        """Test that strategy only tracks eviction/preemption, not other failures."""
+    def test_mixed_preemption_and_hard_failure_retries(self: Self) -> None:
+        """Preemption wins on a mixed snapshot.
+
+        When a Preempted pod event and an OOMKilled pod event appear together,
+        the OOMKilled is treated as a side effect of the eviction, so the
+        workload still retries; only the preempted node is avoided.
+        """
         events = [
             {
                 "object_type": "AppWrapper",
