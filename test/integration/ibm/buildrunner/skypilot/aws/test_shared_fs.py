@@ -12,38 +12,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SkyPilot-on-AWS shared_filesystem (EFS) cross-instance data flow (#378).
+"""SkyPilot-on-AWS shared_filesystem (EFS): hfpull result reaches the step (#378).
 
-The AWS analog of the sibling ``skypilot/aws`` build tests (2target, 1step-image,
-filemount): a two-step byoc producer -> consumer build in one target. SkyPilot
-allocates a SEPARATE EC2 instance per step and AWS has no networked filesystem,
-so step 2 can only read what step 1 wrote if the ``shared_filesystem`` EFS
-provider mounts a shared ``$GB_BUILD_WORKDIR`` on both instances. Step 1 writes a
-sentinel under ``$GB_BUILD_WORKDIR``; step 2, on a different instance, reads it
-back and asserts its value (``set -eu`` fails the step, and thus the build,
-otherwise). Reaching SUCCESS proves EFS carried step 1's bytes across instances.
+The AWS/EFS analog of the sibling
+``skypilot/slurm_bluevela/1step`` test (which uses a SLURM ``shared_workdir``): a
+single ``command`` step with a REAL ``hf://`` input. buildrunner auto-queues a
+hidden hfpull step for the non-env input, and under ``shared_filesystem`` that
+hfpull runs on its OWN EC2 instance and caches the download onto the EFS-backed
+per-run ``$GB_BUILD_WORKDIR``. SkyPilot places the ``command`` step on a DIFFERENT
+EC2 instance, so it can only read the pulled input if the EFS mount carried it
+across instances. The command runs ``test -e {{ bindings.hf_input.binding.path }}``
+under ``set -eu`` (failing the build if the input did not arrive) and writes a
+real file that the hf:// output's hfpush step uploads. Reaching SUCCESS proves the
+feature's real intent: an hfpull (lhpull, etc.) result is available to the
+referenced step across instances over EFS.
+
+Why this and not a hand-written sentinel: ``env://`` I/O is a no-op (no transfer),
+so it never exercises the assetstore pull path. A non-env input is what triggers
+the hidden pull step whose output must land on the shared FS — that is what this
+test drives.
 
 Two fixtures exercise the two mount paths:
-  * :class:`TestSkypilotAwsSharedFsBare` — byoc ``image: ""`` runs on the bare
-    EC2 instance; the mount happens on the host.
-  * :class:`TestSkypilotAwsSharedFsContainerized` — byoc sets an image
-    (``image_id: docker:<image>``) so the commands run INSIDE the container
+  * :class:`TestSkypilotAwsSharedFsBare` — ``command_config.image: ""`` runs on
+    the bare EC2 instance; the EFS mount is read on the host.
+  * :class:`TestSkypilotAwsSharedFsContainerized` — an image is set
+    (``image_id: docker:<image>``) so the command runs INSIDE the container
     against the in-container NFS mount (SkyPilot's default SYS_ADMIN/--net=host/
     fuse) and the 1777/uid path.
 
-``env://`` (env_local) I/O is a no-op, so the build drives the byoc steps
-end-to-end without HF/S3 credentials — only AWS access plus the BYO EFS.
-
 Like the sibling aws build tests this is intentionally NOT marked ``ibm``: it
 needs AWS credentials + SkyPilot, not the IBM cloud secret bundle the ``ibm``
-marker's ``check_cloud_config()`` gate enforces. It is gated on AWS credentials
-being present, so it auto-skips in CI and on machines without AWS access.
+marker's ``check_cloud_config()`` gate enforces. It auto-skips in CI and on
+machines without AWS access.
 
-It ADDITIONALLY needs a real, pre-provisioned BYO EFS (gbserver never creates or
-destroys the filesystem). The fixture Space ships the documented PLACEHOLDER EFS
-``file_system_id``, so the test self-skips until an operator points it at a real
-one — this reads that committed ``environment.yaml`` and skips while it is still
-the placeholder, so no EC2/EFS is provisioned against a bogus id.
+It ADDITIONALLY needs, and self-skips without:
+  * a real, pre-provisioned BYO EFS — gbserver never creates or destroys the
+    filesystem. The fixture Space ships the documented PLACEHOLDER EFS
+    ``file_system_id`` (read here, cloud-free), so a run never provisions against
+    a bogus id until an operator points it at a real one.
+  * an HF token — the hf:// input is pulled and the hf:// output is pushed to a
+    personal HF namespace (which skips HF Enterprise resource groups), so
+    ``HF_TOKEN`` (or ``HUGGING_FACE_HUB_TOKEN``) with write access to that
+    namespace is required.
 
 Prerequisites to actually run (locally, in the extended suite):
   1. AWS credentials configured (env vars or ``~/.aws/credentials``).
@@ -52,6 +62,7 @@ Prerequisites to actually run (locally, in the extended suite):
      2049, root chmod 1777 — see docs/environments/skypilot-aws.md), with its
      ``file_system_id``/``region`` written into the fixture Space's
      ``environments/skypilot/aws-shared-fs/environment.yaml``.
+  4. ``HF_TOKEN`` with write access to the hf:// output namespace.
 
 Each fixture's build.yaml, buildtest.yaml, and the shared test Space live under
 the directory returned by ``_get_yaml_spec_dir`` below.
@@ -95,6 +106,11 @@ def _aws_credentials_available() -> bool:
     return (Path.home() / ".aws" / "credentials").is_file()
 
 
+def _hf_token_available() -> bool:
+    """True if an HF token is in the environment (the hf:// I/O needs write access)."""
+    return bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+
+
 def _fixture_ships_placeholder_efs() -> bool:
     """True while the fixture environment.yaml still ships the placeholder EFS id.
 
@@ -132,12 +148,21 @@ pytestmark = [
             "(see docs/environments/skypilot-aws.md)."
         ),
     ),
+    pytest.mark.skipif(
+        not _hf_token_available(),
+        reason=(
+            "no HF token in the environment (set HF_TOKEN or "
+            "HUGGING_FACE_HUB_TOKEN with write access to the hf:// output "
+            "namespace); the hf:// input is pulled and the output is pushed."
+        ),
+    ),
 ]
 
 
 class TestSkypilotAwsSharedFsBare(AbstractYamlBuildRunnerTest):
-    """Bare EC2: step 1 writes under $GB_BUILD_WORKDIR, step 2 reads it back on a
-    separate instance. SUCCESS proves EFS carried the bytes across instances."""
+    """Bare EC2: the command step verifies the hf:// input the hidden hfpull step
+    cached onto EFS (on a separate instance) is present, reading the mount on the
+    host. SUCCESS proves the pulled input crossed instances over EFS."""
 
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
@@ -145,8 +170,9 @@ class TestSkypilotAwsSharedFsBare(AbstractYamlBuildRunnerTest):
 
 
 class TestSkypilotAwsSharedFsContainerized(AbstractYamlBuildRunnerTest):
-    """Containerized: the same 2-step producer -> consumer flow, but the commands
-    run inside the container against the in-container NFS mount + 1777/uid path."""
+    """Containerized: the same hfpull -> command -> hfpush flow, but the command
+    runs inside the container and reads the hf:// input over the in-container NFS
+    mount + 1777/uid path."""
 
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""

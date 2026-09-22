@@ -1,59 +1,44 @@
 granite.build:
-  name: skypilot-aws-shared-fs-e2e-containerized
+  name: skypilot-aws-shared-fs-hfpull-containerized
+  # Same hf:// input -> hidden hfpull -> command flow as ../bare/build.yaml, but the
+  # command step sets an image, so byoc renders SkyPilot image_id: docker:<image>
+  # and the command runs INSIDE the container against the in-container NFS mount
+  # (SkyPilot's default SYS_ADMIN/--net=host/fuse) and the 1777/uid path. Reaching
+  # SUCCESS proves the hfpull output on EFS is readable from inside the container on
+  # a separate instance.
   targets:
-    efs-producer-consumer:
-      # Same 2-step producer->consumer flow as ../bare/build.yaml, but each byoc step
-      # sets an image, so byoc renders SkyPilot image_id: docker:<image> and the
-      # commands run INSIDE the container against the in-container NFS mount (SkyPilot's
-      # default SYS_ADMIN/--net=host/fuse) and the 1777/uid path.
+    efs-hfpull-command:
       environment_uri: space://environments/skypilot/aws-shared-fs
       inputs:
-        seed:
-          uri: "env:///tmp/gb-seed.txt"
+        hf_input:
+          uri: hf:///hf-internal-testing/tiny-random-gpt2
       outputs:
-        produced:
-          uri: "env:///tmp/gb-produced.txt"
-          type: fileset
-        consumed:
-          uri: "env:///tmp/gb-consumed.txt"
+        # Test account's own user namespace (skips HF Enterprise resource groups) — see ../bare/build.yaml.
+        hf_output:
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-efs-test-output_{{ binding.path | short_hash }}
           type: fileset
       steps:
-        # Step 1 (producer), containerized: writes the sentinel under $GB_BUILD_WORKDIR
-        # from inside the container, then emits the `produced` marker.
-        - step_uri: space://steps/byoc
+        - step_uri: space://steps/command
           config:
             poll_interval_seconds: 5
-            byoc_config:
-              # A Debian-based image that ships git (byoc git-clones the repo in its
-              # setup phase, which runs INSIDE the container) and apt (the shared-fs
-              # mount prologue installs nfs-common). byoc renders
+            command_config:
+              # A Debian-based image (apt) so the in-container shared-fs mount
+              # prologue can install nfs-common; byoc renders
               # image_id: docker:buildpack-deps:bookworm-scm.
               image: "buildpack-deps:bookworm-scm"
-              repo: "https://github.com/octocat/Hello-World.git"
-              ref: ""
-              workdir: "code"
+              # Same verify-then-produce command as the bare variant, run inside the
+              # container against the in-container EFS mount.
               command: >-
-                echo "hello-from-efs-378" > "$GB_BUILD_WORKDIR/sentinel";
-                echo "wrote sentinel to $GB_BUILD_WORKDIR/sentinel";
-                echo "GB_ARTIFACT_ID:produced GB_ARTIFACT_PATH:/tmp/gb-produced.txt"
-            compute_config:
-              num_gpus_per_node: 0
-              total_memory_per_node: 1Gi
-        # Step 2 (consumer), containerized: on a SEPARATE instance's container, reads
-        # the sentinel back and asserts it, then emits the `consumed` marker. SUCCESS
-        # proves the in-container NFS mount + 1777/uid path carried step 1's bytes.
-        - step_uri: space://steps/byoc
-          config:
-            poll_interval_seconds: 5
-            byoc_config:
-              image: "buildpack-deps:bookworm-scm"
-              repo: "https://github.com/octocat/Hello-World.git"
-              ref: ""
-              workdir: "code"
-              command: >-
-                test "$(cat "$GB_BUILD_WORKDIR/sentinel")" = "hello-from-efs-378";
-                echo "consumer read sentinel OK from a separate instance";
-                echo "GB_ARTIFACT_ID:consumed GB_ARTIFACT_PATH:/tmp/gb-consumed.txt"
-            compute_config:
-              num_gpus_per_node: 0
-              total_memory_per_node: 1Gi
+                set -eu;
+                pwd=$(pwd);
+                mkdir -p out;
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                test -e "{{ bindings.hf_input.binding.path }}";
+                echo "verified hf input present on EFS from inside the container";
+                echo '{"artifact": "hf_output", "produced_by": "efs-hfpull-command"}' > out/result.json;
+                echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$pwd/out"
+            launcher_config:
+              resources:
+                infra: "aws/us-east-1"
+                instance_type: t3.small
+                disk_size: 40

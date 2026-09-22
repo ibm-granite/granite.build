@@ -1,29 +1,31 @@
 # YAML spec for the BARE shared-fs EFS build test (test_shared_fs.py).
-# Two byoc steps in one target: step 1 writes a sentinel under $GB_BUILD_WORKDIR
-# (the shared_filesystem per-target-run prefix on EFS), step 2 reads it back on a
-# SEPARATE EC2 instance. Reaching SUCCESS (the consumer's `test ... =` gates it)
-# proves EFS carried step 1's bytes across instances.
-#
-# expected_steps is intentionally omitted: both steps share space://steps/byoc, so
-# a per-step assertion keyed by step_uri cannot uniquely match. step_count == 2 and
-# output_artifact_count == 2 (only checked on SUCCESS) already prove both byoc steps
-# ran and each registered its env:// output.
+# A single command step with a real hf:// input and hf:// output. buildrunner
+# auto-queues an hfpull step (its own EC2 instance under shared_filesystem) that
+# caches the input onto the EFS-backed workdir; the command step, on a SEPARATE
+# instance, verifies the input arrived (test -e {{ bindings.hf_input... }} under
+# set -eu) and writes a real file that the hfpush step uploads. Reaching SUCCESS
+# proves the hfpull result is readable by the referenced step across instances
+# over EFS. This is the AWS analog of skypilot/slurm_bluevela/1step.
 targets:
-  - efs-producer-consumer
+  - efs-hfpull-command
 target_expectations:
-  - target_name: efs-producer-consumer
-    step_count: 2
-    input_artifact_count: 1
-    output_artifact_count: 2
+  - target_name: efs-hfpull-command
+    # hfpull (hidden, for the hf:// input) + command + hfpush (for the hf:// output).
+    step_count: 3
+    input_artifact_count: 1 # hf input
+    output_artifact_count: 1 # hf output
+    jobstats_count: 1
 # The committed Space (../space) carries environments/skypilot/aws-shared-fs and
-# chains base_uris to configurations/assets (for the published space://steps/byoc).
+# chains base_uris to configurations/assets. The `command` step is a gbserver
+# builtin (space://steps/command) resolved regardless of the space.
 space_uri: ../space
-# Only the basic build; the commands finish near-instantly once nodes are up, so
-# there is no stable RUNNING window to cancel in.
+# Only the basic build; skip the cancellation variant.
 tests:
   - runner
-# A single clean run with no injected synthetic failure: a failed clone/command
-# fails the build, so reaching SUCCESS proves both steps ran on real EC2 over EFS.
+# A single clean run with no injected synthetic failure: a missing input (test -e)
+# or a failed pull/push fails the build, so SUCCESS proves the real hfpull ->
+# EFS -> command -> hfpush path worked across instances.
 simulate_step_failure: false
-# EC2 cold-start + SkyPilot setup for two sequential instances plus EFS mount.
+# EC2 cold-start + SkyPilot setup for three sequential instances (hfpull, command,
+# hfpush) plus EFS mount and the hf pull/push.
 timeout_minutes: 40
