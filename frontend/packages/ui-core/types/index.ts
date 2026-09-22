@@ -364,6 +364,17 @@ export interface HfProvenance {
   train_retained_rows?: number
   validation_original_rows?: number
   validation_retained_rows?: number
+  /** Shards the import never opened because the row cap was already reached. The
+   *  `_original_rows` above count only shards actually opened, so when the cap lands
+   *  exactly on a shard boundary they equal `_retained_rows` while data remains
+   *  unread — comparing those two numbers alone reports such an import as complete.
+   *  Prefer `_truncated`, which the server derives from both signals. Absent on
+   *  imports made before the server recorded them; absence is not proof an import
+   *  was complete. */
+  train_unread_shards?: number
+  train_truncated?: boolean
+  validation_unread_shards?: number | null
+  validation_truncated?: boolean | null
 }
 
 export interface HfImportConfig {
@@ -380,12 +391,21 @@ export interface AppConfig {
 
 export interface HfDatasetSplits {
   repo_id: string
+  /** Commit sha of HF's *converted parquet branch* — not of the repo's default
+   *  branch, which is a different commit. Both HF request bodies require it, so it
+   *  must be threaded from here through preview into import: that is what stops a
+   *  branch moving mid-wizard from swapping the data under an approved selection. */
   revision: string
-  /** Config name -> split names. */
+  /** Config name -> split names. Note a split HF sharded past 10 000 files appears
+   *  here as `train-part0`, `train-part1`, ... rather than `train`. */
   configs: Record<string, string[]>
 }
 
 export interface HfImportPreview {
+  /** The revision an *import* will read. The sample itself comes from HF's dataset
+   *  viewer, which serves the latest conversion and takes no revision, so these
+   *  rows are not guaranteed to be from this commit. */
+  revision: string
   columns: string[]
   raw_rows: ParsedDataRow[]
   mapped_rows: ParsedDataRow[]
@@ -397,6 +417,9 @@ export interface HfImportPreview {
  *  422, so these are built field by field and never spread from component state. */
 export interface HfPreviewRequestPayload {
   repo_id: string
+  /** Required. Pass `HfDatasetSplits.revision` straight through; the server
+   *  validates `^[0-9a-f]{40}$`, so a branch name or an abbreviated sha is a 422. */
+  revision: string
   config: string
   train_split: string
   validation_split?: string | null

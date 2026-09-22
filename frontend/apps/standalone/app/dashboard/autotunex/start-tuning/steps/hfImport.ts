@@ -163,22 +163,61 @@ function formatCount(value: number): string {
  * this reads it back out of the provenance the import wrote. Both splits are
  * checked: a truncated validation split with an untouched train split is a real
  * outcome that a train-only check would report as clean.
+ *
+ * Comparing the two row counts is not sufficient on its own. `_original_rows` sums
+ * only the shards the import actually opened, so a cap that lands exactly on a
+ * shard boundary leaves the counts equal while whole shards went unread -- which
+ * this reported as a clean import. `_truncated` is the server's own verdict over
+ * both signals and is authoritative when present; the row comparison remains the
+ * fallback for imports made before the server recorded it. Deliberately not the
+ * other way round: a `false` flag must never suppress row counts that plainly
+ * disagree with it.
  */
 export function truncationNotice(
   provenance: HfProvenance | null | undefined,
   maxRows: number
 ): string | null {
   if (!provenance) return null
-  const pairs: [string, number | undefined, number | undefined][] = [
-    ['train', provenance.train_original_rows, provenance.train_retained_rows],
-    ['validation', provenance.validation_original_rows, provenance.validation_retained_rows],
+  const splits: [
+    string,
+    number | undefined,
+    number | undefined,
+    boolean | null | undefined,
+    number | null | undefined,
+  ][] = [
+    [
+      'train',
+      provenance.train_original_rows,
+      provenance.train_retained_rows,
+      provenance.train_truncated,
+      provenance.train_unread_shards,
+    ],
+    [
+      'validation',
+      provenance.validation_original_rows,
+      provenance.validation_retained_rows,
+      provenance.validation_truncated,
+      provenance.validation_unread_shards,
+    ],
   ]
   const parts: string[] = []
-  for (const [label, original, retained] of pairs) {
-    if (typeof original !== 'number' || typeof retained !== 'number') continue
-    if (retained >= original) continue
+  for (const [label, original, retained, truncated, unreadShards] of splits) {
+    if (typeof retained !== 'number') continue
+    if (typeof original === 'number' && retained < original) {
+      parts.push(
+        `Imported the first ${formatCount(retained)} of ${formatCount(original)} ${label} rows (capped at ${formatCount(maxRows)}).`
+      )
+      continue
+    }
+    if (truncated !== true) continue
+    // The rows agree, so there is no honest total to quote -- `_original_rows` counts
+    // only what was opened. Name the shards left unread instead.
+    const remainder =
+      typeof unreadShards === 'number' && unreadShards > 0
+        ? `${formatCount(unreadShards)} further ${unreadShards === 1 ? 'shard was' : 'shards were'} not read`
+        : 'more rows remain upstream'
     parts.push(
-      `Imported the first ${formatCount(retained)} of ${formatCount(original)} ${label} rows (capped at ${formatCount(maxRows)}).`
+      `Imported ${formatCount(retained)} ${label} rows (capped at ${formatCount(maxRows)}); ${remainder}.`
     )
   }
   return parts.length > 0 ? parts.join(' ') : null

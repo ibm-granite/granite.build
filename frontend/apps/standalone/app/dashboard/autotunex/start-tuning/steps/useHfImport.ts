@@ -392,6 +392,7 @@ export function useHfImport({
     setMapping({})
     previewHfDataset({
       repo_id: repoId,
+      revision: splits.revision,
       config,
       train_split: trainSplit,
       // Always null, and validationSplit is deliberately not a dependency below:
@@ -458,6 +459,7 @@ export function useHfImport({
     setMappedPreviewError('')
     previewHfDataset({
       repo_id: repoId,
+      revision: splits.revision,
       config,
       train_split: trainSplit,
       validation_split: null,
@@ -613,6 +615,9 @@ export function useHfImport({
     // `splits` may briefly be undefined and `suffixWithRevision` would silently
     // leave the name unchanged while the error text claims a suffix was added.
     const revision = splits?.revision ?? ''
+    // The server requires that sha, so an unresolved one is a guaranteed 422. Bail
+    // before touching the importing/status flags rather than after the round trip.
+    if (!revision) return
     setImporting(true)
     setError('')
     setImportStatus('importing')
@@ -624,6 +629,7 @@ export function useHfImport({
         // description; strike this line if that is not wanted.
         description: `Imported from HuggingFace ${repoId}`,
         repo_id: repoId,
+        revision,
         config,
         train_split: trainSplit,
         validation_split: validationSplit === NO_VALIDATION ? null : validationSplit,

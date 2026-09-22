@@ -259,6 +259,64 @@ describe('truncationNotice', () => {
     assert.match(notice, /train/)
     assert.match(notice, /validation/)
   })
+
+  // The discriminating pair for the shard-boundary case: identical row counts, and
+  // the verdict turns entirely on the server's flag. Comparing rows alone -- which
+  // is all this did before -- reports the first of these as a clean import.
+  it('reports truncation the row counts cannot show, naming the unread shards', () => {
+    const notice = truncationNotice(
+      {
+        train_original_rows: 50000,
+        train_retained_rows: 50000,
+        train_truncated: true,
+        train_unread_shards: 9999,
+      },
+      50000
+    )
+    assert.match(notice, /train/)
+    assert.match(notice, /9,999/)
+    assert.match(notice, /not read/)
+    // No "of 50,000": `_original_rows` counts only the shards that were opened, so
+    // quoting it as the split total would be a number the server never claimed.
+    assert.ok(!notice.includes('of 50,000'))
+  })
+
+  it('stays silent on the same counts when the server reported no truncation', () => {
+    assert.equal(
+      truncationNotice(
+        { train_original_rows: 50000, train_retained_rows: 50000, train_unread_shards: 0 },
+        50000
+      ),
+      null
+    )
+  })
+
+  it('reports a validation split truncated at a shard boundary', () => {
+    const notice = truncationNotice(
+      {
+        train_original_rows: 100,
+        train_retained_rows: 100,
+        validation_original_rows: 50000,
+        validation_retained_rows: 50000,
+        validation_truncated: true,
+        validation_unread_shards: 1,
+      },
+      50000
+    )
+    assert.match(notice, /validation/)
+    // Singular, because "1 shards were not read" is the kind of copy people notice.
+    assert.match(notice, /1 further shard was not read/)
+    assert.ok(!notice.includes('train'))
+  })
+
+  it('trusts row counts over a flag that contradicts them', () => {
+    // A `false` flag must not be able to hide a shortfall the counts state plainly.
+    const notice = truncationNotice(
+      { train_original_rows: 120000, train_retained_rows: 50000, train_truncated: false },
+      50000
+    )
+    assert.match(notice, /120,000/)
+  })
 })
 
 describe('problemDetail', () => {
