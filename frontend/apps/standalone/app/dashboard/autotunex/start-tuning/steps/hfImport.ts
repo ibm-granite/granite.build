@@ -11,6 +11,18 @@
 
 import type { HfProvenance } from '@granite-build/ui-core/types'
 
+/**
+ * The share of the train split held back for validation when no separate
+ * validation split is chosen.
+ *
+ * A constant, not a form field: the Upload path shows no ratio control either --
+ * StartTuningWizard's `splitRatio` is a fixed 80 -- so a percentage input here
+ * would be the one place in the wizard where the split is negotiable. Keep this at
+ * `100 - splitRatio`; the two paths splitting differently is invisible to the user
+ * and only shows up in the row counts after an import.
+ */
+export const HF_VALIDATION_PERCENTAGE = 20
+
 // Matches the server's DatasetName: max 255, and no '/', '\' or '..' because the
 // name becomes a filesystem path segment.
 const NAME_MAX = 255

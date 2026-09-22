@@ -28,6 +28,7 @@ import {
   defaultTrainSplit,
   deriveDatasetName,
   hfErrorStatus,
+  HF_VALIDATION_PERCENTAGE,
   isDatasetNameValid,
   isMappingComplete,
   mappedPreviewKey,
@@ -53,7 +54,15 @@ export const NO_VALIDATION = '__none__'
 export interface UseHfImportOptions {
   /** The HuggingFace source is the active tab. Replaces the modal's `open`. */
   active: boolean
+  /** Targets that must have a source before the import may be submitted. */
   requiredColumns: string[]
+  /**
+   * Every target the form renders a select for -- the required columns plus the
+   * optional ones the dataset type declares. This, not `requiredColumns`, is the
+   * vocabulary the AI suggestion is filtered against and the mapping is pruned to:
+   * an optional target the user can see and clear is a legitimate mapping key.
+   */
+  mappableColumns: string[]
   onImported: (datasetId: string) => void
   selectedAlgorithm: string
   datasetTypes: Record<string, any>
@@ -118,8 +127,6 @@ export interface UseHfImportResult {
   name: string
   setName: (next: string) => void
   nameValid: boolean
-  validationPercentage: number
-  setValidationPercentage: (next: number) => void
 
   canSubmit: boolean
   importing: boolean
@@ -137,6 +144,7 @@ export interface UseHfImportResult {
 export function useHfImport({
   active,
   requiredColumns,
+  mappableColumns,
   onImported,
   selectedAlgorithm,
   datasetTypes,
@@ -201,20 +209,24 @@ export function useHfImport({
   const mappingComplete = isMappingComplete(mapping, requiredColumns)
   const mappingKey = JSON.stringify(mapping)
 
-  // `requiredColumns` is a fresh array on every parent render, so it cannot be an
-  // effect dependency directly -- the probe effect would refire forever. This
+  // `mappableColumns` is a fresh array on every parent render, so it cannot be an
+  // effect dependency directly -- the prune effect would refire forever. This
   // string stands in for it, and changes exactly when its contents do.
-  const requiredKey = requiredColumns.join(',')
+  const mappableKey = mappableColumns.join(',')
 
   // The probe's request body needs the current required columns, but its RESPONSE
   // does not depend on them: the server returns source-side `columns` and
   // `raw_rows`, and the payload carries no target_format for it to validate keys
-  // against. Reading them through a ref keeps `requiredKey` out of the probe's
+  // against. Reading them through a ref keeps the column lists out of the probe's
   // dependency array below -- otherwise an AI-suggested algorithm change refires
   // the probe, whose body calls setMapping({}), wiping the mapping the AI just
   // wrote.
   const requiredColumnsRef = useRef(requiredColumns)
   requiredColumnsRef.current = requiredColumns
+  // Read through a ref for the same reason: the prune effect and the AI suggestion
+  // both need the current list without taking it as a dependency.
+  const mappableColumnsRef = useRef(mappableColumns)
+  mappableColumnsRef.current = mappableColumns
 
   const {
     data: splits,
@@ -269,7 +281,7 @@ export function useHfImport({
   async function suggestMappingWithAI(probe: HfImportPreview, token: number) {
     if (probe.raw_rows.length === 0 || probe.columns.length === 0) return
     const isCurrent = () => previewTokenRef.current === token
-    const required = requiredColumnsRef.current
+    const mappable = mappableColumnsRef.current
 
     setIsAiSuggesting(true)
     setAiSuggestion(null)
@@ -287,7 +299,7 @@ export function useHfImport({
      * heuristic could fill it.
      */
     const applyHeuristic = () => {
-      if (isCurrent()) setMapping(suggestColumnMappingHeuristic(probe.columns, required))
+      if (isCurrent()) setMapping(suggestColumnMappingHeuristic(probe.columns, mappable))
     }
 
     try {
@@ -319,18 +331,19 @@ export function useHfImport({
         return
       }
 
-      // The vocabulary is exactly the set of rows the form renders, not every
-      // column the format declares. `getColumnsFromTypes` also returns the
-      // OPTIONAL columns (dataset_type_a carries `documents_col` and `tools_col`),
-      // but the form renders `requiredColumns` only -- so an accepted suggestion
-      // for an optional target landed in `mapping` with no select rendered for it.
-      // A sparse source column then dropped `survived`, at zero `survivalSummary`
-      // returned `blocked` and Import was disabled with nothing on screen the user
-      // could change (editing a visible select spreads `...mapping`, so the key
-      // survived). Out-of-range targets are dropped by `aiMappingToColumnMapping`'s
-      // own `targetColumns.includes(...)` check, and if that empties the mapping
-      // the `applyHeuristic()` fallback below takes over.
-      const targetColumns = required
+      // The vocabulary is exactly the set of rows the form renders -- which is now
+      // every column the dataset type declares, optional ones included, matching the
+      // Upload path. That equality is load-bearing, not incidental: while the form
+      // rendered required columns only, an accepted suggestion for an optional target
+      // (dataset_type_a carries `documents_col` and `tools_col`) landed in `mapping`
+      // with no select rendered for it, and a sparse source column there dropped
+      // `survived` to zero, so `survivalSummary` returned `blocked` and Import was
+      // disabled with nothing on screen the user could change. If the form ever goes
+      // back to rendering a subset, narrow this to match it. Out-of-range targets are
+      // dropped by `aiMappingToColumnMapping`'s own `targetColumns.includes(...)`
+      // check, and if that empties the mapping the `applyHeuristic()` fallback below
+      // takes over.
+      const targetColumns = mappable
       const typeKey = ALGORITHM_TO_DATASET_TYPE[selectedAlgorithm]
 
       const { mapping: next } = aiMappingToColumnMapping(
@@ -410,12 +423,16 @@ export function useHfImport({
   // would be sent in the import body. Prune rather than clear: a target that is
   // still required keeps the source the user (or the AI) chose for it.
   //
-  // `requiredKey` stands in for `requiredColumns`, which is a fresh array on every
+  // `mappableKey` stands in for `mappableColumns`, which is a fresh array on every
   // parent render. pruneMapping returns its argument when nothing is dropped, so
   // this cannot loop.
+  //
+  // Pruned against every mappable target, not just the required ones: an optional
+  // target the form renders is a key the user chose, and pruning to
+  // `requiredColumns` would delete it on the next render.
   useEffect(() => {
-    setMapping((current) => pruneMapping(current, requiredColumnsRef.current))
-  }, [requiredKey])
+    setMapping((current) => pruneMapping(current, mappableColumnsRef.current))
+  }, [mappableKey])
 
   // The second preview: the real one. Fires only once every required column has a
   // source, because the server counts survivors over the mapping's own keys -- a
@@ -477,7 +494,7 @@ export function useHfImport({
     setMapping({})
     setMappedPreview(null)
     setMappedPreviewError('')
-    setValidationPercentage(10)
+    setValidationPercentage(HF_VALIDATION_PERCENTAGE)
     setName('')
     setError('')
     setImporting(false)
@@ -695,8 +712,6 @@ export function useHfImport({
     name,
     setName,
     nameValid,
-    validationPercentage,
-    setValidationPercentage,
 
     canSubmit,
     importing,

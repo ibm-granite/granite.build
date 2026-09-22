@@ -14,19 +14,52 @@ import {
 } from '@carbon/react'
 import type { HfImportConfig } from '@granite-build/ui-core/types'
 import { formatBytes } from '@granite-build/ui-core/lib/autotunex/formatBytes'
+import { toUpperCase } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
+import { InfoTooltip } from './InfoTooltip'
 import { problemDetail } from './hfImport'
 import { NO_VALIDATION, type UseHfImportResult } from './useHfImport'
 import styles from './HfImportForm.module.scss'
 
 interface HfImportFormProps {
   hf: UseHfImportResult
-  requiredColumns: string[]
+  /**
+   * Every target to render a mapping select for, required first, as
+   * Step1DatasetUpload's own mapping block does. Optional targets get a "None"
+   * option; required ones gate the Import button via the hook.
+   */
+  mappableColumns: { name: string; desc: string; required: boolean }[]
   hfConfig: HfImportConfig
 }
 
-export function HfImportForm({ hf, requiredColumns, hfConfig }: HfImportFormProps) {
+export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProps) {
+  // Only a split other than the one being trained on can serve as validation. With
+  // none left over there is nothing to choose, and with a single split there is
+  // nothing to choose for training either -- so both selects are hidden rather than
+  // rendered with one inevitable option, matching how the Upload path shows no
+  // validation affordance until there is a file to attach.
+  const validationCandidates = hf.splitNames.filter((split) => split !== hf.trainSplit)
+
   return (
     <div>
+      {/* Above the repo row, where the Upload path puts it: the name is the one
+          field the user is most likely to edit, and burying it under the mapping
+          meant scrolling past every other control to reach it. Gated on `splits`
+          rather than on `repoId` so it appears already filled by the preselect
+          effect, instead of flashing empty while the repo resolves. */}
+      {hf.splits && (
+        <div className={styles.field}>
+          <TextInput
+            id="hf-dataset-name"
+            labelText="Dataset Name"
+            value={hf.name}
+            invalid={hf.name.length > 0 && !hf.nameValid}
+            invalidText={"Use up to 255 characters, without '/', '\\' or '..'."}
+            onChange={(event) => hf.setName(event.target.value)}
+            disabled={hf.importing}
+          />
+        </div>
+      )}
+
       <div className={styles.field}>
         {hf.repoId ? (
           <FileUploaderItem name={hf.repoId} status="edit" onDelete={() => hf.resetState()} />
@@ -107,41 +140,48 @@ export function HfImportForm({ hf, requiredColumns, hfConfig }: HfImportFormProp
               disabled={hf.importing}
             />
           </div>
-          <div className={styles.field}>
-            <Select
-              id="hf-train-split"
-              labelText="Train split"
-              value={hf.trainSplit}
-              onChange={(event) => hf.handleTrainSplitChange(event.target.value)}
-              disabled={hf.importing}
-            >
-              {hf.splitNames.map((split) => (
-                <SelectItem key={split} value={split} text={split} />
-              ))}
-            </Select>
-          </div>
-          <div className={styles.field}>
-            <Select
-              id="hf-validation-split"
-              labelText="Validation split"
-              value={hf.validationSplit}
-              onChange={(event) => hf.setValidationSplit(event.target.value)}
-              disabled={hf.importing}
-            >
-              {/* Defaults to none rather than guessing at a split named
-                  "validation" or "test": a silently auto-picked wrong split is only
-                  discovered after a multi-hour tuning run. */}
-              <SelectItem value={NO_VALIDATION} text="None (split from train)" />
-              {hf.splitNames
-                .filter((split) => split !== hf.trainSplit)
-                .map((split) => (
+          {/* One split means one possible answer, so the control asks a question the
+              user cannot answer differently. `trainSplit` is still set to it by the
+              preselect effect -- this hides the select, not the choice. */}
+          {hf.splitNames.length > 1 && (
+            <div className={styles.field}>
+              <Select
+                id="hf-train-split"
+                labelText="Train split"
+                value={hf.trainSplit}
+                onChange={(event) => hf.handleTrainSplitChange(event.target.value)}
+                disabled={hf.importing}
+              >
+                {hf.splitNames.map((split) => (
                   <SelectItem key={split} value={split} text={split} />
                 ))}
-            </Select>
-            <p className={styles.revision} title={hf.splits.revision}>
-              Revision {hf.splits.revision.slice(0, 7)}
-            </p>
-          </div>
+              </Select>
+            </div>
+          )}
+          {validationCandidates.length > 0 && (
+            <div className={styles.field}>
+              <Select
+                id="hf-validation-split"
+                labelText="Validation split"
+                value={hf.validationSplit}
+                onChange={(event) => hf.setValidationSplit(event.target.value)}
+                disabled={hf.importing}
+              >
+                {/* Defaults to none rather than guessing at a split named
+                    "validation" or "test": a silently auto-picked wrong split is only
+                    discovered after a multi-hour tuning run. */}
+                <SelectItem value={NO_VALIDATION} text="None (split from train)" />
+                {validationCandidates.map((split) => (
+                  <SelectItem key={split} value={split} text={split} />
+                ))}
+              </Select>
+            </div>
+          )}
+          {/* Outside both blocks above: a single-split dataset hides them, and the
+              revision is what identifies the snapshot being imported either way. */}
+          <p className={styles.revision} title={hf.splits.revision}>
+            Revision {hf.splits.revision.slice(0, 7)}
+          </p>
         </>
       )}
 
@@ -228,31 +268,48 @@ export function HfImportForm({ hf, requiredColumns, hfConfig }: HfImportFormProp
             />
           )}
 
-          {!hf.isAiSuggesting &&
-            requiredColumns.map((required) => (
-              <div className={styles.mappingRow} key={required}>
-                <div className={styles.mappingLabel}>{required}</div>
-                <Select
-                  id={`hf-mapping-${required}`}
-                  // The visual label is the div above and `labelText` stays empty
-                  // for the layout, but Carbon renders that as an empty <label for>,
-                  // which leaves the select with no accessible name.
-                  aria-label={required}
-                  labelText=""
-                  size="sm"
-                  value={hf.mapping[required] ?? ''}
-                  onChange={(event) =>
-                    hf.setMapping({ ...hf.mapping, [required]: event.target.value })
-                  }
-                  disabled={hf.importing}
-                >
-                  <SelectItem value="" text="Choose a column..." />
-                  {hf.preview!.columns.map((column) => (
-                    <SelectItem key={column} value={column} text={column} />
-                  ))}
-                </Select>
+          {!hf.isAiSuggesting && (
+            <>
+              <div className={styles.mappingHeader}>
+                <span>Field</span>
+                <span>Source Column</span>
               </div>
-            ))}
+              {mappableColumns.map((colInfo) => (
+                <div className={styles.mappingRow} key={colInfo.name}>
+                  <div className={styles.mappingLabel}>
+                    {toUpperCase(colInfo.name) ?? colInfo.name}
+                    {colInfo.desc && <InfoTooltip label={colInfo.desc} />}
+                  </div>
+                  <Select
+                    id={`hf-mapping-${colInfo.name}`}
+                    // The visual label is the div above and `labelText` stays empty
+                    // for the layout, but Carbon renders that as an empty <label for>,
+                    // which leaves the select with no accessible name.
+                    aria-label={colInfo.name}
+                    labelText=""
+                    size="sm"
+                    value={hf.mapping[colInfo.name] ?? ''}
+                    onChange={(event) =>
+                      hf.setMapping({ ...hf.mapping, [colInfo.name]: event.target.value })
+                    }
+                    disabled={hf.importing}
+                  >
+                    {/* An optional target is legitimately unmapped, so its empty
+                        option reads as a choice rather than as something missing.
+                        Selecting it writes a blank source, which the server's
+                        apply_mapping skips. */}
+                    <SelectItem
+                      value=""
+                      text={colInfo.required ? 'Choose a column...' : 'None'}
+                    />
+                    {hf.preview!.columns.map((column) => (
+                      <SelectItem key={column} value={column} text={column} />
+                    ))}
+                  </Select>
+                </div>
+              ))}
+            </>
+          )}
 
           {hf.survival.kind !== 'hidden' && (
             <InlineNotification
@@ -271,40 +328,10 @@ export function HfImportForm({ hf, requiredColumns, hfConfig }: HfImportFormProp
             />
           )}
 
+          {/* No validation-percentage field: the split is a constant
+              (HF_VALIDATION_PERCENTAGE), because the Upload path offers no ratio
+              control either. */}
           <hr className={styles.sectionDivider} />
-
-          <div className={styles.field}>
-            <TextInput
-              id="hf-dataset-name"
-              labelText="Dataset name"
-              value={hf.name}
-              invalid={hf.name.length > 0 && !hf.nameValid}
-              invalidText={"Use up to 255 characters, without '/', '\\' or '..'."}
-              onChange={(event) => hf.setName(event.target.value)}
-              disabled={hf.importing}
-            />
-          </div>
-
-          {hf.validationSplit === NO_VALIDATION && (
-            <div className={styles.field}>
-              <TextInput
-                id="hf-validation-percentage"
-                labelText="Validation split (%)"
-                type="number"
-                min={1}
-                max={50}
-                value={String(hf.validationPercentage)}
-                onChange={(event) => hf.setValidationPercentage(Number(event.target.value))}
-                invalid={
-                  !Number.isInteger(hf.validationPercentage) ||
-                  hf.validationPercentage < 1 ||
-                  hf.validationPercentage > 50
-                }
-                invalidText="Choose between 1 and 50."
-                disabled={hf.importing}
-              />
-            </div>
-          )}
 
           <div className={styles.importRow}>
             <Button

@@ -49,6 +49,7 @@ import { Step1DatasetUpload } from './steps/Step1DatasetUpload'
 import { Step2Configure } from './steps/Step2Configure'
 import { StepRewardFunction } from './steps/StepRewardFunction'
 import { Step3ReviewLaunch } from './steps/Step3ReviewLaunch'
+import { HF_VALIDATION_PERCENTAGE } from './steps/hfImport'
 import { NO_VALIDATION } from './steps/useHfImport'
 import styles from './StartTuningWizard.module.scss'
 
@@ -149,7 +150,7 @@ export function StartTuningWizard() {
   const [hfTrainSplit, setHfTrainSplit] = useState('')
   const [hfValidationSplit, setHfValidationSplit] = useState(NO_VALIDATION)
   const [hfName, setHfName] = useState('')
-  const [hfValidationPercentage, setHfValidationPercentage] = useState(10)
+  const [hfValidationPercentage, setHfValidationPercentage] = useState(HF_VALIDATION_PERCENTAGE)
 
   // Step 2: Config
   const [selectedConfigId, setSelectedConfigId] = useState<string | null>(null)

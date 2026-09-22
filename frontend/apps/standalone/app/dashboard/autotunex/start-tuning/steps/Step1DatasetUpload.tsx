@@ -22,9 +22,8 @@ import {
   Tab,
   TabPanels,
   TabPanel,
-  Tooltip,
 } from '@carbon/react'
-import { Reset, Information } from '@carbon/icons-react'
+import { Reset } from '@carbon/icons-react'
 import type { ColumnMapping, ColumnMetadata, Dataset, DatasetForm, DatasetFormatType, ParsedDataRow, TuningGoal } from '@granite-build/ui-core/types'
 import { getAppConfig, getAutotuneDatasetTypes, getDataset, getDatasets, suggestColumnMappingAI } from '@granite-build/ui-core/api/autotunex'
 import { countLinesInFileAsync, processUploadedFileAsync } from '@granite-build/ui-core/lib/autotunex/processUploadedFile'
@@ -47,6 +46,7 @@ import {
   toUpperCase,
   validateDatasetForGoal,
 } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
+import { InfoTooltip } from './InfoTooltip'
 import { useHfImport } from './useHfImport'
 import { HfImportForm } from './HfImportForm'
 import { HfImportPreview } from './HfImportPreview'
@@ -89,16 +89,6 @@ function buildPreviewData(data: ParsedDataRow[]): { headers: PreviewHeader[]; ro
     return processedRow
   })
   return { headers, rows }
-}
-
-function InfoTooltip({ label }: { label: string }) {
-  return (
-    <Tooltip label={label}>
-      <button type="button" className={styles.tooltipTrigger} aria-label={label}>
-        <Information size={16} />
-      </button>
-    </Tooltip>
-  )
 }
 
 interface Step1DatasetUploadProps {
@@ -269,6 +259,20 @@ export function Step1DatasetUpload({
     [hasDatasetTypes, selectedAlgorithm, datasetTypes]
   )
   const allColumnNames = useMemo(() => allColumns.map((c) => c.name), [allColumns])
+
+  // Every target the user may map, required first -- the HuggingFace form renders
+  // one row per entry, exactly as the Upload path's `sortedColumns` does. The
+  // fallback covers a dataset-types response that has not arrived (or does not
+  // describe this algorithm): `getColumnsFromTypes` returns [] there, and an empty
+  // list would leave the form with no mapping rows and prune every mapping away.
+  const mappableColumns = useMemo(
+    () =>
+      allColumns.length > 0
+        ? [...allColumns].sort((a, b) => Number(b.required) - Number(a.required))
+        : requiredColumns.map((name) => ({ name, desc: '', required: true })),
+    [allColumns, requiredColumns]
+  )
+  const mappableColumnNames = useMemo(() => mappableColumns.map((c) => c.name), [mappableColumns])
   const datasetGoalWarning = useMemo(
     () => (selectedGoal && detectedFormat !== 'unknown' ? validateDatasetForGoal(detectedFormat, selectedGoal) : { valid: true, message: '' }),
     [selectedGoal, detectedFormat]
@@ -296,6 +300,7 @@ export function Step1DatasetUpload({
   const hf = useHfImport({
     active: dataSource === 'hf',
     requiredColumns,
+    mappableColumns: mappableColumnNames,
     onImported: handleHfImported,
     selectedAlgorithm,
     datasetTypes,
@@ -794,7 +799,7 @@ export function Step1DatasetUpload({
                     ))}
                   </Select>
                 ) : hfConfig ? (
-                  <HfImportForm hf={hf} requiredColumns={requiredColumns} hfConfig={hfConfig} />
+                  <HfImportForm hf={hf} mappableColumns={mappableColumns} hfConfig={hfConfig} />
                 ) : null}
               </>
             )}
