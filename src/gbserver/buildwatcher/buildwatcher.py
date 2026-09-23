@@ -141,6 +141,12 @@ class BuildWatcher:
     # never on DB status change, so it cannot strand a build.
     submitted_in_flight: set[str]
 
+    # build ids we have already initiated cancellation for (stopped the tracked runner).
+    # Suppresses the orphan branch so we don't force-clean/force-CANCELLED while the
+    # runner still owns the terminal transition (job runner's stop() is non-blocking).
+    # Pruned once the build leaves CANCEL_REQUESTED.
+    cancel_in_flight: set[str]
+
     # build_id -> clean-and-re-dispatch count for a stuck build (PENDING, no live
     # runner). Bounds infra recovery; at config.max_stuck_redispatches the build is
     # FAILED. In-memory (a restart grants a fresh attempt) to avoid a schema change.
@@ -163,6 +169,7 @@ class BuildWatcher:
         self.build_pr_threads = {}
         self.build_runners = {}
         self.submitted_in_flight = set()
+        self.cancel_in_flight = set()
         self.stuck_redispatch_counts = {}
         self.stop_event = threading.Event()
         self._builds_lock = threading.Lock()
@@ -259,8 +266,15 @@ class BuildWatcher:
         logger.debug("BuildWatcher.stop end")
 
     def __process_cancel_requested_build(self, build: StoredBuild):
-        """Update internal data structures, stop the given build if it is in our build_runners, and join the thread if it has a thread.
-        If the build is not tracked locally (e.g., after buildwatcher restart), transition it to CANCELLED directly.
+        """Stop the build if we track it (and let its runner own the CANCELLED write);
+        otherwise force it CANCELLED as a genuine orphan.
+
+        A build we just stopped is recorded in cancel_in_flight: the job runner's stop()
+        is non-blocking and only flips the build to CANCELLED later (from the in-pod
+        process), so it stays CANCEL_REQUESTED and untracked on the next poll. Without
+        this guard the orphan branch would then race that runner — force-cleaning its
+        resources and force-CANCELLED mid-cleanup. Only a genuinely orphaned build (e.g.
+        after a real watcher restart, empty cancel_in_flight) takes the force path.
         """
         is_tracked = False
         with self._builds_lock:
@@ -275,18 +289,27 @@ class BuildWatcher:
             if build.uuid in self.build_pr_threads:
                 self.build_pr_threads[build.uuid].join()
                 del self.build_pr_threads[build.uuid]
-        if not is_tracked:
-            logger.warning(
-                "Build %s is CANCEL_REQUESTED but not tracked locally "
-                "(buildwatcher may have restarted). Transitioning to CANCELLED.",
-                build.uuid,
+        if is_tracked:
+            # We initiated the cancel; the runner owns the terminal transition. Remember
+            # it so the orphan branch below doesn't fire before the runner finishes.
+            self.cancel_in_flight.add(build.uuid)
+            return
+        if build.uuid in self.cancel_in_flight:
+            logger.debug(
+                "Build %s cancellation already in progress; awaiting runner", build.uuid
             )
-            self.__cleanup_runner_resources(build.uuid)
-            get_admin_storage().build_storage.update_fields(
-                build.uuid,
-                fields={"status": Status.CANCELLED},
-                should_update=lambda item: item.status == Status.CANCEL_REQUESTED,
-            )
+            return
+        logger.warning(
+            "Build %s is CANCEL_REQUESTED but not tracked locally "
+            "(buildwatcher may have restarted). Transitioning to CANCELLED.",
+            build.uuid,
+        )
+        self.__cleanup_runner_resources(build.uuid)
+        get_admin_storage().build_storage.update_fields(
+            build.uuid,
+            fields={"status": Status.CANCELLED},
+            should_update=lambda item: item.status == Status.CANCEL_REQUESTED,
+        )
 
     def __cleanup_runner_resources(self, build_id: str) -> None:
         """Reap any external resources left by this build's runner (best-effort).
@@ -333,6 +356,13 @@ class BuildWatcher:
         except Exception as e:
             logger.error("%s", traceback.format_exc())
             logger.error("failed to fetch the new cancelled builds error: %s", e)
+            # Don't prune cancel_in_flight on a failed poll (empty list is not
+            # authoritative), just skip this cycle.
+            return
+        # Prune cancel_in_flight for builds no longer CANCEL_REQUESTED (they reached a
+        # terminal status), bounding the set and re-arming the orphan safety net.
+        cancel_ids = {b.uuid for b in cancelled_builds}
+        self.cancel_in_flight.intersection_update(cancel_ids)
         to_show_cancelled = [b.source_uri for b in cancelled_builds]
         logger.debug(
             "all cancelled builds: %d %s", len(to_show_cancelled), to_show_cancelled
@@ -546,13 +576,22 @@ class BuildWatcher:
             # Do the processing, especially build long-running validation, in threads so we don't
             # 1) hold up other main event loop processing or
             # 2) serialize build submission processing (i.e. let them be processed independent of each other)
-            thread = threading.Thread(
-                name=f"Submitted build processor for build {build_id}",
-                target=self.__process_submitted_build,
-                args=(submitted_build,),
-            )
-            thread.daemon = True
-            thread.start()
+            try:
+                thread = threading.Thread(
+                    name=f"Submitted build processor for build {build_id}",
+                    target=self.__process_submitted_build,
+                    args=(submitted_build,),
+                )
+                thread.daemon = True
+                thread.start()
+            except Exception as e:
+                # If the thread never starts (e.g. OS thread-limit), its finally never
+                # runs to clear the guard — discard here so the build isn't stranded
+                # SUBMITTED forever, and let the next poll retry it.
+                logger.error(
+                    "failed to start submitted-build processor for %s: %s", build_id, e
+                )
+                self.submitted_in_flight.discard(build_id)
 
     def __is_build_in_flight(self: Self, build_id: str) -> bool:
         """True if a live runner thread exists for this build.
@@ -567,7 +606,17 @@ class BuildWatcher:
             return thread is not None and thread.is_alive()
 
     def __process_pending_builds(self: Self) -> None:
-        pending_builds = []
+        """Dispatch PENDING builds and recover stuck ones, in a single pass.
+
+        Runner liveness (build_threads) is the source of truth. A build with a live
+        runner is skipped. A build with no live runner is (re-)dispatched; if it has
+        also been PENDING past the staleness timeout, it is treated as stuck (its runner
+        never started or died before reporting RUNNING): stale K8s resources are cleaned
+        so the re-dispatch gets a fresh job name, and the attempt is charged against a
+        bounded budget so a build that never starts eventually FAILs. Exactly one budget
+        charge per build per loop — one pass, one counter (dead threads are reaped by
+        __clean_finished_builds first).
+        """
         try:
             logger.info("fetching pending builds...")
             pending_builds = self.__get_builds_matching_status(
@@ -581,28 +630,66 @@ class BuildWatcher:
             logger.error("failed to fetch the new pending builds error: %s", e)
             return
 
+        # Prune re-dispatch counters for builds no longer PENDING (recovered or deleted)
+        # so the dict doesn't grow unbounded over the watcher's lifetime.
+        pending_ids = {b.uuid for b in pending_builds}
+        for bid in [b for b in self.stuck_redispatch_counts if b not in pending_ids]:
+            del self.stuck_redispatch_counts[bid]
+
+        now = get_utc_time()
+        threshold = self.config.stuck_build_timeout_seconds
         for b in pending_builds:
-            # A PENDING build with a live runner thread is already being handled; only
-            # (re-)dispatch one that has no live thread (never dispatched, dispatch
-            # threw, or the runner died before leaving PENDING).
+            # A live runner is already handling this build (including a job runner still
+            # polling a slow-to-start pod) — leave it alone.
             if self.__is_build_in_flight(b.uuid):
                 logger.debug("build %s already has a live runner, skipping", b.uuid)
                 continue
+
+            age = (now - b.updated_time).total_seconds()
+            if age < threshold:
+                # Never dispatched yet, or last dispatch threw: the dispatch is itself
+                # the retry. Only a dispatch exception is charged (a healthy start burns
+                # no budget); the build stays PENDING so the next poll retries.
+                try:
+                    logger.info("starting build id %s", b.uuid)
+                    self.__start_build(b)
+                except Exception as e:
+                    logger.error("failed to start build %s, error: %s", b.uuid, e)
+                    self.__record_stuck_build_attempt(
+                        b.uuid,
+                        Status.PENDING,
+                        failure_reason=f"failed to start build: {e}",
+                    )
+                continue
+
+            # Stuck: PENDING past the timeout with no live runner. Charge the budget once
+            # (up front), then recover.
+            logger.warning(
+                "build %s stuck PENDING for %.0fs with no live runner; recovering",
+                b.uuid,
+                age,
+            )
+            reason = f"build stuck PENDING for {age:.0f}s with no live runner"
+            gave_up = self.__record_stuck_build_attempt(b.uuid, Status.PENDING, reason)
+            # Clean stale K8s resources so a re-dispatch gets a fresh job name (no
+            # zombie-job collision), and drop any dead refs.
+            self.__cleanup_runner_resources(b.uuid)
+            with self._builds_lock:
+                self.build_runners.pop(b.uuid, None)
+                self.build_threads.pop(b.uuid, None)
+                self.build_pr_threads.pop(b.uuid, None)
+            if gave_up:
+                # Budget exhausted; build was marked FAILED in __record_stuck_build_attempt.
+                continue
             try:
-                # Start the build
-                logger.info("starting build id %s", b.uuid)
                 self.__start_build(b)
-            except Exception as e:
-                # Dispatch failed before a runner started (e.g. bad deployment
-                # template). Count it against the budget so a build that throws every
-                # poll converges to FAILED instead of retrying forever; it stays PENDING
-                # so the next poll retries.
-                logger.error("failed to start build %s, error: %s", b.uuid, e)
-                self.__record_stuck_build_attempt(
-                    b.uuid,
-                    Status.PENDING,
-                    failure_reason=f"failed to start build: {e}",
+                push_stuck_build_metric(
+                    b.uuid, MetricName.STUCK_BUILD_REDISPATCHED, Status.PENDING
                 )
+            except Exception as e:
+                # Re-dispatch threw; already charged once this loop, so just log —
+                # the next loop re-charges.
+                logger.error("failed to re-dispatch stuck build %s: %s", b.uuid, e)
 
     def __record_stuck_build_attempt(
         self: Self, build_id: str, prior_status: Status, failure_reason: str
@@ -638,65 +725,6 @@ class BuildWatcher:
             return True
         return False
 
-    def __reconcile_stuck_builds(self: Self) -> None:
-        """Recover builds stuck PENDING with no live runner past the staleness timeout.
-
-        A PENDING build whose runner never started, or died before reporting RUNNING,
-        has no live thread and would otherwise sit PENDING indefinitely. When such a
-        build has been PENDING (measured from updated_time, which is stamped on the
-        SUBMITTED->PENDING flip) for longer than the configured timeout, clean up any
-        stale K8s resources and let the next poll re-dispatch it — bounded by the same
-        re-dispatch budget as the dispatch-failure path, after which it is FAILED.
-        """
-        try:
-            pending_builds = self.__get_builds_matching_status(Status.PENDING)
-        except Exception as e:
-            logger.error("failed to fetch pending builds for reconcile: %s", e)
-            return
-
-        # Prune counters for builds no longer PENDING (recovered or deleted) so the
-        # dict doesn't grow unbounded over the watcher's lifetime.
-        pending_ids = {b.uuid for b in pending_builds}
-        for bid in [b for b in self.stuck_redispatch_counts if b not in pending_ids]:
-            del self.stuck_redispatch_counts[bid]
-
-        now = get_utc_time()
-        threshold = self.config.stuck_build_timeout_seconds
-        for b in pending_builds:
-            age = (now - b.updated_time).total_seconds()
-            if age < threshold:
-                continue
-            if self.__is_build_in_flight(b.uuid):
-                # A live runner is still working (e.g. the job runner's thread is
-                # polling a slow-to-start K8s job). Leave it alone.
-                logger.debug(
-                    "build %s PENDING for %.0fs but has a live runner; leaving it",
-                    b.uuid,
-                    age,
-                )
-                continue
-            logger.warning(
-                "build %s stuck PENDING for %.0fs with no live runner; recovering",
-                b.uuid,
-                age,
-            )
-            reason = f"build stuck PENDING for {age:.0f}s with no live runner"
-            if self.__record_stuck_build_attempt(b.uuid, Status.PENDING, reason):
-                # Budget exhausted (now FAILED); clean up so no zombie resources linger.
-                self.__cleanup_runner_resources(b.uuid)
-                continue
-            # Under budget: clean stale resources (a re-dispatch then gets a fresh job
-            # name, no zombie-job collision) and drop dead refs so the next poll
-            # re-dispatches. Stays PENDING.
-            self.__cleanup_runner_resources(b.uuid)
-            with self._builds_lock:
-                self.build_runners.pop(b.uuid, None)
-                self.build_threads.pop(b.uuid, None)
-                self.build_pr_threads.pop(b.uuid, None)
-            push_stuck_build_metric(
-                b.uuid, MetricName.STUCK_BUILD_REDISPATCHED, Status.PENDING
-            )
-
     def __worker_thread_run(self: Self) -> None:
         """
         This is the main processing loop that:
@@ -711,14 +739,13 @@ class BuildWatcher:
             try:
                 if self.watch_for_config_changes:
                     self.__reload_config_file()
+                # __clean_finished_builds first so dead runner threads are reaped before
+                # __process_pending_builds reads liveness (and re-dispatches / recovers
+                # stuck builds in one pass).
                 self.__clean_finished_builds()
                 self.__process_cancel_requested_builds()
                 self.__process_submitted_builds()
                 self.__process_pending_builds()
-                # Safety net: recover builds that have sat PENDING with no live runner
-                # for too long (e.g. their pod died before reporting RUNNING). Runs
-                # after __clean_finished_builds has reaped dead threads.
-                self.__reconcile_stuck_builds()
                 if not self.stop_event.is_set():
                     logger.info("End processing loop. Sleeping...")
                     # monitoring_interval is floored to a sane minimum by

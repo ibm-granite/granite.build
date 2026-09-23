@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from libgbtest.constants import requires_k8s
 
 from gbserver.storage.stored_build import StoredBuild
+from gbserver.types.metrics import MetricName
 from gbserver.types.status import Status
 
 
@@ -43,6 +44,7 @@ def _make_watcher(
     watcher.build_threads = {}
     watcher.build_pr_threads = {}
     watcher.submitted_in_flight = set()
+    watcher.cancel_in_flight = set()
     watcher.stuck_redispatch_counts = {}
     watcher._builds_lock = threading.Lock()
     watcher.exp_mov_avg_processing_delay = 0.0
@@ -141,11 +143,13 @@ class TestPendingDispatchGuard:
                 watcher, "_BuildWatcher__start_build", side_effect=RuntimeError("boom")
             ),
             patch(f"{BW}.finalize_build_status") as finalize,
-            patch(f"{BW}.push_stuck_build_metric"),
+            patch(f"{BW}.push_stuck_build_metric") as metric,
         ):
             watcher._BuildWatcher__process_pending_builds()
         assert watcher.stuck_redispatch_counts[build.uuid] == 1
         finalize.assert_not_called()
+        # a fresh (non-stale) dispatch that throws must NOT emit a re-dispatch metric
+        metric.assert_not_called()
 
     def test_start_build_exception_fails_at_cap(self):
         watcher = _make_watcher(max_stuck_redispatches=2)
@@ -175,8 +179,8 @@ class TestPendingDispatchGuard:
         assert build.uuid not in watcher.stuck_redispatch_counts
 
 
-class TestReconcileStuckBuilds:
-    """The staleness watchdog recovers builds stuck PENDING with no live runner."""
+class TestPendingStaleness:
+    """The single PENDING pass also recovers builds stuck with no live runner."""
 
     def _stale_build(self, seconds=3600, uuid="b1"):
         old = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
@@ -184,7 +188,7 @@ class TestReconcileStuckBuilds:
         )
         return _mock_build(uuid=uuid, updated_time=old)
 
-    def test_stale_no_thread_under_cap_redispatches(self):
+    def test_stale_no_thread_under_cap_cleans_and_redispatches(self):
         watcher = _make_watcher(
             max_stuck_redispatches=3, stuck_build_timeout_seconds=900
         )
@@ -198,19 +202,22 @@ class TestReconcileStuckBuilds:
                 return_value=[build],
             ),
             patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
+            patch.object(watcher, "_BuildWatcher__start_build") as start,
             patch(f"{BW}.finalize_build_status") as finalize,
             patch(f"{BW}.push_stuck_build_metric") as metric,
         ):
-            watcher._BuildWatcher__reconcile_stuck_builds()
+            watcher._BuildWatcher__process_pending_builds()
         cleanup.assert_called_once_with(build.uuid)
+        # cleaned AND re-dispatched in the same pass
+        start.assert_called_once_with(build)
         finalize.assert_not_called()
         assert watcher.stuck_redispatch_counts[build.uuid] == 1
-        # dead thread refs cleared so the next poll re-dispatches
+        # stale refs cleared before re-dispatch
         assert build.uuid not in watcher.build_threads
         assert build.uuid not in watcher.build_runners
         metric.assert_called_once()
 
-    def test_stale_no_thread_at_cap_fails(self):
+    def test_stale_no_thread_at_cap_fails_no_redispatch(self):
         watcher = _make_watcher(
             max_stuck_redispatches=1, stuck_build_timeout_seconds=900
         )
@@ -222,14 +229,18 @@ class TestReconcileStuckBuilds:
                 return_value=[build],
             ),
             patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
+            patch.object(watcher, "_BuildWatcher__start_build") as start,
             patch(f"{BW}.finalize_build_status") as finalize,
-            patch(f"{BW}.push_stuck_build_metric"),
+            patch(f"{BW}.push_stuck_build_metric") as metric,
         ):
-            watcher._BuildWatcher__reconcile_stuck_builds()
+            watcher._BuildWatcher__process_pending_builds()
         finalize.assert_called_once()
         assert finalize.call_args[0][1] == Status.FAILED
-        # cleanup still runs so no zombie resources linger
         cleanup.assert_called_once_with(build.uuid)
+        # at cap: do NOT re-dispatch, and no re-dispatch metric
+        start.assert_not_called()
+        for call in metric.call_args_list:
+            assert call[0][1] != MetricName.STUCK_BUILD_REDISPATCHED
 
     def test_stale_with_live_thread_left_alone(self):
         watcher = _make_watcher(stuck_build_timeout_seconds=900)
@@ -242,27 +253,38 @@ class TestReconcileStuckBuilds:
                 return_value=[build],
             ),
             patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
+            patch.object(watcher, "_BuildWatcher__start_build") as start,
             patch(f"{BW}.finalize_build_status") as finalize,
         ):
-            watcher._BuildWatcher__reconcile_stuck_builds()
+            watcher._BuildWatcher__process_pending_builds()
         cleanup.assert_not_called()
+        start.assert_not_called()
         finalize.assert_not_called()
 
-    def test_fresh_pending_untouched(self):
-        watcher = _make_watcher(stuck_build_timeout_seconds=900)
-        build = _mock_build()  # updated_time = now
+    def test_charged_once_per_loop_when_stale_and_throwing(self):
+        # regression for the double-charge bug: a stale build re-dispatch that throws
+        # is charged exactly once in a single loop, not twice.
+        watcher = _make_watcher(
+            max_stuck_redispatches=5, stuck_build_timeout_seconds=900
+        )
+        build = self._stale_build()
         with (
             patch.object(
                 watcher,
                 "_BuildWatcher__get_builds_matching_status",
                 return_value=[build],
             ),
-            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
-            patch(f"{BW}.finalize_build_status") as finalize,
+            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources"),
+            patch.object(
+                watcher,
+                "_BuildWatcher__start_build",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch(f"{BW}.finalize_build_status"),
+            patch(f"{BW}.push_stuck_build_metric"),
         ):
-            watcher._BuildWatcher__reconcile_stuck_builds()
-        cleanup.assert_not_called()
-        finalize.assert_not_called()
+            watcher._BuildWatcher__process_pending_builds()
+        assert watcher.stuck_redispatch_counts[build.uuid] == 1
 
     def test_thread_runner_cleanup_is_base_noop(self):
         # standalone/thread mode selects the base-class no-op cleanup (no K8s)
@@ -291,9 +313,9 @@ class TestReconcileStuckBuilds:
                 "_BuildWatcher__get_builds_matching_status",
                 return_value=[still],
             ),
-            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources"),
+            patch.object(watcher, "_BuildWatcher__start_build"),
         ):
-            watcher._BuildWatcher__reconcile_stuck_builds()
+            watcher._BuildWatcher__process_pending_builds()
         assert "gone" not in watcher.stuck_redispatch_counts
         assert watcher.stuck_redispatch_counts["still-pending"] == 1
 
@@ -382,6 +404,92 @@ class TestSubmittedProcessing:
         ):
             watcher._BuildWatcher__process_submitted_build(build)
         metric.assert_called_once()
+
+    def test_thread_start_failure_clears_in_flight(self):
+        # If thread.start() raises, the flip thread never runs its finally, so the guard
+        # must be cleared here or the build is stranded SUBMITTED forever.
+        watcher = _make_watcher()
+        build = _mock_build(status=Status.SUBMITTED)
+        with (
+            patch.object(
+                watcher,
+                "_BuildWatcher__get_builds_matching_status",
+                return_value=[build],
+            ),
+            patch(f"{BW}.threading.Thread") as thread_cls,
+        ):
+            thread_cls.return_value.start.side_effect = RuntimeError("thread limit")
+            # Must not raise
+            watcher._BuildWatcher__process_submitted_builds()
+        assert build.uuid not in watcher.submitted_in_flight
+
+
+class TestCancelInFlight:
+    """A cancel we initiated must not be re-processed by the orphan branch."""
+
+    def _cancel_build(self, uuid="c1"):
+        return _mock_build(uuid=uuid, status=Status.CANCEL_REQUESTED)
+
+    def test_tracked_cancel_marks_in_flight_no_force_cancel(self):
+        watcher = _make_watcher()
+        build = self._cancel_build()
+        watcher.build_runners[build.uuid] = MagicMock()
+        watcher.build_threads[build.uuid] = MagicMock()  # join() is a no-op mock
+        admin = MagicMock()
+        with (
+            patch(f"{BW}.get_admin_storage", return_value=admin),
+            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
+        ):
+            watcher._BuildWatcher__process_cancel_requested_build(build)
+        assert build.uuid in watcher.cancel_in_flight
+        # runner owns the CANCELLED write; watcher must not force it or clean up
+        admin.build_storage.update_fields.assert_not_called()
+        cleanup.assert_not_called()
+
+    def test_orphan_suppressed_when_cancel_in_flight(self):
+        watcher = _make_watcher()
+        build = self._cancel_build()
+        watcher.cancel_in_flight.add(build.uuid)  # we already stopped it earlier
+        admin = MagicMock()
+        with (
+            patch(f"{BW}.get_admin_storage", return_value=admin),
+            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
+        ):
+            watcher._BuildWatcher__process_cancel_requested_build(build)
+        cleanup.assert_not_called()
+        admin.build_storage.update_fields.assert_not_called()
+
+    def test_genuine_orphan_forces_cancel(self):
+        # empty cancel_in_flight, not tracked -> real orphan (e.g. watcher restart)
+        watcher = _make_watcher()
+        build = self._cancel_build()
+        admin = MagicMock()
+        with (
+            patch(f"{BW}.get_admin_storage", return_value=admin),
+            patch.object(watcher, "_BuildWatcher__cleanup_runner_resources") as cleanup,
+        ):
+            watcher._BuildWatcher__process_cancel_requested_build(build)
+        cleanup.assert_called_once_with(build.uuid)
+        admin.build_storage.update_fields.assert_called_once()
+        assert (
+            admin.build_storage.update_fields.call_args[1]["fields"]["status"]
+            == Status.CANCELLED
+        )
+
+    def test_cancel_in_flight_pruned_when_no_longer_cancel_requested(self):
+        watcher = _make_watcher()
+        watcher.cancel_in_flight = {"gone", "still"}
+        still = self._cancel_build(uuid="still")
+        with (
+            patch.object(
+                watcher,
+                "_BuildWatcher__get_builds_matching_status",
+                return_value=[still],
+            ),
+            patch.object(watcher, "_BuildWatcher__process_cancel_requested_build"),
+        ):
+            watcher._BuildWatcher__process_cancel_requested_builds()
+        assert watcher.cancel_in_flight == {"still"}
 
 
 JOB = "gbserver.buildrunnerjob.buildrunnerjob"
