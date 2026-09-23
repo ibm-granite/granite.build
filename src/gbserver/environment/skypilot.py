@@ -1883,18 +1883,25 @@ class Skypilot(Environment):
 
     @staticmethod
     def _first_hf_token(bindings: Optional[Dict]) -> Optional[str]:
-        """Return the first HF token found among inline hfpull bindings.
+        """Return the first HF token found among inline hfpull/hfpush bindings.
 
         :param bindings: the launch bindings mapping (may be None); each value
-            may carry an ``_hfpull`` dict with an optional ``hf_token``.
-        :returns: the first non-empty ``hf_token``, or None if none present.
+            may carry an ``_hfpull`` dict with an optional ``hf_token``, or an
+            ``_hfpush`` :class:`HfOutputIO` with an optional ``.token``.
+        :returns: the first non-empty token, preferring an ``_hfpull``
+            ``hf_token`` over an ``_hfpush`` ``.token``, or None if none present.
         """
+        push_token: Optional[str] = None
         for bval in (bindings or {}).values():
             if isinstance(bval, dict) and "_hfpull" in bval:
                 token = bval["_hfpull"].get("hf_token")
                 if token:
                     return token
-        return None
+            if isinstance(bval, dict) and "_hfpush" in bval:
+                token = getattr(bval["_hfpush"], "token", None)
+                if token and push_token is None:
+                    push_token = token
+        return push_token
 
     def _declared_secret_mappings(
         self: Self, **kwargs: Any

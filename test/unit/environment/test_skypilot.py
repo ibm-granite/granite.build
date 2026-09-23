@@ -2188,3 +2188,53 @@ class TestInlineHfpush:
     def test_monitor_no_injection_without_inline_output(self, skypilot_env):
         skypilot_env._launch_kwargs["L2"] = {"bindings": {}}
         assert skypilot_env._inline_push_event_configs("L2", base=[]) == []
+
+    def test_first_hf_token_from_inline_push_only(self, skypilot_env):
+        """A push-WITHOUT-pull inline build has no _hfpull binding; the token
+        must still be harvested from the _hfpush HfOutputIO.token."""
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        bindings = {
+            "out": {
+                "_hfpush": HfOutputIO(
+                    repo="ns/out",
+                    uri="hf:///ns/out",
+                    binding_id="out",
+                    token="ptok",
+                )
+            }
+        }
+        assert skypilot_env._first_hf_token(bindings) == "ptok"
+
+    def test_first_hf_token_prefers_hfpull(self, skypilot_env):
+        """Existing behavior preserved: an _hfpull hf_token still wins."""
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        bindings = {
+            "in": {"_hfpull": {"hf_token": "pulltok"}},
+            "out": {
+                "_hfpush": HfOutputIO(
+                    repo="ns/out",
+                    uri="hf:///ns/out",
+                    binding_id="out",
+                    token="ptok",
+                )
+            },
+        }
+        assert skypilot_env._first_hf_token(bindings) == "pulltok"
+
+    def test_first_hf_token_none_when_no_tokens(self, skypilot_env):
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        bindings = {
+            "in": {"_hfpull": {"hf_token": ""}},
+            "out": {
+                "_hfpush": HfOutputIO(
+                    repo="ns/out",
+                    uri="hf:///ns/out",
+                    binding_id="out",
+                    token="",
+                )
+            },
+        }
+        assert skypilot_env._first_hf_token(bindings) is None
