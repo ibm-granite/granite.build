@@ -2124,3 +2124,30 @@ class TestInlineHfpush:
         assert io.path_in_repo == "sub/dir"
         assert io.private is True
         assert io.resource_group_id is None
+
+    def test_launch_appends_epilogue_and_tee_wraps_body_for_hfpush(self, skypilot_env):
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        bindings = {
+            "out": {
+                "_hfpush": HfOutputIO(
+                    repo="ns/out", uri="hf:///ns/out", binding_id="out", token="t"
+                )
+            }
+        }
+        run_script = skypilot_env._compose_inline_run_script(
+            base_run="python train.py", bindings=bindings, build_workdir=None
+        )
+        assert "set -o pipefail" in run_script
+        assert "| tee " in run_script
+        assert "python train.py" in run_script
+        assert 'echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"' in run_script
+
+    def test_launch_run_script_unchanged_without_hfpush(self, skypilot_env):
+        base = "python train.py"
+        run_script = skypilot_env._compose_inline_run_script(
+            base_run=base, bindings={}, build_workdir=None
+        )
+        assert "| tee " not in run_script
+        assert "Pushed HF URI:" not in run_script
+        assert run_script.endswith(base)

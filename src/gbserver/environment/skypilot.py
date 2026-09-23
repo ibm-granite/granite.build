@@ -1387,6 +1387,44 @@ class Skypilot(Environment):
             self._shared_fs_provider_cache = build_provider(self.config)
         return self._shared_fs_provider_cache
 
+    def _compose_inline_run_script(self, base_run, bindings, build_workdir):
+        """Compose the run script, tee-wrapping the body + appending the inline
+        hfpush epilogue when any binding carries an ``_hfpush`` ``HfOutputIO``.
+
+        With no hfpush outputs the result is byte-identical to today's
+        ``cli_prefix + base_run`` (regression guard). With outputs, the body is
+        wrapped in ``{ ... } | tee "$GB_INLINE_PUSH_CAP"`` so the step's
+        ``GB_ARTIFACT_PATH`` markers land in a capture file, then
+        ``SkypilotIO.render_epilogue`` resolves each output's source path from
+        that file and runs the shared hf-upload body. ``GB_INLINE_PUSH_CAP`` is
+        the exact capture_var name render_epilogue greps.
+        """
+        from gbserver.environment.io import SkypilotIO
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        provider = self._shared_fs_provider()
+        cli_prefix = _compose_step_prologue(provider, build_workdir)
+        outputs = [
+            b["_hfpush"]
+            for b in (bindings or {}).values()
+            if isinstance(b, dict) and isinstance(b.get("_hfpush"), HfOutputIO)
+        ]
+        if not outputs:
+            return cli_prefix + base_run
+        # Single-producing-step scope: one capture file per launch.
+        cap = "GB_INLINE_PUSH_CAP"
+        epilogue = SkypilotIO().render_epilogue(outputs, cap)
+        return (
+            cli_prefix
+            + f'{cap}="$(mktemp)"\nexport {cap}\nset -o pipefail\n'
+            + "{\n"
+            + base_run
+            + '\n} | tee "${'
+            + cap
+            + '}"\n'
+            + epilogue
+        )
+
     def _get_idle_minutes(self: Self) -> int:
         """Get idle_minutes_to_autostop from environment.yaml config."""
         if self.config is None:
@@ -2252,33 +2290,30 @@ class Skypilot(Environment):
 
             # Inject inline hfpull downloads into setup from per-step bindings.
             # (HF_TOKEN from these bindings is already applied in the env above.)
+            # Rendered via SkypilotIO.render_prologue from HfInputIO descriptors
+            # reconstructed from each `_hfpull` binding dict; the emitted shell is
+            # byte-identical to the prior ad-hoc block (same pip bootstrap + one
+            # `hf download` per input, preserving prepend-before-setup ordering).
+            from gbserver.environment.io import SkypilotIO
+            from gbserver.environment.io.descriptors import HfInputIO
+
             setup_script = launcher_config.get("setup") or ""
             pending_hfpulls = {}
             for bid, bval in (kwargs.get("bindings") or {}).items():
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
-                # Pin <2.0: huggingface_hub 2.x pulls httpx2, whose BrotliDecoder
-                # calls brotli.Decompressor.process(output_buffer_limit=...) -- a
-                # kwarg added only in brotli>=1.2.0. The bare worker's ambient
-                # conda brotli (1.0.9) rejects it (TypeError), failing hf download.
-                # NOT a Python-version issue (reproduces on py3.12 w/ brotli<1.2).
-                # Stop-gap until the worker ships brotli>=1.2.0 (or httpx2[brotli])
-                # so hf 2.x works; see follow-up issue.
-                hfpull_lines = [
-                    "# -- gbserver: inline hfpull for inputs --",
-                    "pip install --no-cache-dir 'huggingface_hub[cli]<2.0' "
-                    "2>/dev/null || true",
+                hf_inputs = [
+                    HfInputIO(
+                        repo=pull_info["repo"],
+                        revision=pull_info.get("revision") or "",
+                        type=pull_info.get("type") or "model",
+                        dest=pull_info["path"],
+                        token=pull_info.get("hf_token") or "",
+                    )
+                    for pull_info in pending_hfpulls.values()
                 ]
-                for bid, pull_info in pending_hfpulls.items():
-                    cmd = f'hf download "{pull_info["repo"]}" --local-dir "{pull_info["path"]}"'
-                    if pull_info.get("revision"):
-                        cmd += f' --revision "{pull_info["revision"]}"'
-                    if pull_info.get("type"):
-                        cmd += f' --repo-type {pull_info["type"]}'
-                    hfpull_lines.append(cmd)
-                hfpull_lines.append("# -- end inline hfpull --")
-                hfpull_block = "\n".join(hfpull_lines) + "\n"
+                hfpull_block = SkypilotIO().render_prologue(hf_inputs)
                 setup_script = hfpull_block + setup_script
                 logger.info(
                     "Injected %d inline hfpull download(s) into setup script",
@@ -2322,7 +2357,15 @@ class Skypilot(Environment):
                 if note:
                     logger.warning(note)
             cli_prefix = _compose_step_prologue(provider, build_workdir)
-            run_script = cli_prefix + launcher_config.get("run", "")
+            # The helper owns the full run_script composition (it recomputes the
+            # same cli_prefix internally, tee-wraps the body, and appends the
+            # inline-hfpush epilogue when any `_hfpush` binding is present); do
+            # NOT prepend cli_prefix here as well or the run phase double-prefixes.
+            run_script = self._compose_inline_run_script(
+                launcher_config.get("run", ""),
+                kwargs.get("bindings"),
+                build_workdir,
+            )
             if setup_script:
                 setup_script = cli_prefix + setup_script
 
