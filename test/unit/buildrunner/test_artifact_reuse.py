@@ -36,6 +36,7 @@ from gbserver.storage.artifact_registration import (
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.buildevent import (
+    ArtifactPushedEventPayload,
     BuildEvent,
     BuildEventType,
     CreatedArtifactEventPayload,
@@ -197,3 +198,70 @@ class TestArtifactReuseWithinBuild:
         assert created.status == ArtifactRegistrationStatus.PENDING
         assert created.created_by_build_id == build_id
         runner._BuildRunner__update_target_with_artifact.assert_called_once()
+
+
+def _make_pushed_event(build_id, targetrun_id):
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(build_id=build_id, targetrun_id=targetrun_id),
+        type=BuildEventType.ARTIFACT_PUSHED_EVENT,
+        payload=ArtifactPushedEventPayload(
+            uri=_TEST_URI, binding_id=_BINDING, type=ArtifactType.UNDEFINED
+        ),
+        timestamp=datetime(2026, 6, 17, 12, 0, 0),
+        source="build-runner",
+    )
+
+
+class TestArtifactPushedBeforeCreated:
+    """PUSHED can arrive before the async CREATED registers the artifact, for
+    inline hfpush (spec §6). ``__process_artifact_event(pushed=True)`` must then
+    register-if-missing rather than fail."""
+
+    def test_pushed_registers_missing_artifact_then_marks_success(self):
+        build_id = "build-1"
+        runner = _make_runner(build_id)
+        # PUSHED overtook the async CREATED: nothing registered yet.
+        runner.storage.artifact_registry.get_by_uri.return_value = None
+        # The final status write returns a registration (asserted by the code).
+        runner.storage.artifact_registry.update_fields.return_value = (
+            _existing_artifact(
+                created_by_build_id=build_id,
+                created_by_target_id="target-1",
+                status=ArtifactRegistrationStatus.SUCCESS,
+            )
+        )
+
+        event = _make_pushed_event(build_id=build_id, targetrun_id="target-1")
+        runner._BuildRunner__process_artifact_event(event, pushed=True)
+
+        # Registered the missing artifact (PENDING) instead of asserting/failing.
+        runner.storage.artifact_registry.update.assert_called_once()
+        (registered,), _ = runner.storage.artifact_registry.update.call_args
+        assert isinstance(registered, ArtifactRegistration)
+        assert registered.created_by_build_id == build_id
+        assert registered.name == _BINDING
+        # (registered.status is mutated to SUCCESS in place right after this
+        # register call, so assert the SUCCESS write below rather than the
+        # transient PENDING on the same object.)
+        # Then marked it SUCCESS.
+        args, _ = runner.storage.artifact_registry.update_fields.call_args
+        assert args[1] == {"status": ArtifactRegistrationStatus.SUCCESS}
+
+    def test_pushed_marks_existing_artifact_success_without_reregister(self):
+        build_id = "build-1"
+        runner = _make_runner(build_id)
+        existing = _existing_artifact(
+            created_by_build_id=build_id,
+            created_by_target_id="target-1",
+            status=ArtifactRegistrationStatus.PENDING,
+        )
+        runner.storage.artifact_registry.get_by_uri.return_value = existing
+        runner.storage.artifact_registry.update_fields.return_value = existing
+
+        event = _make_pushed_event(build_id=build_id, targetrun_id="target-1")
+        runner._BuildRunner__process_artifact_event(event, pushed=True)
+
+        # CREATED already registered it → no re-register, just mark SUCCESS.
+        runner.storage.artifact_registry.update.assert_not_called()
+        args, _ = runner.storage.artifact_registry.update_fields.call_args
+        assert args[1] == {"status": ArtifactRegistrationStatus.SUCCESS}

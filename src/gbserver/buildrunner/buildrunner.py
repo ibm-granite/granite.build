@@ -959,10 +959,34 @@ Build ID    : {build_id}
             _art_result = art_store.get_by_uri(
                 uri=normalized_uri, space_name=stored_build.space_name
             )
-            assert isinstance(
-                _art_result, ArtifactRegistration
-            ), f"failed to find an artifact registered for uri: {normalized_uri}"
-            artifact = _art_result
+            if isinstance(_art_result, ArtifactRegistration):
+                artifact = _art_result
+            else:
+                # Inline hfpush emits PUSHED from the producing step's monitor
+                # (the "Pushed HF URI:" log line) while CREATED is emitted by the
+                # async sentinel pushasset off the SAME step's NEWARTIFACT marker.
+                # PUSHED (fewer hops) can overtake CREATED, so the artifact may
+                # not be registered yet when PUSHED is processed. Register it here
+                # (mirroring the CREATED branch above) instead of failing; a later
+                # CREATED for the same URI reuses this record. Separate-step push
+                # is unaffected — its CREATED always precedes PUSHED.
+                artifact = ArtifactRegistration(
+                    uri=normalized_uri,
+                    space_name=stored_build.space_name,
+                    username=username,
+                    name=payload.binding_id,
+                    type=artifact_type,
+                    created_by_build_id=build_id,
+                    created_by_target_id=target_id,
+                    created_at=event.timestamp,
+                    status=ArtifactRegistrationStatus.PENDING,
+                )
+                logger.info(
+                    "PUSHED arrived before CREATED (inline hfpush); registering "
+                    "artifact then marking it pushed: %s",
+                    artifact,
+                )
+                self.storage.artifact_registry.update(artifact)
             artifact.status = ArtifactRegistrationStatus.SUCCESS
             logger.info("updating the artifact as success: %s", artifact)
             _updated_art = self.storage.artifact_registry.update_fields(
