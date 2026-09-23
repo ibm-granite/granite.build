@@ -78,6 +78,20 @@ def test_render_epilogue_resolves_src_from_marker_and_uploads():
         assert var in sh
 
 
+def test_render_epilogue_unsets_empty_hf_endpoint():
+    # huggingface_hub reads HF_ENDPOINT from the env; exporting an EMPTY value
+    # overrides its https://huggingface.co default with "" and breaks every API
+    # call ("Request URL is missing an 'http://' ... protocol"). With no endpoint
+    # on the descriptor, the epilogue must `unset HF_ENDPOINT`, not export "".
+    out = HfOutputIO(
+        repo="ns/out", uri="hf:///ns/out", binding_id="model_out", token="t"
+    )
+    sh = SkypilotIO().render_epilogue([out], capture_var="CAP")
+    assert "unset HF_ENDPOINT" in sh
+    assert "export HF_ENDPOINT=''" not in sh
+    assert 'export HF_ENDPOINT=""' not in sh
+
+
 def test_render_epilogue_sets_owner_and_repo_name_from_repo():
     out = HfOutputIO(
         repo="acme/widgets",

@@ -59,6 +59,17 @@ class SkypilotIO(EnvironmentIO):
             resource_group_id = (
                 "" if o.resource_group_id is None else o.resource_group_id
             )
+            # huggingface_hub reads HF_ENDPOINT from the environment; an
+            # empty-but-SET value overrides its https://huggingface.co default
+            # with "" and breaks every API call ("Request URL is missing an
+            # 'http://' or 'https://' protocol"). So export HF_ENDPOINT only when
+            # non-empty; otherwise `unset` it so hf falls back to its default.
+            endpoint = getattr(o, "endpoint", "") or ""
+            endpoint_line = (
+                f"export HF_ENDPOINT={_shq(endpoint)}"
+                if endpoint
+                else "unset HF_ENDPOINT"
+            )
             # Resolve the source path at runtime from the step's own
             # GB_ARTIFACT_PATH marker (marker-capture, spec §5): read the
             # capture file, pull the artifact path for THIS binding_id,
@@ -81,7 +92,7 @@ class SkypilotIO(EnvironmentIO):
                     f"HF_OWNER={_shq(owner)}",
                     f"HF_REPO_NAME={_shq(repo_name)}",
                     'export HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"',
-                    f"export HF_ENDPOINT={_shq(getattr(o, 'endpoint', ''))}",
+                    endpoint_line,
                     f"export HF_REVISION={_shq(o.revision)}",
                     f"export HF_PATH_IN_REPO={_shq(o.path_in_repo)}",
                     f"export HF_PRIVATE={_shq(str(o.private))}",
