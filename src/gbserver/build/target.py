@@ -267,6 +267,48 @@ class Target(BuildEntity):
             tasks.append(task)
         return tasks
 
+    def push_assets(self: Self) -> Dict[str, dict]:
+        """Resolve inline-push declared outputs to HfOutputIO descriptors.
+
+        For each declared output whose resolved push store is an hfstore with
+        ``push[0].config.inline`` truthy, ask the environment to build a
+        destination descriptor (Task 7's ``resolve_inline_hfpush``) and stash it
+        on the output's ``binding_id`` so the producing step's launch appends the
+        upload epilogue (spec §5, Q1). Non-inline / non-hf outputs resolve to
+        nothing (they take the separate-step push path). Single-producing-step
+        scope.
+        """
+        resolved: Dict[str, dict] = {}
+        outputs = getattr(self.config, "outputs", None)
+        if not outputs:
+            return resolved
+        for binding_id, out in outputs.items():
+            if not out.uri:
+                continue
+            uri = URI.get_uri(out.uri)
+            assetstore, storeenv = self.environment._get_storeconfig(
+                uri=uri, raise_exceptions=False
+            )
+            if assetstore is None or assetstore.type.lower() != "hfstore":
+                continue
+            push_cfg = storeenv.push[0] if (storeenv and storeenv.push) else None
+            inline = (
+                push_cfg is not None
+                and isinstance(getattr(push_cfg, "config", None), dict)
+                and push_cfg.config.get("inline", False)
+            )
+            if not inline:
+                continue
+            io = self.environment.resolve_inline_hfpush(
+                uri=uri,
+                storepush_config=push_cfg,
+                assetstore=assetstore,
+                output_config=out,
+                binding_id=binding_id,
+            )
+            resolved[binding_id] = {"_hfpush": io}
+        return resolved
+
     async def setup(self: Self, tg: TaskGroup, **kwargs) -> None:
         """Do some setup before launching the steps that are part of the target."""
         async with self.setup_lock:
