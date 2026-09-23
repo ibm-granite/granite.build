@@ -19,6 +19,7 @@ The Target.
 """
 
 import asyncio
+import re
 from asyncio import Queue, Task, TaskGroup
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -285,7 +286,29 @@ class Target(BuildEntity):
         for binding_id, out in outputs.items():
             if not out.uri:
                 continue
-            uri = URI.get_uri(out.uri)
+            # URI.get_uri renders Jinja eagerly. An output URI may legitimately
+            # reference the PRODUCED artifact (e.g. "{{ binding.path | short_hash }}"),
+            # which does not exist at target-setup time. The separate-step push path
+            # renders it later (post-step, in Environment.pushasset, with `binding`
+            # in scope), so a NON-inline output is fine — skip it here. But an INLINE
+            # hf push must resolve its HF destination BEFORE the producing step
+            # launches (the epilogue is baked into the step's run script), so a
+            # binding-dependent destination is unsupported: fail clearly instead of
+            # crashing deep in Jinja mid-run.
+            try:
+                uri = URI.get_uri(out.uri)
+            except Exception as e:  # noqa: BLE001 - template render / parse failure
+                if self._output_is_inline_hf_push(out.uri):
+                    raise ValueError(
+                        f"inline hfpush output '{binding_id}' has a destination URI "
+                        "that cannot be resolved before the producing step runs "
+                        "(it references the produced artifact, e.g. "
+                        "'{{ binding.* }}'): inline push resolves the HF destination "
+                        "at setup, so the repo name may not depend on the artifact "
+                        "the push creates. Use a literal or build-time name, or drop "
+                        f"`inline: true` to use the separate-step hfpush. URI: {out.uri}"
+                    ) from e
+                continue
             assetstore, storeenv = self.environment._get_storeconfig(
                 uri=uri, raise_exceptions=False
             )
@@ -327,6 +350,33 @@ class Target(BuildEntity):
             )
             resolved[binding_id] = {"_hfpush": io}
         return resolved
+
+    def _output_is_inline_hf_push(self: Self, raw_uri: str) -> bool:
+        """Is ``raw_uri`` an hf output whose push store is ``inline: true``?
+
+        Used only when ``URI.get_uri(raw_uri)`` failed to render (e.g. the URI
+        references the not-yet-produced ``{{ binding.* }}``), to decide between a
+        clear inline-push error and silently skipping a non-inline output. Detects
+        the store WITHOUT the produced binding by substituting any Jinja expression
+        with a literal placeholder — the store match keys off the scheme, not the
+        repo path — so a binding-dependent URI can still be classified.
+        """
+        sanitized = re.sub(r"\{\{.*?\}\}", "x", raw_uri)
+        try:
+            uri = URI.get_uri(sanitized)
+        except Exception:  # noqa: BLE001 - still unrenderable/parse error => not ours
+            return False
+        assetstore, storeenv = self.environment._get_storeconfig(
+            uri=uri, raise_exceptions=False
+        )
+        if assetstore is None or assetstore.type.lower() != "hfstore":
+            return False
+        push_cfg = storeenv.push[0] if (storeenv and storeenv.push) else None
+        return bool(
+            push_cfg is not None
+            and isinstance(getattr(push_cfg, "config", None), dict)
+            and push_cfg.config.get("inline", False)
+        )
 
     async def setup(self: Self, tg: TaskGroup, **kwargs) -> None:
         """Do some setup before launching the steps that are part of the target."""

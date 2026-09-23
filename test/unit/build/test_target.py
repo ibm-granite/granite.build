@@ -149,3 +149,56 @@ def test_push_assets_empty_when_no_outputs():
     target.config = BuildTargetConfig(environment_uri="env:///skypilot", steps=[])
     target.environment = MagicMock()
     assert target.push_assets() == {}
+
+
+# A URI that references the PRODUCED artifact ({{ binding.* }}) — it cannot be
+# rendered at target-setup time (binding does not exist yet). URI.get_uri renders
+# Jinja strictly, so this raises during push_assets' resolution.
+BINDING_DEP_URI = "hf:///ibm-granite/out_{{ binding.path }}"
+
+
+@pytest.fixture
+def binding_dep_inline_push_target():
+    """An inline hf output whose destination URI depends on the produced binding."""
+    outputs = {"model_out": BuildTargetOutputConfig(uri=BINDING_DEP_URI)}
+    storeenv = AssetStoreEnvironmentConfig(
+        store_uri="hf:///",
+        push=[StorePush(config={"inline": True})],
+    )
+    assetstore = MagicMock()
+    assetstore.type = "hfstore"
+    return _make_target(outputs, storeenv, assetstore)
+
+
+def test_push_assets_rejects_binding_dependent_inline_uri(
+    binding_dep_inline_push_target,
+):
+    # Inline push resolves the HF destination at setup, BEFORE the producing step
+    # runs, so a destination that references the produced artifact must fail with a
+    # clear error — not a cryptic Jinja UndefinedError deep in the run.
+    with pytest.raises(
+        ValueError, match="cannot be resolved before the producing step"
+    ):
+        binding_dep_inline_push_target.push_assets()
+
+
+@pytest.fixture
+def binding_dep_noninline_push_target():
+    """Same binding-dependent URI, but NOT inline: the separate-step path renders
+    it post-step, so push_assets must SKIP it here (never eagerly render/crash)."""
+    outputs = {"model_out": BuildTargetOutputConfig(uri=BINDING_DEP_URI)}
+    storeenv = AssetStoreEnvironmentConfig(
+        store_uri="hf:///",
+        push=[StorePush(config={"inline": False})],
+    )
+    assetstore = MagicMock()
+    assetstore.type = "hfstore"
+    return _make_target(outputs, storeenv, assetstore)
+
+
+def test_push_assets_skips_binding_dependent_noninline_uri(
+    binding_dep_noninline_push_target,
+):
+    # A non-inline binding-dependent output is resolved post-step by pushasset;
+    # push_assets must not eagerly render it and must not raise.
+    assert binding_dep_noninline_push_target.push_assets() == {}
