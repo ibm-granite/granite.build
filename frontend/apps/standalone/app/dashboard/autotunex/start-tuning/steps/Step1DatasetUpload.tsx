@@ -767,6 +767,7 @@ export function Step1DatasetUpload({
                   <ContentSwitcher
                     selectedIndex={availableSources.indexOf(dataSource)}
                     onChange={({ index }) => setDataSource(availableSources[index ?? 0])}
+                    className={styles.sourceSwitcher}
                     style={{ marginBottom: '0.75rem' }}
                   >
                     {availableSources.map((source) => (

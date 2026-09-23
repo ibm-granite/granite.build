@@ -144,3 +144,21 @@
   padding: 0;
   cursor: pointer;
 }
+
+// Carbon gives every switch `inline-size: 100%`, so as equal-basis flex items the
+// three tabs each take exactly a third of the 340px settings tile -- 81px of label
+// room once the 16px inline padding is taken off. "Select Existing" needs 94px and
+// "HuggingFace" 83px, so both ellipsized regardless of how much room the short
+// "Upload" tab was wasting. `max-content` sizes each tab to its own label instead.
+//
+// `flex-grow` is the other half of the fix, not a flourish: at max-content the three
+// tabs come to 319px and `justify-content: space-evenly` on the switcher would spend
+// the leftover 21px as gaps *between* the segments, splitting the connected pill into
+// three floating buttons. Growing them consumes it inside the segments.
+//
+// Both tabs still ellipsize if the column is ever narrowed enough, but they now
+// shrink in proportion to their own text rather than all being clamped to a third.
+.sourceSwitcher :global(.cds--content-switcher-btn) {
+  flex-basis: max-content;
+  flex-grow: 1;
+}
