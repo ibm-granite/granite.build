@@ -37,6 +37,7 @@ import {
   probeMapping,
   problemDetail,
   pruneMapping,
+  reconcileValidationSplit,
   suffixWithRevision,
   survivalSummary,
   type SurvivalSummary,
@@ -112,6 +113,8 @@ export interface UseHfImportResult {
   handleTrainSplitChange: (next: string) => void
   validationSplit: string
   setValidationSplit: (next: string) => void
+  /** True when no separate validation split is chosen. Drives the split toggle. */
+  splitFromTrain: boolean
 
   preview: HfImportPreview | null
   freshMappedPreview: HfImportPreview | null
@@ -539,6 +542,15 @@ export function useHfImport({
   function handleTrainSplitChange(nextSplit: string) {
     setTrainSplit(nextSplit)
     setMapping({})
+    // The candidate list is keyed on the *incoming* split, so a selection can go
+    // stale: `handleConfigChange` resets it outright, and without this the import
+    // could post one split as both train and validation.
+    setValidationSplit((current) =>
+      reconcileValidationSplit(
+        current,
+        splitNames.filter((split) => split !== nextSplit),
+      ),
+    )
   }
 
   const splitsErrorStatus = hfErrorStatus(splitsError)
@@ -571,6 +583,7 @@ export function useHfImport({
     survivalKind: survival.kind,
     importing,
     splitFromTrain,
+    hasValidationSplit: validationSplit !== '',
     validationPercentage,
   })
 
@@ -703,6 +716,7 @@ export function useHfImport({
     handleTrainSplitChange,
     validationSplit,
     setValidationSplit,
+    splitFromTrain,
 
     preview,
     freshMappedPreview,
