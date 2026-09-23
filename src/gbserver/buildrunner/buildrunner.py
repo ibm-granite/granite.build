@@ -17,7 +17,6 @@
 # from .artifact import ArtifactStoreType, ArtifactType
 # from .resources import ResourceSpec, ResourceType
 
-
 """
 The Build runner and build event processor.
 """
@@ -83,6 +82,7 @@ from gbserver.types.constants import (
     DEFAULT_GH_API_ENDPOINT,
     DEFAULT_ROOT_WORKSPACE_DIR,
     GBSERVER_GITHUB_TOKEN,
+    GBSERVER_LOG_RECORD_MAX_CHARS,
     GBSERVER_RAISE_BUILD_EXCEPTIONS,
     STARTING_BUILD_MESSAGE,
     WORKSPACE_BUILDS_DIR,
@@ -90,10 +90,11 @@ from gbserver.types.constants import (
 from gbserver.types.status import STATUS_TO_ICON, Status
 from gbserver.utils.archive import extract_archive
 from gbserver.utils.logger import get_logger
-from gbserver.utils.unwrap_errors import format_failure_reason
+from gbserver.utils.unwrap_errors import escape_for_one_record, format_failure_reason
 from gbserver.utils.utils import get_build_status_link
 
 logger = get_logger(__name__)
+
 # How many times the monitoring interval between checks for cancellation
 _CANCEL_CHECK_MONITORING_INTERVAL_MULTIPLIER = 5
 _BUILD_EVENT_SOURCE_NAME = "build-runner"
@@ -593,7 +594,10 @@ class BuildRunner(AbstractBuildRunner):
                 )
                 assert isinstance(event, BuildEvent), f"invalid event: {event}"
                 logger.info(
-                    "build %s got a new event: %s : %s", build_id, event.type, event
+                    "build %s got a new event: %s : %s",
+                    build_id,
+                    event.type,
+                    escape_for_one_record(str(event), GBSERVER_LOG_RECORD_MAX_CHARS),
                 )
                 build_finished = self.__process_event(event=event)
                 if build_finished:
@@ -840,7 +844,12 @@ Build ID    : {build_id}
         assert isinstance(
             payload, BuildEventStatusPayload
         ), f"expected a status payload, actual: {payload}"
-        logger.info("got a status: %s and a message: %s", payload.status, payload.msg)
+        # payload.msg is multi-line markdown (see Run.create_message).
+        logger.info(
+            "got a status: %s and a message: %s",
+            payload.status,
+            escape_for_one_record(payload.msg or "", GBSERVER_LOG_RECORD_MAX_CHARS),
+        )
         logger.info("run_info: %s", run_info)
         if self.build_run is None:
             logger.warning(

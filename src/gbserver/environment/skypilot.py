@@ -55,6 +55,7 @@ from gbserver.spaces.hf_push_config import (
 )
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
+from gbserver.types.constants import GBSERVER_LOG_RECORD_MAX_CHARS
 from gbserver.types.environment.environment import EnvironmentVariableConfig
 from gbserver.types.environment.skypilot import StepSkypilotConfig
 from gbserver.types.environmentconfig import EnvironmentConfig
@@ -669,12 +670,6 @@ _NON_TRANSIENT_PROVISION_SUBSTRINGS = (
 )
 
 
-# Cap for the server traceback emitted as one log record (mirrors
-# build/run.py _TRACE_LOG_MAX_CHARS; kept local to avoid importing build.run
-# into an environment module).
-_REMOTE_TRACE_LOG_MAX_CHARS = 20000
-
-
 def _log_remote_stacktrace(exc: BaseException, context: str) -> None:
     """Log the SkyPilot API server's traceback for ``exc``, when it carries one.
 
@@ -695,7 +690,7 @@ def _log_remote_stacktrace(exc: BaseException, context: str) -> None:
     logger.error(
         "Traceback from the SkyPilot API server (%s): %s",
         context,
-        escape_for_one_record(stacktrace, _REMOTE_TRACE_LOG_MAX_CHARS),
+        escape_for_one_record(stacktrace, GBSERVER_LOG_RECORD_MAX_CHARS),
     )
 
 

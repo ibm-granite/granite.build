@@ -32,7 +32,7 @@ from gbserver.types.buildevent import (
     BuildEventType,
     EntityRunMetadata,
 )
-from gbserver.types.constants import truncate
+from gbserver.types.constants import GBSERVER_LOG_RECORD_MAX_CHARS
 from gbserver.types.status import STATUS_TO_ICON, Status
 from gbserver.utils.logger import get_logger
 from gbserver.utils.unwrap_errors import (
@@ -69,10 +69,6 @@ class RunFailed(RuntimeError):
         self.exceptions = exceptions
 
 
-# Caps the trace in the single-record log below; guards a runaway recursion trace
-# from flooding the log pipeline.
-_TRACE_LOG_MAX_CHARS = 20000
-
 # Grep-able marker; distinguishes this deliberate trace from a crash dump.
 _TRACE_MARKER = "FAILURE TRACEBACK"
 
@@ -88,7 +84,7 @@ def _log_failure_trace(err_stack: Optional[str], entity_id: str) -> None:
     Called only from the innermost reporting layer (see ``_already_reported``), so a
     failure logs its trace exactly once.
     """
-    escaped = escape_for_one_record(err_stack or "", _TRACE_LOG_MAX_CHARS)
+    escaped = escape_for_one_record(err_stack or "", GBSERVER_LOG_RECORD_MAX_CHARS)
     logger.error("%s [%s]: %s", _TRACE_MARKER, entity_id, escaped)
 
 
@@ -349,7 +345,10 @@ Build ID    : {build_id}
         logger.debug("Run.update_status %s start", self.id)
         self.status = status
         msg = self.create_message(extra_msg=extra_msg)
-        logger.info("msg: %s", truncate(msg))
+        # ONE record: msg is multi-line markdown, and the pipeline splits on newlines.
+        logger.info(
+            "msg: %s", escape_for_one_record(msg, GBSERVER_LOG_RECORD_MAX_CHARS)
+        )
         event = BuildEvent(
             run_metadata=self.get_runmetadata(),
             type=BuildEventType.STATUS_EVENT,

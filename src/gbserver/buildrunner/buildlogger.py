@@ -42,8 +42,10 @@ from gbserver.types.constants import (
     DEFAULT_GH_API_ENDPOINT,
     GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GITHUB_TOKEN,
+    GBSERVER_LOG_RECORD_MAX_CHARS,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.unwrap_errors import escape_for_one_record
 
 logger = get_logger(__name__)
 
@@ -138,16 +140,16 @@ class BuildPRLogger(AbstractBuildLogger):
         markdown: str,
         triggering_event: Optional[BuildEvent] = None,
     ) -> None:
-        # Prefix with a log-level indication
-        truncated_body = markdown[:20] + "..." if len(markdown) > 20 else markdown
+        # Prefix with a log-level indication. Escaped, not just sliced: see _log.
+        escaped_body = escape_for_one_record(markdown, GBSERVER_LOG_RECORD_MAX_CHARS)
         if level == BuildLogLevel.INFO:
-            logger.info("posting to PR %s, body: %s", self.pr_id, truncated_body)
+            logger.info("posting to PR %s, body: %s", self.pr_id, escaped_body)
             markdown = "## ℹ️  INFO\n\n" + str(markdown)
         elif level == BuildLogLevel.WARNING:
-            logger.warning("posting to PR %s, body: %s", self.pr_id, truncated_body)
+            logger.warning("posting to PR %s, body: %s", self.pr_id, escaped_body)
             markdown = "## ⚠️  WARNING!\n\n" + str(markdown)
         elif level == BuildLogLevel.ERROR:
-            logger.error("posting to PR %s, body: %s", self.pr_id, truncated_body)
+            logger.error("posting to PR %s, body: %s", self.pr_id, escaped_body)
             markdown = "## ❌  ERROR!\n\n" + str(markdown)
         # Create a logger message.
         # Post to git PR
@@ -206,9 +208,12 @@ class BuildEventMessageLogger(AbstractBuildLogger):
         triggering_event: Optional[BuildEvent] = None,
     ) -> None:
 
-        # Create a logger message.
-        truncated_body = markdown[:20] + "..." if len(markdown) > 20 else markdown
-        logger.info("posting a %s log event: %s", level.name, truncated_body)
+        # Escaped, not just sliced: the fence ends in a newline at offset 3.
+        logger.info(
+            "posting a %s log event: %s",
+            level.name,
+            escape_for_one_record(markdown, GBSERVER_LOG_RECORD_MAX_CHARS),
+        )
 
         # Post to gb_events table
         assert (
