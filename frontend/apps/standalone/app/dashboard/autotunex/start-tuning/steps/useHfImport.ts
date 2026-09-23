@@ -583,7 +583,7 @@ export function useHfImport({
     survivalKind: survival.kind,
     importing,
     splitFromTrain,
-    hasValidationSplit: validationSplit !== '',
+    hasValidationSplit: validationSplit !== '' && validationSplit !== NO_VALIDATION,
     validationPercentage,
   })
 

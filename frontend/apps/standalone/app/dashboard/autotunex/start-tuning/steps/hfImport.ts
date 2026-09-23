@@ -149,9 +149,13 @@ export function defaultTrainSplit(splitNames: string[]): string {
   return splitNames[0] ?? ''
 }
 
-// Carbon's Select needs a real option value; null is not one. Lives here rather
-// than in useHfImport.ts so the rule functions below can return it -- useHfImport
-// imports from this module, so the reverse direction would be circular.
+// The "no separate validation split; carve one out of train" state. A third distinct
+// string rather than null or '', because '' now means "toggled off, nothing chosen
+// yet" and the two differ to the import gate: this sentinel imports with a
+// percentage, '' blocks. Never rendered -- the split toggle replaced the Select
+// option this used to be. Lives here rather than in useHfImport.ts so the rule
+// functions below can return it; useHfImport imports from this module, so the
+// reverse direction would be circular.
 export const NO_VALIDATION = '__none__'
 
 /**
@@ -330,9 +334,10 @@ export function canImport(input: {
   /** True when no separate validation split is chosen, so the percentage applies. */
   splitFromTrain: boolean
   /**
-   * True when a separate validation split has actually been picked. False is the
-   * "toggle is off, dropdown still on its placeholder" state, which must not
-   * import -- it would post an empty validation_split.
+   * True only when a real split has been picked as validation. False both on the
+   * default path -- the toggle is on, so validation is carved out of train -- and
+   * in the "toggle off, dropdown still on its placeholder" state, which must not
+   * import, since it would post an empty validation_split.
    */
   hasValidationSplit: boolean
   validationPercentage: number
