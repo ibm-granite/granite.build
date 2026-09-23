@@ -185,6 +185,7 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
               </div>
               <Toggle
                 id="hf-split-toggle"
+                aria-label="Split dataset"
                 labelText=""
                 hideLabel
                 toggled={hf.splitFromTrain}
