@@ -65,7 +65,6 @@ def test_production_banner_timeout_is_transient():
         "Failed to query Slurm jobs.",
         "kex_exchange_identification: Connection closed by remote host",
         "ssh_exchange_identification: read: Connection reset by peer",
-        "Connection closed by remote host",
     ],
 )
 def test_ssh_flakiness_is_transient(msg):
@@ -80,6 +79,9 @@ def test_ssh_flakiness_is_transient(msg):
 # would otherwise be retried with a full teardown between attempts.
 _GENERIC_NETWORK_MSGS = [
     "Connection timed out",
+    # Bare form only: the kex_/ssh_exchange_identification variants are
+    # unambiguous and stay cloud-independent above.
+    "Connection closed by remote host",
     "Connection reset by peer",
     "No route to host",
     "Temporary failure in name resolution",

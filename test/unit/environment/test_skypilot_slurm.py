@@ -795,6 +795,76 @@ class TestProvisionRetry:
         assert mock_sky.stream_and_get.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_generic_network_error_retried_when_step_overrides_cloud(self):
+        """A control-plane blip must be retried based on the cloud actually being
+        provisioned, not the env's ``default_cloud``.
+
+        Regression guard: the classifier was bound to ``self._get_cloud()``, so an
+        env defaulting to k8s running a step that overrides to slurm classified
+        with ``cloud="k8s"``, skipped _TRANSIENT_SSH_ONLY_SUBSTRINGS, and failed
+        the launch on the first blip — defeating this PR's whole mechanism on
+        cloud-overridden launches. Asserted through ``launch_skypilot`` so the
+        wiring is pinned, not just the predicate.
+        """
+        k8s_default_env = Skypilot(
+            event_q=asyncio.Queue(),
+            environment_config=EnvironmentConfig(
+                name="test-k8s-default",
+                type="Skypilot",
+                config={"default_cloud": "k8s", "idle_minutes_to_autostop": 0},
+            ),
+        )
+        assert k8s_default_env._get_cloud() == "k8s", "precondition: env says k8s"
+
+        mock_sky = _mock_sky()
+        mock_sky.stream_and_get.side_effect = [
+            Exception("Connection timed out"),  # generic wording, HPC-only tuple
+            (1, MagicMock()),
+        ]
+        s, h, bmax, batt = self._patches(mock_sky)
+        with s, h, bmax, batt:
+            k8s_default_env._get_launch_ready_event("prov-override")
+            await k8s_default_env.launch_skypilot(
+                launch_id="prov-override",
+                # The step overrides the cloud to slurm.
+                launcher_config={"run": "hostname", "resources": {"cloud": "slurm"}},
+                config={},
+            )
+
+        # Retried (2 attempts) rather than failing on the first blip.
+        assert mock_sky.stream_and_get.call_count == 2
+        # Cluster recorded (exact name is length-capped elsewhere; not asserted here).
+        assert "prov-override" in k8s_default_env._cluster_names
+
+    @pytest.mark.asyncio
+    async def test_generic_network_error_not_retried_on_non_hpc_cloud(self):
+        """The converse: on a genuine k8s launch the same generic wording must NOT
+        be retried, so a persistent misconfig fails fast instead of burning the
+        budget on teardown-per-attempt."""
+        k8s_env = Skypilot(
+            event_q=asyncio.Queue(),
+            environment_config=EnvironmentConfig(
+                name="test-k8s",
+                type="Skypilot",
+                config={"default_cloud": "k8s", "idle_minutes_to_autostop": 0},
+            ),
+        )
+        mock_sky = _mock_sky()
+        mock_sky.stream_and_get.side_effect = Exception("Connection timed out")
+        s, h, bmax, batt = self._patches(mock_sky)
+        with s, h, bmax, batt:
+            k8s_env._get_launch_ready_event("prov-k8s")
+            with pytest.raises(Exception, match="Connection timed out"):
+                await k8s_env.launch_skypilot(
+                    launch_id="prov-k8s",
+                    launcher_config={"run": "hostname", "resources": {}},
+                    config={},
+                )
+
+        assert mock_sky.stream_and_get.call_count == 1
+        assert mock_sky.down.call_count == 0
+
+    @pytest.mark.asyncio
     async def test_cleanup_tolerates_cluster_already_gone(self, slurm_env):
         """_teardown swallows ClusterDoesNotExist (already gone) and
         cleanup_skypilot still clears the per-launch bookkeeping."""

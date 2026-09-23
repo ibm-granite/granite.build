@@ -624,7 +624,9 @@ _TRANSIENT_PROVISION_SUBSTRINGS = (
     "failed to get slurm partitions",
     "failed to get partitions for cluster",
     "failed to query slurm jobs",
-    "connection closed by remote host",
+    # The ssh_/kex_-prefixed forms are unambiguous; the bare "connection closed
+    # by remote host" is not (aws/gcp VM-setup paths emit it too), so it lives in
+    # the SSH-only tuple below.
     "kex_exchange_identification",  # ssh key-exchange aborted mid-handshake
     "ssh_exchange_identification",
 )
@@ -636,6 +638,7 @@ _TRANSIENT_PROVISION_SUBSTRINGS = (
 # matched only when the target cloud is slurm/lsf — see _is_transient_provision_error.
 _TRANSIENT_SSH_ONLY_SUBSTRINGS = (
     "connection timed out",
+    "connection closed by remote host",
     "connection reset by peer",
     "no route to host",
     "temporary failure in name resolution",
@@ -726,8 +729,10 @@ def _is_transient_provision_error(
             return True
     if any(s in text for s in _TRANSIENT_PROVISION_SUBSTRINGS):
         return True
-    # Accept a bare cloud ("slurm") or a full infra string ("slurm/bluevela"),
-    # matching the normalization used at the launch site.
+    # Callers pass the cloud already resolved from the launch infra; normalize
+    # defensively so a full infra string ("slurm/bluevela") or odd casing still
+    # matches. This is NOT a licence to pass the env's default_cloud — a step can
+    # override the cloud, and classifying against the override is the point.
     cloud_group = (cloud or "").strip().split("/", 1)[0].lower()
     if cloud_group in _SSH_HPC_CLOUDS:
         return any(s in text for s in _TRANSIENT_SSH_ONLY_SUBSTRINGS)
@@ -2197,7 +2202,7 @@ class Skypilot(Environment):
             # resource-acquisition failures (e.g. a just-torn-down slurm/lsf
             # allocation not yet released on retry). See _provision_with_retry.
             job_id, _handle = await self._provision_with_retry(
-                task, cluster_name, autostop
+                task, cluster_name, autostop, cloud_group
             )
 
             self._cluster_names[launch_id] = cluster_name
@@ -2302,6 +2307,7 @@ class Skypilot(Environment):
         task: Any,
         cluster_name: str,
         autostop: Optional[int],
+        cloud_group: str,
     ) -> Tuple[Optional[int], Any]:
         """Run ``sky.launch`` + ``sky.stream_and_get`` with bounded retry on
         transient resource-acquisition failures.
@@ -2320,6 +2326,11 @@ class Skypilot(Environment):
             task: The ``sky.Task`` to launch.
             cluster_name: Deterministic cluster name for this launch.
             autostop: idle_minutes_to_autostop (None on slurm/lsf).
+            cloud_group: Normalized target cloud, as resolved from the launch
+                infra by the caller — NOT the env's ``default_cloud``, which a
+                step can override via ``infra:``/``resources.cloud``. Decides
+                whether generic TCP/DNS wording counts as transient (see
+                :func:`_is_transient_provision_error`).
 
         Returns:
             Tuple of (job_id, handle) from ``sky.stream_and_get``.
@@ -2345,13 +2356,9 @@ class Skypilot(Environment):
             )
         )
 
-        # Bind the target cloud so generic TCP/DNS wording is only retried on the
-        # HPC SSH path (see _TRANSIENT_SSH_ONLY_SUBSTRINGS).
-        target_cloud = self._get_cloud()
-
         async for attempt in AsyncRetrying(
             retry=retry_if_exception(
-                lambda e: _is_transient_provision_error(e, cloud=target_cloud)
+                lambda e: _is_transient_provision_error(e, cloud=cloud_group)
             ),
             wait=wait_exponential(multiplier=30, max=provision_backoff_max),
             stop=stop_after_attempt(max(1, max_attempts)),
@@ -2401,7 +2408,7 @@ class Skypilot(Environment):
                     # next attempt so the relaunch doesn't reuse the stale
                     # allocation. Only for transient errors — others re-raise
                     # untouched and tenacity will not retry them.
-                    if _is_transient_provision_error(e, cloud=target_cloud):
+                    if _is_transient_provision_error(e, cloud=cloud_group):
                         logger.warning(
                             "Transient provision failure for %s (attempt %d): %s",
                             cluster_name,
