@@ -44,6 +44,7 @@ from tenacity import (
 from gbcommon.uri.uri import URI
 from gbserver.environment._skypilot_ssh import _kill_and_reap
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
+from gbserver.environment.io.descriptors import HfOutputIO, InlineDeferredPush
 from gbserver.environment.shared_fs import (
     build_provider,
     resolve_local_scratch,
@@ -3641,7 +3642,7 @@ class Skypilot(Environment):
         assetstore=None,
         output_config=None,
         **kwargs,
-    ) -> BuildTargetStepConfig:
+    ) -> Union[BuildTargetStepConfig, InlineDeferredPush]:
         """Push an artifact from the cluster to HuggingFace Hub via the hfpush step.
 
         Mirrors the K8s ``pushasset_hfstore`` resolution order for resource group
@@ -3666,6 +3667,23 @@ class Skypilot(Environment):
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
+
+        inline = (
+            storepush_config is not None
+            and isinstance(getattr(storepush_config, "config", None), dict)
+            and storepush_config.config.get("inline", False)
+        )
+        if inline:
+            # Upload was folded into the producing step's epilogue at launch
+            # (resolve_inline_hfpush + SkypilotIO.render_epilogue). This post-step
+            # call is a no-op that only lets pushasset emit CREATED (spec §6).
+            logger.info(
+                "pushasset_hfstore: inline mode — deferring upload to producing "
+                "step epilogue for %s",
+                str(hfuri),
+            )
+            return InlineDeferredPush()
+
         space_name = output_config.space_name if output_config else None
         # Enterprise/non-enterprise split + config precedence (environment-level
         # storepush_config, overridden by build.yaml store_push) + table-first
@@ -3716,6 +3734,59 @@ class Skypilot(Environment):
                 "hfpush_config": hfpush_config,
                 "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
             },
+        )
+
+    def resolve_inline_hfpush(
+        self: Self,
+        uri: Union[str, URI],
+        storepush_config=None,
+        assetstore=None,
+        output_config=None,
+        binding_id: str = "",
+    ) -> HfOutputIO:
+        """Build the destination descriptor for an inline (folded) hfpush.
+
+        The inline path uploads at the producing step's epilogue instead of
+        queuing a separate hfpush step, so this returns a *destination-only*
+        ``HfOutputIO`` (no ``src``; the source is resolved at runtime from the
+        step's ``GB_ARTIFACT_PATH`` marker). Task 8's ``Target.push_assets``
+        calls this at target setup.
+
+        It reuses the exact resolution the separate-step ``pushasset_hfstore``
+        path uses — ``resolve_hfpush_resource_group_id`` (Enterprise split,
+        env/output config precedence, ``private`` flip),
+        ``assetstore.resolve_token``, and ``HfURI`` parsing — so the inline
+        destination matches what the queued step would have pushed to. The
+        ``path_in_repo``/``private`` overlay fields from the merged ``hf`` push
+        config are carried in from ``resolve_hfpush_resource_group_id``'s merged
+        view so parity holds for the common case.
+        """
+        from gbcommon.uri.hf import HfURI
+
+        hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        space_name = output_config.space_name if output_config else None
+        resource_group_id, hf_private, _hf_cfg = resolve_hfpush_resource_group_id(
+            hfuri=hfuri,
+            assetstore=assetstore,
+            space_name=space_name,
+            storepush_config=storepush_config,
+            output_config=output_config,
+        )
+        token = assetstore.resolve_token(hfuri) or ""
+        hf_type = hfuri.get_hf_type() or "model"
+        return HfOutputIO(
+            repo=f"{hfuri.get_owner()}/{hfuri.get_repo()}",
+            revision=hfuri.get_revision() or "main",
+            private=bool(hf_private),
+            resource_group_id=resource_group_id,
+            path_in_repo=(
+                _hf_cfg.get("path_in_repo", "") if isinstance(_hf_cfg, dict) else ""
+            ),
+            uri=str(hfuri),
+            binding_id=binding_id or "",
+            token=token,
+            # HfType is an enum; HfOutputIO.hf_type is a plain str, so normalize.
+            hf_type=getattr(hf_type, "value", hf_type),
         )
 
     async def pushasset_cosstore(
