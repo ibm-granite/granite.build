@@ -40,12 +40,25 @@ import { TrialCompare } from './TrialCompare'
 import { TrialProgressSummary } from './TrialProgressSummary'
 import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
+import { TrialSearchSpace } from './TrialSearchSpace'
 import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import { formatHyperparamValue, hyperparamColumnLabel, hyperparamColumns } from './trialHyperparams'
 import styles from './TrialsTable.module.scss'
 import { bestTrialId, isLowerBetter, jobMetric, rankBestFirst, scoreOn, toFeatureLabel, toRadarData } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
+
+// The radar chart is superseded by TrialSearchSpace but kept behind this flag,
+// not deleted, because stakeholders may ask for it back. A radar is the same
+// construction in polar coordinates, so the two show the same trials; the parallel
+// plot drops the square aspect ratio that left most of a full-width row empty, and
+// the enclosed area that reads as meaning when the axes carry different units.
+//
+// Flip to `true` to restore it. Everything it needs — `toRadarData`, `radarData`,
+// `axisCount`, styles.radar and the RadarChart import — is still wired up, so
+// nothing else has to change. Remove this flag and that machinery together if the
+// decision is ever made final.
+const SHOW_RADAR = false
 
 // Hyperparameter columns are appended to these at render time. Appended, not
 // inserted: cause-then-effect would read more naturally, but on a wide sweep it
@@ -125,6 +138,20 @@ export function TrialsTable({ job }: Props) {
   // hyperparameters, in which case the table renders exactly as it did before this
   // feature.
   const hyperparamKeys = useMemo(() => hyperparamColumns(trials), [trials])
+
+  // The metric the job scores its trials on, and whether smaller is better. Read
+  // through the same accessor and the same predicate `bestTrialId` uses, so the
+  // plot's better-is-up axes cannot disagree with which trial it marks as best.
+  // Decided from the first trial reporting a value, since every trial in a job is
+  // scored on the same metric. A hook, and up here with the others rather than
+  // beside its use below, because the early returns follow.
+  const plotMetric = useMemo(() => {
+    for (const trial of trials) {
+      const primary = primaryMetric(trial)
+      if (primary) return { name: primary.name, lowerIsBetter: isLowerBetter(primary.name) }
+    }
+    return { name: 'loss', lowerIsBetter: true }
+  }, [trials])
   // The column is keyed `loss` for formatCell and the default sort, but holds the
   // job's metric, so it is labelled with it: a reward job's 0.91 under "Loss"
   // read as a bad loss.
@@ -267,7 +294,14 @@ export function TrialsTable({ job }: Props) {
   // blob still sits where that trial landed within it. Two axes is Carbon's own
   // floor: a single-axis radar makes RadarChart reject.
   const axisCount = new Set(radarData.map((d) => d.feature)).size
-  const canShowRadar = comparableTrials.length >= 1 && axisCount >= 2
+  const canShowRadar = SHOW_RADAR && comparableTrials.length >= 1 && axisCount >= 2
+  // The parallel plot draws the ticked trials and nothing else — with no selection
+  // the section is absent, the same gate the radar used. `boundsFrom` below is still
+  // the whole run, so each axis keeps the run's full scale and ticking a trial on or
+  // off never reshapes the axes under the reader; one selected trial is drawn where
+  // it sits within the run rather than pinned to the top of every axis.
+  const parallelTrials = comparableTrials
+
   // The diff-table only needs 2+ completed trials with a score — no axis constraint.
   const canOpenCompare = comparableTrials.length >= 2
   const atSelectionCap = selectedIds.length >= MAX_SELECTED
@@ -542,6 +576,19 @@ export function TrialsTable({ job }: Props) {
               theme,
               height: '420px',
             }}
+          />
+        </div>
+      )}
+
+      {parallelTrials.length > 0 && (
+        <div style={{ marginTop: '2rem' }}>
+          <TrialSearchSpace
+            trials={parallelTrials}
+            boundsFrom={plottableTrials}
+            hyperparamKeys={hyperparamKeys}
+            metric={plotMetric}
+            colorScale={colorScale}
+            bestTrialId={bestId}
           />
         </div>
       )}

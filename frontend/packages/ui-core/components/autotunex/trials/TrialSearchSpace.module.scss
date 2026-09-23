@@ -1,0 +1,132 @@
+/**
+ * Hand-drawn SVG rather than a Carbon chart: @carbon/charts has no parallel
+ * coordinates type, and this is nine axes and a polyline per trial — far less code
+ * than bending another chart into the shape.
+ */
+.axisLine {
+  stroke: var(--cds-border-subtle);
+  stroke-width: 1;
+}
+
+.divider {
+  stroke: var(--cds-border-strong);
+  stroke-width: 1;
+}
+
+.axisName {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  fill: var(--cds-text-secondary);
+}
+
+.axisTick,
+.groupLabel {
+  font-family: var(--cds-code-01-font-family, 'IBM Plex Mono', monospace);
+  font-size: 0.625rem;
+  fill: var(--cds-text-helper);
+}
+
+.groupLabel {
+  letter-spacing: 0.08em;
+}
+
+.line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* Wide transparent copy of each line, so the pointer doesn't need to land on a
+   2px stroke. The visible line is pointer-events: none so this is what gets hit. */
+.hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 12;
+  cursor: pointer;
+}
+
+.valueLabel {
+  font-family: var(--cds-code-01-font-family, 'IBM Plex Mono', monospace);
+  font-size: 0.625rem;
+  font-weight: 500;
+  /* Painted behind the glyphs so a label stays readable where lines cross it. */
+  stroke: var(--cds-layer);
+  stroke-width: 3.5;
+  stroke-linejoin: round;
+  paint-order: stroke;
+}
+
+.scroller {
+  overflow-x: auto;
+}
+
+.plot {
+  display: block;
+  /* Nine axes need room; narrower than this the axis names collide, so the
+     container scrolls rather than the labels overlapping. */
+  min-width: 52rem;
+  width: 100%;
+  height: auto;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem 0.25rem;
+  margin-top: 0.5rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+  font-family: var(--cds-code-01-font-family, 'IBM Plex Mono', monospace);
+  font-size: 0.6875rem;
+  color: var(--cds-text-secondary);
+
+  &:hover {
+    background: var(--cds-layer-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--cds-focus);
+    outline-offset: 1px;
+  }
+
+  &[aria-pressed='false'] {
+    opacity: 0.4;
+  }
+}
+
+.swatch {
+  width: 0.625rem;
+  height: 0.625rem;
+  flex: 0 0 0.625rem;
+}
+
+.chipBest {
+  font-size: 0.625rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cds-text-helper);
+}
+
+.ramp {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  font-family: var(--cds-code-01-font-family, 'IBM Plex Mono', monospace);
+  font-size: 0.625rem;
+  color: var(--cds-text-helper);
+}
+
+.rampBar {
+  width: 9rem;
+  height: 0.5rem;
+}
