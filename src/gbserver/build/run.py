@@ -36,8 +36,10 @@ from gbserver.types.constants import truncate
 from gbserver.types.status import STATUS_TO_ICON, Status
 from gbserver.utils.logger import get_logger
 from gbserver.utils.unwrap_errors import (
+    escape_for_one_record,
     format_failure_reason,
     get_readable_error_message,
+    with_remote_stacktrace,
 )
 from gbserver.utils.utils import get_uuid
 
@@ -86,19 +88,7 @@ def _log_failure_trace(err_stack: Optional[str], entity_id: str) -> None:
     Called only from the innermost reporting layer (see ``_already_reported``), so a
     failure logs its trace exactly once.
     """
-    raw = err_stack or ""
-    # Escape FIRST, then cap: escaping doubles every backslash and newline, so a
-    # cap applied to the raw text lets a backslash/newline-heavy trace emit a
-    # record up to 2x the limit — the flood the cap exists to prevent.
-    # "\n" keeps frame boundaries legible while staying one physical line.
-    escaped = raw.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "")
-    if len(escaped) > _TRACE_LOG_MAX_CHARS:
-        cut = escaped[:_TRACE_LOG_MAX_CHARS]
-        # Never end on a dangling backslash: cutting mid-pair ("\\\\" -> "\\") would
-        # make the tail un-escape to something the original never contained.
-        if (len(cut) - len(cut.rstrip("\\"))) % 2:
-            cut = cut[:-1]
-        escaped = cut + f"... [truncated, {len(raw)} chars total]"
+    escaped = escape_for_one_record(err_stack or "", _TRACE_LOG_MAX_CHARS)
     logger.error("%s [%s]: %s", _TRACE_MARKER, entity_id, escaped)
 
 
@@ -197,6 +187,10 @@ class Run(ABC):
                     # No tb on the primary: format_exception would degrade to a
                     # single type+message line. Use the live handler trace instead.
                     err_stack = traceback.format_exc()
+                # A failure from a remote API server carries its frames on the
+                # exception, not in err_stack — fold them in here so BOTH the
+                # <details> body and the single-record log below get them.
+                err_stack = with_remote_stacktrace(primary, err_stack)
                 if _already_reported(failures):
                     # Inner layer already emitted the full body + <details>; stay
                     # concise here (full stack at DEBUG) so the re-wrapped
@@ -215,7 +209,7 @@ class Run(ABC):
                 self.update_status(Status.CANCELLED)
                 raise asyncio.CancelledError() from eg
         except Exception as e:
-            err_stack = traceback.format_exc()
+            err_stack = with_remote_stacktrace(e, traceback.format_exc())
             if _already_reported([e]):
                 # Inner layer already reported the detailed body; stay concise.
                 self.update_status(Status.FAILED, extra_msg=format_failure_reason(e))

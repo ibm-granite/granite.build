@@ -92,11 +92,26 @@ RUN install -o ${USER} -g root -m 0775 kubectl /usr/local/bin/kubectl && rm kube
 RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 # Copy installed package
 COPY --from=builder --chown=${USER}:root --chmod=775 /opt/app-root/lib/python3.12/site-packages /opt/app-root/lib/python3.12/site-packages
-# Copy the venv's console scripts. Copying the whole bin/ (rather than naming
-# gbserver and dmf) ships every entry point pyproject declares — `gb`/`gbcli` for
-# in-pod debugging, `gbtest`, `gbmcp` — and stops new ones from silently going
-# missing here. The scripts are thin shebang wrappers, so this costs a few KB.
-COPY --from=builder --chown=${USER}:root --chmod=775 /opt/app-root/bin/ /opt/app-root/bin/
+# Copy our console scripts. Previously only gbserver and dmf were copied, so `gb`
+# — the CLI, useful for in-pod debugging — was absent from every runner image even
+# though pyproject declares it. Named explicitly rather than copying the whole
+# bin/: that directory holds ~114 scripts (every dependency's, e.g. aws/black/
+# pytest), and a directory COPY would also make bin/ itself group-writable,
+# letting the app user add entries to its own PATH.
+# Keep in sync with [project.scripts] in pyproject.toml (dmf comes from the
+# Artifactory DMF package, not pyproject).
+COPY --from=builder --chown=${USER}:root --chmod=775 \
+    /opt/app-root/bin/gbserver \
+    /opt/app-root/bin/gbcli \
+    /opt/app-root/bin/gb \
+    /opt/app-root/bin/llmbuild \
+    /opt/app-root/bin/llmb \
+    /opt/app-root/bin/lamb \
+    /opt/app-root/bin/gbtest \
+    /opt/app-root/bin/gbmcp \
+    /opt/app-root/bin/gb-ui-backend \
+    /opt/app-root/bin/dmf \
+    /opt/app-root/bin/
 # Copy the source code
 COPY --from=builder --chown=${USER}:root --chmod=775 /app /app
 # Switch to the non-root user

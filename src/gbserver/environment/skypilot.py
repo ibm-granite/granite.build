@@ -62,7 +62,11 @@ from gbserver.types.errors import (
     WorkloadFailedException,
 )
 from gbserver.utils.logger import get_logger
-from gbserver.utils.unwrap_errors import format_oserror, remote_stacktrace
+from gbserver.utils.unwrap_errors import (
+    escape_for_one_record,
+    format_oserror,
+    remote_stacktrace,
+)
 
 if TYPE_CHECKING:
     from gbserver.monitoring.logfile_monitor import LogFileMonitor
@@ -664,6 +668,12 @@ _NON_TRANSIENT_PROVISION_SUBSTRINGS = (
 )
 
 
+# Cap for the server traceback emitted as one log record (mirrors
+# build/run.py _TRACE_LOG_MAX_CHARS; kept local to avoid importing build.run
+# into an environment module).
+_REMOTE_TRACE_LOG_MAX_CHARS = 20000
+
+
 def _log_remote_stacktrace(exc: BaseException, context: str) -> None:
     """Log the SkyPilot API server's traceback for ``exc``, when it carries one.
 
@@ -678,8 +688,13 @@ def _log_remote_stacktrace(exc: BaseException, context: str) -> None:
     stacktrace = remote_stacktrace(exc)
     if stacktrace is None:
         return
+    # ONE record: the log pipeline ingests one record per line, so emitting the raw
+    # multi-line traceback here would be shredded and reordered exactly like the
+    # traces this PR set out to make readable.
     logger.error(
-        "Traceback from the SkyPilot API server (%s):\n%s", context, stacktrace
+        "Traceback from the SkyPilot API server (%s): %s",
+        context,
+        escape_for_one_record(stacktrace, _REMOTE_TRACE_LOG_MAX_CHARS),
     )
 
 
@@ -1252,7 +1267,10 @@ class Skypilot(Environment):
         :param cloud_group: Normalized target cloud (``"slurm"``/``"lsf"``).
         :param cluster: Cluster name — the ``Host`` alias in ``~/.<cloud>/config``.
         """
-        from gbserver.types.constants import GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
+        from gbserver.types.constants import (
+            ENABLE_SSH_HOST_KEY_VERIFICATION,
+            GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S,
+        )
 
         timeout = GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
         if cloud_group not in _SSH_HPC_CLOUDS or not cluster or timeout <= 0:
@@ -1270,10 +1288,25 @@ class Skypilot(Environment):
             "BatchMode=yes",
             "-o",
             f"ConnectTimeout={timeout}",
-            cluster,
-            "echo",
-            "gbserver probe",
         ]
+        # BatchMode=yes disables host-key *confirmation*, and OpenSSH defaults to
+        # StrictHostKeyChecking=ask, so without these an unknown host key is a hard
+        # refusal ("Host key verification failed", rc=255) — not an auto-accept. On a
+        # fresh runner pod (empty known_hosts) that fails every probe on any env whose
+        # cluster_ssh_configs omits them, e.g. lsf/ibm-bluevela. Since the probe is
+        # best-effort it would fail silently, never testing reachability at all.
+        # SkyPilot's own launch hardcodes both (ssh_options_list), so skipping them
+        # would make the probe stricter than the launch it predicts. Gated on the same
+        # toggle Lsf.ssh_no_verification_flags() uses, so strict probing stays
+        # available.
+        if not ENABLE_SSH_HOST_KEY_VERIFICATION:
+            cmds += [
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+            ]
+        cmds += [cluster, "echo", "gbserver probe"]
         logger.info(
             "probing %s login node %s for SSH reachability before launch",
             cloud_group,

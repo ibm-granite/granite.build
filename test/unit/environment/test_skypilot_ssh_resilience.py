@@ -218,6 +218,73 @@ async def test_probe_runs_echo_against_skypilot_ssh_config(slurm_env, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_probe_disables_host_key_verification_by_default(slurm_env, tmp_path):
+    """The probe must not be stricter than the launch it predicts.
+
+    Regression guard: the probe passed BatchMode=yes but not
+    StrictHostKeyChecking/UserKnownHostsFile. BatchMode disables host-key
+    *confirmation* and OpenSSH defaults to StrictHostKeyChecking=ask, so on a pod
+    with an empty known_hosts an unknown key is a hard refusal ("Host key
+    verification failed", rc=255) — not an auto-accept. Envs whose
+    cluster_ssh_configs omit those directives (lsf/ibm-bluevela) therefore failed
+    every probe, silently, because the probe is best-effort. SkyPilot's own launch
+    hardcodes both in ssh_options_list.
+    """
+    cfg_dir = tmp_path / ".slurm"
+    cfg_dir.mkdir()
+    (cfg_dir / "config").write_text("Host bluevela\n    User me\n")
+
+    proc = MagicMock()
+    proc.communicate = _async_return((b"gbserver probe\n", b""))
+    proc.returncode = 0
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch(
+            "gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION",
+            False,
+        ),
+        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)) as spawn,
+    ):
+        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
+
+    args = spawn.call_args[0]
+    assert "StrictHostKeyChecking=no" in args
+    assert "UserKnownHostsFile=/dev/null" in args
+    # The destination must still be last-but-two (host, then `echo <msg>`).
+    assert args[-3:] == ("bluevela", "echo", "gbserver probe")
+
+
+@pytest.mark.asyncio
+async def test_probe_honours_strict_host_key_toggle(slurm_env, tmp_path):
+    """With verification explicitly enabled, the probe stays strict.
+
+    Mirrors Lsf.ssh_no_verification_flags(), which is gated on the same constant.
+    """
+    cfg_dir = tmp_path / ".slurm"
+    cfg_dir.mkdir()
+    (cfg_dir / "config").write_text("Host bluevela\n    User me\n")
+
+    proc = MagicMock()
+    proc.communicate = _async_return((b"gbserver probe\n", b""))
+    proc.returncode = 0
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch(
+            "gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION",
+            True,
+        ),
+        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)) as spawn,
+    ):
+        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
+
+    args = spawn.call_args[0]
+    assert "StrictHostKeyChecking=no" not in args
+    assert "UserKnownHostsFile=/dev/null" not in args
+
+
+@pytest.mark.asyncio
 async def test_probe_timeout_kills_child_and_does_not_raise(slurm_env, tmp_path):
     """A hung probe is killed and reaped: wait_for alone leaks the ssh child."""
     cfg_dir = tmp_path / ".slurm"

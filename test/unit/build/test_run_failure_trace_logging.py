@@ -14,6 +14,7 @@ from gbserver.build.run import (
     _TRACE_MARKER,
     _log_failure_trace,
 )
+from gbserver.utils.unwrap_errors import with_remote_stacktrace
 
 MULTI_LINE_TRACE = (
     "Traceback (most recent call last):\n"
@@ -137,3 +138,50 @@ def test_truncation_never_splits_an_escape_pair(caplog):
     body = message.split("... [truncated", 1)[0]
     trailing = len(body) - len(body.rstrip("\\"))
     assert trailing % 2 == 0, "odd trailing backslashes = split escape pair"
+
+
+class TestRemoteTraceReachesTheLog:
+    """The server-side traceback must reach the SINGLE-RECORD log path.
+
+    Regression guard: get_readable_error_message appended the server stack to its
+    own local `err_stack`, so the caller's variable — the one handed to
+    _log_failure_trace — was unchanged, and the log still carried only
+    "OSError: [Errno 30] Read-only file system" for the motivating remote failure.
+    """
+
+    @staticmethod
+    def _remote_exc():
+        e = OSError(30, "Read-only file system")
+        setattr(e, "stacktrace", 'File "/sky/backend.py", line 9, in _sync\nOSError: x')
+        return e
+
+    def test_with_remote_stacktrace_augments(self):
+        out = with_remote_stacktrace(
+            self._remote_exc(), "OSError: [Errno 30] Read-only file system\n"
+        )
+        assert "Traceback from the remote API server" in out
+        assert "/sky/backend.py" in out
+
+    def test_with_remote_stacktrace_is_idempotent(self):
+        once = with_remote_stacktrace(self._remote_exc(), "OSError: x\n")
+        twice = with_remote_stacktrace(self._remote_exc(), once)
+        assert once == twice
+
+    def test_with_remote_stacktrace_passthrough_without_remote(self):
+        original = "Traceback (most recent call last):\n  File ...\nValueError: x\n"
+        assert with_remote_stacktrace(ValueError("x"), original) == original
+
+    def test_augmented_stack_logs_as_one_record_with_frames(self, caplog):
+        # End-to-end: the augmented err_stack survives the one-record log path.
+        err_stack = with_remote_stacktrace(
+            self._remote_exc(), "OSError: [Errno 30] Read-only file system\n"
+        )
+        with caplog.at_level(logging.ERROR, logger="gbserver.build.run"):
+            _log_failure_trace(err_stack, "step-remote")
+
+        records = [r for r in caplog.records if _TRACE_MARKER in r.getMessage()]
+        assert len(records) == 1, "must be exactly one record"
+        message = records[0].getMessage()
+        assert "\n" not in message, "must be one physical line"
+        assert "/sky/backend.py" in message, "frames must be present"
+        assert "Traceback from the remote API server" in message

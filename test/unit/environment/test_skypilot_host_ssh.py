@@ -325,3 +325,32 @@ def test_missing_file_is_retriable(stderr):
 )
 def test_transient_ssh_failures_are_retriable(stderr):
     assert _is_fatal_ssh_error(stderr) is False
+
+
+@pytest.mark.asyncio
+async def test_zero_login_timeout_does_not_brick_the_payload():
+    """login_timeout=0 must be floored, not passed to wait_for.
+
+    Regression guard: unlike the pre-launch probe's timeout (where 0 means
+    "disabled"), a 0 here reached wait_for(timeout=0), fired immediately, failed
+    every attempt, and raised before the payload ever ran. The two vars sit side by
+    side in the same table with opposite semantics for 0.
+    """
+    proc = MagicMock()
+
+    async def _communicate(*_a, **_kw):
+        return (b"gbserver probe\n", b"")
+
+    proc.communicate = _communicate
+    proc.returncode = 0
+
+    async def _spawn(*args, **_kwargs):
+        _spawn.argv = args
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=_spawn):
+        # Must not raise: with the floor, the echo probe succeeds.
+        await _await_host_reachable("10.0.0.1", "/k.pem", 0)
+
+    # ConnectTimeout is rendered from the floored value, never 0.
+    assert "ConnectTimeout=0" not in " ".join(_spawn.argv)

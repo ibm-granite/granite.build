@@ -161,6 +161,11 @@ async def _await_host_reachable(host_ip: str, ssh_key: str, login_timeout: int) 
     from gbserver.types.constants import GBSERVER_SKYPILOT_HOST_SSH_ATTEMPTS
 
     attempts = max(1, GBSERVER_SKYPILOT_HOST_SSH_ATTEMPTS)
+    # Unlike the pre-launch probe's timeout, 0 is NOT "disabled" here: it would reach
+    # wait_for(timeout=0), fire immediately, fail every attempt, and raise before the
+    # payload ever runs. Floor it so a 0/negative setting cannot brick post-launch
+    # tasks; to skip the reachability wait, set attempts to 1 and rely on the payload.
+    login_timeout = max(1, login_timeout)
     last = "no attempt made"
     for attempt in range(1, attempts + 1):
         cmds = _host_ssh_base_cmd(ssh_key, host_ip, login_timeout) + [
@@ -252,7 +257,9 @@ async def execute_on_host_via_ssh(
         ssh_key: The path to the SSH private key.
         commands: The bash commands to execute.
         env_vars: Optional dict of environment variables to inject.
-        timeout: Max seconds to wait for command completion (default: 600).
+        timeout: Max seconds to wait for command completion (default: 600). Bounds
+            the payload only; the preceding reachability wait can add up to
+            attempts x login_timeout plus backoff (~93s at defaults) before it.
 
     Raises:
         RuntimeError: If the host never accepts a login, or execution fails/times out.
