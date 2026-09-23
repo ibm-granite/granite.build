@@ -14,6 +14,8 @@ drift-guarded ``HFPUSH_RUN_SHELL`` (hf_shell.py), so it stays in lock-step with
 the skypilot hfpush step.yaml run block.
 """
 
+from collections.abc import Sequence
+
 from gbserver.environment.io.base import EnvironmentIO
 from gbserver.environment.io.descriptors import (
     HfInputIO,
@@ -30,7 +32,7 @@ def _shq(value: str) -> str:
 
 
 class SkypilotIO(EnvironmentIO):
-    def render_prologue(self, inputs: list[InputIO]) -> str:
+    def render_prologue(self, inputs: Sequence[InputIO]) -> str:
         hf_inputs = [i for i in inputs if isinstance(i, HfInputIO)]
         if not hf_inputs:
             return ""
@@ -48,7 +50,7 @@ class SkypilotIO(EnvironmentIO):
         lines.append("# -- end inline hfpull --")
         return "\n".join(lines) + "\n"
 
-    def render_epilogue(self, outputs: list[OutputIO], capture_var: str) -> str:
+    def render_epilogue(self, outputs: Sequence[OutputIO], capture_var: str) -> str:
         hf_outputs = [o for o in outputs if isinstance(o, HfOutputIO)]
         if not hf_outputs:
             return ""
