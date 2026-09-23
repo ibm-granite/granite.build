@@ -1,0 +1,64 @@
+granite.build:
+  name: skypilot-aws-inline-hfpush-test
+  # Single-instance inline pull -> byoc compute -> inline push on SkyPilot/aws
+  # (real EC2), issue #390. This is the aws env with NO shared_filesystem, so the
+  # hf assetstore pull AND push both run `inline: true`: the download is injected
+  # into the step's setup and the upload into the step's epilogue, rather than as
+  # separate hfpull/hfpush steps (=> step_count 1). Reaching SUCCESS + the pushed
+  # artifact landing on HF proves the inline push epilogue captured the byoc
+  # command's GB_ARTIFACT_PATH marker and uploaded it before emitting PUSHED.
+  targets:
+
+    inline-hfpush:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        # Inline hf pull: a tiny public dataset staged anonymously into the
+        # instance-local cache_path (/tmp/hf_cache) by the step's injected setup.
+        # Ruling R3: all hf URIs are THREE-slash (hf:///owner/repo); a two-slash
+        # form raises "Malformed HF URI". This one is public, so no HF_TOKEN is
+        # needed for the pull (only the push needs a token).
+        seed:
+          uri: hf:///datasets/shalisha-witherspoon/dpk-tokenization-sample
+      outputs:
+        # Inline hf push: the terminal output is registered from the byoc command's
+        # GB_ARTIFACT_PATH marker and pushed inline (epilogue) to a THROWAWAY repo
+        # under a test namespace. The test rewrites {HF_PUSH_REPO} to a real
+        # hf:///<namespace>/<unique-repo> at load time (build_yaml_override) and
+        # deletes the repo in teardown. Ruling R3: three-slash form.
+        pushed:
+          uri: "{HF_PUSH_REPO}"
+          type: fileset
+      steps:
+        # The byoc step (space://steps/byoc), resolved through the skypilot
+        # base_uris chain to configurations/assets. Bare node (image: "") so the
+        # command runs directly on the EC2 instance. The command writes a small
+        # output file and emits the artifact marker the inline push epilogue
+        # captures (its runtime `src` comes from GB_ARTIFACT_PATH; see step.yaml
+        # lines ~96-98 and the SkypilotIO epilogue marker-capture).
+        - step_uri: space://steps/byoc
+          config:
+            poll_interval_seconds: 5
+            byoc_config:
+              image: ""
+              # Canonical tiny public repo; the command does not use its contents.
+              repo: "https://github.com/octocat/Hello-World.git"
+              ref: ""
+              workdir: "code"
+              # Write the artifact payload, then emit the marker on ONE line, at the
+              # start of the line, EXACTLY as the byoc/skypilot monitor expects:
+              #   echo "GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>"
+              # <output-id> must equal the output binding key above (`pushed`); the
+              # inline push epilogue reads <abs-path> as the runtime upload source.
+              # It also confirms the inline pull staged the seed dataset locally.
+              command: >-
+                mkdir -p /tmp/gb-inline-hfpush-output;
+                echo "hello from inline hfpush e2e ($(date -u +%s))"
+                > /tmp/gb-inline-hfpush-output/result.txt;
+                echo "pulled seed at: {{ bindings.seed.binding.path }}";
+                test -e "{{ bindings.seed.binding.path }}";
+                echo "GB_ARTIFACT_ID:pushed GB_ARTIFACT_PATH:/tmp/gb-inline-hfpush-output"
+            compute_config:
+              num_gpus_per_node: 0
+              # Memory floor is ENFORCED on aws; keep it minimal for a fast, cheap
+              # instance (this is a byoc no-op workload).
+              total_memory_per_node: 1Gi
