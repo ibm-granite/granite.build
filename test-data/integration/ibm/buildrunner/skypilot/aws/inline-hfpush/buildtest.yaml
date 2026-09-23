@@ -18,10 +18,14 @@ target_expectations:
     input_artifact_count: 1 # hf input (inline-pulled in the step's setup)
     output_artifact_count: 1 # hf output (inline-pushed in the step's epilogue)
     jobstats_count: 1
-# The committed Space (../space) carries environments/skypilot/aws-inline and
+# The committed Space (./space) carries environments/skypilot/aws-inline and
 # chains base_uris to configurations/assets. The `command` step is a gbserver
-# builtin (space://steps/command) resolved regardless of the space.
-space_uri: ../space
+# builtin (space://steps/command) resolved regardless of the space. NOTE: this
+# fixture is FLAT — buildtest.yaml, build.yaml, and space/ all live directly in
+# inline-hfpush/, so the space is ./space (a sibling), NOT ../space. (The #389
+# shared-fs fixture nests bare/ + containerized/ under shared-fs/, so it uses
+# ../space to reach the shared shared-fs/space one level up; ours does not nest.)
+space_uri: ./space
 # Only the basic build; skip the cancellation variant.
 tests:
   - runner
