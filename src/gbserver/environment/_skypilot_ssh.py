@@ -7,6 +7,7 @@ both skypilot.py and skypilot_managed.py for post-launch tasks (sidecars).
 import asyncio
 import contextlib
 import re
+from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -82,7 +83,17 @@ def extract_host_ssh_info(cluster_name: str) -> Tuple[str, str]:
 
 
 def _host_ssh_base_cmd(ssh_key: str, host_ip: str, connect_timeout: int) -> List[str]:
-    """Shared `ssh` prefix for the post-launch host connection."""
+    """Shared `ssh` prefix for the post-launch host connection.
+
+    Args:
+        ssh_key: Path to the SSH private key (``-i``).
+        host_ip: Host VM address; connected to as ``ubuntu@<host_ip>:22``.
+        connect_timeout: ``ConnectTimeout`` seconds — bounds the TCP leg only,
+            not the banner/auth phase (see :func:`_await_host_reachable`).
+
+    Returns:
+        The argv prefix, ending with the destination; append the remote command.
+    """
     return [
         "ssh",
         "-i",
@@ -126,7 +137,16 @@ _FATAL_SSH_SUBSTRINGS = (
 
 
 def _is_fatal_ssh_error(stderr_text: str) -> bool:
-    """True if this SSH failure will not be fixed by retrying."""
+    """True if this SSH failure will not be fixed by retrying.
+
+    Args:
+        stderr_text: Raw stderr from the failed ``ssh`` invocation; matched
+            case-insensitively against _FATAL_SSH_SUBSTRINGS.
+
+    Returns:
+        True to stop retrying (auth/config rejection), False to back off and
+        retry — including for transient wording and anything unrecognized.
+    """
     lowered = stderr_text.lower()
     return any(sub in lowered for sub in _FATAL_SSH_SUBSTRINGS)
 
@@ -196,8 +216,15 @@ async def _await_host_reachable(host_ip: str, ssh_key: str, login_timeout: int) 
     )
 
 
-async def _kill_and_reap(proc) -> None:
-    """Kill a subprocess and reap it, ignoring an already-exited child."""
+async def _kill_and_reap(proc: Process) -> None:
+    """Kill a subprocess and reap it, ignoring an already-exited child.
+
+    Reaping matters after a ``wait_for`` timeout: cancelling the await leaves the
+    child running, so without this a hung ssh lingers for the life of the runner.
+
+    Args:
+        proc: The process to terminate; already-exited is not an error.
+    """
     with contextlib.suppress(ProcessLookupError):
         proc.kill()
     with contextlib.suppress(Exception):
@@ -249,6 +276,11 @@ async def execute_on_host_via_ssh(
     # to `timeout` (600s default).
     await _await_host_reachable(host_ip, ssh_key, _LOGIN_TIMEOUT)
 
+    # The payload opens its own connection, so its banner/auth phase is bounded
+    # only by `timeout` — accepted, not overlooked: a slow login still completes
+    # within that budget, and tolerating slowness is the point. Sharing the
+    # probe's proven connection would need ControlMaster, which SkyPilot owns on
+    # this path. ServerAlive* still bounds post-auth silence to ~15s.
     ssh_cmd = _host_ssh_base_cmd(ssh_key, host_ip, _LOGIN_TIMEOUT) + ["bash"]
 
     logger.info(
