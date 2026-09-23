@@ -32,6 +32,7 @@ import {
   isDatasetNameValid,
   isMappingComplete,
   mappedPreviewKey,
+  NO_VALIDATION,
   pollStep,
   probeMapping,
   problemDetail,
@@ -48,8 +49,7 @@ import { ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotun
 
 const SEARCH_DEBOUNCE_MS = 300
 const SEARCH_LIMIT = 20
-// Carbon's Select needs a real option value; null is not one.
-export const NO_VALIDATION = '__none__'
+export { NO_VALIDATION } from './hfImport'
 
 export interface UseHfImportOptions {
   /** The HuggingFace source is the active tab. Replaces the modal's `open`. */

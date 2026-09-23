@@ -34,6 +34,9 @@ const {
   mappedPreviewKey,
   canImport,
   pruneMapping,
+  NO_VALIDATION,
+  preselectValidationSplit,
+  reconcileValidationSplit,
 } = require('../app/dashboard/autotunex/start-tuning/steps/hfImport.ts')
 
 describe('deriveDatasetName', () => {
@@ -504,5 +507,59 @@ describe('pruneMapping', () => {
     // An empty source is an incomplete mapping, not a stale key -- dropping it
     // would silently reset a select the user is part-way through.
     assert.deepEqual(pruneMapping({ input: '' }, ['input']), { input: '' })
+  })
+})
+
+describe('preselectValidationSplit', () => {
+  it('picks a split named exactly "validation"', () => {
+    assert.equal(preselectValidationSplit(['test', 'validation']), 'validation')
+  })
+
+  it('does not fall back to "test"', () => {
+    // Selecting a model against the held-out test split is a methodology error,
+    // and it is the "wrong split discovered after a multi-hour run" case the
+    // import UI's own comments warn about. An implementation that ranked
+    // candidates would return 'test' here and still pass every other assertion
+    // in this block.
+    assert.equal(preselectValidationSplit(['test']), '')
+  })
+
+  it('does not match a near-miss name', () => {
+    assert.equal(preselectValidationSplit(['valid', 'dev', 'eval']), '')
+  })
+
+  it('returns empty for no candidates', () => {
+    assert.equal(preselectValidationSplit([]), '')
+  })
+})
+
+describe('reconcileValidationSplit', () => {
+  it('forces split-from-train when the new train split leaves no candidates', () => {
+    // The toggle hides at zero candidates, so any other return would leave it
+    // stuck OFF with an unreachable control -- holding a stale name equal to the
+    // new train split, which is the bug this function exists to fix.
+    assert.equal(reconcileValidationSplit('test', []), NO_VALIDATION)
+  })
+
+  it('leaves split-from-train alone when candidates remain', () => {
+    // NO_VALIDATION is a sentinel and never a member of nextCandidates, so
+    // without an explicit check for it the "still a candidate" branch cannot
+    // match and the preselect branch fires -- silently switching the toggle OFF
+    // on the default path every time the train split changes.
+    assert.equal(reconcileValidationSplit(NO_VALIDATION, ['test', 'validation']), NO_VALIDATION)
+  })
+
+  it('keeps a selection that is still a candidate', () => {
+    assert.equal(reconcileValidationSplit('validation', ['test', 'validation']), 'validation')
+  })
+
+  it('re-preselects when the selection is no longer a candidate', () => {
+    assert.equal(reconcileValidationSplit('test', ['train', 'validation']), 'validation')
+  })
+
+  it('re-preselects to empty rather than snapping back to split-from-train', () => {
+    // Keeps the toggle OFF: forcing it back ON would silently discard a choice
+    // the user made explicitly. '' blocks Import visibly instead.
+    assert.equal(reconcileValidationSplit('validation', ['train', 'test']), '')
   })
 })

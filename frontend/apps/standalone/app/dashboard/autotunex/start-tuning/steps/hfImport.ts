@@ -149,6 +149,40 @@ export function defaultTrainSplit(splitNames: string[]): string {
   return splitNames[0] ?? ''
 }
 
+// Carbon's Select needs a real option value; null is not one. Lives here rather
+// than in useHfImport.ts so the rule functions below can return it -- useHfImport
+// imports from this module, so the reverse direction would be circular.
+export const NO_VALIDATION = '__none__'
+
+/**
+ * The validation split to offer when the user turns the split toggle off.
+ *
+ * Matches `validation` exactly and never falls back to `test`. Selecting a model
+ * against the held-out test split is a methodology error, and an auto-pick is only
+ * discovered after a multi-hour tuning run. `''` means "the user asked for a
+ * separate split but this dataset names none obviously" -- it renders as a
+ * placeholder and `canImport` blocks on it.
+ */
+export function preselectValidationSplit(candidates: string[]): string {
+  return candidates.includes('validation') ? 'validation' : ''
+}
+
+/**
+ * Re-settle the validation selection after the train split changed.
+ *
+ * The candidate list is `splitNames` minus the *incoming* train split, so a
+ * selection can go stale: picking `test` as validation and then making `test` the
+ * train split would otherwise post the same split as both.
+ */
+export function reconcileValidationSplit(current: string, nextCandidates: string[]): string {
+  // The toggle hides with no candidates, so its off-state must not survive.
+  if (nextCandidates.length === 0) return NO_VALIDATION
+  // Checked before the membership test below: the sentinel is never a candidate.
+  if (current === NO_VALIDATION) return NO_VALIDATION
+  if (nextCandidates.includes(current)) return current
+  return preselectValidationSplit(nextCandidates)
+}
+
 // Pinned locale: the default is the host's, which would make both this copy and
 // its tests machine-dependent.
 function formatCount(value: number): string {
