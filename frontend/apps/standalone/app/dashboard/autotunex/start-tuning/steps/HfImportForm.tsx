@@ -73,10 +73,10 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
               }}
               disabled={hf.importing}
             />
-            <p className={styles.limits}>
+            {/* <p className={styles.limits}>
               Up to {hfConfig.max_rows.toLocaleString('en-US')} rows and{' '}
               {formatBytes(hfConfig.max_bytes)} per import.
-            </p>
+            </p> */}
           </>
         )}
       </div>
