@@ -14,6 +14,7 @@ import pytest
 from gbserver.environment._skypilot_ssh import (
     _await_host_reachable,
     _host_ssh_base_cmd,
+    _is_fatal_ssh_error,
     execute_on_host_via_ssh,
 )
 
@@ -280,3 +281,47 @@ def _spawns(proc):
         return proc
 
     return _inner
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Permission denied (publickey).",
+        "Too many authentication failures",
+        "Host key verification failed.",
+        "no such identity: /home/gbserver/.ssh/id_rsa",
+        "Load key: invalid privatekey",
+        "Bad configuration option: FooBar",
+    ],
+)
+def test_auth_and_config_failures_stay_fatal(stderr):
+    """A rejected key or bad option stays rejected — retrying only wastes time."""
+    assert _is_fatal_ssh_error(stderr) is True
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Warning: Identity file /shared/keys/id_rsa not accessible: "
+        "No such file or directory.",
+        "no such file or directory",
+    ],
+)
+def test_missing_file_is_retriable(stderr):
+    """An identity file on a momentarily-unavailable shared mount emits exactly
+    this. Treating it as fatal aborted every remaining attempt on the first try,
+    which is the opposite of what this module is for; retrying a genuinely missing
+    key costs a few bounded attempts before the same failure surfaces anyway."""
+    assert _is_fatal_ssh_error(stderr) is False
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Connection timed out during banner exchange",
+        "kex_exchange_identification: Connection closed by remote host",
+        "Connection reset by peer",
+    ],
+)
+def test_transient_ssh_failures_are_retriable(stderr):
+    assert _is_fatal_ssh_error(stderr) is False

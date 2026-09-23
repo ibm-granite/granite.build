@@ -394,6 +394,71 @@ assert 0 > 0
         body = get_readable_error_message(e=e, err_stack="Traceback...\nOSError: x")
         assert "Traceback from the remote API server" not in body
 
+    # -- chain traversal -----------------------------------------------------
+    # By the time a failure reaches a reporting layer it is wrapped: the
+    # production trace read "RunFailed -> ValueError: failed during loading
+    # artifacts" over the original OSError. Looking only at the outermost
+    # exception skipped the server traceback exactly where it was needed.
+
+    @staticmethod
+    def _remote_oserror():
+        e = OSError(errno.EROFS, "Read-only file system")
+        setattr(e, "stacktrace", 'File "/sky/backend.py", line 9\nOSError: ...')
+        return e
+
+    def test_remote_stacktrace_walks_cause(self):
+        try:
+            try:
+                raise self._remote_oserror()
+            except OSError as inner:
+                raise ValueError("failed during loading artifacts") from inner
+        except ValueError as wrapped:
+            assert remote_stacktrace(wrapped) is not None
+            body = get_readable_error_message(e=wrapped, err_stack="ValueError: x\n")
+            assert "Traceback from the remote API server" in body
+            assert "/sky/backend.py" in body
+
+    def test_remote_stacktrace_walks_implicit_context(self):
+        # `raise X` inside an except block sets __context__, not __cause__.
+        try:
+            try:
+                raise self._remote_oserror()
+            except OSError:
+                raise ValueError("implicit context")
+        except ValueError as wrapped:
+            assert remote_stacktrace(wrapped) is not None
+
+    def test_remote_stacktrace_walks_exception_group(self):
+        # The TaskGroup path delivers failures inside a group.
+        group = ExceptionGroup("tg", [ValueError("sibling"), self._remote_oserror()])
+        assert remote_stacktrace(group) is not None
+
+    def test_remote_stacktrace_walks_group_nested_in_cause(self):
+        try:
+            try:
+                raise ExceptionGroup("tg", [self._remote_oserror()])
+            except ExceptionGroup as eg:
+                raise RuntimeError("outer") from eg
+        except RuntimeError as wrapped:
+            assert remote_stacktrace(wrapped) is not None
+
+    def test_remote_stacktrace_tolerates_context_cycle(self):
+        # __context__ can form a cycle; the walk must terminate.
+        a = ValueError("a")
+        b = ValueError("b")
+        a.__context__ = b
+        b.__context__ = a
+        assert remote_stacktrace(a) is None
+
+    def test_remote_stacktrace_none_anywhere_in_chain(self):
+        try:
+            try:
+                raise OSError(errno.EROFS, "Read-only file system")
+            except OSError as inner:
+                raise ValueError("wrapped") from inner
+        except ValueError as wrapped:
+            assert remote_stacktrace(wrapped) is None
+
 
 # Kubernetes label value validation regex (from the API server rules):
 # up to 63 chars, alphanumerics/'-'/'_'/'.', beginning and ending alphanumeric.

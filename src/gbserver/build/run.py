@@ -86,18 +86,20 @@ def _log_failure_trace(err_stack: Optional[str], entity_id: str) -> None:
     Called only from the innermost reporting layer (see ``_already_reported``), so a
     failure logs its trace exactly once.
     """
-    trace = err_stack or ""
-    if len(trace) > _TRACE_LOG_MAX_CHARS:
-        trace = (
-            trace[:_TRACE_LOG_MAX_CHARS] + f"... [truncated, {len(trace)} chars total]"
-        )
-    # Collapse to one physical line; "\n" keeps frame boundaries legible.
-    logger.error(
-        "%s [%s]: %s",
-        _TRACE_MARKER,
-        entity_id,
-        trace.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", ""),
-    )
+    raw = err_stack or ""
+    # Escape FIRST, then cap: escaping doubles every backslash and newline, so a
+    # cap applied to the raw text lets a backslash/newline-heavy trace emit a
+    # record up to 2x the limit — the flood the cap exists to prevent.
+    # "\n" keeps frame boundaries legible while staying one physical line.
+    escaped = raw.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "")
+    if len(escaped) > _TRACE_LOG_MAX_CHARS:
+        cut = escaped[:_TRACE_LOG_MAX_CHARS]
+        # Never end on a dangling backslash: cutting mid-pair ("\\\\" -> "\\") would
+        # make the tail un-escape to something the original never contained.
+        if (len(cut) - len(cut.rstrip("\\"))) % 2:
+            cut = cut[:-1]
+        escaped = cut + f"... [truncated, {len(raw)} chars total]"
+    logger.error("%s [%s]: %s", _TRACE_MARKER, entity_id, escaped)
 
 
 def _already_reported(exceptions: List[BaseException]) -> bool:

@@ -105,9 +105,15 @@ def _host_ssh_base_cmd(ssh_key: str, host_ip: str, connect_timeout: int) -> List
     ]
 
 
-# SSH failures that never succeed on retry — a rejected key stays rejected, and a
-# missing binary/key stays missing. Mirrors _NON_TRANSIENT_PROVISION_SUBSTRINGS in
-# skypilot.py (kept local: that one is matched against SkyPilot exception text).
+# SSH failures that never succeed on retry — a rejected key stays rejected.
+# Mirrors _NON_TRANSIENT_PROVISION_SUBSTRINGS in skypilot.py (kept local: that
+# one is matched against SkyPilot exception text).
+#
+# Deliberately NOT here: "no such file or directory". It reads permanent, but an
+# identity file on a momentarily-unavailable shared mount emits exactly that, and
+# treating it as fatal aborts every remaining attempt on the first try — the
+# opposite of what this module exists to do. Retrying a genuinely missing key
+# costs a few bounded attempts before the same failure surfaces.
 _FATAL_SSH_SUBSTRINGS = (
     "permission denied",
     "too many authentication failures",
@@ -116,7 +122,6 @@ _FATAL_SSH_SUBSTRINGS = (
     "invalid privatekey",
     "unprotected private key file",
     "bad configuration option",
-    "no such file or directory",
 )
 
 

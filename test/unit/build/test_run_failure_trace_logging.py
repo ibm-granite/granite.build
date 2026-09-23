@@ -92,3 +92,48 @@ def test_empty_trace_does_not_raise(caplog, value):
     """A missing trace must never turn a build failure into a logging crash."""
     with caplog.at_level(logging.ERROR, logger="gbserver.build.run"):
         _log_failure_trace(value, "step-empty")
+
+
+@pytest.mark.parametrize(
+    "filler,label",
+    [
+        ("\\", "backslash-heavy"),
+        ("\n", "newline-heavy"),
+    ],
+)
+def test_escape_expansion_cannot_exceed_the_cap(caplog, filler, label):
+    """The cap must bound the ESCAPED record, not the raw input.
+
+    Escaping doubles every backslash and newline, so capping the raw text first
+    let a pathological trace emit a record up to 2x the limit — the flood the cap
+    exists to prevent. Windows paths and repr()'d regexes produce exactly this.
+    """
+    huge = filler * (_TRACE_LOG_MAX_CHARS + 5000)
+    with caplog.at_level(logging.ERROR, logger="gbserver.build.run"):
+        _log_failure_trace(huge, f"step-{label}")
+
+    message = next(
+        r.getMessage() for r in caplog.records if _TRACE_MARKER in r.getMessage()
+    )
+    assert "truncated" in message
+    assert str(len(huge)) in message, "reports the true pre-escape size"
+    assert len(message) < _TRACE_LOG_MAX_CHARS + 500
+
+
+def test_truncation_never_splits_an_escape_pair(caplog):
+    """A cut must not leave a dangling backslash.
+
+    Slicing escaped text can land mid-pair ("\\\\" -> "\\"), which would make the
+    tail un-escape to something the original never contained.
+    """
+    # Place a backslash so its escaped pair straddles the cap boundary.
+    raw = "a" * (_TRACE_LOG_MAX_CHARS - 1) + "\\" + "b" * 100
+    with caplog.at_level(logging.ERROR, logger="gbserver.build.run"):
+        _log_failure_trace(raw, "step-split")
+
+    message = next(
+        r.getMessage() for r in caplog.records if _TRACE_MARKER in r.getMessage()
+    )
+    body = message.split("... [truncated", 1)[0]
+    trailing = len(body) - len(body.rstrip("\\"))
+    assert trailing % 2 == 0, "odd trailing backslashes = split escape pair"

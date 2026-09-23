@@ -58,18 +58,61 @@ def test_production_banner_timeout_is_transient():
 @pytest.mark.parametrize(
     "msg",
     [
+        # Unambiguously-SSH wording: retried on every cloud, since no other path
+        # produces it.
         "Connection timed out during banner exchange",
         "Failed to get Slurm partitions.",
         "Failed to query Slurm jobs.",
         "kex_exchange_identification: Connection closed by remote host",
         "ssh_exchange_identification: read: Connection reset by peer",
         "Connection closed by remote host",
-        "No route to host",
-        "Temporary failure in name resolution",
     ],
 )
 def test_ssh_flakiness_is_transient(msg):
     assert _is_transient_provision_error(ValueError(msg)) is True
+    # Cloud-independent: still transient when the cloud is known, either way.
+    assert _is_transient_provision_error(ValueError(msg), cloud="slurm") is True
+    assert _is_transient_provision_error(ValueError(msg), cloud="k8s") is True
+
+
+# Generic TCP/DNS wording. The identical text comes out of k8s/gcp/aws paths
+# (registry blips, image pull, cloud-API hiccups), where a persistent misconfig
+# would otherwise be retried with a full teardown between attempts.
+_GENERIC_NETWORK_MSGS = [
+    "Connection timed out",
+    "Connection reset by peer",
+    "No route to host",
+    "Temporary failure in name resolution",
+]
+
+
+@pytest.mark.parametrize("msg", _GENERIC_NETWORK_MSGS)
+@pytest.mark.parametrize("cloud", ["slurm", "lsf", "slurm/bluevela", "LSF"])
+def test_generic_network_error_is_transient_on_hpc(msg, cloud):
+    """On the HPC SSH path these mean the control-plane SSH blipped — retry.
+
+    Accepts a bare cloud or a full infra string, and is case-insensitive.
+    """
+    assert _is_transient_provision_error(ValueError(msg), cloud=cloud) is True
+
+
+@pytest.mark.parametrize("msg", _GENERIC_NETWORK_MSGS)
+@pytest.mark.parametrize("cloud", ["k8s", "gcp", "aws", "kubernetes"])
+def test_generic_network_error_not_transient_off_hpc(msg, cloud):
+    """Off the HPC path the same text may be a persistent misconfig — don't retry."""
+    assert _is_transient_provision_error(ValueError(msg), cloud=cloud) is False
+
+
+@pytest.mark.parametrize("msg", _GENERIC_NETWORK_MSGS)
+def test_generic_network_error_not_transient_without_cloud(msg):
+    """With no cloud supplied, stay conservative and do not retry."""
+    assert _is_transient_provision_error(ValueError(msg)) is False
+
+
+def test_hpc_cloud_does_not_rescue_auth_rejection():
+    """Cloud scoping must not override the non-transient (auth) tuple."""
+    msg = "Permission denied (publickey). Connection timed out"
+    assert _is_transient_provision_error(ValueError(msg), cloud="slurm") is False
 
 
 @pytest.mark.parametrize(

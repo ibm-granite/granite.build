@@ -8,7 +8,6 @@ require it unless a Skypilot environment is actually configured.
 
 import asyncio
 import concurrent.futures
-import contextlib
 import functools
 import glob
 import os
@@ -42,6 +41,7 @@ from tenacity import (
 )
 
 from gbcommon.uri.uri import URI
+from gbserver.environment._skypilot_ssh import _kill_and_reap
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.environment.shared_fs import (
     build_provider,
@@ -618,20 +618,27 @@ _TRANSIENT_PROVISION_SUBSTRINGS = (
     # commands over an un-retried `ssh` bounded only by ConnectTimeout (TCP leg),
     # so a slow banner or wedged session fails the launch with exit 255 as a bare
     # ValueError. A blip on a shared login node, not a bad request — retry.
-    # Kept to SSH-specific wording: this text is matched across all clouds, so a
-    # generic phrase like "timed out waiting for" would also retry unrelated
-    # azure/gcp/k8s provisioning timeouts (e.g. k8s "waiting for apt update").
+    # Only unambiguously-SSH wording belongs here: this tuple is matched on every
+    # cloud. Generic TCP/DNS phrasings live in _TRANSIENT_SSH_ONLY_SUBSTRINGS.
     "banner exchange",  # "Connection timed out during banner exchange"
     "failed to get slurm partitions",
     "failed to get partitions for cluster",
     "failed to query slurm jobs",
-    "connection timed out",
     "connection closed by remote host",
+    "kex_exchange_identification",  # ssh key-exchange aborted mid-handshake
+    "ssh_exchange_identification",
+)
+
+# Generic TCP/DNS failures: retriable on the HPC control-plane SSH path, but the
+# same wording also comes out of k8s/gcp/aws paths (registry blips, image pull,
+# cloud-API hiccups) where a *persistent* misconfig would then be retried with a
+# full teardown between attempts, burning the budget for nothing. So these are
+# matched only when the target cloud is slurm/lsf — see _is_transient_provision_error.
+_TRANSIENT_SSH_ONLY_SUBSTRINGS = (
+    "connection timed out",
     "connection reset by peer",
     "no route to host",
     "temporary failure in name resolution",
-    "kex_exchange_identification",  # ssh key-exchange aborted mid-handshake
-    "ssh_exchange_identification",
 )
 
 # Bounds the pre-retry teardown. sky.down talks to the same login node that just
@@ -673,7 +680,9 @@ def _log_remote_stacktrace(exc: BaseException, context: str) -> None:
     )
 
 
-def _is_transient_provision_error(exc: BaseException) -> bool:
+def _is_transient_provision_error(
+    exc: BaseException, cloud: Optional[str] = None
+) -> bool:
     """Return True if exc is a retriable resource-acquisition/provision failure.
 
     The primary signal is the SkyPilot exception *type*; the substring scan is a
@@ -691,6 +700,11 @@ def _is_transient_provision_error(exc: BaseException) -> bool:
 
     Args:
         exc: The exception raised by the provisioning step.
+        cloud: Target cloud (``default_cloud``). Generic TCP/DNS wording
+            (_TRANSIENT_SSH_ONLY_SUBSTRINGS) is retried only for slurm/lsf, where
+            it means the control-plane SSH blipped; on other clouds the same text
+            can come from a persistent misconfig that retrying will not fix. When
+            None, only the cloud-independent substrings apply.
 
     Returns:
         bool: True if the failure looks transient and worth retrying.
@@ -710,7 +724,14 @@ def _is_transient_provision_error(exc: BaseException) -> bool:
         )
         if exc_types and isinstance(exc, exc_types):
             return True
-    return any(s in text for s in _TRANSIENT_PROVISION_SUBSTRINGS)
+    if any(s in text for s in _TRANSIENT_PROVISION_SUBSTRINGS):
+        return True
+    # Accept a bare cloud ("slurm") or a full infra string ("slurm/bluevela"),
+    # matching the normalization used at the launch site.
+    cloud_group = (cloud or "").strip().split("/", 1)[0].lower()
+    if cloud_group in _SSH_HPC_CLOUDS:
+        return any(s in text for s in _TRANSIENT_SSH_ONLY_SUBSTRINGS)
+    return False
 
 
 # Path fragment of SkyPilot's client module that drives interactive SSH auth.
@@ -1267,18 +1288,12 @@ class Skypilot(Environment):
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.CancelledError:
             # Don't leak the child when the launch itself is being cancelled.
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+            await _kill_and_reap(proc)
             raise
         except Exception as e:  # noqa: BLE001 — timeout => treat as unreachable
             # wait_for only cancels the await; kill and reap so a hung ssh (the
             # exact late-banner case) cannot linger for the life of the runner.
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+            await _kill_and_reap(proc)
             logger.warning(
                 "SSH probe to %s login node %s did not complete within %ss (%s) — "
                 "the login node may be slow to send its SSH banner. Continuing to "
@@ -2330,8 +2345,14 @@ class Skypilot(Environment):
             )
         )
 
+        # Bind the target cloud so generic TCP/DNS wording is only retried on the
+        # HPC SSH path (see _TRANSIENT_SSH_ONLY_SUBSTRINGS).
+        target_cloud = self._get_cloud()
+
         async for attempt in AsyncRetrying(
-            retry=retry_if_exception(_is_transient_provision_error),
+            retry=retry_if_exception(
+                lambda e: _is_transient_provision_error(e, cloud=target_cloud)
+            ),
             wait=wait_exponential(multiplier=30, max=provision_backoff_max),
             stop=stop_after_attempt(max(1, max_attempts)),
             reraise=True,
@@ -2380,7 +2401,7 @@ class Skypilot(Environment):
                     # next attempt so the relaunch doesn't reuse the stale
                     # allocation. Only for transient errors — others re-raise
                     # untouched and tenacity will not retry them.
-                    if _is_transient_provision_error(e):
+                    if _is_transient_provision_error(e, cloud=target_cloud):
                         logger.warning(
                             "Transient provision failure for %s (attempt %d): %s",
                             cluster_name,

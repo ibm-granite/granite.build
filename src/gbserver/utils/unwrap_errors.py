@@ -94,13 +94,37 @@ def remote_stacktrace(e: BaseException) -> Optional[str]:
     an ``OSError`` built as ``OSError(errno, strerror)`` carries no ``filename``
     for :func:`format_oserror` to report.
 
-    Returns None when the attribute is absent or not a non-empty string, so
-    locally-raised exceptions (which have a real traceback) are unaffected.
+    Searches the whole exception chain (``__cause__``/``__context__`` and
+    ``(Base)ExceptionGroup`` members), not just ``e``: by the time a failure
+    reaches a reporting layer it is typically wrapped — the production trace read
+    ``RunFailed -> ValueError: failed during loading artifacts`` over the
+    original OSError — and looking only at the outermost exception would skip the
+    server traceback exactly where it is needed. Mirrors the traversal in
+    :func:`unwrap_errors`.
+
+    Returns None when no exception in the chain carries a non-empty ``stacktrace``
+    string, so locally-raised exceptions (which have a real traceback) are
+    unaffected.
     """
-    stacktrace = getattr(e, "stacktrace", None)
-    if isinstance(stacktrace, str) and stacktrace.strip():
-        return stacktrace
-    return None
+    # Cycles are possible via __context__; bound the walk by identity.
+    seen: set[int] = set()
+
+    def _walk(exc: Optional[BaseException]) -> Optional[str]:
+        if exc is None or id(exc) in seen:
+            return None
+        seen.add(id(exc))
+        stacktrace = getattr(exc, "stacktrace", None)
+        if isinstance(stacktrace, str) and stacktrace.strip():
+            return stacktrace
+        if isinstance(exc, BaseExceptionGroup):
+            for member in exc.exceptions:
+                found = _walk(member)
+                if found is not None:
+                    return found
+        # __cause__ first (explicit `raise ... from`), then the implicit context.
+        return _walk(exc.__cause__) or _walk(exc.__context__)
+
+    return _walk(e)
 
 
 def format_failure_reason(e: BaseException) -> str:
