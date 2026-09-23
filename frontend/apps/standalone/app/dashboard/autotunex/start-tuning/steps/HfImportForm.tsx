@@ -10,13 +10,14 @@ import {
   Select,
   SelectItem,
   Tag,
+  Toggle,
   TextInput,
 } from '@carbon/react'
 import type { HfImportConfig } from '@granite-build/ui-core/types'
 import { formatBytes } from '@granite-build/ui-core/lib/autotunex/formatBytes'
 import { toUpperCase } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { InfoTooltip } from './InfoTooltip'
-import { problemDetail } from './hfImport'
+import { preselectValidationSplit, problemDetail } from './hfImport'
 import { NO_VALIDATION, type UseHfImportResult } from './useHfImport'
 import styles from './HfImportForm.module.scss'
 
@@ -34,9 +35,8 @@ interface HfImportFormProps {
 export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProps) {
   // Only a split other than the one being trained on can serve as validation. With
   // none left over there is nothing to choose, and with a single split there is
-  // nothing to choose for training either -- so both selects are hidden rather than
-  // rendered with one inevitable option, matching how the Upload path shows no
-  // validation affordance until there is a file to attach.
+  // nothing to choose for training either -- so the train select and the split
+  // toggle are both hidden rather than rendered with one inevitable option.
   const validationCandidates = hf.splitNames.filter((split) => split !== hf.trainSplit)
 
   return (
@@ -172,7 +172,33 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
               </Select>
             </div>
           )}
+          {/* The toggle owns the split-from-train state that used to be this
+              dropdown's first option, so the two controls cannot disagree: it is a
+              view over `validationSplit`, not state of its own. Same gate the
+              dropdown used, because a dataset with no split besides the train one
+              has nothing to offer either control. */}
           {validationCandidates.length > 0 && (
+            <div className={styles.splitToggleRow}>
+              <div className={styles.toggleLabelRow}>
+                <span>Split dataset</span>
+                <InfoTooltip label="Automatically holds back part of the train split for validation. Disable this to use a separate split shipped with the dataset." />
+              </div>
+              <Toggle
+                id="hf-split-toggle"
+                labelText=""
+                hideLabel
+                toggled={hf.splitFromTrain}
+                onToggle={(checked) =>
+                  hf.setValidationSplit(
+                    checked ? NO_VALIDATION : preselectValidationSplit(validationCandidates),
+                  )
+                }
+                size="sm"
+                disabled={hf.importing}
+              />
+            </div>
+          )}
+          {!hf.splitFromTrain && validationCandidates.length > 0 && (
             <div className={styles.field}>
               <Select
                 id="hf-validation-split"
@@ -181,10 +207,12 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
                 onChange={(event) => hf.setValidationSplit(event.target.value)}
                 disabled={hf.importing}
               >
-                {/* Defaults to none rather than guessing at a split named
-                    "validation" or "test": a silently auto-picked wrong split is only
-                    discovered after a multi-hour tuning run. */}
-                <SelectItem value={NO_VALIDATION} text="None (split from train)" />
+                {/* Preselected only on an exact "validation" match, never on
+                    "test": validating against the held-out test split is a
+                    methodology error, and a wrong split is only discovered after a
+                    multi-hour tuning run. With no match this placeholder stands and
+                    `canImport` blocks, rather than picking for the user. */}
+                <SelectItem value="" text="Choose a split..." />
                 {validationCandidates.map((split) => (
                   <SelectItem key={split} value={split} text={split} />
                 ))}
