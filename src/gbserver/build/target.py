@@ -299,6 +299,25 @@ class Target(BuildEntity):
             )
             if not inline:
                 continue
+            # Inline hfpush constraint: the producing step's upload epilogue
+            # (io/skypilot.py) renders this binding_id into a sed program that
+            # matches the runtime "GB_ARTIFACT_ID:<id>" marker LITERALLY.
+            # buildrun.py, however, matches output configs to runtime artifact
+            # ids via fnmatch, so an output KEY may legally be a glob (e.g.
+            # "model-*"). A glob key would render "GB_ARTIFACT_ID:model-*",
+            # which can never match the concrete marker "GB_ARTIFACT_ID:model-v1"
+            # -> HF_SOURCE resolves empty -> confusing mid-run abort. Raise
+            # early (at resolve time, before launch) to turn that silent trap
+            # into a clear build-config error.
+            if any(ch in binding_id for ch in "*?["):
+                raise ValueError(
+                    "inline hfpush requires a literal output binding_id, not a "
+                    f"glob ('{binding_id}'): the producing step's upload epilogue "
+                    "matches the runtime GB_ARTIFACT_ID:<id> marker literally, so "
+                    "a glob key can never match. Use a literal output name for an "
+                    "inline-push output, or drop `inline: true` to use the "
+                    "separate-step hfpush."
+                )
             io = self.environment.resolve_inline_hfpush(
                 uri=uri,
                 storepush_config=push_cfg,

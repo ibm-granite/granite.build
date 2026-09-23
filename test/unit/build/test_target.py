@@ -93,6 +93,32 @@ def test_push_assets_resolves_inline_hf_outputs(inline_push_target):
     assert io.binding_id == "model_out"
 
 
+@pytest.fixture
+def glob_inline_push_target():
+    """An inline hf output whose binding_id (key) is a shell glob.
+
+    buildrun.py matches output configs to runtime artifact ids via
+    fnmatch, so a key MAY be a glob. Inline hfpush cannot support that:
+    the epilogue matches the GB_ARTIFACT_ID:<id> marker literally.
+    """
+    outputs = {"model-*": BuildTargetOutputConfig(uri=HF_OUTPUT_URI)}
+    storeenv = AssetStoreEnvironmentConfig(
+        store_uri="hf:///",
+        push=[StorePush(config={"inline": True})],
+    )
+    assetstore = MagicMock()
+    assetstore.type = "hfstore"
+    return _make_target(outputs, storeenv, assetstore)
+
+
+def test_push_assets_rejects_glob_binding_id(glob_inline_push_target):
+    # An inline-push output key with a glob metachar must fail early at
+    # resolve time, not silently produce an epilogue marker that can never
+    # match the concrete runtime GB_ARTIFACT_ID:<id>.
+    with pytest.raises(ValueError, match="inline hfpush requires a literal"):
+        glob_inline_push_target.push_assets()
+
+
 def test_push_assets_skips_non_inline_outputs(byo_push_target):
     # Outputs without inline: true resolve to nothing (separate-step path).
     assert byo_push_target.push_assets() == {}
