@@ -61,6 +61,7 @@ from gbcommon.uri.file import absolutize_file_uri
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
+from gbserver.environment.io.descriptors import InlineDeferredPush
 from gbserver.messaging.messaging_base import MessagingBase
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
@@ -1617,18 +1618,23 @@ class Environment(ABC):
                 run_metadata=run_metadata,
                 output_config=output_config,
             )
+            is_sentinel = isinstance(result, InlineDeferredPush)
             if isinstance(result, BuildTargetStepConfig):
                 assert (
                     additional_targetsteps_queue is not None
                 ), "additional_targetsteps_queue is None"
                 await additional_targetsteps_queue.put(result)
-            else:
+            elif not is_sentinel:
+                # Synchronous inline push (memstore/envstore): available now.
                 Environment._thread_local.asset_events[uristr].set()
             await self.event_q.put(event)
             self.asset_bindings[uristr] = {BINDING_KEY: binding}
-            # For inline pushes (no separate push step), emit ARTIFACT_PUSHED_EVENT
-            # so the artifact transitions from pending to success.
-            if not isinstance(result, BuildTargetStepConfig):
+            # Immediate server-side ARTIFACT_PUSHED_EVENT only for synchronous
+            # inline pushes, so the artifact transitions from pending to success.
+            # The InlineDeferredPush sentinel folds the upload into the producing
+            # step's epilogue, so PUSHED is deferred to that step's monitor
+            # ("Pushed HF URI:") — suppress the immediate emission here (spec §6).
+            if not isinstance(result, BuildTargetStepConfig) and not is_sentinel:
                 pushed_event = BuildEvent(
                     run_metadata=run_metadata,
                     type=BuildEventType.ARTIFACT_PUSHED_EVENT,
