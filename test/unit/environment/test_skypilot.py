@@ -2151,3 +2151,40 @@ class TestInlineHfpush:
         assert "| tee " not in run_script
         assert "Pushed HF URI:" not in run_script
         assert run_script.endswith(base)
+
+    def test_monitor_injects_pushed_event_config_for_inline_output(self, skypilot_env):
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        launch_id = "L1"
+        skypilot_env._launch_kwargs[launch_id] = {
+            "bindings": {
+                "out": {
+                    "_hfpush": HfOutputIO(
+                        repo="ns/out", uri="hf://ns/out", binding_id="out", token="t"
+                    )
+                }
+            }
+        }
+        base = [{"event_type": "OTHER_EVENT"}]
+        configs = skypilot_env._inline_push_event_configs(launch_id, base=base)
+        # Base configs are preserved.
+        assert configs[0] == {"event_type": "OTHER_EVENT"}
+        # PUSHED config appended, matching hfpush step.yaml:290-298 exactly.
+        pushed = [c for c in configs if c["event_type"] == "ARTIFACT_PUSHED_EVENT"]
+        assert len(pushed) == 1
+        assert pushed[0] == {
+            "event_type": "ARTIFACT_PUSHED_EVENT",
+            "line_regex": r"Pushed HF URI:\s.+",
+            "is_json": False,
+            "event_fields": [
+                {"field_name": "uri", "field_regex": r"hf://[^\s]+"},
+                {
+                    "field_name": "binding_id",
+                    "field_regex": r"(?<=binding\s)[^\s]+",
+                },
+            ],
+        }
+
+    def test_monitor_no_injection_without_inline_output(self, skypilot_env):
+        skypilot_env._launch_kwargs["L2"] = {"bindings": {}}
+        assert skypilot_env._inline_push_event_configs("L2", base=[]) == []

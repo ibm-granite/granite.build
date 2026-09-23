@@ -2688,6 +2688,42 @@ class Skypilot(Environment):
             on_abort=_teardown_cluster,
         )
 
+    def _inline_push_event_configs(self: Self, launch_id: str, base) -> list:
+        """Return ``base`` augmented with the inline-hfpush PUSHED event config.
+
+        When any binding for ``launch_id`` carries an ``_hfpush`` ``HfOutputIO``
+        (an inline push folded into the producing step's epilogue), the runtime
+        "pushed" signal comes from that step's own log line ``Pushed HF URI:``.
+        This appends the matching ``ARTIFACT_PUSHED_EVENT`` config so the
+        LogFileMonitor emits the event. The config matches the separate hfpush
+        ``step.yaml`` monitor byte-for-byte. Pure/idempotent: never mutates
+        ``base`` and returns ``list(base or [])`` unchanged when no inline push.
+        """
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        bindings = (self._launch_kwargs.get(launch_id, {}) or {}).get("bindings") or {}
+        has_inline_push = any(
+            isinstance(b, dict) and isinstance(b.get("_hfpush"), HfOutputIO)
+            for b in bindings.values()
+        )
+        configs = list(base or [])
+        if has_inline_push:
+            configs.append(
+                {
+                    "event_type": "ARTIFACT_PUSHED_EVENT",
+                    "line_regex": r"Pushed HF URI:\s.+",
+                    "is_json": False,
+                    "event_fields": [
+                        {"field_name": "uri", "field_regex": r"hf://[^\s]+"},
+                        {
+                            "field_name": "binding_id",
+                            "field_regex": r"(?<=binding\s)[^\s]+",
+                        },
+                    ],
+                }
+            )
+        return configs
+
     async def monitor_skypilot_monitor(
         self: Self,
         launch_id: str,
@@ -2725,6 +2761,12 @@ class Skypilot(Environment):
         enabled, retry_transparently = self._get_step_retry_config(
             self._launch_kwargs.get(launch_id, {})
         )
+
+        # Inline hfpush emits its "pushed" signal from the producing step's own
+        # log line, so augment the parser configs once (before the poll loop)
+        # with the ARTIFACT_PUSHED_EVENT config for any inline HfOutputIO
+        # binding; the augmented list flows into every _poll_skypilot_job.
+        event_configs = self._inline_push_event_configs(launch_id, event_configs)
 
         async with self._with_retry_handler(
             launch_id,
