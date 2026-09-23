@@ -34,9 +34,13 @@ granite.build:
         # this stays self-contained (no admin-provisioned resource group). Requires
         # the granite-build-test HF token (write) the extended suite runs with.
         # NOTE: the explicit huggingface.co host makes this a valid 3-part hf URI;
-        # a 2-slash `hf://ns/repo` is Malformed.
+        # a 2-slash `hf://ns/repo` is Malformed. The repo name is STATIC (no
+        # `{{ binding.* }}`): inline push resolves the HF destination at target
+        # setup, BEFORE the producing step runs, so the destination may not depend
+        # on the produced artifact. create_repo is exist_ok=True, so re-running the
+        # test just overwrites this repo.
         hf_output:
-          uri: hf://huggingface.co/datasets/granite-build-test/gb-inline-hfpush-output_{{ binding.path | short_hash }}
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-inline-hfpush-e2e-output
           type: fileset
       steps:
         - step_uri: space://steps/command
