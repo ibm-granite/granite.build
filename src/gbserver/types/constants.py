@@ -143,6 +143,7 @@ CONFIGURATIONS_STANDALONE_SPACE_SUBPATH = Path("spaces") / "local"
 
 
 ENV_VAR_TRUNCATE_LENGTH = ENV_VAR_PREFIX + "_TRUNCATE_LENGTH"
+ENV_VAR_LOG_RECORD_MAX_CHARS = ENV_VAR_PREFIX + "_LOG_RECORD_MAX_CHARS"
 # The env var for admin table prefix, to cascade it to child processes (especiallly for rest-server multiworker)
 # Once we migrate to env-based SQL schemas we won't need it.
 ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX = ENV_VAR_PREFIX + "_ADMIN_TABLE_PREFIX"
@@ -607,6 +608,11 @@ GBSERVER_METRICS_AUTH_TOKEN = os.getenv(ENV_VAR_GBSERVER_METRICS_AUTH_TOKEN, "")
 # Metrics
 DEFAULT_LOG_LEVEL = os.getenv(ENV_VAR_DEFAULT_LOG_LEVEL, "info").lower()
 GBSERVER_TRUNCATE_LENGTH = int(os.getenv(ENV_VAR_TRUNCATE_LENGTH, "-1"), base=10)
+# Cap for text escaped into one log record (see escape_for_one_record): the log
+# pipeline ingests one record per line, so multi-line bodies are escaped, not split.
+GBSERVER_LOG_RECORD_MAX_CHARS = int(
+    os.getenv(ENV_VAR_LOG_RECORD_MAX_CHARS, "20000"), base=10
+)
 # Cap on simultaneous SkyPilot cluster bring-ups. Each launch opens a fresh
 # SSH session to the cloud's login node; LSF-backed clouds in particular
 # trip MaxAuthTries on sshd when many evals fan out at once. Default 4 is

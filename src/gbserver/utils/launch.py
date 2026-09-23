@@ -29,12 +29,14 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from gbserver.types.constants import GBSERVER_LOG_RECORD_MAX_CHARS
 from gbserver.types.errors import (
     ErrConnectionClosed,
     ErrConnResetByPeer,
     ErrNetworkUnreachable,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.unwrap_errors import escape_for_one_record
 from gbserver.utils.utils import cmd_safe_join
 
 logger = get_logger(__name__)
@@ -101,7 +103,7 @@ async def launch_command_and_raise_errors(
                 "step %s, command: `%s` , stderr: %s",
                 launch_id,
                 command_str,
-                stderr,
+                escape_for_one_record(stderr, GBSERVER_LOG_RECORD_MAX_CHARS),
             )
     if process.returncode is None:
         raise ValueError(f"failed to launch the process `{command_str}`")
@@ -115,7 +117,9 @@ async def launch_command_and_raise_errors(
             if ErrConnectionClosed.matches_error_str(stderr):
                 raise ErrConnectionClosed(err_msg)
             raise ValueError(err_msg)
-        logger.warning("%s", err_msg)
+        logger.warning(
+            "%s", escape_for_one_record(err_msg, GBSERVER_LOG_RECORD_MAX_CHARS)
+        )
     return process, stdout, stderr
 
 

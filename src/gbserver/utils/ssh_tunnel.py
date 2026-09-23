@@ -48,11 +48,13 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from gbserver.types.constants import GBSERVER_LOG_RECORD_MAX_CHARS
 from gbserver.utils.launch import (
     launch_command_and_raise_errors,
     launch_command_and_retry_or_raise_errors,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.unwrap_errors import escape_for_one_record
 
 logger = get_logger(__name__)
 
@@ -310,9 +312,15 @@ class SshTunnel:
         stdout: str = self.__to_str(result.stdout)
         stderr: str = self.__to_str(result.stderr)
         if len(stdout) > 0:
-            logger.info("[SshTunnel] stdout: %s", stdout)
+            logger.info(
+                "[SshTunnel] stdout: %s",
+                escape_for_one_record(stdout, GBSERVER_LOG_RECORD_MAX_CHARS),
+            )
         if len(stderr) > 0:
-            logger.warning("[SshTunnel] stderr: %s", stderr)
+            logger.warning(
+                "[SshTunnel] stderr: %s",
+                escape_for_one_record(stderr, GBSERVER_LOG_RECORD_MAX_CHARS),
+            )
 
         if raise_on_error and rc != 0:
             raise ValueError(

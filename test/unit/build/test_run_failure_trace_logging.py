@@ -9,11 +9,8 @@ import logging
 
 import pytest
 
-from gbserver.build.run import (
-    _TRACE_LOG_MAX_CHARS,
-    _TRACE_MARKER,
-    _log_failure_trace,
-)
+from gbserver.build.run import _TRACE_MARKER, _log_failure_trace
+from gbserver.types.constants import GBSERVER_LOG_RECORD_MAX_CHARS
 from gbserver.utils.unwrap_errors import with_remote_stacktrace
 
 MULTI_LINE_TRACE = (
@@ -76,7 +73,7 @@ def test_backslashes_in_trace_are_not_ambiguous(caplog):
 
 def test_long_trace_is_truncated_with_total_size(caplog):
     """A pathological trace is capped so it cannot flood the log pipeline."""
-    huge = "x" * (_TRACE_LOG_MAX_CHARS + 5000)
+    huge = "x" * (GBSERVER_LOG_RECORD_MAX_CHARS + 5000)
     with caplog.at_level(logging.ERROR, logger="gbserver.build.run"):
         _log_failure_trace(huge, "step-huge")
 
@@ -85,7 +82,7 @@ def test_long_trace_is_truncated_with_total_size(caplog):
     )
     assert "truncated" in message
     assert str(len(huge)) in message
-    assert len(message) < _TRACE_LOG_MAX_CHARS + 500
+    assert len(message) < GBSERVER_LOG_RECORD_MAX_CHARS + 500
 
 
 @pytest.mark.parametrize("value", ["", None])
@@ -109,7 +106,7 @@ def test_escape_expansion_cannot_exceed_the_cap(caplog, filler, label):
     let a pathological trace emit a record up to 2x the limit — the flood the cap
     exists to prevent. Windows paths and repr()'d regexes produce exactly this.
     """
-    huge = filler * (_TRACE_LOG_MAX_CHARS + 5000)
+    huge = filler * (GBSERVER_LOG_RECORD_MAX_CHARS + 5000)
     with caplog.at_level(logging.ERROR, logger="gbserver.build.run"):
         _log_failure_trace(huge, f"step-{label}")
 
@@ -118,7 +115,7 @@ def test_escape_expansion_cannot_exceed_the_cap(caplog, filler, label):
     )
     assert "truncated" in message
     assert str(len(huge)) in message, "reports the true pre-escape size"
-    assert len(message) < _TRACE_LOG_MAX_CHARS + 500
+    assert len(message) < GBSERVER_LOG_RECORD_MAX_CHARS + 500
 
 
 def test_truncation_never_splits_an_escape_pair(caplog):
@@ -128,7 +125,7 @@ def test_truncation_never_splits_an_escape_pair(caplog):
     tail un-escape to something the original never contained.
     """
     # Place a backslash so its escaped pair straddles the cap boundary.
-    raw = "a" * (_TRACE_LOG_MAX_CHARS - 1) + "\\" + "b" * 100
+    raw = "a" * (GBSERVER_LOG_RECORD_MAX_CHARS - 1) + "\\" + "b" * 100
     with caplog.at_level(logging.ERROR, logger="gbserver.build.run"):
         _log_failure_trace(raw, "step-split")
 

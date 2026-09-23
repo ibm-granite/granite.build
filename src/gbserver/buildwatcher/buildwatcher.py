@@ -14,7 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 """
 Watch the admin metadata tables for new builds, cancellations, etc.
 """
@@ -49,6 +48,7 @@ from gbserver.types.constants import (
     COMMAND_RUN_BUILD_WATCH_BUILD_NAME,
     DEFAULT_DIR_PERMS,
     GBSERVER_GITHUB_TOKEN,
+    GBSERVER_LOG_RECORD_MAX_CHARS,
     WORKSPACE_REPOS_DIR,
 )
 from gbserver.types.metrics import (
@@ -60,6 +60,7 @@ from gbserver.types.status import Status
 from gbserver.utils.filesystem import create_temp_subdir
 from gbserver.utils.git_retry import git_clone_retry
 from gbserver.utils.logger import get_logger
+from gbserver.utils.unwrap_errors import escape_for_one_record
 from gbserver.utils.utils import get_utc_time, normalize_to_filename
 
 logger = get_logger(__name__)
@@ -396,7 +397,12 @@ class BuildWatcher:
                 self.__get_newly_cancelled_builds()
             )  # only those from the assigned space(s)
         except Exception as e:
-            logger.error("%s", traceback.format_exc())
+            logger.error(
+                "%s",
+                escape_for_one_record(
+                    traceback.format_exc(), GBSERVER_LOG_RECORD_MAX_CHARS
+                ),
+            )
             logger.error("failed to fetch the new cancelled builds error: %s", e)
         to_show_cancelled = [b.source_uri for b in cancelled_builds]
         logger.debug(
@@ -595,7 +601,12 @@ class BuildWatcher:
                 f"Found {len(pending_builds)} pending builds in our managed spaces"
             )
         except Exception as e:
-            logger.error("%s", traceback.format_exc())
+            logger.error(
+                "%s",
+                escape_for_one_record(
+                    traceback.format_exc(), GBSERVER_LOG_RECORD_MAX_CHARS
+                ),
+            )
             logger.error("failed to fetch the new pending builds error: %s", e)
             return
 
@@ -632,7 +643,11 @@ class BuildWatcher:
                     time.sleep(self.config.monitoring_interval)
             except Exception as e:
                 msg = traceback.format_exc()
-                logger.error("Ignoring exception in BuildWatcher: %s\n%s", e, msg)
+                logger.error(
+                    "Ignoring exception in BuildWatcher: %s | %s",
+                    e,
+                    escape_for_one_record(msg, GBSERVER_LOG_RECORD_MAX_CHARS),
+                )
         if self.stop_event.is_set():
             logger.warning("stop event has been set, stopping __worker_thread_run...")
 
