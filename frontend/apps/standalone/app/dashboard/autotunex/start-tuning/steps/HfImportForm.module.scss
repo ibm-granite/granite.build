@@ -102,3 +102,29 @@
 .importRow {
   margin-top: 1rem;
 }
+
+// A repo id is longer than a filename, and Carbon's file item will not shrink to
+// fit one. Both elements it can render the name into -- the plain `<p>`, and the
+// tooltip-wrapped `<button>` it swaps in once its own `offsetWidth < scrollWidth`
+// check trips -- carry `white-space: nowrap`, which makes the item's min-content
+// width its full text width. As a grid item in the `120px 1fr` row above, it then
+// refuses the 212px track it was given and keeps its intrinsic 316px: the row's
+// content measured 444px inside a 340px tile, so "ibm-research/Wish-Summarization-
+// Llama" ran off the tile edge with no ellipsis, since nothing was clipping it.
+//
+// Wrapping is what fits it, rather than `minmax(0, 1fr)` on the track -- that lets
+// the track shrink but not the item, and measured no change at all. Two lines also
+// beat the ellipsis Carbon intends here: the tail of a repo id is the dataset name,
+// so it is the half worth reading.
+//
+// `anywhere` for the ids that offer no break opportunity: hyphens and slashes break
+// on their own, but `someorg/onelongunbrokentoken` would still overflow.
+.fileRow :global(.cds--file__selected-file .cds--file-filename),
+.fileRow :global(.cds--file__selected-file .cds--file-filename-button) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  // Carbon renders the long-name variant into a `<button>`, which centres its text
+  // by UA default. On the single line that was never visible; on two it left the
+  // second line ragged against the left-aligned fields under it.
+  text-align: start;
+}
