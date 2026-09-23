@@ -1,0 +1,51 @@
+# skypilot/aws environment for the gated inline-hfpush single-instance build test (#390).
+#
+# The aws-inline environment carried by the co-located test Space and referenced
+# by the inline-hfpush/build.yaml fixture as space://environments/skypilot/aws-inline.
+# It is modeled on the committed configurations/assets/environments/skypilot/aws/
+# environment.yaml inline path: NO shared_filesystem, and the hf assetstore runs
+# `inline: true` for BOTH pull and push. Inline mode folds the hf download into the
+# consuming step's setup and the upload into the producing step's run epilogue, so
+# there are no separate hfpull/hfpush steps — the whole build runs on ONE EC2
+# instance. No BYO EFS and no admin-provisioned resource group are needed.
+name: skypilot-aws-inline-e2e
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  idle_minutes_to_autostop: 5
+  # AWS credentials materialized from the space secret manager into a NON-default
+  # profile in ~/.aws/credentials. The values are secret NAMES resolved by the
+  # space's secret_manager — never literals (mirrors the shipped aws environment).
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  # NO shared_filesystem block: the inline pull/push paths keep model data
+  # instance-local, so the whole build runs on one EC2 instance without EFS.
+assetstores:
+  - store_uri: space://assetstores/s3/
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}
+  # Inline pull AND inline push (no shared_filesystem): hfpull/hfpush run inline
+  # within the consuming/producing step so the model data lives instance-locally.
+  # cache_path pins the instance-local hf cache used by the inline download.
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config:
+          cache_path: /tmp/hf_cache
+          inline: true
+    push:
+      - mode: default
+        config:
+          inline: true
