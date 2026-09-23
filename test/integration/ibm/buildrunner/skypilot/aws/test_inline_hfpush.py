@@ -50,8 +50,19 @@ Prerequisites to actually run (locally, in the extended suite):
   2. SkyPilot installed and ``sky check aws`` passing.
   3. ``HF_TOKEN`` with write access to the hf:// output namespace.
 
-The build.yaml, buildtest.yaml, and the co-located test Space live under the
-directory returned by ``_get_yaml_spec_dir`` below.
+Two fixtures exercise the two execution paths (mirroring the sibling shared-fs
+test's bare/containerized split):
+  * :class:`TestSkypilotAwsInlineHfpushBare` — ``command_config.image: ""`` runs
+    on the bare EC2 VM.
+  * :class:`TestSkypilotAwsInlineHfpushContainerized` — an image is set
+    (``image_id: docker:python:3.12-slim``) so setup+run execute inside the
+    container; the inline pull downloads into the container fs and the epilogue's
+    ``python``/``huggingface_hub`` upload runs in-container.
+
+Each variant's build.yaml + buildtest.yaml live under
+``inline-hfpush/{bare,containerized}/`` and share the one test Space at
+``inline-hfpush/space`` (the dir returned by ``_get_yaml_spec_dir`` + "/space"'s
+parent), resolved via each buildtest.yaml's ``space_uri: ../space``.
 """
 
 import os
@@ -102,12 +113,26 @@ pytestmark = [
 ]
 
 
-class TestSkypilotAwsInlineHfpush(AbstractYamlBuildRunnerTest):
-    """Single EC2 instance: inline hf pull -> command -> inline hf push, no shared
-    FS. The command reads the inline-pulled hf:// input (folded into its setup),
-    writes a file, and emits the artifact marker the inline push epilogue uploads.
-    SUCCESS proves the no-shared-FS, no-admin inline pull->compute->push path."""
+class TestSkypilotAwsInlineHfpushBare(AbstractYamlBuildRunnerTest):
+    """BARE (command_config.image empty): inline hf pull -> command -> inline hf
+    push runs directly on the EC2 VM, no shared FS. The command reads the
+    inline-pulled hf:// input (folded into its setup), writes a file, and emits the
+    artifact marker the inline push epilogue uploads. SUCCESS proves the
+    no-shared-FS, no-admin inline pull->compute->push path on the bare host."""
 
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
-        return get_test_data_dir_for(__file__) / "inline-hfpush"
+        return get_test_data_dir_for(__file__) / "inline-hfpush" / "bare"
+
+
+class TestSkypilotAwsInlineHfpushContainerized(AbstractYamlBuildRunnerTest):
+    """CONTAINERIZED (image set -> image_id: docker:python:3.12-slim): the same
+    inline flow, but setup+run execute INSIDE the container. Exercises the
+    container-boundary path the bare variant does not: the inline pull downloads
+    into the container fs and the inline push epilogue runs python/huggingface_hub
+    in-container (the image supplies python3 + pip). SUCCESS proves inline
+    pull->compute->push works from inside a container on one instance."""
+
+    def _get_yaml_spec_dir(self) -> Path:
+        """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
+        return get_test_data_dir_for(__file__) / "inline-hfpush" / "containerized"

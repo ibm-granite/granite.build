@@ -1,0 +1,31 @@
+# YAML spec for the CONTAINERIZED inline-hfpush build test (test_inline_hfpush.py).
+# Same inline hf:// input -> command -> hf:// output flow as ../bare/buildtest.yaml,
+# but the command step sets an image (image_id: docker:python:3.12-slim), so
+# setup+run execute INSIDE the container: the inline pull downloads into the
+# container fs and the inline push epilogue runs python/huggingface_hub in-container.
+# NO shared_filesystem; still ONE step on ONE instance (step_count 1). Reaching
+# SUCCESS proves the inline pull->compute->push path works from inside a container.
+targets:
+  - inline-hfpush-command
+target_expectations:
+  - target_name: inline-hfpush-command
+    # SINGLE instance: inline pull folded into the command step's setup and inline
+    # push into its run epilogue, so exactly ONE step (no separate hfpull/hfpush) —
+    # the key contrast with shared-fs (step_count 3).
+    step_count: 1
+    input_artifact_count: 1 # hf input (inline-pulled into the container in setup)
+    output_artifact_count: 1 # hf output (inline-pushed from the container in the epilogue)
+    jobstats_count: 1
+# The committed Space (../space) carries environments/skypilot/aws-inline and
+# chains base_uris to configurations/assets, shared with the bare variant.
+space_uri: ../space
+# Only the basic build; skip the cancellation variant.
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: a missing input (test -e)
+# or a failed inline pull/push fails the build, so SUCCESS proves the inline
+# pull -> compute -> push path ran end to end inside a container on one instance.
+simulate_step_failure: false
+# EC2 cold-start + SkyPilot setup for ONE instance + container pull + the inline
+# hf pull/push. A shade higher than bare to allow for image pull into the VM.
+timeout_minutes: 30
