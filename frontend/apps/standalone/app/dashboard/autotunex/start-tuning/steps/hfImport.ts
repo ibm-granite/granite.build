@@ -329,11 +329,18 @@ export function canImport(input: {
   importing: boolean
   /** True when no separate validation split is chosen, so the percentage applies. */
   splitFromTrain: boolean
+  /**
+   * True when a separate validation split has actually been picked. False is the
+   * "toggle is off, dropdown still on its placeholder" state, which must not
+   * import -- it would post an empty validation_split.
+   */
+  hasValidationSplit: boolean
   validationPercentage: number
 }): boolean {
   if (!input.hasRepo || !input.hasConfig || !input.hasTrainSplit) return false
   if (!input.mappingComplete || !input.nameValid || input.importing) return false
   if (input.survivalKind !== 'ok' && input.survivalKind !== 'warning') return false
+  if (!input.splitFromTrain && !input.hasValidationSplit) return false
   if (
     input.splitFromTrain &&
     !(

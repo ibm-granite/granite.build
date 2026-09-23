@@ -417,6 +417,7 @@ describe('canImport', () => {
     survivalKind: 'ok',
     importing: false,
     splitFromTrain: false,
+    hasValidationSplit: true,
     validationPercentage: 10,
   }
 
@@ -469,6 +470,28 @@ describe('canImport', () => {
   it('ignores the percentage when a separate validation split is chosen', () => {
     assert.equal(canImport({ ...base, splitFromTrain: false, validationPercentage: 0 }), true)
     assert.equal(canImport({ ...base, splitFromTrain: false, validationPercentage: 99 }), true)
+  })
+
+  it('blocks a separate validation split that has not been chosen yet', () => {
+    // Reachable state, not a hypothetical: turning the toggle off on a dataset
+    // whose splits are [train, test] preselects '' because there is no split
+    // named "validation". Without this branch Import goes live and posts
+    // validation_split: ''.
+    assert.equal(canImport({ ...base, splitFromTrain: false, hasValidationSplit: false }), false)
+  })
+
+  it('ignores a missing validation split when splitting from train', () => {
+    // splitFromTrain means validationSplit holds the NO_VALIDATION sentinel, so
+    // the new branch must not fire on the default path.
+    assert.equal(
+      canImport({
+        ...base,
+        splitFromTrain: true,
+        hasValidationSplit: false,
+        validationPercentage: 10,
+      }),
+      true,
+    )
   })
 })
 
