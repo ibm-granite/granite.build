@@ -38,7 +38,11 @@ class SkypilotIO(EnvironmentIO):
             return ""
         lines = [
             "# -- gbserver: inline hfpull for inputs --",
-            "pip install --no-cache-dir 'huggingface_hub[cli]' 2>/dev/null || true",
+            # Pin <2.0: huggingface_hub 2.0.0's httpx2 decompressor breaks
+            # `hf download` on the bare AWS AMI's Python 3.10 (TypeError). See
+            # the separate pin PR (fix/pin-hfhub-lt2-skypilot).
+            "pip install --no-cache-dir 'huggingface_hub[cli]<2.0' "
+            "2>/dev/null || true",
         ]
         for i in hf_inputs:
             cmd = f'hf download "{i.repo}" --local-dir "{i.dest}"'
