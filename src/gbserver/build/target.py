@@ -269,15 +269,17 @@ class Target(BuildEntity):
         return tasks
 
     def push_assets(self: Self) -> Dict[str, dict]:
-        """Resolve inline-push declared outputs to HfOutputIO descriptors.
+        """Resolve inline-push declared outputs to ``OutputIO`` descriptors.
 
-        For each declared output whose resolved push store is an hfstore with
-        ``push[0].config.inline`` truthy, ask the environment to build a
-        destination descriptor (Task 7's ``resolve_inline_hfpush``) and stash it
-        on the output's ``binding_id`` so the producing step's launch appends the
-        upload epilogue (spec §5, Q1). Non-inline / non-hf outputs resolve to
-        nothing (they take the separate-step push path). Single-producing-step
-        scope.
+        For each declared output whose resolved push store is ``inline: true``,
+        delegate to the environment's store-agnostic
+        ``resolve_inline_output`` (which dispatches to the per-store handler,
+        e.g. ``resolve_inline_output_hfstore``) and stash the returned
+        ``OutputIO`` on the output's ``binding_id`` so the producing step's
+        launch appends the upload epilogue (spec §5, Q1). This method knows
+        nothing about HF or any concrete store; a store with no inline handler
+        resolves to nothing and takes the separate-step push path, as does a
+        non-inline output. Single-producing-step scope.
         """
         resolved: Dict[str, dict] = {}
         outputs = getattr(self.config, "outputs", None)
@@ -291,28 +293,28 @@ class Target(BuildEntity):
             # which does not exist at target-setup time. The separate-step push path
             # renders it later (post-step, in Environment.pushasset, with `binding`
             # in scope), so a NON-inline output is fine — skip it here. But an INLINE
-            # hf push must resolve its HF destination BEFORE the producing step
-            # launches (the epilogue is baked into the step's run script), so a
+            # push must resolve its destination BEFORE the producing step launches
+            # (the epilogue is baked into the step's run script), so a
             # binding-dependent destination is unsupported: fail clearly instead of
             # crashing deep in Jinja mid-run.
             try:
                 uri = URI.get_uri(out.uri)
             except Exception as e:  # noqa: BLE001 - template render / parse failure
-                if self._output_is_inline_hf_push(out.uri):
+                if self._output_is_inline_push(out.uri):
                     raise ValueError(
-                        f"inline hfpush output '{binding_id}' has a destination URI "
+                        f"inline push output '{binding_id}' has a destination URI "
                         "that cannot be resolved before the producing step runs "
                         "(it references the produced artifact, e.g. "
-                        "'{{ binding.* }}'): inline push resolves the HF destination "
-                        "at setup, so the repo name may not depend on the artifact "
+                        "'{{ binding.* }}'): inline push resolves the destination "
+                        "at setup, so the name may not depend on the artifact "
                         "the push creates. Use a literal or build-time name, or drop "
-                        f"`inline: true` to use the separate-step hfpush. URI: {out.uri}"
+                        f"`inline: true` to use the separate-step push. URI: {out.uri}"
                     ) from e
                 continue
             assetstore, storeenv = self.environment._get_storeconfig(
                 uri=uri, raise_exceptions=False
             )
-            if assetstore is None or assetstore.type.lower() != "hfstore":
+            if assetstore is None:
                 continue
             push_cfg = storeenv.push[0] if (storeenv and storeenv.push) else None
             inline = (
@@ -322,37 +324,41 @@ class Target(BuildEntity):
             )
             if not inline:
                 continue
-            # Inline hfpush constraint: the producing step's upload epilogue
-            # (io/skypilot.py) renders this binding_id into a sed program that
+            # Inline push constraint: the producing step's upload epilogue
+            # (io/*.py) renders this binding_id into a sed program that
             # matches the runtime "GB_ARTIFACT_ID:<id>" marker LITERALLY.
             # buildrun.py, however, matches output configs to runtime artifact
             # ids via fnmatch, so an output KEY may legally be a glob (e.g.
             # "model-*"). A glob key would render "GB_ARTIFACT_ID:model-*",
             # which can never match the concrete marker "GB_ARTIFACT_ID:model-v1"
-            # -> HF_SOURCE resolves empty -> confusing mid-run abort. Raise
+            # -> the source resolves empty -> confusing mid-run abort. Raise
             # early (at resolve time, before launch) to turn that silent trap
             # into a clear build-config error.
             if any(ch in binding_id for ch in "*?["):
                 raise ValueError(
-                    "inline hfpush requires a literal output binding_id, not a "
+                    "inline push requires a literal output binding_id, not a "
                     f"glob ('{binding_id}'): the producing step's upload epilogue "
                     "matches the runtime GB_ARTIFACT_ID:<id> marker literally, so "
                     "a glob key can never match. Use a literal output name for an "
                     "inline-push output, or drop `inline: true` to use the "
-                    "separate-step hfpush."
+                    "separate-step push."
                 )
-            io = self.environment.resolve_inline_hfpush(
+            io = self.environment.resolve_inline_output(
                 uri=uri,
                 storepush_config=push_cfg,
                 assetstore=assetstore,
                 output_config=out,
                 binding_id=binding_id,
             )
-            resolved[binding_id] = {"_hfpush": io}
+            # A store with no inline handler (e.g. cosstore today) returns None:
+            # take the separate-step push path for it.
+            if io is None:
+                continue
+            resolved[binding_id] = {"_inline_output": io}
         return resolved
 
-    def _output_is_inline_hf_push(self: Self, raw_uri: str) -> bool:
-        """Is ``raw_uri`` an hf output whose push store is ``inline: true``?
+    def _output_is_inline_push(self: Self, raw_uri: str) -> bool:
+        """Is ``raw_uri`` an output whose push store is ``inline: true``?
 
         Used only when ``URI.get_uri(raw_uri)`` failed to render (e.g. the URI
         references the not-yet-produced ``{{ binding.* }}``), to decide between a
@@ -369,7 +375,7 @@ class Target(BuildEntity):
         assetstore, storeenv = self.environment._get_storeconfig(
             uri=uri, raise_exceptions=False
         )
-        if assetstore is None or assetstore.type.lower() != "hfstore":
+        if assetstore is None:
             return False
         push_cfg = storeenv.push[0] if (storeenv and storeenv.push) else None
         return bool(

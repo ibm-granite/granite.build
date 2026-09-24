@@ -272,6 +272,37 @@ class TestPullassetHfstore:
             Path("/explicit/override/myorg/myrepo/main")
         )
 
+    @pytest.mark.asyncio
+    async def test_inline_mode_stashes_typed_input_descriptor(
+        self, skypilot_env, mock_hfuri
+    ):
+        """Inline mode emits a typed HfInputIO under the store-agnostic
+        ``_inline_input`` key (built here in the per-store dispatch, not
+        reconstructed at launch) and queues no separate pull step."""
+        from gbserver.environment.io.descriptors import HfInputIO
+
+        assetstore = _hfstore_mock(token="pull-tok")
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {"cache_path": "/data/cache", "inline": True}
+
+        binding_config, step_config = await skypilot_env.pullasset_hfstore(
+            uri=mock_hfuri,
+            assetstore=assetstore,
+            storeload_config=storeload_config,
+        )
+
+        assert step_config is None
+        expected_path = str(Path("/data/cache/myorg/myrepo/main"))
+        assert binding_config["binding"]["path"] == expected_path
+        io = binding_config["_inline_input"]
+        assert isinstance(io, HfInputIO)
+        assert io.repo == "myorg/myrepo"
+        assert io.revision == "main"
+        assert io.type == "model"
+        assert io.dest == expected_path
+        assert io.token == "pull-tok"
+
 
 class TestGetHfCacheDir:
     """Unit tests for the three-rung cache-path resolution chain."""

@@ -61,7 +61,7 @@ from gbcommon.uri.file import absolutize_file_uri
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
-from gbserver.environment.io.descriptors import InlineDeferredPush
+from gbserver.environment.io.descriptors import InlineDeferredPush, OutputIO
 from gbserver.messaging.messaging_base import MessagingBase
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
@@ -279,6 +279,7 @@ class Environment(ABC):
     __cleanup_done_events: Dict[str, Event]
     pullasset_types: Dict[str, Callable]
     pushasset_types: Dict[str, Callable]
+    resolve_inline_output_types: Dict[str, Callable]
     __launch_stopped_events: Dict[
         str, asyncio.Event
     ]  # stop events to exit monitoring, one per launch_id
@@ -321,6 +322,9 @@ class Environment(ABC):
         self.teardown_types = self._get_fns_with_prefix(prefix="teardown_")
         self.pullasset_types = self._get_fns_with_prefix(prefix="pullasset_")
         self.pushasset_types = self._get_fns_with_prefix(prefix="pushasset_")
+        self.resolve_inline_output_types = self._get_fns_with_prefix(
+            prefix="resolve_inline_output_"
+        )
         self.shared_mem_store: Dict[str, Any] = {}
         self.supported_assetstores: Dict[Assetstore, AssetStoreEnvironmentConfig] = {}
         self._load_assetstores()
@@ -1647,6 +1651,41 @@ class Environment(ABC):
 
         asyncio_runner = task_group if task_group is not None else asyncio
         return asyncio_runner.create_task(pushasset_as_uri())
+
+    def resolve_inline_output(
+        self: Self,
+        uri: URI,
+        storepush_config=None,
+        assetstore=None,
+        output_config=None,
+        binding_id: str = "",
+    ) -> Optional[OutputIO]:
+        """Resolve a declared output into an inline (folded-into-step) push
+        descriptor, or ``None`` if this store/environment has no inline push.
+
+        Store-agnostic entry point for the setup-time inline-push pass
+        (``Target.push_assets``): dispatches by asset-store type to the
+        ``resolve_inline_output_<store>`` handler (registered like
+        ``pushasset_<store>`` via :meth:`_get_fns_with_prefix`). Environments or
+        stores that don't implement inline output IO simply register no handler,
+        so the caller falls back to the separate-step push path. The returned
+        :class:`OutputIO` (subclass) is what the environment's ``EnvironmentIO``
+        renders into the producing step's upload epilogue — the environment/base
+        layer never needs to know the concrete store type.
+        """
+        if assetstore is None:
+            return None
+        fn = self.resolve_inline_output_types.get(assetstore.type.lower())
+        if fn is None:
+            return None
+        return fn(
+            self,
+            uri=uri,
+            storepush_config=storepush_config,
+            assetstore=assetstore,
+            output_config=output_config,
+            binding_id=binding_id,
+        )
 
     def _get_fns_with_prefix(self: Self, prefix: str) -> dict[str, Callable]:
         """

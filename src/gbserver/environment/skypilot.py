@@ -44,7 +44,11 @@ from tenacity import (
 from gbcommon.uri.uri import URI
 from gbserver.environment._skypilot_ssh import _kill_and_reap
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
-from gbserver.environment.io.descriptors import HfOutputIO, InlineDeferredPush
+from gbserver.environment.io.descriptors import (
+    HfInputIO,
+    HfOutputIO,
+    InlineDeferredPush,
+)
 from gbserver.environment.shared_fs import (
     build_provider,
     resolve_local_scratch,
@@ -1389,25 +1393,27 @@ class Skypilot(Environment):
 
     def _compose_inline_run_script(self, base_run, bindings, build_workdir):
         """Compose the run script, tee-wrapping the body + appending the inline
-        hfpush epilogue when any binding carries an ``_hfpush`` ``HfOutputIO``.
+        push epilogue when any binding carries an ``_inline_output`` ``OutputIO``.
 
-        With no hfpush outputs the result is byte-identical to today's
+        With no inline outputs the result is byte-identical to today's
         ``cli_prefix + base_run`` (regression guard). With outputs, the body is
         wrapped in ``{ ... } | tee "$GB_INLINE_PUSH_CAP"`` so the step's
         ``GB_ARTIFACT_PATH`` markers land in a capture file, then
         ``SkypilotIO.render_epilogue`` resolves each output's source path from
-        that file and runs the shared hf-upload body. ``GB_INLINE_PUSH_CAP`` is
-        the exact capture_var name render_epilogue greps.
+        that file and emits the (store-specific) upload shell. The launch path
+        stays store-agnostic: it collects generic ``OutputIO`` descriptors and
+        the ``EnvironmentIO`` subclass decides what to render.
+        ``GB_INLINE_PUSH_CAP`` is the exact capture_var name render_epilogue greps.
         """
         from gbserver.environment.io import SkypilotIO
-        from gbserver.environment.io.descriptors import HfOutputIO
+        from gbserver.environment.io.descriptors import OutputIO
 
         provider = self._shared_fs_provider()
         cli_prefix = _compose_step_prologue(provider, build_workdir)
         outputs = [
-            b["_hfpush"]
+            b["_inline_output"]
             for b in (bindings or {}).values()
-            if isinstance(b, dict) and isinstance(b.get("_hfpush"), HfOutputIO)
+            if isinstance(b, dict) and isinstance(b.get("_inline_output"), OutputIO)
         ]
         if not outputs:
             return cli_prefix + base_run
@@ -1883,24 +1889,29 @@ class Skypilot(Environment):
 
     @staticmethod
     def _first_hf_token(bindings: Optional[Dict]) -> Optional[str]:
-        """Return the first HF token found among inline hfpull/hfpush bindings.
+        """Return the first token found among inline input/output bindings.
+
+        Reads the optional ``.token`` off the typed IO descriptors (currently
+        only HF carries one), so the launch env can supply HF_TOKEN as the
+        weakest fallback source.
 
         :param bindings: the launch bindings mapping (may be None); each value
-            may carry an ``_hfpull`` dict with an optional ``hf_token``, or an
-            ``_hfpush`` :class:`HfOutputIO` with an optional ``.token``.
-        :returns: the first non-empty token, preferring an ``_hfpull``
-            ``hf_token`` over an ``_hfpush`` ``.token``, or None if none present.
+            may carry an ``_inline_input`` :class:`InputIO` and/or an
+            ``_inline_output`` :class:`OutputIO`, each with an optional
+            ``.token``.
+        :returns: the first non-empty token, preferring an input token over an
+            output token, or None if none present.
         """
         push_token: Optional[str] = None
         for bval in (bindings or {}).values():
-            if isinstance(bval, dict) and "_hfpull" in bval:
-                token = bval["_hfpull"].get("hf_token")
-                if token:
-                    return token
-            if isinstance(bval, dict) and "_hfpush" in bval:
-                token = getattr(bval["_hfpush"], "token", None)
-                if token and push_token is None:
-                    push_token = token
+            if not isinstance(bval, dict):
+                continue
+            pull_token = getattr(bval.get("_inline_input"), "token", None)
+            if pull_token:
+                return pull_token
+            token = getattr(bval.get("_inline_output"), "token", None)
+            if token and push_token is None:
+                push_token = token
         return push_token
 
     def _declared_secret_mappings(
@@ -2295,36 +2306,29 @@ class Skypilot(Environment):
                 bindings=kwargs.get("bindings"),
             )
 
-            # Inject inline hfpull downloads into setup from per-step bindings.
-            # (HF_TOKEN from these bindings is already applied in the env above.)
-            # Rendered via SkypilotIO.render_prologue from HfInputIO descriptors
-            # reconstructed from each `_hfpull` binding dict; the emitted shell is
-            # byte-identical to the prior ad-hoc block (same pip bootstrap + one
-            # `hf download` per input, preserving prepend-before-setup ordering).
+            # Inject inline input downloads into setup from per-step bindings.
+            # (Any token on these descriptors is already applied in the env
+            # above.) The store-specific descriptor (e.g. HfInputIO) was built at
+            # resolve time by the per-store dispatch (pullasset_hfstore) and
+            # stashed as a generic `_inline_input` InputIO; the launch path stays
+            # store-agnostic — it just hands the descriptors to
+            # SkypilotIO.render_prologue, whose subclass logic emits the shell.
             from gbserver.environment.io import SkypilotIO
-            from gbserver.environment.io.descriptors import HfInputIO
+            from gbserver.environment.io.descriptors import InputIO
 
             setup_script = launcher_config.get("setup") or ""
-            pending_hfpulls = {}
-            for bid, bval in (kwargs.get("bindings") or {}).items():
-                if isinstance(bval, dict) and "_hfpull" in bval:
-                    pending_hfpulls[bid] = bval["_hfpull"]
-            if pending_hfpulls:
-                hf_inputs = [
-                    HfInputIO(
-                        repo=pull_info["repo"],
-                        revision=pull_info.get("revision") or "",
-                        type=pull_info.get("type") or "model",
-                        dest=pull_info["path"],
-                        token=pull_info.get("hf_token") or "",
-                    )
-                    for pull_info in pending_hfpulls.values()
-                ]
-                hfpull_block = SkypilotIO().render_prologue(hf_inputs)
-                setup_script = hfpull_block + setup_script
+            inline_inputs = [
+                bval["_inline_input"]
+                for bval in (kwargs.get("bindings") or {}).values()
+                if isinstance(bval, dict)
+                and isinstance(bval.get("_inline_input"), InputIO)
+            ]
+            if inline_inputs:
+                prologue = SkypilotIO().render_prologue(inline_inputs)
+                setup_script = prologue + setup_script
                 logger.info(
-                    "Injected %d inline hfpull download(s) into setup script",
-                    len(pending_hfpulls),
+                    "Injected %d inline input download(s) into setup script",
+                    len(inline_inputs),
                 )
 
             # Compute file_mounts up front so relative destinations can be
@@ -2366,8 +2370,8 @@ class Skypilot(Environment):
             cli_prefix = _compose_step_prologue(provider, build_workdir)
             # The helper owns the full run_script composition (it recomputes the
             # same cli_prefix internally, tee-wraps the body, and appends the
-            # inline-hfpush epilogue when any `_hfpush` binding is present); do
-            # NOT prepend cli_prefix here as well or the run phase double-prefixes.
+            # inline push epilogue when any `_inline_output` binding is present);
+            # do NOT prepend cli_prefix here too or the run phase double-prefixes.
             run_script = self._compose_inline_run_script(
                 launcher_config.get("run", ""),
                 kwargs.get("bindings"),
@@ -2696,21 +2700,24 @@ class Skypilot(Environment):
         )
 
     def _inline_push_event_configs(self: Self, launch_id: str, base) -> list:
-        """Return ``base`` augmented with the inline-hfpush PUSHED event config.
+        """Return ``base`` augmented with the inline-push PUSHED event config.
 
-        When any binding for ``launch_id`` carries an ``_hfpush`` ``HfOutputIO``
-        (an inline push folded into the producing step's epilogue), the runtime
-        "pushed" signal comes from that step's own log line ``Pushed HF URI:``.
-        This appends the matching ``ARTIFACT_PUSHED_EVENT`` config so the
-        LogFileMonitor emits the event. The config matches the separate hfpush
-        ``step.yaml`` monitor byte-for-byte. Pure/idempotent: never mutates
-        ``base`` and returns ``list(base or [])`` unchanged when no inline push.
+        When any binding for ``launch_id`` carries an ``_inline_output``
+        ``OutputIO`` (an inline push folded into the producing step's epilogue),
+        the runtime "pushed" signal comes from that step's own log line
+        ``Pushed HF URI:``. This appends the matching ``ARTIFACT_PUSHED_EVENT``
+        config so the LogFileMonitor emits the event. The config matches the
+        separate hfpush ``step.yaml`` monitor byte-for-byte. Pure/idempotent:
+        never mutates ``base`` and returns ``list(base or [])`` unchanged when no
+        inline push. (The ``Pushed HF URI:`` regex is still HF-shaped — pairing a
+        store's upload marker with its event config in the IO layer is a noted
+        follow-up when a second inline store lands.)
         """
-        from gbserver.environment.io.descriptors import HfOutputIO
+        from gbserver.environment.io.descriptors import OutputIO
 
         bindings = (self._launch_kwargs.get(launch_id, {}) or {}).get("bindings") or {}
         has_inline_push = any(
-            isinstance(b, dict) and isinstance(b.get("_hfpush"), HfOutputIO)
+            isinstance(b, dict) and isinstance(b.get("_inline_output"), OutputIO)
             for b in bindings.values()
         )
         configs = list(base or [])
@@ -3668,7 +3675,9 @@ class Skypilot(Environment):
         )
 
         hf_token = assetstore.resolve_token(hfuri) or ""
-        binding_config = {"binding": {"path": str(binding_path)}}
+        # Widened value type: carries the "binding" dict plus, in inline mode, a
+        # typed `_inline_input` InputIO descriptor (see below).
+        binding_config: Dict[str, Any] = {"binding": {"path": str(binding_path)}}
 
         # Inline mode: stash download metadata for injection into the main
         # step's setup script rather than launching a separate cluster.
@@ -3678,16 +3687,17 @@ class Skypilot(Environment):
             and storeload_config.config.get("inline", False)
         )
         if inline:
-            # Embed hfpull metadata in the binding_config so it flows per-step
-            # through kwargs["bindings"] to _launch_skypilot_inner (no shared state).
-            binding_config["_hfpull"] = {
-                "path": str(binding_path),
-                "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
-                "revision": hfuri.get_revision(),
-                "type": hfuri.get_hf_type() or "model",
-                "uri": str(hfuri),
-                "hf_token": hf_token,
-            }
+            # Emit a typed, env-agnostic InputIO descriptor (built here, in the
+            # per-store dispatch — NOT reconstructed in the launch path) so it
+            # flows per-step through kwargs["bindings"] to _launch_skypilot_inner,
+            # which renders it via SkypilotIO.render_prologue without knowing HF.
+            binding_config["_inline_input"] = HfInputIO(
+                repo=f"{hfuri.get_owner()}/{hfuri.get_repo()}",
+                revision=hfuri.get_revision() or "",
+                type=hfuri.get_hf_type() or "model",
+                dest=str(binding_path),
+                token=hf_token,
+            )
             logger.info(
                 "pullasset_hfstore: inline mode — deferring download of %s to main step setup (dest=%s)",
                 str(hfuri),
@@ -3767,8 +3777,8 @@ class Skypilot(Environment):
         )
         if inline:
             # Upload was folded into the producing step's epilogue at launch
-            # (resolve_inline_hfpush + SkypilotIO.render_epilogue). This post-step
-            # call is a no-op that only lets pushasset emit CREATED (spec §6).
+            # (resolve_inline_output_hfstore + SkypilotIO.render_epilogue). This
+            # post-step call is a no-op that only lets pushasset emit CREATED (§6).
             logger.info(
                 "pushasset_hfstore: inline mode — deferring upload to producing "
                 "step epilogue for %s",
@@ -3828,7 +3838,7 @@ class Skypilot(Environment):
             },
         )
 
-    def resolve_inline_hfpush(
+    def resolve_inline_output_hfstore(
         self: Self,
         uri: Union[str, URI],
         storepush_config=None,
@@ -3838,11 +3848,15 @@ class Skypilot(Environment):
     ) -> HfOutputIO:
         """Build the destination descriptor for an inline (folded) hfpush.
 
+        The hfstore implementation of the store-agnostic
+        :meth:`Environment.resolve_inline_output` seam (registered by the
+        ``resolve_inline_output_`` prefix, parallel to ``pushasset_hfstore``).
         The inline path uploads at the producing step's epilogue instead of
         queuing a separate hfpush step, so this returns a *destination-only*
         ``HfOutputIO`` (no ``src``; the source is resolved at runtime from the
-        step's ``GB_ARTIFACT_PATH`` marker). Task 8's ``Target.push_assets``
-        calls this at target setup.
+        step's ``GB_ARTIFACT_PATH`` marker). ``Target.push_assets`` reaches it
+        via ``environment.resolve_inline_output`` at target setup, so neither
+        ``Target`` nor the launch path names HF directly.
 
         It reuses the exact resolution the separate-step ``pushasset_hfstore``
         path uses — ``resolve_hfpush_resource_group_id`` (Enterprise split,

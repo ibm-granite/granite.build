@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for Target.push_assets (inline-hfpush output resolution, #390)."""
+"""Unit tests for Target.push_assets (inline push output resolution, #390)."""
 
 from unittest.mock import MagicMock
 
@@ -34,7 +34,10 @@ def _make_target(outputs, storeenv, assetstore):
     push_assets only consumes self.config.outputs and self.environment, so we
     construct the Target directly (bypassing assimilate, which needs a live
     environment_uri) and attach a MagicMock environment whose
-    _get_storeconfig / resolve_inline_hfpush mirror the real signatures.
+    _get_storeconfig / resolve_inline_output mirror the real signatures. The
+    mocked resolve_inline_output stands in for the real store dispatch: it
+    returns an HfOutputIO for an hfstore and None for any other store (as the
+    base Environment.resolve_inline_output does when no handler is registered).
     """
     target = object.__new__(Target)
     target.name = "t"
@@ -48,13 +51,15 @@ def _make_target(outputs, storeenv, assetstore):
     environment._get_storeconfig.return_value = (assetstore, storeenv)
 
     def _resolve(uri, storepush_config, assetstore, output_config, binding_id):
+        if assetstore is None or getattr(assetstore, "type", "").lower() != "hfstore":
+            return None
         return HfOutputIO(
             repo="ibm-granite/granite-4.0-h-350m",
             uri=str(uri),
             binding_id=binding_id,
         )
 
-    environment.resolve_inline_hfpush.side_effect = _resolve
+    environment.resolve_inline_output.side_effect = _resolve
     target.environment = environment
     return target
 
@@ -88,7 +93,7 @@ def byo_push_target():
 def test_push_assets_resolves_inline_hf_outputs(inline_push_target):
     resolved = inline_push_target.push_assets()
     assert "model_out" in resolved
-    io = resolved["model_out"]["_hfpush"]
+    io = resolved["model_out"]["_inline_output"]
     assert isinstance(io, HfOutputIO)
     assert io.binding_id == "model_out"
 
@@ -115,7 +120,7 @@ def test_push_assets_rejects_glob_binding_id(glob_inline_push_target):
     # An inline-push output key with a glob metachar must fail early at
     # resolve time, not silently produce an epilogue marker that can never
     # match the concrete runtime GB_ARTIFACT_ID:<id>.
-    with pytest.raises(ValueError, match="inline hfpush requires a literal"):
+    with pytest.raises(ValueError, match="inline push requires a literal"):
         glob_inline_push_target.push_assets()
 
 
