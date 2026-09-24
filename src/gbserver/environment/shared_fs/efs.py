@@ -3,11 +3,17 @@ containerized step. SkyPilot's container run options already permit the in-conta
 mount -- ``--cap-add=SYS_ADMIN`` for mount(2) and ``--security-opt=apparmor:unconfined``
 to clear AppArmor (plus host networking to reach the mount target)."""
 
+import asyncio
 import shlex
 from typing import Optional
 
 from gbserver.environment.shared_fs.base import SharedFilesystemProvider
 from gbserver.environment.shared_fs.config import EfsConfig
+from gbserver.environment.shared_fs.efs_provisioning import (
+    EfsDeprovisionError,
+    deprovision_efs,
+    provision_efs,
+)
 
 _NFS_OPTS = (
     "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport"
@@ -95,6 +101,37 @@ class EfsProvider(SharedFilesystemProvider):
             + f'rmdir --ignore-fail-on-non-empty "$(dirname {pr})" 2>/dev/null || true\n'
             + f'rmdir --ignore-fail-on-non-empty "$(dirname "$(dirname {pr})")" 2>/dev/null || true\n'
         )
+
+    def _session(self, aws_profile):
+        # Lazy: boto3 ships only with the skypilot/aws extra; BYO + non-AWS envs
+        # and unit tests import this module without it (mirror _require_skypilot).
+        import boto3
+
+        return (
+            boto3.Session(profile_name=aws_profile) if aws_profile else boto3.Session()
+        )
+
+    async def provision(self, tags, aws_profile):
+        if self.cfg.provision != "ephemeral":
+            return None
+        session = self._session(aws_profile)
+        return await asyncio.to_thread(
+            provision_efs,
+            session,
+            self.cfg.region,
+            tags,
+            self.cfg.vpc_id,
+            self.cfg.subnets,
+            self.cfg.security_group_id,
+        )
+
+    async def deprovision(self, provisioned, aws_profile):
+        if provisioned is None:
+            return
+        session = self._session(aws_profile)
+        failures = await asyncio.to_thread(deprovision_efs, session, provisioned)
+        if failures:
+            raise EfsDeprovisionError(provisioned, failures)
 
     def cleanup_zone(self) -> Optional[str]:
         return self.cfg.cleanup_zone

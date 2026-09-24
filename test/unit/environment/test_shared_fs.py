@@ -1,5 +1,7 @@
+import asyncio
 import subprocess
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 
@@ -453,6 +455,70 @@ def test_efs_cleanup_run_script_mounts_then_reaps():
     assert "rm -rf '/mnt/gb-shared/builds/b1/runs/r1'" in script
     assert "rmdir" in script  # parent reap
     _bash_ok(script)
+
+
+# --- Task 7: EfsProvider.provision/deprovision delegate to boto3 helper (#391) ---
+
+
+def test_efs_provider_provision_byo_returns_none():
+    p = EfsProvider("/mnt/b", EfsConfig(file_system_id="fs-b", region="us-east-1"))
+    assert asyncio.run(p.provision({"gb-build-id": "b1"}, "gb-skypilot")) is None
+
+
+def test_efs_provider_provision_ephemeral_delegates():
+    p = EfsProvider(
+        "/mnt/e",
+        EfsConfig(
+            provision="ephemeral",
+            region="us-east-1",
+            subnets=["subnet-a"],
+            security_group_id="sg-1",
+        ),
+    )
+    fake_pr = ProvisionedResources(
+        region="us-east-1",
+        file_system_id="fs-x",
+        dns_name="fs-x.efs.us-east-1.amazonaws.com",
+        mount_target_ids=["mt-1"],
+        subnet_ids=["subnet-a"],
+        security_group_id="sg-1",
+        created_sg=False,
+    )
+    with (
+        mock.patch.object(EfsProvider, "_session", return_value=object()) as sess,
+        mock.patch(
+            "gbserver.environment.shared_fs.efs.provision_efs", return_value=fake_pr
+        ) as pv,
+    ):
+        out = asyncio.run(p.provision({"gb-build-id": "b1"}, "gb-skypilot"))
+    assert out is fake_pr
+    sess.assert_called_once_with("gb-skypilot")  # profile threaded through
+    # region + optional networking forwarded to the helper
+    args, kw = pv.call_args
+    assert "us-east-1" in args or kw.get("region") == "us-east-1"
+
+
+def test_efs_provider_deprovision_raises_on_failure():
+    p = EfsProvider("/mnt/e", EfsConfig(provision="ephemeral", region="us-east-1"))
+    pr = ProvisionedResources(
+        region="us-east-1",
+        file_system_id="fs-x",
+        dns_name="d",
+        mount_target_ids=[],
+        subnet_ids=[],
+        security_group_id=None,
+        created_sg=False,
+    )
+    with (
+        mock.patch.object(EfsProvider, "_session", return_value=object()),
+        mock.patch(
+            "gbserver.environment.shared_fs.efs.deprovision_efs",
+            return_value=["delete_file_system fs-x: boom"],
+        ),
+    ):
+        with pytest.raises(Exception) as ei:
+            asyncio.run(p.deprovision(pr, "gb-skypilot"))
+    assert "fs-x" in str(ei.value)
 
 
 def test_efs_transit_encryption_note_when_tls():
