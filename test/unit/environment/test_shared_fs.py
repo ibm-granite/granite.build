@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gbserver.environment.shared_fs import build_provider
+from gbserver.environment.shared_fs import build_providers
 from gbserver.environment.shared_fs.base import (
     ProvisionedResources,
     resolve_local_scratch,
@@ -455,14 +455,40 @@ def test_efs_cleanup_zone_from_config():
     assert p.cleanup_zone() == "us-east-1a"
 
 
-def test_build_provider_none_when_absent():
-    assert build_provider(_env({})) is None
-    assert build_provider(_env({"shared_workdir": "/proj/x"})) is None
-    assert build_provider(None) is None
+# --- Task 4: build_providers returns one provider per mount (#404) ---
 
 
-def test_build_provider_returns_efs():
-    prov = build_provider(
+def test_build_providers_empty_when_no_block():
+    assert build_providers(_env({"default_cloud": "aws"})) == []
+    assert build_providers(_env({})) == []
+    assert build_providers(None) == []
+
+
+def test_build_providers_one_per_mount_in_order():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "/mnt/a/w",
+        "shared_filesystem": [
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/a",
+                "efs": {"file_system_id": "fs-a", "region": "us-east-1"},
+            },
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/b",
+                "efs": {"provision": "ephemeral", "region": "us-east-1"},
+            },
+        ],
+    }
+    ps = build_providers(_env(cfg))
+    assert [p.mount_point for p in ps] == ["/mnt/a", "/mnt/b"]
+    assert all(isinstance(p, EfsProvider) for p in ps)
+    assert ps[1].cfg.provision == "ephemeral"
+
+
+def test_build_providers_single_object_backcompat():
+    prov = build_providers(
         _env(
             {
                 "shared_filesystem": {
@@ -473,5 +499,5 @@ def test_build_provider_returns_efs():
             }
         )
     )
-    assert isinstance(prov, EfsProvider)
-    assert prov.mount_point == "/mnt/gb-shared"
+    assert len(prov) == 1 and isinstance(prov[0], EfsProvider)
+    assert prov[0].mount_point == "/mnt/gb-shared"
