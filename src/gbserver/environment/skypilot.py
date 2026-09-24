@@ -2257,9 +2257,15 @@ class Skypilot(Environment):
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
+                # Pin <2.0: huggingface_hub 2.0.0's httpx2 streaming decompressor
+                # calls process(output_buffer_limit=...), which is broken on the
+                # bare AWS AMI's Python 3.10 (TypeError) and fails `hf download`.
+                # Stop-gap until the worker Python is bumped or 2.x is validated
+                # on py3.10.
                 hfpull_lines = [
                     "# -- gbserver: inline hfpull for inputs --",
-                    "pip install --no-cache-dir 'huggingface_hub[cli]' 2>/dev/null || true",
+                    "pip install --no-cache-dir 'huggingface_hub[cli]<2.0' "
+                    "2>/dev/null || true",
                 ]
                 for bid, pull_info in pending_hfpulls.items():
                     cmd = f'hf download "{pull_info["repo"]}" --local-dir "{pull_info["path"]}"'

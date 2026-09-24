@@ -37,7 +37,10 @@ environment_configs:
           resources:
             cpus: 1+
           setup: |
-            pip install --no-cache-dir huggingface_hub
+            # Pin <2.0: huggingface_hub 2.0.0 breaks on Python 3.10 workers
+            # (httpx2 decompressor TypeError). Stop-gap until the worker Python
+            # is bumped or 2.x is validated on py3.10.
+            pip install --no-cache-dir 'huggingface_hub<2.0'
           run: |
             set -euo pipefail
             trap 'EC=$?; echo "hfpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
