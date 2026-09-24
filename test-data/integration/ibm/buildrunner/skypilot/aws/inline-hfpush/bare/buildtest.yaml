@@ -1,0 +1,37 @@
+# YAML spec for the inline-hfpush single-instance build test (test_inline_hfpush.py).
+# The no-shared-filesystem counterpart of shared-fs/bare/buildtest.yaml (#390). A
+# single command step with a real hf:// input and hf:// output on an environment
+# whose hf assetstore is inline (pull AND push) with NO shared_filesystem. Inline
+# mode folds the hf download into the step's setup and the upload into the step's
+# run epilogue, so there are NO separate hfpull/hfpush steps: the whole target
+# runs as ONE step on ONE EC2 instance. `test -e` under `set -eu` fails the build
+# if the inline-pulled input did not arrive, so SUCCESS proves the inline
+# pull->compute->push path with no shared FS.
+targets:
+  - inline-hfpush-command
+target_expectations:
+  - target_name: inline-hfpush-command
+    # SINGLE instance: inline pull is folded into the command step's setup and
+    # inline push into its run epilogue, so there is exactly ONE step (no separate
+    # hfpull/hfpush steps) — this is the key contrast with shared-fs (step_count 3).
+    step_count: 1
+    input_artifact_count: 1 # hf input (inline-pulled in the step's setup)
+    output_artifact_count: 1 # hf output (inline-pushed in the step's epilogue)
+    jobstats_count: 1
+# The committed Space (../space) carries environments/skypilot/aws-inline and
+# chains base_uris to configurations/assets. The `command` step is a gbserver
+# builtin (space://steps/command) resolved regardless of the space. The bare and
+# containerized variants live under inline-hfpush/{bare,containerized}/ and SHARE
+# the one Space at inline-hfpush/space (mirrors the #389 shared-fs layout), so
+# ../space reaches it one level up.
+space_uri: ../space
+# Only the basic build; skip the cancellation variant.
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: a missing input (test -e)
+# or a failed inline pull/push fails the build, so SUCCESS proves the inline
+# pull -> compute -> push path ran end to end on one instance.
+simulate_step_failure: false
+# EC2 cold-start + SkyPilot setup for ONE instance plus the inline hf pull/push —
+# smaller than shared-fs's 40 (which sequences three instances).
+timeout_minutes: 25

@@ -50,10 +50,14 @@ config:
   #     tls: true
   #     # cleanup_zone: us-east-1a   # pin the teardown VM to a mount-target AZ
   #
+  # Inline pull AND inline push are the paths used when NO shared_filesystem is
+  # configured: hfpull/hfpush run inline within their consuming/producing step so
+  # the model data lives instance-locally (there is no shared mount to stage through).
   # When enabling shared_filesystem, ALSO change the hf assetstore below to drop
-  # `cache_path: /tmp/hf_cache` and `inline: true`, so hfpull runs as its own step
-  # and caches to ${shared_workdir}/hf_cache (otherwise it caches instance-locally and
-  # the model never reaches EFS). i.e. replace the hf pull config with `config: {}`.
+  # `cache_path: /tmp/hf_cache` and `inline: true` from BOTH the pull and push configs,
+  # so hfpull/hfpush run as their own steps and stage through ${shared_workdir}/hf_cache
+  # (otherwise they cache instance-locally and the model never reaches EFS). i.e.
+  # replace the hf pull config with `config: {}` and the push config with `config: {}`.
 assetstores:
   - store_uri: space://assetstores/s3/
     pull:
@@ -70,4 +74,5 @@ assetstores:
           inline: true
     push:
       - mode: default
-        config: {}
+        config:
+          inline: true

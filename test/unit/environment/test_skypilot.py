@@ -2005,3 +2005,246 @@ def test_no_gbserver_pinned_container_run_options():
     constant were removed; assert they no longer exist."""
     assert not hasattr(skymod, "_with_container_mount_options")
     assert not hasattr(skymod, "_CONTAINER_SHARED_FS_RUN_OPTIONS")
+
+
+def make_hfstore():
+    """Build a real ``Hfstore`` for a non-Enterprise org.
+
+    ``resolve_hfpush_resource_group_id`` short-circuits for a non-Enterprise
+    org (owner ``ns`` is not in ``enterprise_organizations``), returning
+    ``(None, <private>, {})`` with no HF API call, so these tests stay offline.
+    Token/secret lookups are pinned so no env/keychain read happens.
+    """
+    from gbserver.asset.hfstore import Hfstore
+    from gbserver.types.assetstoreconfig import AssetStoreConfig
+
+    store = Hfstore(
+        AssetStoreConfig(
+            base_uri="hf:/", config={"enterprise_organizations": ["some-ent-org"]}
+        )
+    )
+    store.resolve_token = lambda uri: "tok"  # type: ignore[method-assign]
+    store.get_secrets = lambda: {"HF_TOKEN": "tok"}  # type: ignore[method-assign]
+    return store
+
+
+class TestInlineHfpush:
+    @pytest.fixture
+    def skypilot_env(self):
+        from gbserver.environment.skypilot import Skypilot
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        event_q = asyncio.Queue()
+        config = EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={
+                "default_cloud": "k8s",
+                "idle_minutes_to_autostop": 15,
+            },
+        )
+        return Skypilot(event_q=event_q, environment_config=config)
+
+    @pytest.mark.asyncio
+    async def test_pushasset_hfstore_inline_returns_sentinel(self, skypilot_env):
+        from gbserver.environment.io.descriptors import InlineDeferredPush
+
+        cfg = MagicMock()
+        cfg.config = {"inline": True}
+        result = await skypilot_env.pushasset_hfstore(
+            binding={"path": "/out"},
+            binding_id="out",
+            storepush_config=cfg,
+            uri="hf:///ns/out",
+            assetstore=make_hfstore(),
+            output_config=None,
+        )
+        assert isinstance(result, InlineDeferredPush)
+
+    @pytest.mark.asyncio
+    async def test_pushasset_hfstore_default_returns_step_config(self, skypilot_env):
+        from gbserver.types.buildconfig import BuildTargetStepConfig
+
+        cfg = MagicMock()
+        cfg.config = {}  # no inline
+        result = await skypilot_env.pushasset_hfstore(
+            binding={"path": "/out"},
+            binding_id="out",
+            storepush_config=cfg,
+            uri="hf:///ns/out",
+            assetstore=make_hfstore(),
+            output_config=None,
+        )
+        assert isinstance(result, BuildTargetStepConfig)
+
+    def test_resolve_inline_output_hfstore_builds_output_io_without_src(
+        self, skypilot_env
+    ):
+        from gbcommon.uri.hf import HfURI
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        cfg = MagicMock()
+        cfg.config = {"inline": True}
+        io = skypilot_env.resolve_inline_output_hfstore(
+            uri="hf:///ns/out",
+            storepush_config=cfg,
+            assetstore=make_hfstore(),
+            output_config=None,
+            binding_id="out",
+        )
+        assert isinstance(io, HfOutputIO)
+        # uri is the canonicalized HfURI string for the destination.
+        assert io.uri == str(HfURI.parse("hf:///ns/out"))
+        assert io.binding_id == "out"
+        assert io.repo == "ns/out"
+        # Destination-only: HfOutputIO has no `src` field (marker-capture).
+        assert not hasattr(io, "src")
+        assert io.token == "tok"
+
+    def test_resolve_inline_output_hfstore_carries_overlay_fields(self, skypilot_env):
+        """path_in_repo and private from the merged hf config flow into the
+        destination descriptor, matching the separate-step overlay."""
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        cfg = MagicMock()
+        cfg.config = {"inline": True}
+        output_config = MagicMock()
+        output_config.space_name = None
+        output_config.public = False
+        output_config.store_push = MagicMock()
+        output_config.store_push.config = {
+            "hf": {"path_in_repo": "sub/dir", "public": False}
+        }
+        io = skypilot_env.resolve_inline_output_hfstore(
+            uri="hf:///ns/out",
+            storepush_config=cfg,
+            assetstore=make_hfstore(),
+            output_config=output_config,
+            binding_id="out",
+        )
+        assert isinstance(io, HfOutputIO)
+        assert io.path_in_repo == "sub/dir"
+        assert io.private is True
+        assert io.resource_group_id is None
+
+    def test_launch_appends_epilogue_and_tee_wraps_body_for_hfpush(self, skypilot_env):
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        bindings = {
+            "out": {
+                "_inline_output": HfOutputIO(
+                    repo="ns/out", uri="hf:///ns/out", binding_id="out", token="t"
+                )
+            }
+        }
+        run_script = skypilot_env._compose_inline_run_script(
+            base_run="python train.py", bindings=bindings, build_workdir=None
+        )
+        assert "set -o pipefail" in run_script
+        assert "| tee " in run_script
+        assert "python train.py" in run_script
+        assert 'echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"' in run_script
+
+    def test_launch_run_script_unchanged_without_hfpush(self, skypilot_env):
+        base = "python train.py"
+        run_script = skypilot_env._compose_inline_run_script(
+            base_run=base, bindings={}, build_workdir=None
+        )
+        assert "| tee " not in run_script
+        assert "Pushed HF URI:" not in run_script
+        assert run_script.endswith(base)
+
+    def test_monitor_injects_pushed_event_config_for_inline_output(self, skypilot_env):
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        launch_id = "L1"
+        skypilot_env._launch_kwargs[launch_id] = {
+            "bindings": {
+                "out": {
+                    "_inline_output": HfOutputIO(
+                        repo="ns/out", uri="hf://ns/out", binding_id="out", token="t"
+                    )
+                }
+            }
+        }
+        base = [{"event_type": "OTHER_EVENT"}]
+        configs = skypilot_env._inline_push_event_configs(launch_id, base=base)
+        # Base configs are preserved.
+        assert configs[0] == {"event_type": "OTHER_EVENT"}
+        # PUSHED config appended, matching hfpush step.yaml:290-298 exactly.
+        pushed = [c for c in configs if c["event_type"] == "ARTIFACT_PUSHED_EVENT"]
+        assert len(pushed) == 1
+        assert pushed[0] == {
+            "event_type": "ARTIFACT_PUSHED_EVENT",
+            "line_regex": r"Pushed HF URI:\s.+",
+            "is_json": False,
+            "event_fields": [
+                {"field_name": "uri", "field_regex": r"hf://[^\s]+"},
+                {
+                    "field_name": "binding_id",
+                    "field_regex": r"(?<=binding\s)[^\s]+",
+                },
+            ],
+        }
+
+    def test_monitor_no_injection_without_inline_output(self, skypilot_env):
+        skypilot_env._launch_kwargs["L2"] = {"bindings": {}}
+        assert skypilot_env._inline_push_event_configs("L2", base=[]) == []
+
+    def test_first_hf_token_from_inline_push_only(self, skypilot_env):
+        """A push-WITHOUT-pull inline build has no _inline_input binding; the
+        token must still be harvested from the _inline_output descriptor.token."""
+        from gbserver.environment.io.descriptors import HfOutputIO
+
+        bindings = {
+            "out": {
+                "_inline_output": HfOutputIO(
+                    repo="ns/out",
+                    uri="hf:///ns/out",
+                    binding_id="out",
+                    token="ptok",
+                )
+            }
+        }
+        assert skypilot_env._first_hf_token(bindings) == "ptok"
+
+    def test_first_hf_token_prefers_input(self, skypilot_env):
+        """Existing behavior preserved: an inline-input token still wins."""
+        from gbserver.environment.io.descriptors import HfInputIO, HfOutputIO
+
+        bindings = {
+            "in": {
+                "_inline_input": HfInputIO(
+                    repo="ns/in", revision="main", dest="/tmp/in", token="pulltok"
+                )
+            },
+            "out": {
+                "_inline_output": HfOutputIO(
+                    repo="ns/out",
+                    uri="hf:///ns/out",
+                    binding_id="out",
+                    token="ptok",
+                )
+            },
+        }
+        assert skypilot_env._first_hf_token(bindings) == "pulltok"
+
+    def test_first_hf_token_none_when_no_tokens(self, skypilot_env):
+        from gbserver.environment.io.descriptors import HfInputIO, HfOutputIO
+
+        bindings = {
+            "in": {
+                "_inline_input": HfInputIO(
+                    repo="ns/in", revision="main", dest="/tmp/in", token=""
+                )
+            },
+            "out": {
+                "_inline_output": HfOutputIO(
+                    repo="ns/out",
+                    uri="hf:///ns/out",
+                    binding_id="out",
+                    token="",
+                )
+            },
+        }
+        assert skypilot_env._first_hf_token(bindings) is None

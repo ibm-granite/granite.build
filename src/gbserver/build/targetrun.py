@@ -174,6 +174,11 @@ class TargetRun(Run):
                 if failed_tasks:
                     raise RunFailed(status_updated=False, exceptions=failed_tasks)
                 self.metadata["inputs"] = input_uris
+                # Resolve inline-push outputs into the shared bindings so the
+                # producing step's launch appends the upload epilogue (spec §5).
+                for out_bid, out_binding in self_entity.push_assets().items():
+                    # Merge, do not clobber a pulled input binding of the same id.
+                    self.bindings.setdefault(out_bid, {}).update(out_binding)
                 self.update_status(Status.RUNNING)
             except Exception as e:
                 raise ValueError("failed during loading artifacts") from e

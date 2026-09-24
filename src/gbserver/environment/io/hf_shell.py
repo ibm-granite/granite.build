@@ -1,0 +1,268 @@
+"""Single source of the HF-push run shell (create_repo + hf upload + the
+`Pushed HF URI:` line). Kept byte-identical to the skypilot hfpush step.yaml
+run block; a drift test (test_hf_shell_drift.py) enforces it. See spec section 7.
+
+R1 note: Task 4's inline epilogue exports its own HF_* vars from the
+runtime-resolved source path, so it reuses HFPUSH_UPLOAD_BODY (the portion from
+the hf_mocked() definition onward), not the full HFPUSH_RUN_SHELL, whose leading
+set/trap/echo + Jinja HF_* assignment prologue is templated and meaningless
+inline. HFPUSH_UPLOAD_BODY is derived from HFPUSH_RUN_SHELL at import time to
+keep it DRY (single source of truth).
+"""
+
+HF_PUSH_MOCK_ENV = "GBTEST_MOCK_HF"
+
+# NOTE: verbatim copy of
+# src/gbserver/builtins/steps/skypilot/hfpush/step.yaml -> ...launchers.hfpush.config.run
+# Kept byte-identical; enforced by test_hf_shell_drift.py.
+HFPUSH_RUN_SHELL = """set -euo pipefail
+trap 'EC=$?; echo "hfpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
+echo 'hfpush start'
+
+HF_SOURCE='{{ config.hfpush_config.path }}'
+HF_URI='{{ config.hfpush_config.uri }}'
+export HF_ENDPOINT='{{ config.hfpush_config.endpoint }}'
+HF_OWNER='{{ config.hfpush_config.owner }}'
+HF_REPO_NAME='{{ config.hfpush_config.repo }}'
+export HF_REPO="${HF_OWNER}/${HF_REPO_NAME}"
+export HF_REVISION='{{ config.hfpush_config.revision }}'
+export HF_PATH_IN_REPO='{{ config.hfpush_config.path_in_repo }}'
+export HF_PRIVATE='{{ config.hfpush_config.private }}'
+export HF_TYPE='{{ config.hfpush_config.hf.type }}'
+export HF_RESOURCE_GROUP_ID='{{ config.hfpush_config.hf.resource_group_id }}'
+export HF_SOURCE
+BINDING_ID='{{ config.hfpush_config.binding_id }}'
+
+# Mocked when GBTEST_MOCK_HF is "true" (case-insensitive), matching
+# gbcommon.types.testing.is_hf_mocked. GBTEST_MOCK_HF arrives as a
+# worker env var (sky.Task envs), not via hfpush_config — it is
+# test-harness state, not a push param.
+# Keep identical to the other hfpull/hfpush step scripts (lsf + skypilot);
+# skypilot embeds this inline (no shared file on the worker), so the copies
+# are kept byte-identical to prevent behavioral drift.
+hf_mocked() {
+    case "${GBTEST_MOCK_HF:-}" in [Tt][Rr][Uu][Ee]) return 0 ;; *) return 1 ;; esac
+}
+if hf_mocked; then
+    echo "[GBTEST_MOCK_HF] mocking hfpush — skipping create_repo and upload"
+    echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
+    echo 'hfpush end'
+    exit 0
+fi
+
+if [ -z "${HF_TOKEN:-}" ]; then
+    echo 'HF_TOKEN is not set' >&2
+    exit 1
+fi
+
+# Inline reimplementation of HfURI.push() (src/gbcommon/uri/hf.py).
+# gbserver/gbcommon is NOT installed on the skypilot worker (setup only
+# pip-installs huggingface_hub), so we cannot import hf.py and must
+# mirror it here. Keep this in sync with, and diffable against:
+#   - HfURI.push()              (repo + bucket branches, upload calls)
+#   - HfURI._validate_non_empty_src()
+#   - _classify_hf_error() / _log_hf_api_error()  (status severity)
+#   - HfURI.hfpush_step()       (SIGALRM timeout wrapper)
+# The URI is already parsed server-side by build_hfpush_step_config
+# (asset/hfstore.py), which passes owner/repo/revision/path_in_repo/
+# hf.type/resource_group_id down via hfpush_config — so no URI parser
+# is needed here. Single-quoted heredoc: no bash/jinja expansion; all
+# values are read from the exported HF_* env vars above.
+echo "Pushing HF URI: ${HF_URI} from path ${HF_SOURCE}"
+python - <<'PY'
+import logging
+import os
+import signal
+import sys
+from pathlib import Path
+
+from huggingface_hub import HfApi
+
+logging.basicConfig(
+    level=logging.INFO, format="[%(levelname)s] hfpush: %(message)s"
+)
+logger = logging.getLogger("hfpush")
+
+COMMIT_MSG = "Upload via gbserver"
+TIMEOUT_S = 3600
+# Mirror of hf.py _HF_TYPE_TO_REPO_TYPE; BUCKET intentionally absent
+# (no huggingface_hub repo_type) -> callers default to "model".
+_TYPE_TO_REPO_TYPE = {"model": "model", "dataset": "dataset", "space": "space"}
+
+
+def _env(name):
+    return os.environ.get(name, "")
+
+
+src = Path(_env("HF_SOURCE"))
+repo_id = _env("HF_REPO")
+endpoint = _env("HF_ENDPOINT") or None
+token = os.environ["HF_TOKEN"]
+hf_type = _env("HF_TYPE").strip().lower()
+# Mirror push(): p.revision always defaults to "main", never None.
+revision = _env("HF_REVISION") or "main"
+path_in_repo = _env("HF_PATH_IN_REPO")
+private = _env("HF_PRIVATE") == "True"
+rg = _env("HF_RESOURCE_GROUP_ID")
+resource_group_id = rg if rg and rg != "None" else None
+
+
+def validate_non_empty_src(p):
+    # Mirror of HfURI._validate_non_empty_src + the src.exists() check
+    # in push(): HF silently skips empty commits, so a push of empty
+    # content "succeeds" while creating nothing. Fail fast instead.
+    if not p.exists():
+        raise ValueError(f"{p} does not exist")
+    if p.is_file():
+        if p.stat().st_size == 0:
+            raise ValueError(f"refusing to push zero-length file: {p}")
+        return
+    if not any(f.is_file() and f.stat().st_size > 0 for f in p.rglob("*")):
+        raise ValueError(
+            f"refusing to push directory with no non-empty files: {p}"
+        )
+
+
+def log_hf_api_error(op, target, exc):
+    # Mirror of _classify_hf_error + _log_hf_api_error: pick a log
+    # severity matched to the HTTP status so transient (429/5xx) vs
+    # auth (401/403) vs not-found (404) stand out instead of one
+    # generic error line.
+    status = None
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    request_id = getattr(exc, "request_id", None)
+    server_message = getattr(exc, "server_message", None)
+    detail = f"status={status}" if status is not None else "no HTTP status"
+    if request_id:
+        detail += f", request_id={request_id}"
+    if server_message:
+        detail += f", server_message={server_message!r}"
+    if status == 429:
+        retry_after = None
+        if response is not None:
+            retry_after = getattr(response, "headers", {}).get("Retry-After")
+        if retry_after:
+            detail += f", Retry-After={retry_after}"
+        logger.warning("HF %s RATE LIMIT (HTTP 429) for %s: %s: %s",
+                       op, target, detail, exc)
+    elif status is not None and 500 <= status < 600:
+        logger.warning("HF %s server error for %s: %s: %s",
+                       op, target, detail, exc)
+    elif status in (401, 403):
+        logger.error("HF %s auth error for %s: %s: %s",
+                     op, target, detail, exc)
+    elif status == 404:
+        logger.error("HF %s not found for %s: %s: %s",
+                     op, target, detail, exc)
+    else:
+        logger.error("HF %s failed for %s: %s: %s",
+                     op, target, detail, exc)
+
+
+def call(op, target, fn):
+    # Per-API-call seam mirroring push(): log with severity, re-raise.
+    try:
+        return fn()
+    except Exception as exc:
+        log_hf_api_error(op, target, exc)
+        raise
+
+
+def do_push():
+    api = HfApi(endpoint=endpoint, token=token)
+    validate_non_empty_src(src)
+    # Surface the resolved resource group before any API call: a repo
+    # created in an Enterprise resource group is governed by that RG's
+    # access policy, so this value is the first thing to check when
+    # diagnosing create/upload 403s.
+    logger.info(
+        "HF push %s (type=%s, resource_group_id=%s, private=%s)",
+        repo_id, hf_type or "model", resource_group_id or "<none>", private,
+    )
+
+    if hf_type == "bucket":
+        bucket_id = repo_id
+        call("create_bucket", bucket_id, lambda: api.create_bucket(
+            bucket_id=bucket_id,
+            private=private,
+            resource_group_id=resource_group_id,
+            exist_ok=True,
+        ))
+        if src.is_file():
+            dest_path = path_in_repo or src.name
+            logger.info("Uploading file %s to bucket %s/%s",
+                        src, bucket_id, dest_path)
+            call("upload to bucket", bucket_id,
+                 lambda: api.batch_bucket_files(
+                     bucket_id=bucket_id, add=[(src, dest_path)]))
+        else:
+            bucket_hf_path = f"hf://buckets/{bucket_id}"
+            if path_in_repo:
+                bucket_hf_path += f"/{path_in_repo}"
+            logger.info("Uploading folder %s to bucket %s", src, bucket_id)
+            call("upload to bucket", bucket_id,
+                 lambda: api.sync_bucket(
+                     source=str(src), dest=bucket_hf_path))
+        return
+
+    repo_type = _TYPE_TO_REPO_TYPE.get(hf_type, "model")
+    call("create_repo", repo_id, lambda: api.create_repo(
+        repo_id=repo_id,
+        repo_type=repo_type,
+        private=private,
+        resource_group_id=resource_group_id,
+        exist_ok=True,
+    ))
+    if src.is_file():
+        dest_path = path_in_repo or src.name
+        logger.info("Uploading file %s -> %s/%s (type=%s, rev=%s)",
+                    src, repo_id, dest_path, repo_type, revision)
+        call("upload_file", repo_id, lambda: api.upload_file(
+            path_or_fileobj=src,
+            path_in_repo=dest_path,
+            repo_id=repo_id,
+            repo_type=repo_type,
+            revision=revision,
+            commit_message=COMMIT_MSG,
+        ))
+    else:
+        logger.info("Uploading folder %s -> %s/%s (type=%s, rev=%s)",
+                    src, repo_id, path_in_repo, repo_type, revision)
+        call("upload_folder", repo_id, lambda: api.upload_folder(
+            folder_path=str(src),
+            path_in_repo=path_in_repo,
+            repo_id=repo_id,
+            repo_type=repo_type,
+            revision=revision,
+            commit_message=COMMIT_MSG,
+        ))
+
+
+def _timeout_handler(signum, frame):
+    raise TimeoutError(f"HF push timed out after {TIMEOUT_S} seconds")
+
+
+signal.signal(signal.SIGALRM, _timeout_handler)
+signal.alarm(TIMEOUT_S)
+try:
+    do_push()
+    signal.alarm(0)
+except Exception as e:
+    print(f"HF push failed: {e}", flush=True)
+    sys.exit(1)
+PY
+
+echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
+echo 'hfpush end'
+"""
+
+# R1: the inline epilogue reuses only the body from the hf_mocked() definition
+# onward. Derive it from HFPUSH_RUN_SHELL (do not hand-maintain a second copy)
+# so it stays in lock-step with the drift-guarded source.
+_UPLOAD_SPLIT = "hf_mocked() {"
+_idx = HFPUSH_RUN_SHELL.index(_UPLOAD_SPLIT)
+HFPUSH_UPLOAD_BODY = HFPUSH_RUN_SHELL[HFPUSH_RUN_SHELL.rindex("\n", 0, _idx) + 1 :]

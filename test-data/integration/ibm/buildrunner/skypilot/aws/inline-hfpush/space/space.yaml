@@ -1,0 +1,17 @@
+# Committed test Space for the gated inline-hfpush single-instance E2E build (#390).
+#
+# It carries only the aws-inline environment (environments/skypilot/aws-inline, hf
+# assetstore inline pull+push, NO shared_filesystem) and chains base_uris to
+# configurations/assets, from which space://steps/command resolves to the builtin
+# command step. This mirrors the sibling shared-fs space (base_uris ->
+# configurations/assets), so NO `make space` render is needed — the fixture is
+# committed and self-contained.
+name: inline-hfpush-e2e
+secret_manager:
+  type: local
+  config: {}
+base_uris:
+  # Pull assetstores, environments, and steps from configurations/assets/.
+  # Relative to this space.yaml's dir: eight `..` reach the repo root (same depth
+  # as the sibling shared-fs space), then configurations/assets.
+  - file://../../../../../../../../configurations/assets
