@@ -1,7 +1,7 @@
 """Typed, validated schema for the environment.yaml `shared_filesystem` block (EFS)."""
 
 import os
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import model_validator
 
@@ -20,21 +20,34 @@ class EfsConfig(Config):
     worker AZ, or set ``cleanup_zone``.
     """
 
+    provision: Literal["byo", "ephemeral"] = "byo"
     file_system_id: Optional[str] = None
     dns_name: Optional[str] = None
     region: Optional[str] = None
     tls: bool = True
     cleanup_zone: Optional[str] = None
+    vpc_id: Optional[str] = None
+    subnets: Optional[List[str]] = None
+    security_group_id: Optional[str] = None
 
     @model_validator(mode="after")
     def _require_target(self) -> "EfsConfig":
-        if not self.file_system_id and not self.dns_name:
-            raise ValueError("efs: one of file_system_id or dns_name is required")
-        if self.file_system_id and not self.dns_name and not self.region:
-            raise ValueError(
-                "efs: 'region' is required with 'file_system_id' (to derive the "
-                "nfs4-fallback DNS name); or set 'dns_name' explicitly"
-            )
+        if self.provision == "ephemeral":
+            if self.file_system_id or self.dns_name:
+                raise ValueError(
+                    "efs: provision 'ephemeral' must not set file_system_id/"
+                    "dns_name (the filesystem is created at runtime)"
+                )
+            if not self.region:
+                raise ValueError("efs: provision 'ephemeral' requires 'region'")
+        else:  # byo
+            if not self.file_system_id and not self.dns_name:
+                raise ValueError("efs: one of file_system_id or dns_name is required")
+            if self.file_system_id and not self.dns_name and not self.region:
+                raise ValueError(
+                    "efs: 'region' is required with 'file_system_id' (to derive the "
+                    "nfs4-fallback DNS name); or set 'dns_name' explicitly"
+                )
         if (
             self.cleanup_zone
             and self.region

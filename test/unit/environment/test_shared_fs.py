@@ -156,6 +156,42 @@ def test_efs_cleanup_zone_in_region_ok():
     assert sf.efs.cleanup_zone == "us-east-1a"
 
 
+# --- Task 1: EfsConfig.provision ephemeral/BYO validation (#391) ---
+
+
+def test_efs_byo_defaults_to_byo_and_validates_as_before():
+    cfg = EfsConfig(file_system_id="fs-1", region="us-east-1")
+    assert cfg.provision == "byo"
+    assert cfg.derived_dns_name() == "fs-1.efs.us-east-1.amazonaws.com"
+
+
+def test_efs_ephemeral_requires_region():
+    with pytest.raises(ValueError, match="ephemeral.*region"):
+        EfsConfig(provision="ephemeral")
+
+
+def test_efs_ephemeral_forbids_file_system_id():
+    with pytest.raises(ValueError, match="ephemeral.*must not set"):
+        EfsConfig(provision="ephemeral", region="us-east-1", file_system_id="fs-1")
+
+
+def test_efs_ephemeral_forbids_dns_name():
+    with pytest.raises(ValueError, match="ephemeral.*must not set"):
+        EfsConfig(provision="ephemeral", region="us-east-1", dns_name="x.example.com")
+
+
+def test_efs_ephemeral_accepts_optional_networking():
+    cfg = EfsConfig(
+        provision="ephemeral",
+        region="us-east-1",
+        vpc_id="vpc-1",
+        subnets=["subnet-a"],
+        security_group_id="sg-1",
+    )
+    assert cfg.vpc_id == "vpc-1" and cfg.subnets == ["subnet-a"]
+    assert cfg.derived_dns_name() is None  # no fsid yet
+
+
 def _env(cfg: dict):
     return SimpleNamespace(config=cfg)
 
