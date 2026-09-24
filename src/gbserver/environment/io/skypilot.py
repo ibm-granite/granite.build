@@ -38,9 +38,11 @@ class SkypilotIO(EnvironmentIO):
             return ""
         lines = [
             "# -- gbserver: inline hfpull for inputs --",
-            # Pin <2.0: huggingface_hub 2.0.0's httpx2 decompressor breaks
-            # `hf download` on the bare AWS AMI's Python 3.10 (TypeError). See
-            # the separate pin PR (fix/pin-hfhub-lt2-skypilot).
+            # Pin <2.0: hf 2.x pulls httpx2, whose BrotliDecoder calls
+            # brotli.Decompressor.process(output_buffer_limit=...), a kwarg only
+            # in brotli>=1.2.0; the worker's ambient conda brotli (1.0.9) rejects
+            # it (TypeError). Not a Python-version issue. See the separate pin PR
+            # (fix/pin-hfhub-lt2-skypilot) and the hf-2.x/brotli follow-up issue.
             "pip install --no-cache-dir 'huggingface_hub[cli]<2.0' "
             "2>/dev/null || true",
         ]
