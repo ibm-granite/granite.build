@@ -215,16 +215,32 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
         assert False, f"No active retry appeared within {timeout_seconds}s."
 
     def _wait_until_settled(self, build_id: str, timeout_seconds: float) -> None:
-        """Block until the build is no longer in flight."""
+        """Block until the build is no longer in flight.
+
+        On timeout, report the statuses actually observed and how many build records
+        exist. Without that the failure surfaces downstream as a stale assertion
+        (e.g. "workload still alive"), which reads like a reaping bug rather than a
+        build that never settled.
+        """
         poll = 2.0
         start = time()
+        seen: list[str] = []
         while time() - start <= timeout_seconds:
             builds = self.storage.build_storage.get_by_uuid(None) or []
             build = next((b for b in builds if b.uuid == build_id), None)
-            if build is not None and build.status not in _IN_FLIGHT:
-                return
+            if build is not None:
+                name = build.status.name
+                if not seen or seen[-1] != name:
+                    seen.append(name)
+                if build.status not in _IN_FLIGHT:
+                    return
             sleep(poll)
-        assert False, f"Build {build_id} did not settle within {timeout_seconds}s."
+        assert False, (
+            f"Build {build_id} did not settle within {timeout_seconds}s. "
+            f"Status sequence observed: {' -> '.join(seen) or 'none'}. "
+            f"{len(self.storage.build_storage.get_by_uuid(None) or [])} build "
+            "record(s) exist; more than one for this id means it was dispatched twice."
+        )
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:

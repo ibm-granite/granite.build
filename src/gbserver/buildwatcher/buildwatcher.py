@@ -65,6 +65,13 @@ from gbserver.utils.utils import get_utc_time, normalize_to_filename
 
 logger = get_logger(__name__)
 
+# Bound for every thread join in shutdown/cancel. An untimed join hangs the whole
+# process with no diagnostic when a build thread wedges -- in CI that shows up as a
+# job killed mid-run with no pytest summary. Build threads are daemons, so
+# abandoning one cannot hold up interpreter exit.
+_SHUTDOWN_JOIN_TIMEOUT_S = 120
+
+
 BUILD_ONLY_THIS_NAME = ""
 
 _BUILD_EVENT_SOURCE_NAME = "build-watcher"
@@ -225,20 +232,48 @@ class BuildWatcher:
                 return
 
             # Wait for main monitoring thread.  When that is done, we're all done.
-            self.worker_thread.join()
+            # Bounded: an untimed join here hangs shutdown forever if the loop is
+            # wedged, with no message saying why (see _SHUTDOWN_JOIN_TIMEOUT_S).
+            self.worker_thread.join(timeout=_SHUTDOWN_JOIN_TIMEOUT_S)
+            if self.worker_thread.is_alive():
+                logger.error(
+                    "monitoring thread did not stop within %ss; continuing shutdown",
+                    _SHUTDOWN_JOIN_TIMEOUT_S,
+                )
 
             # Once the main monitoring thread is done, we can assume we're shutting down
             # and so we'll stop all BuildRunners and wait for them to finish.
+            # Snapshot under the lock, then stop and join OUTSIDE it: a join while
+            # holding _builds_lock blocks the very threads that need the lock to
+            # report status or be cleaned up, which deadlocks shutdown instead of
+            # merely slowing it.
             with self._builds_lock:
-                for build_id, build_runner in self.build_runners.items():
-                    logger.info("stopping build runner for build %s", build_id)
+                runners = list(self.build_runners.items())
+                build_threads = list(self.build_threads.items())
+                pr_threads = list(self.build_pr_threads.items())
+            for build_id, build_runner in runners:
+                logger.info("stopping build runner for build %s", build_id)
+                try:
                     build_runner.stop()
-                for build_id, build_thread in self.build_threads.items():
-                    logger.info("waiting on thread for build %s", build_id)
-                    build_thread.join()
-                for build_id, build_pr_thread in self.build_pr_threads.items():
-                    logger.info("waiting on PR creation thread for build %s", build_id)
-                    build_pr_thread.join()
+                except Exception as e:  # noqa: BLE001 - one bad runner must not
+                    # strand the rest; shutdown continues and says which failed.
+                    logger.error("failed to stop runner for build %s: %s", build_id, e)
+            for label, threads in (
+                ("build", build_threads),
+                ("PR creation", pr_threads),
+            ):
+                for build_id, thread in threads:
+                    logger.info("waiting on %s thread for build %s", label, build_id)
+                    thread.join(timeout=_SHUTDOWN_JOIN_TIMEOUT_S)
+                    if thread.is_alive():
+                        logger.error(
+                            "%s thread for build %s did not finish within %ss; "
+                            "abandoning it (thread is a daemon, so it cannot hold "
+                            "up process exit)",
+                            label,
+                            build_id,
+                            _SHUTDOWN_JOIN_TIMEOUT_S,
+                        )
             self.__clean_finished_builds()  # Not required, but may help to clean up memory.
             self.worker_thread = None
 
@@ -256,18 +291,41 @@ class BuildWatcher:
         If the build is not tracked locally (e.g., after buildwatcher restart), transition it to CANCELLED directly.
         """
         is_tracked = False
+        # Read the entries under the lock but stop/join OUTSIDE it: joining while
+        # holding _builds_lock blocks the build thread that needs the same lock, so
+        # the cancel can wedge the whole monitoring loop.
+        #
+        # The runner is popped (so stop() runs once) but build_threads keeps its
+        # entry until the join returns. That entry is what __start_build checks, and
+        # dropping it early would leave a window where a build whose CANCELLED status
+        # is not yet persisted looks un-dispatched and gets a second runner.
         with self._builds_lock:
-            if build.uuid in self.build_runners:
-                is_tracked = True
-                self.build_runners[build.uuid].stop()
-                del self.build_runners[build.uuid]
-            if build.uuid in self.build_threads:
-                is_tracked = True
-                self.build_threads[build.uuid].join()
-                del self.build_threads[build.uuid]
-            if build.uuid in self.build_pr_threads:
-                self.build_pr_threads[build.uuid].join()
-                del self.build_pr_threads[build.uuid]
+            runner = self.build_runners.pop(build.uuid, None)
+            build_thread = self.build_threads.get(build.uuid)
+            pr_thread = self.build_pr_threads.get(build.uuid)
+        if runner is not None:
+            is_tracked = True
+            runner.stop()
+        if build_thread is not None:
+            is_tracked = True
+        for label, thread in (("build", build_thread), ("PR creation", pr_thread)):
+            if thread is None:
+                continue
+            thread.join(timeout=_SHUTDOWN_JOIN_TIMEOUT_S)
+            if thread.is_alive():
+                logger.error(
+                    "%s thread for cancelled build %s did not finish within %ss; "
+                    "abandoning it",
+                    label,
+                    build.uuid,
+                    _SHUTDOWN_JOIN_TIMEOUT_S,
+                )
+        # Now that the threads are done (or abandoned), stop tracking them. A still
+        # -alive thread is dropped deliberately: keeping it would make the build look
+        # permanently in-flight and block any later legitimate dispatch.
+        with self._builds_lock:
+            self.build_threads.pop(build.uuid, None)
+            self.build_pr_threads.pop(build.uuid, None)
         if not is_tracked:
             logger.warning(
                 "Build %s is CANCEL_REQUESTED but not tracked locally "
@@ -736,6 +794,26 @@ class BuildWatcher:
     def __start_build(self: Self, build: StoredBuild) -> None:
         build_id = build.uuid
 
+        # Never run two runners for one build id. The "already seen" lists only
+        # suppress a re-dispatch while the build still *has* the status that was
+        # dispatched: a build that leaves PENDING and later returns to it (an
+        # in-place retry, or a status the runner rewrites mid-flight) is dropped
+        # from the list by the garbage collection in
+        # __get_unseen_builds_matching_status and looks new again. A live thread
+        # for this id is the authoritative answer, so check it here where the
+        # runner is actually created. A second runner would race the first over
+        # the same build record -- relaunching the workload a cancellation had
+        # already reaped, and pushing retry_count past max_retries.
+        with self._builds_lock:
+            existing = self.build_threads.get(build_id)
+            if existing is not None and existing.is_alive():
+                logger.warning(
+                    "build %s is already running under this watcher; "
+                    "not dispatching a second runner",
+                    build_id,
+                )
+                return
+
         build_runner = self.__create_build_runner(build)
 
         build_thread = threading.Thread(
@@ -744,6 +822,15 @@ class BuildWatcher:
             name=f"BuildRunner: build_id={build_id}",
         )
         with self._builds_lock:
+            # Re-check under the lock: __create_build_runner is slow (it clones the
+            # space), so a concurrent dispatch could have won the race meanwhile.
+            existing = self.build_threads.get(build_id)
+            if existing is not None and existing.is_alive():
+                logger.warning(
+                    "build %s started concurrently; discarding this runner",
+                    build_id,
+                )
+                return
             self.build_runners[build_id] = build_runner
             self.build_threads[build_id] = build_thread
         build_thread.start()
