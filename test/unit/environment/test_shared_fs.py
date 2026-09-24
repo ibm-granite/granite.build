@@ -367,6 +367,33 @@ def test_efs_mount_prologue_installs_nfs_client_and_falls_back_to_nfs4():
     _bash_ok(shell)
 
 
+# --- Task 5: mount_prologue dns_override + ephemeral 1777 root bootstrap (#391) ---
+
+
+def test_ephemeral_prologue_chmods_root_and_uses_dns_override():
+    p = EfsProvider("/mnt/e", EfsConfig(provision="ephemeral", region="us-east-1"))
+    sh = p.mount_prologue(dns_override="fs-x.efs.us-east-1.amazonaws.com")
+    assert "chmod 1777 /mnt/e" in sh
+    assert "fs-x.efs.us-east-1.amazonaws.com:/" in sh
+    _bash_ok(sh)
+
+
+def test_byo_prologue_does_not_chmod_root():
+    p = EfsProvider("/mnt/b", EfsConfig(file_system_id="fs-b", region="us-east-1"))
+    sh = p.mount_prologue()
+    assert "chmod 1777" not in sh
+    assert "fs-b.efs.us-east-1.amazonaws.com:/" in sh
+    _bash_ok(sh)
+
+
+def test_dns_override_ignored_for_byo_uses_config():
+    p = EfsProvider("/mnt/b", EfsConfig(file_system_id="fs-b", region="us-east-1"))
+    sh = p.mount_prologue(dns_override="ignored.example.com")
+    # BYO derives from config; override only matters when config has no dns (ephemeral)
+    assert "fs-b.efs.us-east-1.amazonaws.com:/" in sh
+    assert "ignored.example.com" not in sh
+
+
 def test_efs_mount_prologue_is_root_safe_no_bare_sudo():
     """Regression (#393): a containerized step runs as root in a minimal image
     (e.g. debian:12-slim) that has NO `sudo`; the prologue must gate sudo on the

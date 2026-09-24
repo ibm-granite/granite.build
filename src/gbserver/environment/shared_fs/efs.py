@@ -30,9 +30,11 @@ class EfsProvider(SharedFilesystemProvider):
         super().__init__(mount_point)
         self.cfg = cfg
 
-    def _mount_line(self, mp_quoted: str) -> str:
-        # Validation guarantees a derivable DNS name (fsid+region or dns_name).
-        dns = self.cfg.derived_dns_name()
+    def _mount_line(self, mp_quoted: str, dns_override: Optional[str] = None) -> str:
+        # BYO: validation guarantees a derivable DNS name (fsid+region or dns_name)
+        # and it wins. Ephemeral: config has no DNS, so the runtime dns_override
+        # (the just-created filesystem's DNS) is used.
+        dns = self.cfg.derived_dns_name() or dns_override
         tls = " -o tls" if self.cfg.tls else ""
         fsid = self.cfg.file_system_id
         efs_cmd = (
@@ -60,15 +62,22 @@ class EfsProvider(SharedFilesystemProvider):
             return f"if command -v mount.efs >/dev/null 2>&1; then {efs_cmd}; else {nfs_cmd}; fi"
         return nfs_cmd
 
-    def mount_prologue(self) -> str:
+    def mount_prologue(self, dns_override: Optional[str] = None) -> str:
         mp = shlex.quote(self.mount_point)
         fail = f'echo "shared_filesystem: EFS mount at {self.mount_point} failed" >&2; exit 1'
+        # Ephemeral EFS has a fresh root:root 0755 root; gbserver cannot mount it
+        # from k8s, so the first step (sudo on bare / root in container) makes it
+        # sticky world-writable so non-root steps can create the per-run workdir.
+        chmod_root = (
+            f"  $SUDO chmod 1777 {mp}\n" if self.cfg.provision == "ephemeral" else ""
+        )
         return (
             f"{_SUDO_SETUP}"
             f"{_INSTALL_NFS}\n"
             f"if ! mountpoint -q {mp}; then\n"
             f"  $SUDO mkdir -p {mp}\n"
-            f"  {self._mount_line(mp)} || {{ {fail}; }}\n"
+            f"  {self._mount_line(mp, dns_override)} || {{ {fail}; }}\n"
+            f"{chmod_root}"
             f"fi\n"
         )
 
