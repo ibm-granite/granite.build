@@ -1656,8 +1656,8 @@ class Environment(ABC):
         self: Self,
         uri: URI,
         storepush_config=None,
-        assetstore=None,
-        output_config=None,
+        assetstore: Optional[Assetstore] = None,
+        output_config: Optional[BuildTargetOutputConfig] = None,
         binding_id: str = "",
     ) -> Optional[OutputIO]:
         """Resolve a declared output into an inline (folded-into-step) push

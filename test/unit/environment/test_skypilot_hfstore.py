@@ -304,6 +304,23 @@ class TestPullassetHfstore:
         assert io.token == "pull-tok"
 
 
+def test_resolve_inline_output_dispatch_registry(skypilot_env):
+    """The ``resolve_inline_output_`` prefix registers the hfstore handler but
+    excludes the base ``resolve_inline_output`` dispatcher itself.
+
+    The trailing underscore in the prefix is the only thing keeping them apart:
+    ``resolve_inline_output`` (no trailing ``_``) must not be picked up, or the
+    dispatcher would register itself as a store handler and recurse. Lock that
+    subtlety in so a future rename can't silently reintroduce the collision.
+    """
+    reg = skypilot_env.resolve_inline_output_types
+    assert reg["hfstore"].__name__ == "resolve_inline_output_hfstore"
+    # The base dispatcher is not registered under any key (it lacks the
+    # trailing-underscore prefix, so removeprefix would never yield "").
+    assert "" not in reg
+    assert all(fn.__name__ != "resolve_inline_output" for fn in reg.values())
+
+
 class TestGetHfCacheDir:
     """Unit tests for the three-rung cache-path resolution chain."""
 
