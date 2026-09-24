@@ -57,6 +57,7 @@ from gbserver.types.metrics import (
     MetricName,
 )
 from gbserver.types.status import Status
+from gbserver.utils import spawned_groups
 from gbserver.utils.filesystem import create_temp_subdir
 from gbserver.utils.git_retry import git_clone_retry
 from gbserver.utils.logger import get_logger
@@ -67,8 +68,16 @@ logger = get_logger(__name__)
 
 # Bound for every thread join in shutdown/cancel. An untimed join hangs the whole
 # process with no diagnostic when a build thread wedges -- in CI that shows up as a
-# job killed mid-run with no pytest summary. Build threads are daemons, so
-# abandoning one cannot hold up interpreter exit.
+# job killed mid-run with no pytest summary.
+#
+# Abandoning a join is safe for *process exit* because build threads are daemons: they
+# are created inside __worker_thread_run, which is started with daemon=True, and
+# threading inherits that flag from the creating thread. A live daemon thread does not
+# hold up interpreter shutdown. It is NOT a kill: the thread keeps running until the
+# process exits, so the timeout is a last resort that trades a leaked thread (and any
+# child process it owns) for a diagnosable failure instead of a silent hang. The real
+# cure for the wedge is the dispatch guard in __start_build plus cleanup_nohup in the
+# bash environment; this bound only ensures we report it rather than hang.
 _SHUTDOWN_JOIN_TIMEOUT_S = 120
 
 
@@ -274,6 +283,18 @@ class BuildWatcher:
                             build_id,
                             _SHUTDOWN_JOIN_TIMEOUT_S,
                         )
+            # Last resort: a thread abandoned above may still own a workload process
+            # group (launched start_new_session, so not in our own group). Its
+            # environment's cleanup cannot run if that thread is the thing that
+            # wedged, so make the attempt here. Best-effort by design -- it gives up
+            # rather than blocking shutdown, and reports anything that survives.
+            survivors = spawned_groups.reap_all()
+            if survivors:
+                logger.error(
+                    "%d workload process(es) survived shutdown reaping: %s",
+                    len(survivors),
+                    survivors,
+                )
             self.__clean_finished_builds()  # Not required, but may help to clean up memory.
             self.worker_thread = None
 
