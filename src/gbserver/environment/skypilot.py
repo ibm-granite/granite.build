@@ -19,6 +19,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -1401,6 +1402,20 @@ class Skypilot(Environment):
             return "k8s"
         return self.config.config.get("default_cloud", "k8s")
 
+    def _aws_profile(self: Self) -> Optional[str]:
+        """The AWS profile SkyPilot/boto3 use, from cloud_config or aws_credentials."""
+        cfg = (self.config.config if self.config else {}) or {}
+        ws = ((cfg.get("cloud_config") or {}).get("workspaces") or {}).get(
+            "default"
+        ) or {}
+        prof = (ws.get("aws") or {}).get("profile")
+        if prof:
+            return prof
+        creds = cfg.get("aws_credentials") or []
+        if isinstance(creds, list) and creds and isinstance(creds[0], dict):
+            return creds[0].get("profile")
+        return None
+
     def _shared_fs_providers(self: Self):
         """The shared_filesystem providers for this env (list, possibly empty),
         memoized. Config-only/stateless; per-run runtime state is keyed by
@@ -1676,12 +1691,55 @@ class Skypilot(Environment):
             "build_id": runmetadata.build_id or "",
             "build_config_name": runmetadata.build_config_name or "",
         }
+        providers = self._shared_fs_providers()
+        profile = self._aws_profile()
+        tags = {
+            "app": "granite.build",
+            "gb-ephemeral": "true",
+            "gb-build-id": runmetadata.build_id or "",
+            "gb-targetrun-id": runmetadata.targetrun_id or "",
+            "gb-created-at": datetime.now(timezone.utc).isoformat(),
+        }
+        provisioned: list = []
+        shared_fs_mounts: list = []
+        try:
+            for p in providers:
+                pr = await p.provision(tags, profile)
+                provisioned.append((p, pr))
+                shared_fs_mounts.append(
+                    {
+                        "mount_point": p.mount_point,
+                        "dns_name": pr.dns_name if pr is not None else None,
+                    }
+                )
+        except Exception:
+            # Best-effort roll back mounts already created before re-raising, so a
+            # partial provision does not leak. Rollback failures are logged as
+            # orphans (reclaim by tag) but do not mask the original error.
+            for p, pr in provisioned:
+                if pr is not None:
+                    try:
+                        await p.deprovision(pr, profile)
+                    except Exception:  # noqa: BLE001 - best-effort during rollback
+                        logger.warning(
+                            "setup_skypilot: rollback deprovision failed; ORPHAN "
+                            "fsid=%s sg=%s tags(build=%s,targetrun=%s)",
+                            pr.file_system_id,
+                            pr.security_group_id,
+                            runmetadata.build_id,
+                            runmetadata.targetrun_id,
+                        )
+            raise
+        self._setup_provisioned[setup_id] = provisioned
         logger.info(
-            "setup_skypilot: per-run workdir for setup_id=%s -> %s",
+            "setup_skypilot: per-run workdir for setup_id=%s -> %s (mounts=%d)",
             setup_id,
             workdir,
+            len(providers),
         )
-        return {"skypilot": {"build_workdir": workdir}}
+        return {
+            "skypilot": {"build_workdir": workdir, "shared_fs_mounts": shared_fs_mounts}
+        }
 
     async def teardown_skypilot(self: Self, setup_id: str, **kwargs) -> None:
         """Remove the per-run workdir provisioned by ``setup_skypilot``.

@@ -2052,6 +2052,74 @@ def test_resolved_shared_fs_dns_reads_setup_config():
     assert skymod._resolved_shared_fs_dns(None) == {}
 
 
+# --- Task 10: setup_skypilot provisions ephemeral EFS + threads runtime DNS ---
+
+
+def _make_skypilot(cfg):
+    from gbserver.environment.skypilot import Skypilot
+    from gbserver.types.environmentconfig import EnvironmentConfig
+
+    env = EnvironmentConfig(name="e", type="Skypilot", subtype="aws", config=cfg)
+    return Skypilot(event_q=asyncio.Queue(), environment_config=env)
+
+
+class _RM:  # runmetadata
+    build_id = "b1"
+    targetrun_id = "r1"
+    target_name = "t"
+    build_config_name = "c"
+
+
+def test_aws_profile_from_cloud_config():
+    sp = _make_skypilot(
+        {
+            "default_cloud": "aws",
+            "cloud_config": {
+                "workspaces": {"default": {"aws": {"profile": "gb-skypilot"}}}
+            },
+        }
+    )
+    assert sp._aws_profile() == "gb-skypilot"
+
+
+def test_setup_provisions_ephemeral_and_threads_dns():
+    from unittest import mock
+
+    from gbserver.environment.shared_fs.base import ProvisionedResources
+
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "/mnt/e/work",
+        "shared_filesystem": [
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/e",
+                "efs": {"provision": "ephemeral", "region": "us-east-1"},
+            }
+        ],
+    }
+    sp = _make_skypilot(cfg)
+    fake_pr = ProvisionedResources(
+        region="us-east-1",
+        file_system_id="fs-x",
+        dns_name="fs-x.efs.us-east-1.amazonaws.com",
+        mount_target_ids=["mt-1"],
+        subnet_ids=["subnet-a"],
+        security_group_id="sg-1",
+        created_sg=True,
+    )
+    with mock.patch.object(
+        type(sp._shared_fs_providers()[0]),
+        "provision",
+        new=mock.AsyncMock(return_value=fake_pr),
+    ):
+        out = asyncio.run(sp.setup_skypilot("sid-1", _RM()))
+    mounts = out["skypilot"]["shared_fs_mounts"]
+    assert mounts == [{"mount_point": "/mnt/e", "dns_name": fake_pr.dns_name}]
+    assert sp._setup_provisioned["sid-1"][0][1] is fake_pr
+    assert out["skypilot"]["build_workdir"].startswith("/mnt/e/work/builds/b1/runs/r1")
+
+
 def test_no_gbserver_pinned_container_run_options():
     """Regression (#389 review): gbserver must NOT pin any docker run options for a
     containerized shared_filesystem step -- SkyPilot's docker_start_cmds already
