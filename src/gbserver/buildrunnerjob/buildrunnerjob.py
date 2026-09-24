@@ -48,11 +48,13 @@ from gbserver.types.constants import (
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENV_VAR_GBSERVER_K8S_USE_ASPERA,
     ENV_VAR_GBSERVER_LSF_USE_ASPERA,
+    ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S,
     GB_ENVIRONMENT_CONFIG,
     GBSERVER_GBSERVER_IMAGE_TAG,
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_METRICS_AUTH_TOKEN,
     GBSERVER_METRICS_ENDPOINT,
+    GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S,
     K8S_USE_ASPERA,
     LSF_USE_ASPERA,
 )
@@ -119,6 +121,10 @@ class BuildRunnerJob(AbstractBuildRunner):
         build_runner_extra_env_vars: dict[str, Any] = {
             ENV_VAR_GBSERVER_K8S_USE_ASPERA: K8S_USE_ASPERA,
             ENV_VAR_GBSERVER_LSF_USE_ASPERA: LSF_USE_ASPERA,
+            # The runner, not this process, launches SkyPilot — unforwarded, the knob
+            # would be read only where it has no effect. (The sibling SkyPilot
+            # tunables have the same gap; not widening this fix to cover them.)
+            ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S: GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S,
         }
 
         # Make sure the test env vars are copied to the buildrunner for testing.

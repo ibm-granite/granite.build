@@ -56,6 +56,17 @@ See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_conf
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
 
+> **Slow login nodes and the pre-launch probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`).** Before an
+> HPC launch gbserver can run a trivial `echo` over SSH to name a wedged login node up front, rather
+> than leaving you SkyPilot's opaque `ValueError: Failed to get partitions for cluster …`. On a node
+> slow to send its SSH banner this backfires: the probe holds a session for up to its timeout
+> (default 30s), and where SSH slots are scarce that starves the control connection SkyPilot opens
+> next for `scontrol show partitions -o`. The symptom is `Connection timed out during banner
+> exchange` from the probe *and* the launch, once per provision retry — a diagnostic causing the
+> failure it reports. Set `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` to disable it (our deployments
+> do; the skip is logged). Costs no error handling: genuine blips are still retried as transient and
+> the API server's traceback is still surfaced.
+
 ### `cluster` / `zone`
 
 - `cluster` is composed into `infra=slurm/<cluster>` for steps that don't set their own

@@ -1267,19 +1267,35 @@ class Skypilot(Environment):
         An ``echo``, not a slurm command: tests SSH only, adds no scheduler load.
 
         Best-effort — a failure warns and the launch proceeds, so a probe-only quirk
-        can't block a good launch; the retry classifier is the real backstop. Set
-        ``GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0`` to skip.
+        can't block a good launch; the retry classifier is the real backstop.
+
+        ``GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0`` skips it, and logs that it did.
+        Worth skipping where SSH slots are scarce: the probe holds one for up to
+        ``timeout``, starving the control connection SkyPilot opens next.
 
         :param cloud_group: Normalized target cloud (``"slurm"``/``"lsf"``).
         :param cluster: Cluster name — the ``Host`` alias in ``~/.<cloud>/config``.
         """
         from gbserver.types.constants import (
             ENABLE_SSH_HOST_KEY_VERIFICATION,
+            ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S,
             GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S,
         )
 
         timeout = GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
-        if cloud_group not in _SSH_HPC_CLOUDS or not cluster or timeout <= 0:
+        if cloud_group not in _SSH_HPC_CLOUDS or not cluster:
+            return
+        if timeout <= 0:
+            # After the cloud guard, so every k8s/aws launch stays quiet. Logged, not
+            # silent: otherwise a missing probe line reads as code that never ran.
+            logger.info(
+                "SSH probe disabled (%s=%s); skipping the %s login node %s "
+                "pre-launch probe",
+                ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S,
+                timeout,
+                cloud_group,
+                cluster,
+            )
             return
         # Reuse SkyPilot's own SSH config so the probe follows the same
         # alias/user/key/ProxyCommand directives the launch will.
