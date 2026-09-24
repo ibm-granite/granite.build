@@ -694,6 +694,47 @@ class BuildWatcher:
             except Exception as e:
                 logger.error("failed to start build %s, error: %s", b.uuid, e)
 
+    def __redispatch_stuck_pending_builds(self: Self) -> None:
+        """Re-arm builds stuck PENDING with no live runner past the staleness timeout.
+
+        A build whose runner never started or died before reaching RUNNING stays PENDING
+        forever, since dispatch is gated on the seen-list. Drop such a build from
+        active_pending_builds so the next poll re-dispatches it; __start_build's own
+        live-thread guard makes this safe even if a runner does exist. Never fails the
+        build -- recovery is a re-dispatch, not a verdict.
+
+        Queries ALL PENDING builds (not the seen-filtered set) so an
+        already-dispatched-but-dead build is seen. Worker-thread-only, so
+        active_pending_builds needs no lock; build_threads is read under _builds_lock.
+        """
+        try:
+            pending_builds = self.__get_builds_matching_status(Status.PENDING)
+        except Exception as e:
+            logger.error("failed to fetch pending builds for stuck check: %s", e)
+            return
+
+        now = get_utc_time()
+        threshold = self.config.stuck_build_timeout_seconds
+        for b in pending_builds:
+            build_id = b.uuid
+            age = (now - b.updated_time).total_seconds()
+            if age < threshold:
+                continue
+            with self._builds_lock:
+                thread = self.build_threads.get(build_id)
+                has_live_runner = thread is not None and thread.is_alive()
+            if has_live_runner:
+                continue  # a runner is handling it (incl. a slow-to-start job pod)
+            # No live runner: forget it as "seen" so the next poll re-dispatches it.
+            if build_id in self.active_pending_builds:
+                logger.warning(
+                    "build %s stuck PENDING for %.0fs with no live runner; "
+                    "re-arming for dispatch",
+                    build_id,
+                    age,
+                )
+                self.active_pending_builds.remove(build_id)
+
     def __worker_thread_run(self: Self) -> None:
         """
         This is the main processing loop that:
@@ -712,6 +753,10 @@ class BuildWatcher:
                 self.__process_cancel_requested_builds()
                 self.__process_submitted_builds()
                 self.__process_pending_builds()
+                # Re-arm builds stuck PENDING with no live runner. Runs after
+                # __clean_finished_builds reaps dead threads, so a died runner reads as
+                # no-live-runner here.
+                self.__redispatch_stuck_pending_builds()
                 if not self.stop_event.is_set():
                     logger.info("End processing loop. Sleeping...")
                     # monitoring_interval is floored to a sane minimum by
