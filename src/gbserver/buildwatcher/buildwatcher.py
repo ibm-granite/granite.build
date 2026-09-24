@@ -241,14 +241,11 @@ class BuildWatcher:
                 return
 
             # Wait for main monitoring thread.  When that is done, we're all done.
-            # Bounded: an untimed join here hangs shutdown forever if the loop is
-            # wedged, with no message saying why (see _SHUTDOWN_JOIN_TIMEOUT_S).
-            self.worker_thread.join(timeout=_SHUTDOWN_JOIN_TIMEOUT_S)
-            if self.worker_thread.is_alive():
-                logger.error(
-                    "monitoring thread did not stop within %ss; continuing shutdown",
-                    _SHUTDOWN_JOIN_TIMEOUT_S,
-                )
+            # Unbounded on purpose: this is the process's main wait, so a healthy
+            # worker never returns. A timeout wouldn't bound shutdown, it would cause
+            # one — tearing down live builds and exiting 0 on a loop. The joins below
+            # run after stop() and are the ones that need bounding.
+            self.worker_thread.join()
 
             # Once the main monitoring thread is done, we can assume we're shutting down
             # and so we'll stop all BuildRunners and wait for them to finish.

@@ -141,6 +141,40 @@ class TestDispatchIsIdempotent:
 
 
 class TestShutdownIsBounded:
+    def test_running_worker_is_waited_on_indefinitely(self, monkeypatch):
+        """__wait_for_completion is the process's main wait, not just a shutdown path.
+
+        A bounded join here tears down live builds and exits 0 on a loop
+        (CrashLoopBackOff). Every other test starts a worker that exits immediately,
+        so none of them can see it.
+        """
+        monkeypatch.setattr(bw_mod, "_SHUTDOWN_JOIN_TIMEOUT_S", 0.2)
+        w = _watcher(monkeypatch)
+        runner = _StubRunner()
+        w.build_runners[BUILD_ID] = runner
+        stop_loop = threading.Event()
+        w.worker_thread = threading.Thread(target=stop_loop.wait, daemon=True)
+        w.worker_thread.start()
+
+        done = threading.Event()
+        waiter = threading.Thread(
+            target=lambda: (w._BuildWatcher__wait_for_completion(), done.set()),
+            daemon=True,
+        )
+        waiter.start()
+        try:
+            # Well past the patched bound, so a timed join would have returned.
+            assert not done.wait(timeout=2.0), (
+                "returned while the worker was still running — it timed out "
+                "instead of waiting for stop()"
+            )
+            assert not runner.stopped, "live build torn down by a spurious shutdown"
+        finally:
+            stop_loop.set()
+            assert done.wait(timeout=10), "did not return once the worker exited"
+            waiter.join(timeout=5)
+        assert runner.stopped, "runner was not stopped after the worker exited"
+
     def test_wedged_build_thread_does_not_hang_shutdown(self, monkeypatch):
         """A thread that never exits must not block shutdown forever."""
         monkeypatch.setattr(bw_mod, "_SHUTDOWN_JOIN_TIMEOUT_S", 0.2)
