@@ -250,7 +250,7 @@ class TestTeardownWithProvider:
                 return "us-east-1a"
 
         monkeypatch.setattr(
-            "gbserver.environment.skypilot.build_provider", lambda cfg: _Prov()
+            "gbserver.environment.skypilot.build_providers", lambda cfg: [_Prov()]
         )
 
         # Force the throwaway launch to fail, assert it is logged (not swallowed).
@@ -300,7 +300,7 @@ class TestTeardownWithProvider:
                 return "us-east-1a"
 
         monkeypatch.setattr(
-            "gbserver.environment.skypilot.build_provider", lambda cfg: _Prov()
+            "gbserver.environment.skypilot.build_providers", lambda cfg: [_Prov()]
         )
 
         mock_sky = MagicMock()
@@ -358,7 +358,7 @@ class TestTeardownWithProvider:
                 _Prov.cleaned = True
 
         monkeypatch.setattr(
-            "gbserver.environment.skypilot.build_provider", lambda cfg: _Prov()
+            "gbserver.environment.skypilot.build_providers", lambda cfg: [_Prov()]
         )
         mock_sky = MagicMock()
         env._setup_workdirs["sid"] = "/mnt/gb-shared/gbroot/builds/b1/runs/r1"
@@ -411,7 +411,7 @@ class TestWorkdirLauncherEnvVars:
     def test_gb_local_scratch_exported_when_provider_active(self):
         # GB_LOCAL_SCRATCH is only exported when a shared_filesystem provider is
         # active (the provider prologue creates it); a Skypilot/aws env with an
-        # efs shared_filesystem block makes build_provider() return a provider.
+        # efs shared_filesystem block makes build_providers() return a provider.
         event_q = asyncio.Queue()
         ec = EnvironmentConfig(
             name="test-scratch",

@@ -1948,7 +1948,7 @@ from gbserver.environment import skypilot as skymod
 class _FakeProvider:
     mount_point = "/mnt/gb-shared"
 
-    def mount_prologue(self):
+    def mount_prologue(self, dns_override=None):
         return "echo MOUNT_HERE\n"
 
     def cleanup_run_script(self, workdir):
@@ -1958,6 +1958,11 @@ class _FakeProvider:
         return "us-east-1a"
 
 
+class _WorkdirMount:
+    def __init__(self, mp):
+        self.mount_point = mp
+
+
 def test_prologue_orders_mount_before_cd_and_chmods_1777():
     import subprocess
 
@@ -1965,7 +1970,10 @@ def test_prologue_orders_mount_before_cd_and_chmods_1777():
     # mount is still at mount_point (/mnt/gb-shared). The chmod-walk sentinel is
     # mount_point, so the extra gbroot level is created and chmod'd during the walk.
     prologue = skymod._compose_step_prologue(
-        _FakeProvider(), "/mnt/gb-shared/gbroot/builds/b/runs/r"
+        [_FakeProvider()],
+        {},
+        _WorkdirMount("/mnt/gb-shared"),
+        "/mnt/gb-shared/gbroot/builds/b/runs/r",
     )
     assert prologue.startswith("set -eu")
     # Mount, then chmod, then cd.
@@ -1992,9 +2000,56 @@ def test_prologue_orders_mount_before_cd_and_chmods_1777():
 
 
 def test_prologue_no_provider_is_plain_cli_prefix():
-    assert skymod._compose_step_prologue(None, "/mnt/x") == skymod._get_cli_prefix(
-        "/mnt/x"
+    assert skymod._compose_step_prologue([], {}, None, "/mnt/x") == (
+        skymod._get_cli_prefix("/mnt/x")
     )
+
+
+# --- Task 9: multi-mount step prologue (#404/#391) ---
+
+
+class _FakeProv:
+    def __init__(self, mp):
+        self.mount_point = mp
+
+    def mount_prologue(self, dns_override=None):
+        return f"# mount {self.mount_point} dns={dns_override}\n"
+
+    def transit_encryption_note(self):
+        return None
+
+
+def test_compose_prologue_mounts_every_provider_chmods_only_workdir():
+    ps = [_FakeProv("/mnt/a"), _FakeProv("/mnt/b")]
+    sh = skymod._compose_step_prologue(
+        ps, {"/mnt/b": "fs-b.dns"}, _WorkdirMount("/mnt/a"), "/mnt/a/builds/b1/runs/r1"
+    )
+    assert sh.startswith("set -eu\n")
+    assert "# mount /mnt/a dns=None" in sh  # BYO: no override
+    assert "# mount /mnt/b dns=fs-b.dns" in sh  # ephemeral: override threaded
+    assert 'cd "$GB_BUILD_WORKDIR"' in sh  # workdir mount only
+    # chmod-walk bounded by the WORKDIR mount root, not the other mount
+    assert "!= '/mnt/a'" in sh or "/mnt/a" in sh
+
+
+def test_compose_prologue_no_providers_is_plain_cli_prefix():
+    assert skymod._compose_step_prologue([], {}, None, "/x") == skymod._get_cli_prefix(
+        "/x"
+    )
+
+
+def test_resolved_shared_fs_dns_reads_setup_config():
+    sc = {
+        "skypilot": {
+            "build_workdir": "/mnt/e/w",
+            "shared_fs_mounts": [
+                {"mount_point": "/mnt/e", "dns_name": "fs-x.dns"},
+                {"mount_point": "/mnt/byo", "dns_name": None},
+            ],
+        }
+    }
+    assert skymod._resolved_shared_fs_dns(sc) == {"/mnt/e": "fs-x.dns"}
+    assert skymod._resolved_shared_fs_dns(None) == {}
 
 
 def test_no_gbserver_pinned_container_run_options():

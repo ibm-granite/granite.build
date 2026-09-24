@@ -45,9 +45,10 @@ from gbcommon.uri.uri import URI
 from gbserver.environment._skypilot_ssh import _kill_and_reap
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.environment.shared_fs import (
-    build_provider,
+    build_providers,
     resolve_local_scratch,
     resolve_shared_workdir,
+    resolve_workdir_mount,
 )
 from gbserver.spaces.hf_push_config import (
     apply_hf_step_overlay,
@@ -971,22 +972,34 @@ def _get_cli_prefix(build_workdir: Optional[str]) -> str:
     return prefix
 
 
-def _compose_step_prologue(provider, build_workdir):
-    """Prologue prepended to setup and run. Without a provider this is exactly
-    ``_get_cli_prefix(build_workdir)`` (unchanged). With a provider: ``set -eu``,
-    the idempotent mount, then make every level from the shared-fs mount root down
-    to the per-run workdir world-writable + sticky (1777) so a later step running
-    as a different uid can create and traverse its own per-run dir, and ``cd`` in.
+def _resolved_shared_fs_dns(setup_config) -> dict:
+    """mount_point -> runtime DNS from setup_config.skypilot.shared_fs_mounts
+    (empty for BYO-only envs / before ephemeral provisioning)."""
+    mounts = ((setup_config or {}).get("skypilot", {}) or {}).get(
+        "shared_fs_mounts", []
+    )
+    return {m["mount_point"]: m["dns_name"] for m in mounts if m.get("dns_name")}
+
+
+def _compose_step_prologue(providers, resolved, workdir_mount, build_workdir):
+    """Prologue prepended to setup and run. With no providers this is exactly
+    ``_get_cli_prefix(build_workdir)``. With providers: ``set -eu``, then the
+    idempotent mount of EVERY declared filesystem (ephemeral mounts get their
+    runtime DNS from ``resolved``), then -- only for the workdir-hosting mount --
+    make the tree down to the per-run workdir world-writable + sticky (1777) and
+    ``cd`` in.
 
     The chmod walk is GUARDED: a level a prior step's uid created is not ours to
     ``chmod`` (that EPERMs, and under ``set -eu`` would abort the step in the
     prologue), and it is already 1777, so ignoring the failure is safe. Bounded by
-    the mount root, which the admin runbook chmods 1777 out of band."""
-    if provider is None:
+    the workdir mount root, which the admin runbook chmods 1777 out of band."""
+    if not providers:
         return _get_cli_prefix(build_workdir)
-    prologue = "set -eu\n" + provider.mount_prologue()
-    if build_workdir:
-        mount_root = shlex.quote(provider.mount_point)
+    prologue = "set -eu\n"
+    for p in providers:
+        prologue += p.mount_prologue(dns_override=(resolved or {}).get(p.mount_point))
+    if build_workdir and workdir_mount is not None:
+        mount_root = shlex.quote(workdir_mount.mount_point)
         prologue += (
             'mkdir -p "$GB_LOCAL_SCRATCH"\n'
             # Create the per-run tree world-writable ATOMICALLY (umask 000 in a
@@ -1072,8 +1085,8 @@ def aws_credentials_present() -> bool:
     return has_key_pair or bool(os.environ.get("AWS_PROFILE"))
 
 
-# Sentinel distinguishing "shared_filesystem provider not yet computed" from a
-# computed None (no provider). See Skypilot._shared_fs_provider.
+# Sentinel distinguishing "shared_filesystem providers not yet computed" from a
+# computed empty list (no providers). See Skypilot._shared_fs_providers.
 _PROVIDER_UNSET = object()
 
 
@@ -1138,6 +1151,10 @@ class Skypilot(Environment):
         # setup_id -> {"target_name","build_id","build_config_name"} so teardown can
         # name its cleanup cluster the same human-identifiable way as launch.
         self._setup_run_meta: Dict[str, Dict[str, str]] = {}
+        # setup_id -> [(provider, ProvisionedResources|None)] created by
+        # setup_skypilot; teardown_skypilot deprovisions from it. Keyed by
+        # setup_id so concurrent target-runs never share ephemeral runtime state.
+        self._setup_provisioned: Dict[str, list] = {}
         # launch_id -> kwargs replayed by retry_workload
         self._launch_kwargs: Dict[str, Dict] = {}
         self._skypilot_retry_complete_events: Dict[str, asyncio.Event] = {}
@@ -1154,11 +1171,11 @@ class Skypilot(Environment):
         # periodic/startup pull resumes after the lines it last emitted events
         # for instead of re-emitting from the top each time.
         self._log_lines_parsed: Dict[str, int] = {}
-        # Lazily-memoized shared_filesystem provider. Left UNSET here (not
-        # computed) so build_provider still runs on first use — preserving the
+        # Lazily-memoized shared_filesystem providers (list). Left UNSET here (not
+        # computed) so build_providers still runs on first use — preserving the
         # pre-memoization validation timing and letting tests monkeypatch
-        # build_provider after construction. See _shared_fs_provider.
-        self._shared_fs_provider_cache: Any = _PROVIDER_UNSET
+        # build_providers after construction. See _shared_fs_providers.
+        self._shared_fs_providers_cache: Any = _PROVIDER_UNSET
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -1384,18 +1401,20 @@ class Skypilot(Environment):
             return "k8s"
         return self.config.config.get("default_cloud", "k8s")
 
-    def _shared_fs_provider(self: Self):
-        """The shared_filesystem provider for this env (or None), memoized.
+    def _shared_fs_providers(self: Self):
+        """The shared_filesystem providers for this env (list, possibly empty),
+        memoized. Config-only/stateless; per-run runtime state is keyed by
+        setup_id, so concurrent target-runs never collide.
 
-        ``build_provider`` re-validates the ``shared_filesystem`` block, and
+        ``build_providers`` re-validates the ``shared_filesystem`` block, and
         launch, the built-in launcher env, and teardown all consult it — so
         compute it at most once per environment instance. Lazy rather than in
         ``__init__`` so the (potentially raising) validation still happens on
         first use, matching the pre-memoization timing.
         """
-        if self._shared_fs_provider_cache is _PROVIDER_UNSET:
-            self._shared_fs_provider_cache = build_provider(self.config)
-        return self._shared_fs_provider_cache
+        if self._shared_fs_providers_cache is _PROVIDER_UNSET:
+            self._shared_fs_providers_cache = build_providers(self.config)
+        return self._shared_fs_providers_cache
 
     def _get_idle_minutes(self: Self) -> int:
         """Get idle_minutes_to_autostop from environment.yaml config."""
@@ -1680,7 +1699,17 @@ class Skypilot(Environment):
         if not workdir:
             return
         _require_skypilot()
-        provider = self._shared_fs_provider()
+        providers = self._shared_fs_providers()
+        workdir_mount = resolve_workdir_mount(self.config)
+        provider = next(
+            (
+                p
+                for p in providers
+                if workdir_mount is not None
+                and p.mount_point == workdir_mount.mount_point
+            ),
+            None,
+        )
         # A shared_filesystem provider cleans the whole per-run tree via its own
         # shell (and may pin the throwaway VM to an AZ that has a mount target);
         # without a provider a plain rm -rf of the workdir suffices. Only the run
@@ -1964,7 +1993,7 @@ class Skypilot(Environment):
             # exported when a shared_filesystem provider is active: the provider
             # prologue creates it (mkdir -p "$GB_LOCAL_SCRATCH"); plain shared_workdir
             # envs (bluevela/SLURM/k8s) have no provider, so must not see it.
-            if self._shared_fs_provider() is not None:
+            if self._shared_fs_providers():
                 env["GB_LOCAL_SCRATCH"] = (
                     resolve_local_scratch(self.config) or "/tmp/gb-scratch"
                 )
@@ -2324,14 +2353,18 @@ class Skypilot(Environment):
             # scripts stay in SkyPilot's default ~/sky_workdir, where relative
             # file_mounts land. Only prefix setup when there is a setup script, so
             # steps without one don't acquire a spurious setup phase.
-            provider = self._shared_fs_provider()
-            if provider is not None:
+            providers = self._shared_fs_providers()
+            for _p in providers:
                 # Surface a transit-encryption caveat in the gbserver log at launch
                 # (the mount prologue also warns, but only in the step log).
-                note = provider.transit_encryption_note()
+                note = _p.transit_encryption_note()
                 if note:
                     logger.warning(note)
-            cli_prefix = _compose_step_prologue(provider, build_workdir)
+            workdir_mount = resolve_workdir_mount(self.config)
+            resolved = _resolved_shared_fs_dns(kwargs.get("setup_config"))
+            cli_prefix = _compose_step_prologue(
+                providers, resolved, workdir_mount, build_workdir
+            )
             run_script = cli_prefix + launcher_config.get("run", "")
             if setup_script:
                 setup_script = cli_prefix + setup_script
