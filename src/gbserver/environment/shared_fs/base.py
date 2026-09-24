@@ -1,12 +1,25 @@
 """SharedFilesystemProvider contract + the shared_workdir resolver."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
-
-from gbserver.environment.shared_fs.config import SharedFilesystemConfig
 
 if TYPE_CHECKING:
     from gbserver.types.environmentconfig import EnvironmentConfig
+
+
+@dataclass(frozen=True)
+class ProvisionedResources:
+    """Runtime identity of an ephemeral EFS created for one target-run.
+    Opaque to skypilot.py; threaded from provision() to deprovision()."""
+
+    region: str
+    file_system_id: str
+    dns_name: str
+    mount_target_ids: list = field(default_factory=list)
+    subnet_ids: list = field(default_factory=list)
+    security_group_id: Optional[str] = None
+    created_sg: bool = False
 
 
 class SharedFilesystemProvider(ABC):
@@ -17,10 +30,24 @@ class SharedFilesystemProvider(ABC):
         self.mount_point = mount_point
 
     @abstractmethod
-    def mount_prologue(self) -> str:
-        """Idempotent shell that mounts the FS at ``mount_point`` (host or, for a
-        containerized step, inside the container). Must `echo` a clear message
-        and exit non-zero on failure so the caller's `set -eu` aborts the step."""
+    def mount_prologue(self, dns_override: Optional[str] = None) -> str:
+        """Idempotent shell mounting the FS at ``mount_point`` (host or, for a
+        containerized step, inside the container). ``dns_override`` supplies the
+        runtime DNS for ephemeral mounts; BYO mounts use config. Must echo a clear
+        message and exit non-zero on failure so the caller's ``set -eu`` aborts."""
+
+    async def provision(  # pylint: disable=unused-argument
+        self, tags: dict, aws_profile: Optional[str]
+    ) -> Optional[ProvisionedResources]:
+        """Create backing infra for an ephemeral mount and return its runtime
+        identity. Default None (BYO / non-provisioning backends)."""
+        return None
+
+    async def deprovision(  # pylint: disable=unused-argument
+        self, provisioned: Optional[ProvisionedResources], aws_profile: Optional[str]
+    ) -> None:
+        """Destroy infra created by :meth:`provision`. Default no-op."""
+        return None
 
     def cleanup_run_script(  # pylint: disable=unused-argument
         self, per_run_workdir: str
@@ -64,13 +91,30 @@ def resolve_shared_workdir(config: Optional["EnvironmentConfig"]) -> Optional[st
     return (config.config or {}).get("shared_workdir")
 
 
-def resolve_local_scratch(config: Optional["EnvironmentConfig"]) -> Optional[str]:
-    """Return the ``shared_filesystem.local_scratch`` dir, or None when there is no
-    ``shared_filesystem`` block (the caller applies the ``/tmp/gb-scratch`` default).
-    Read through the typed config so an invalid (e.g. relative) value is rejected."""
+def resolve_workdir_mount(config: Optional["EnvironmentConfig"]):
+    """Return the SharedFilesystemConfig whose mount_point prefixes shared_workdir
+    (the mount that hosts the per-run workdir), or None."""
     if config is None:
         return None
-    sf_raw = (config.config or {}).get("shared_filesystem")
-    if not sf_raw:
+    workdir = resolve_shared_workdir(config)
+    if not workdir:
         return None
-    return SharedFilesystemConfig.model_validate(sf_raw).local_scratch
+    from gbserver.environment.shared_fs.config import parse_shared_filesystems
+
+    for m in parse_shared_filesystems((config.config or {}).get("shared_filesystem")):
+        mp = m.mount_point
+        if workdir == mp or workdir.startswith(mp.rstrip("/") + "/"):
+            return m
+    return None
+
+
+def resolve_local_scratch(config: Optional["EnvironmentConfig"]) -> Optional[str]:
+    """Return the single mount's local_scratch, or None (caller applies default)."""
+    if config is None:
+        return None
+    from gbserver.environment.shared_fs.config import parse_shared_filesystems
+
+    for m in parse_shared_filesystems((config.config or {}).get("shared_filesystem")):
+        if m.local_scratch:
+            return m.local_scratch
+    return None

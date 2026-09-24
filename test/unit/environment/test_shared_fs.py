@@ -4,7 +4,12 @@ from types import SimpleNamespace
 import pytest
 
 from gbserver.environment.shared_fs import build_provider
-from gbserver.environment.shared_fs.base import resolve_shared_workdir
+from gbserver.environment.shared_fs.base import (
+    ProvisionedResources,
+    resolve_local_scratch,
+    resolve_shared_workdir,
+    resolve_workdir_mount,
+)
 from gbserver.environment.shared_fs.config import (
     EfsConfig,
     SharedFilesystemConfig,
@@ -238,6 +243,76 @@ def test_parse_rejects_multiple_local_scratch():
     b["local_scratch"] = "/tmp/s2"
     with pytest.raises(ValueError, match="local_scratch"):
         parse_shared_filesystems([a, b])
+
+
+# --- Task 3: ProvisionedResources, workdir-mount resolver, list local_scratch ---
+# NOTE: these reuse the module-level SimpleNamespace `_env` (resolve_* only read
+# `.config`); the full EnvironmentConfig gate is exercised in test_environmentconfig.
+
+
+def test_provisioned_resources_fields():
+    pr = ProvisionedResources(
+        region="us-east-1",
+        file_system_id="fs-1",
+        dns_name="fs-1.efs.us-east-1.amazonaws.com",
+        mount_target_ids=["mt-1"],
+        subnet_ids=["subnet-a"],
+        security_group_id="sg-1",
+        created_sg=True,
+    )
+    assert pr.file_system_id == "fs-1" and pr.created_sg is True
+
+
+def test_resolve_workdir_mount_prefix_selects_mount():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_filesystem": [
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/a",
+                "efs": {"file_system_id": "fs-a", "region": "us-east-1"},
+            },
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/b",
+                "efs": {"file_system_id": "fs-b", "region": "us-east-1"},
+            },
+        ],
+        "shared_workdir": "/mnt/b/work",
+    }
+    m = resolve_workdir_mount(_env(cfg))
+    assert m is not None and m.mount_point == "/mnt/b"
+
+
+def test_resolve_workdir_mount_under_none_returns_none():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_filesystem": [
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/a",
+                "efs": {"file_system_id": "fs-a", "region": "us-east-1"},
+            }
+        ],
+        "shared_workdir": "/mnt/z/work",
+    }
+    assert resolve_workdir_mount(_env(cfg)) is None
+
+
+def test_resolve_local_scratch_from_list():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "/mnt/a/w",
+        "shared_filesystem": [
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/a",
+                "local_scratch": "/opt/nvme/scratch",
+                "efs": {"file_system_id": "fs-a", "region": "us-east-1"},
+            }
+        ],
+    }
+    assert resolve_local_scratch(_env(cfg)) == "/opt/nvme/scratch"
 
 
 def _env(cfg: dict):
