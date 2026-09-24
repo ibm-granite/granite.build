@@ -407,6 +407,94 @@ class TestTeardownWithProvider:
         assert run_script == "rm -rf /shared/builds/b1/runs/r1"
 
 
+class TestTeardownDeprovisionsEphemeral:
+    """Task 11 (#391): teardown deprovisions every ephemeral mount, skips the
+    throwaway rm-VM when the workdir mount is ephemeral, and WARNs (not raises)
+    naming the orphan on a deprovision failure."""
+
+    @pytest.mark.asyncio
+    async def test_deprovisions_all_ephemeral_and_skips_rm_for_ephemeral_workdir(self):
+        from unittest import mock
+
+        from gbserver.environment.shared_fs.base import ProvisionedResources
+
+        env = make_skypilot_env(
+            {
+                "shared_workdir": "/mnt/e/work",
+                "shared_filesystem": [
+                    {
+                        "provider": "efs",
+                        "mount_point": "/mnt/e",
+                        "efs": {"provision": "ephemeral", "region": "us-east-1"},
+                    }
+                ],
+            }
+        )
+        pr = ProvisionedResources(
+            region="us-east-1",
+            file_system_id="fs-x",
+            dns_name="d",
+            mount_target_ids=["mt-1"],
+            subnet_ids=["subnet-a"],
+            security_group_id="sg-1",
+            created_sg=True,
+        )
+        prov = env._shared_fs_providers()[0]
+        env._setup_workdirs["sid-1"] = "/mnt/e/work/builds/b1/runs/r1"
+        env._setup_run_meta["sid-1"] = {"build_id": "b1"}
+        env._setup_provisioned["sid-1"] = [(prov, pr)]
+        with (
+            mock.patch.object(type(prov), "deprovision", new=mock.AsyncMock()) as dep,
+            patch("gbserver.environment.skypilot.sky") as sky_mod,
+        ):
+            await env.teardown_skypilot("sid-1")
+        dep.assert_awaited_once()
+        sky_mod.launch.assert_not_called()  # no rm-VM for an ephemeral workdir mount
+
+    @pytest.mark.asyncio
+    async def test_warns_orphan_on_deprovision_failure(self, caplog):
+        from unittest import mock
+
+        from gbserver.environment.shared_fs.base import ProvisionedResources
+
+        env = make_skypilot_env(
+            {
+                "shared_workdir": "/mnt/e/work",
+                "shared_filesystem": [
+                    {
+                        "provider": "efs",
+                        "mount_point": "/mnt/e",
+                        "efs": {"provision": "ephemeral", "region": "us-east-1"},
+                    }
+                ],
+            }
+        )
+        pr = ProvisionedResources(
+            region="us-east-1",
+            file_system_id="fs-orphan",
+            dns_name="d",
+            mount_target_ids=["mt-1"],
+            subnet_ids=["subnet-a"],
+            security_group_id="sg-1",
+            created_sg=True,
+        )
+        prov = env._shared_fs_providers()[0]
+        env._setup_workdirs["sid-2"] = "/mnt/e/work/builds/b1/runs/r1"
+        env._setup_run_meta["sid-2"] = {"build_id": "b1"}
+        env._setup_provisioned["sid-2"] = [(prov, pr)]
+        with (
+            mock.patch.object(
+                type(prov),
+                "deprovision",
+                new=mock.AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            patch("gbserver.environment.skypilot.sky"),
+        ):
+            with caplog.at_level("WARNING"):
+                await env.teardown_skypilot("sid-2")
+        assert "fs-orphan" in caplog.text and "ORPHAN" in caplog.text
+
+
 class TestWorkdirLauncherEnvVars:
     def test_gb_local_scratch_exported_when_provider_active(self):
         # GB_LOCAL_SCRATCH is only exported when a shared_filesystem provider is

@@ -1754,9 +1754,9 @@ class Skypilot(Environment):
         """
         workdir = self._setup_workdirs.pop(setup_id, None)
         run_meta = self._setup_run_meta.pop(setup_id, {})
-        if not workdir:
+        provisioned = self._setup_provisioned.pop(setup_id, [])
+        if not workdir and not provisioned:
             return
-        _require_skypilot()
         providers = self._shared_fs_providers()
         workdir_mount = resolve_workdir_mount(self.config)
         provider = next(
@@ -1768,81 +1768,119 @@ class Skypilot(Environment):
             ),
             None,
         )
-        # A shared_filesystem provider cleans the whole per-run tree via its own
-        # shell (and may pin the throwaway VM to an AZ that has a mount target);
-        # without a provider a plain rm -rf of the workdir suffices. Only the run
-        # script and the optional zone differ.
-        run_script = (
-            provider.cleanup_run_script(workdir)
-            if provider is not None
-            else f"rm -rf {shlex.quote(workdir)}"
+        workdir_is_ephemeral = bool(
+            workdir_mount is not None
+            and workdir_mount.efs is not None
+            and workdir_mount.efs.provision == "ephemeral"
         )
-        if provider is not None and run_script is None:
-            # A non-mount backend (e.g. object-store / stage-out) reaps its per-run
-            # state server-side, with no throwaway VM to launch.
-            logger.info(
-                "teardown_skypilot: provider reaps per-run workdir %s server-side "
-                "(setup_id=%s)",
-                workdir,
-                setup_id,
+        # For a BYO workdir mount, reap the per-run tree via the throwaway VM as
+        # before. For an ephemeral workdir mount, skip it -- the deprovision below
+        # deletes the whole filesystem anyway.
+        if workdir and not workdir_is_ephemeral:
+            _require_skypilot()
+            # A shared_filesystem provider cleans the whole per-run tree via its own
+            # shell (and may pin the throwaway VM to an AZ that has a mount target);
+            # without a provider a plain rm -rf of the workdir suffices. Only the run
+            # script and the optional zone differ.
+            run_script = (
+                provider.cleanup_run_script(workdir)
+                if provider is not None
+                else f"rm -rf {shlex.quote(workdir)}"
             )
-            await provider.cleanup()
-            return
-        cluster_name = self._cluster_name_for(
-            f"td-{setup_id}",
-            target_name=run_meta.get("target_name", ""),
-            build_id=run_meta.get("build_id", ""),
-            build_config_name=run_meta.get("build_config_name", ""),
-        )
-        res_kwargs = {"infra": self._get_cloud()}
-        zone = provider.cleanup_zone() if provider is not None else None
-        if zone:
-            res_kwargs["zone"] = zone  # land where a mount target exists
-        elif provider is not None:
-            # Context for the orphan WARNING below: with no pinned zone the
-            # throwaway VM lands in the cloud's default AZ, which may lack an EFS
-            # mount target and fail the cleanup.
-            logger.info(
-                "teardown_skypilot: efs.cleanup_zone unset; the cleanup VM lands "
-                "in the default AZ, which may lack a mount target (set "
-                "efs.cleanup_zone, or ensure a mount target in every worker AZ)"
-            )
-        logger.info(
-            "teardown_skypilot: cleaning per-run workdir %s "
-            "(setup_id=%s, provider=%s, zone=%s)",
-            workdir,
-            setup_id,
-            provider is not None,
-            zone,
-        )
-        try:
-            task = sky.Task(
-                name=cluster_name,
-                run=run_script,
-                resources=sky.Resources(**res_kwargs),
-            )
-            request_id = await asyncio.to_thread(
-                sky.launch,
-                task,
-                cluster_name=cluster_name,
-                idle_minutes_to_autostop=0,
-                down=True,
-            )
-            await asyncio.to_thread(sky.stream_and_get, request_id)
-        except Exception as e:  # don't fail an already-finished build for cleanup
-            # Make an orphaned per-run tree visible so it can be reaped (see the
-            # teardown notes in docs/environments/skypilot-aws.md). For OSError,
-            # format_oserror surfaces the underlying path/errno; the full trace
-            # goes to debug.
-            detail = format_oserror(e) if isinstance(e, OSError) else str(e)
-            logger.warning(
-                "teardown cleanup failed; per-run tree may be ORPHANED at %s "
-                "(setup_id=%s): %s",
-                workdir,
-                setup_id,
-                detail,
-            )
-            logger.debug("teardown_skypilot failure trace", exc_info=True)
+            if provider is not None and run_script is None:
+                # A non-mount backend (e.g. object-store / stage-out) reaps its
+                # per-run state server-side, with no throwaway VM to launch.
+                logger.info(
+                    "teardown_skypilot: provider reaps per-run workdir %s "
+                    "server-side (setup_id=%s)",
+                    workdir,
+                    setup_id,
+                )
+                await provider.cleanup()
+            else:
+                cluster_name = self._cluster_name_for(
+                    f"td-{setup_id}",
+                    target_name=run_meta.get("target_name", ""),
+                    build_id=run_meta.get("build_id", ""),
+                    build_config_name=run_meta.get("build_config_name", ""),
+                )
+                res_kwargs = {"infra": self._get_cloud()}
+                zone = provider.cleanup_zone() if provider is not None else None
+                if zone:
+                    res_kwargs["zone"] = zone  # land where a mount target exists
+                elif provider is not None:
+                    # Context for the orphan WARNING below: with no pinned zone the
+                    # throwaway VM lands in the cloud's default AZ, which may lack an
+                    # EFS mount target and fail the cleanup.
+                    logger.info(
+                        "teardown_skypilot: efs.cleanup_zone unset; the cleanup VM "
+                        "lands in the default AZ, which may lack a mount target (set "
+                        "efs.cleanup_zone, or ensure a mount target in every worker AZ)"
+                    )
+                logger.info(
+                    "teardown_skypilot: cleaning per-run workdir %s "
+                    "(setup_id=%s, provider=%s, zone=%s)",
+                    workdir,
+                    setup_id,
+                    provider is not None,
+                    zone,
+                )
+                try:
+                    task = sky.Task(
+                        name=cluster_name,
+                        run=run_script,
+                        resources=sky.Resources(**res_kwargs),
+                    )
+                    request_id = await asyncio.to_thread(
+                        sky.launch,
+                        task,
+                        cluster_name=cluster_name,
+                        idle_minutes_to_autostop=0,
+                        down=True,
+                    )
+                    await asyncio.to_thread(sky.stream_and_get, request_id)
+                except Exception as e:  # don't fail a finished build for cleanup
+                    # Make an orphaned per-run tree visible so it can be reaped (see
+                    # the teardown notes in docs/environments/skypilot-aws.md). For
+                    # OSError, format_oserror surfaces the path/errno; full trace
+                    # goes to debug.
+                    detail = format_oserror(e) if isinstance(e, OSError) else str(e)
+                    logger.warning(
+                        "teardown cleanup failed; per-run tree may be ORPHANED at %s "
+                        "(setup_id=%s): %s",
+                        workdir,
+                        setup_id,
+                        detail,
+                    )
+                    logger.debug("teardown_skypilot failure trace", exc_info=True)
+        # Deprovision every ephemeral mount created in setup (runs regardless of
+        # which mount hosts the workdir). Never fail an already-finished build for
+        # cleanup: log a WARNING naming the orphan so it can be reclaimed by tag.
+        profile = self._aws_profile()
+        for p, pr in provisioned:
+            if pr is None:
+                continue
+            try:
+                await p.deprovision(pr, profile)
+                logger.info(
+                    "teardown_skypilot: deprovisioned ephemeral EFS %s (setup_id=%s)",
+                    pr.file_system_id,
+                    setup_id,
+                )
+            except Exception as e:  # noqa: BLE001 - never fail a finished build
+                logger.warning(
+                    "teardown_skypilot: ephemeral EFS deprovision FAILED -- ORPHAN "
+                    "fsid=%s mount_targets=%s sg=%s(created=%s) region=%s "
+                    "tags(build=%s,targetrun=%s); reclaim by tag. Error: %s",
+                    pr.file_system_id,
+                    pr.mount_target_ids,
+                    pr.security_group_id,
+                    pr.created_sg,
+                    pr.region,
+                    run_meta.get("build_id", ""),
+                    setup_id,
+                    e,
+                )
 
     @staticmethod
     def _parse_memory_gib(memory_str: str) -> Optional[float]:
