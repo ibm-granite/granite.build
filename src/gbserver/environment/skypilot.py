@@ -2257,11 +2257,13 @@ class Skypilot(Environment):
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
-                # Pin <2.0: huggingface_hub 2.0.0's httpx2 streaming decompressor
-                # calls process(output_buffer_limit=...), which is broken on the
-                # bare AWS AMI's Python 3.10 (TypeError) and fails `hf download`.
-                # Stop-gap until the worker Python is bumped or 2.x is validated
-                # on py3.10.
+                # Pin <2.0: huggingface_hub 2.x pulls httpx2, whose BrotliDecoder
+                # calls brotli.Decompressor.process(output_buffer_limit=...) -- a
+                # kwarg added only in brotli>=1.2.0. The bare worker's ambient
+                # conda brotli (1.0.9) rejects it (TypeError), failing hf download.
+                # NOT a Python-version issue (reproduces on py3.12 w/ brotli<1.2).
+                # Stop-gap until the worker ships brotli>=1.2.0 (or httpx2[brotli])
+                # so hf 2.x works; see follow-up issue.
                 hfpull_lines = [
                     "# -- gbserver: inline hfpull for inputs --",
                     "pip install --no-cache-dir 'huggingface_hub[cli]<2.0' "

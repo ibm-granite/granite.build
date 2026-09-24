@@ -30,9 +30,11 @@ environment_configs:
           resources:
             cpus: 1+
           setup: |
-            # Pin <2.0: huggingface_hub 2.0.0's httpx2 decompressor breaks
-            # `hf download` on Python 3.10 workers (TypeError). Stop-gap until
-            # the worker Python is bumped or 2.x is validated on py3.10.
+            # Pin <2.0: hf 2.x pulls httpx2, whose BrotliDecoder calls
+            # brotli.Decompressor.process(output_buffer_limit=...), a kwarg only
+            # in brotli>=1.2.0; the worker's ambient conda brotli (1.0.9) rejects
+            # it (TypeError). Not a Python-version issue. Stop-gap until the
+            # worker ships brotli>=1.2.0 (or httpx2[brotli]); see follow-up issue.
             pip install --no-cache-dir 'huggingface_hub[cli]<2.0'
           run: |
             set -euo pipefail
