@@ -49,6 +49,83 @@ _SF = {
 }
 
 
+# --- Task 8: multi-mount shared_filesystem gate + workdir-mount selection (#404) ---
+
+
+def _cfg(**over):
+    base = {
+        "default_cloud": "aws",
+        "shared_filesystem": [
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/a",
+                "efs": {"file_system_id": "fs-a", "region": "us-east-1"},
+            },
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/b",
+                "efs": {"provision": "ephemeral", "region": "us-east-1"},
+            },
+        ],
+        "shared_workdir": "/mnt/a/work",
+    }
+    base.update(over)
+    return base
+
+
+def _mk(cfg):
+    return EnvironmentConfig(name="e", type="Skypilot", subtype="aws", config=cfg)
+
+
+def test_gate_accepts_multi_mount_list():
+    _mk(_cfg())  # no raise
+
+
+def test_gate_accepts_lone_object_backcompat():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "/mnt/a/work",
+        "shared_filesystem": {
+            "provider": "efs",
+            "mount_point": "/mnt/a",
+            "efs": {"file_system_id": "fs-a", "region": "us-east-1"},
+        },
+    }
+    _mk(cfg)
+
+
+def test_gate_rejects_workdir_under_no_mount():
+    with pytest.raises(
+        ValueError, match="under .*mount_point|no shared_filesystem mount"
+    ):
+        _mk(_cfg(shared_workdir="/mnt/z/work"))
+
+
+def test_gate_rejects_nested_mounts():
+    with pytest.raises(ValueError, match="nested"):
+        _mk(
+            _cfg(
+                shared_filesystem=[
+                    {
+                        "provider": "efs",
+                        "mount_point": "/mnt/a",
+                        "efs": {"file_system_id": "fs-a", "region": "us-east-1"},
+                    },
+                    {
+                        "provider": "efs",
+                        "mount_point": "/mnt/a/b",
+                        "efs": {"file_system_id": "fs-b", "region": "us-east-1"},
+                    },
+                ]
+            )
+        )
+
+
+def test_gate_still_requires_skypilot_aws():
+    with pytest.raises(ValueError, match="Skypilot/aws"):
+        EnvironmentConfig(name="e", type="K8s", subtype=None, config=_cfg())
+
+
 def test_shared_filesystem_allowed_on_skypilot_aws():
     cfg = EnvironmentConfig.model_validate(
         {
@@ -78,7 +155,7 @@ def test_shared_workdir_must_be_under_mount_point():
         "shared_filesystem": _SF,
     }
     with pytest.raises(
-        ValidationError, match="must be under shared_filesystem.mount_point"
+        ValidationError, match="not under any shared_filesystem mount_point"
     ):
         EnvironmentConfig.model_validate(_aws_env(cfg))
 
@@ -89,9 +166,7 @@ def test_shared_workdir_must_be_absolute():
         "shared_workdir": "gbroot",
         "shared_filesystem": _SF,
     }
-    with pytest.raises(
-        ValidationError, match="must be under shared_filesystem.mount_point"
-    ):
+    with pytest.raises(ValidationError, match="must be absolute"):
         EnvironmentConfig.model_validate(_aws_env(cfg))
 
 

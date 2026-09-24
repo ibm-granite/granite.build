@@ -167,20 +167,24 @@ class EnvironmentConfig(Config):
                 "shared_filesystem is only supported on a Skypilot/aws environment "
                 f"(got type={self.type!r}, subtype={self.subtype!r})"
             )
-        mount_point = (sf.get("mount_point") if isinstance(sf, dict) else None) or ""
-        mp = mount_point.rstrip("/") or "/"
+        # Keep the import inside the method to avoid a circular import at module
+        # load (shared_fs imports environmentconfig types).
+        from gbserver.environment.shared_fs import resolve_workdir_mount
+        from gbserver.environment.shared_fs.config import parse_shared_filesystems
+
+        mounts = parse_shared_filesystems(sf)  # validates each + unique/non-nested
         workdir = cfg.get("shared_workdir")
         if not workdir:
             raise ValueError(
                 "shared_filesystem requires 'shared_workdir' (an absolute path "
-                "under mount_point)"
+                "under one mount's mount_point)"
             )
-        if not os.path.isabs(workdir) or not (
-            workdir == mp or workdir.startswith(mp.rstrip("/") + "/")
-        ):
+        if not os.path.isabs(workdir):
+            raise ValueError(f"shared_workdir {workdir!r} must be absolute")
+        if resolve_workdir_mount(self) is None:
             raise ValueError(
-                f"shared_workdir {workdir!r} must be under "
-                f"shared_filesystem.mount_point {mp!r}"
+                f"shared_workdir {workdir!r} is not under any shared_filesystem "
+                f"mount_point ({[m.mount_point for m in mounts]})"
             )
         # The EFS mount targets and the teardown VM are AWS-only, and both the
         # per-run mount and teardown launch key on ``default_cloud`` (skypilot's
@@ -196,14 +200,15 @@ class EnvironmentConfig(Config):
                 "targets and the teardown VM are AWS-only); got "
                 f"default_cloud={default_cloud!r}"
             )
+        mount_points = [m.mount_point for m in mounts]
         for store in self.assetstores:
             if "hf" not in (store.store_uri or ""):
                 continue
             for pull in store.pull:
                 pcfg = pull.config or {}
                 cache_path = pcfg.get("cache_path")
-                local_cache = cache_path and not (
-                    mount_point and str(cache_path).startswith(mount_point)
+                local_cache = cache_path and not any(
+                    str(cache_path).startswith(mp) for mp in mount_points
                 )
                 if pcfg.get("inline") or local_cache:
                     logger.warning(
