@@ -136,7 +136,9 @@ def reap_all(grace_seconds: float = 5.0) -> List[int]:
         try:
             # Re-read the group: if this pid is no longer its own leader, the pid
             # was recycled (or setsid never took) and signalling the recorded pgid
-            # could hit something unrelated.
+            # could hit something unrelated. The getpgid/killpg gap is closed by the
+            # pid staying pinned by its own zombie until waited, and cleanup_nohup
+            # unregistering only after proc.wait() — don't reorder that wait.
             current = os.getpgid(pid)
         except (ProcessLookupError, PermissionError, OSError):
             with _lock:

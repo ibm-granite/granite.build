@@ -849,6 +849,10 @@ class BuildWatcher:
                     build_id,
                 )
                 return
+            if existing is not None:
+                # Dead entry __clean_finished_builds hasn't collected yet. Safe to
+                # replace, but logged so a re-dispatch isn't invisible.
+                logger.debug("build %s replacing a finished runner entry", build_id)
             self.build_runners[build_id] = build_runner
             self.build_threads[build_id] = build_thread
         build_thread.start()
