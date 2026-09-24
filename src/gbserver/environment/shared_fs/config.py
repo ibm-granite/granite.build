@@ -99,3 +99,33 @@ class SharedFilesystemConfig(Config):
                 f"{self.local_scratch!r}"
             )
         return self
+
+
+def parse_shared_filesystems(sf_raw) -> "List[SharedFilesystemConfig]":
+    """Parse the environment `shared_filesystem` value into a validated list.
+
+    A lone object is coerced to a 1-element list (back-compat with the single
+    mount form). Cross-mount rules: mount_points must be unique and non-nested;
+    at most one mount may set local_scratch (it is instance-local, not per-FS).
+    """
+    if not sf_raw:
+        return []
+    items = sf_raw if isinstance(sf_raw, list) else [sf_raw]
+    mounts = [SharedFilesystemConfig.model_validate(i) for i in items]
+    mps = [m.mount_point for m in mounts]
+    for i, a in enumerate(mps):
+        for j, b in enumerate(mps):
+            if i == j:
+                continue
+            if a == b:
+                raise ValueError(f"shared_filesystem: mount_point {a!r} is not unique")
+            if b.startswith(a.rstrip("/") + "/"):
+                raise ValueError(
+                    f"shared_filesystem: mount_point {b!r} is nested under {a!r}"
+                )
+    if sum(1 for m in mounts if m.local_scratch) > 1:
+        raise ValueError(
+            "shared_filesystem: at most one mount may set local_scratch "
+            "(it is instance-local, not per-filesystem)"
+        )
+    return mounts

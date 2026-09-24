@@ -5,7 +5,11 @@ import pytest
 
 from gbserver.environment.shared_fs import build_provider
 from gbserver.environment.shared_fs.base import resolve_shared_workdir
-from gbserver.environment.shared_fs.config import EfsConfig, SharedFilesystemConfig
+from gbserver.environment.shared_fs.config import (
+    EfsConfig,
+    SharedFilesystemConfig,
+    parse_shared_filesystems,
+)
 from gbserver.environment.shared_fs.efs import EfsProvider
 
 
@@ -190,6 +194,50 @@ def test_efs_ephemeral_accepts_optional_networking():
     )
     assert cfg.vpc_id == "vpc-1" and cfg.subnets == ["subnet-a"]
     assert cfg.derived_dns_name() is None  # no fsid yet
+
+
+# --- Task 2: parse_shared_filesystems list coercion + cross-mount rules (#404) ---
+
+
+def _byo(mp, fsid):
+    return {
+        "provider": "efs",
+        "mount_point": mp,
+        "efs": {"file_system_id": fsid, "region": "us-east-1"},
+    }
+
+
+def test_parse_none_returns_empty():
+    assert parse_shared_filesystems(None) == []
+
+
+def test_parse_lone_object_coerced_to_one_list():
+    out = parse_shared_filesystems(_byo("/mnt/a", "fs-a"))
+    assert len(out) == 1 and out[0].mount_point == "/mnt/a"
+
+
+def test_parse_list_passthrough():
+    out = parse_shared_filesystems([_byo("/mnt/a", "fs-a"), _byo("/mnt/b", "fs-b")])
+    assert [m.mount_point for m in out] == ["/mnt/a", "/mnt/b"]
+
+
+def test_parse_rejects_duplicate_mount_point():
+    with pytest.raises(ValueError, match="unique"):
+        parse_shared_filesystems([_byo("/mnt/a", "fs-a"), _byo("/mnt/a", "fs-b")])
+
+
+def test_parse_rejects_nested_mount_point():
+    with pytest.raises(ValueError, match="nested|under"):
+        parse_shared_filesystems([_byo("/mnt/a", "fs-a"), _byo("/mnt/a/b", "fs-b")])
+
+
+def test_parse_rejects_multiple_local_scratch():
+    a = _byo("/mnt/a", "fs-a")
+    a["local_scratch"] = "/tmp/s1"
+    b = _byo("/mnt/b", "fs-b")
+    b["local_scratch"] = "/tmp/s2"
+    with pytest.raises(ValueError, match="local_scratch"):
+        parse_shared_filesystems([a, b])
 
 
 def _env(cfg: dict):
