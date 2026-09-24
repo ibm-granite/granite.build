@@ -141,6 +141,64 @@ validation raises a `ValueError` rather than silently ignoring it at runtime. It
 mount never targets a cloud without a mount target. On other backends use an operator-mounted
 [`shared_workdir`](skypilot.md#shared_workdir) instead.
 
+### Multiple shared filesystems
+
+`shared_filesystem` may be a **list** of mounts as well as a single object (a lone object is treated
+as a one-element list, so existing configs keep working — [#404](https://github.com/ibm-granite/granite.build/issues/404)).
+Each entry is an independent `{ provider, mount_point, efs, local_scratch? }` mount; gbserver mounts
+every one on each worker. Cross-mount rules, enforced at config load:
+
+- `mount_point`s must be **unique** and **non-nested** (no mount under another).
+- At most **one** mount may set `local_scratch` (it is instance-local, not per-filesystem).
+- `shared_workdir` must sit under **exactly one** mount's `mount_point`; that mount hosts the per-run
+  workdir (and its `1777` walk is bounded by *its* root). The other mounts are just mounted, for the
+  step to read/write as it likes.
+
+```yaml
+config:
+  default_cloud: aws
+  shared_workdir: /mnt/gb-shared/gbroot      # under the first mount below
+  shared_filesystem:
+    - provider: efs                          # BYO durable share (hosts the workdir)
+      mount_point: /mnt/gb-shared
+      efs: { file_system_id: fs-0abc123, region: us-east-1 }
+    - provider: efs                          # a second, e.g. ephemeral, mount
+      mount_point: /mnt/gb-scratch
+      efs: { provision: ephemeral, region: us-east-1 }
+```
+
+### Ephemeral auto-provisioned EFS (`provision: ephemeral`)
+
+Set `efs.provision: ephemeral` (default is `byo`) to have **gbserver create the filesystem at
+target-run setup and destroy it at teardown** ([#391](https://github.com/ibm-granite/granite.build/issues/391)),
+instead of referencing a pre-provisioned one. An ephemeral `efs` block **must not** set
+`file_system_id`/`dns_name` (there is nothing to reference yet) and **requires `region`**; optional
+`vpc_id`, `subnets`, and `security_group_id` pin the networking (otherwise the region's default VPC,
+all its subnets, and a fresh gbserver-created security group are used). At setup gbserver creates an
+encrypted, elastic-throughput filesystem tagged `app=granite.build`, `gb-ephemeral=true`,
+`gb-build-id`, `gb-targetrun-id`, `gb-created-at`, a mount target per subnet, and (unless a BYO
+`security_group_id` is given) a security group allowing NFS (TCP 2049) from the VPC CIDR; the runtime
+DNS name is threaded to the workers' mount. Because a fresh EFS root is `root:root 0755`, the ephemeral
+mount prologue `chmod 1777`s it so non-root steps can create the per-run workdir.
+
+**IAM split.** BYO needs **no** gbserver AWS permissions (a plain NFS mount). Ephemeral needs the
+gbserver identity (the `cloud_config`/`aws_credentials` profile) to hold:
+`elasticfilesystem:{Create,Delete,Describe}{FileSystem,MountTarget}`,
+`ec2:{CreateSecurityGroup,DeleteSecurityGroup,AuthorizeSecurityGroupIngress,DescribeVpcs,DescribeSubnets,DescribeSecurityGroups}`,
+plus resource tagging. Grant these only where ephemeral EFS is used.
+
+**Leak / cost / reclamation.** Teardown deletes the mount targets, the filesystem, and (only) a
+gbserver-created security group. A crashed/killed gbserver, or a teardown-time API failure, can
+**orphan** the filesystem — teardown logs a `WARNING` naming the `fsid`/`sg`/tags so it can be found.
+There is **no automatic TTL sweeper** (deferred); reclaim orphans manually by the `gb-ephemeral=true`
+tag, e.g. `aws efs describe-file-systems` filtered on that tag, then delete mount targets → filesystem.
+Elastic throughput bills per byte moved, so an orphan costs until reaped — keep hot IO on
+`GB_LOCAL_SCRATCH`, not EFS.
+
+**Region pin.** As with BYO, an ephemeral EFS is region/VPC-scoped: pin the env (and `efs.region`) to
+the region the workers run in (e.g. `us-east-1`) so the mount targets are reachable from the instances'
+AZs.
+
 ### Per-run workdir and permissions (`1777`)
 
 gbserver mounts the EFS at `mount_point` on every worker and creates the same per-target-run subdir it

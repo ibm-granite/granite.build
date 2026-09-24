@@ -1,9 +1,11 @@
 import asyncio
+import pathlib
 import subprocess
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+import yaml
 
 from gbserver.environment.shared_fs import build_providers
 from gbserver.environment.shared_fs.base import (
@@ -594,3 +596,24 @@ def test_build_providers_single_object_backcompat():
     )
     assert len(prov) == 1 and isinstance(prov[0], EfsProvider)
     assert prov[0].mount_point == "/mnt/gb-shared"
+
+
+# --- Task 13: example environment fixtures validate (ephemeral + multi-mount) ---
+
+_ROOT = pathlib.Path(__file__).resolve().parents[3]  # repo root
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "test-data/integration/ibm/buildrunner/skypilot/aws/ephemeral-efs/space/"
+        "environments/skypilot/aws-ephemeral/environment.yaml",
+        "test-data/integration/ibm/buildrunner/skypilot/aws/multi-efs/space/"
+        "environments/skypilot/aws-multi/environment.yaml",
+    ],
+)
+def test_example_env_fixtures_validate(rel):
+    from gbserver.types.environmentconfig import EnvironmentConfig
+
+    data = yaml.safe_load((_ROOT / rel).read_text())
+    EnvironmentConfig.model_validate(data)  # must not raise

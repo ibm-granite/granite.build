@@ -1,0 +1,17 @@
+name: skypilot-aws-ephemeral
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  shared_workdir: /mnt/gb-scratch/gbroot
+  shared_filesystem:
+    - provider: efs
+      mount_point: /mnt/gb-scratch
+      efs:
+        provision: ephemeral
+        region: us-east-1
