@@ -2120,6 +2120,32 @@ def test_setup_provisions_ephemeral_and_threads_dns():
     assert out["skypilot"]["build_workdir"].startswith("/mnt/e/work/builds/b1/runs/r1")
 
 
+# --- Task 12: launch threads runtime DNS + env for multiple providers ---
+
+
+def test_launcher_env_exports_local_scratch_when_provider_active():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "/mnt/e/work",
+        "shared_filesystem": [
+            {
+                "provider": "efs",
+                "mount_point": "/mnt/e",
+                "local_scratch": "/opt/nvme/s",
+                "efs": {"provision": "ephemeral", "region": "us-east-1"},
+            }
+        ],
+    }
+    sp = _make_skypilot(cfg)
+    env = sp._skypilot_builtin_env(
+        launch_id="l1",
+        cluster_name="c1",
+        build_workdir="/mnt/e/work/builds/b1/runs/r1",
+    )
+    assert env["GB_LOCAL_SCRATCH"] == "/opt/nvme/s"
+    assert env["GB_SHARED_WORKDIR"] == "/mnt/e/work"
+
+
 def test_no_gbserver_pinned_container_run_options():
     """Regression (#389 review): gbserver must NOT pin any docker run options for a
     containerized shared_filesystem step -- SkyPilot's docker_start_cmds already
