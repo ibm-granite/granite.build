@@ -25,7 +25,7 @@ import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/component
 import StepDetailsPanel, { stepDrawerSummary } from './StepDetailsPanel'
 import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
 
-const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending'])
+const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
 
 // Target nodes are keyed `target-${name}`; the details panel needs the name back.
 const TARGET_NODE_PREFIX = 'target-'
@@ -393,11 +393,18 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // graph pane, so this is the node the resize compensation must keep on-screen —
   // and, unlike currentArtifactNode, it is set on build pages (where the drawer
   // exists) rather than only on artifact pages.
+  //
+  // Memoized on `stepDetailTarget` alone, not on `enrichedNodes`: both consumers
+  // of `selectedNode` read only `.id` (GraphNode's isSelected check, and the
+  // resize compensation's position lookup), and `enrichedNodes` is a fresh array
+  // on every status poll. Depending on it would hand Graph a new object each
+  // poll, defeating its React.memo and re-running the nodeElements effect on
+  // every tick of a live build with the drawer open.
   const openDrawerNode = React.useMemo(
     () => (stepDetailTarget
-      ? enrichedNodes.find((n) => n.id === `${TARGET_NODE_PREFIX}${stepDetailTarget}`)
+      ? ({ id: `${TARGET_NODE_PREFIX}${stepDetailTarget}` } as ElkNodeEx)
       : undefined),
-    [stepDetailTarget, enrichedNodes]
+    [stepDetailTarget]
   )
 
   const { filteredNodes, filteredLinks } = React.useMemo(() => {
@@ -430,6 +437,14 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   }, [stepDetailTarget, enrichedNodes])
 
   const handleNodeClick = (node: ElkNodeEx) => {
+    // Skeleton stubs are placeholders for hidden upstream/downstream branches,
+    // not real nodes: Graph synthesises them with an empty title and an id of
+    // `<nodeId>-upstream-skeleton`. That id still starts with TARGET_NODE_PREFIX
+    // when the node it hangs off is a target, so without this guard the target
+    // branch below opens the drawer for the non-existent target
+    // `<name>-upstream-skeleton`, which the reconcile effect then immediately
+    // closes again — the click reads as doing nothing at all.
+    if (node.type === 'skeleton-source' || node.type === 'skeleton-target') return
     if (!showFocusNode) {
       setFocusNodeId(node.id)
     }
@@ -548,23 +563,16 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               className="overflow-item"
               itemText="Reset view"
               onClick={() => {
-                // Was the graph filtered? If so, clearing the filter expands the
-                // node set and kicks off an async relayout — clear the
-                // user-adjusted flag and let that relayout auto-fit once, rather
-                // than fitting now against stale positions and re-snapping. If
-                // nothing was filtered, no relayout fires, so fit immediately.
-                const wasFiltered =
-                  focusNodeId !== null &&
-                  (upstreamLevels !== Infinity || downstreamLevels !== Infinity);
+                // Clear every filter, then fit. `resetView` fits against the
+                // current layout immediately and clears the user-adjusted flag,
+                // so a relayout triggered by the expanded node set simply
+                // auto-fits again over this one with nothing fighting it —
+                // whether or not the graph was actually filtered.
                 setFocusNodeId(null);
                 setUpstreamLevels(Infinity);
                 setDownstreamLevels(Infinity);
                 setPartial(false);
-                if (wasFiltered) {
-                  graphRef.current?.resetView();
-                } else {
-                  graphRef.current?.resetZoom();
-                }
+                graphRef.current?.resetView();
               }}
             />
           </OverflowMenu>
@@ -642,7 +650,14 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           aria-label={`Step details — ${stepDetailTarget}`}
         >
           {(() => {
-            const target = buildStatus?.targets?.[stepDetailTarget]
+            // Own-property lookup for the same reason as the close effect above:
+            // a bare-object index would return Object.prototype.toString (a
+            // function) for a target named `toString`.
+            const targets = buildStatus?.targets
+            const target =
+              targets && Object.prototype.hasOwnProperty.call(targets, stepDetailTarget)
+                ? targets[stepDetailTarget]
+                : undefined
             const { status, subtitle, summary } = stepDrawerSummary(target, build)
             return (
               <>

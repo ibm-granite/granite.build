@@ -368,12 +368,24 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
 
     // Programmatic: fires the `zoom` handler with no sourceEvent, so the fit
     // itself is not mistaken for a user adjustment.
+    //
+    // interrupt() first: `resetView` starts a 300ms transition toward the
+    // pre-expansion fit, and the ELK relayout it triggers usually lands well
+    // inside that window. A plain `.call(zoom.transform, …)` does NOT cancel a
+    // running transition, so without this the in-flight transition keeps
+    // interpolating past our fresh fit and snaps the view back to the stale one.
+    svg.interrupt()
     svg.call(zoomRef.current.transform, transformRef.current)
 
     return () => {
       svg.on('.zoom', null)
     }
-  }, [nodeElements, computeFitTransform])
+    // Keyed on `positions` (layout), not `nodeElements`: nodeElements also
+    // rebuilds on `props.selectedNode` (for the node-highlight prop), and this
+    // effect doing the same rebind + fit on every click would repeat the exact
+    // "thrash" the hoverNode split above was written to avoid, just gated on
+    // click instead of hover.
+  }, [positions, computeFitTransform])
 
   // Handle container resize. Coalesce bursts (a drag-resize fires the observer
   // many times per second) into one update per animation frame rather than
@@ -453,6 +465,23 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     }
   }, [computeFitTransform])
 
+  // Clear the auto-fit lock and transition to the current layout's fit.
+  // `fallback` is used when there is no layout to measure: a transform to go to
+  // anyway, or null to leave the viewport untouched.
+  const fitNow = React.useCallback(
+    (fallback: d3.ZoomTransform | null) => {
+      hasUserAdjustedRef.current = false
+      if (!svgRef.current || !zoomRef.current) return
+      const target = computeFitTransform() ?? fallback
+      if (!target) return
+      d3.select(svgRef.current)
+        .transition()
+        .duration(300)
+        .call(zoomRef.current.transform, target)
+    },
+    [computeFitTransform]
+  )
+
   React.useImperativeHandle(ref, () => ({
     zoomIn: () => {
       if (svgRef.current && zoomRef.current) {
@@ -469,26 +498,29 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
         d3.select(svgRef.current).call(zoomRef.current.scaleBy, 1 / 1.1)
       }
     },
-    // "Reset" means fit the whole graph, which is what the user wants when
-    // something (a skeleton stub, a far-downstream branch) is off-screen. Use
-    // this only when the node set is unchanged (the toolbar's Reset Zoom); it
-    // fits against the *current* layout immediately.
+    // Both reset entries fit the whole graph — which is what the user wants
+    // when something (a skeleton stub, a far-downstream branch) is off-screen —
+    // and clear the user-adjusted flag so a later relayout may auto-fit again.
+    //
+    // They differ only in the no-layout fallback. `resetZoom` is the toolbar
+    // control on an unchanged node set: there is always a layout to fit, and if
+    // computeFitTransform somehow yields nothing, INITIAL_TRANSFORM is a sane
+    // home position. `resetView` is called when the node set is *expected* to
+    // expand and an async ELK relayout is likely; with no layout yet there is
+    // nothing meaningful to fit, so it leaves the viewport alone and lets the
+    // layout-driven auto-fit handle it rather than lurching to a default.
+    //
+    // Both fit against the *current* layout immediately, because the expansion
+    // is not guaranteed: clearing a filter whose subgraph already covered every
+    // node yields a shallow-equal `props.nodes`, so the layout effect never
+    // re-runs and no auto-fit ever arrives — "Reset view" would look like a
+    // no-op. When a relayout does follow, its auto-fit interrupts this
+    // transition (see svg.interrupt() in the layout effect) and fits again.
     resetZoom: () => {
-      if (!svgRef.current || !zoomRef.current) return
-      hasUserAdjustedRef.current = false
-      const target = computeFitTransform() ?? INITIAL_TRANSFORM
-      d3.select(svgRef.current)
-        .transition()
-        .duration(300)
-        .call(zoomRef.current.transform, target)
+      fitNow(INITIAL_TRANSFORM)
     },
-    // "Reset view" also expands the node set, which kicks off an async ELK
-    // relayout. Fitting now would fit against the stale (pre-expansion) layout
-    // and then visibly re-snap once the new layout lands. Instead just clear the
-    // user-adjusted flag and let the layout-driven auto-fit do the fitting once —
-    // when the fresh positions arrive.
     resetView: () => {
-      hasUserAdjustedRef.current = false
+      fitNow(null)
     },
     currentZoom: () => {
       if (svgRef.current) {
@@ -505,8 +537,8 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       // Focusing a node is a deliberate viewport choice, so it must survive the
       // next relayout — on a live build any status poll re-runs the layout effect,
       // and without this flag the auto-fit would immediately discard the centring.
-      // (Programmatic transforms fire no sourceEvent, so start.userintent won't
-      // set it for us; "Reset view" clears it again.)
+      // (Programmatic transforms fire no sourceEvent, so the zoom handler's
+      // sourceEvent check won't set it for us; "Reset view" clears it again.)
       hasUserAdjustedRef.current = true
       const { width: W, height: H } = svgRef.current.getBoundingClientRect()
       const cx = (node.x ?? 0) + (node.width ?? 0) / 2
@@ -525,7 +557,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
         .duration(400)
         .call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty).scale(k))
     },
-  }), [computeFitTransform])
+  }), [computeFitTransform, fitNow])
 
   // Compute dimensions from last layout
   const svgWidth = React.useMemo(() => {

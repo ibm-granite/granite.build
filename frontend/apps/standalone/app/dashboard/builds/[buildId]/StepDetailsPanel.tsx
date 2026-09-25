@@ -3,7 +3,7 @@
 import * as React from 'react'
 import { CopyButton, Link } from '@carbon/react'
 import styles from './LineagePanel.module.scss'
-import type { Build, BuildStepRun, BuildTargetRun } from '@granite-build/ui-core/types'
+import type { Build, BuildStatus, BuildStepRun, BuildTargetRun } from '@granite-build/ui-core/types'
 import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
 import { formatDurationBetween } from '@granite-build/ui-core/lib/duration'
 
@@ -12,16 +12,33 @@ const NOT_RECORDED = 'Not recorded'
 /** Build statuses that mean the build is still in flight. Mirrors LineagePanel. */
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
 
-// Step statuses that make a target's outcome worse than its trailing step's,
-// most severe first. Drives both the header badge and the duration label in
-// stepDrawerSummary so the two always agree.
-const WORST_FIRST: BuildStepRun['status'][] = [
-  'failed',
-  'invalid',
-  'cancelled',
-  'cancel_requested',
+/**
+ * Target statuses that are not terminal — the target has not reached an outcome
+ * yet, so it may still be elapsing. Targets and builds draw from the same
+ * backend `Status` enum (src/gbserver/types/status.py), so this currently has
+ * the same members as ACTIVE_STATUSES. It is kept separate because it answers a
+ * different question — is this TARGET still elapsing, versus is the BUILD still
+ * in flight — and the two diverge as soon as either gains a status the other
+ * cannot report.
+ *
+ * Terminal by omission: success, failed, invalid, cancelled.
+ *
+ * `retry_pending` is in the BuildStatus union and BuildStatusBadge renders it as
+ * a yellow "Retrying", so it belongs here even though src/gbserver/types/status.py
+ * has no RETRY_PENDING member and nothing can emit it today — a target awaiting a
+ * retry is still elapsing, and omitting it would print "Ran for 2m 4s" under a
+ * "Retrying" badge the moment the backend gains the status.
+ *
+ * `planned` is deliberately absent: it is frontend-only (synthesised for targets
+ * read from the build definition) and never reaches a target's `status`.
+ */
+const UNFINISHED_TARGET_STATUSES = new Set([
   'running',
-]
+  'submitted',
+  'pending',
+  'cancel_requested',
+  'retry_pending',
+])
 
 /** `10:51:22` — the clock time alone, for the compact Execution row. */
 function formatClock(value: string | undefined): string {
@@ -682,24 +699,42 @@ export function stepDrawerSummary(
   target: BuildTargetRun | undefined,
   build?: Pick<Build, 'status' | 'finished_at'>,
 ): {
-  status: BuildStepRun['status'] | undefined
+  status: BuildStatus | undefined
   subtitle: string
   summary: string | undefined
 } {
   const steps = target?.steps ?? []
-  if (steps.length === 0) {
+  // No target at all — a planned target from the build definition, which has no
+  // runtime row yet. Nothing to report.
+  if (!target) {
     return { status: undefined, subtitle: 'Target', summary: undefined }
   }
 
-  // A multi-step target is only as healthy as its worst step; a single-step
-  // target just reports that step. Ranked most severe first, so a target whose
-  // first step went `invalid` or `cancelled` — leaving the later steps never to
-  // start — reports that, not the trailing step's Pending. Anything not listed
-  // (pending/planned/submitted/success) falls through to the last step, which is
-  // the right answer for a target that ran cleanly or has not started.
-  const status =
-    WORST_FIRST.map((rank) => steps.find((s) => s.status === rank)?.status).find(Boolean) ??
-    steps[steps.length - 1].status
+  // The runner sets `target.status` from its own target-level status events
+  // (buildrunner.py, __update_stored_target_run), so it is the authoritative
+  // outcome — unlike ranking over `steps`, which is incomplete: a step only
+  // gets a row once it emits its first status event, so a target whose second
+  // step hasn't started yet can't be judged from its steps alone.
+  //
+  // Deliberately NOT gated on `steps.length`: the status is exactly what we can
+  // still report for a target run that exists but whose step rows have not
+  // arrived yet — the very gap that motivated reading it from the target. An
+  // early return on an empty `steps` would blank the badge in that window and
+  // then pop it in on a later poll.
+  //
+  // Unconfirmed: whether the server moves a target to a terminal status when a
+  // build is cancelled mid-target. If it does not, such a target keeps a stale
+  // `running` status and the header reads "Running for" while the build is
+  // active, then "Ran for" once it stops — wrong in the badge but never wrong
+  // in the label, since "Ran for" makes no claim about the outcome. Fixing that
+  // belongs on the server, not here.
+  const status = target.status
+
+  // Timing and the step list both need at least one step. Without one there is
+  // no span to measure and no names to list, but the badge above still stands.
+  if (steps.length === 0) {
+    return { status, subtitle: 'Target', summary: undefined }
+  }
 
   const subtitle =
     steps.length === 1
@@ -722,47 +757,54 @@ export function stepDrawerSummary(
   // running, and its `finished_at` is the real upper bound for the span.
   const buildFinished = build?.finished_at
   const buildStopped = Boolean(build && !ACTIVE_STATUSES.has(build.status))
-  const isRunning = steps.some((s) => !finishedAt(s)) && !buildStopped
+  // "Is this target still elapsing?" is a question about the TARGET, so ask its
+  // own status — not `steps.some(s => !finishedAt(s))`, which is the same
+  // incomplete-list trap that drove the outcome wrong: a target whose first step
+  // has finished and whose second has not reported yet has no unfinished step
+  // ROW, so a step-based check calls it finished and the header reads "Ran for"
+  // while it is still running. A target in a non-terminal status is elapsing;
+  // a stopped build overrides that, since nothing under it can still run.
+  const isRunning = UNFINISHED_TARGET_STATUSES.has(status) && !buildStopped
   const finishTimes = steps
     .map((s) => finishedAt(s))
     .filter((t): t is string => Boolean(t) && Number.isFinite(Date.parse(t as string)))
   const lastFinished = finishTimes.length
     ? finishTimes.reduce((latest, t) => (Date.parse(t) > Date.parse(latest) ? t : latest))
     : undefined
-  // Prefer the build's finish time over the last step's when the build has
-  // stopped but a step's own finish time is missing, since the steps then
-  // understate (or entirely lack) the span.
+  // Fall back to the build's finish time only when the target itself never
+  // reached an outcome. The build's `finished_at` bounds the span but does not
+  // measure it: a target that succeeded at 10:02 inside a build whose other
+  // targets ran until 11:00 would report "Completed in 1h 0m" instead of 2m.
+  // A target that *did* succeed has a trustworthy last-step finish, so use it
+  // even if some sibling step row is missing one; only a target with no
+  // outcome (failed/cancelled mid-flight, or left non-terminal under a stopped
+  // build) needs the build's bound, and then only when its own steps came up
+  // short.
+  const reachedOutcome = status === 'success'
   const finished = isRunning
     ? undefined
-    : buildStopped && (!lastFinished || steps.some((s) => !finishedAt(s)))
+    : !reachedOutcome && buildStopped && (!lastFinished || steps.some((s) => !finishedAt(s)))
       ? (buildFinished ?? lastFinished)
       : lastFinished
   const duration = formatDurationBetween(
     started,
     isRunning ? new Date().toISOString() : finished,
   )
-  const stamp = formatDateTime(finished ?? started)
+  // The timestamp slot means "when it finished" for a target that has stopped.
+  // A running target has no finish time, so it shows its start instead — label
+  // that explicitly, or the same slot silently means two different instants.
+  const stamp = finished
+    ? formatDateTime(finished)
+    : started
+      ? `started ${formatDateTime(started)}`
+      : undefined
   // A target that ended badly, or never finished, did not "complete" — say how
   // long it ran instead, or the header reads "Completed in 2m 4s" directly
-  // under a red Failed (or Pending) badge. Checked against every step's status
-  // rather than the WORST_FIRST ranking, since pending/planned/submitted/
-  // retry_pending steps aren't in that ranking but still mean the target isn't
-  // done: a trailing step stuck at `pending` when the build stops must not read
-  // "Completed in" just because it isn't `running`, `failed`, etc.
-  //
-  // `isRunning` is not the same question as a `running` status: a step left
-  // `running` under a build that has since stopped is not still elapsing (so
-  // `isRunning` is false), but it never completed either — hence the explicit
-  // check ahead of the `isRunning` arm, or such a target reads "Completed in"
-  // under a Running badge.
-  const allStepsSucceeded = steps.every((s) => s.status === 'success')
-  const durationLabel = !allStepsSucceeded
-    ? isRunning
-      ? 'Running for'
-      : 'Ran for'
-    : isRunning
-      ? 'Running for'
-      : 'Completed in'
+  // under a red Failed (or Pending) badge. Keyed off `target.status`, the
+  // authoritative outcome, rather than `isRunning`: a step left `running`
+  // under a build that has since stopped is not still elapsing (`isRunning`
+  // is false) but it never completed either, so it must still read "Ran for".
+  const durationLabel = isRunning ? 'Running for' : status === 'success' ? 'Completed in' : 'Ran for'
   const summary = [duration ? `${durationLabel} ${duration}` : undefined, stamp]
     .filter(Boolean)
     .join(' · ')

@@ -200,29 +200,48 @@ function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType 
   // which requires an hf:// prefix). Without the scope guard a plain
   // `cos://bucket/datasets/eval.json` would be misread as a DATASET.
   if (!/^(hf:\/\/|https:\/\/huggingface\.co\/)/.test(uri)) return null
-  // The type keyword is only meaningful in the FIRST path segment — that is the
-  // only slot the backend inspects (HfURI.parse consumes parts[0] when it is a
-  // known keyword, else defaults to MODEL). Matching it anywhere would mislabel
-  // a URI whose org or repo happens to be named `models`/`datasets`, e.g.
-  // hf:///acme/datasets/v1. Strip scheme + optional host, then read one segment.
-  const path = uri
-    .replace(/^hf:\/\//, '')
-    .replace(/^https:\/\/huggingface\.co/, '')
-    .replace(/^[^/]*/, '') // drop the host (empty for hf:///... triple slash)
-    .replace(/^\/+/, '')
-  const m = /^(datasets|models|spaces|buckets)\//.exec(path)
-  if (m) {
-    switch (m[1]) {
-      case 'datasets': return 'DATASET'
-      case 'models':   return 'MODEL'
-      case 'buckets':  return 'BUCKET'
-      case 'spaces':   return 'FILESET'
-    }
+
+  const TYPE_KEYWORDS: Record<string, import('../types').ArtifactType> = {
+    datasets: 'DATASET',
+    models: 'MODEL',
+    buckets: 'BUCKET',
+    // No dedicated Space type in the UI; a Space is browsable files.
+    spaces: 'FILESET',
   }
-  // A bare reference with no type segment (hf://org/name, or the browser-copied
-  // https://huggingface.co/org/name) is a model. Both prefixes were already
-  // checked above, so reaching here means the URI is on HF either way.
-  return 'MODEL'
+
+  // Which segment holds the type keyword depends on whether a DOMAIN is present,
+  // and the backend discriminates that by SEGMENT COUNT, not by pattern — see
+  // parse_hf_uri in src/gbcommon/utils/hf_utils.py:
+  //
+  //   hf:///[type/]org/name          → no domain (leading slash ⇒ 2 or 3 parts)
+  //   hf://domain/[type/]org/name    → domain    (no leading slash ⇒ 3 or 4 parts)
+  //
+  // Sniffing for a host instead (the previous `^[^/]*` strip) gets the two-slash
+  // form backwards: for `hf://acme/datasets/v1` the backend reads domain=acme,
+  // org=datasets, name=v1, type=MODEL, whereas stripping one leading segment
+  // leaves `datasets/v1` and reports DATASET. Count the segments as the backend
+  // does so a custom-domain artifact is not mislabelled.
+  if (uri.startsWith('https://huggingface.co/')) {
+    // Browser-copied URL: the host is explicit and fixed, so the remaining path
+    // is `[type/]org/name` with no domain segment to account for.
+    const parts = uri.slice('https://huggingface.co/'.length).split('/').filter(Boolean)
+    if (parts.length >= 3) return TYPE_KEYWORDS[parts[0]] ?? 'MODEL'
+    return 'MODEL' // org/name
+  }
+
+  const remainder = uri.slice('hf://'.length)
+  if (remainder.startsWith('/')) {
+    // hf:///[type/]org/name — no domain.
+    const parts = remainder.replace(/^\/+/, '').split('/').filter(Boolean)
+    if (parts.length >= 3) return TYPE_KEYWORDS[parts[0]] ?? 'MODEL'
+    return 'MODEL' // hf:///org/name
+  }
+
+  // hf://domain/[type/]org/name — first segment is the domain, so the type
+  // keyword (when present) is the SECOND segment.
+  const parts = remainder.split('/').filter(Boolean)
+  if (parts.length >= 4) return TYPE_KEYWORDS[parts[1]] ?? 'MODEL'
+  return 'MODEL' // hf://domain/org/name
 }
 
 function adaptArtifact(raw: Record<string, unknown>): Artifact {
@@ -230,10 +249,16 @@ function adaptArtifact(raw: Record<string, unknown>): Artifact {
   return {
     uuid: raw.uuid as string,
     name: (raw.name as string) || uri,
-    artifact_type: ((raw.type as string) ||
+    // ArtifactType is uppercase in the frontend ('MODEL'), but the server's
+    // ArtifactType is a StrEnum with auto(), so it serializes lowercase
+    // ('model'). Uppercase here so a server-typed artifact and one whose type
+    // inferArtifactTypeFromUri had to infer compare equal — the artifacts-page
+    // type filter matches on exact equality, so mixing the two casings would
+    // make it match inferred artifacts and miss real ones.
+    artifact_type: (((raw.type as string) ||
       (raw.artifact_type as string) ||
       inferArtifactTypeFromUri(uri) ||
-      'FILESET') as import('../types').ArtifactType,
+      'FILESET').toUpperCase()) as import('../types').ArtifactType,
     status: (((raw.status as string) || 'success').toLowerCase()) as import('../types').ArtifactStatus,
     space_name: raw.space_name as string,
     username: raw.username as string,
