@@ -157,7 +157,7 @@ export function TrialSearchSpace({
         <div>
           <h5 style={{ margin: 0 }}>Trial search space</h5>
           <p style={{ margin: '0.125rem 0 0', fontSize: '0.75rem', color: 'var(--cds-text-secondary)' }}>
-            Both outcome axes put the better value at the top, so a line that stays high did well.
+            Hyperparameter with differences amongst trials are shown.
           </p>
         </div>
         {/* Carbon's own segmented control, so this reads as part of the page rather
@@ -181,12 +181,12 @@ export function TrialSearchSpace({
           aria-label={`Parallel coordinates plot of ${lines.length} trials across ${axes.length} axes.`}
         >
           <text className={styles.groupLabel} x={PLOT_LEFT} y={26}>
-            SEARCHED
+            Hyperparameters
           </text>
           {firstOutcome !== -1 && (
             <>
               <text className={styles.groupLabel} x={PLOT_RIGHT} y={26} textAnchor="end">
-                OUTCOME ↑ BETTER
+                Results ↑ Better
               </text>
               <line
                 className={styles.divider}
