@@ -20,7 +20,9 @@ import styles from './TrialMetricsCharts.module.scss'
 import {
   METRIC_PALETTE,
   derivePhases,
+  logDomain,
   positiveRows,
+  rowsForKnownRuns,
   rowsForTrials,
   runOrigins,
   splitMetricRows,
@@ -148,11 +150,21 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
   )
 
   // A selection narrows the search phase to the ticked trials. With nothing
-  // ticked these charts are off screen entirely (see `showSearch`), so the
-  // unfiltered rows are only ever what the no-final-run fallback draws.
+  // ticked these charts are only on screen at all as the no-final-run fallback
+  // (see `showSearch`), and they then draw every run the table lists.
+  //
+  // Not `phases.search` raw, which is not the same set: `derivePhases` falls back
+  // to calling the whole stream "search" whenever it cannot trust the split, and a
+  // job that finished without resolving all `num_trials` trial rows leaves it there
+  // for good — so the phase can hold runs that have no row in the table, the final
+  // run among them. See `rowsForKnownRuns`. On a job whose split did happen this is
+  // a no-op, because the phase already holds only known ids.
   const searchRows = useMemo(
-    () => (selectedIds.length > 0 ? rowsForTrials(phases.search, selectedIds) : phases.search),
-    [phases.search, selectedIds]
+    () =>
+      selectedIds.length > 0
+        ? rowsForTrials(phases.search, selectedIds)
+        : rowsForKnownRuns(phases.search, trialIds),
+    [phases.search, selectedIds, trialIds]
   )
   const search = useMemo(() => splitMetricRows(searchRows), [searchRows])
   const final = useMemo(() => splitMetricRows(phases.final), [phases.final])
@@ -161,8 +173,9 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
 
   // Origins for the `elapsed` axis, taken from each phase's whole row set rather
   // than from the split series a chart happens to draw — see `runOrigins`. A set
-  // narrowed to a selection is still a whole row set: `rowsForTrials` drops whole
-  // runs and leaves the survivors' rows intact, so their origins do not move.
+  // narrowed to a selection, or to the table's runs, is still a whole row set: both
+  // filters drop whole runs and leave the survivors' rows intact, so their origins
+  // do not move.
   const searchOrigins = useMemo(() => runOrigins(searchRows), [searchRows])
   const finalOrigins = useMemo(() => runOrigins(phases.final), [phases.final])
 
@@ -463,6 +476,7 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
                       yTitle: 'Learning rate',
                       height: '220px',
                       logY: true,
+                      yDomain: logDomain(searchLr),
                     })}
                     style={{ flex: '1 1 24rem', minWidth: 0 }}
                   />

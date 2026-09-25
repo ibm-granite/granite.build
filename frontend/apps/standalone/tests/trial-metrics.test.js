@@ -35,9 +35,11 @@ const {
   splitMetricRows,
   derivePhases,
   rowsForTrials,
+  rowsForKnownRuns,
   trialColorScale,
   toChartRows,
   positiveRows,
+  logDomain,
   runOrigins,
   METRIC_PALETTE,
   METRIC_DE_EMPHASIS,
@@ -220,6 +222,57 @@ describe('derivePhases', () => {
     const rows = [...fixture(), stepRow('99999_00000', 2, 0.1)]
     const { finalTrialIds } = derivePhases(rows, SEARCH_IDS, true, true)
     assert.deepEqual(finalTrialIds, [FINAL_ID, '99999_00000'])
+  })
+})
+
+describe('rowsForKnownRuns', () => {
+  it('drops a run the trials table has no row for', () => {
+    // The reported bug, in the shape that produced it: job
+    // 2c6f6aa3-2656-4e89-8436-c9ce0cc3507f declared num_trials=16 but wrote only
+    // 10 trial rows, four of them left `running` when the job finished. `resolved`
+    // can therefore never reach 16, so `isSearchComplete` is false for good, and
+    // `derivePhases` stays in its bail-out branch and hands the final run back as a
+    // search row. It then reached the search charts' shared y-scale, where its
+    // full-data descent next to the trials' one-epoch stubs is exactly the
+    // comparison those charts are built to prevent -- and its legend entry named a
+    // run the reader could not find in the table.
+    const rows = fixture()
+    const { search } = derivePhases(rows, SEARCH_IDS, true, false)
+    assert.equal(search.length, rows.length, 'the bail-out branch keeps the final run')
+
+    const kept = rowsForKnownRuns(search, SEARCH_IDS)
+    assert.equal(kept.length, 4 * 38)
+    assert.ok(kept.every((r) => SEARCH_IDS.includes(r.trial_id)))
+    assert.ok(!kept.some((r) => r.trial_id === FINAL_ID))
+  })
+
+  it('keeps every kind of row for the runs it does list', () => {
+    // Filtering by run must not double as a kind filter -- an eval-only selection
+    // still has a curve to draw.
+    const { trainSteps, evals, summaries } = splitMetricRows(
+      rowsForKnownRuns(fixture(), [SEARCH_IDS[0]])
+    )
+    assert.deepEqual([trainSteps.length, evals.length, summaries.length], [34, 3, 1])
+  })
+
+  it('keeps a row that carries no trial id', () => {
+    // Where this parts company with `rowsForTrials`. Such a row is the job's single
+    // unnamed run, which owns no trials-table row and so can never be named by one;
+    // dropping it would blank the charts for a plain tuning job, whose every row is
+    // untagged.
+    const rows = [{ ...stepRow(null, 2, 0.1), trial_id: null }]
+    assert.equal(rowsForKnownRuns(rows, []).length, 1)
+    assert.equal(rowsForKnownRuns(rows, SEARCH_IDS).length, 1)
+  })
+
+  it('leaves a surviving run\u2019s elapsed origin exactly where it was', () => {
+    // Same contract as `rowsForTrials`: this drops whole runs and never reorders or
+    // trims a survivor's rows, so `runOrigins` may be taken after it.
+    const rows = fixture()
+    const all = runOrigins(rows)
+    const narrowed = runOrigins(rowsForKnownRuns(rows, SEARCH_IDS))
+    assert.deepEqual([...narrowed.keys()].sort(), [...SEARCH_IDS].sort())
+    for (const id of SEARCH_IDS) assert.equal(narrowed.get(id), all.get(id))
   })
 })
 
@@ -440,5 +493,93 @@ describe('positiveRows — the log-axis guard', () => {
       (r) => r.learning_rate
     )
     assert.deepEqual(positiveRows(chart), chart)
+  })
+})
+
+describe('logDomain — the log-axis headroom', () => {
+  // Carbon pads an axis domain by `(max - min) * 0.1` (paddingRatio, in
+  // configuration-non-customizable, so options cannot change it) and applies that
+  // *linear* pad whatever the scale type. On a learning-rate axis spanning
+  // 1.2e-9..4.9e-6 that pad is ~10% of the max, which is log10(1.1) = 0.04 of the
+  // 3.67 decades on screen — 1.1% of the plot height, less than the stroke is
+  // wide, so every schedule's peak came out flat-topped against the plot frame.
+  // The floor is worse: the LOG branch clamps the lower bound back to the data
+  // minimum exactly, so the lowest point sat *on* the bottom axis.
+  //
+  // `nn` below is that function, transcribed from
+  // node_modules/@carbon/charts/dist/index-CHbrPDmO.mjs, so these tests measure
+  // what Carbon will actually draw rather than what we hand it.
+  const PADDING_RATIO = 0.1
+  function nn([min, max], ratio, isLog) {
+    const pad = (max - min) * ratio
+    const upper = max <= 0 && max + pad > 0 ? 0 : max + pad
+    let lower = min >= 0 && min - pad < 0 ? 0 : min - pad
+    if (isLog && lower <= 0) {
+      if (min <= 0) throw Error('Data must have values greater than 0 if log scale type is used.')
+      lower = min
+    }
+    return [lower, upper]
+  }
+
+  /** Where `value` lands as a fraction of plot height, 0 = bottom edge, 1 = top. */
+  function heightFraction(value, [lo, hi]) {
+    const span = Math.log10(hi) - Math.log10(lo)
+    return (Math.log10(value) - Math.log10(lo)) / span
+  }
+
+  const rows = (...values) => values.map((value, i) => ({ group: 'a', key: i, value }))
+
+  it('leaves the peak and the floor clear of the plot frame', () => {
+    // The reported symptom, measured after Carbon re-pads what we hand it: an
+    // explicit `domain` still goes through `extendsDomain`. A 3px point marker on
+    // these charts needs ~3% of a 220px chart's plot area to draw in full.
+    const data = rows(1.156e-9, 5e-8, 1e-6, 4.878e-6)
+    const drawn = nn(logDomain(data), PADDING_RATIO, true)
+    const top = heightFraction(4.878e-6, drawn)
+    const bottom = heightFraction(1.156e-9, drawn)
+    assert.ok(top < 0.97, `peak sits at ${(top * 100).toFixed(1)}% of plot height, needs < 97%`)
+    assert.ok(bottom > 0.03, `floor sits at ${(bottom * 100).toFixed(1)}% of plot height, needs > 3%`)
+  })
+
+  it('is what Carbon\u2019s own unpadded domain is not', () => {
+    // Guards the fix against being reverted to "Carbon already pads it".
+    const data = rows(1.156e-9, 4.878e-6)
+    const values = data.map((r) => r.value)
+    const carbon = nn([Math.min(...values), Math.max(...values)], PADDING_RATIO, true)
+    assert.ok(heightFraction(4.878e-6, carbon) > 0.98, 'unpadded: peak is against the frame')
+    assert.equal(heightFraction(1.156e-9, carbon), 0, 'unpadded: floor is exactly on the axis')
+  })
+
+  it('pads in decades, so headroom does not depend on how wide the span is', () => {
+    // The bug in one line: a pad computed on `max - min` is worth almost nothing
+    // in log space once the span covers a few decades. This one is scale-free.
+    //
+    // Both spans are wider than half a decade, which is where the constant-series
+    // floor stops being the binding term — a 0.3-decade span takes the floor and
+    // gets proportionally more room, which is deliberate, not a counterexample.
+    const headroom = ([lo, hi], max) =>
+      (Math.log10(hi) - Math.log10(max)) / (Math.log10(hi) - Math.log10(lo))
+    const narrow = headroom(logDomain(rows(1e-6, 1e-5)), 1e-5)
+    const wide = headroom(logDomain(rows(1e-9, 1e-5)), 1e-5)
+    assert.ok(
+      Math.abs(narrow - wide) < 0.005,
+      `1 decade gives ${narrow.toFixed(4)}, 4 decades ${wide.toFixed(4)}`
+    )
+  })
+
+  it('returns a usable domain for a series that never changes value', () => {
+    // A constant learning-rate schedule. Carbon's pad is `(max - min) * ratio` = 0
+    // here, so its domain collapses to [v, v] and the d3 log scale degenerates.
+    const [lo, hi] = logDomain(rows(3e-6, 3e-6, 3e-6))
+    assert.ok(lo < 3e-6 && hi > 3e-6, `expected 3e-6 strictly inside [${lo}, ${hi}]`)
+  })
+
+  it('declines to guess when there is nothing to measure', () => {
+    assert.equal(logDomain([]), undefined)
+    // positiveRows runs first at every call site, so this is belt and braces —
+    // but a zero here would make Carbon throw, and returning undefined leaves its
+    // own (throwing) behaviour exactly as it was rather than hiding it.
+    assert.equal(logDomain(rows(0, 1e-6)), undefined)
+    assert.equal(logDomain(rows(-1e-7)), undefined)
   })
 })

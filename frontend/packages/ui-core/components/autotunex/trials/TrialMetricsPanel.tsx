@@ -7,7 +7,7 @@ import { useChartsTheme } from '../../../hooks/useTheme'
 import { useMetricStream } from '../../../hooks/useMetricStream'
 import { getTrialMetrics } from '../../../api/autotunex'
 import { metricChartOptions } from './metricChartOptions'
-import { METRIC_PALETTE, positiveRows, splitMetricRows, toChartRows } from './trialMetrics'
+import { METRIC_PALETTE, logDomain, positiveRows, splitMetricRows, toChartRows } from './trialMetrics'
 import type { TuningStatus } from '../../../types'
 
 type Scope = 'own' | 'all'
@@ -142,6 +142,7 @@ export function TrialMetricsPanel({ jobId, trialId, status, color, scope }: Prop
           yTitle: 'Learning rate',
           colorScale: { 'Learning rate': color },
           logY: true,
+          yDomain: logDomain(lrRows),
         })}
       />
       <Chart
