@@ -31,7 +31,8 @@ import type { Dataset } from '../../../types'
 import { getDatasets, deleteDataset } from '../../../api/autotunex'
 import { deleteEach, isBulkDeleteError } from '../../../lib/autotunex/bulkDelete'
 import { pruneSelection } from '../../../lib/autotunex/tableSelection'
-import { listSpaces } from '../../../api/gbserver'
+import { adminDefaultScope } from '../../../api/client'
+import { useAutotunexIsAdmin } from '../../../hooks/useAutotunexIsAdmin'
 import { SettingsDeleteModal } from './SettingsDeleteModal'
 import { SettingsDatasetView } from './SettingsDatasetView'
 import { SettingsDatasetCreate } from './SettingsDatasetCreate'
@@ -63,7 +64,8 @@ export function DatasetsTable() {
   const [pageSize, setPageSize] = useState(10)
   const [searchInput, setSearchInput] = useState('')
   const [q, setQ] = useState('')
-  const [scope, setScope] = useState<'own' | 'all'>('own')
+  // null until the admin flips the toggle; `scope` below resolves the default.
+  const [scopeChoice, setScope] = useState<'own' | 'all' | null>(null)
 
   // Debounce free-text search into `q` and reset to page 1 on change.
   useEffect(() => {
@@ -74,15 +76,9 @@ export function DatasetsTable() {
     return () => clearTimeout(timer)
   }, [searchInput])
 
-  // No "current active space" concept exists in this dashboard (no space
-  // context/provider), so the own/all scope toggle is gated on the viewer
-  // being an admin of at least one space — same convention used by the
-  // tunings list. Shared `["spaces"]` queryKey avoids a duplicate fetch.
-  const { data: spaces = [] } = useQuery({
-    queryKey: ['spaces'],
-    queryFn: listSpaces,
-  })
-  const isSpaceAdmin = spaces.some((s) => s.is_admin)
+  // Only an AutoTuneX admin may request scope=all, so only they get the toggle.
+  const { isAdmin } = useAutotunexIsAdmin()
+  const scope = scopeChoice ?? (isAdmin ? adminDefaultScope() : 'own')
 
   // `error` is surfaced rather than swallowed: without it a 500 or a dropped
   // connection rendered a populated-looking table with 0 rows and "0 items",
@@ -211,7 +207,7 @@ export function DatasetsTable() {
                     placeholder="Search datasets…"
                     onChange={(_e, value) => setSearchInput(value ?? '')}
                   />
-                  {isSpaceAdmin && (
+                  {isAdmin && (
                     <Toggle
                       id="datasets-scope-toggle"
                       labelText=""

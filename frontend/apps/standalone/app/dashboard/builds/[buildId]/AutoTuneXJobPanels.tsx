@@ -15,8 +15,8 @@ import { TuningLogViewer } from '@granite-build/ui-core/components/autotunex/tun
  * same one, or an admin who resolved another user's job then 403s on its logs and
  * sees an empty pane. AutoTuneXTrialsPanel takes no `scope` prop for this because
  * it doesn't need one passed down: TrialsTable derives the identical scope itself
- * from the same cached `['spaces']` query (see
- * packages/ui-core/components/autotunex/trials/TrialsTable.tsx:85-88), so a prop
+ * from the same cached admin check (`useAutotunexIsAdmin`, see
+ * packages/ui-core/components/autotunex/trials/TrialsTable.tsx), so a prop
  * here would be redundant, not missing.
  */
 

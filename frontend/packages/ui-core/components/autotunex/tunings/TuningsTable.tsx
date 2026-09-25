@@ -50,7 +50,7 @@ interface Props {
   /** Current list scope. Only meaningful (and only shown as a control) when `showScopeToggle` is true. */
   scope: 'own' | 'all'
   onScopeChange: (scope: 'own' | 'all') => void
-  /** Show the own/all scope toggle — gate this on the viewer being a space admin. */
+  /** Show the own/all scope toggle — gate this on the viewer being an AutoTuneX admin. */
   showScopeToggle: boolean
 }
 

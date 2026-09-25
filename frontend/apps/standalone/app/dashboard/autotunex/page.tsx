@@ -8,7 +8,8 @@ import axios from 'axios'
 import { getJobs, deleteJob } from '@granite-build/ui-core/api/autotunex'
 import { deleteEach, isBulkDeleteError } from '@granite-build/ui-core/lib/autotunex/bulkDelete'
 import { pruneSelection } from '@granite-build/ui-core/lib/autotunex/tableSelection'
-import { listSpaces } from '@granite-build/ui-core/api/gbserver'
+import { adminDefaultScope } from '@granite-build/ui-core/api/client'
+import { useAutotunexIsAdmin } from '@granite-build/ui-core/hooks/useAutotunexIsAdmin'
 import { AutotunexTabs } from '@granite-build/ui-core/components/autotunex/shared/AutotunexTabs'
 import { TuningsTable } from '@granite-build/ui-core/components/autotunex/tunings/TuningsTable'
 import { TuningDeleteModal } from '@granite-build/ui-core/components/autotunex/tunings/TuningDeleteModal'
@@ -21,7 +22,8 @@ export default function AutoTuneXPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [q, setQ] = useState('')
-  const [scope, setScope] = useState<'own' | 'all'>('own')
+  // null until the admin flips the toggle; `scope` below resolves the default.
+  const [scopeChoice, setScope] = useState<'own' | 'all' | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
@@ -30,17 +32,9 @@ export default function AutoTuneXPage() {
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(searchDebounceRef.current), [])
 
-  // Reused verbatim from the builds/artifacts pages (`["spaces"]` queryKey) so
-  // this shares the same React Query cache entry rather than issuing a
-  // duplicate `listSpaces()` fetch. There's no "current active space" concept
-  // in this dashboard (no space context/provider — grepped for one), so the
-  // scope toggle is gated on "is admin of at least one space" rather than a
-  // single active space's `is_admin`.
-  const { data: spaces = [] } = useQuery({
-    queryKey: ['spaces'],
-    queryFn: listSpaces,
-  })
-  const isSpaceAdmin = spaces.some((s) => s.is_admin)
+  // Only an AutoTuneX admin may request scope=all, so only they get the toggle.
+  const { isAdmin } = useAutotunexIsAdmin()
+  const scope = scopeChoice ?? (isAdmin ? adminDefaultScope() : 'own')
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['autotunex-jobs', page, pageSize, q, scope],
@@ -142,7 +136,7 @@ export default function AutoTuneXPage() {
         onSearch={handleSearch}
         scope={scope}
         onScopeChange={handleScopeChange}
-        showScopeToggle={isSpaceAdmin}
+        showScopeToggle={isAdmin}
         onRowClick={(id) => router.push(`/dashboard/autotunex/_/?id=${id}`)}
         onDeleteSelected={() => setDeleteOpen(true)}
         onCompareSelected={() => setCompareOpen(true)}

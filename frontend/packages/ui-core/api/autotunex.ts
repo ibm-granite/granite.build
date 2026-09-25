@@ -108,6 +108,19 @@ export async function getHFModelCard(modelId: string): Promise<string> {
   return data
 }
 
+// ── Caller identity ───────────────────────────────────────────────────────────
+
+/**
+ * Who AutoTuneX resolves this caller to. `is_admin` is the flag AutoTuneX itself
+ * checks before honouring `scope=all` (a non-admin gets a 403), so it — not a
+ * gbserver space role — is what decides which scope the UI asks for. Served at
+ * /api/v1/auth/me; the root /auth/me is outside what the proxies forward.
+ */
+export async function getMe(): Promise<{ email: string | null; is_admin: boolean }> {
+  const { data } = await client.get<{ email: string | null; is_admin: boolean }>('/auth/me')
+  return data
+}
+
 // ── Configurations ────────────────────────────────────────────────────────────
 
 export async function getConfigurationTemplate(): Promise<ConfigData> {

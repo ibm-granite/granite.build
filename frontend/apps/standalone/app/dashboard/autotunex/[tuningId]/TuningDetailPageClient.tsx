@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import { InlineNotification, SkeletonText } from '@carbon/react'
 import { useQuery } from '@tanstack/react-query'
 import { getJob } from '@granite-build/ui-core/api/autotunex'
-import { listSpaces } from '@granite-build/ui-core/api/gbserver'
+import { useAutotunexIsAdmin } from '@granite-build/ui-core/hooks/useAutotunexIsAdmin'
 import { PageHeader } from '@granite-build/ui-core/components/PageHeader'
 import { TuningStatusBadge } from '@granite-build/ui-core/components/autotunex/tunings/TuningStatusBadge'
 import { TuningDetailTabs } from './TuningDetailTabs'
@@ -72,15 +72,9 @@ function TuningDetailContent() {
     }
   }, [tuningId])
 
-  // Reused verbatim from the tunings list (`["spaces"]` queryKey) so the admin
-  // check shares the same React Query cache entry rather than issuing a
-  // duplicate `listSpaces()` fetch. Admins get `scope=all` so they can drill
-  // into tunings they don't own.
-  const { data: spaces = [] } = useQuery({
-    queryKey: ['spaces'],
-    queryFn: listSpaces,
-  })
-  const isAdmin = spaces.some((s) => s.is_admin)
+  // The same cached AutoTuneX admin check the tunings list uses. Admins get
+  // `scope=all` so they can drill into tunings they don't own.
+  const { isAdmin } = useAutotunexIsAdmin()
 
   const { data: job, isLoading, error } = useQuery({
     queryKey: ['autotunex-job', tuningId, isAdmin],

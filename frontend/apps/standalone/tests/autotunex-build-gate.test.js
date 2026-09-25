@@ -57,16 +57,16 @@ describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
     assert.match(stripComments(hook), /retry:\s*false/, 'the lookup should not retry')
   })
 
-  it('the lookup waits for spaces before firing', () => {
-    // `isAdmin` is part of the query key and starts false while `listSpaces` is in
-    // flight. Without waiting for it, the lookup fires twice for an admin — once
-    // at scope=own, then again at scope=all under a new key. The bug is invisible
-    // in the UI (identical render, one extra request), so nothing but this
-    // mechanical check catches someone removing `&& !spacesPending` as apparently
-    // redundant.
+  it('the lookup waits for the admin check before firing', () => {
+    // `isAdmin` is part of the query key and starts false while the AutoTuneX
+    // admin check is in flight. Without waiting for it, the lookup fires twice for
+    // an admin — once at scope=own, then again at scope=all under a new key. The
+    // bug is invisible in the UI (identical render, one extra request), so nothing
+    // but this mechanical check catches someone removing `&& !adminPending` as
+    // apparently redundant.
     const hook = read(BUILD_PAGE, 'useLinkedTuningJob.ts')
     assert.ok(hook, 'useLinkedTuningJob.ts should exist')
-    assert.match(stripComments(hook), /!spacesPending/, 'the lookup must wait for spaces so isAdmin is settled before the key is built')
+    assert.match(stripComments(hook), /!adminPending/, 'the lookup must wait for the admin check so isAdmin is settled before the key is built')
   })
 
   it('BuildDetails does not read build tags', () => {

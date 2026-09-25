@@ -34,7 +34,7 @@ import { RadarChart } from '@carbon/charts-react'
 import { useQuery } from '@tanstack/react-query'
 import { useChartsTheme } from '../../../hooks/useTheme'
 import { getJobTrials } from '../../../api/autotunex'
-import { listSpaces } from '../../../api/gbserver'
+import { useAutotunexIsAdmin } from '../../../hooks/useAutotunexIsAdmin'
 import { TrialLogViewer } from './TrialLogViewer'
 import { TrialCompare } from './TrialCompare'
 import { TrialProgressSummary } from './TrialProgressSummary'
@@ -98,11 +98,11 @@ export function TrialsTable({ job }: Props) {
   const [showCompare, setShowCompare] = useState(false)
   const theme = useChartsTheme()
 
-  // Same cached `['spaces']` query the rest of the detail view uses to pick a
-  // scope — admins read `scope=all` so they can see trials for jobs they don't
+  // Same cached admin check the rest of the detail view uses to pick a scope —
+  // AutoTuneX admins read `scope=all` so they can see trials for jobs they don't
   // own. No extra fetch: React Query dedupes on the shared key.
-  const { data: spaces = [] } = useQuery({ queryKey: ['spaces'], queryFn: listSpaces })
-  const scope = spaces.some((s) => s.is_admin) ? 'all' : 'own'
+  const { isAdmin } = useAutotunexIsAdmin()
+  const scope = isAdmin ? 'all' : 'own'
 
   // Trials come from GET /jobs/{id}/trials — the job detail no longer nests them.
   // No `enabled` gate: a non-HPO job just returns an empty page, and Carbon

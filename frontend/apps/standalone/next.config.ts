@@ -29,6 +29,8 @@ const nextConfig: NextConfig = {
   env: {
     GBSERVER_API_URL: gbserverApiUrl ?? '',
     MONACO_VS_PATH: monacoVsPath ?? '',
+    // "all" opens an admin's AutoTuneX lists on every user's rows (see adminDefaultScope).
+    AUTOTUNEX_ADMIN_DEFAULT_SCOPE: process.env.AUTOTUNEX_ADMIN_DEFAULT_SCOPE ?? '',
   },
   // Dev mode: proxy /api/* to gbserver and /api/autotunex/* to the AutoTuneX
   // server, both server-side (no CORS). Both are optional — omit either URL to
