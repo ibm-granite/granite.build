@@ -28,6 +28,7 @@ import {
   Button,
   InlineNotification,
   InlineLoading,
+  Pagination,
 } from '@carbon/react'
 import { ArrowLeft, Compare } from '@carbon/icons-react'
 import { RadarChart } from '@carbon/charts-react'
@@ -87,6 +88,10 @@ const ACTIVE_STATUSES = new Set(['running', 'pending'])
 // trial whose hue a ticked one already holds — see colorClash.
 const MAX_SELECTED = EMPHASIS_THRESHOLD
 
+// Same page sizes as the other AutoTuneX tables. The pager only appears once a job
+// has more trials than the smallest page holds.
+const PAGE_SIZES = [10, 20, 50]
+
 interface Props {
   job: JobDetail
 }
@@ -95,6 +100,8 @@ export function TrialsTable({ job }: Props) {
   const jobId = job.id
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [showCompare, setShowCompare] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZES[0])
   const theme = useChartsTheme()
 
   // Same cached admin check the rest of the detail view uses to pick a scope —
@@ -323,6 +330,12 @@ export function TrialsTable({ job }: Props) {
 
   const trialsById = new Map(trials.map((t) => [t.id, t]))
 
+  // Client-side: every trial is already loaded, and Carbon has sorted and
+  // filtered them by the time they reach the render prop, so a page is a slice of
+  // that. Only the rendered rows are paged — selection, select-all and Cancel still
+  // act on every filtered row, on any page.
+  const showPagination = trials.length > PAGE_SIZES[0]
+
   return (
     <div>
       <TrialProgressSummary job={job} trials={trials} />
@@ -356,7 +369,12 @@ export function TrialsTable({ job }: Props) {
                 <TableToolbarSearch
                   persistent
                   placeholder="Search trials…"
-                  onChange={onInputChange}
+                  // Back to the first page, or a search that narrows the rows
+                  // could leave the reader on a page past the last one.
+                  onChange={(e, value) => {
+                    setPage(1)
+                    onInputChange(e, value)
+                  }}
                   aria-label="Search trials"
                 />
                 {trials.length > MAX_SELECTED && (
@@ -483,7 +501,7 @@ export function TrialsTable({ job }: Props) {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {tableRows.map((row) => {
+                {(showPagination ? tableRows.slice((page - 1) * pageSize, page * pageSize) : tableRows).map((row) => {
                   const { key: _k, ...rowProps } = getRowProps({ row })
                   const selectionProps = getSelectionProps({ row })
                   const trial = trialsById.get(row.id)
@@ -585,6 +603,18 @@ export function TrialsTable({ job }: Props) {
                 })}
               </TableBody>
             </Table>
+            {showPagination && (
+              <Pagination
+                totalItems={tableRows.length}
+                pageSize={pageSize}
+                page={page}
+                pageSizes={PAGE_SIZES}
+                onChange={({ page: p, pageSize: ps }) => {
+                  setPage(p)
+                  setPageSize(ps)
+                }}
+              />
+            )}
           </TableContainer>
         )}
       </DataTable>
