@@ -61,9 +61,7 @@ class FakeStorage:
 
 
 def row(job_id: str, source: str, target: str) -> StoredLineageRow:
-    return StoredLineageRow(
-        job_id=job_id, source=source, target=target
-    )
+    return StoredLineageRow(job_id=job_id, source=source, target=target)
 
 
 def chain(*nodes: str) -> list:
@@ -223,6 +221,89 @@ class TestLimits:
         assert graph.truncated
 
 
+class TestUnexpandedFrontier:
+    """``unexpanded`` turns ``truncated`` into a magnitude.
+
+    A bare boolean let the UI claim "partially displayed" without saying how much
+    was missing, which read as "click twice more" on a graph whose remainder was in
+    the thousands. Both stopping conditions report their leftover frontier.
+    """
+
+    def test_a_complete_walk_reports_nothing_unexpanded(self):
+        storage = FakeStorage(chain("a", "b"))
+        graph = walk_lineage(storage, ["a"], Direction.DESCENDANTS, max_depth=5)
+        assert not graph.truncated
+        assert graph.unexpanded == 0
+
+    def test_depth_limit_reports_the_frontier_it_stopped_on(self):
+        storage = FakeStorage(chain("a", "b", "c", "d", "e"))
+        graph = walk_lineage(storage, ["a"], Direction.DESCENDANTS, max_depth=2)
+        # Stopped holding "c", whose descendants were never queried.
+        assert graph.truncated
+        assert graph.unexpanded == 1
+
+    def test_depth_limit_counts_a_wide_frontier(self):
+        rows = [row(f"J{i}", "a", f"m{i}") for i in range(7)]
+        rows += [row(f"K{i}", f"m{i}", f"end{i}") for i in range(7)]
+        storage = FakeStorage(rows)
+        graph = walk_lineage(storage, ["a"], Direction.DESCENDANTS, max_depth=1)
+        assert graph.truncated
+        assert graph.unexpanded == 7
+
+    def test_wide_level_reports_the_frontier_it_refused(self):
+        rows = [row(f"J{i}", "a", f"out{i}") for i in range(20)]
+        storage = FakeStorage(rows)
+        graph = walk_lineage(
+            storage, ["a"], Direction.DESCENDANTS, max_depth=3, max_nodes_per_level=5
+        )
+        # The 20-node level exceeded the cap, so all 20 went unexpanded.
+        assert graph.truncated
+        assert graph.unexpanded == 20
+
+    def test_both_sums_each_direction(self):
+        """A BOTH walk shares one graph, so each side adds its own remainder."""
+        storage = FakeStorage(chain("up2", "up1", "a", "down1", "down2", "down3"))
+        graph = walk_lineage(storage, ["a"], Direction.BOTH, max_depth=1)
+        # Holding "up1"'s ancestor side and "down1"'s descendant side.
+        assert graph.truncated
+        assert graph.unexpanded == 2
+
+    def test_a_terminal_frontier_is_not_unexpanded(self):
+        """Reaching the end of the graph is not truncation, even at the depth limit."""
+        storage = FakeStorage(chain("a", "b"))
+        graph = walk_lineage(storage, ["a"], Direction.DESCENDANTS, max_depth=1)
+        assert not graph.truncated
+        assert graph.unexpanded == 0
+
+
+class TestRaisingThePerLevelCeiling:
+    """A caller can raise the per-level cap for an explicit "full graph" request.
+
+    The point of raising it is that a wide level stops being truncation. The ceiling
+    is still a ceiling: there is deliberately no value meaning "no limit".
+    """
+
+    def test_a_raised_ceiling_stops_truncating_a_wide_level(self):
+        rows = [row(f"J{i}", "a", f"out{i}") for i in range(20)]
+        storage = FakeStorage(rows)
+        graph = walk_lineage(
+            storage, ["a"], Direction.DESCENDANTS, max_nodes_per_level=50
+        )
+        assert not graph.truncated
+        assert graph.unexpanded == 0
+        assert len(graph.depths) == 21
+
+    def test_the_same_level_truncates_under_a_low_ceiling(self):
+        """The contrast: identical graph, only the ceiling differs."""
+        rows = [row(f"J{i}", "a", f"out{i}") for i in range(20)]
+        storage = FakeStorage(rows)
+        graph = walk_lineage(
+            storage, ["a"], Direction.DESCENDANTS, max_depth=3, max_nodes_per_level=5
+        )
+        assert graph.truncated
+        assert graph.unexpanded == 20
+
+
 class TestQueryCost:
     def test_one_query_per_level_not_per_node(self):
         rows = [row(f"J{i}", "a", f"m{i}") for i in range(10)]
@@ -232,6 +313,22 @@ class TestQueryCost:
         # 3 levels expanded (a -> m*, m* -> end, end -> nothing), 20 rows.
         assert storage.queries == 3
         assert len(graph.rows) == 20
+
+    def test_the_truncation_probe_is_one_query_not_one_per_node(self):
+        """Confirming a frontier has more graph must not cost a query per node.
+
+        The probe that decides `unexpanded` runs on the level the walk abandons. A
+        naive per-node version reintroduced the N-queries-per-level cost that _hop
+        exists to avoid, and no existing test caught it because none exhausted the
+        depth limit on a wide frontier.
+        """
+        rows = [row(f"J{i}", "a", f"m{i}") for i in range(10)]
+        rows += [row(f"K{i}", f"m{i}", f"end{i}") for i in range(10)]
+        storage = FakeStorage(rows)
+        graph = walk_lineage(storage, ["a"], Direction.DESCENDANTS, max_depth=1)
+        assert graph.unexpanded == 10
+        # One query to expand "a", one to probe the 10-node frontier.
+        assert storage.queries == 2
 
     def test_both_costs_each_direction_separately(self):
         storage = FakeStorage(chain("a", "b"))
@@ -253,7 +350,9 @@ class TestScopingIsBySeedNotByFilter:
 
         assert "build_id" not in inspect.signature(walk_lineage).parameters
 
-    def test_seeding_a_subset_bounds_the_graph(self, ):
+    def test_seeding_a_subset_bounds_the_graph(
+        self,
+    ):
         rows = [row("J1", "a", "b"), row("J2", "c", "d")]
         storage = FakeStorage(rows)
         graph = walk_lineage(storage, ["a"], Direction.DESCENDANTS)

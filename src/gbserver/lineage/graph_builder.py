@@ -17,8 +17,8 @@
 """Turn walked lineage rows into the graph dict the API already speaks.
 
 The read path's shape is not ours to choose: ``api/lineage.get_artifact_graph``
-consumes ``{root_id, nodes, edges, truncated}`` with artifact and run nodes and
-directed edges between them, and re-projects that into the run-centred
+consumes ``{root_id, nodes, edges, truncated, unexpanded}`` with artifact and run
+nodes and directed edges between them, and re-projects that into the run-centred
 ``ArtifactGraphResponse`` the frontend renders. Serving the index through the same
 dict is what lets a second provider land with no frontend change.
 
@@ -103,8 +103,8 @@ def build_graph_dict(
             this to ``True`` would mint a bogus artifact node named after the build.
 
     Returns:
-        ``{root_id, nodes, edges, truncated}``. An empty artifact graph yields the
-        root node alone with no edges: "nothing recorded" is a real answer and must
+        ``{root_id, nodes, edges, truncated, unexpanded}``. An empty artifact graph
+        yields the root node alone with no edges: "nothing recorded" is a real answer and must
         not read as an error.
 
     **Self-loops are collapsed.** A row whose source equals its target is an in-place
@@ -203,6 +203,7 @@ def build_graph_dict(
         "nodes": list(artifact_nodes.values()) + list(run_nodes.values()),
         "edges": edges,
         "truncated": graph.truncated,
+        "unexpanded": graph.unexpanded,
     }
 
 

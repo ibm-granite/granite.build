@@ -133,8 +133,8 @@ class DBLineageService(LineageService):
             direction: ``downstream``, ``upstream`` or ``both``, in wire terms.
 
         Returns:
-            ``{root_id, nodes, edges, truncated}``, or ``None`` when the request
-            names nothing this index can key on. ``None`` becomes the 404 the
+            ``{root_id, nodes, edges, truncated, unexpanded}``, or ``None`` when the
+            request names nothing this index can key on. ``None`` becomes the 404 the
             frontend shows as "not available", so it must mean "unknown here", never
             "no lineage": an artifact that normalizes fine but has no edges yet
             returns a graph with just its own node.
@@ -203,6 +203,7 @@ class DBLineageService(LineageService):
         job_id: Optional[str] = None,
         direction: str = "both",
         max_depth: int = 10,
+        max_nodes_per_level: Optional[int] = None,
     ) -> Dict:
         """Return a lineage graph for any combination of optional filters.
 
@@ -225,10 +226,13 @@ class DBLineageService(LineageService):
             job_id: the job execution to seed from.
             direction: ``downstream``, ``upstream`` or ``both``, in wire terms.
             max_depth: how many hops to expand beyond the seeds.
+            max_nodes_per_level: raise the per-level frontier ceiling for this one
+                request, for an explicit "show the full graph" action. ``None`` uses
+                the server default.
 
         Returns:
-            ``{root_id, nodes, edges, truncated}``. ``root_id`` is the resolved URI
-            when exactly one artifact was named, else ``""``: a job-seeded or
+            ``{root_id, nodes, edges, truncated, unexpanded}``. ``root_id`` is the
+            resolved URI when exactly one artifact was named, else ``""``: a job-seeded or
             unfiltered query has several roots, and flagging one arbitrarily would
             misreport what was asked about.
 
@@ -262,7 +266,7 @@ class DBLineageService(LineageService):
             seeds=seeds,
             direction=walk_direction,
             max_depth=max_depth,
-            max_nodes_per_level=DEFAULT_MAX_NODES_PER_LEVEL,
+            max_nodes_per_level=max_nodes_per_level or DEFAULT_MAX_NODES_PER_LEVEL,
         )
         # Only a single-artifact query has one root to flag; anything else has many.
         single_root = bool(root_uri) and not job_id

@@ -483,3 +483,50 @@ export async function getArtifactLineage(params: GetArtifactLineageParams): Prom
   const { data } = await client.post<ArtifactLineageResult>('/lineage/artifact', params, { timeout: 45_000 })
   return data
 }
+
+// ── Full lineage graph (GET /lineage/graph) ─────────────────────────────────────
+
+export interface LineageGraphNode {
+  id: string
+  node_type: string
+  name?: string
+  artifact_type?: string
+  is_root?: boolean
+  depth?: number | null
+  metadata?: Record<string, unknown>
+}
+
+export interface LineageGraphEdge {
+  source: string
+  target: string
+}
+
+export interface LineageGraphResult {
+  root_id: string
+  nodes: LineageGraphNode[]
+  edges: LineageGraphEdge[]
+  truncated: boolean
+  // How many frontier nodes the walk stopped short of expanding. Turns
+  // `truncated` from a bare flag into a magnitude, so the UI can report
+  // "N not expanded" instead of implying a few more clicks would finish.
+  unexpanded?: number
+}
+
+export async function getLineageGraph(params: {
+  uri?: string
+  job_id?: string
+  direction?: string
+  depth?: number
+  // Raise the per-level frontier ceiling for one request, for an explicit
+  // "show the full graph" action. Omit for the server default.
+  max_nodes_per_level?: number
+}, opts?: { timeoutMs?: number }): Promise<LineageGraphResult> {
+  const { data } = await client.get<LineageGraphResult>('/lineage/graph', {
+    params,
+    // A "show the full graph" request walks far more of the index than a normal
+    // one, so the caller can raise the deadline rather than have it time out at a
+    // limit chosen for neighbourhood-sized queries.
+    timeout: opts?.timeoutMs ?? 45_000,
+  })
+  return data
+}

@@ -42,7 +42,23 @@ DEFAULT_MAX_DEPTH = 100
 # Ceiling on the frontier of a single level. A wide graph can otherwise turn one
 # hop into a query with an unbounded IN list; when it trips, the result is marked
 # truncated rather than silently partial.
-DEFAULT_MAX_NODES_PER_LEVEL = 1000
+#
+# Raised from 1000 so an ordinary artifact loads its whole graph instead of
+# tripping the cap on the first hop. It stays a real ceiling for hub artifacts --
+# a shared base model in model_shared fans out into the thousands per hop, and
+# there the omitted runs are genuinely different jobs feeding different
+# artifacts, so capping does cost reachability (unlike the self-loop collapse in
+# graph_builder). Such a graph reports its leftover frontier via `unexpanded`
+# rather than pretending a few more clicks would finish it.
+DEFAULT_MAX_NODES_PER_LEVEL = 5000
+
+# Hard ceiling a caller can raise the per-level cap to, for an explicit "show the
+# full graph" request. Deliberately NOT unbounded: a shared base model's closure
+# runs into six figures, each level becomes one IN list that wide, and the SVG
+# renderer draws every node with no virtualization. This is the point past which
+# the answer stops being a graph anyone can read -- so "full" means "as full as is
+# survivable", and the response still reports `unexpanded` when it stops.
+ABSOLUTE_MAX_NODES_PER_LEVEL = 50_000
 
 
 class Direction(Enum):
@@ -72,19 +88,25 @@ class LineageGraph:
             distance and never a signed direction.
         truncated: whether a limit stopped the walk before it ran out of graph, so
             a caller can tell "this is all of it" from "this is as far as we went".
+        unexpanded: how many nodes were left on the frontier when a limit stopped
+            the walk. Turns ``truncated`` from a bare flag into a magnitude, so a
+            caller can say "N not expanded" instead of implying a few more clicks
+            will finish. 0 whenever ``truncated`` is False.
     """
 
-    __slots__ = ("rows", "depths", "truncated")
+    __slots__ = ("rows", "depths", "truncated", "unexpanded")
 
     def __init__(
         self,
         rows: Optional[list] = None,
         depths: Optional[dict] = None,
         truncated: bool = False,
+        unexpanded: int = 0,
     ) -> None:
         self.rows = rows if rows is not None else []
         self.depths = depths if depths is not None else {}
         self.truncated = truncated
+        self.unexpanded = unexpanded
 
     @property
     def nodes(self) -> set:
@@ -98,7 +120,7 @@ class LineageGraph:
     def __repr__(self) -> str:
         return (
             f"LineageGraph(rows={len(self.rows)}, nodes={len(self.depths)}, "
-            f"truncated={self.truncated})"
+            f"truncated={self.truncated}, unexpanded={self.unexpanded})"
         )
 
 
@@ -191,6 +213,7 @@ def _walk_one_direction(
                 max_nodes_per_level,
             )
             graph.truncated = True
+            graph.unexpanded += len(frontier)
             return
 
         rows = _hop(storage, frontier, direction)
@@ -229,8 +252,34 @@ def _walk_one_direction(
         frontier = next_frontier
 
     if frontier:
-        # Ran out of depth with graph still to expand.
-        graph.truncated = True
+        # Ran out of depth still holding a frontier -- but holding a node is not the
+        # same as there being more graph behind it. A leaf sits on the frontier
+        # exactly like a hub does; the difference costs one more query to learn.
+        #
+        # Without this check every leaf counted as unseen graph, so a shallow walk
+        # reported truncation it could not justify and no amount of expanding ever
+        # cleared it. One extra hop, only on the level we are about to abandon,
+        # buys an honest answer -- and it is ONE query for the whole frontier, not one
+        # per node: a per-node probe would reintroduce exactly the
+        # N-queries-per-level cost that _hop exists to avoid.
+        held = set(frontier)
+        remainder = set()
+        for r in _hop(storage, frontier, direction):
+            reached = _continuation(r, direction)
+            # Same stopping rules the main loop applies, so a frontier node whose only
+            # rows are terminals or self-loops is correctly not counted as more graph.
+            if reached == TERMINAL or not reached or reached in visited:
+                continue
+            if r.source == r.target:
+                continue
+            matched = _matched_on(r, direction)
+            # The batched query can return rows for nodes beyond this frontier; keep
+            # only the ones it was asked about.
+            if matched in held:
+                remainder.add(matched)
+        if remainder:
+            graph.truncated = True
+            graph.unexpanded += len(remainder)
 
 
 def _hop(
@@ -242,6 +291,15 @@ def _hop(
     if direction == Direction.DESCENDANTS:
         return storage.get_rows_by_source(frontier)
     return storage.get_rows_by_target(frontier)
+
+
+def _matched_on(row: StoredLineageRow, direction: Direction) -> str:
+    """Return the identifier a row was matched *on*, the mirror of _continuation.
+
+    Walking toward descendants, ``_hop`` queries by ``source``, so a returned row
+    belongs to the frontier node in its ``source``.
+    """
+    return row.source if direction == Direction.DESCENDANTS else row.target
 
 
 def _continuation(row: StoredLineageRow, direction: Direction) -> str:

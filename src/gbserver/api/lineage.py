@@ -456,6 +456,7 @@ def query_lineage_graph_get(
     job_id: Optional[str] = None,
     direction: str = "both",
     depth: int = 10,
+    max_nodes_per_level: Optional[int] = None,
 ) -> LineageGraphResponse:
     """Query the lineage graph by URI, by job, or with no filter at all.
 
@@ -464,7 +465,11 @@ def query_lineage_graph_get(
     return query_lineage_graph(
         request,
         LineageQueryRequest(
-            uri=uri, job_id=job_id, direction=direction, max_depth=depth
+            uri=uri,
+            job_id=job_id,
+            direction=direction,
+            max_depth=depth,
+            max_nodes_per_level=max_nodes_per_level,
         ),
     )
 
@@ -543,6 +548,7 @@ def query_lineage_graph(
             job_id=body.job_id,
             direction=body.direction,
             max_depth=body.max_depth,
+            max_nodes_per_level=body.max_nodes_per_level,
         )
     except ValueError as e:
         raise HTTPException(
@@ -555,6 +561,7 @@ def query_lineage_graph(
         nodes=result.get("nodes", []),
         edges=result.get("edges", []),
         truncated=result.get("truncated", False),
+        unexpanded=result.get("unexpanded", 0),
     )
 
 

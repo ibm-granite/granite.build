@@ -377,6 +377,9 @@ def test_query_graph_accepts_a_request_with_no_filters():
         "job_id": None,
         "direction": "both",
         "max_depth": 10,
+        # None, not a number: the per-level ceiling is the service's default unless a
+        # caller explicitly raises it for a "show the full graph" request.
+        "max_nodes_per_level": None,
     }
     assert resp.root_id == ""
     assert resp.nodes == []
@@ -394,7 +397,11 @@ def test_query_graph_passes_every_filter_through():
         lineage_mod.query_lineage_graph(
             _fake_request("member", "member@example.com"),
             LineageQueryRequest(
-                uri="s3://b/x", job_id="J1", direction="upstream", max_depth=3
+                uri="s3://b/x",
+                job_id="J1",
+                direction="upstream",
+                max_depth=3,
+                max_nodes_per_level=25_000,
             ),
         )
     assert seen == {
@@ -402,6 +409,7 @@ def test_query_graph_passes_every_filter_through():
         "job_id": "J1",
         "direction": "upstream",
         "max_depth": 3,
+        "max_nodes_per_level": 25_000,
     }
 
 

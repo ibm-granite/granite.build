@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from gbserver.lineage.walk import ABSOLUTE_MAX_NODES_PER_LEVEL
+
 
 class RunState(str, Enum):
     START = "START"
@@ -162,6 +164,7 @@ class BuildGraphResponse(BaseModel):
     nodes: List[GraphNode] = Field(default_factory=list)
     edges: List[GraphEdge] = Field(default_factory=list)
     truncated: bool = False
+    unexpanded: int = 0
 
 
 class LineageQueryRequest(BaseModel):
@@ -190,6 +193,17 @@ class LineageQueryRequest(BaseModel):
     )
     max_depth: int = Field(default=10, ge=1, le=50)
     direction: str = "both"
+    max_nodes_per_level: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=ABSOLUTE_MAX_NODES_PER_LEVEL,
+        description=(
+            "Raise the per-level frontier ceiling for this one request, for an "
+            "explicit 'show the full graph' action. Omit for the server default. "
+            "Still bounded: a hub artifact's closure is unbounded in practice, so "
+            "there is no value meaning 'no limit'."
+        ),
+    )
 
 
 class LineageGraphResponse(BaseModel):
@@ -204,6 +218,7 @@ class LineageGraphResponse(BaseModel):
     nodes: List[GraphNode] = Field(default_factory=list)
     edges: List[GraphEdge] = Field(default_factory=list)
     truncated: bool = False
+    unexpanded: int = 0
 
 
 class LineageRunEntry(BaseModel):
