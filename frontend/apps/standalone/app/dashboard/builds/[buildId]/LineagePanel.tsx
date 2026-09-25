@@ -316,20 +316,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     drawerReturnFocusRef.current = null
   }, [stepDetailTarget])
 
-  // If the open target disappears from a later status poll (renamed, or dropped
-  // from the build), close the drawer rather than leave it pointing at a target
-  // that no longer exists. Guarded on buildStatus being loaded so the drawer
-  // isn't closed during a transient empty poll. Planned targets (from the build
-  // definition, not yet in runtime status) are legitimately absent from
-  // buildStatus.targets, so keep the drawer open for those too — otherwise it
-  // opens and immediately self-closes on the next render.
-  React.useEffect(() => {
-    if (!stepDetailTarget || !buildStatus?.targets) return
-    if (stepDetailTarget in buildStatus.targets) return
-    if (plannedTargets.some((t) => t.target_name === stepDetailTarget)) return
-    setStepDetailTarget(null)
-  }, [stepDetailTarget, buildStatus, plannedTargets])
-
   const { nodes: allNodes, links: allLinks, artifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
     [buildStatus, plannedTargets, isActive]
@@ -421,6 +407,27 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     const sub = getSubgraph(focusNodeId, downstreamLevels, upstreamLevels, enrichedNodes, allLinks)
     return { filteredNodes: sub.nodes, filteredLinks: sub.links }
   }, [focusNodeId, upstreamLevels, downstreamLevels, enrichedNodes, allLinks])
+
+  // If the open target disappears from a later relayout (renamed, or dropped from
+  // the build), close the drawer rather than leave it pointing at a target that no
+  // longer exists. The graph itself is the authority: a target is exactly as real
+  // as the node the user clicked, so validate against the rendered nodes rather
+  // than rebuilding the answer from buildStatus.targets plus plannedTargets.
+  //
+  // Those two sources cannot decide it. A planned target is absent from
+  // buildStatus.targets by definition, and plannedTargets is empty whenever the
+  // build archive has not loaded — the archive query is gated on isActive and
+  // yields [] for a finished build or an unparseable build.yaml. Checking them
+  // closed the drawer on every planned target, in the same frame it opened.
+  //
+  // Guarded on the node set being non-empty so a transient empty layout (first
+  // render, or a poll that briefly returns no targets) does not close it either.
+  React.useEffect(() => {
+    if (!stepDetailTarget || enrichedNodes.length === 0) return
+    const nodeId = `${TARGET_NODE_PREFIX}${stepDetailTarget}`
+    if (enrichedNodes.some((n) => n.id === nodeId)) return
+    setStepDetailTarget(null)
+  }, [stepDetailTarget, enrichedNodes])
 
   const handleNodeClick = (node: ElkNodeEx) => {
     if (!showFocusNode) {
