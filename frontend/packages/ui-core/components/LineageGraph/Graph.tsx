@@ -342,6 +342,19 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       const t = event.transform
       container.attr('transform', `translate(${t.x},${t.y}) scale(${BASE_SCALE * t.k})`)
       transformRef.current = event.transform
+      // A `zoom` event carrying a sourceEvent is real user movement: d3 emits it
+      // once the pointer actually moves (pan) or the wheel turns. This must not
+      // be a `start` handler — d3-zoom fires `start` on every mousedown inside
+      // the SVG, and nodes deliberately let that propagate so the graph can be
+      // dragged by its nodes. Flagging on `start` therefore treated a plain node
+      // click (opening the drawer) as a viewport takeover, permanently disabling
+      // the auto-fit for nodes added by later status polls.
+      //
+      // Deliberately NOT gated on "the transform changed": scaleExtent clamps
+      // the scale, so a user wheeling past the min/max emits `zoom` events with
+      // an unchanged transform. That is still intent, and ignoring it would let
+      // the next poll re-fit the graph out from under them.
+      if (event.sourceEvent) hasUserAdjustedRef.current = true
     })
 
     svg.call(zoomRef.current)
@@ -353,17 +366,12 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       if (fit) transformRef.current = fit
     }
 
+    // Programmatic: fires the `zoom` handler with no sourceEvent, so the fit
+    // itself is not mistaken for a user adjustment.
     svg.call(zoomRef.current.transform, transformRef.current)
-
-    // Registered after the programmatic transform above so the fit itself does
-    // not count as a user adjustment.
-    zoomRef.current.on('start.userintent', (event) => {
-      if (event.sourceEvent) hasUserAdjustedRef.current = true
-    })
 
     return () => {
       svg.on('.zoom', null)
-      zoomRef.current?.on('start.userintent', null)
     }
   }, [nodeElements, computeFitTransform])
 

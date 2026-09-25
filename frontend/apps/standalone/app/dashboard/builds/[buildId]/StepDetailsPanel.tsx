@@ -12,6 +12,23 @@ const NOT_RECORDED = 'Not recorded'
 /** Build statuses that mean the build is still in flight. Mirrors LineagePanel. */
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
 
+// Step statuses that make a target's outcome worse than its trailing step's,
+// most severe first. Drives both the header badge and the duration label in
+// stepDrawerSummary so the two always agree.
+const WORST_FIRST: BuildStepRun['status'][] = [
+  'failed',
+  'invalid',
+  'cancelled',
+  'cancel_requested',
+  'running',
+]
+
+// Of those, the ones that mean "this target did not complete", so the duration
+// reads "Ran for"/"Running for" rather than "Completed in". Every WORST_FIRST
+// entry qualifies today; kept as its own set so the ranking can later gain a
+// status that *is* a completion without silently changing the label.
+const UNFINISHED_STATUSES = new Set<string>(WORST_FIRST)
+
 /** `10:51:22` — the clock time alone, for the compact Execution row. */
 function formatClock(value: string | undefined): string {
   if (!value) return '—'
@@ -681,10 +698,13 @@ export function stepDrawerSummary(
   }
 
   // A multi-step target is only as healthy as its worst step; a single-step
-  // target just reports that step.
+  // target just reports that step. Ranked most severe first, so a target whose
+  // first step went `invalid` or `cancelled` — leaving the later steps never to
+  // start — reports that, not the trailing step's Pending. Anything not listed
+  // (pending/planned/submitted/success) falls through to the last step, which is
+  // the right answer for a target that ran cleanly or has not started.
   const status =
-    steps.find((s) => s.status === 'failed')?.status ??
-    steps.find((s) => s.status === 'running')?.status ??
+    WORST_FIRST.map((rank) => steps.find((s) => s.status === rank)?.status).find(Boolean) ??
     steps[steps.length - 1].status
 
   const subtitle =
@@ -728,15 +748,23 @@ export function stepDrawerSummary(
     isRunning ? new Date().toISOString() : finished,
   )
   const stamp = formatDateTime(finished ?? started)
-  // A failed or cancelled target did not "complete" — say how long it ran instead,
+  // A target that ended badly did not "complete" — say how long it ran instead,
   // or the header reads "Completed in 2m 4s" directly under a red Failed badge.
-  // An in-flight target has not completed either; it is still running.
-  const durationLabel =
-    status === 'failed' || status === 'cancelled'
-      ? 'Ran for'
-      : isRunning
-        ? 'Running for'
-        : 'Completed in'
+  // Checked against the same ranking that picked `status`, so the badge and the
+  // label can never disagree about whether the target completed.
+  //
+  // `isRunning` is not the same question as a `running` status: a step left
+  // `running` under a build that has since stopped is not still elapsing (so
+  // `isRunning` is false), but it never completed either — hence the explicit
+  // status check ahead of the `isRunning` arm, or such a target reads
+  // "Completed in" under a Running badge.
+  const durationLabel = UNFINISHED_STATUSES.has(status)
+    ? isRunning
+      ? 'Running for'
+      : 'Ran for'
+    : isRunning
+      ? 'Running for'
+      : 'Completed in'
   const summary = [duration ? `${durationLabel} ${duration}` : undefined, stamp]
     .filter(Boolean)
     .join(' · ')
