@@ -117,6 +117,7 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 |----------|---------|---------|
 | `GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY` | `4` | Concurrent `sky.launch` operations. |
 | `GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS` / `_BACKOFF_MAX` | `4` / `30` | Provision retry policy. |
+| `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` | `30` | Pre-launch SSH reachability probe for slurm/lsf; `0` disables it (set to `0` in our deployments — see [SkyPilot SLURM](../environments/skypilot-slurm.md)). |
 | `GBSERVER_LSF_TRANSIENT_ERROR_MAX_RETRIES` / `_RETRY_DELAY` | `3` / `30` | LSF transient-error retry policy. |
 | `GBSERVER_K8S_USE_ASPERA` / `GBSERVER_LSF_USE_ASPERA` | `true` / `false` | Use Aspera for asset transfer. |
 | `GBSERVER_ENABLE_STEP_RETRY` | `true` | Master switch for step-level retry. See [step retry](../builds/step-retry-configuration.md). |

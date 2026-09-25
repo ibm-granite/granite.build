@@ -6,8 +6,8 @@ granite.build:
   # provisioned instance; the source is RELATIVE, so the SkyPilot launcher
   # resolves it against the step.yaml's own directory (the per-run asset dir) —
   # the behavior under test. The step's run command verifies the copy landed and
-  # fails the build if it did not. This is the AWS analog of the
-  # skypilot/bluevela/filemount fixture (which mounts through LSF's enroot).
+  # fails the build if it did not. This is the AWS analog of the LSF (bluevela)
+  # filemount path (which mounts through LSF's enroot).
   #
   # Runs BARE (empty command_config.image): file_mounts land in the VM run workdir,
   # which is the run command's CWD, so ./payload is

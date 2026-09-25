@@ -118,6 +118,8 @@ The run-relevant environment variables:
 | `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` | `job` (k8s), `process`, or `thread`. Use `thread` for local test runs. |
 | `GBTEST_SPS_IBMCLOUD_API_KEY` | Loads test secrets from IBM Cloud Secrets Manager (SPS). |
 | `GBTEST_STANDALONE_ENVIRONMENT` | Under `GB_ENVIRONMENT=STANDALONE`, which environment's HF resource group pushes target. The **source** default is empty, i.e. the production `gbspace-public` a real standalone user must get; `test/conftest.py` defaults it to `STAGING` for any pytest run, so tests push to a group the CI token can write. Set it explicitly (including to empty) to override. |
+| `GBTEST_ENABLE_MANUAL_TESTS` | Set to `1` to run tests marked `@manual_testing_only` (from `libgbtest.constants`) — manual-only tests that depend on external, possibly-unpushed resources (private repos, unpushed assets steps, cluster SSH, real secrets). Skipped otherwise, including in CI. See the test's docstring for its specific prerequisites. |
+| `GBTEST_SPS_ENABLE_ENV_VAR_OVERRIDE` | When `true`, a locally-set env var supersedes the value `conftest.set_test_env` fetches from SPS (default `false`, so the SPS secret wins). Set it alongside a local write `HF_TOKEN` to push with your own token instead of the shared `hf-token` secret (see the hf:// push note below). |
 | **IBM infrastructure** | For `ibm`-marked / live-cluster tests: |
 | `GBSERVER_IMAGE_TAG` | The gbserver build-runner image tag to run against. |
 | `GBSERVER_SIDECAR_MONITORING_IMAGE_TAG` | The monitoring sidecar image tag. |
@@ -125,6 +127,13 @@ The run-relevant environment variables:
 For the IBM-infra tags, the Makefile prints ready-to-`source` lines (`export GBSERVER_IMAGE_TAG=…` /
 `export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=…`) derived from the current git commit — use those so tests
 run against the image you built.
+
+> **`hf://` push tests need a write token.** Tests that push an `hf://` output (e.g. the gated
+> `test/integration/ibm/buildrunner/skypilot/aws/test_shared_fs.py`) resolve `HF_TOKEN` through
+> `conftest.set_test_env` — from the shared SPS `hf-token` secret unless overridden. That secret should be a
+> **write**-capable token; otherwise run with `GBTEST_SPS_ENABLE_ENV_VAR_OVERRIDE=true` and a local write
+> `HF_TOKEN`. Note that an ambient `HF_TOKEN` env var also takes precedence over the token from
+> `hf auth login`, so a read-only `HF_TOKEN` in your shell will shadow a write token you logged in with.
 
 ## Running tests in VS Code
 

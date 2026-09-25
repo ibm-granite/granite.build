@@ -123,6 +123,53 @@ How the shared filesystem is exposed to a container differs by backend:
 - **AWS** — EFS/FSx is mounted on the VM; a bare step sees it directly, a containerized step needs the
   mount visible inside the container. See [skypilot-aws.md](skypilot-aws.md#shared_workdir).
 
+### `shared_filesystem`
+
+`shared_workdir` above assumes the operator has *already* mounted a shared filesystem on every worker.
+`shared_filesystem` closes that gap on **Skypilot/aws only**: gbserver mounts a BYO, pre-provisioned
+EFS filesystem on each worker at launch (at `mount_point`), so cross-step state flows across the
+separate EC2 instances SkyPilot allocates per step with no manual mount step. `shared_filesystem`
+defines **only the mount** — it does *not* imply a workdir. When `shared_filesystem` is set,
+`shared_workdir` is **required** and must be an absolute path equal to `mount_point` or a subdirectory
+of it; it defines where the workdir lives on the mount (and, per
+[#404](https://github.com/ibm-granite/granite.build/issues/404), its path prefix will later select
+which filesystem once multiple are supported). `EnvironmentConfig` validation rejects a
+`shared_filesystem` with no `shared_workdir`, or a `shared_workdir` outside `mount_point`.
+
+```yaml
+config:
+  default_cloud: aws
+  shared_workdir: /mnt/gb-shared/gbroot   # Required with shared_filesystem; must be mount_point or a subdir of it.
+  shared_filesystem:
+    provider: efs                 # Only `efs` today (BYO, pre-provisioned — gbserver does not create it).
+    mount_point: /mnt/gb-shared   # Where the FS is mounted on each worker.
+    efs:
+      file_system_id: fs-0abc123
+      region: us-east-1           # Must match the region the workers launch in (mount targets are AZ-scoped).
+      tls: true
+      # cleanup_zone: us-east-1a  # Optional. Pin the teardown VM to a mount-target AZ.
+```
+
+- **Provider `efs`** — a bring-your-own, pre-provisioned EFS filesystem (with mount targets per worker
+  AZ and an SG allowing NFS 2049). gbserver mounts it; it never creates or deletes the filesystem. See
+  the [provisioning runbook](skypilot-aws.md#runbook-provision-a-shared-efs-filesystem).
+- **Bare *and* containerized steps** — the mount reaches inside a step's container too, via SkyPilot's
+  default container capabilities, so both step shapes see the same per-run workdir. See
+  [skypilot-aws.md](skypilot-aws.md#shared_filesystem-auto-mounting-efs).
+- **`1777` root requirement** — the EFS root must be `chmod 1777` (sticky, like `/tmp`) so a non-root
+  step can `mkdir` its per-run workdir; gbserver creates each per-run dir `1777` as well. This is a
+  one-time bootstrap on the filesystem (see the runbook).
+- **`GB_LOCAL_SCRATCH`** — the shared FS is the durable **hand-off medium** between steps, not fast
+  scratch. Each step also gets an instance-local `GB_LOCAL_SCRATCH` dir on the worker's NVMe; **stage
+  hot paths (checkpoints, working scratch) there** and copy only the durable result back to the shared
+  workdir, so per-byte EFS throughput charges stay on the hand-off, not on churn.
+- **hf cache** — when `shared_filesystem` is enabled, drop `cache_path: /tmp/hf_cache` and
+  `inline: true` from the hf assetstore (use `config: {}`) so `hfpull` runs as its own step and caches
+  to `${mount_point}/hf_cache`; otherwise it caches instance-locally and the model never reaches EFS.
+
+Full AWS admin runbook, container internals, and GC/cost guidance:
+[skypilot-aws.md](skypilot-aws.md#shared_filesystem-auto-mounting-efs).
+
 ## `step.yaml` — launcher and monitor types
 
 | `type` | Method | Notes |
@@ -165,8 +212,13 @@ environment_configs:
 
           # ---- sky config overrides (SkyPilot's task-level `config:`) ----
           docker:                 # Optional. Deep-merged into sky.Resources._cluster_config_overrides.
-            run_options:          # Only the `docker` section is passed through per-step; other SkyPilot
-              - "--shm-size=8g"   # config sections belong in the env-level `cloud_config` block.
+            run_options:          # The `docker` and (SLURM-only) `sbatch_options` sections are passed
+              - "--shm-size=8g"   # through per-step; other SkyPilot config belongs in env `cloud_config`.
+          sbatch_options:         # Optional, SLURM-only. #SBATCH directives (no `--`), forwarded verbatim.
+            time: "4:00:00"       # e.g. --time=4:00:00, --qos=high. No-op on aws/k8s/lsf (WARNING).
+            qos: high             # NOTE: SkyPilot-managed keys (gres, mem, cpus-per-task, partition,
+                                  # nodes, ...) are silently dropped — use resources.accelerators etc.
+                                  # See skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
 
           # ---- sky.Task ----
           setup: |                # Optional. Run once at cluster bring-up (cached across reuse).
@@ -259,14 +311,22 @@ cloud-agnostic steps leave `resources` empty and let the build.yaml supply them.
 
 > `compute_config` is **not** read by this launcher (unlike K8s/LSF) — see the dedicated note below.
 
-#### `config` overrides (`docker`)
+#### `config` overrides (`docker`, `sbatch_options`)
 
 SkyPilot tasks accept a top-level `config:` block that overrides `~/.sky/config.yaml` per request; on
-`sky.Resources` this is `_cluster_config_overrides`. gbserver exposes **only the `docker` section** of
-it, as a launcher-level `docker:` key — e.g. `docker.run_options` to pass extra `docker run` flags
-(`--shm-size`, `--gpus`, `--ipc=host`). It merges `launcher_config.docker` with
-`config.launcher_config.docker` (build.yaml wins). Broader SkyPilot config (kubernetes, aws, nvidia,
-etc.) is not per-step — set it once at the env level via `cloud_config` (see "Inline config").
+`sky.Resources` this is `_cluster_config_overrides`. gbserver exposes two sections of it per step:
+
+- **`docker`** — a launcher-level `docker:` key — e.g. `docker.run_options` to pass extra `docker run`
+  flags (`--shm-size`, `--gpus`, `--ipc=host`). It merges `launcher_config.docker` with
+  `config.launcher_config.docker` (build.yaml wins).
+- **`sbatch_options`** (**SLURM-only**) — a map of SLURM `#SBATCH` directive names (no `--`) forwarded
+  verbatim to the job (`time`, `gres`, `qos`, `account`, …). Merged **per key** across env
+  (`environment.yaml` `config.sbatch_options`) → step.yaml → build.yaml (highest last). A no-op on
+  aws/kubernetes/lsf (a WARNING is logged). See
+  [skypilot-slurm.md](skypilot-slurm.md#sbatch_options--slurm-sbatch-directives).
+
+Broader SkyPilot config (kubernetes, aws, nvidia, etc.) is not per-step — set it once at the env level
+via `cloud_config` (see "Inline config").
 
 #### `file_mounts`
 

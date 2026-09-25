@@ -6,11 +6,13 @@ import click
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import common_options
+from gbcli.commands.common_options import (
+    common_options,
+    enforce_version_check,
+)
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.utils import check_runnable_browser
-from gbcli.utils.versionutil import check_current_and_latest_versions
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 
 
@@ -110,15 +112,7 @@ def cli(
                 click.echo(local_cache_output)
 
         if space_repo_fork:
-            if not skip_version_check:
-                try:
-                    outdated_version = check_current_and_latest_versions()
-                except Exception as e:
-                    click.echo(f"❌ {str(e)}.", err=True)
-                    ctx.exit(1)  # Exit with a non-zero status
-                if outdated_version:
-                    click.echo(outdated_version, err=True)
-                    ctx.exit(1)  # Exit with a non-zero status
+            enforce_version_check(ctx, skip_version_check)
 
             click.echo(
                 f"{CLIPBOARD_CHAR}Find user's forked repository from default space"

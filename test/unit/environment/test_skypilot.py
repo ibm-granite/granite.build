@@ -1940,3 +1940,68 @@ class TestInlineConfigMaterialization:
             with pytest.raises(RuntimeError):
                 await env._launch_skypilot_inner(launch_id="L1", launcher_config={})
         assert calls[:2] == ["materialize", "api"]
+
+
+from gbserver.environment import skypilot as skymod
+
+
+class _FakeProvider:
+    mount_point = "/mnt/gb-shared"
+
+    def mount_prologue(self):
+        return "echo MOUNT_HERE\n"
+
+    def cleanup_run_script(self, workdir):
+        return f"echo CLEAN {workdir}\n"
+
+    def cleanup_zone(self):
+        return "us-east-1a"
+
+
+def test_prologue_orders_mount_before_cd_and_chmods_1777():
+    import subprocess
+
+    # Per-run workdir is under shared_workdir (a subdir of mount_point), while the
+    # mount is still at mount_point (/mnt/gb-shared). The chmod-walk sentinel is
+    # mount_point, so the extra gbroot level is created and chmod'd during the walk.
+    prologue = skymod._compose_step_prologue(
+        _FakeProvider(), "/mnt/gb-shared/gbroot/builds/b/runs/r"
+    )
+    assert prologue.startswith("set -eu")
+    # Mount, then chmod, then cd.
+    assert prologue.index("MOUNT_HERE") < prologue.index("chmod 1777")
+    assert prologue.rindex("chmod 1777") < prologue.index('cd "$GB_BUILD_WORKDIR"')
+    # Regression (#389 review): the chmod must be GUARDED so a step 2 running as a
+    # different uid than step 1 (which owns the pre-created dir) does not EPERM and
+    # abort under `set -eu`; and it must cover the builds/<id>/runs parents (created
+    # 0755 by mkdir -p) up to the shared-fs mount root, so a different-uid step can
+    # create its own per-run dir. So: no UNGUARDED chmod of the workdir, a guard is
+    # present, and the mount root bounds the walk.
+    assert 'chmod 1777 "$GB_BUILD_WORKDIR"\n' not in prologue
+    assert "2>/dev/null || true" in prologue
+    assert "/mnt/gb-shared" in prologue
+    # Race-safety (#389 review): the per-run tree is created world-writable
+    # atomically (umask 000) so a concurrent different-uid step never sees a 0755
+    # parent between mkdir and the sticky-bit chmod.
+    assert "umask 000" in prologue
+    # The emitted shell must be syntactically valid.
+    proc = subprocess.run(
+        ["bash", "-n"], input=prologue, text=True, capture_output=True
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_prologue_no_provider_is_plain_cli_prefix():
+    assert skymod._compose_step_prologue(None, "/mnt/x") == skymod._get_cli_prefix(
+        "/mnt/x"
+    )
+
+
+def test_no_gbserver_pinned_container_run_options():
+    """Regression (#389 review): gbserver must NOT pin any docker run options for a
+    containerized shared_filesystem step -- SkyPilot's docker_start_cmds already
+    provides --net=host / SYS_ADMIN / fuse / apparmor:unconfined, and pinning
+    --net=host duplicated fails ``docker run`` (rc 125). The pinning helper and its
+    constant were removed; assert they no longer exist."""
+    assert not hasattr(skymod, "_with_container_mount_options")
+    assert not hasattr(skymod, "_CONTAINER_SHARED_FS_RUN_OPTIONS")

@@ -71,7 +71,7 @@ class TestFormatFlag:
     # Tag command tests
     @patch("gbcli.commands.command_tag.get_user_token")
     @patch("gbcli.commands.command_tag.GBClient")
-    @patch("gbcli.commands.command_tag.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_tag.enforce_version_check")
     def test_tag_list_format_plain(self, mock_check_version, mock_client, mock_token):
         """Test tag list with plain format."""
         mock_token.return_value = self._mock_token()
@@ -88,7 +88,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_tag.get_user_token")
     @patch("gbcli.commands.command_tag.GBClient")
-    @patch("gbcli.commands.command_tag.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_tag.enforce_version_check")
     def test_tag_list_format_json(self, mock_check_version, mock_client, mock_token):
         """Test tag list with json format."""
         mock_token.return_value = self._mock_token()
@@ -107,7 +107,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_tag.get_user_token")
     @patch("gbcli.commands.command_tag.GBClient")
-    @patch("gbcli.commands.command_tag.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_tag.enforce_version_check")
     def test_tag_list_format_pretty(self, mock_check_version, mock_client, mock_token):
         """Test tag list with pretty format."""
         mock_token.return_value = self._mock_token()
@@ -124,7 +124,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_tag.get_user_token")
     @patch("gbcli.commands.command_tag.GBClient")
-    @patch("gbcli.commands.command_tag.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_tag.enforce_version_check")
     def test_tag_list_format_default(self, mock_check_version, mock_client, mock_token):
         """Test tag list with default format (plain)."""
         mock_token.return_value = self._mock_token()
@@ -140,7 +140,7 @@ class TestFormatFlag:
         ), f"Expected exit code 0, got {result.exit_code}. Output: {result.output}"
 
     @patch("gbcli.commands.command_tag.get_user_token")
-    @patch("gbcli.commands.command_tag.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_tag.enforce_version_check")
     def test_tag_list_format_invalid(self, mock_check_version, mock_token):
         """Test tag list with invalid format value."""
         mock_token.return_value = self._mock_token()
@@ -155,7 +155,7 @@ class TestFormatFlag:
     # Template command tests
     @patch("gbcli.commands.command_template.get_user_token")
     @patch("gbcli.commands.command_template.GBClient")
-    @patch("gbcli.commands.command_template.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_template.enforce_version_check")
     def test_template_list_format_plain(
         self, mock_check_version, mock_client, mock_token
     ):
@@ -175,7 +175,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_template.get_user_token")
     @patch("gbcli.commands.command_template.GBClient")
-    @patch("gbcli.commands.command_template.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_template.enforce_version_check")
     def test_template_list_format_json(
         self, mock_check_version, mock_client, mock_token
     ):
@@ -194,7 +194,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_template.get_user_token")
     @patch("gbcli.commands.command_template.GBClient")
-    @patch("gbcli.commands.command_template.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_template.enforce_version_check")
     def test_template_describe_format_plain(
         self, mock_check_version, mock_client, mock_token
     ):
@@ -217,7 +217,7 @@ class TestFormatFlag:
     # Artifact command tests
     @patch("gbcli.commands.command_artifact.get_user_token")
     @patch("gbcli.commands.command_artifact.GBClient")
-    @patch("gbcli.commands.command_artifact.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_artifact.enforce_version_check")
     def test_artifact_list_format_plain(
         self, mock_check_version, mock_client, mock_token
     ):
@@ -241,7 +241,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_artifact.get_user_token")
     @patch("gbcli.commands.command_artifact.GBClient")
-    @patch("gbcli.commands.command_artifact.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_artifact.enforce_version_check")
     def test_artifact_list_format_json(
         self, mock_check_version, mock_client, mock_token
     ):
@@ -281,7 +281,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_artifact.get_user_token")
     @patch("gbcli.commands.command_artifact.GBClient")
-    @patch("gbcli.commands.command_artifact.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_artifact.enforce_version_check")
     def test_artifact_list_plain_is_borderless(
         self, mock_check_version, mock_client, mock_token
     ):
@@ -314,7 +314,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_artifact.get_user_token")
     @patch("gbcli.commands.command_artifact.GBClient")
-    @patch("gbcli.commands.command_artifact.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_artifact.enforce_version_check")
     def test_artifact_list_does_not_mutate_module_headers(
         self, mock_check_version, mock_client, mock_token
     ):
@@ -344,7 +344,7 @@ class TestFormatFlag:
     # Step command tests
     @patch("gbcli.commands.command_step.get_user_token")
     @patch("gbcli.commands.command_step.GBClient")
-    @patch("gbcli.commands.command_step.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_step.enforce_version_check")
     def test_step_list_format_plain(self, mock_check_version, mock_client, mock_token):
         """Test step list with plain format."""
         mock_token.return_value = self._mock_token()
@@ -362,7 +362,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_step.get_user_token")
     @patch("gbcli.commands.command_step.GBClient")
-    @patch("gbcli.commands.command_step.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_step.enforce_version_check")
     def test_step_list_format_json(self, mock_check_version, mock_client, mock_token):
         """Test step list with json format."""
         mock_token.return_value = self._mock_token()
@@ -407,7 +407,7 @@ class TestFormatFlag:
     # Secret command tests
     @patch("gbcli.commands.command_secret.get_user_token")
     @patch("gbcli.commands.command_secret.GBClient")
-    @patch("gbcli.commands.command_secret.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_secret.enforce_version_check")
     def test_secret_list_format_plain(
         self, mock_check_version, mock_client, mock_token
     ):
@@ -431,7 +431,7 @@ class TestFormatFlag:
 
     @patch("gbcli.commands.command_secret.get_user_token")
     @patch("gbcli.commands.command_secret.GBClient")
-    @patch("gbcli.commands.command_secret.check_current_and_latest_versions")
+    @patch("gbcli.commands.command_secret.enforce_version_check")
     def test_secret_list_format_json(self, mock_check_version, mock_client, mock_token):
         """Test secret list with json format accepts format parameter."""
         mock_token.return_value = self._mock_token()

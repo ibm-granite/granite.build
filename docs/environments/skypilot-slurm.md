@@ -56,6 +56,17 @@ See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_conf
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
 
+> **Slow login nodes and the pre-launch probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`).** Before an
+> HPC launch gbserver can run a trivial `echo` over SSH to name a wedged login node up front, rather
+> than leaving you SkyPilot's opaque `ValueError: Failed to get partitions for cluster …`. On a node
+> slow to send its SSH banner this backfires: the probe holds a session for up to its timeout
+> (default 30s), and where SSH slots are scarce that starves the control connection SkyPilot opens
+> next for `scontrol show partitions -o`. The symptom is `Connection timed out during banner
+> exchange` from the probe *and* the launch, once per provision retry — a diagnostic causing the
+> failure it reports. Set `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` to disable it (our deployments
+> do; the skip is logged). Costs no error handling: genuine blips are still retried as transient and
+> the API server's traceback is still surfaced.
+
 ### `cluster` / `zone`
 
 - `cluster` is composed into `infra=slurm/<cluster>` for steps that don't set their own
@@ -78,9 +89,14 @@ whichever layer is most convenient:
 
 This precedence is implemented in `Skypilot._resolve_infra_and_zone` and applies to the HPC
 clouds (`slurm` and `lsf` — see [skypilot-lsf.md](skypilot-lsf.md); non-HPC clouds consult only
-the step launcher's `resources`). For a real-cluster example, the SLURM/BlueVela integration
-fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` target BlueVela's
-`gpu-mid` partition (reached at `login1`) via the `bluevela` environment.
+the step launcher's `resources`). Because the resolver ends by falling back to the environment's own
+`config.cluster` / `config.zone`, this env-wide default is **enforced for every step** — including
+step types not listed under `config.steps` (see
+[Per-step-type config defaults](README.md#per-step-type-config-defaults-configstepstype)). A `command`
+step with no `zone` of its own thus lands on the environment's partition, while `hfpull`/`hfpush` listed
+under `config.steps` take their per-type partition. For a real-cluster example, the SLURM/BlueVela
+integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` target
+BlueVela's `gpu-mid` partition (reached at `login1`) via the `bluevela` environment.
 
 > **The `bluevela` environment lives in a remote space, not this repo.** Those fixtures resolve
 > `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), which is
@@ -126,6 +142,70 @@ SLURM does not support cluster autostop, so gbserver forces `idle_minutes_to_aut
 `slurm` cloud — any value you set is ignored. Per-step `cleanup_skypilot()` runs `sky down` after each
 step, which releases the node allocation. If you queue more parallel steps than the cluster has nodes,
 the surplus stay PENDING until earlier ones finish and free a node.
+
+### `sbatch_options` — SLURM `#SBATCH` directives
+
+By default a SkyPilot step inherits the partition's scheduling defaults (its
+`DefaultTime`/`MaxTime`, default `--gres`, etc.). Set `sbatch_options` to a map
+of SLURM directive names (without the leading `--`) to forward them verbatim to
+the submitted job's `#SBATCH` lines — most commonly `time`, but also `qos`,
+`account`, `constraint`, `nodelist`, and similar scheduling directives.
+
+```yaml
+# build.yaml — cap a step at four hours on a named QOS/account
+steps:
+  - step_uri: space://steps/command
+    config:
+      launcher_config:
+        sbatch_options:
+          time: "4:00:00"       # -> #SBATCH --time=4:00:00
+          qos: high             # -> #SBATCH --qos=high
+          account: my-project   # -> #SBATCH --account=my-project
+```
+
+Values use SLURM's own formats — e.g. `time` accepts bare minutes (`240`),
+`MM:SS`, `HH:MM:SS` (`"4:00:00"`), or `D-HH:MM:SS` (`"7-00:00:00"`).
+
+> **Some directives are managed by SkyPilot and silently dropped from
+> `sbatch_options`.** SkyPilot generates a set of `#SBATCH` lines itself from the
+> provisioned resources and **removes** those keys from `sbatch_options` (logging
+> a warning only into the provisioning log, not the build output). Setting them
+> here is a no-op — a value like `gres: "gpu:2"` never reaches SLURM and the step
+> can land on a CPU-only allocation while the build still reports success. Use
+> the first-class field instead:
+>
+> | Protected key (dropped) | Set this instead |
+> |---|---|
+> | `gres` | `launcher_config.resources.accelerators` — typed `"H100:2"` → `--gres=gpu:H100:2`, or untyped `":2"` → `--gres=gpu:2`. Always quote the value (a YAML int like `2` errors, and a bare `"2"` is read as *type* `2`, count 1 → `--gres=gpu:2:1`). |
+> | `cpus-per-task` | `compute_config.num_cpus_per_node`, or `resources.cpus` |
+> | `mem` | `resources.memory` (the `compute_config.total_memory_per_node` floor is intentionally skipped on slurm/lsf, so set an explicit `resources.memory`) |
+> | `partition` | the `infra` string / `zone` (`"slurm/<cluster>/<partition>"`) — see [`cluster` / `zone`](#cluster--zone) |
+> | `nodes` | *(not plumbed through the SkyPilot launcher — see below)* |
+>
+> `nodes`, `job-name`, `output`, and `error` are likewise SkyPilot-managed.
+> Multi-node is **not** driven from the step config on this launcher: SkyPilot's
+> `--nodes` comes from its own provisioner node count, and the SkyPilot launcher
+> does not read `compute_config.num_nodes` (that field is honored only by the
+> native k8s/LSF gbstep paths). Confirmed to pass through unchanged: `time`,
+> `qos`, `account`, `constraint`, `nodelist`.
+
+It resolves per step, merged **per key** (highest precedence last), so a step can
+override one directive while inheriting the rest:
+
+1. `sbatch_options` in this `environment.yaml` `config` (env-wide default).
+2. `sbatch_options` on the step launcher (`step.yaml`).
+3. `config.launcher_config.sbatch_options` in the build.yaml step (wins).
+
+Notes:
+
+- `time` requests a ceiling; it **cannot exceed** the partition's `MaxTime` —
+  SLURM rejects a job whose `--time` is above the partition limit, so keep it at
+  or below what the partition (or admin) allows.
+- It is a **SLURM-only** knob (maps to per-task `sbatch_options` in SkyPilot's
+  fork). On lsf/aws/kubernetes it is a no-op (a WARNING is logged if set); for
+  LSF set the runlimit at the environment level via
+  `cloud_config.lsf...bsub_options.W` (minutes) — see
+  [skypilot-lsf.md](skypilot-lsf.md).
 
 ### No `image_id` on bare-host clusters
 

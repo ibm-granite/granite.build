@@ -56,6 +56,11 @@ no manual `rm ~/.lsf/config`); a *foreign* (non-gbserver) entry for the same ali
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
 
+The pre-launch SSH probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`) covers LSF as well as SLURM, and
+our deployments disable it for both — on a slow-banner login node it starves the control connection
+SkyPilot opens next. See
+[the probe note on the SLURM page](skypilot-slurm.md#cluster_ssh_configsslurm--reachability).
+
 ### `cloud_config.lsf` — behavioral tuning
 
 Structured LSF settings that can't live in the SSH file are deep-merged into `~/.sky/config.yaml`:
@@ -80,7 +85,16 @@ config:
           bsub_options:
             G: my-lsf-group
             M: 64G
+            W: 240            # Job wall-clock runlimit in MINUTES (bsub -W).
 ```
+
+> **`sbatch_options` is a no-op on LSF.** The per-step `sbatch_options` field
+> ([skypilot.md](skypilot.md#config-overrides-docker-sbatch_options)) is a
+> **SLURM-only** knob; SkyPilot's fork exposes no per-task override for LSF, so a
+> value set on a step/launcher/env is ignored (gbserver logs a WARNING). Set a
+> job wall-clock runlimit at the **environment level** via
+> `cloud_config.lsf...bsub_options.W` (minutes, `bsub -W`) as shown above, or
+> rely on the queue's own `RUNLIMIT`.
 
 ### `zone` → LSF queue
 

@@ -53,6 +53,9 @@ ENV_VAR_GBTEST_JOB_TERMINATION_TIMEOUT_SECONDS = (
     TEST_ENV_VAR_PREFIX + "JOB_TERMINATION_TIMEOUT_SECONDS"
 )
 
+# Environment variable name for enabling manual-only tests (see manual_testing_only)
+ENV_VAR_GBTEST_ENABLE_MANUAL_TESTS = TEST_ENV_VAR_PREFIX + "ENABLE_MANUAL_TESTS"
+
 # Static test configuration
 GBTEST_SPACE_NAME = "public"
 GBTEST_USER_NAME = "Granite-Dot-Build-Test"
@@ -126,6 +129,26 @@ except ImportError:
 
 requires_k8s = pytest.mark.skipif(
     not HAS_K8S, reason="kubernetes_asyncio not installed (optional 'ibm' extra)"
+)
+
+
+# Marker for manual-only tests that depend on external, possibly-unpushed
+# resources (private repos, unpushed assets steps, cluster SSH, real secrets)
+# and must never run in any automated suite. Like requires_k8s it is a skipif,
+# not a selection marker: it skips unless GBTEST_ENABLE_MANUAL_TESTS=1 is set
+# explicitly by a human. Test-specific prerequisites go in the test's docstring.
+#
+# Usage:
+#   from libgbtest.constants import manual_testing_only
+#
+#   @manual_testing_only
+#   class TestSomethingManual: ...
+GBTEST_ENABLE_MANUAL_TESTS = os.getenv(ENV_VAR_GBTEST_ENABLE_MANUAL_TESTS, "") == "1"
+
+manual_testing_only = pytest.mark.skipif(
+    not GBTEST_ENABLE_MANUAL_TESTS,
+    reason="manual-only test: set GBTEST_ENABLE_MANUAL_TESTS=1 to run (depends on "
+    "external, possibly-unpushed resources — see the test docstring)",
 )
 
 

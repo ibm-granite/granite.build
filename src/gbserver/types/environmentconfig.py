@@ -19,6 +19,7 @@ The environment type.
 """
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from pydantic import Field, model_validator
@@ -154,3 +155,66 @@ class EnvironmentConfig(Config):
     config: Dict = Field(default_factory=dict)
     assetstores: List[AssetStoreEnvironmentConfig] = Field(default_factory=list)
     subtype: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _gate_shared_filesystem(self) -> "EnvironmentConfig":
+        cfg = self.config or {}
+        sf = cfg.get("shared_filesystem")
+        if not sf:
+            return self
+        if self.type != "Skypilot" or self.subtype != "aws":
+            raise ValueError(
+                "shared_filesystem is only supported on a Skypilot/aws environment "
+                f"(got type={self.type!r}, subtype={self.subtype!r})"
+            )
+        mount_point = (sf.get("mount_point") if isinstance(sf, dict) else None) or ""
+        mp = mount_point.rstrip("/") or "/"
+        workdir = cfg.get("shared_workdir")
+        if not workdir:
+            raise ValueError(
+                "shared_filesystem requires 'shared_workdir' (an absolute path "
+                "under mount_point)"
+            )
+        if not os.path.isabs(workdir) or not (
+            workdir == mp or workdir.startswith(mp.rstrip("/") + "/")
+        ):
+            raise ValueError(
+                f"shared_workdir {workdir!r} must be under "
+                f"shared_filesystem.mount_point {mp!r}"
+            )
+        # The EFS mount targets and the teardown VM are AWS-only, and both the
+        # per-run mount and teardown launch key on ``default_cloud`` (skypilot's
+        # ``_get_cloud``, which defaults to ``k8s`` when unset) -- NOT on
+        # ``subtype``. A ``subtype: aws`` env whose ``default_cloud`` is anything
+        # other than aws (including unset -> k8s) would pass the subtype gate yet
+        # mount/teardown on the wrong cloud, where no mount target exists. Require
+        # them to agree so the misconfiguration is caught at config load.
+        default_cloud = cfg.get("default_cloud")
+        if default_cloud != "aws":
+            raise ValueError(
+                "shared_filesystem requires 'default_cloud: aws' (the EFS mount "
+                "targets and the teardown VM are AWS-only); got "
+                f"default_cloud={default_cloud!r}"
+            )
+        for store in self.assetstores:
+            if "hf" not in (store.store_uri or ""):
+                continue
+            for pull in store.pull:
+                pcfg = pull.config or {}
+                cache_path = pcfg.get("cache_path")
+                local_cache = cache_path and not (
+                    mount_point and str(cache_path).startswith(mount_point)
+                )
+                if pcfg.get("inline") or local_cache:
+                    logger.warning(
+                        "environment '%s': shared_filesystem is set but the hf assetstore "
+                        "uses %s; hfpull will not cache to the shared filesystem. Remove "
+                        "'inline: true' and any instance-local 'cache_path'.",
+                        self.name,
+                        (
+                            "inline: true"
+                            if pcfg.get("inline")
+                            else f"cache_path={cache_path!r}"
+                        ),
+                    )
+        return self

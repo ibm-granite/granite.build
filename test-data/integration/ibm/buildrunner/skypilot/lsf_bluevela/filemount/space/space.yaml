@@ -13,7 +13,7 @@ secret_manager:
 base_uris:
   # Pull assetstores, environments, and (builtin) steps from configurations/assets/.
   # Relative path resolves against this space.yaml's directory. Eight `..` because
-  # the bluevela test tree (integration/ibm/buildrunner/skypilot/bluevela/) is one
+  # the bluevela test tree (integration/ibm/buildrunner/skypilot/lsf_bluevela/) is one
   # level deeper than the slurm tree.
   - file://../../../../../../../../configurations/assets
 variables:

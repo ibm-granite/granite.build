@@ -10,6 +10,7 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
+    enforce_version_check,
     pass_context_and_reject_standalone,
 )
 from gbcli.utils.gbconstants import (
@@ -27,7 +28,6 @@ from gbcli.utils.utils import (
     get_current_epoch,
     parse_build_identifier,
 )
-from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("admin")
@@ -114,15 +114,7 @@ def log(
 
     Provide module: gbserver-rest-server, gbserver-build-watch, or gbserver-build-runner
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if follow and (end_date or sort == "asc" or head or tail or format == "json"):
         click.echo(
@@ -399,15 +391,7 @@ def space_membership(
 
     By default, lists all members in the space. Use --add, --delete, or --update to modify membership.
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)
+    enforce_version_check(ctx, skip_version_check)
 
     # Validate mutually exclusive action options
     actions = [add_user, delete_user, update_user]

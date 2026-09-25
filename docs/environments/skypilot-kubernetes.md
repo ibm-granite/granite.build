@@ -37,6 +37,12 @@ Kubernetes supports autostop, but per-step `cleanup_skypilot()` already runs `sk
 `idle_minutes_to_autostop` (default 10) is a safety net for crashed processes; set `0` for near-immediate
 autostop or `null` to disable.
 
+> **`sbatch_options` is a no-op on Kubernetes.** The per-step `sbatch_options`
+> field ([skypilot.md](skypilot.md#config-overrides-docker-sbatch_options)) is a
+> **SLURM-only** knob; SkyPilot exposes no per-task equivalent on Kubernetes, so
+> a value set here is ignored (a WARNING is logged). Bound job runtime inside the
+> `run:` command or via a Kubernetes-level policy instead.
+
 ### `shared_workdir`
 
 For cross-step state, point `shared_workdir` at a path backed by a **ReadWriteMany PVC** mounted on

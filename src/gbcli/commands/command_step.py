@@ -11,6 +11,7 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
+    enforce_version_check,
     pass_context_and_reject_standalone,
 )
 from gbcli.utils.gbconstants import (
@@ -21,7 +22,6 @@ from gbcli.utils.gbconstants import (
 )
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.utils import render_plain, render_pretty, step_uri_notation
-from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("step")
@@ -45,15 +45,7 @@ def list(
     ctx, space: str, step_repo: str, format: str, skip_version_check: bool, quiet: bool
 ):
     """List all available build definition steps"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -179,15 +171,7 @@ def describe(
     quiet: bool,
 ):
     """Show step contents"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True

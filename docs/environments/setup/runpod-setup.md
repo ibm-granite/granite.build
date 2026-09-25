@@ -96,6 +96,9 @@ export GB_ENVIRONMENT=STANDALONE
 export GBSERVER_HOST=https://<pod-id>-8080.proxy.runpod.net
 export GBSERVER_API_KEY=<same-key-as-server>
 
+# Optional: point build status/lineage links at the pod's web UI too
+export GB_WEB_UI_URL=https://<pod-id>-8080.proxy.runpod.net/dashboard
+
 # Verify connectivity
 gb build list --space standalone
 ```

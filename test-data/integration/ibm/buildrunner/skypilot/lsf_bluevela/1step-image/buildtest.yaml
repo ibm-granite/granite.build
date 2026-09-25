@@ -1,5 +1,5 @@
 # YAML-driven spec for
-# test/integration/ibm/buildrunner/skypilot/bluevela/test_1step_image.py.
+# test/integration/ibm/buildrunner/skypilot/lsf_bluevela/test_1step_image.py.
 # build_yaml defaults to ./build.yaml (sibling) when omitted.
 #
 # Single command-step target on BlueVela LSF (Skypilot) that runs the command

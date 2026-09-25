@@ -10,6 +10,7 @@ import asyncio
 import concurrent.futures
 import functools
 import glob
+import json
 import os
 import re
 import shlex
@@ -41,13 +42,20 @@ from tenacity import (
 )
 
 from gbcommon.uri.uri import URI
+from gbserver.environment._skypilot_ssh import _kill_and_reap
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
+from gbserver.environment.shared_fs import (
+    build_provider,
+    resolve_local_scratch,
+    resolve_shared_workdir,
+)
 from gbserver.spaces.hf_push_config import (
     apply_hf_step_overlay,
     resolve_hfpush_resource_group_id,
 )
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
+from gbserver.types.constants import GBSERVER_LOG_RECORD_MAX_CHARS
 from gbserver.types.environment.environment import EnvironmentVariableConfig
 from gbserver.types.environment.skypilot import StepSkypilotConfig
 from gbserver.types.environmentconfig import EnvironmentConfig
@@ -56,6 +64,11 @@ from gbserver.types.errors import (
     WorkloadFailedException,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.unwrap_errors import (
+    escape_for_one_record,
+    format_oserror,
+    remote_stacktrace,
+)
 
 if TYPE_CHECKING:
     from gbserver.monitoring.logfile_monitor import LogFileMonitor
@@ -607,15 +620,83 @@ _TRANSIENT_PROVISION_SUBSTRINGS = (
     "failed to acquire resources",  # slurm: "Failed to acquire resources in normal for ..."
     "resources unavailable",
     "in normal for",  # slurm partition acquisition failure tail
+    # HPC control-plane SSH flakiness (slurm/lsf): SkyPilot runs its precheck
+    # commands over an un-retried `ssh` bounded only by ConnectTimeout (TCP leg),
+    # so a slow banner or wedged session fails the launch with exit 255 as a bare
+    # ValueError. A blip on a shared login node, not a bad request — retry.
+    # Only unambiguously-SSH wording belongs here: this tuple is matched on every
+    # cloud. Generic TCP/DNS phrasings live in _TRANSIENT_SSH_ONLY_SUBSTRINGS.
+    "banner exchange",  # "Connection timed out during banner exchange"
+    "failed to get slurm partitions",
+    "failed to get partitions for cluster",
+    "failed to query slurm jobs",
+    # The ssh_/kex_-prefixed forms are unambiguous; the bare "connection closed
+    # by remote host" is not (aws/gcp VM-setup paths emit it too), so it lives in
+    # the SSH-only tuple below.
+    "kex_exchange_identification",  # ssh key-exchange aborted mid-handshake
+    "ssh_exchange_identification",
 )
+
+# Generic TCP/DNS failures: retriable on the HPC control-plane SSH path, but the
+# same wording also comes out of k8s/gcp/aws paths (registry blips, image pull,
+# cloud-API hiccups) where a *persistent* misconfig would then be retried with a
+# full teardown between attempts, burning the budget for nothing. So these are
+# matched only when the target cloud is slurm/lsf — see _is_transient_provision_error.
+_TRANSIENT_SSH_ONLY_SUBSTRINGS = (
+    "connection timed out",
+    "connection closed by remote host",
+    "connection reset by peer",
+    "no route to host",
+    "temporary failure in name resolution",
+)
+
+# Bounds the pre-retry teardown. sky.down talks to the same login node that just
+# failed, so an unbounded call could stall every remaining attempt.
+_PROVISION_RETRY_TEARDOWN_TIMEOUT_S = 300
 
 _NON_TRANSIENT_PROVISION_SUBSTRINGS = (
     "catalog does not contain",  # no matching instance type exists — config error
     "no launchable resource",  # similar permanent mismatch
+    # SSH *auth* failures share the exit-255 vocabulary of the transient blips
+    # above but never succeed on retry, so this tuple is checked first. Keep them
+    # specific: anything broader would swallow the banner timeouts we do retry.
+    "permission denied (publickey",
+    "permission denied, please try again",
+    "too many authentication failures",
+    "host key verification failed",
+    "no such identity",
+    "invalid privatekey",
+    "unprotected private key file",
 )
 
 
-def _is_transient_provision_error(exc: BaseException) -> bool:
+def _log_remote_stacktrace(exc: BaseException, context: str) -> None:
+    """Log the SkyPilot API server's traceback for ``exc``, when it carries one.
+
+    A failure raised inside the API server reaches us as a re-raised, unpickled
+    object with no ``__traceback__``, so the ``exc_info=True`` beside each call
+    to this function can only print ``<Type>: <message>`` — no frames, and for
+    an ``OSError`` no failing path. The server's own traceback rides along as a
+    ``stacktrace`` attribute; SkyPilot prints it only under SKYPILOT_DEBUG, so
+    emit it ourselves. Logged separately rather than folded into the message
+    above to keep the one-line reason greppable.
+    """
+    stacktrace = remote_stacktrace(exc)
+    if stacktrace is None:
+        return
+    # ONE record: the log pipeline ingests one record per line, so emitting the raw
+    # multi-line traceback here would be shredded and reordered exactly like the
+    # traces this PR set out to make readable.
+    logger.error(
+        "Traceback from the SkyPilot API server (%s): %s",
+        context,
+        escape_for_one_record(stacktrace, GBSERVER_LOG_RECORD_MAX_CHARS),
+    )
+
+
+def _is_transient_provision_error(
+    exc: BaseException, cloud: Optional[str] = None
+) -> bool:
     """Return True if exc is a retriable resource-acquisition/provision failure.
 
     The primary signal is the SkyPilot exception *type*; the substring scan is a
@@ -623,12 +704,21 @@ def _is_transient_provision_error(exc: BaseException) -> bool:
     Exception. Non-provision failures (auth, image-not-found, config, etc.)
     return False so they propagate without masking.
 
+    Also covers HPC control-plane SSH flakiness (late banner, wedged session),
+    which surfaces as a bare ValueError from SkyPilot's un-retried precheck ssh.
+    Auth rejections are excluded (_NON_TRANSIENT_PROVISION_SUBSTRINGS wins).
+
     Permanent configuration errors (e.g. "Catalog does not contain any
     instances") are excluded even when they raise ResourcesUnavailableError,
     since retrying will never succeed.
 
     Args:
         exc: The exception raised by the provisioning step.
+        cloud: Target cloud (``default_cloud``). Generic TCP/DNS wording
+            (_TRANSIENT_SSH_ONLY_SUBSTRINGS) is retried only for slurm/lsf, where
+            it means the control-plane SSH blipped; on other clouds the same text
+            can come from a persistent misconfig that retrying will not fix. When
+            None, only the cloud-independent substrings apply.
 
     Returns:
         bool: True if the failure looks transient and worth retrying.
@@ -648,7 +738,16 @@ def _is_transient_provision_error(exc: BaseException) -> bool:
         )
         if exc_types and isinstance(exc, exc_types):
             return True
-    return any(s in text for s in _TRANSIENT_PROVISION_SUBSTRINGS)
+    if any(s in text for s in _TRANSIENT_PROVISION_SUBSTRINGS):
+        return True
+    # Callers pass the cloud already resolved from the launch infra; normalize
+    # defensively so a full infra string ("slurm/bluevela") or odd casing still
+    # matches. This is NOT a licence to pass the env's default_cloud — a step can
+    # override the cloud, and classifying against the override is the point.
+    cloud_group = (cloud or "").strip().split("/", 1)[0].lower()
+    if cloud_group in _SSH_HPC_CLOUDS:
+        return any(s in text for s in _TRANSIENT_SSH_ONLY_SUBSTRINGS)
+    return False
 
 
 # Path fragment of SkyPilot's client module that drives interactive SSH auth.
@@ -684,6 +783,11 @@ def _is_interactive_auth_stdin_failure(exc: BaseException) -> bool:
     return False
 
 
+from gbserver.environment._skypilot_metadata import (
+    apply_slurm_comment_override,
+    normalize_run_metadata,
+    task_metadata_labels,
+)
 from gbserver.environment._skypilot_ssh import (
     execute_on_host_via_ssh as _execute_on_host_via_ssh,
 )
@@ -867,6 +971,40 @@ def _get_cli_prefix(build_workdir: Optional[str]) -> str:
     return prefix
 
 
+def _compose_step_prologue(provider, build_workdir):
+    """Prologue prepended to setup and run. Without a provider this is exactly
+    ``_get_cli_prefix(build_workdir)`` (unchanged). With a provider: ``set -eu``,
+    the idempotent mount, then make every level from the shared-fs mount root down
+    to the per-run workdir world-writable + sticky (1777) so a later step running
+    as a different uid can create and traverse its own per-run dir, and ``cd`` in.
+
+    The chmod walk is GUARDED: a level a prior step's uid created is not ours to
+    ``chmod`` (that EPERMs, and under ``set -eu`` would abort the step in the
+    prologue), and it is already 1777, so ignoring the failure is safe. Bounded by
+    the mount root, which the admin runbook chmods 1777 out of band."""
+    if provider is None:
+        return _get_cli_prefix(build_workdir)
+    prologue = "set -eu\n" + provider.mount_prologue()
+    if build_workdir:
+        mount_root = shlex.quote(provider.mount_point)
+        prologue += (
+            'mkdir -p "$GB_LOCAL_SCRATCH"\n'
+            # Create the per-run tree world-writable ATOMICALLY (umask 000 in a
+            # subshell, so mkdir -p makes every new level 0777 with no 0755 gap) —
+            # a concurrent different-uid step in the same build can then create its
+            # own per-run dir immediately. The guarded chmod walk below adds the
+            # sticky bit (1777) and fixes any pre-existing level.
+            '(umask 000 && mkdir -p "$GB_BUILD_WORKDIR")\n'
+            '__gb_d="$GB_BUILD_WORKDIR"\n'
+            f'while [ "$__gb_d" != {mount_root} ] && [ "$__gb_d" != "/" ]; do\n'
+            '  chmod 1777 "$__gb_d" 2>/dev/null || true\n'
+            '  __gb_d="$(dirname "$__gb_d")"\n'
+            "done\n"
+            'cd "$GB_BUILD_WORKDIR"\n'
+        )
+    return prologue
+
+
 def _build_skypilot_mounts(
     file_mounts_raw: dict,
     asset_dir: Union[Path, str, None],
@@ -932,6 +1070,11 @@ def aws_credentials_present() -> bool:
         os.environ.get("AWS_SECRET_ACCESS_KEY")
     )
     return has_key_pair or bool(os.environ.get("AWS_PROFILE"))
+
+
+# Sentinel distinguishing "shared_filesystem provider not yet computed" from a
+# computed None (no provider). See Skypilot._shared_fs_provider.
+_PROVIDER_UNSET = object()
 
 
 class Skypilot(Environment):
@@ -1011,6 +1154,11 @@ class Skypilot(Environment):
         # periodic/startup pull resumes after the lines it last emitted events
         # for instead of re-emitting from the top each time.
         self._log_lines_parsed: Dict[str, int] = {}
+        # Lazily-memoized shared_filesystem provider. Left UNSET here (not
+        # computed) so build_provider still runs on first use — preserving the
+        # pre-memoization validation timing and letting tests monkeypatch
+        # build_provider after construction. See _shared_fs_provider.
+        self._shared_fs_provider_cache: Any = _PROVIDER_UNSET
         super().__init__(
             event_q=event_q,
             environment_config=environment_config,
@@ -1099,17 +1247,218 @@ class Skypilot(Environment):
             _clear_skypilot_ssh_control_sockets()
         self._materialize_ssh_for_launch(cloud_group)
 
+    async def _probe_hpc_login_node(self: Self, cloud_group: str, cluster: str) -> None:
+        """Probe the slurm/lsf login node with a trivial `echo` before launching.
+
+        SkyPilot runs its precheck control commands (``scontrol show partitions``)
+        over an `ssh` bounded only by ``ConnectTimeout`` — the TCP leg, not the
+        banner/login phase — with no command timeout and no retry, so a slow-banner
+        login node fails the launch as an opaque ``ValueError: Failed to get
+        partitions for cluster ...``. This names that condition up front, bounded by
+        ``ConnectTimeout`` plus an outer ``wait_for`` (the ``echo`` still incurs the
+        session-setup delay ``ConnectTimeout`` misses). Mirrors
+        ``Lsf.__is_ssh_node_reachable``.
+
+        An ``echo``, not a slurm command: tests SSH only, adds no scheduler load.
+
+        Best-effort — a failure warns and the launch proceeds, so a probe-only quirk
+        can't block a good launch; the retry classifier is the real backstop.
+
+        ``GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0`` skips it, and logs that it did.
+        Worth skipping where SSH slots are scarce: the probe holds one for up to
+        ``timeout``, starving the control connection SkyPilot opens next.
+
+        :param cloud_group: Normalized target cloud (``"slurm"``/``"lsf"``).
+        :param cluster: Cluster name — the ``Host`` alias in ``~/.<cloud>/config``.
+        """
+        from gbserver.types.constants import (
+            ENABLE_SSH_HOST_KEY_VERIFICATION,
+            ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S,
+            GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S,
+        )
+
+        timeout = GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
+        if cloud_group not in _SSH_HPC_CLOUDS or not cluster:
+            return
+        if timeout <= 0:
+            # After the cloud guard, so every k8s/aws launch stays quiet. Logged, not
+            # silent: otherwise a missing probe line reads as code that never ran.
+            logger.info(
+                "SSH probe disabled (%s=%s); skipping the %s login node %s "
+                "pre-launch probe",
+                ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S,
+                timeout,
+                cloud_group,
+                cluster,
+            )
+            return
+        # Reuse SkyPilot's own SSH config so the probe follows the same
+        # alias/user/key/ProxyCommand directives the launch will.
+        config_path = Path.home() / f".{cloud_group}" / "config"
+        if not config_path.is_file():
+            return
+        cmds = [
+            "ssh",
+            "-F",
+            str(config_path),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={timeout}",
+        ]
+        # BatchMode=yes disables host-key *confirmation*, and OpenSSH defaults to
+        # StrictHostKeyChecking=ask, so without these an unknown host key is a hard
+        # refusal ("Host key verification failed", rc=255) — not an auto-accept. On a
+        # fresh runner pod (empty known_hosts) that fails every probe on any env whose
+        # cluster_ssh_configs omits them, e.g. lsf/ibm-bluevela. Since the probe is
+        # best-effort it would fail silently, never testing reachability at all.
+        # SkyPilot's own launch hardcodes both (ssh_options_list), so skipping them
+        # would make the probe stricter than the launch it predicts. Gated on the same
+        # toggle Lsf.ssh_no_verification_flags() uses, so strict probing stays
+        # available.
+        if not ENABLE_SSH_HOST_KEY_VERIFICATION:
+            cmds += [
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+            ]
+        cmds += [cluster, "echo", "gbserver probe"]
+        logger.info(
+            "probing %s login node %s for SSH reachability before launch",
+            cloud_group,
+            cluster,
+        )
+        started = time.monotonic()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmds,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as e:  # noqa: BLE001 — probe is best-effort
+            logger.warning("could not spawn SSH probe for %s: %s", cluster, e)
+            return
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.CancelledError:
+            # Don't leak the child when the launch itself is being cancelled.
+            await _kill_and_reap(proc)
+            raise
+        except Exception as e:  # noqa: BLE001 — timeout => treat as unreachable
+            # wait_for only cancels the await; kill and reap so a hung ssh (the
+            # exact late-banner case) cannot linger for the life of the runner.
+            await _kill_and_reap(proc)
+            logger.warning(
+                "SSH probe to %s login node %s did not complete within %ss (%s) — "
+                "the login node may be slow to send its SSH banner. Continuing to "
+                "launch anyway; a precheck failure from this will be retried.",
+                cloud_group,
+                cluster,
+                timeout,
+                type(e).__name__,
+            )
+            return
+        elapsed = time.monotonic() - started
+        if proc.returncode == 0:
+            logger.info(
+                "SSH probe to %s login node %s succeeded in %.1fs",
+                cloud_group,
+                cluster,
+                elapsed,
+            )
+            return
+        logger.warning(
+            "SSH probe to %s login node %s failed after %.1fs (rc=%s): %s — "
+            "continuing to launch anyway.",
+            cloud_group,
+            cluster,
+            elapsed,
+            proc.returncode,
+            (stderr or b"").decode("utf-8", errors="replace").strip(),
+        )
+
     def _get_cloud(self: Self) -> str:
         """Get default cloud/infra from environment.yaml config."""
         if self.config is None:
             return "k8s"
         return self.config.config.get("default_cloud", "k8s")
 
+    def _shared_fs_provider(self: Self):
+        """The shared_filesystem provider for this env (or None), memoized.
+
+        ``build_provider`` re-validates the ``shared_filesystem`` block, and
+        launch, the built-in launcher env, and teardown all consult it — so
+        compute it at most once per environment instance. Lazy rather than in
+        ``__init__`` so the (potentially raising) validation still happens on
+        first use, matching the pre-memoization timing.
+        """
+        if self._shared_fs_provider_cache is _PROVIDER_UNSET:
+            self._shared_fs_provider_cache = build_provider(self.config)
+        return self._shared_fs_provider_cache
+
     def _get_idle_minutes(self: Self) -> int:
         """Get idle_minutes_to_autostop from environment.yaml config."""
         if self.config is None:
             return 10
         return self.config.config.get("idle_minutes_to_autostop", 10)
+
+    def _resolve_sbatch_options(
+        self: Self,
+        launcher_config: Dict[str, Any],
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Merge the per-step SLURM ``sbatch_options`` across the config layers.
+
+        ``sbatch_options`` is a free-form map of SLURM ``#SBATCH`` directives
+        (e.g. ``time``, ``gres``, ``qos``, ``account``) forwarded verbatim to the
+        SkyPilot SLURM backend via ``_cluster_config_overrides``. Layers are
+        merged **per key** (highest precedence last), so a step may override a
+        single directive (e.g. ``time``) while still inheriting the env-level
+        default for the others:
+
+        1. ``environment.yaml`` ``config.sbatch_options`` (env-wide default).
+        2. ``step.yaml`` ``launcher_config.sbatch_options``.
+        3. ``build.yaml`` step ``config.launcher_config.sbatch_options`` (wins).
+
+        :param launcher_config: the step.yaml ``launcher_config`` block.
+        :param config: the build.yaml step ``config`` dict; a nested
+            ``launcher_config`` here takes precedence over the step.yaml one.
+        :returns: the merged ``sbatch_options`` map, empty when no layer sets it.
+        """
+        # Each layer is coerced with ``or {}`` so a bare (present-but-null)
+        # ``sbatch_options:`` / ``launcher_config:`` YAML key resolves to an
+        # empty map rather than crashing the merge with a ``None`` operand
+        # (matches the ``or {}`` guarding used elsewhere in this module).
+        env_default = self.config.config.get("sbatch_options") if self.config else None
+        return {
+            **(env_default or {}),
+            **self._step_sbatch_options(launcher_config, config),
+        }
+
+    @staticmethod
+    def _step_sbatch_options(
+        launcher_config: Dict[str, Any],
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """The per-step ``sbatch_options``, excluding the env-level default.
+
+        This is the step.yaml ``launcher_config`` layer merged under the
+        build.yaml ``config.launcher_config`` layer (build wins per key). It is
+        the portion the build author set **on this step** — as opposed to the
+        env-wide default folded in by :meth:`_resolve_sbatch_options` — so the
+        launch site can tell an explicit per-step value from a passively
+        inherited one (which governs the non-SLURM log level).
+
+        :param launcher_config: the step.yaml ``launcher_config`` block.
+        :param config: the build.yaml step ``config`` dict.
+        :returns: the merged per-step ``sbatch_options`` map, empty when neither
+            the step nor the build layer sets it.
+        """
+        return {
+            **(launcher_config.get("sbatch_options") or {}),
+            **((config.get("launcher_config") or {}).get("sbatch_options") or {}),
+        }
 
     def _resolve_infra_and_zone(
         self: Self, cloud: str, override_res: dict, config: dict
@@ -1292,9 +1641,7 @@ class Skypilot(Environment):
         # Materialize inline config as early as possible (before the
         # shared_workdir early-return below).
         self._ensure_inline_configs_materialized()
-        shared_workdir = (
-            self.config.config.get("shared_workdir") if self.config else None
-        )
+        shared_workdir = resolve_shared_workdir(self.config)
         if not shared_workdir:
             return {}
         workdir = os.path.join(
@@ -1333,22 +1680,59 @@ class Skypilot(Environment):
         if not workdir:
             return
         _require_skypilot()
+        provider = self._shared_fs_provider()
+        # A shared_filesystem provider cleans the whole per-run tree via its own
+        # shell (and may pin the throwaway VM to an AZ that has a mount target);
+        # without a provider a plain rm -rf of the workdir suffices. Only the run
+        # script and the optional zone differ.
+        run_script = (
+            provider.cleanup_run_script(workdir)
+            if provider is not None
+            else f"rm -rf {shlex.quote(workdir)}"
+        )
+        if provider is not None and run_script is None:
+            # A non-mount backend (e.g. object-store / stage-out) reaps its per-run
+            # state server-side, with no throwaway VM to launch.
+            logger.info(
+                "teardown_skypilot: provider reaps per-run workdir %s server-side "
+                "(setup_id=%s)",
+                workdir,
+                setup_id,
+            )
+            await provider.cleanup()
+            return
         cluster_name = self._cluster_name_for(
             f"td-{setup_id}",
             target_name=run_meta.get("target_name", ""),
             build_id=run_meta.get("build_id", ""),
             build_config_name=run_meta.get("build_config_name", ""),
         )
+        res_kwargs = {"infra": self._get_cloud()}
+        zone = provider.cleanup_zone() if provider is not None else None
+        if zone:
+            res_kwargs["zone"] = zone  # land where a mount target exists
+        elif provider is not None:
+            # Context for the orphan WARNING below: with no pinned zone the
+            # throwaway VM lands in the cloud's default AZ, which may lack an EFS
+            # mount target and fail the cleanup.
+            logger.info(
+                "teardown_skypilot: efs.cleanup_zone unset; the cleanup VM lands "
+                "in the default AZ, which may lack a mount target (set "
+                "efs.cleanup_zone, or ensure a mount target in every worker AZ)"
+            )
         logger.info(
-            "teardown_skypilot: removing per-run workdir %s (setup_id=%s)",
+            "teardown_skypilot: cleaning per-run workdir %s "
+            "(setup_id=%s, provider=%s, zone=%s)",
             workdir,
             setup_id,
+            provider is not None,
+            zone,
         )
         try:
             task = sky.Task(
                 name=cluster_name,
-                run=f"rm -rf {shlex.quote(workdir)}",
-                resources=sky.Resources(infra=self._get_cloud()),
+                run=run_script,
+                resources=sky.Resources(**res_kwargs),
             )
             request_id = await asyncio.to_thread(
                 sky.launch,
@@ -1358,8 +1742,20 @@ class Skypilot(Environment):
                 down=True,
             )
             await asyncio.to_thread(sky.stream_and_get, request_id)
-        except Exception as e:  # don't fail the build for cleanup
-            logger.warning("teardown_skypilot rm -rf %s failed: %s", workdir, e)
+        except Exception as e:  # don't fail an already-finished build for cleanup
+            # Make an orphaned per-run tree visible so it can be reaped (see the
+            # teardown notes in docs/environments/skypilot-aws.md). For OSError,
+            # format_oserror surfaces the underlying path/errno; the full trace
+            # goes to debug.
+            detail = format_oserror(e) if isinstance(e, OSError) else str(e)
+            logger.warning(
+                "teardown cleanup failed; per-run tree may be ORPHANED at %s "
+                "(setup_id=%s): %s",
+                workdir,
+                setup_id,
+                detail,
+            )
+            logger.debug("teardown_skypilot failure trace", exc_info=True)
 
     @staticmethod
     def _parse_memory_gib(memory_str: str) -> Optional[float]:
@@ -1556,11 +1952,22 @@ class Skypilot(Environment):
             "GB_SKYPILOT_LAUNCH_ID": launch_id,
             "GB_SKYPILOT_CLUSTER_NAME": cluster_name,
         }
-        shared_workdir = (
-            self.config.config.get("shared_workdir") if self.config else None
-        )
+        shared_workdir = resolve_shared_workdir(self.config)
         if shared_workdir:
             env["GB_SHARED_WORKDIR"] = shared_workdir
+            # Instance-local scratch for hot IO: steps may stage here and copy only
+            # artifacts to $GB_BUILD_WORKDIR (EFS is slower + bills per byte). The
+            # path is the typed, validated `shared_filesystem.local_scratch` and
+            # defaults to /tmp/gb-scratch -- which on stock AWS/DLAMI images is the
+            # EBS root volume, NOT instance-store NVMe (point local_scratch at the
+            # image's NVMe mount, e.g. /opt/dlami/nvme/..., if you want that). Only
+            # exported when a shared_filesystem provider is active: the provider
+            # prologue creates it (mkdir -p "$GB_LOCAL_SCRATCH"); plain shared_workdir
+            # envs (bluevela/SLURM/k8s) have no provider, so must not see it.
+            if self._shared_fs_provider() is not None:
+                env["GB_LOCAL_SCRATCH"] = (
+                    resolve_local_scratch(self.config) or "/tmp/gb-scratch"
+                )
         if build_workdir:
             env["GB_BUILD_WORKDIR"] = build_workdir
         return env
@@ -1624,13 +2031,9 @@ class Skypilot(Environment):
             config = kwargs.get("config", {}) or {}
 
             attempt = self._relaunch_attempts.get(launch_id, 0)
-            run_metadata = kwargs.get("run_metadata") or {}
-            # run_metadata is normally a dict here; tolerate an
-            # EntityRunMetadata object defensively (codebase passes both shapes).
-            if not isinstance(run_metadata, dict):
-                run_metadata = (
-                    run_metadata.to_dict() if hasattr(run_metadata, "to_dict") else {}
-                )
+            # run_metadata is normally a dict here, but the codebase also passes
+            # an EntityRunMetadata object; normalize to a plain dict.
+            run_metadata = normalize_run_metadata(kwargs.get("run_metadata"))
             cluster_name = self._cluster_name_for(
                 launch_id,
                 attempt,
@@ -1671,6 +2074,16 @@ class Skypilot(Environment):
             # is set. Done here — before the non-SSH materialize and the API start
             # below — so the config is in place before sky.launch connects.
             self._prepare_ssh_for_launch(cloud_group)
+
+            # With the SSH config in place, probe the HPC login node with a
+            # trivial `echo` so a wedged/slow-banner node is reported as such
+            # instead of as an opaque SkyPilot precheck error. Best-effort: never
+            # blocks the launch (see _probe_hpc_login_node). The cluster is the
+            # middle infra segment (cloud/cluster[/partition]).
+            infra_parts = str(infra).split("/")
+            await self._probe_hpc_login_node(
+                cloud_group, infra_parts[1] if len(infra_parts) > 1 else ""
+            )
 
             # Materialize non-SSH inline config (cloud_config / AWS creds) before
             # the API server starts / sky.launch builds the per-request config
@@ -1716,12 +2129,53 @@ class Skypilot(Environment):
             # SkyPilot's top-level `config:` section maps to
             # _cluster_config_overrides on sky.Resources.
             cluster_config_overrides = {}
+            # `or {}` per layer so a bare (present-but-null) `docker:` /
+            # `launcher_config:` YAML key resolves to an empty map rather than
+            # crashing the merge with a None operand.
             docker_config = {
-                **launcher_config.get("docker", {}),
-                **config.get("launcher_config", {}).get("docker", {}),
+                **(launcher_config.get("docker") or {}),
+                **((config.get("launcher_config") or {}).get("docker") or {}),
             }
-            if docker_config:
-                cluster_config_overrides["docker"] = docker_config
+
+            # Attach build-tracking metadata as a SLURM --comment (searchable via
+            # sjob/squeue/sacct). Safe to set unconditionally: only the SLURM
+            # backend reads it; the slurm section is inert on k8s/cloud/LSF.
+            # Applied BEFORE the per-step sbatch_options merge below so that
+            # deep-merge preserves the comment (an explicit user `comment` in
+            # sbatch_options still wins, as it is merged last).
+            apply_slurm_comment_override(cluster_config_overrides, run_metadata)
+
+            # Per-step SLURM sbatch directives (--time, --gres, --qos, ...).
+            # SLURM is the only cloud whose SkyPilot fork exposes a per-task
+            # sbatch_options override; on any other cloud it is a documented
+            # no-op (warn and drop). Deep-merge under `slurm` so a sibling
+            # slurm.* override is never clobbered.
+            sbatch_options = self._resolve_sbatch_options(launcher_config, config)
+            if sbatch_options:
+                if cloud_group == "slurm":
+                    slurm_over = cluster_config_overrides.get("slurm", {})
+                    cluster_config_overrides["slurm"] = {
+                        **slurm_over,
+                        "sbatch_options": {
+                            **slurm_over.get("sbatch_options", {}),
+                            **sbatch_options,
+                        },
+                    }
+                else:
+                    # Warn only when the step/build explicitly set sbatch_options
+                    # on this (non-SLURM) step. A value inherited solely from the
+                    # env-wide default is a passive no-op here — the build author
+                    # didn't touch it on this step — so log it at DEBUG rather
+                    # than nagging on every non-SLURM step of a SLURM-default env.
+                    explicitly_set = bool(
+                        self._step_sbatch_options(launcher_config, config)
+                    )
+                    log = logger.warning if explicitly_set else logger.debug
+                    log(
+                        "sbatch_options is set but cloud %r is not SLURM; "
+                        "ignoring it.",
+                        cloud_group,
+                    )
 
             # Trailing `or None` maps an empty image_id to None: the merged
             # `command` step renders image_id to "" when no image is given, and
@@ -1731,13 +2185,18 @@ class Skypilot(Environment):
                 or launcher_config.get("image_id")
             ) or None
 
-            logger.info(
-                "SkyPilot resources: accelerators=%s, image_id=%s, "
-                "cluster_config_overrides=%s",
-                res_config.get("accelerators"),
-                image_id,
-                cluster_config_overrides or None,
-            )
+            # A containerized shared_filesystem step relies on SkyPilot's own
+            # container run options for the in-container mount: docker_start_cmds
+            # (sky/provision/docker_utils.py) adds --net=host, --cap-add=SYS_ADMIN,
+            # --device=/dev/fuse and --security-opt=apparmor:unconfined -- which is
+            # what actually permits `mount -t nfs4` inside the container (SYS_ADMIN
+            # for mount(2), apparmor:unconfined to clear AppArmor). gbserver does NOT
+            # pin any of these: --net=host duplicated fails `docker run` (#393), and
+            # pinning only SYS_ADMIN was both redundant (SkyPilot provides it) and
+            # missed the apparmor flag that matters. If a future SkyPilot bump drops
+            # them, pin the needed dup-tolerant ones (not --net=host) here.
+            if docker_config:
+                cluster_config_overrides["docker"] = docker_config
 
             resources = sky.Resources(
                 infra=infra,
@@ -1749,14 +2208,42 @@ class Skypilot(Environment):
                 use_spot=res_config.get("use_spot"),
                 zone=zone,
                 image_id=image_id,
+                # Build-tracking labels. SkyPilot applies these on k8s (pod
+                # labels) and cloud (instance tags); ignored on SLURM/LSF.
+                labels=task_metadata_labels(run_metadata) or None,
                 _cluster_config_overrides=cluster_config_overrides or None,
+            )
+
+            # Diagnostic only: sky.Resources.__dict__ holds Cloud objects that
+            # aren't JSON serializable; to_yaml_config() returns a plain dict
+            # (with infra encoding cloud/region/zone), and the accessors expose
+            # the resolved cloud/region/zone directly. Both the accessors and
+            # the serialization are evaluated eagerly as logging args (before
+            # any level check), so a raise here would turn a good provision into
+            # a launch-time crash — guard the whole description build and fall
+            # back to a marker rather than propagate.
+            try:
+                resources_desc = (
+                    f"cloud={resources.cloud} region={resources.region}"
+                    f" zone={resources.zone} config={json.dumps(resources.to_yaml_config())}"
+                )
+            except Exception as resource_log_err:  # pylint: disable=broad-except
+                resources_desc = f"<unavailable: {resource_log_err!r}>"
+            logger.info(
+                "SkyPilot launching task with resources: %s accelerators=%s,"
+                " image_id=%s, cluster_config_overrides=%s",
+                resources_desc,
+                res_config.get("accelerators"),
+                image_id,
+                cluster_config_overrides or None,
             )
 
             # Per-run workdir provisioned by setup_skypilot. Exported as
             # GB_BUILD_WORKDIR (inside get_launch_env_vars) and also used below
             # as the initial CWD of the run script and the remap target for
             # relative file_mounts, so it is computed here as a local.
-            run_metadata = kwargs.get("run_metadata", {})
+            # (run_metadata is intentionally NOT re-read here: the normalized
+            # dict from the top of the method stays in effect through this call.)
             build_workdir = (
                 kwargs.get("setup_config", {}).get("skypilot", {}).get("build_workdir")
             )
@@ -1781,9 +2268,17 @@ class Skypilot(Environment):
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
+                # Pin <2.0: huggingface_hub 2.x pulls httpx2, whose BrotliDecoder
+                # calls brotli.Decompressor.process(output_buffer_limit=...) -- a
+                # kwarg added only in brotli>=1.2.0. The bare worker's ambient
+                # conda brotli (1.0.9) rejects it (TypeError), failing hf download.
+                # NOT a Python-version issue (reproduces on py3.12 w/ brotli<1.2).
+                # Stop-gap until the worker ships brotli>=1.2.0 (or httpx2[brotli])
+                # so hf 2.x works; see follow-up issue.
                 hfpull_lines = [
                     "# -- gbserver: inline hfpull for inputs --",
-                    "pip install --no-cache-dir 'huggingface_hub[cli]' 2>/dev/null || true",
+                    "pip install --no-cache-dir 'huggingface_hub[cli]<2.0' "
+                    "2>/dev/null || true",
                 ]
                 for bid, pull_info in pending_hfpulls.items():
                     cmd = f'hf download "{pull_info["repo"]}" --local-dir "{pull_info["path"]}"'
@@ -1829,7 +2324,14 @@ class Skypilot(Environment):
             # scripts stay in SkyPilot's default ~/sky_workdir, where relative
             # file_mounts land. Only prefix setup when there is a setup script, so
             # steps without one don't acquire a spurious setup phase.
-            cli_prefix = _get_cli_prefix(build_workdir)
+            provider = self._shared_fs_provider()
+            if provider is not None:
+                # Surface a transit-encryption caveat in the gbserver log at launch
+                # (the mount prologue also warns, but only in the step log).
+                note = provider.transit_encryption_note()
+                if note:
+                    logger.warning(note)
+            cli_prefix = _compose_step_prologue(provider, build_workdir)
             run_script = cli_prefix + launcher_config.get("run", "")
             if setup_script:
                 setup_script = cli_prefix + setup_script
@@ -1874,7 +2376,7 @@ class Skypilot(Environment):
             # resource-acquisition failures (e.g. a just-torn-down slurm/lsf
             # allocation not yet released on retry). See _provision_with_retry.
             job_id, _handle = await self._provision_with_retry(
-                task, cluster_name, autostop
+                task, cluster_name, autostop, cloud_group
             )
 
             self._cluster_names[launch_id] = cluster_name
@@ -1962,7 +2464,14 @@ class Skypilot(Environment):
                 # would surface the opaque stdin error instead of this message.
                 # Implicit __context__ still preserves the original in the trace.
                 raise ErrSkypilotInteractiveAuthFailed(msg)
-            logger.error("Failed to launch SkyPilot cluster for %s: %s", launch_id, e)
+            detail = format_oserror(e) if isinstance(e, OSError) else str(e)
+            logger.error(
+                "Failed to launch SkyPilot cluster for %s: %s",
+                launch_id,
+                detail,
+                exc_info=True,
+            )
+            _log_remote_stacktrace(e, f"launch {launch_id}")
             raise
         finally:
             self._release_monitors(launch_id)
@@ -1972,6 +2481,7 @@ class Skypilot(Environment):
         task: Any,
         cluster_name: str,
         autostop: Optional[int],
+        cloud_group: str,
     ) -> Tuple[Optional[int], Any]:
         """Run ``sky.launch`` + ``sky.stream_and_get`` with bounded retry on
         transient resource-acquisition failures.
@@ -1990,6 +2500,11 @@ class Skypilot(Environment):
             task: The ``sky.Task`` to launch.
             cluster_name: Deterministic cluster name for this launch.
             autostop: idle_minutes_to_autostop (None on slurm/lsf).
+            cloud_group: Normalized target cloud, as resolved from the launch
+                infra by the caller — NOT the env's ``default_cloud``, which a
+                step can override via ``infra:``/``resources.cloud``. Decides
+                whether generic TCP/DNS wording counts as transient (see
+                :func:`_is_transient_provision_error`).
 
         Returns:
             Tuple of (job_id, handle) from ``sky.stream_and_get``.
@@ -2016,7 +2531,9 @@ class Skypilot(Environment):
         )
 
         async for attempt in AsyncRetrying(
-            retry=retry_if_exception(_is_transient_provision_error),
+            retry=retry_if_exception(
+                lambda e: _is_transient_provision_error(e, cloud=cloud_group)
+            ),
             wait=wait_exponential(multiplier=30, max=provision_backoff_max),
             stop=stop_after_attempt(max(1, max_attempts)),
             reraise=True,
@@ -2065,15 +2582,42 @@ class Skypilot(Environment):
                     # next attempt so the relaunch doesn't reuse the stale
                     # allocation. Only for transient errors — others re-raise
                     # untouched and tenacity will not retry them.
-                    if _is_transient_provision_error(e):
+                    if _is_transient_provision_error(e, cloud=cloud_group):
                         logger.warning(
-                            "Transient provision failure for %s (attempt %d): %s "
-                            "— tearing down partial cluster before retry",
+                            "Transient provision failure for %s (attempt %d): %s",
                             cluster_name,
                             attempt.retry_state.attempt_number,
                             e,
                         )
-                        await self._teardown(cluster_name)
+                        # Bound the teardown: sky.down has no timeout of its own and
+                        # talks to the same login node, so on the wedged-SSH failure
+                        # that got us here it could block for the rest of the build.
+                        # A leaked partial cluster is the lesser cost — per-step
+                        # cleanup_skypilot still runs at the end.
+                        try:
+                            await asyncio.wait_for(
+                                self._teardown(cluster_name),
+                                timeout=_PROVISION_RETRY_TEARDOWN_TIMEOUT_S,
+                            )
+                        except (asyncio.TimeoutError, TimeoutError):
+                            logger.warning(
+                                "Teardown of %s did not finish within %ss; retrying "
+                                "the launch anyway",
+                                cluster_name,
+                                _PROVISION_RETRY_TEARDOWN_TIMEOUT_S,
+                            )
+                    else:
+                        # Non-transient: this frame is closest to the sky call, so
+                        # log the full trace (and the path, for OSError) before the
+                        # bare re-raise that tenacity won't retry.
+                        detail = format_oserror(e) if isinstance(e, OSError) else str(e)
+                        logger.error(
+                            "Non-transient provision failure for %s: %s",
+                            cluster_name,
+                            detail,
+                            exc_info=True,
+                        )
+                        _log_remote_stacktrace(e, f"provision {cluster_name}")
                     raise
         # Unreachable: AsyncRetrying with reraise=True either returns from the
         # `return` above or raises; this satisfies the type checker.
@@ -3033,9 +3577,7 @@ class Skypilot(Environment):
         self._warn_non_default_mode(storeload_config, uri)
 
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
-        shared_workdir = (
-            self.config.config.get("shared_workdir") if self.config else None
-        )
+        shared_workdir = resolve_shared_workdir(self.config)
         cache_dir = Path(
             get_hf_cache_dir(storeload_config, default_workdir=shared_workdir)
         )

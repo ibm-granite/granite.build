@@ -1,0 +1,66 @@
+# skypilot/aws environment for the gated shared-fs EFS build test (#378).
+#
+# The aws-shared-fs environment (its shared_filesystem efs block) carried by the
+# co-located test Space and referenced by the bare/ and containerized/ build.yaml
+# fixtures. The intended fixture is the IBM-research-provisioned EFS in us-east-1;
+# an internal filesystem id is NOT committed to this public repo, so the efs block
+# ships a stand-in id and test_shared_fs.py self-skips (it reads this file's
+# file_system_id) until it is pointed at a real EFS:
+#
+#   * IBM: set efs.file_system_id/region to the ibm-research shared-fs EFS;
+#   * anyone else: point it at your own pre-provisioned EFS instead — it needs
+#     mount targets per worker AZ, an SG allowing NFS 2049, and its root chmod'd
+#     1777 (see docs/environments/skypilot-aws.md);
+#   * then run in the extended suite with AWS creds (spins up EC2/EFS; $).
+#   * #391 will auto-provision an ephemeral EFS so no manual id is needed.
+name: skypilot-aws-shared-fs-e2e
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  idle_minutes_to_autostop: 5
+  # AWS credentials materialized from the space secret manager into a NON-default
+  # profile in ~/.aws/credentials. The values are secret NAMES resolved by the
+  # space's secret_manager — never literals (mirrors the shipped aws environment).
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  # Issue #378: a pre-provisioned EFS so multi-step data flow works across the
+  # separate EC2 instances SkyPilot allocates per step.
+  # shared_filesystem defines only the mount; shared_workdir is the explicit
+  # workdir path under mount_point (decoupled per #404 so more than one shared
+  # filesystem can be added later; the path prefix selects which one).
+  shared_workdir: /mnt/gb-shared/gbroot
+  shared_filesystem:
+    provider: efs
+    mount_point: /mnt/gb-shared
+    efs:
+      # Stand-in id: replace with the ibm-research shared-fs EFS (IBM), or your own
+      # pre-provisioned EFS, to run the gated tests. See the header comment + #391.
+      file_system_id: fs-0abc123
+      region: us-east-1
+      tls: true
+assetstores:
+  - store_uri: space://assetstores/s3/
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}
+  # With shared_filesystem set, hfpull runs as its own step and caches to
+  # ${shared_workdir}/hf_cache (config: {}) rather than instance-locally, so a pulled
+  # model actually reaches EFS (see the shipped aws environment's guidance).
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}

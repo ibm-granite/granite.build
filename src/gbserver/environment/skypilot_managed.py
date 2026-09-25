@@ -50,6 +50,11 @@ def _download_logs_with_retry(cluster_name: str, job_name: str):
     return result.get(job_name)
 
 
+from gbserver.environment._skypilot_metadata import (
+    apply_slurm_comment_override,
+    normalize_run_metadata,
+    task_metadata_labels,
+)
 from gbserver.environment._skypilot_ssh import (
     execute_on_host_via_ssh as _execute_on_host_via_ssh,
 )
@@ -158,7 +163,8 @@ class Skypilot_managed(Environment):
             launcher_config = kwargs.get("launcher_config", {}) or {}
             config = kwargs.get("config", {}) or {}
             # Kept as a local: reused by the post-launch-failure event below.
-            run_metadata = kwargs.get("run_metadata", {})
+            # Normalize to a plain dict (codebase passes dict or EntityRunMetadata).
+            run_metadata = normalize_run_metadata(kwargs.get("run_metadata"))
 
             job_name = self._job_name_for(launch_id)
             cloud = (
@@ -177,6 +183,11 @@ class Skypilot_managed(Environment):
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
 
+            # Attach build-tracking metadata as a SLURM --comment (searchable via
+            # sjob/squeue/sacct). Safe to set unconditionally: only the SLURM
+            # backend reads it; the slurm section is inert on k8s/cloud/LSF.
+            apply_slurm_comment_override(cluster_config_overrides, run_metadata)
+
             image_id = config.get("launcher_config", {}).get(
                 "image_id"
             ) or launcher_config.get("image_id")
@@ -188,6 +199,9 @@ class Skypilot_managed(Environment):
                 memory=res_config.get("memory"),
                 disk_size=res_config.get("disk_size"),
                 image_id=image_id,
+                # Build-tracking labels. SkyPilot applies these on k8s (pod
+                # labels) and cloud (instance tags); ignored on SLURM/LSF.
+                labels=task_metadata_labels(run_metadata) or None,
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 

@@ -1,0 +1,55 @@
+name: filemount-check
+version: 1.0.0
+type: exec
+config:
+  command_config:
+    command: ""    # command to run on the launcher node
+    image: ""      # optional docker image; empty => run on the bare launcher node
+
+environment_configs:
+  Skypilot:
+    default_launcher: filemount-check
+    launchers:
+      filemount-check:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # image_id follows command_config.image, mirroring the builtin `command`
+          # step: a non-empty image runs via the Pyxis SPANK plugin on SLURM
+          # (BlueVela provides it), an empty one runs on the bare node. This
+          # test's build.yaml sets a minimal image, so file_mounts must land
+          # inside the container — exercising file_mounts + the Pyxis image path.
+          image_id: '{{ ("docker:" ~ config.command_config.image) if config.command_config.image else "" }}'
+          resources: {}
+          # Copy the `payload/` directory that ships next to THIS step.yaml onto
+          # the cluster. The source is relative, so the Skypilot launcher resolves
+          # it against the step.yaml's own directory (the per-run asset dir) — this
+          # is the behavior under test. The DESTINATION is also relative, which
+          # gbserver remaps under the per-run build workdir (on the shared /proj FS
+          # that the Pyxis container bind-mounts via --container-mounts = home +
+          # ccache + workdir). The run script's CWD is that same workdir, so the
+          # payload is reachable at exactly ./payload inside the container — the
+          # same path, relative to the step, that the source occupies on disk
+          # (relative in, relative out). This exercises both container-visibility
+          # and per-target isolation.
+          file_mounts:
+            payload: payload
+          run: |
+            set -euo pipefail
+            # Verify file_mounts copied the step-relative payload dir to the
+            # matching relative path in the run CWD (the per-run workdir, bind-
+            # mounted into the Pyxis container). `set -e` + `test` fail the step
+            # (=> build FAILED) if the dir/file is absent inside the container.
+            echo "verifying file_mounts copied the step-relative payload dir..."
+            test -d ./payload
+            test -f ./payload/marker.txt
+            echo "payload marker: $(cat ./payload/marker.txt)"
+            # Build-supplied command (emits the artifact markers, mirroring the
+            # builtin command step).
+            {{ config.command_config.command }}
+    monitors:
+      # Shipped monitor library (builtins/monitors/skypilot); inherits the
+      # GB_ARTIFACT convention and honors build.yaml's poll_interval_seconds.
+      skypilot_monitor:
+        ref: space://monitors/skypilot

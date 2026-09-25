@@ -113,6 +113,93 @@ _ENV_TYPE_KEEP_DIR = {
 }
 
 
+def _step_slug_from_uri(step_uri: Optional[str]) -> str:
+    """Return the step-type slug from a step URI.
+
+    The slug is the last non-empty path segment, e.g.
+    ``space://steps/hfpull`` -> ``"hfpull"``. A bare slug is returned as-is.
+
+    :param step_uri: the step URI (``self.step_uri``), or ``None``.
+    :returns: the slug, or ``""`` when ``step_uri`` is empty/``None``.
+    """
+    if not step_uri:
+        return ""
+    return step_uri.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _env_step_config(env_config: Optional[dict], step_slug: str) -> dict:
+    """Return the top-level ``config`` override for ``step_slug``.
+
+    Reads ``env_config["steps"][step_slug]`` (the environment.yaml
+    ``config.steps.<type>`` map) and returns its top-level keys. The
+    ``environment_configs`` sibling is intentionally dropped: it belongs to the
+    Phase-2 launcher/resources subtree, not the top-level ``config`` subtree.
+
+    :param env_config: the environment.yaml ``config:`` block
+        (``self.environment.config.config``), or ``None``.
+    :param step_slug: the step-type slug from :func:`_step_slug_from_uri`.
+    :returns: a deep-copied dict of top-level config keys (possibly empty), safe
+        to mutate without affecting the live environment config. Never ``None``.
+        Logs at INFO when an override is applied, and at DEBUG (with the
+        configured slugs) when ``config.steps`` is set but has no entry for
+        ``step_slug`` — so a silently-unmatched override (e.g. a typo, or the
+        ``gbstep`` default-step slug) is diagnosable.
+    """
+    if not isinstance(env_config, dict):
+        return {}
+    steps = env_config.get("steps")
+    if not isinstance(steps, dict) or not steps:
+        return {}
+    entry = steps.get(step_slug)
+    if not isinstance(entry, dict):
+        # ``config.steps`` is configured, but has no (dict) entry for this step
+        # type. Log the miss with the configured slugs so an override that
+        # silently did not apply — a typo, or an attempt to steer the default
+        # base step (whose slug is ``gbstep``: an omitted ``step_uri`` defaults
+        # there, not to ``command``/``hfpull``/…) — is diagnosable. Fires once
+        # per unlisted step, so it is DEBUG, not INFO.
+        logger.debug(
+            "No config.steps override for step slug '%s'; configured slugs: %s",
+            step_slug,
+            sorted(steps.keys()),
+        )
+        return {}
+    # Deep-copy the values: they are held by reference on the long-lived
+    # ``self.environment.config.config``. ``merge_dicts`` copies base-only keys
+    # by reference, so returning the live nested dicts (e.g. ``launcher_config``)
+    # would let a later step's in-place mutation corrupt the environment config
+    # for every subsequent step in the run.
+    overrides = {
+        k: deepcopy(v) for k, v in entry.items() if k != "environment_configs"
+    }
+    logger.info(
+        "Applying environment config.steps['%s'] defaults (keys: %s)",
+        step_slug,
+        sorted(overrides.keys()),
+    )
+    return overrides
+
+
+def _seed_step_config_with_env_defaults(
+    env_config: Optional[dict],
+    step_uri: Optional[str],
+    step_default_config: dict,
+) -> dict:
+    """Seed the step-config merge base with environment per-step-type defaults.
+
+    The environment per-step-type override is the lowest precedence layer; the
+    ``step_default.yaml`` config is merged on top of it (and the caller then
+    layers step.yaml and build.yaml above that). Returns a new dict.
+
+    :param env_config: the environment.yaml ``config:`` block, or ``None``.
+    :param step_uri: the step URI used to derive the step-type slug.
+    :param step_default_config: the ``config`` block from ``step_default.yaml``.
+    :returns: the merged base dict (env defaults overridden by step defaults).
+    """
+    env_defaults = _env_step_config(env_config, _step_slug_from_uri(step_uri))
+    return merge_dicts(env_defaults, step_default_config)
+
+
 def _copy_basestep_scaffold(temp_path: Path, env_type: str) -> None:
     """Copy the gbstep base-step scaffold into ``temp_path`` for ``env_type``,
     then drop the backend template dirs the active environment won't use.
@@ -415,7 +502,23 @@ class TargetStep(BuildEntity):
         base_step_config["config"] = step_cfg_base.get("config", {})
 
         # --- Merge configs ---
-        merged_inner_config = dict(base_step_config.get(CONFIG_KEY, {}))
+        # Base layer: environment.yaml per-step-type defaults (config.steps.<type>),
+        # overridden by the step_default.yaml config merged on top. The step.yaml and
+        # build.yaml layers below then override this base (see the per-step env config
+        # design spec). env_cfg_block comes from the active environment's config
+        # block; guard defensively since self.environment can be unset in some
+        # code paths. (Named distinctly from the env_config launcher entry below.)
+        env_cfg_block = (
+            self.environment.config.config
+            if getattr(self, "environment", None) is not None
+            and getattr(self.environment, "config", None) is not None
+            else None
+        )
+        merged_inner_config = _seed_step_config_with_env_defaults(
+            env_cfg_block,
+            getattr(self, "step_uri", None),
+            dict(base_step_config.get(CONFIG_KEY, {})),
+        )
 
         # If step config exists, merge base step config with step config
         # (for same keys, priority given to step config)

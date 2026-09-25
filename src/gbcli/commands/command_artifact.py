@@ -14,6 +14,7 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
+    enforce_version_check,
     reject_standalone,
 )
 from gbcli.services.service_artifact import (
@@ -54,7 +55,6 @@ from gbcli.utils.utils import (
     render_pretty,
     validate_tags,
 )
-from gbcli.utils.versionutil import check_current_and_latest_versions
 from gbcommon.types.gbenvconfig import gb_environment_config
 from gbcommon.uri.uri import URI, UnknownURIScheme
 from gbcommon.utils.hf_utils import (
@@ -508,15 +508,7 @@ def push(
 
     _validate_store_type(ctx, store, type, is_push=True)
 
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if not from_local or not artifact_name:
         click.echo(
@@ -1244,15 +1236,7 @@ def register(
 
     # Validate store type compatibility with artifact type
     # Note: type might be inferred from URI, so we validate after URI decoding below
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     # Check artifact name formatting
     name_valid, name_invalid_chars = is_valid_name(artifact_name, "artifact_name")
@@ -1781,15 +1765,7 @@ def list(
             case _:
                 pass  # Ignore unknown events
 
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -2088,15 +2064,7 @@ def download(
     Provide artifact id as an argument as the UUID or URI.\n
     The --artifact-id option is deprecated.
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -2457,15 +2425,7 @@ def archive(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -2557,15 +2517,7 @@ def unarchive(
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -2654,15 +2606,7 @@ def copy(
 
     artifact_id: The source artifact ID or URI.
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -2888,15 +2832,7 @@ def describe(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -3007,15 +2943,7 @@ def checksum(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -3139,15 +3067,7 @@ def update(
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
