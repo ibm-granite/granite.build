@@ -38,7 +38,7 @@ const {
   rowsForKnownRuns,
   trialColorScale,
   emphasisColorScale,
-  colorClash,
+  selectionSlots,
   toChartRows,
   positiveRows,
   logDomain,
@@ -384,25 +384,54 @@ describe('emphasisColorScale', () => {
   })
 })
 
-describe('colorClash', () => {
-  const many = Array.from({ length: EMPHASIS_THRESHOLD + 3 }, (_, i) => `t_${i}`)
-  const scale = trialColorScale(many, 'white')
+describe('selectionSlots', () => {
+  const many = Array.from({ length: EMPHASIS_THRESHOLD + 6 }, (_, i) => `t_${i}`)
 
-  it('names the ticked run that already holds this run’s colour', () => {
-    assert.equal(colorClash('t_10', ['t_3', 't_0'], scale), 't_0')
+  it('gives a ticked run its home slot when no other ticked run holds it', () => {
+    assert.deepEqual(selectionSlots(many, ['t_3', 't_12'], {}), { t_3: 3, t_12: 2 })
   })
 
-  it('finds no clash between runs in different slots', () => {
-    assert.equal(colorClash('t_1', ['t_0', 't_2'], scale), undefined)
+  it('lends the lowest free slot when a ticked run already holds the home one', () => {
+    // t_10 shares t_0's home slot, so it borrows — rather than being refused, which
+    // disabled rows while the reader was still under the selection cap.
+    assert.deepEqual(selectionSlots(many, ['t_0', 't_10'], {}), { t_0: 0, t_10: 1 })
   })
 
-  it('does not report a ticked run as clashing with itself', () => {
-    assert.equal(colorClash('t_0', ['t_0'], scale), undefined)
+  it('keeps every ticked run distinct up to the cap, however the homes collide', () => {
+    const ticked = ['t_0', 't_10', 't_1', 't_11', 't_2', 't_12', 't_3', 't_13', 't_4', 't_14']
+    const slots = selectionSlots(many, ticked, {})
+    assert.equal(new Set(Object.values(slots)).size, ticked.length)
   })
 
-  it('never clashes in a job at or below the threshold', () => {
-    const small = trialColorScale(SEARCH_IDS, 'white')
-    for (const id of SEARCH_IDS) assert.equal(colorClash(id, SEARCH_IDS, small), undefined)
+  it('leaves a borrowed slot in place when its home frees up', () => {
+    // Colour follows the run while it stays ticked: unticking t_0 must not repaint
+    // t_10's curve back to slot 0 under the reader.
+    const first = selectionSlots(many, ['t_0', 't_10'], {})
+    const after = selectionSlots(many, ['t_10'], first)
+    assert.deepEqual(after, { t_10: 1 })
+  })
+
+  it('drops unticked runs, so their slot is free for the next tick', () => {
+    const first = selectionSlots(many, ['t_0', 't_10'], {})
+    const after = selectionSlots(many, ['t_10', 't_5'], selectionSlots(many, ['t_10'], first))
+    assert.deepEqual(after, { t_10: 1, t_5: 5 })
+    // t_0's home is free again, so re-ticking it gets its own colour back.
+    assert.equal(selectionSlots(many, ['t_10', 't_0'], selectionSlots(many, ['t_10'], first)).t_0, 0)
+  })
+
+  it('never borrows in a job at or below the threshold', () => {
+    const slots = selectionSlots(SEARCH_IDS, [...SEARCH_IDS].reverse(), {})
+    SEARCH_IDS.forEach((id, i) => assert.equal(slots[id], i))
+  })
+})
+
+describe('trialColorScale with selection slots', () => {
+  it('paints a ticked run from its slot and every other run from its home', () => {
+    const many = Array.from({ length: EMPHASIS_THRESHOLD + 3 }, (_, i) => `t_${i}`)
+    const scale = trialColorScale(many, 'white', { t_10: 1 })
+    assert.equal(scale['t_10'], METRIC_PALETTE.white[1])
+    assert.equal(scale['t_11'], METRIC_PALETTE.white[1], 'an unticked run keeps its home colour')
+    assert.equal(scale['t_0'], METRIC_PALETTE.white[0])
   })
 })
 

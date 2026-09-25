@@ -66,7 +66,7 @@ interface Props {
  * and of its curves in the charts below — one trial, one colour, everywhere on the
  * page. The lines drawn are the ticked ones, which the table keeps in distinct hues
  * even past `EMPHASIS_THRESHOLD` trials, where the palette wraps — see
- * `colorClash`. One limit of that scale surfaces here, inherited rather than
+ * `selectionSlots`. One limit of that scale surfaces here, inherited rather than
  * introduced: `METRIC_PALETTE`'s slot 8 (#520408) is too dark to sit in a
  * categorical set.
  *

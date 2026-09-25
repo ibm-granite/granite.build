@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   DataTable,
@@ -42,7 +42,7 @@ import { TrialProgressSummary } from './TrialProgressSummary'
 import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
 import { TrialSearchSpace } from './TrialSearchSpace'
-import { EMPHASIS_THRESHOLD, colorClash, emphasisColorScale, trialColorScale } from './trialMetrics'
+import { EMPHASIS_THRESHOLD, emphasisColorScale, selectionSlots, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import { formatHyperparamValue, hyperparamColumnLabel, hyperparamColumns } from './trialHyperparams'
 import styles from './TrialsTable.module.scss'
@@ -82,10 +82,10 @@ const ACTIVE_STATUSES = new Set(['running', 'pending'])
 // selection would have to draw two curves in the same colour — and ten
 // overlapping curves is already about the limit for reading a line chart.
 //
-// The cap alone does not keep a selection distinct. Colour follows the run, so
-// in a job past EMPHASIS_THRESHOLD trials the palette wraps and trial 11 shares
-// trial 1's hue however few are ticked. The row checkboxes therefore also refuse a
-// trial whose hue a ticked one already holds — see colorClash.
+// The cap alone does not keep a selection distinct: in a job past
+// EMPHASIS_THRESHOLD trials the palette wraps and trial 11's home hue is trial 1's.
+// A ticked trial whose home hue is taken borrows a free one instead — see
+// selectionSlots — and because the cap is the palette size, one is always free.
 const MAX_SELECTED = EMPHASIS_THRESHOLD
 
 // Same page sizes as the other AutoTuneX tables. The pager only appears once a job
@@ -132,17 +132,31 @@ export function TrialsTable({ job }: Props) {
   // and the compare view tags it. Reading it twice would let the tag crown a trial
   // the charts colour as an also-ran if the two ever fell out of step.
   const bestId = bestTrialId(trials)
-  const colorScale = useMemo(() => {
-    const ordered = [...trials]
-      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
-      .map((t) => t.id)
-    return trialColorScale(ordered, theme)
-  }, [trials, theme])
+  const orderedIds = useMemo(
+    () =>
+      [...trials]
+        .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+        .map((t) => t.id),
+    [trials]
+  )
+  // The ticked trials' slots, sticky across selection changes — see
+  // selectionSlots. The previous result lives in a ref because the next one is
+  // derived from it; recomputing from the selection alone would hand a borrowed
+  // slot back the moment its home freed up, repainting a curve under the reader.
+  // Written during render, which is safe here because the result is a pure
+  // function of (previous, orderedIds, selectedIds): a render React discards
+  // leaves behind only slots the next render with the same selection would pick.
+  const slotsRef = useRef<Record<string, number>>({})
+  const slots = useMemo(() => {
+    slotsRef.current = selectionSlots(orderedIds, selectedIds, slotsRef.current)
+    return slotsRef.current
+  }, [orderedIds, selectedIds])
+  const colorScale = useMemo(() => trialColorScale(orderedIds, theme, slots), [orderedIds, theme, slots])
   // With nothing ticked and no final run, the charts fall back to drawing every
-  // trial the table lists. Past EMPHASIS_THRESHOLD trials the permanent scale
-  // repeats hues there, pairing trials that have nothing to do with each other, so
-  // that view alone greys all but the best. A tick switches back to the permanent
-  // scale, where colorClash keeps the ticked trials distinct.
+  // trial the table lists. Past EMPHASIS_THRESHOLD trials the home hues repeat
+  // there, pairing trials that have nothing to do with each other, so that view
+  // alone greys all but the best. A tick switches back to the full scale, where
+  // selectionSlots keeps the ticked trials distinct.
   const chartsColorScale = useMemo(
     () =>
       selectedIds.length === 0 && trials.length > EMPHASIS_THRESHOLD
@@ -323,10 +337,6 @@ export function TrialsTable({ job }: Props) {
   // The diff-table only needs 2+ completed trials with a score — no axis constraint.
   const canOpenCompare = comparableTrials.length >= 2
   const atSelectionCap = selectedIds.length >= MAX_SELECTED
-  // Every row's clash with the current selection — see colorClash. Always empty at
-  // or below EMPHASIS_THRESHOLD trials, where no two trials share a hue.
-  const clashes = new Map(trials.map((t) => [t.id, colorClash(t.id, selectedIds, colorScale)]))
-  const hasClashBlockedRow = trials.some((t) => !selectedIds.includes(t.id) && clashes.get(t.id))
 
   const trialsById = new Map(trials.map((t) => [t.id, t]))
 
@@ -392,9 +402,7 @@ export function TrialsTable({ job }: Props) {
                     }}
                   >
                     {selectedIds.length} of {MAX_SELECTED} selected
-                    {atSelectionCap
-                      ? ' — clear one to pick another'
-                      : hasClashBlockedRow && ' — trials sharing a ticked trial\u2019s colour are unavailable'}
+                    {atSelectionCap && ' — clear one to pick another'}
                   </span>
                 )}
                 {selectedIds.length > 0 && (
@@ -436,23 +444,11 @@ export function TrialsTable({ job }: Props) {
                     // go, which would sail past MAX_SELECTED and leave Carbon's
                     // own list holding rows the mirror refused — exactly the
                     // desync the comment below is written to avoid. So it is
-                    // offered only when it cannot overshoot, nor tick two rows
-                    // sharing a hue — a search can narrow a job past
-                    // EMPHASIS_THRESHOLD to, say, trials 1 and 11. Clearing stays
+                    // offered only when it cannot overshoot. Clearing stays
                     // available: Carbon deselects whenever anything is already
                     // selected (DataTable.js:303), so a non-empty selection
                     // makes this click a clear rather than an add.
-                    disabled={
-                      selectedIds.length === 0 &&
-                      (tableRows.length > MAX_SELECTED ||
-                        tableRows.some((r) =>
-                          colorClash(
-                            r.id,
-                            tableRows.map((other) => other.id),
-                            colorScale
-                          )
-                        ))
-                    }
+                    disabled={selectedIds.length === 0 && tableRows.length > MAX_SELECTED}
                     onSelect={(e) => {
                       getSelectionProps().onSelect(e)
                       // Mirror Carbon's own scope, which is the *filtered* rows:
@@ -542,19 +538,7 @@ export function TrialsTable({ job }: Props) {
                           // the reader would be stuck at ten with no way down.
                           // Carbon puts no tooltip on a disabled checkbox, so
                           // the toolbar carries the reason.
-                          //
-                          // Also refused while a ticked trial holds this row's
-                          // hue, or the two would draw as one colour. The label
-                          // names that trial for a screen reader; the toolbar
-                          // says why for everyone else.
-                          disabled={
-                            !selectedIds.includes(row.id) && (atSelectionCap || clashes.get(row.id) !== undefined)
-                          }
-                          aria-label={
-                            !selectedIds.includes(row.id) && clashes.get(row.id)
-                              ? `Unavailable: same colour as ticked trial ${clashes.get(row.id)}`
-                              : selectionProps['aria-label']
-                          }
+                          disabled={atSelectionCap && !selectedIds.includes(row.id)}
                           onSelect={(e) => {
                             selectionProps.onSelect(e)
                             const checked = (e.target as HTMLInputElement).checked

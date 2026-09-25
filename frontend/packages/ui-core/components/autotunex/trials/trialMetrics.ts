@@ -208,10 +208,10 @@ export const METRIC_DE_EMPHASIS: Record<ChartsTheme, string> = {
  * invented hue is indistinguishable from an existing one under colour-vision
  * deficiency.
  *
- * So past this many runs the palette cycles and hues repeat — run 11 shares run 1's.
- * Two consequences, both handled by callers rather than here: a comparison may not
- * tick two runs holding the same hue (see `colorClash`), and a view drawing every
- * run with nothing ticked switches to emphasis (see `emphasisColorScale`).
+ * So past this many runs the palette cycles and hues repeat — run 11's home slot is
+ * run 1's. Two consequences: a ticked run whose home slot another ticked run holds
+ * borrows a free one (see `selectionSlots`), and a view drawing every run with
+ * nothing ticked switches to emphasis (see `emphasisColorScale`).
  *
  * This counts every run in the job, not the selected subset, because colour
  * follows the run and `trialColorScale` is always handed the full list.
@@ -227,15 +227,21 @@ export type ChartsTheme = 'white' | 'g100'
  * in `orderedIds`, so hiding one series never repaints the others. Callers must
  * therefore pass the full ordered run list, not the currently visible subset.
  *
- * Past `EMPHASIS_THRESHOLD` runs the slots wrap, so several runs share a hue. The
- * alternative — greying every run but the best — made the colour a run showed
- * depend on how many trials the job happened to have.
+ * Each run's home slot is its position modulo the palette, so past
+ * `EMPHASIS_THRESHOLD` runs several runs share a home. The alternative — greying
+ * every run but the best — made the colour a run showed depend on how many trials
+ * the job happened to have. `slots`, from `selectionSlots`, overrides the home slot
+ * for the ticked runs so that no two of them share a hue.
  */
-export function trialColorScale(orderedIds: string[], theme: ChartsTheme): Record<string, string> {
+export function trialColorScale(
+  orderedIds: string[],
+  theme: ChartsTheme,
+  slots: Record<string, number> = {}
+): Record<string, string> {
   const palette = METRIC_PALETTE[theme]
   const scale: Record<string, string> = {}
   orderedIds.forEach((id, i) => {
-    scale[id] = palette[i % palette.length]
+    scale[id] = palette[slots[id] ?? i % palette.length]
   })
   return scale
 }
@@ -263,18 +269,54 @@ export function emphasisColorScale(
 }
 
 /**
- * The ticked run that already holds `id`'s colour, if any.
+ * Palette slot per ticked run, for `trialColorScale`'s `slots`.
  *
- * Only possible past `EMPHASIS_THRESHOLD` runs, where `trialColorScale` wraps. Two
- * ticked runs in one hue would draw as one indistinguishable pair of curves, so the
- * table refuses the second tick and names this run as the reason.
+ * A run takes its home slot (its position in `orderedIds`, modulo the palette)
+ * unless another ticked run already holds it, and then borrows the lowest free
+ * slot. Refusing the tick instead disabled rows while the reader was still under
+ * the selection cap, and the cap is the palette size, so a free slot always exists.
+ *
+ * Sticky: a run already in `previous` keeps its slot for as long as it stays in
+ * `selectedIds`, even once its home frees up, so unticking one run never repaints
+ * another's curve. Pass the previous result back in on every change; runs no longer
+ * ticked are dropped, freeing their slots. Newly ticked runs are placed in
+ * `selectedIds` order, which is tick order.
+ *
+ * At or below `EMPHASIS_THRESHOLD` runs no two homes collide, so every run gets its
+ * home slot and colour follows the run outright.
  */
-export function colorClash(
-  id: string,
+export function selectionSlots(
+  orderedIds: string[],
   selectedIds: string[],
-  scale: Record<string, string>
-): string | undefined {
-  return selectedIds.find((other) => other !== id && scale[other] === scale[id])
+  previous: Record<string, number>
+): Record<string, number> {
+  const size = METRIC_PALETTE.white.length
+  const slots: Record<string, number> = {}
+  const taken = new Set<number>()
+  for (const id of selectedIds) {
+    if (previous[id] !== undefined) {
+      slots[id] = previous[id]
+      taken.add(previous[id])
+    }
+  }
+  for (const id of selectedIds) {
+    if (slots[id] !== undefined) continue
+    const index = orderedIds.indexOf(id)
+    if (index === -1) continue
+    const home = index % size
+    let slot = home
+    if (taken.has(home)) {
+      for (let s = 0; s < size; s++) {
+        if (!taken.has(s)) {
+          slot = s
+          break
+        }
+      }
+    }
+    slots[id] = slot
+    taken.add(slot)
+  }
+  return slots
 }
 
 // `primaryMetric` and `bestTrialId` live in `trialsRadar.ts`, beside the
