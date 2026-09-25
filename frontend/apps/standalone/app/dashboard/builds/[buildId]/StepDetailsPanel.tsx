@@ -23,12 +23,6 @@ const WORST_FIRST: BuildStepRun['status'][] = [
   'running',
 ]
 
-// Of those, the ones that mean "this target did not complete", so the duration
-// reads "Ran for"/"Running for" rather than "Completed in". Every WORST_FIRST
-// entry qualifies today; kept as its own set so the ranking can later gain a
-// status that *is* a completion without silently changing the label.
-const UNFINISHED_STATUSES = new Set<string>(WORST_FIRST)
-
 /** `10:51:22` — the clock time alone, for the compact Execution row. */
 function formatClock(value: string | undefined): string {
   if (!value) return '—'
@@ -748,17 +742,21 @@ export function stepDrawerSummary(
     isRunning ? new Date().toISOString() : finished,
   )
   const stamp = formatDateTime(finished ?? started)
-  // A target that ended badly did not "complete" — say how long it ran instead,
-  // or the header reads "Completed in 2m 4s" directly under a red Failed badge.
-  // Checked against the same ranking that picked `status`, so the badge and the
-  // label can never disagree about whether the target completed.
+  // A target that ended badly, or never finished, did not "complete" — say how
+  // long it ran instead, or the header reads "Completed in 2m 4s" directly
+  // under a red Failed (or Pending) badge. Checked against every step's status
+  // rather than the WORST_FIRST ranking, since pending/planned/submitted/
+  // retry_pending steps aren't in that ranking but still mean the target isn't
+  // done: a trailing step stuck at `pending` when the build stops must not read
+  // "Completed in" just because it isn't `running`, `failed`, etc.
   //
   // `isRunning` is not the same question as a `running` status: a step left
   // `running` under a build that has since stopped is not still elapsing (so
   // `isRunning` is false), but it never completed either — hence the explicit
-  // status check ahead of the `isRunning` arm, or such a target reads
-  // "Completed in" under a Running badge.
-  const durationLabel = UNFINISHED_STATUSES.has(status)
+  // check ahead of the `isRunning` arm, or such a target reads "Completed in"
+  // under a Running badge.
+  const allStepsSucceeded = steps.every((s) => s.status === 'success')
+  const durationLabel = !allStepsSucceeded
     ? isRunning
       ? 'Running for'
       : 'Ran for'

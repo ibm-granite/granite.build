@@ -350,10 +350,10 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       // click (opening the drawer) as a viewport takeover, permanently disabling
       // the auto-fit for nodes added by later status polls.
       //
-      // Deliberately NOT gated on "the transform changed": scaleExtent clamps
-      // the scale, so a user wheeling past the min/max emits `zoom` events with
-      // an unchanged transform. That is still intent, and ignoring it would let
-      // the next poll re-fit the graph out from under them.
+      // Deliberately NOT gated on "the transform changed": a pan that gets fully
+      // clamped (e.g. against a boundary) could in principle emit a `zoom` event
+      // with an unchanged transform. That is still intent, and ignoring it would
+      // let the next poll re-fit the graph out from under them.
       if (event.sourceEvent) hasUserAdjustedRef.current = true
     })
 
@@ -456,9 +456,9 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   React.useImperativeHandle(ref, () => ({
     zoomIn: () => {
       if (svgRef.current && zoomRef.current) {
-        // Programmatic scaleBy fires no sourceEvent, so the start.userintent
-        // handler won't flag it — mark it here or a later relayout snaps the
-        // toolbar-set zoom back to auto-fit.
+        // Programmatic scaleBy fires no sourceEvent, so the zoom handler's
+        // sourceEvent check won't flag it — mark it here or a later relayout
+        // snaps the toolbar-set zoom back to auto-fit.
         hasUserAdjustedRef.current = true
         d3.select(svgRef.current).call(zoomRef.current.scaleBy, 1.1)
       }
