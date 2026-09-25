@@ -1,8 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import { ContentSwitcher, Switch } from '@carbon/react'
-import { useChartsTheme } from '../../../hooks/useTheme'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { buildParallelCoords } from './trialsParallelCoords'
 import type { ParallelMetric } from './trialsParallelCoords'
 import { hyperparamColumnLabel } from './trialHyperparams'
@@ -15,21 +13,15 @@ import type { Trial } from '../../../types'
 // path, and `./TrialsParallelCoords` silently imported the pure module. The same
 // reason trialMetrics.ts sits beside TrialMetricsCharts.tsx rather than a case-twin.
 
-// Carbon blue, worst -> best. Two steps interpolated rather than a hand-picked
-// ramp, which keeps lightness monotonic by construction; both ends were checked
-// against their own surface at >= 3:1.
+// Drawing units, one per CSS pixel. The width is measured from the container and
+// the viewBox matches it, so the SVG never scales: text renders at the size the
+// stylesheet gives it, and the plot is exactly VIEW_H tall on any screen. A fixed
+// viewBox stretched to the container made both grow with the window — on a wide
+// screen the plot ran past 500px tall with axis names larger than the table's text.
 //
-// Dark mode is its own pair, not a flip of the light one: on g100 the "best" end
-// has to be the BRIGHT one, because a near-black navy is what disappears against a
-// dark surface — the reverse of which end vanishes on white.
-const METRIC_RAMP: Record<'white' | 'g100', [string, string]> = {
-  white: ['#4589ff', '#001141'],
-  g100: ['#4589ff', '#d0e2ff'],
-}
-
-// viewBox units. The SVG scales to its container, so these are a fixed drawing
-// grid rather than pixels — `plot`'s min-width in the stylesheet is what actually
-// keeps the axis names from colliding.
+// MIN_W is where nine axis names stop colliding; narrower, the container scrolls
+// rather than the labels overlapping. It is also the width drawn before the first
+// measurement.
 //
 // The side margins are deliberately tiny. Nothing is drawn outside the outermost
 // axes: their labels are anchored `start` and `end` so they read INWARD, and
@@ -37,19 +29,14 @@ const METRIC_RAMP: Record<'white' | 'g100', [string, string]> = {
 // can overhang (a 4-unit nudge, a 2.5-unit vertex circle, a 1-unit half-stroke).
 // Larger margins were pure dead space at the left and right of the row — the same
 // waste that made the radar chart this replaced leave most of the row empty.
-const VIEW_W = 1040
-const VIEW_H = 392
+const MIN_W = 832
+const VIEW_H = 272
 const PLOT_LEFT = 10
-const PLOT_RIGHT = 1030
-const PLOT_TOP = 98
-const PLOT_BOTTOM = 356
-
-function mix(from: string, to: string, t: number): string {
-  const parse = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))
-  const a = parse(from)
-  const b = parse(to)
-  return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',')})`
-}
+const SIDE_MARGIN = 10
+const GROUP_LABEL_Y = 14
+const AXIS_NAME_Y = 36
+const PLOT_TOP = 62
+const PLOT_BOTTOM = 242
 
 interface Props {
   /** Trials to draw — the reader's ticked selection. */
@@ -75,14 +62,17 @@ interface Props {
  * more than a handful of axes and can carry a categorical one such as
  * `lr_scheduler_type`, which a radar cannot plot at all.
  *
- * Colour defaults to the run, so a line here is the colour of that trial's row
- * checkbox and of its curves in the charts below — one trial, one colour, everywhere
- * on the page. The lines drawn are the ticked ones, which the table keeps in
- * distinct hues even past `EMPHASIS_THRESHOLD` trials, where the palette wraps — see
+ * Colour is the run's, so a line here is the colour of that trial's row checkbox
+ * and of its curves in the charts below — one trial, one colour, everywhere on the
+ * page. The lines drawn are the ticked ones, which the table keeps in distinct hues
+ * even past `EMPHASIS_THRESHOLD` trials, where the palette wraps — see
  * `colorClash`. One limit of that scale surfaces here, inherited rather than
  * introduced: `METRIC_PALETTE`'s slot 8 (#520408) is too dark to sit in a
- * categorical set. The metric mode is the way out: one hue light-to-dark, legible at
- * any count.
+ * categorical set.
+ *
+ * There was a second colour mode, a light-to-dark ramp on the metric, behind a
+ * Trial / <metric> switcher. It was removed so the plot always matches the rest of
+ * the page; `ParallelLine.goodness` still carries the value it was drawn from.
  */
 export function TrialSearchSpace({
   trials,
@@ -92,8 +82,8 @@ export function TrialSearchSpace({
   colorScale,
   bestTrialId,
 }: Props) {
-  const theme = useChartsTheme()
-  const [colorByMetric, setColorByMetric] = useState(false)
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const [viewW, setViewW] = useState(MIN_W)
   const [hiddenIds, setHiddenIds] = useState<Record<string, boolean>>({})
   const [hoveredId, setHoveredId] = useState<string | null>(null)
 
@@ -102,20 +92,30 @@ export function TrialSearchSpace({
     [trials, hyperparamKeys, metric, boundsFrom]
   )
 
+  // Before the early return, which would otherwise change the hook count. The
+  // effect re-runs when the plot first mounts, since the ref is empty until then.
+  const canDraw = axes.length >= 2
+  useEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const observer = new ResizeObserver(([entry]) => {
+      setViewW(Math.max(MIN_W, Math.floor(entry.contentRect.width)))
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [canDraw])
+
   // Two axes is the floor: a single-axis parallel-coordinates plot is a dot plot
   // with extra chrome, and with none there is nothing to draw.
-  if (axes.length < 2) return null
+  if (!canDraw) return null
 
+  const PLOT_RIGHT = viewW - SIDE_MARGIN
   const step = (PLOT_RIGHT - PLOT_LEFT) / (axes.length - 1)
   const axisX = (index: number) => PLOT_LEFT + index * step
   const axisY = (position: number) => PLOT_BOTTOM - position * (PLOT_BOTTOM - PLOT_TOP)
   const firstOutcome = axes.findIndex((a) => a.isOutcome)
 
-  const colorFor = (line: (typeof lines)[number]) => {
-    if (!colorByMetric) return colorScale[line.id] ?? 'var(--cds-text-primary)'
-    const [worst, best] = METRIC_RAMP[theme]
-    return mix(worst, best, line.goodness ?? 0)
-  }
+  const colorFor = (line: (typeof lines)[number]) => colorScale[line.id] ?? 'var(--cds-text-primary)'
 
   // A null position breaks the path rather than joining across it: the trial did
   // not report that key, and a straight line through the gap would assert a value.
@@ -144,54 +144,34 @@ export function TrialSearchSpace({
 
   return (
     <div>
-      <div
-        style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'baseline',
-          justifyContent: 'space-between',
-          gap: '0.75rem',
-          marginBottom: '0.5rem',
-        }}
-      >
-        <div>
-          <h5 style={{ margin: 0 }}>Trial search space</h5>
-          <p style={{ margin: '0.125rem 0 0', fontSize: '0.75rem', color: 'var(--cds-text-secondary)' }}>
-            Hyperparameter with differences amongst trials are shown.
-          </p>
-        </div>
-        {/* Carbon's own segmented control, so this reads as part of the page rather
-            than as two hand-styled buttons. */}
-        <ContentSwitcher
-          size="sm"
-          selectedIndex={colorByMetric ? 1 : 0}
-          onChange={({ index }) => setColorByMetric(index === 1)}
-          style={{ maxWidth: '16rem' }}
-        >
-          <Switch name="trial" text="Trial" />
-          <Switch name="metric" text={hyperparamColumnLabel(metric.name)} />
-        </ContentSwitcher>
+      <div style={{ marginBottom: '0.5rem' }}>
+        <h5 style={{ margin: 0 }}>Trial search space</h5>
+        <p style={{ margin: '0.125rem 0 0', fontSize: '0.75rem', color: 'var(--cds-text-secondary)' }}>
+          Hyperparameter with differences amongst trials are shown.
+        </p>
       </div>
 
-      <div className={styles.scroller}>
+      <div className={styles.scroller} ref={scrollerRef}>
         <svg
           className={styles.plot}
-          viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+          width={viewW}
+          height={VIEW_H}
+          viewBox={`0 0 ${viewW} ${VIEW_H}`}
           role="img"
           aria-label={`Parallel coordinates plot of ${lines.length} trials across ${axes.length} axes.`}
         >
-          <text className={styles.groupLabel} x={PLOT_LEFT} y={26}>
+          <text className={styles.groupLabel} x={PLOT_LEFT} y={GROUP_LABEL_Y}>
             Hyperparameters
           </text>
           {firstOutcome !== -1 && (
             <>
-              <text className={styles.groupLabel} x={PLOT_RIGHT} y={26} textAnchor="end">
+              <text className={styles.groupLabel} x={PLOT_RIGHT} y={GROUP_LABEL_Y} textAnchor="end">
                 Results ↑ Better
               </text>
               <line
                 className={styles.divider}
                 x1={axisX(firstOutcome) - step / 2}
-                y1={16}
+                y1={4}
                 x2={axisX(firstOutcome) - step / 2}
                 y2={PLOT_BOTTOM + 24}
               />
@@ -210,7 +190,7 @@ export function TrialSearchSpace({
               <text
                 className={styles.axisName}
                 x={axisX(index) + nudgeFor(index)}
-                y={54}
+                y={AXIS_NAME_Y}
                 textAnchor={anchorFor(index)}
               >
                 {hyperparamColumnLabel(axis.key)}
@@ -292,20 +272,6 @@ export function TrialSearchSpace({
           )}
         </svg>
       </div>
-
-      {colorByMetric && (
-        <div className={styles.ramp}>
-          <span>{hyperparamColumnLabel(metric.name)}</span>
-          <span>{axes[axes.length - 1].bottomLabel} worst</span>
-          <span
-            className={styles.rampBar}
-            style={{
-              background: `linear-gradient(to right, ${METRIC_RAMP[theme][0]}, ${METRIC_RAMP[theme][1]})`,
-            }}
-          />
-          <span>{axes[axes.length - 1].topLabel} best</span>
-        </div>
-      )}
 
       <div className={styles.legend}>
         {lines.map((line) => (

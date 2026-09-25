@@ -62,12 +62,10 @@
 }
 
 .plot {
+  /* Sized in pixels from the component, which measures the scroller — see MIN_W
+     in TrialSearchSpace.tsx. No width: 100% here: it would override that and
+     scale the drawing, text included, with the window again. */
   display: block;
-  /* Nine axes need room; narrower than this the axis names collide, so the
-     container scrolls rather than the labels overlapping. */
-  min-width: 52rem;
-  width: 100%;
-  height: auto;
 }
 
 .legend {
@@ -114,19 +112,4 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--cds-text-helper);
-}
-
-.ramp {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-  font-family: var(--cds-code-01-font-family, 'IBM Plex Mono', monospace);
-  font-size: 0.625rem;
-  color: var(--cds-text-helper);
-}
-
-.rampBar {
-  width: 9rem;
-  height: 0.5rem;
 }
