@@ -27,6 +27,7 @@ from gbserver.storage.artifact_registry import IArtifactRegistry
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.event_storage import IStoredEventStorage
 from gbserver.storage.kv_pair_storage import IKeyValuePairStorage
+from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.node_failure_storage import INodeFailureStorage
 from gbserver.storage.space_storage import IStoredSpaceStorage
@@ -42,6 +43,7 @@ from gbserver.types.constants import (
     GB_BUILDS_TABLE_NAME,
     GB_EVENTS_TABLE_NAME,
     GB_KV_PAIRS_TABLE_NAME,
+    GB_LINEAGE_JOB_TABLE_NAME,
     GB_LINEAGE_TABLE_NAME,
     GB_METADATA_STORAGE,
     GB_NODE_FAILURES_TABLE_NAME,
@@ -66,6 +68,7 @@ class SingletonAdminStorage(BaseModel):
     event_storage: IStoredEventStorage
     node_failure_storage: INodeFailureStorage
     lineage_row_storage: ILineageRowStorage
+    lineage_job_storage: ILineageJobStorage
     space_user_storage: ISpaceUserStorage
     kv_pair_storage: IKeyValuePairStorage
     table_name_prefix: str
@@ -175,6 +178,9 @@ def set_storage_prefix(table_prefix: Optional[str] = None) -> SingletonAdminStor
     lineage_row_storage = factory.create_lineage_row_storage(
         table_name=table_prefix + GB_LINEAGE_TABLE_NAME
     )
+    lineage_job_storage = factory.create_lineage_job_storage(
+        table_name=table_prefix + GB_LINEAGE_JOB_TABLE_NAME
+    )
     space_user_storage = factory.create_space_user_storage(
         table_name=table_prefix + GB_SPACE_USERS_TABLE_NAME
     )
@@ -202,6 +208,7 @@ def set_storage_prefix(table_prefix: Optional[str] = None) -> SingletonAdminStor
         event_storage=event_storage,
         node_failure_storage=node_failure_storage,
         lineage_row_storage=lineage_row_storage,
+        lineage_job_storage=lineage_job_storage,
         space_user_storage=space_user_storage,
         kv_pair_storage=kv_pair_storage,
         table_name_prefix=table_prefix,

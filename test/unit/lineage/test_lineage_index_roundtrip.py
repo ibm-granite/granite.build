@@ -64,6 +64,9 @@ class _AdminStorage:
         self.lineage_row_storage = factory.create_lineage_row_storage(
             table_name=f"rt_l_{suffix}"
         )
+        self.lineage_job_storage = factory.create_lineage_job_storage(
+            table_name=f"rt_j_{suffix}"
+        )
 
 
 @pytest.fixture(name="storage")
@@ -144,6 +147,11 @@ def all_rows(storage) -> list:
     return [row for page in storage.lineage_row_storage.get_paged() for row in page]
 
 
+def all_jobs(storage) -> list:
+    """Every job record in the index; see :func:`all_rows`."""
+    return [job for page in storage.lineage_job_storage.get_paged() for job in page]
+
+
 def artifact_ids(graph: dict) -> set:
     return {n["id"] for n in graph["nodes"] if n["node_type"] == "artifact"}
 
@@ -163,7 +171,10 @@ class TestOneHop:
             inputs={"raw": self.raw.uuid},
             outputs={"model": [self.model.uuid]},
         )
-        self.sink = DBLineageStore(storage=storage.lineage_row_storage)
+        self.sink = DBLineageStore(
+            storage=storage.lineage_row_storage,
+            job_storage=storage.lineage_job_storage,
+        )
         self.service = DBLineageService(storage=storage.lineage_row_storage)
 
     def test_recording_writes_a_row(self, storage):
@@ -171,6 +182,41 @@ class TestOneHop:
         # The regression guard: an empty index here means the job entries were
         # silently rejected, which is what a nested job_id caused.
         assert len(all_rows(storage)) == 1
+
+    def test_recording_writes_one_job_record(self, storage):
+        """The job record is written alongside the rows, keyed by the same job_id."""
+        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        jobs = all_jobs(storage)
+        assert len(jobs) == 1
+        assert jobs[0].job_id == all_rows(storage)[0].job_id
+
+    def test_the_job_record_carries_the_step_configs(self, storage):
+        """The whole point of the job table: the payload a row cannot hold.
+
+        ``job_input_params`` is excluded from a row blob because a job with N inputs
+        and M outputs would store N*M copies of it. One record per execution means
+        one copy, so it survives here.
+        """
+        from gbserver.lineage.attributes import payload_detail
+
+        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        payload = payload_detail(all_jobs(storage)[0].attributes)
+        assert payload.get("job_input_params"), payload
+
+    def test_the_job_record_scopes_by_space(self, storage):
+        """space_name is derived from the namespace's first segment, and the
+        namespace itself is kept verbatim so the derivation stays checkable."""
+        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        job = all_jobs(storage)[0]
+        assert job.job_namespace.split("/", 1)[0] == SPACE
+        assert job.space_name == SPACE
+        assert job.owner == USER
+
+    def test_re_recording_does_not_duplicate_the_job(self, storage):
+        """Idempotent under the unique on job_id, like the rows are under theirs."""
+        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        assert len(all_jobs(storage)) == 1
 
     def test_the_row_connects_the_two_artifacts(self, storage):
         self.sink.add_jobstats_for_build(storage, self.build.uuid)
@@ -269,7 +315,10 @@ class TestFanOutRows:
             outputs={"models": [out_a.uuid, out_b.uuid]},
         )
 
-        sink = DBLineageStore(storage=storage.lineage_row_storage)
+        sink = DBLineageStore(
+            storage=storage.lineage_row_storage,
+            job_storage=storage.lineage_job_storage,
+        )
         sink.add_jobstats_for_build(storage, build.uuid)
 
         rows = all_rows(storage)
@@ -296,7 +345,10 @@ class TestFanOutRows:
             outputs={"models": [out_a.uuid]},
         )
 
-        sink = DBLineageStore(storage=storage.lineage_row_storage)
+        sink = DBLineageStore(
+            storage=storage.lineage_row_storage,
+            job_storage=storage.lineage_job_storage,
+        )
         sink.add_jobstats_for_build(storage, build.uuid)
 
         service = DBLineageService(storage=storage.lineage_row_storage)
@@ -329,7 +381,10 @@ class TestChainAcrossBuilds:
             storage, build2, inputs={"mid": mid.uuid}, outputs={"final": [final.uuid]}
         )
 
-        sink = DBLineageStore(storage=storage.lineage_row_storage)
+        sink = DBLineageStore(
+            storage=storage.lineage_row_storage,
+            job_storage=storage.lineage_job_storage,
+        )
         sink.add_jobstats_for_build(storage, build1.uuid)
         sink.add_jobstats_for_build(storage, build2.uuid)
 
@@ -346,13 +401,19 @@ class TestChainAcrossBuilds:
 
 class TestErrors:
     def test_an_unknown_build_raises(self, storage):
-        sink = DBLineageStore(storage=storage.lineage_row_storage)
+        sink = DBLineageStore(
+            storage=storage.lineage_row_storage,
+            job_storage=storage.lineage_job_storage,
+        )
         with pytest.raises(ValueError):
             sink.add_jobstats_for_build(storage, "no-such-build")
 
     def test_a_build_with_no_targets_raises(self, storage):
         # Matches the W&B sink, so the reconciler sees one behaviour either way.
         build = add_build(storage)
-        sink = DBLineageStore(storage=storage.lineage_row_storage)
+        sink = DBLineageStore(
+            storage=storage.lineage_row_storage,
+            job_storage=storage.lineage_job_storage,
+        )
         with pytest.raises(ValueError):
             sink.add_jobstats_for_build(storage, build.uuid)

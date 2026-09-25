@@ -45,13 +45,19 @@ unrecorded forever and re-record on every scan.
 import logging
 from typing import Callable, Dict, List, Optional, Tuple
 
-from gbserver.lineage.attributes import build_attributes, origin_id
+from gbserver.lineage.attributes import (
+    build_attributes,
+    build_job_attributes,
+    origin_id,
+)
 from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.jobstats import ILineageStore
 from gbserver.storage.artifact_registration import ArtifactRegistration
+from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
+from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 from gbserver.storage.stored_target_run import StoredTargetRun
 
@@ -66,14 +72,27 @@ SOURCE_SYSTEM = "granite.build"
 class DBLineageStore(ILineageStore):
     """Record lineage into the local lineage index.
 
+    Each recorded execution produces two writes: the N*M lineage rows, and one job
+    record holding the metadata a row does not carry (the large payloads, and the
+    fields promoted to job columns). Both are idempotent under their own unique
+    index, so re-recording is a no-op rather than a duplicate.
+
     Args:
         storage: the lineage row storage to write. Defaults to the process-wide
             admin storage, resolved lazily so importing this module does not
             require a configured database.
+        job_storage: the lineage job storage to write. Resolved the same way, but
+            only when ``storage`` was not given -- see :attr:`job_storage`. Without
+            it the rows are still written; only the job record is skipped.
     """
 
-    def __init__(self, storage: Optional[ILineageRowStorage] = None) -> None:
+    def __init__(
+        self,
+        storage: Optional[ILineageRowStorage] = None,
+        job_storage: Optional[ILineageJobStorage] = None,
+    ) -> None:
         self._row_storage = storage
+        self._job_storage = job_storage
 
     @property
     def row_storage(self) -> ILineageRowStorage:
@@ -83,6 +102,32 @@ class DBLineageStore(ILineageStore):
 
             self._row_storage = get_admin_storage().lineage_row_storage
         return self._row_storage
+
+    @property
+    def job_storage(self) -> Optional[ILineageJobStorage]:
+        """The lineage job storage, resolved on first use, or ``None``.
+
+        ``None`` when there is nothing to resolve it from. The rows are what the graph
+        is built from; the job record enriches them, so a caller that supplied only a
+        row storage still records usable lineage rather than failing.
+
+        A caller that passed an explicit ``storage`` and no ``job_storage`` gets
+        ``None`` without the singleton being consulted at all. Reaching for it would
+        open a database connection that caller never asked for -- and, against a
+        configured-but-unreachable backend, block rather than fail.
+        """
+        if self._job_storage is None:
+            if self._row_storage is not None:
+                return None
+
+            from gbserver.storage.singleton_storage import get_admin_storage
+
+            try:
+                self._job_storage = get_admin_storage().lineage_job_storage
+            except Exception as exc:
+                logger.debug("No lineage job storage available: %s", exc)
+                return None
+        return self._job_storage
 
     # -- Recording -----------------------------------------------------------
 
@@ -202,6 +247,15 @@ class DBLineageStore(ILineageStore):
             )
             return
 
+        # The job record first: it holds the metadata the rows no longer carry
+        # (the large payloads, and the three fields promoted to job columns), so it
+        # is written even if every draft below turns out to be unstorable.
+        self._add_job(
+            _normalized_job(job),
+            build_id=build_id,
+            target_run_uuid=target_run_uuid,
+        )
+
         for draft in drafts:
             if not draft.source and not draft.target:
                 # Both endpoints unidentifiable: the row would be terminal on both
@@ -211,6 +265,36 @@ class DBLineageStore(ILineageStore):
                 draft,
                 build_id=build_id,
                 target_run_uuid=target_run_uuid,
+            )
+
+    def _add_job(
+        self,
+        job_metadata: dict,
+        build_id: str,
+        target_run_uuid: str,
+    ) -> None:
+        """Store one job record, tolerating the duplicate case.
+
+        The unique on ``job_id`` is what makes re-recording idempotent, so an
+        IntegrityError here is the expected outcome of recording the same execution
+        twice -- not a failure, and not a reason to abandon the rows.
+        """
+        storage = self.job_storage
+        if storage is None:
+            return
+        job = _job_from_metadata(
+            job_metadata,
+            build_id=build_id,
+            target_run_uuid=target_run_uuid,
+        )
+        if not job:
+            return
+        try:
+            storage.add(job)
+        except Exception:
+            logger.debug(
+                "Lineage job already present or could not be added (job=%s)",
+                job.job_id,
             )
 
     def _add_row(
@@ -406,6 +490,11 @@ def _normalized_job(job: dict) -> dict:
     taught to the decomposer -- which stays independent of the W&B event shape and
     so remains usable by an importer with its own.
 
+    Three further blocks are lifted for the same reason: the namespace from ``job``,
+    and the large payloads from ``run.facets``. Each is nested somewhere the mirror
+    does not reach, and each is needed by something downstream -- authorization for
+    the first, the job record for the rest.
+
     ``job_details.job_id`` is the target run's uuid for build lineage and the
     artifact's uuid for a registered artifact, so it is a stable per-execution
     identity either way -- exactly what the rows of one job must share.
@@ -428,7 +517,73 @@ def _normalized_job(job: dict) -> dict:
     namespace = job_block.get("namespace")
     if namespace and not normalized.get("job_namespace"):
         normalized["job_namespace"] = namespace
+
+    # The large payloads sit under run.facets, a fourth nesting: the mirror lifts
+    # only job_details (and job_output_stats lives inside THAT), so
+    # job_input_params, execution_stats and source_code stay behind. They are
+    # lifted here because the job record carries them -- one copy per execution,
+    # which is what a row could not do -- and without this they would silently be
+    # absent and the record would look like a source that never reported them.
+    #
+    # ``source_code`` is renamed to ``source_code_details``, the name the attributes
+    # contract and the wire model both use.
+    facets = (job.get("run") or {}).get("facets") or {}
+    for facet_key, flat_key in (
+        ("job_input_params", "job_input_params"),
+        ("execution_stats", "execution_stats"),
+        ("source_code", "source_code_details"),
+    ):
+        value = facets.get(facet_key)
+        if value and not normalized.get(flat_key):
+            normalized[flat_key] = value
     return normalized
+
+
+def _job_from_metadata(
+    job_metadata: dict,
+    build_id: str,
+    target_run_uuid: str,
+    source_system: str = SOURCE_SYSTEM,
+) -> Optional[StoredLineageJob]:
+    """Turn a normalized job dict into the stored job record.
+
+    One record per execution, which is what lets it carry the four large payloads --
+    ``job_input_params``, ``execution_stats``, ``job_output_stats``,
+    ``source_code_details`` -- that a *row* cannot, because a row is one of N*M and
+    would hold N*M copies of each.
+
+    ``space_name`` is derived from ``job_namespace``, which the producers spell
+    ``"<space_name>/<build_name>"``: the space is the part before the first ``/``, the
+    same split the read path uses to prune what a caller cannot see. It is stored as
+    its own column rather than recomputed per read, but the namespace is kept
+    verbatim too, so the derived value can always be checked against its source.
+
+    Returns:
+        The record, or ``None`` when the metadata carries no ``job_id`` -- there is
+        no identity to store it under, and a blank key would collide with every other
+        identity-less job under the unique index.
+    """
+    job_id = str(job_metadata.get("job_id") or "")
+    if not job_id:
+        return None
+
+    namespace = str(job_metadata.get("job_namespace") or "")
+    space_name = namespace.split("/", 1)[0] if namespace else ""
+
+    return StoredLineageJob(
+        job_id=job_id,
+        job_namespace=namespace,
+        space_name=space_name,
+        owner=str(job_metadata.get("owner") or ""),
+        source_system=source_system,
+        status=str(job_metadata.get("job_status") or ""),
+        started_at=str(job_metadata.get("job_started_at") or ""),
+        attributes=build_job_attributes(
+            job_metadata=job_metadata,
+            source_system=source_system,
+            ids={"build_id": build_id, "target_run_uuid": target_run_uuid},
+        ),
+    )
 
 
 def _row_from_draft(

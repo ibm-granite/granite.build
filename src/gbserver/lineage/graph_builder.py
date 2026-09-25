@@ -66,11 +66,12 @@ NODE_TYPE_RUN = "run"
 # handler's expected names and the blob's contract are translated in one visible
 # place rather than by a chain of lookups.
 #
-# Four of the handler's fields are absent on purpose: job_input_params,
-# execution_stats, job_output_stats and source_code_details are not carried by the
-# index (they are large and identical across every row of one job -- see
-# gbserver.lineage.attributes). They default to {} in the wire model, and a caller
-# needing them asks GET /lineage/target/{id}, which reads them from build state.
+# Four of the handler's fields are absent from a ROW on purpose: job_input_params,
+# execution_stats, job_output_stats and source_code_details are large and identical
+# across every row of one job, so they live on the job record instead --
+# gb_lineage_job, one row per job_id, under the PAYLOAD group (see
+# gbserver.lineage.attributes). They still default to {} here, because this projects
+# rows; a caller wanting them reads the job record, or GET /lineage/target/{id}.
 _RUN_METADATA_FROM_JOB = {
     "name": "job_name",
     "namespace": "job_namespace",
