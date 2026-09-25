@@ -101,7 +101,7 @@ class TestTemplateRenderingSafety:
         script = tmp_path / "wrapper.sh"
         script.write_text(_render(WRAPPER, num_nodes))
         proc = subprocess.run(
-            ["bash", "-n", str(script)], capture_output=True, text=True
+            ["bash", "-n", str(script)], capture_output=True, text=True, check=False
         )
         assert proc.returncode == 0, proc.stderr
 
@@ -197,6 +197,7 @@ class TestTopologyExecution:
             ["bash", "-c", script],
             capture_output=True,
             text=True,
+            check=False,
             env={"PATH": "/usr/bin:/bin", **env},
         )
         if proc.returncode == 42:
