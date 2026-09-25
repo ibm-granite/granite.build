@@ -77,12 +77,12 @@ interface Props {
  *
  * Colour defaults to the run, so a line here is the colour of that trial's row
  * checkbox and of its curves in the charts below — one trial, one colour, everywhere
- * on the page. Two limits of that scale surface here, both inherited rather than
+ * on the page. The lines drawn are the ticked ones, which the table keeps in
+ * distinct hues even past `EMPHASIS_THRESHOLD` trials, where the palette wraps — see
+ * `colorClash`. One limit of that scale surfaces here, inherited rather than
  * introduced: `METRIC_PALETTE`'s slot 8 (#520408) is too dark to sit in a
- * categorical set, and above `EMPHASIS_THRESHOLD` runs `trialColorScale` returns its
- * emphasis form, which paints every run but the best in one de-emphasis grey — so in
- * a job of more than ten trials several selected lines can share a colour. The metric
- * mode is the way out of both: one hue light-to-dark, legible at any count.
+ * categorical set. The metric mode is the way out: one hue light-to-dark, legible at
+ * any count.
  */
 export function TrialSearchSpace({
   trials,

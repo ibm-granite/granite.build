@@ -203,15 +203,18 @@ export const METRIC_DE_EMPHASIS: Record<ChartsTheme, string> = {
 }
 
 /**
- * Past this many runs the charts switch to emphasis — best run in the first
- * palette slot, every other run in the de-emphasis grey — rather than reaching
- * for more hues. Ten is where `METRIC_PALETTE` runs out: past it a hue would have
- * to be invented rather than taken from Carbon, and an invented hue is
- * indistinguishable from an existing one under colour-vision deficiency.
+ * The number of distinct hues `METRIC_PALETTE` holds. Ten is where it runs out:
+ * past it a hue would have to be invented rather than taken from Carbon, and an
+ * invented hue is indistinguishable from an existing one under colour-vision
+ * deficiency.
  *
- * This counts every run in the job, not the selected subset. Colour follows the
- * run, so `trialColorScale` is always handed the full list — an 11-trial job is
- * in emphasis form even when the reader has ticked only two of them.
+ * So past this many runs the palette cycles and hues repeat — run 11 shares run 1's.
+ * Two consequences, both handled by callers rather than here: a comparison may not
+ * tick two runs holding the same hue (see `colorClash`), and a view drawing every
+ * run with nothing ticked switches to emphasis (see `emphasisColorScale`).
+ *
+ * This counts every run in the job, not the selected subset, because colour
+ * follows the run and `trialColorScale` is always handed the full list.
  */
 export const EMPHASIS_THRESHOLD = 10
 
@@ -224,27 +227,54 @@ export type ChartsTheme = 'white' | 'g100'
  * in `orderedIds`, so hiding one series never repaints the others. Callers must
  * therefore pass the full ordered run list, not the currently visible subset.
  *
- * Above `EMPHASIS_THRESHOLD` runs this returns the emphasis form — the best run
- * in the first palette slot, every other run in the de-emphasis grey.
+ * Past `EMPHASIS_THRESHOLD` runs the slots wrap, so several runs share a hue. The
+ * alternative — greying every run but the best — made the colour a run showed
+ * depend on how many trials the job happened to have.
  */
-export function trialColorScale(
-  orderedIds: string[],
-  bestId: string | undefined,
-  theme: ChartsTheme
-): Record<string, string> {
+export function trialColorScale(orderedIds: string[], theme: ChartsTheme): Record<string, string> {
   const palette = METRIC_PALETTE[theme]
   const scale: Record<string, string> = {}
-
-  if (orderedIds.length > EMPHASIS_THRESHOLD) {
-    for (const id of orderedIds) {
-      scale[id] = id === bestId ? palette[0] : METRIC_DE_EMPHASIS[theme]
-    }
-    return scale
-  }
   orderedIds.forEach((id, i) => {
     scale[id] = palette[i % palette.length]
   })
   return scale
+}
+
+/**
+ * The emphasis form of a `trialColorScale` result: the best run keeps its own
+ * colour, every other run takes the de-emphasis grey.
+ *
+ * For a view that draws every run at once with nothing ticked, in a job past
+ * `EMPHASIS_THRESHOLD` runs. There the runs are context rather than a comparison,
+ * and a repeated hue would pair runs that have nothing to do with each other. The
+ * best run keeps its permanent slot rather than taking slot 0, so it is the same
+ * colour here as on its row checkbox and in its Metrics tab.
+ */
+export function emphasisColorScale(
+  scale: Record<string, string>,
+  bestId: string | undefined,
+  theme: ChartsTheme
+): Record<string, string> {
+  const emphasis: Record<string, string> = {}
+  for (const id of Object.keys(scale)) {
+    emphasis[id] = id === bestId ? scale[id] : METRIC_DE_EMPHASIS[theme]
+  }
+  return emphasis
+}
+
+/**
+ * The ticked run that already holds `id`'s colour, if any.
+ *
+ * Only possible past `EMPHASIS_THRESHOLD` runs, where `trialColorScale` wraps. Two
+ * ticked runs in one hue would draw as one indistinguishable pair of curves, so the
+ * table refuses the second tick and names this run as the reason.
+ */
+export function colorClash(
+  id: string,
+  selectedIds: string[],
+  scale: Record<string, string>
+): string | undefined {
+  return selectedIds.find((other) => other !== id && scale[other] === scale[id])
 }
 
 // `primaryMetric` and `bestTrialId` live in `trialsRadar.ts`, beside the

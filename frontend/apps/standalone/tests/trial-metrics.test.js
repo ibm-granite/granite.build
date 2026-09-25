@@ -37,6 +37,8 @@ const {
   rowsForTrials,
   rowsForKnownRuns,
   trialColorScale,
+  emphasisColorScale,
+  colorClash,
   toChartRows,
   positiveRows,
   logDomain,
@@ -315,7 +317,7 @@ describe('rowsForTrials', () => {
 
 describe('trialColorScale', () => {
   it('gives each run a distinct palette slot at or below the threshold', () => {
-    const scale = trialColorScale(SEARCH_IDS, '491c7_00002', 'white')
+    const scale = trialColorScale(SEARCH_IDS, 'white')
     const used = Object.values(scale)
     assert.equal(new Set(used).size, SEARCH_IDS.length, 'no two runs share a hue')
     assert.equal(scale[SEARCH_IDS[0]], METRIC_PALETTE.white[0])
@@ -325,32 +327,82 @@ describe('trialColorScale', () => {
     // Colour must follow the run, not its position among the *visible* ones —
     // otherwise hiding a series repaints the survivors and a reader who learned
     // "_00002 is purple" is misled.
-    const all = trialColorScale(SEARCH_IDS, '491c7_00002', 'white')
-    const stillOrdered = trialColorScale(SEARCH_IDS, '491c7_00002', 'white')
+    const all = trialColorScale(SEARCH_IDS, 'white')
+    const stillOrdered = trialColorScale(SEARCH_IDS, 'white')
     assert.equal(stillOrdered['491c7_00003'], all['491c7_00003'])
     // And the scale is keyed by id, so a caller filtering its *data* down to two
     // series reuses the same map untouched.
     assert.equal(all['491c7_00002'], METRIC_PALETTE.white[2])
   })
 
-  it('switches to emphasis past the threshold instead of inventing hues', () => {
+  it('cycles the palette past the threshold instead of greying runs out', () => {
     const many = Array.from({ length: EMPHASIS_THRESHOLD + 3 }, (_, i) => `t_${i}`)
-    const scale = trialColorScale(many, 't_4', 'white')
-    assert.equal(scale['t_4'], METRIC_PALETTE.white[0], 'best run takes the accent')
-    const others = many.filter((id) => id !== 't_4').map((id) => scale[id])
+    const scale = trialColorScale(many, 'white')
     assert.ok(
-      others.every((c) => c === METRIC_DE_EMPHASIS.white),
-      'every other run falls back to the de-emphasis grey'
+      Object.values(scale).every((c) => METRIC_PALETTE.white.includes(c)),
+      'no run falls back to the de-emphasis grey'
     )
+    assert.equal(scale[`t_${EMPHASIS_THRESHOLD}`], METRIC_PALETTE.white[0], 'the eleventh run wraps to slot 0')
+  })
+
+  it('never repaints an existing run when the job gains trials', () => {
+    // A running job's trials list grows between polls. Colour follows the run, so
+    // the eleventh trial arriving must not move the first ten.
+    const ten = Array.from({ length: EMPHASIS_THRESHOLD }, (_, i) => `t_${i}`)
+    const before = trialColorScale(ten, 'white')
+    const after = trialColorScale([...ten, 't_10', 't_11'], 'white')
+    for (const id of ten) assert.equal(after[id], before[id], `${id} kept its colour`)
   })
 
   it('uses selected dark steps, not the light ones', () => {
-    const light = trialColorScale(SEARCH_IDS, undefined, 'white')
-    const dark = trialColorScale(SEARCH_IDS, undefined, 'g100')
+    const light = trialColorScale(SEARCH_IDS, 'white')
+    const dark = trialColorScale(SEARCH_IDS, 'g100')
     // purple-70 and green-60 are too dark on Carbon's g100 layer.
     assert.notEqual(light['491c7_00002'], dark['491c7_00002'])
     assert.notEqual(light['491c7_00003'], dark['491c7_00003'])
     assert.equal(dark['491c7_00002'], '#a56eff')
+  })
+})
+
+describe('emphasisColorScale', () => {
+  it('keeps the best run in its own colour and greys every other run', () => {
+    const many = Array.from({ length: EMPHASIS_THRESHOLD + 3 }, (_, i) => `t_${i}`)
+    const scale = trialColorScale(many, 'white')
+    const emphasis = emphasisColorScale(scale, 't_4', 'white')
+    // Its own slot, not slot 0: the best row's checkbox tint and its Metrics tab
+    // use the permanent scale, and the charts must agree with them.
+    assert.equal(emphasis['t_4'], scale['t_4'])
+    assert.notEqual(emphasis['t_4'], METRIC_PALETTE.white[0])
+    const others = many.filter((id) => id !== 't_4').map((id) => emphasis[id])
+    assert.ok(others.every((c) => c === METRIC_DE_EMPHASIS.white))
+  })
+
+  it('greys everything when there is no best run yet', () => {
+    const scale = trialColorScale(SEARCH_IDS, 'g100')
+    const emphasis = emphasisColorScale(scale, undefined, 'g100')
+    assert.ok(Object.values(emphasis).every((c) => c === METRIC_DE_EMPHASIS.g100))
+  })
+})
+
+describe('colorClash', () => {
+  const many = Array.from({ length: EMPHASIS_THRESHOLD + 3 }, (_, i) => `t_${i}`)
+  const scale = trialColorScale(many, 'white')
+
+  it('names the ticked run that already holds this run’s colour', () => {
+    assert.equal(colorClash('t_10', ['t_3', 't_0'], scale), 't_0')
+  })
+
+  it('finds no clash between runs in different slots', () => {
+    assert.equal(colorClash('t_1', ['t_0', 't_2'], scale), undefined)
+  })
+
+  it('does not report a ticked run as clashing with itself', () => {
+    assert.equal(colorClash('t_0', ['t_0'], scale), undefined)
+  })
+
+  it('never clashes in a job at or below the threshold', () => {
+    const small = trialColorScale(SEARCH_IDS, 'white')
+    for (const id of SEARCH_IDS) assert.equal(colorClash(id, SEARCH_IDS, small), undefined)
   })
 })
 
