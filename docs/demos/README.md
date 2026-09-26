@@ -10,5 +10,5 @@ down cleanly when you're done.
 > are smaller and faster.
 
 - [Standalone Docker demo](docker-demo.md) — TRL fine-tuning and unitxt evaluation in Docker containers via the standalone server. No cluster or cloud credentials needed.
-- [SLURM demo (via SkyPilot)](skypilot-slurm-demo.md) — the same workload on a local Docker SLURM cluster via SkyPilot, with artifact push to MinIO. Runs entirely locally.
+- [SLURM demo (via SkyPilot)](skypilot-slurm-demo.md) — the same workload on a local Docker SLURM cluster via SkyPilot, with artifact push to a local S3 store. Runs entirely locally.
 - [Granite 4.0 Nano — SFT + Eval on AWS](granite4_nano.md) — fine-tune Granite 4.0 350M on AWS and run the full evaluation suite via SkyPilot.

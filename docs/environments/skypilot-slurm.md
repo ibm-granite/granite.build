@@ -342,5 +342,5 @@ environment_configs:
 ## See also
 
 - [SkyPilot overview](skypilot.md) — compute model, launcher fields, inline-config rules
-- [Local SLURM setup](setup/skypilot-slurm-setup.md) — bring up a Docker SLURM cluster + MinIO
+- [Local SLURM setup](setup/skypilot-slurm-setup.md) — bring up a Docker SLURM cluster + local S3 store
 - [SkyPilot on LSF](skypilot-lsf.md) — the other SSH-provisioned HPC backend
