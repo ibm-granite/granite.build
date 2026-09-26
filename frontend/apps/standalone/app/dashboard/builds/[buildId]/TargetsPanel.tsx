@@ -280,8 +280,8 @@ export function TargetsPanel({ targets }: Props) {
                       </tr>
                     </thead>
                     <tbody>
-                      {target.steps.map((step) => (
-                        <tr key={step.step_name}>
+                      {target.steps.map((step, i) => (
+                        <tr key={step.uuid ?? `${step.step_name}-${i}`}>
                           <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
                             {step.step_name}
                           </td>

@@ -90,9 +90,41 @@ function stepNameFromUri(uri: string): string {
   return uri.split(/[/?#@]/).filter(Boolean).pop() ?? uri
 }
 
+// Best-effort container image for a step, read from the step's own build.yaml
+// config. The image is normally resolved inside each compute environment's
+// launcher at launch time and is never persisted (see
+// src/gbserver/environment/docker.py:_resolve_image), so it is only visible
+// here when the build.yaml named it explicitly. Precedence mirrors that
+// resolver: launcher config first, then the step's docker block, then a
+// bare top-level key. Returns undefined when the build.yaml didn't name one.
+function stepImageFromConfig(config: Record<string, unknown> | undefined): string | undefined {
+  if (!config) return undefined
+  const launcherConfig = (config.launcher_config as Record<string, unknown>) ?? {}
+  const dockerConfig = (config.docker as Record<string, unknown>) ?? {}
+  // `config.skypilot.image_id` is a real field of StepSkypilotConfig
+  // (types/environment/skypilot.py) that a step may set, so read it rather than
+  // reporting "Not recorded" for a step that named an image. It sits last
+  // because the launch path resolves launcher_config.image_id first.
+  const skypilotConfig = (config.skypilot as Record<string, unknown>) ?? {}
+  const candidates = [
+    launcherConfig.image,
+    launcherConfig.image_id,
+    dockerConfig.image,
+    config.image,
+    config.image_id,
+    skypilotConfig.image_id,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate
+  }
+  return undefined
+}
+
 function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
   const json = (raw.json as Record<string, unknown>) ?? {}
   const definitionUri = (raw.definition_uri as string) || ''
+  const config = (raw.config as Record<string, unknown>) ?? undefined
+  const launcher = config?.launcher
   return {
     step_name: (definitionUri ? stepNameFromUri(definitionUri) : undefined) || (raw.uuid as string),
     status: adaptStatus((raw.status as string) || (json.status as string)),
@@ -100,13 +132,43 @@ function adaptStepRun(raw: Record<string, unknown>): BuildStepRun {
     started_at: (raw.started_at as string) || (json.started_at as string),
     updated_at: (raw.finished_at as string) || (json.finished_at as string),
     log_path: (raw.log_path as string) || (json.log_path as string) || undefined,
+    uuid: raw.uuid as string | undefined,
+    // Step config is the build.yaml's own runtime parameters. It reaches the
+    // client only via GET /builds/{id}/status, which is gated by
+    // authorize_build_read_access — do NOT copy it onto the lineage/jobstats
+    // path, where it is deliberately redacted because any space member can read.
+    config,
+    image: stepImageFromConfig(config),
+    launcher: typeof launcher === 'string' ? launcher : undefined,
+    status_msg: (raw.status_msg as string) || undefined,
+    finished_at: (raw.finished_at as string) || (json.finished_at as string) || undefined,
+    // Runtime metadata the step pushed at execution time (GB_STEP_METADATA
+    // hook). Serialized in the status row's JSON blob alongside config; safe to
+    // surface here because /builds/{id}/status is already read-gated.
+    metadata: (raw.metadata as Record<string, unknown>) ?? undefined,
   }
 }
 
 function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
-  const steps: BuildStepRun[] = ((raw.steps as unknown[]) ?? []).map(
-    (s) => adaptStepRun(s as Record<string, unknown>)
-  )
+  // The server builds this list with storage.step_storage.get_by_where(), whose
+  // result order is documented as undefined (see Storage.get_by_where). Sort by
+  // start time here, at the single point where steps enter the client, so the
+  // step numbering, the `a → b → c` subtitle and the first-start/last-finish
+  // duration in stepDrawerSummary all agree on one order. Steps that have not
+  // started yet (queued) sort last, keeping the original relative order.
+  const steps: BuildStepRun[] = ((raw.steps as unknown[]) ?? [])
+    .map((s) => adaptStepRun(s as Record<string, unknown>))
+    .map((step, index) => ({ step, index }))
+    .sort((a, b) => {
+      const at = a.step.started_at ? Date.parse(a.step.started_at) : NaN
+      const bt = b.step.started_at ? Date.parse(b.step.started_at) : NaN
+      const aValid = Number.isFinite(at)
+      const bValid = Number.isFinite(bt)
+      if (aValid && bValid && at !== bt) return at - bt
+      if (aValid !== bValid) return aValid ? -1 : 1
+      return a.index - b.index // stable tiebreak for equal/absent timestamps
+    })
+    .map(({ step }) => step)
   const inputArtifacts = (raw.input_artifacts as Record<string, string>) ?? {}
   const outputArtifacts = (raw.output_artifacts as Record<string, unknown[]>) ?? {}
   return {
@@ -122,15 +184,85 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
   }
 }
 
+// Infer an artifact type from its URI when the stored type is empty.
+//
+// Some artifacts are registered (e.g. a raw HF dataset reference) without a
+// `type` ever being set — the backend should classify these at registration
+// (see parse_hf_uri in src/gbcommon/utils/hf_utils.py), but until it does, a
+// blind 'FILESET' fallback mislabels datasets/models/buckets in the UI (e.g.
+// the lineage graph). The URI segment is unambiguous, so we mirror the
+// backend's own rules here: `datasets/` → DATASET, `buckets/` → BUCKET,
+// `spaces/` → FILESET (no dedicated Space type), everything else on HF
+// (including a bare org/name) → MODEL.
+function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType | null {
+  if (!uri) return null
+  // Only HF URIs carry this convention (mirroring the backend's parse_hf_uri,
+  // which requires an hf:// prefix). Without the scope guard a plain
+  // `cos://bucket/datasets/eval.json` would be misread as a DATASET.
+  if (!/^(hf:\/\/|https:\/\/huggingface\.co\/)/.test(uri)) return null
+
+  const TYPE_KEYWORDS: Record<string, import('../types').ArtifactType> = {
+    datasets: 'DATASET',
+    models: 'MODEL',
+    buckets: 'BUCKET',
+    // No dedicated Space type in the UI; a Space is browsable files.
+    spaces: 'FILESET',
+  }
+
+  // Which segment holds the type keyword depends on whether a DOMAIN is present,
+  // and the backend discriminates that by SEGMENT COUNT, not by pattern — see
+  // parse_hf_uri in src/gbcommon/utils/hf_utils.py:
+  //
+  //   hf:///[type/]org/name          → no domain (leading slash ⇒ 2 or 3 parts)
+  //   hf://domain/[type/]org/name    → domain    (no leading slash ⇒ 3 or 4 parts)
+  //
+  // Sniffing for a host instead (the previous `^[^/]*` strip) gets the two-slash
+  // form backwards: for `hf://acme/datasets/v1` the backend reads domain=acme,
+  // org=datasets, name=v1, type=MODEL, whereas stripping one leading segment
+  // leaves `datasets/v1` and reports DATASET. Count the segments as the backend
+  // does so a custom-domain artifact is not mislabelled.
+  if (uri.startsWith('https://huggingface.co/')) {
+    // Browser-copied URL: the host is explicit and fixed, so the remaining path
+    // is `[type/]org/name` with no domain segment to account for.
+    const parts = uri.slice('https://huggingface.co/'.length).split('/').filter(Boolean)
+    if (parts.length >= 3) return TYPE_KEYWORDS[parts[0]] ?? 'MODEL'
+    return 'MODEL' // org/name
+  }
+
+  const remainder = uri.slice('hf://'.length)
+  if (remainder.startsWith('/')) {
+    // hf:///[type/]org/name — no domain.
+    const parts = remainder.replace(/^\/+/, '').split('/').filter(Boolean)
+    if (parts.length >= 3) return TYPE_KEYWORDS[parts[0]] ?? 'MODEL'
+    return 'MODEL' // hf:///org/name
+  }
+
+  // hf://domain/[type/]org/name — first segment is the domain, so the type
+  // keyword (when present) is the SECOND segment.
+  const parts = remainder.split('/').filter(Boolean)
+  if (parts.length >= 4) return TYPE_KEYWORDS[parts[1]] ?? 'MODEL'
+  return 'MODEL' // hf://domain/org/name
+}
+
 function adaptArtifact(raw: Record<string, unknown>): Artifact {
+  const uri = raw.uri as string
   return {
     uuid: raw.uuid as string,
-    name: (raw.name as string) || (raw.uri as string),
-    artifact_type: ((raw.type as string) || (raw.artifact_type as string) || 'FILESET') as import('../types').ArtifactType,
+    name: (raw.name as string) || uri,
+    // ArtifactType is uppercase in the frontend ('MODEL'), but the server's
+    // ArtifactType is a StrEnum with auto(), so it serializes lowercase
+    // ('model'). Uppercase here so a server-typed artifact and one whose type
+    // inferArtifactTypeFromUri had to infer compare equal — the artifacts-page
+    // type filter matches on exact equality, so mixing the two casings would
+    // make it match inferred artifacts and miss real ones.
+    artifact_type: (((raw.type as string) ||
+      (raw.artifact_type as string) ||
+      inferArtifactTypeFromUri(uri) ||
+      'FILESET').toUpperCase()) as import('../types').ArtifactType,
     status: (((raw.status as string) || 'success').toLowerCase()) as import('../types').ArtifactStatus,
     space_name: raw.space_name as string,
     username: raw.username as string,
-    uri: raw.uri as string,
+    uri,
     build_id: raw.created_by_build_id as string | undefined,
     created_time: ((raw.created_at ?? raw.created_time) as string),
     updated_time: ((raw.updated_at ?? raw.updated_time ?? raw.created_at) as string),
@@ -230,6 +362,12 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
     }
   }>(`/builds/${buildId}/status`)
 
+  // A run that never started sorts first, like `started_at or datetime.min`.
+  const startedAtMs = (t: BuildTargetRun) => {
+    const ms = t.started_at ? Date.parse(t.started_at) : NaN
+    return Number.isNaN(ms) ? -Infinity : ms
+  }
+
   const s = data.status
   const build = adaptBuild(s.build)
   const targets: Record<string, BuildTargetRun> = {}
@@ -241,7 +379,13 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
       ...tr.target,
       steps: tr.steps,
     })
-    if (adapted.target_name) {
+    if (!adapted.target_name) continue
+    // A retried target has several runs under one name, returned in no
+    // particular order. Keep the latest attempt, as the server does in
+    // api/build_files.py — otherwise an earlier FAILED run can shadow the
+    // retry that succeeded.
+    const existing = targets[adapted.target_name]
+    if (!existing || startedAtMs(adapted) >= startedAtMs(existing)) {
       targets[adapted.target_name] = adapted
     }
   }
