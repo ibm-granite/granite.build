@@ -1759,7 +1759,9 @@ class K8s(Environment):
                 assert (
                     event_log_parser_configs is not None
                 ), "event_log_parser_configs is None"
-                pod_name = await asyncio.wait_for(pod_processes_queue.get(), timeout=10)
+                # Not wait_for: on 3.11 it can swallow a racing cancel (gh-86296).
+                async with asyncio.timeout(10):
+                    pod_name = await pod_processes_queue.get()
                 logger.info("Starting log monitoring for pod %s", pod_name)
                 log_tasks.append(
                     asyncio.create_task(
