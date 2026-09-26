@@ -91,3 +91,29 @@ class TestRegisterArtifactProdGate:
         with pytest.raises(HTTPException) as exc:
             _call_gate("file:///tmp/some/artifact")
         assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+
+class TestReservedLhTableRegistration:
+    """A reserved LH table name is a 400 (not a 500) on every registration path."""
+
+    @pytest.mark.parametrize("env", ["PROD", "STANDALONE"])
+    def test_register_artifact_rejects_reserved_table(self, env):
+        with patch.object(artifacts_module, "GB_ENVIRONMENT", env):
+            with pytest.raises(HTTPException) as exc:
+                register_artifact(
+                    MagicMock(),
+                    _registration(
+                        "lh://prod/ns0/tables/model_shared", ArtifactType.TABLE
+                    ),
+                )
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "reserved Lakehouse table name" in exc.value.detail
+
+    def test_register_lakehouse_table_rejects_reserved_table(self):
+        req = artifacts_module.ArtifactTableRequest(
+            space_name="sn", username="un", namespace="ns0", table_name="fileset"
+        )
+        with patch.object(artifacts_module, "GB_ENVIRONMENT", "STANDALONE"):
+            with pytest.raises(HTTPException) as exc:
+                artifacts_module.register_lakehouse_table(MagicMock(), req)
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
