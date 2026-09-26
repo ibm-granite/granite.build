@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from gbcommon.uri.hf import HfType, HfURI
-from gbcommon.uri.lh import LhURI
+from gbcommon.uri.lh import LH_URI_SCHEME, LhURI
 from gbcommon.uri.uri import URI
 from gbserver.api.utils import (
     NO_ACCESSIBLE_SPACE,
@@ -144,12 +144,25 @@ def __get_registerable_uris(uris: Optional[list[str]]) -> Tuple[list[str], list[
     return reg_uris, non_reg_uris
 
 
+def _validate_lh_uri(uri: str) -> None:
+    """Reject an lh:// URI that LhURI refuses (e.g. a reserved table name) as a 400."""
+    if not uri.startswith(f"{LH_URI_SCHEME}://"):
+        return
+    try:
+        URI.get_uri(uri)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        ) from e
+
+
 def _create_and_register_artifact(
     request: Request,
     artifact_request: BaseArtifactRequest,
     uri: str,
     type: ArtifactType,
 ) -> RegisterArtifactResponse:
+    _validate_lh_uri(uri)
     if artifact_request.name == "":
         artifact_request.name = getattr(artifact_request, "table_name", "")
 
@@ -303,6 +316,7 @@ def register_artifact(
     artifact: ArtifactRegistration,
 ) -> RegisterArtifactResponse:
     new_artifact = artifact
+    _validate_lh_uri(new_artifact.uri)
 
     # Only allow artifacts whose URI type is production-safe in the PROD env.
     # HfURI is always safe (HF host is env-independent); LhURI is safe only when
