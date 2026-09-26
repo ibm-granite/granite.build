@@ -303,7 +303,6 @@ quick-tests:
 .PHONY: extended-tests-setup
 extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
-	$(MAKE) minio-setup 
 	$(MAKE) slurm-setup
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
@@ -454,7 +453,7 @@ test-g4os:
 .PHONY: cicd-skypilot-pr
 cicd-skypilot-pr: test-g4os
 
-# --- Local infrastructure (SLURM + MinIO) ---
+# --- Local infrastructure (SLURM + S3) ---
 
 .PHONY: slurm-setup
 slurm-setup:
@@ -466,15 +465,17 @@ slurm-teardown:
 	source .venv/bin/activate;\
 	bash scripts/slurm/teardown-slurm.sh
 
-.PHONY: minio-setup
-minio-setup:
+# Local S3-compatible store (SeaweedFS) for the SLURM demo's artifact push.
+# Demo-only — keep out of CI setup targets (Docker Hub anonymous rate limit).
+.PHONY: s3-setup
+s3-setup:
 	source .venv/bin/activate;\
-	bash scripts/minio/setup-minio.sh
+	bash scripts/s3/setup-s3.sh
 
-.PHONY: minio-teardown
-minio-teardown:
+.PHONY: s3-teardown
+s3-teardown:
 	source .venv/bin/activate;\
-	bash scripts/minio/teardown-minio.sh
+	bash scripts/s3/teardown-s3.sh
 
 .PHONY: integration-test
 integration-test:

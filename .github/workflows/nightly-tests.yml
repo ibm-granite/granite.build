@@ -3,7 +3,7 @@ name: Nightly Extended Tests
 # Runs the heavier, live extended test suite on a nightly schedule against the
 # default branch. This replaces the previously merge-triggered `extended-test`
 # job in ci.yml, catching regressions caused by external/live dependencies (HF,
-# MinIO, SLURM) that drift independently of repo changes.
+# SLURM) that drift independently of repo changes.
 #
 # NOTE: GitHub only runs `schedule` triggers on the default branch (main), so
 # this workflow always tests main. Use the `workflow_dispatch` trigger to run

@@ -509,5 +509,5 @@ SkyPilot reads `resources` directly from the launcher config. If a step needs GP
 ## See also
 
 - Cloud pages: [SLURM](skypilot-slurm.md) · [LSF](skypilot-lsf.md) · [Kubernetes](skypilot-kubernetes.md) · [AWS](skypilot-aws.md)
-- [Local SLURM setup](setup/skypilot-slurm-setup.md) — Docker SLURM + MinIO for local testing
+- [Local SLURM setup](setup/skypilot-slurm-setup.md) — Docker SLURM + local S3 for local testing
 - [Environments overview](README.md) and the shared [event_configs schema](README.md#event_configs--log-line-parsing-rules)

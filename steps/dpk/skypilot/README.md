@@ -130,8 +130,8 @@ run everywhere. They are Mode-1 only (not copied by `publish-step`), the same pl
 `test-data/<cluster>/` — real-infra, extended-suite only, each self-skipping unless its
 backend is reachable:
 
-- **slurm** — needs the local Docker SLURM cluster (+ MinIO). Bring them up once with
-  `make test-setup` (delegates to the repo-root `slurm-setup` / `minio-setup`). One target:
+- **slurm** — needs the local Docker SLURM cluster. Bring it up once with
+  `make test-setup` (delegates to the repo-root `slurm-setup`). One target:
   `transform: tokenization2arrow` with `validate: true`, and `output_path` left at its
   `./output` default. So it covers three things a render test cannot — the derivations
   against real DPK, the validator hook running on a compute node before the artifact
