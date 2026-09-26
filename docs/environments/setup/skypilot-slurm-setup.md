@@ -1,7 +1,7 @@
-# SkyPilot SLURM setup (local Docker cluster + MinIO)
+# SkyPilot SLURM setup (local Docker cluster + S3)
 
-This guide covers setting up a local Docker SLURM cluster and MinIO S3-compatible
-storage for development and integration testing with SkyPilot. For the SkyPilot-on-SLURM
+This guide covers setting up a local Docker SLURM cluster and a local S3-compatible
+store (SeaweedFS) for development and integration testing with SkyPilot. For the SkyPilot-on-SLURM
 configuration that runs against this cluster, see [skypilot-slurm.md](../skypilot-slurm.md).
 
 ## Table of Contents
@@ -9,7 +9,7 @@ configuration that runs against this cluster, see [skypilot-slurm.md](../skypilo
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [SLURM Cluster](#slurm-cluster)
-- [MinIO S3 Storage](#minio-s3-storage)
+- [S3 Storage](#s3-storage)
 - [Running Integration Tests](#running-integration-tests)
 - [Teardown](#teardown)
 - [Troubleshooting](#troubleshooting)
@@ -27,15 +27,15 @@ configuration that runs against this cluster, see [skypilot-slurm.md](../skypilo
 # Bring up SLURM cluster (auto-detects GPU)
 make slurm-setup
 
-# Bring up MinIO S3 storage
-make minio-setup
+# Bring up local S3 storage (only needed for S3 artifact push, e.g. the SLURM demo)
+make s3-setup
 
 # Run integration tests
 make integration-test
 
 # Tear everything down
 make slurm-teardown
-make minio-teardown
+make s3-teardown
 ```
 
 ## SLURM Cluster
@@ -123,44 +123,45 @@ ssh -i ~/.ssh/slurm_docker_key -p 2222 root@localhost sbatch --wrap 'hostname'
 ssh -i ~/.ssh/slurm_docker_key -p 2222 root@localhost srun --gres=gpu:1 nvidia-smi
 ```
 
-## MinIO S3 Storage
+## S3 Storage
 
 ### What gets deployed
 
-A single MinIO container (`gb-minio`) with:
-- S3-compatible API on port 9000
-- Web console on port 9001
-- A `gb-checkpoints` bucket pre-created
+A single [SeaweedFS](https://github.com/seaweedfs/seaweedfs) container (`gb-s3`,
+running `weed mini`) with:
+- S3-compatible API on port 9000 (reachable from the SLURM containers as `gb-s3:9000`)
+- A `gb-checkpoints` bucket pre-created (via `aws s3 mb`, so the AWS CLI must be on
+  `PATH` — the repo `.venv` provides it)
 
 ### Setup
 
 ```bash
-make minio-setup
+make s3-setup
 ```
 
 Or invoke the script directly:
 
 ```bash
-MINIO_API_PORT=9000 MINIO_CONSOLE_PORT=9001 bash scripts/minio/setup-minio.sh
+GB_S3_PORT=9000 bash scripts/s3/setup-s3.sh
 ```
 
 ### Environment variables
 
-| Variable              | Default         | Description               |
-|-----------------------|-----------------|---------------------------|
-| `MINIO_API_PORT`      | `9000`          | S3 API port               |
-| `MINIO_CONSOLE_PORT`  | `9001`          | Web console port          |
-| `MINIO_ROOT_USER`     | `minioadmin`    | Root access key           |
-| `MINIO_ROOT_PASSWORD` | `minioadmin`    | Root secret key           |
-| `MINIO_BUCKET`        | `gb-checkpoints`| Default bucket name       |
-| `MINIO_IMAGE`         | `quay.io/minio/minio:latest` | Container image |
+| Variable               | Default          | Description               |
+|------------------------|------------------|---------------------------|
+| `GB_S3_PORT`           | `9000`           | S3 API port (host)        |
+| `GB_S3_ACCESS_KEY`     | `gbadmin`        | Admin access key          |
+| `GB_S3_SECRET_KEY`     | `gbadmin`        | Admin secret key          |
+| `GB_S3_BUCKET`         | `gb-checkpoints` | Default bucket name       |
+| `GB_S3_IMAGE`          | `docker.io/chrislusf/seaweedfs:4.47` | Container image |
+| `GB_S3_CONTAINER_NAME` | `gb-s3`          | Container name            |
+| `GB_S3_DATA_VOLUME`    | `gb-s3-data`     | Persistent data volume    |
 
 ### Verification
 
 ```bash
-# Set AWS credentials for MinIO
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_ACCESS_KEY_ID=gbadmin
+export AWS_SECRET_ACCESS_KEY=gbadmin
 export AWS_ENDPOINT_URL=http://localhost:9000
 
 # List buckets
@@ -171,11 +172,13 @@ echo "hello" | aws s3 cp - s3://gb-checkpoints/test.txt
 aws s3 ls s3://gb-checkpoints/
 ```
 
-> **Note:** The MinIO web console is available at http://localhost:9001 (login: `minioadmin`/`minioadmin`).
+> **Upgrading from MinIO:** earlier versions ran a `gb-minio` container on port 9000.
+> Remove it first (`docker rm -f gb-minio`; `docker volume rm gb-minio-data` to drop
+> its data) or `make s3-setup` will fail on the port conflict.
 
 ## Running Integration Tests
 
-Tests that require local SLURM and MinIO infrastructure use the `skypilot_integration` pytest marker:
+Tests that require local SLURM infrastructure use the `skypilot_integration` pytest marker:
 
 ```bash
 # Run only integration tests
@@ -196,26 +199,26 @@ These tests are excluded from the default test run (`make py-test`) and CI test 
 # Stop and remove SLURM cluster (preserves volumes)
 make slurm-teardown
 
-# Stop and remove MinIO (preserves data volume)
-make minio-teardown
+# Stop and remove the S3 store (preserves data volume)
+make s3-teardown
 ```
 
 To also remove persistent data:
 
 ```bash
 bash scripts/slurm/teardown-slurm.sh --remove-volumes
-bash scripts/minio/teardown-minio.sh --remove-data
+bash scripts/s3/teardown-s3.sh --remove-data
 ```
 
 ## Troubleshooting
 
 ### Port conflicts
 
-If port 2222 (SLURM SSH) or 9000/9001 (MinIO) are already in use:
+If port 2222 (SLURM SSH) or 9000 (S3) are already in use:
 
 ```bash
 SLURM_SSH_PORT=2223 make slurm-setup
-MINIO_API_PORT=9010 MINIO_CONSOLE_PORT=9011 make minio-setup
+GB_S3_PORT=9010 make s3-setup
 ```
 
 ### GPU not detected
@@ -246,12 +249,14 @@ docker logs slurm-c1
 docker logs slurm-c2
 ```
 
-### MinIO bucket creation fails
+### S3 bucket creation fails
 
-The `mc` CLI runs inside the container. If it fails, verify MinIO is healthy:
+Bucket creation runs `aws s3 mb` from the host. Check that the AWS CLI is on `PATH`
+(`source .venv/bin/activate`) and that the store is healthy:
 
 ```bash
-curl -sf http://localhost:9000/minio/health/ready && echo OK
+curl -sf http://localhost:9000/healthz && echo OK
+docker logs gb-s3
 ```
 
 ## Configuration Reference

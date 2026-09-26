@@ -17,7 +17,7 @@ granite.build:
             s3pull_config:
               s3_uri: "{{ space.variables.S3_DIGIT_INPUT_URI }}"
               local_path: /gb-data/inputs/digit
-              endpoint_url: ""  # leave empty for default AWS endpoint; set for COS/MinIO
+              endpoint_url: ""  # leave empty for default AWS endpoint; set for COS / other S3-compatible stores
 
     syntheticdatageneration:
       environment_uri: space://environments/skypilot/kubernetes
@@ -74,4 +74,4 @@ granite.build:
             s3push_config:
               local_path: /gb-data/outputs/digit
               s3_uri: "{{ space.variables.S3_DIGIT_OUTPUT_URI }}"
-              endpoint_url: ""  # leave empty for default AWS endpoint; set for COS/MinIO
+              endpoint_url: ""  # leave empty for default AWS endpoint; set for COS / other S3-compatible stores

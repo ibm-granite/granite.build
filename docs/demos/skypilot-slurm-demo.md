@@ -1,7 +1,7 @@
 # SLURM demo (via SkyPilot)
 
 Runs TRL fine-tuning and unitxt evaluation on a local Docker-based SLURM cluster
-via SkyPilot, with artifact push to MinIO (S3-compatible object storage).
+via SkyPilot, with artifact push to a local S3-compatible store (SeaweedFS).
 
 ## Prerequisites
 
@@ -16,11 +16,11 @@ via SkyPilot, with artifact push to MinIO (S3-compatible object storage).
 make g4os-skypilot-venv PYTHON=python3.13
 source .venv/bin/activate
 
-# 2. Start MinIO (S3-compatible artifact store)
-make minio-setup
+# 2. Start the local S3-compatible artifact store (SeaweedFS)
+make s3-setup
 
 # 3. Start the Docker SLURM cluster (slurmctld + 2 compute nodes)
-#    This also connects MinIO to the SLURM network
+#    This also connects the S3 store to the SLURM network
 make slurm-setup
 
 # 4. Verify SkyPilot sees the SLURM cluster
@@ -28,7 +28,7 @@ sky check slurm
 ```
 
 See [SkyPilot SLURM setup](../environments/setup/skypilot-slurm-setup.md) for details on the local
-Docker SLURM cluster and MinIO, and [SkyPilot on SLURM](../environments/skypilot-slurm.md) for the
+Docker SLURM cluster and S3 store, and [SkyPilot on SLURM](../environments/skypilot-slurm.md) for the
 environment configuration.
 
 ## Run
@@ -46,14 +46,14 @@ bash scripts/demo-slurm.sh --unitxt-only
 
 The demo submits builds that run on the SLURM cluster via SkyPilot. When
 training completes, an `s3push` step automatically uploads the checkpoint to
-MinIO. First run takes 5-10 minutes (SkyPilot installs dependencies on the
+the local S3 store. First run takes 5-10 minutes (SkyPilot installs dependencies on the
 SLURM nodes).
 
-## Verify artifacts in MinIO
+## Verify artifacts in S3
 
 ```bash
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_ACCESS_KEY_ID=gbadmin
+export AWS_SECRET_ACCESS_KEY=gbadmin
 
 # Fine-tuning checkpoint
 aws --endpoint-url http://localhost:9000 s3 ls s3://gb-checkpoints/outputs/trl-finetune/ --recursive
@@ -66,7 +66,7 @@ aws --endpoint-url http://localhost:9000 s3 ls s3://gb-checkpoints/outputs/unitx
 
 ```bash
 make slurm-teardown
-make minio-teardown
+make s3-teardown
 ```
 
 ## How it works
@@ -80,7 +80,7 @@ build.yaml ──→ gbserver ──→ SkyPilot ──→ SLURM (sbatch)
                                               │
                               pushasset_cosstore auto-queues s3push
                                               │
-                                    s3push uploads to MinIO
+                                    s3push uploads to local S3
                                               │
                                     Build completes SUCCESS
 ```

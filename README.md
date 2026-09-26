@@ -425,9 +425,9 @@ End-to-end demos with TRL fine-tuning and unitxt evaluation. Each runs locally a
 make demo-venv PYTHON=python3.13 && source .venv/bin/activate
 bash scripts/demo-standalone.sh
 
-# SLURM via SkyPilot — same workload on a local Docker SLURM cluster, with MinIO push
+# SLURM via SkyPilot — same workload on a local Docker SLURM cluster, with S3 push
 make g4os-skypilot-venv PYTHON=python3.13 && source .venv/bin/activate
-make minio-setup && make slurm-setup
+make s3-setup && make slurm-setup
 bash scripts/demo-slurm.sh
 ```
 
