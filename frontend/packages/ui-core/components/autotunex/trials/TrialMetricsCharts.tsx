@@ -265,35 +265,35 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
       : 'full data set'
   }, [trainingConfig])
 
-  if (isLoading) return <InlineLoading description="Loading metrics…" />
+  // The loading and error returns below sit where the charts would, directly under
+  // the trials table, so they take the same top margin as the charts section;
+  // without it a notification butts against the table's last row.
+  if (isLoading) {
+    return (
+      <div style={{ marginTop: '2rem' }}>
+        <InlineLoading description="Loading metrics…" />
+      </div>
+    )
+  }
 
   if (isError) {
     return (
-      <InlineNotification
-        kind="error"
-        title="Couldn't load step metrics"
-        subtitle={String(error)}
-        lowContrast
-        hideCloseButton
-      />
+      <div style={{ marginTop: '2rem' }}>
+        <InlineNotification
+          kind="error"
+          title="Couldn't load step metrics"
+          subtitle={String(error)}
+          lowContrast
+          hideCloseButton
+        />
+      </div>
     )
   }
 
-  if (rows.length === 0) {
-    return (
-      <InlineNotification
-        kind="info"
-        title={isActive ? 'Waiting for the first logged step' : 'This run logged no step metrics'}
-        subtitle={
-          isActive
-            ? 'Curves appear here as the run reports them.'
-            : 'Older runs finished before per-step metrics were recorded.'
-        }
-        lowContrast
-        hideCloseButton
-      />
-    )
-  }
+  // No step rows, running or finished: the section draws nothing rather than a
+  // notice. A running job's stream keeps polling, so its charts appear in this
+  // spot once the first step lands.
+  if (rows.length === 0) return null
 
   const sharedSpec = { theme, colorScale, xTitle, height: '260px' } as const
 
