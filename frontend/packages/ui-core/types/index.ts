@@ -866,27 +866,3 @@ export interface WizardDraft {
   experimentName: string
   autotuneEnabled?: boolean
 }
-
-export type HuggingFaceLibraryName = 'sentence-transformers' | 'transformers'
-
-export interface HuggingFaceModelConfig {
-  architectures: string[]
-  model_type: string
-  chat_template_jinja?: string
-  processor_config?: { chat_template: string }
-}
-
-export interface HuggingFaceModel {
-  _id: string
-  id: string
-  likes: number
-  trendingScore: number
-  private: boolean
-  config: HuggingFaceModelConfig
-  downloads: number
-  tags: string[]
-  pipeline_tag: string
-  library_name: HuggingFaceLibraryName
-  createdAt: string
-  modelId: string
-}

@@ -27,7 +27,7 @@ import {
 } from '@carbon/icons-react'
 import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
-import type { HuggingFaceModel, ModelSource, TuningGoal } from '@granite-build/ui-core/types'
+import type { ModelSource, TuningGoal } from '@granite-build/ui-core/types'
 import { GOAL_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import { getDefaultAlgorithmForGoal } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { stripFrontMatter } from '@granite-build/ui-core/lib/autotunex/modelCard'
@@ -64,7 +64,7 @@ interface Step0GetStartedProps {
   setSelectedModel: (v: string) => void
   modelSource: ModelSource
   setModelSource: (v: ModelSource) => void
-  prefetchedModels: HuggingFaceModel[] | null
+  prefetchedModels: string[] | null
 }
 
 export function Step0GetStarted({
@@ -78,7 +78,7 @@ export function Step0GetStarted({
   setModelSource,
   prefetchedModels,
 }: Step0GetStartedProps) {
-  const [models, setModels] = useState<HuggingFaceModel[]>([])
+  const [models, setModels] = useState<string[]>([])
   const [suggestions, setSuggestions] = useState<ModelSuggestion[]>([])
   const [modelCard, setModelCard] = useState<string | null>(null)
   // `modelCard === null` used to mean both "not fetched" and "the fetch failed",
@@ -107,13 +107,13 @@ export function Step0GetStarted({
   async function fetchSuggestions(term: string) {
     const suggestToken = ++suggestTokenRef.current
     if (!term.trim()) {
-      setSuggestions(models.map((m) => ({ id: m.id, text: m.id })))
+      setSuggestions(models.map((id) => ({ id, text: id })))
       return
     }
     try {
       const response = await getHFModels(term.replace(/(\w+)[-/]\1(?=[-/])/g, '$1'))
       if (suggestTokenRef.current !== suggestToken) return
-      setSuggestions(response.map((model) => ({ id: model.id, text: model.id })))
+      setSuggestions(response.map((id) => ({ id, text: id })))
     } catch {
       if (suggestTokenRef.current === suggestToken) setSuggestions([])
     }
@@ -158,7 +158,7 @@ export function Step0GetStarted({
       setModelCardStatus('idle')
     } else {
       setSelectedModel('ibm-granite/granite-4.0-h-micro')
-      setSuggestions(models.map((m) => ({ id: m.id, text: m.id })))
+      setSuggestions(models.map((id) => ({ id, text: id })))
       fetchModelCard('ibm-granite/granite-4.0-h-micro')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -176,7 +176,7 @@ export function Step0GetStarted({
 
     if (prefetchedModels && prefetchedModels.length > 0) {
       setModels(prefetchedModels)
-      setSuggestions(withSelectedModel(prefetchedModels.map((m) => ({ id: m.id, text: m.id }))))
+      setSuggestions(withSelectedModel(prefetchedModels.map((id) => ({ id, text: id }))))
       setComboBoxReady(true)
       return
     }
@@ -191,7 +191,7 @@ export function Step0GetStarted({
         const data = await getHFModels('ibm-granite/granite-4.0-h-micro', 20)
         if (!alive) return
         setModels(data)
-        setSuggestions(withSelectedModel(data.map((m) => ({ id: m.id, text: m.id }))))
+        setSuggestions(withSelectedModel(data.map((id) => ({ id, text: id }))))
       } catch {
         if (alive) setSuggestions(withSelectedModel([]))
       }
@@ -222,7 +222,7 @@ export function Step0GetStarted({
     if (!selectedItem?.id) {
       // Cleared
       setSelectedModel('')
-      setSuggestions(models.map((m) => ({ id: m.id, text: m.id })))
+      setSuggestions(models.map((id) => ({ id, text: id })))
       return
     }
     setSelectedModel(selectedItem.id)

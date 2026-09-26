@@ -4,9 +4,9 @@
  *
  * Dev mode: calls go through the Next.js dev proxy. Standalone builds go through
  * gbserver's same-origin proxy — never at AUTOTUNEX_API_URL directly, which the
- * browser cannot reach without CORS. `getHFModels`/`getHFModelCard` are the two
- * exceptions — they call the public HuggingFace API directly via bare `axios`,
- * not through this backend.
+ * browser cannot reach without CORS. That includes `getHFModels`/`getHFModelCard`:
+ * AutoTuneX queries HuggingFace server-side, so private repos in its allowlisted
+ * namespaces are visible, which a direct browser call never could.
  *
  * Targets AutoTuneX API v0.3.5 (`/api/v1/*`, offset-paginated list envelopes
  * `{items,total,limit,offset}`). `pageQuery`/`toListResult` and the `adaptX()`
@@ -30,7 +30,6 @@ import type {
   HfImportRequestPayload,
   HfPreviewRequestPayload,
   HfProvenance,
-  HuggingFaceModel,
   JobDetail,
   JobRead,
   ListParams,
@@ -93,16 +92,14 @@ export const AUTOTUNEX_FEATURES = {
 
 // ── HuggingFace models ────────────────────────────────────────────────────────
 
-export async function getHFModels(search = '', limit = 10): Promise<HuggingFaceModel[]> {
-  const params = new URLSearchParams({ search, limit: String(limit), config: 'true' })
-  const { data } = await axios.get<{ models: HuggingFaceModel[] } | HuggingFaceModel[]>(
-    `https://huggingface.co/api/models?${params.toString()}`
-  )
+export async function getHFModels(search: string, limit = 10): Promise<string[]> {
+  const { data } = await client.get<string[]>('/hf/models/search', { params: { query: search, limit } })
   return Array.isArray(data) ? data : []
 }
 
 export async function getHFModelCard(modelId: string): Promise<string> {
-  const { data } = await axios.get<string>(`https://huggingface.co/${modelId}/raw/main/README.md`, {
+  const { data } = await client.get<string>('/hf/models/card', {
+    params: { repo_id: modelId },
     responseType: 'text',
   })
   return data
