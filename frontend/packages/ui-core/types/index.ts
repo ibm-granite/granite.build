@@ -43,6 +43,7 @@ export interface BuildTargetRun {
   target_name: string
   status: BuildStatus
   started_at?: string
+  finished_at?: string
   updated_at?: string
   steps: BuildStepRun[]
   inputs?: Record<string, string>

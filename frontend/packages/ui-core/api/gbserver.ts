@@ -13,6 +13,7 @@
  */
 import axios from 'axios'
 import { apiBase } from './client'
+import { isLaterAttempt } from './targetAttempts'
 import type {
   Build,
   BuildStatus,
@@ -153,8 +154,8 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
   // The server builds this list with storage.step_storage.get_by_where(), whose
   // result order is documented as undefined (see Storage.get_by_where). Sort by
   // start time here, at the single point where steps enter the client, so the
-  // step numbering, the `a → b → c` subtitle and the first-start/last-finish
-  // duration in stepDrawerSummary all agree on one order. Steps that have not
+  // step numbering and the `a → b → c` subtitle in stepDrawerSummary agree on
+  // one order. Steps that have not
   // started yet (queued) sort last, keeping the original relative order.
   const steps: BuildStepRun[] = ((raw.steps as unknown[]) ?? [])
     .map((s) => adaptStepRun(s as Record<string, unknown>))
@@ -175,6 +176,7 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
     target_name: (raw.name as string) || (raw.uuid as string),
     status: adaptStatus(raw.status as string),
     started_at: raw.started_at as string | undefined,
+    finished_at: raw.finished_at as string | undefined,
     updated_at: raw.finished_at as string | undefined,
     steps,
     inputs: Object.fromEntries(Object.entries(inputArtifacts).map(([k, v]) => [k, String(v)])),
@@ -362,12 +364,6 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
     }
   }>(`/builds/${buildId}/status`)
 
-  // A run that never started sorts first, like `started_at or datetime.min`.
-  const startedAtMs = (t: BuildTargetRun) => {
-    const ms = t.started_at ? Date.parse(t.started_at) : NaN
-    return Number.isNaN(ms) ? -Infinity : ms
-  }
-
   const s = data.status
   const build = adaptBuild(s.build)
   const targets: Record<string, BuildTargetRun> = {}
@@ -381,11 +377,10 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
     })
     if (!adapted.target_name) continue
     // A retried target has several runs under one name, returned in no
-    // particular order. Keep the latest attempt, as the server does in
-    // api/build_files.py — otherwise an earlier FAILED run can shadow the
-    // retry that succeeded.
+    // particular order. Keep the current attempt, or an earlier FAILED run
+    // can shadow the retry that is queued, running or succeeded.
     const existing = targets[adapted.target_name]
-    if (!existing || startedAtMs(adapted) >= startedAtMs(existing)) {
+    if (isLaterAttempt(adapted, existing)) {
       targets[adapted.target_name] = adapted
     }
   }
