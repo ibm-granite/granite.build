@@ -183,3 +183,32 @@ def test_add_uri_revision():
     assert lh.get_lh_model_revision() == DEFAULT_MODEL_REVISION
     uristr = lh.get_uristr(lh)
     assert f"{uristr}" == f"{uri}{DEFAULT_MODEL_REVISION}"
+
+
+@pytest.mark.parametrize(
+    "table_name", ["model", "model_shared", "fileset", "fileset_shared", "Model_Shared"]
+)
+def test_table_uri_rejects_reserved_table_name(table_name):
+    with pytest.raises(ValueError, match="reserved Lakehouse table name"):
+        URI.get_uri(f"lh://prod/mynamespace/tables/{table_name}")
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "lh://prod/mynamespace/models/model_shared/mymodel/rev1",
+        "lh://prod/mynamespace/models/model/mymodel",
+        "lh://prod/mynamespace/filesets/fileset_shared/myfileset/v1",
+        "lh://prod/mynamespace/filesets/fileset/myfileset",
+        "lh://prod/mynamespace/datasets/model/mydataset",
+        "lh://prod/mynamespace/tables/model_shared_copy",
+    ],
+)
+def test_reserved_table_names_allowed_for_non_table_types(uri):
+    assert isinstance(URI.get_uri(uri), LhURI)
+
+
+def test_delete_is_refused():
+    lh = URI.get_uri("lh://prod/mynamespace/tables/mytable")
+    with pytest.raises(NotImplementedError, match="does not delete"):
+        lh.delete()

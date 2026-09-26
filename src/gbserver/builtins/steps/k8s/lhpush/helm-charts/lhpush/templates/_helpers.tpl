@@ -36,23 +36,13 @@ fi
 {{- $push_args = printf "--namespace %s --table %s --filepath %s --use-batches --batch-size 50000000 %s" $namespace $table_name $filename $public_flag }}
 {{- end }}
 # -----------------------------------
+{{- if has (lower $table_name) (list "model" "model_shared" "fileset" "fileset_shared") }}
+echo 'Refusing to push: "{{ $table_name }}" is a reserved Lakehouse table (model/fileset metadata)'; exit 1
+{{- end }}
 echo "Start=$(date)";
+# Artifacts are immutable: no append/delete fallback; dmf refuses an existing table.
 echo dmf table push {{ $push_args }}
 dmf table push {{ $push_args }}
-if [ $? -ne 0 ]; then
-  echo dmf table append {{ $push_args }}
-  dmf table append {{ $push_args }}
-  if [ $? -ne 0 ]; then
-    if dmf table ls --namespace {{ $namespace }} | grep -q '{{ $table_name }}'; then
-      echo dmf table delete --namespace {{ $namespace }} --table {{ $table_name }}
-      dmf table delete --namespace {{ $namespace }} --table {{ $table_name }}
-    else
-      echo "Table {{ $namespace }}.{{ $table_name }} does not exist, skipping delete"
-    fi
-    echo dmf table push {{ $push_args }}
-    dmf table push {{ $push_args }}
-  fi
-fi
 # -----------------------------------
 {{- include "my_check_exit_code" . }}
 echo "End=$(date)";
@@ -61,6 +51,7 @@ echo "End=$(date)";
 {{- else if eq $lhtype "model" }}
 # -----------------------------------
 # CASE 2 MODEL
+# No --overwrite: artifacts are immutable, an existing revision fails the push.
 {{- $open_flag := "" }}
 {{- if eq $table_name "model_shared" }}
 {{- $open_flag = "--open True" }}
@@ -80,8 +71,8 @@ config_path="{{ $filename }}/config.json";
 model_type=$(cat $config_path | grep model_type | sed "s/.*: \([^,]*\).*/\\1/"); echo "model_type=$model_type";
 # -----------------------------------
 echo "Start=$(date)";
-echo dmf model push {{ $use_aspera_flag }} {{ $model_label }} --namespace {{ $namespace }} --dir {{ $filename }} --table {{ $table_name }} --type "${model_type}" --size "${model_size}" --variant fine-tuned --overwrite --revision "${model_revision}" {{ $open_flag }};
-dmf model push {{ $use_aspera_flag }} {{ $model_label }} --namespace {{ $namespace }} --dir {{ $filename }} --table {{ $table_name }} --type "${model_type}" --size "${model_size}" --variant fine-tuned --overwrite --revision "${model_revision}" {{ $open_flag }};
+echo dmf model push {{ $use_aspera_flag }} {{ $model_label }} --namespace {{ $namespace }} --dir {{ $filename }} --table {{ $table_name }} --type "${model_type}" --size "${model_size}" --variant fine-tuned --revision "${model_revision}" {{ $open_flag }};
+dmf model push {{ $use_aspera_flag }} {{ $model_label }} --namespace {{ $namespace }} --dir {{ $filename }} --table {{ $table_name }} --type "${model_type}" --size "${model_size}" --variant fine-tuned --revision "${model_revision}" {{ $open_flag }};
 # -----------------------------------
 {{- include "my_check_exit_code" . }}
 echo "End=$(date)";
@@ -106,8 +97,8 @@ rank=$(cat $config_path | grep '"r"' | sed "s/.*: \([^,]*\).*/\\1/"); echo "rank
 if [ -z "$rank" ]; then rank="unk"; fi;
 # -----------------------------------
 echo "Start=$(date)";
-echo dmf model push {{ $use_aspera_flag }} {{ $model_label }} --namespace {{ $namespace }} --dir {{ $filename }} --table {{ $table_name }} --type "$model_type" --size "$rank" --variant "$peft_type" --base-model "$base_model" --overwrite --revision "$model_revision" {{ $open_flag }};
-dmf model push {{ $use_aspera_flag }} {{ $model_label }} --namespace {{ $namespace }} --dir {{ $filename }} --table {{ $table_name }} --type "$model_type" --size "$rank" --variant "$peft_type" --base-model "$base_model" --overwrite --revision "$model_revision" {{ $open_flag }};
+echo dmf model push {{ $use_aspera_flag }} {{ $model_label }} --namespace {{ $namespace }} --dir {{ $filename }} --table {{ $table_name }} --type "$model_type" --size "$rank" --variant "$peft_type" --base-model "$base_model" --revision "$model_revision" {{ $open_flag }};
+dmf model push {{ $use_aspera_flag }} {{ $model_label }} --namespace {{ $namespace }} --dir {{ $filename }} --table {{ $table_name }} --type "$model_type" --size "$rank" --variant "$peft_type" --base-model "$base_model" --revision "$model_revision" {{ $open_flag }};
 # -----------------------------------
 {{- include "my_check_exit_code" . }}
 echo "End=$(date)";
@@ -117,27 +108,16 @@ fi;
 {{- else if eq $lhtype "fileset" }}
 # -----------------------------------
 # CASE 3 FILESET
+# Artifacts are immutable: no delete; dmf refuses an existing label+version and adds a new version when none is set.
 {{- $filename := $config.path | required ".Values.lhpush_config.path is required." }}
 echo "Start=$(date)";
 # -----------------------------------
 {{- if $config.lh.fileset_version }}
-if dmf table ls --namespace {{ $namespace }} | grep -q '{{ $table_name }}'; then
-echo dmf fileset delete {{ $config.lh.fileset_label }} --namespace {{ $namespace }} --table {{ $table_name }} --version {{ $config.lh.fileset_version }}
-dmf fileset delete {{ $config.lh.fileset_label }} --namespace {{ $namespace }} --table {{ $table_name }} --version {{ $config.lh.fileset_version }}
-else
-echo "Table {{ $namespace }}.{{ $table_name }} does not exist, skipping fileset delete"
-fi
 # -----------------------------------
 echo dmf fileset push {{ $use_aspera_flag }} {{ $config.lh.fileset_label }} --namespace {{ $namespace }} --table {{ $table_name }} --dir {{ $filename }} --version {{ $config.lh.fileset_version }}
 dmf fileset push {{ $use_aspera_flag }} {{ $config.lh.fileset_label }} --namespace {{ $namespace }} --table {{ $table_name }} --dir {{ $filename }} --version {{ $config.lh.fileset_version }}
 # -----------------------------------
 {{- else }}
-if dmf table ls --namespace {{ $namespace }} | grep -q '{{ $table_name }}'; then
-echo dmf fileset delete {{ $config.lh.fileset_label }} --namespace {{ $namespace }} --table {{ $table_name }}
-dmf fileset delete {{ $config.lh.fileset_label }} --namespace {{ $namespace }} --table {{ $table_name }}
-else
-echo "Table {{ $namespace }}.{{ $table_name }} does not exist, skipping fileset delete"
-fi
 # -----------------------------------
 echo dmf fileset push {{ $use_aspera_flag }} {{ $config.lh.fileset_label }} --namespace {{ $namespace }} --table {{ $table_name }} --dir {{ $filename }}
 dmf fileset push {{ $use_aspera_flag }} {{ $config.lh.fileset_label }} --namespace {{ $namespace }} --table {{ $table_name }} --dir {{ $filename }}
@@ -150,15 +130,10 @@ echo "End=$(date)";
 {{- else if eq $lhtype "dataset" }}
 # -----------------------------------
 # CASE 4 DATASET
+# Artifacts are immutable: no delete; dmf refuses an existing dataset.
 {{- $filename := $config.path | required ".Values.lhpush_config.path is required." }}
 {{- $dataset_name := $config.lh.dataset_name | required ".Values.lhpush_config.lh.dataset_name is required." }}
 echo "Start=$(date)";
-if dmf table ls --namespace {{ $namespace }} | grep -q '{{ $table_name }}'; then
-echo dmf dataset delete {{ $dataset_name }} --namespace {{ $namespace }} --table {{ $table_name }}
-dmf dataset delete {{ $dataset_name }} --namespace {{ $namespace }} --table {{ $table_name }}
-else
-echo "Table {{ $namespace }}.{{ $table_name }} does not exist, skipping dataset delete"
-fi
 # -----------------------------------
 echo dmf dataset push {{ $dataset_name }} --namespace {{ $namespace }} --table {{ $table_name }} --filepath {{ $filename }} --type 'synthetic' --description 'Created by llm.build' {{ $public_flag }}
 dmf dataset push {{ $dataset_name }} --namespace {{ $namespace }} --table {{ $table_name }} --filepath {{ $filename }} --type 'synthetic' --description 'Created by llm.build' {{ $public_flag }}
