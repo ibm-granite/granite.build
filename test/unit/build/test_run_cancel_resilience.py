@@ -94,7 +94,9 @@ class TestRunCancelResilience:
             await task
 
         assert run.cleanup_completed
-        assert task.cancelled() or task.cancelling() == 0  # cancellation consumed cleanly
+        assert (
+            task.cancelled() or task.cancelling() == 0
+        )  # cancellation consumed cleanly
         assert run.status is Status.CANCELLED
 
 
@@ -136,3 +138,32 @@ class TestTargetRunCancelFanOut:
 
         step_a.task.cancel.assert_called_once()
         # step_b has no task — must not raise
+
+
+class TestBuildRunTargetsQueueCancel:
+    """BuildRun's targets_queue poll must honor a cancel that races an event."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_not_swallowed_when_event_arrives_same_tick(self) -> None:
+        """On 3.11 wait_for(q.get()) drops a same-tick cancel (gh-86296)."""
+        from gbserver.build.buildrun import BuildRun
+
+        build_run = BuildRun.__new__(BuildRun)
+        build_run.id = "test-build"
+        build_run.starting_targets = []
+        build_run.targets_queue = asyncio.Queue()
+
+        async def _process_event(**_kwargs) -> None:
+            await asyncio.sleep(3600)
+
+        build_run._process_event = _process_event  # type: ignore[method-assign,assignment]
+
+        task = asyncio.create_task(build_run._run_targets_of_build())
+        await asyncio.sleep(0)  # task now blocked in targets_queue.get()
+        build_run.targets_queue.put_nowait(MagicMock())
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        for t in build_run.tasks:
+            t.cancel()
