@@ -33,6 +33,12 @@ URLSEGMENT_MODELS = "models"
 URLSEGMENT_FILES = "filesets"
 URLSEGMENT_DATASETS = "datasets"
 
+# Physical tables in every LH namespace that hold model/fileset metadata. LH does
+# not reserve them itself, so a table-type push to one corrupts the whole table.
+RESERVED_LH_TABLE_NAMES = frozenset(
+    {"model", "model_shared", "fileset", "fileset_shared"}
+)
+
 DEFAULT_MODEL_REVISION = "granite-dot-build"
 DEFAULT_FILESET_VERSION = "granite-dot-build"
 
@@ -151,6 +157,11 @@ class LhURI(URI):
                 )
         except Exception as e:
             raise ValueError(f"failed to create from uri: {original_uri}") from e
+        if lh_type is LhType.TABLE and table_name.lower() in RESERVED_LH_TABLE_NAMES:
+            raise ValueError(
+                f"'{table_name}' is a reserved Lakehouse table name (holds model/fileset "
+                f"metadata) and cannot be used as a table artifact: {self.get_uristr(self)}"
+            )
 
     @staticmethod
     def _get_uri_from_name(
@@ -261,31 +272,13 @@ class LhURI(URI):
         raise NotImplementedError("LhURI pull is not implemented")
 
     def delete(self: Self) -> bool:
-        """Delete the Lakehouse resource referenced by this URI.
-
-        Only TABLE type deletion is currently supported via BaseLakehouseStorage.
-
-        Returns:
-            True if deletion succeeded, False on error.
+        """LH artifacts are immutable, and LH cannot always restore deleted content.
 
         Raises:
-            NotImplementedError: If the LH type is not TABLE.
+            NotImplementedError: Always.
         """
-        lh_type = self.get_lh_type()
-        if lh_type == LhType.TABLE:
-            from gbserver.storage.lh.lh_storage import BaseLakehouseStorage
-
-            try:
-                BaseLakehouseStorage().delete_table_in_namespace(
-                    namespace=self.get_lh_namespace(),
-                    table_name=self.get_lh_table_name(),
-                )
-                return True
-            except Exception as e:
-                logger.warning("Could not delete LH artifact %s: %s", self, e)
-                return False
         raise NotImplementedError(
-            f"LhURI delete is not implemented for LH type {lh_type}"
+            f"granite.build does not delete Lakehouse artifacts: {self.get_uristr(self)}"
         )
 
     def get_lh_namespace(self: Self) -> str:
