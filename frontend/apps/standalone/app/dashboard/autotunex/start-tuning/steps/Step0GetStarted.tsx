@@ -27,6 +27,7 @@ import {
 } from '@carbon/icons-react'
 import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
+import { isAxiosError } from 'axios'
 import type { ModelSource, TuningGoal } from '@granite-build/ui-core/types'
 import { GOAL_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import { getDefaultAlgorithmForGoal } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
@@ -137,8 +138,13 @@ export function Step0GetStarted({
       if (modelCardTokenRef.current !== cardToken) return
       setModelCard(stripFrontMatter(rawContent))
       setModelCardStatus('ready')
-    } catch {
+    } catch (err) {
       if (modelCardTokenRef.current !== cardToken) return
+      if (isAxiosError(err) && err.response?.status === 404) {
+        setModelCard(null)
+        setModelCardStatus('ready')
+        return
+      }
       setModelCard(null)
       setModelCardStatus('error')
     }
