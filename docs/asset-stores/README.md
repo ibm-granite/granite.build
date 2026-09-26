@@ -70,6 +70,15 @@ Notes:
     to recognize the `GB_ARTIFACT_STATE` marker the workload prints — the shipped `bash`, `skypilot`,
     and `docker` library monitors carry that rule; other environments' monitors need it added (see
     [Value outputs (`mem://`)](../steps/monitoring-and-artifact-events.md#value-outputs-mem)).
+- **Lakehouse (`lh://`)** pushes never replace existing content. The built-in `lhpush` step doesn't
+  delete, append to, or `--overwrite` an existing table, model revision, fileset, or dataset. If the
+  target already exists, the push fails, so give each output a unique URI (e.g. with a
+  `{{ run_metadata.targetsteprun_id | short_hash }}` suffix). The table names `model`, `model_shared`,
+  `fileset`, and `fileset_shared` are **reserved**: every namespace uses these physical tables to store
+  model and fileset metadata. So `lh://<env>/<namespace>/tables/<reserved name>` is rejected wherever
+  it is parsed: at build-config load for a literal URI, at push/pull time for a templated one, and by
+  `gb artifact push --type table`. Model and fileset URIs such as
+  `lh://…/models/model_shared/<label>/<revision>` still work normally.
 
 The store implementations live in [`src/gbserver/asset/`](../../src/gbserver/asset/); the matching URI
 parsers in [`src/gbcommon/uri/`](../../src/gbcommon/uri/).

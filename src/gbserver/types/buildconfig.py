@@ -400,6 +400,25 @@ class BuildConfig(Config):
                     errors.add(f"Target `{target_name}`: {err}")
         return errors
 
+    def __validate_lh_output_uris(self: Self) -> GBValidationErrors:
+        """Parse literal lh:// output URIs so LhURI's rules (e.g. reserved table
+        names) fail at submit time. Templated URIs are checked at push time.
+        """
+        from gbcommon.uri.lh import LH_URI_SCHEME
+        from gbcommon.uri.uri import URI
+
+        errors = GBValidationErrors()
+        for target_name, target in self.targets.items():
+            for output_name, output in (target.outputs or {}).items():
+                uri = output.uri
+                if not uri or not uri.startswith(f"{LH_URI_SCHEME}://") or "{{" in uri:
+                    continue
+                try:
+                    URI.get_uri(uri)
+                except ValueError as e:
+                    errors.add(f"Target `{target_name}` Output `{output_name}`: {e}")
+        return errors
+
     def my_validate(self: Self) -> GBValidationErrors:
         """Validate the build config."""
         logger.info("validating the build config")
@@ -411,6 +430,7 @@ class BuildConfig(Config):
         errors.add(self.__validate_target_inputs())
         errors.add(self.__validate_env_uris())
         errors.add(self.__validate_output_push())
+        errors.add(self.__validate_lh_output_uris())
         logger.info("validated the build config and found %d errors", len(errors))
         return errors
 

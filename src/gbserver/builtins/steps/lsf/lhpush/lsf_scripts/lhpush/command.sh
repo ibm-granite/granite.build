@@ -72,12 +72,10 @@ echo 'Pushing URI: {{ lhp.uri }} from path {{ lh_path }}'
 {%- set public_flag = '--public True' %}
 {%- endif %}
 # -----------------------------------
-if dmf table ls --namespace {{ lh_namespace }} | grep -q '{{ lh_table_name }}'; then
-echo dmf table delete --namespace {{ lh_namespace }} --table {{ lh_table_name }}
-dmf table delete --namespace {{ lh_namespace }} --table {{ lh_table_name }}
-else
-echo "Table {{ lh_namespace }}.{{ lh_table_name }} does not exist, skipping delete"
-fi
+{%- if lh_table_name | lower in ['model', 'model_shared', 'fileset', 'fileset_shared'] %}
+echo 'Refusing to push: "{{ lh_table_name }}" is a reserved Lakehouse table (model/fileset metadata)'; exit 1
+{%- endif %}
+# Artifacts are immutable: no delete/overwrite; dmf refuses an existing table.
 echo dmf table push --filepath {{ lh_path }} --namespace {{ lh_namespace }} --table {{ lh_table_name }} {{ batch_flag }} {{ public_flag }}
 dmf table push --filepath {{ lh_path }} --namespace {{ lh_namespace }} --table {{ lh_table_name }} {{ batch_flag }} {{ public_flag }}
 # -----------------------------------
@@ -86,6 +84,7 @@ dmf table push --filepath {{ lh_path }} --namespace {{ lh_namespace }} --table {
 
 # -----------------------------------
 # CASE 2 MODEL
+# No --overwrite: artifacts are immutable, an existing revision fails the push.
 {%- set lh_model_revision = lhpconf.model_revision %}
 {%- set lh_model_label = lhpconf.model_label %}
 {%- set open_flag = '' %}
@@ -113,8 +112,8 @@ config_path="{{ lh_path }}/config.json";
 # at the LoRA-adapter parsing lines below.
 model_type=$(cat $config_path | grep 'model_type' | sed "s/.*: \([^,]*\).*/\\1/" || true); echo "model_type=$model_type";
 # -----------------------------------
-echo dmf model push {{ use_aspera_flag }} --overwrite --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$model_size" --variant fine-tuned --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
-dmf model push {{ use_aspera_flag }} --overwrite --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$model_size" --variant fine-tuned --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
+echo dmf model push {{ use_aspera_flag }} --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$model_size" --variant fine-tuned --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
+dmf model push {{ use_aspera_flag }} --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$model_size" --variant fine-tuned --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
 # -----------------------------------
 else
 # -----------------------------------
@@ -133,8 +132,8 @@ if [[ -z "$peft_type" ]]; then peft_type="fine-tuned"; fi;
 rank=$(cat $config_path | grep '"r"' | sed "s/.*: \([^,]*\).*/\\1/" || true); echo "rank=$rank";
 if [ -z "$rank" ]; then rank="unk"; fi;
 # -----------------------------------
-echo dmf model push {{ use_aspera_flag }} --overwrite --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$rank" --variant "$peft_type" --base-model "$base_model" --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
-dmf model push {{ use_aspera_flag }} --overwrite --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$rank" --variant "$peft_type" --base-model "$base_model" --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
+echo dmf model push {{ use_aspera_flag }} --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$rank" --variant "$peft_type" --base-model "$base_model" --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
+dmf model push {{ use_aspera_flag }} --namespace {{ lh_namespace }} --dir {{ lh_path }} --table {{ lh_table_name }} --type "$model_type" --size "$rank" --variant "$peft_type" --base-model "$base_model" --revision "$model_revision" {{ open_flag }} {{ lh_model_label }}
 # -----------------------------------
 fi
 # -----------------------------------
@@ -150,12 +149,7 @@ fi
 {%- set lh_fileset_version_flag = '--version ' ~ lh_fileset_version %}
 {%- endif %}
 # -----------------------------------
-if dmf table ls --namespace {{ lh_namespace }} | grep -q '{{ lh_table_name }}'; then
-echo dmf fileset delete --namespace {{ lh_namespace }} --table {{ lh_table_name }} {{ lh_fileset_version_flag }} {{ lh_fileset_label }}
-dmf fileset delete --namespace {{ lh_namespace }} --table {{ lh_table_name }} {{ lh_fileset_version_flag }} {{ lh_fileset_label }}
-else
-echo "Table {{ lh_namespace }}.{{ lh_table_name }} does not exist, skipping fileset delete"
-fi
+# Artifacts are immutable: no delete; dmf refuses an existing label+version and adds a new version when none is set.
 echo dmf fileset push {{ use_aspera_flag }} --namespace {{ lh_namespace }} --table {{ lh_table_name }} --dir {{ lh_path }} {{ lh_fileset_version_flag }} {{ lh_fileset_label }}
 dmf fileset push {{ use_aspera_flag }} --namespace {{ lh_namespace }} --table {{ lh_table_name }} --dir {{ lh_path }} {{ lh_fileset_version_flag }} {{ lh_fileset_label }}
 # -----------------------------------
@@ -167,13 +161,12 @@ dmf fileset push {{ use_aspera_flag }} --namespace {{ lh_namespace }} --table {{
 {%- set dataset_name = lhp.lh.dataset_name %}
 {%- set dataset_type = 'synthetic' %}
 {%- set dataset_desc = 'Created by llm.build' %}
+{%- set public_flag = '--public False' %}
+{%- if (lh_namespace == 'granite_dot_build.public') or (lh_namespace == 'granite_dot_build.public_dev') %}
+{%- set public_flag = '--public True' %}
+{%- endif %}
 # -----------------------------------
-if dmf table ls --namespace {{ lh_namespace }} | grep -q '{{ lh_table_name }}'; then
-echo dmf dataset delete {{ dataset_name }} --namespace {{ lh_namespace }} --table {{ lh_table_name }}
-dmf dataset delete {{ dataset_name }} --namespace {{ lh_namespace }} --table {{ lh_table_name }}
-else
-echo "Table {{ lh_namespace }}.{{ lh_table_name }} does not exist, skipping dataset delete"
-fi
+# Artifacts are immutable: no delete; dmf refuses an existing dataset.
 echo dmf dataset push {{ dataset_name }} --namespace {{ lh_namespace }} --table {{ lh_table_name }} --filepath {{ lh_path }} --type {{ dataset_type }} --description {{ dataset_desc }} {{ public_flag }}
 dmf dataset push {{ dataset_name }} --namespace {{ lh_namespace }} --table {{ lh_table_name }} --filepath {{ lh_path }} --type {{ dataset_type }} --description {{ dataset_desc }} {{ public_flag }}
 # --type is either real or synthetic
