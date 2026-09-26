@@ -650,9 +650,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           aria-label={`Step details — ${stepDetailTarget}`}
         >
           {(() => {
-            // Own-property lookup for the same reason as the close effect above:
-            // a bare-object index would return Object.prototype.toString (a
-            // function) for a target named `toString`.
+            // Own-property lookup: a bare-object index would return
+            // Object.prototype.toString (a function) for a target named `toString`.
             const targets = buildStatus?.targets
             const target =
               targets && Object.prototype.hasOwnProperty.call(targets, stepDetailTarget)

@@ -364,17 +364,19 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     if (!hasUserAdjustedRef.current) {
       const fit = computeFitTransform()
       if (fit) transformRef.current = fit
+      // interrupt() only when a fresh fit is applied: `resetView` starts a 300ms
+      // transition toward the pre-expansion fit, and the ELK relayout it triggers
+      // usually lands well inside that window. A plain `.call(zoom.transform, …)`
+      // does NOT cancel a running transition, so without this the in-flight
+      // transition keeps interpolating past our fresh fit and snaps the view back
+      // to the stale one. When the user owns the viewport (including a
+      // `centerOnNode` transition in flight) we must not interrupt, or a status
+      // poll relayout would freeze that transition partway.
+      svg.interrupt()
     }
 
     // Programmatic: fires the `zoom` handler with no sourceEvent, so the fit
     // itself is not mistaken for a user adjustment.
-    //
-    // interrupt() first: `resetView` starts a 300ms transition toward the
-    // pre-expansion fit, and the ELK relayout it triggers usually lands well
-    // inside that window. A plain `.call(zoom.transform, …)` does NOT cancel a
-    // running transition, so without this the in-flight transition keeps
-    // interpolating past our fresh fit and snaps the view back to the stale one.
-    svg.interrupt()
     svg.call(zoomRef.current.transform, transformRef.current)
 
     return () => {

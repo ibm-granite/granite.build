@@ -362,6 +362,12 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
     }
   }>(`/builds/${buildId}/status`)
 
+  // A run that never started sorts first, like `started_at or datetime.min`.
+  const startedAtMs = (t: BuildTargetRun) => {
+    const ms = t.started_at ? Date.parse(t.started_at) : NaN
+    return Number.isNaN(ms) ? -Infinity : ms
+  }
+
   const s = data.status
   const build = adaptBuild(s.build)
   const targets: Record<string, BuildTargetRun> = {}
@@ -373,7 +379,13 @@ export async function getBuildStatus(buildId: string): Promise<BuildStatusDetail
       ...tr.target,
       steps: tr.steps,
     })
-    if (adapted.target_name) {
+    if (!adapted.target_name) continue
+    // A retried target has several runs under one name, returned in no
+    // particular order. Keep the latest attempt, as the server does in
+    // api/build_files.py — otherwise an earlier FAILED run can shadow the
+    // retry that succeeded.
+    const existing = targets[adapted.target_name]
+    if (!existing || startedAtMs(adapted) >= startedAtMs(existing)) {
       targets[adapted.target_name] = adapted
     }
   }
