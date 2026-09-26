@@ -129,7 +129,8 @@ ssh -i ~/.ssh/slurm_docker_key -p 2222 root@localhost srun --gres=gpu:1 nvidia-s
 
 A single [SeaweedFS](https://github.com/seaweedfs/seaweedfs) container (`gb-s3`,
 running `weed mini`) with:
-- S3-compatible API on port 9000 (reachable from the SLURM containers as `gb-s3:9000`)
+- S3-compatible API on port 9000, reachable from the SLURM containers as `gb-s3:9000`
+  (it joins `slurm-net`, whichever of `s3-setup` / `slurm-setup` runs first)
 - A `gb-checkpoints` bucket pre-created (via `aws s3 mb`, so the AWS CLI must be on
   `PATH` — the repo `.venv` provides it)
 

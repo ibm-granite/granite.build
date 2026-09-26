@@ -96,7 +96,7 @@ fi
 ok "SkyPilot SLURM enabled"
 
 # Ensure the local S3 store is running (artifact store)
-if ! curl -sf http://localhost:9000/healthz >/dev/null 2>&1; then
+if ! curl -sf "http://localhost:${GB_S3_PORT:-9000}/healthz" >/dev/null 2>&1; then
     step "Starting local S3 store (SeaweedFS)"
     bash scripts/s3/setup-s3.sh
     ok "S3 store ready"

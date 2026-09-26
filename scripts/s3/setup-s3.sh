@@ -81,10 +81,9 @@ ensure_container_running() {
     # Container does not exist — create and run.
     # Pre-pull quietly so the `run` below prints no per-layer progress.
     ${CONTAINER_CLI} pull --quiet "${GB_S3_IMAGE}"
-    # `weed mini` runs master, volume, filer and S3 in one process; it creates
-    # an admin identity from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY. -ip pins
-    # the internal component address to loopback so a restart (new container
-    # IP) doesn't strand the volume registration. Unused gateways are disabled.
+    # `weed mini` runs master, volume, filer and S3 in one process, with an admin
+    # identity from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY. -ip keeps internal
+    # traffic on loopback rather than the (changeable) container IP.
     ${CONTAINER_CLI} run -d \
         --name "${name}" \
         -p "${GB_S3_PORT}:9000" \
@@ -95,6 +94,21 @@ ensure_container_running() {
         mini -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0 -s3.port=9000 \
         -webdav=false -admin.ui=false -s3.port.iceberg=0 -s3.port.lance=0
     log_create "Container '${name}' (S3 API :${GB_S3_PORT})"
+}
+
+# ── SLURM network ────────────────────────────────────────────────────────
+# SLURM jobs push to gb-s3:9000, so join slurm-net if it exists. setup-slurm.sh
+# does the same, so either may run first.
+connect_slurm_net() {
+    local name="${GB_S3_CONTAINER_NAME}" members
+    members="$(${CONTAINER_CLI} network inspect slurm-net \
+        --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null)" || return 0
+    if [[ " ${members} " == *" ${name} "* ]]; then
+        log_skip "Container '${name}' already on slurm-net"
+        return
+    fi
+    ${CONTAINER_CLI} network connect slurm-net "${name}"
+    log_create "Connected '${name}' to slurm-net"
 }
 
 # ── Health check ─────────────────────────────────────────────────────────
@@ -177,6 +191,7 @@ main() {
     detect_container_cli
     check_aws_cli
     ensure_container_running
+    connect_slurm_net
     wait_for_healthy
     create_bucket
     print_summary
