@@ -20,7 +20,6 @@ import {
   TableBatchAction,
   Pagination,
   Button,
-  Toggle,
   Link as CarbonLink,
   Modal,
   InlineNotification,
@@ -62,8 +61,6 @@ export function ConfigurationsTable() {
   const [pageSize, setPageSize] = useState(10)
   const [searchInput, setSearchInput] = useState('')
   const [q, setQ] = useState('')
-  // null until the admin flips the toggle; `scope` below resolves the default.
-  const [scopeChoice, setScope] = useState<'own' | 'all' | null>(null)
 
   // Debounce free-text search into `q` and reset to page 1 on change.
   useEffect(() => {
@@ -74,9 +71,9 @@ export function ConfigurationsTable() {
     return () => clearTimeout(timer)
   }, [searchInput])
 
-  // Only an AutoTuneX admin may request scope=all, so only they get the toggle.
+  // Only an AutoTuneX admin may request scope=all.
   const { isAdmin } = useAutotunexIsAdmin()
-  const scope = scopeChoice ?? (isAdmin ? adminDefaultScope() : 'own')
+  const scope = isAdmin ? adminDefaultScope() : 'own'
 
   // `error` is surfaced rather than swallowed: without it a 500 or a dropped
   // connection rendered a populated-looking table with 0 rows and "0 items",
@@ -206,17 +203,6 @@ export function ConfigurationsTable() {
                     placeholder="Search configurations…"
                     onChange={(_e, value) => setSearchInput(value ?? '')}
                   />
-                  {isAdmin && (
-                    <Toggle
-                      id="configurations-scope-toggle"
-                      labelText=""
-                      labelA="Mine"
-                      labelB="All"
-                      toggled={scope === 'all'}
-                      onToggle={(checked) => { setScope(checked ? 'all' : 'own'); setPage(1) }}
-                      size="sm"
-                    />
-                  )}
                   <Button renderIcon={Add} onClick={() => setCreateOpen(true)}>
                     Create New Configuration
                   </Button>

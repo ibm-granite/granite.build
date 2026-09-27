@@ -22,8 +22,6 @@ export default function AutoTuneXPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [q, setQ] = useState('')
-  // null until the admin flips the toggle; `scope` below resolves the default.
-  const [scopeChoice, setScope] = useState<'own' | 'all' | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
@@ -32,9 +30,9 @@ export default function AutoTuneXPage() {
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(searchDebounceRef.current), [])
 
-  // Only an AutoTuneX admin may request scope=all, so only they get the toggle.
+  // Only an AutoTuneX admin may request scope=all.
   const { isAdmin } = useAutotunexIsAdmin()
-  const scope = scopeChoice ?? (isAdmin ? adminDefaultScope() : 'own')
+  const scope = isAdmin ? adminDefaultScope() : 'own'
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['autotunex-jobs', page, pageSize, q, scope],
@@ -91,11 +89,6 @@ export default function AutoTuneXPage() {
     }, 300)
   }, [])
 
-  const handleScopeChange = useCallback((newScope: 'own' | 'all') => {
-    setScope(newScope)
-    setPage(1)
-  }, [])
-
   // `selectedIds` shadows the table's own selection. Carbon does not rebuild its
   // checkboxes from the rows it is handed -- it carries `isSelected` forward for
   // every id it still knows -- so this prunes to the visible rows rather than
@@ -135,8 +128,6 @@ export default function AutoTuneXPage() {
         onPageChange={handlePageChange}
         onSearch={handleSearch}
         scope={scope}
-        onScopeChange={handleScopeChange}
-        showScopeToggle={isAdmin}
         onRowClick={(id) => router.push(`/dashboard/autotunex/_/?id=${id}`)}
         onDeleteSelected={() => setDeleteOpen(true)}
         onCompareSelected={() => setCompareOpen(true)}
