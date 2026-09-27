@@ -64,12 +64,11 @@ export interface UseHfImportOptions {
   // unmounts on wizard navigation, so a user who picked a repo, waited for the
   // probe and then went Back to check something in Step 0 returned to an empty
   // HuggingFace tab. Only the selection is lifted -- every transient value
-  // (previews, loading flags, errors, the import status, the AI fields) stays local.
+  // (previews, loading flags, errors, the AI fields) stays local.
   //
   // `mapping` is deliberately NOT lifted: the probe effect calls `setMapping({})`
   // unconditionally, so a restored mapping would be wiped on remount anyway. The
   // probe refires on return and the AI re-derives the mapping, which is intended.
-  //
   repoId: string | null
   setRepoId: Dispatch<SetStateAction<string | null>>
   config: string

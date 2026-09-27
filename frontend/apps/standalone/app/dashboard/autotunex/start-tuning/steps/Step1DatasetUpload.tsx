@@ -225,8 +225,9 @@ export function Step1DatasetUpload({
   })
   // GET /datasets returns every status. A dataset still uploading or importing has
   // no rows or preview behind it yet, and an errored one never will, so offering
-  // one sets existingDatasetId with nothing behind it. Pre-existing gap, but every
-  // abandoned HF import adds an `importing` row, so it stops being theoretical.
+  // one sets existingDatasetId with nothing behind it. Pre-existing gap, but a
+  // timed-out or closed-mid-launch HF import leaves an `importing` row behind, so
+  // it stops being theoretical.
   const existingDatasets = useMemo(
     () => (existingDatasetsResult?.items ?? []).filter((ds) => ds.status === 'ready'),
     [existingDatasetsResult]
@@ -514,6 +515,10 @@ export function Step1DatasetUpload({
     setError('')
     setExistingDatasetId(null)
     setSelectedExistingDataset(null)
+    // Picking a file, even one that turns out to be bad, replaces whatever dataset
+    // was previously in play -- including a pending HF import frozen at Next, which
+    // a failed parse below would otherwise leave sitting alongside this new file.
+    onDatasetChanged()
 
     try {
       setUploadedFile(file)
@@ -551,7 +556,6 @@ export function Step1DatasetUpload({
         })
         .catch(() => {})
 
-      onDatasetChanged()
       suggestMappingWithAI(rawData, metadata, uploadToken)
     } catch (err: any) {
       if (uploadTokenRef.current !== uploadToken) return

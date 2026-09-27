@@ -84,6 +84,7 @@ export function Step3ReviewLaunch({
 }: Step3ReviewLaunchProps) {
   const isExisting = !!selectedExistingDataset
   const hfSummary = hfImport ? hfSnapshotSummary(hfImport) : null
+  const datasetDescription = hfImport ? hfImport.payload.description ?? '' : datasetForm.description
 
   const trainFileName = isExisting ? selectedExistingDataset!.train_file : uploadedFile?.name ?? null
   const valFileName = isExisting
@@ -176,11 +177,11 @@ export function Step3ReviewLaunch({
                 <span className={styles.cardLabel}>Name</span>
                 <span className={styles.cardValue}>{hfSummary ? hfSummary.name : datasetForm.name}</span>
               </div>
-              {datasetForm.description && (
+              {datasetDescription && (
                 <div className={styles.cardRow}>
                   <span className={styles.cardLabel}>Description</span>
-                  <span className={`${styles.cardValue} ${styles.cardValueTruncate}`} title={datasetForm.description}>
-                    {datasetForm.description}
+                  <span className={`${styles.cardValue} ${styles.cardValueTruncate}`} title={datasetDescription}>
+                    {datasetDescription}
                   </span>
                 </div>
               )}
