@@ -170,6 +170,11 @@ export function Step0GetStarted({
   useEffect(() => {
     if (modelSource === previousModelSource.current) return
     previousModelSource.current = modelSource
+    // A pick check already in flight (handleTunedModelChange's getJobAssets call)
+    // must not land after the source has moved on — in either direction, away
+    // from or back to 'tuned_model' — or it overwrites the state this effect is
+    // about to reset.
+    ++tunedCheckTokenRef.current
 
     if (modelSource === 'custom_path') {
       // No default and nothing to search — the user types a path. Clearing the
