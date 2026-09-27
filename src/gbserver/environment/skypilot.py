@@ -446,11 +446,17 @@ def _ssh_probe_cmd(config_path: str, alias: str, timeout: int) -> List[str]:
     """
     from gbserver.types.constants import ENABLE_SSH_HOST_KEY_VERIFICATION
 
-    cmds = ["ssh", "-F", config_path, "-o", "BatchMode=yes", "-o",
-            f"ConnectTimeout={timeout}"]
+    cmds = [
+        "ssh",
+        "-F",
+        config_path,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        f"ConnectTimeout={timeout}",
+    ]
     if not ENABLE_SSH_HOST_KEY_VERIFICATION:
-        cmds += ["-o", "StrictHostKeyChecking=no", "-o",
-                 "UserKnownHostsFile=/dev/null"]
+        cmds += ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
     cmds += [alias, "echo", "gbserver probe"]
     return cmds
 

@@ -185,9 +185,7 @@ class TestSshProbeCmd:
     """`_ssh_probe_cmd` — the argv builder for the reachability probe."""
 
     def test_argv_shape_and_no_verification_flags(self):
-        with patch(
-            "gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION", False
-        ):
+        with patch("gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION", False):
             cmds = _ssh_probe_cmd("/tmp/cfg", "bluevela", 12)
         assert cmds[:3] == ["ssh", "-F", "/tmp/cfg"]
         assert "BatchMode=yes" in cmds
@@ -198,9 +196,7 @@ class TestSshProbeCmd:
         assert cmds[-3:] == ["bluevela", "echo", "gbserver probe"]
 
     def test_strict_toggle_keeps_verification(self):
-        with patch(
-            "gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION", True
-        ):
+        with patch("gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION", True):
             cmds = _ssh_probe_cmd("/tmp/cfg", "bluevela", 5)
         assert "StrictHostKeyChecking=no" not in cmds
         assert "UserKnownHostsFile=/dev/null" not in cmds

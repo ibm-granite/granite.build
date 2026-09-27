@@ -500,7 +500,9 @@ class TestHostnameSelection:
             return False  # force every candidate to be tried
 
         with pytest.raises(RuntimeError, match="not reachable"):
-            sc._select_reachable_hostname(_host(HostName=list(self._NODES)), probe=probe)
+            sc._select_reachable_hostname(
+                _host(HostName=list(self._NODES)), probe=probe
+            )
         assert sorted(seen) == sorted(self._NODES)  # every candidate probed once
         assert all(isinstance(n, str) for n in seen)  # never a list
 
