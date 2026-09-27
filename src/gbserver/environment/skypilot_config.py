@@ -60,7 +60,10 @@ from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
 )
-from gbserver.types.errors import SkypilotConfigCollisionError
+from gbserver.types.errors import (
+    NoReachableLoginNodeError,
+    SkypilotConfigCollisionError,
+)
 from gbserver.utils.logger import get_logger
 from gbserver.utils.ssh_keys import write_private_key_file
 
@@ -315,7 +318,8 @@ def _select_reachable_hostname(
         probe can read the per-host timeout).
     :param probe: Reachability probe, or ``None`` to skip probing.
     :returns: A host mapping with a single scalar ``HostName``.
-    :raises RuntimeError: If no candidate ``HostName`` is reachable.
+    :raises NoReachableLoginNodeError: If no candidate ``HostName`` is reachable
+        (a ``RuntimeError`` subclass; the caller retries the sweep before failing).
     """
     candidates = host.get("HostName")
     if candidates is None:
@@ -329,7 +333,7 @@ def _select_reachable_hostname(
         if probe is None or probe(chosen):
             return chosen
     tried = candidates[0] if len(candidates) == 1 else candidates
-    raise RuntimeError(
+    raise NoReachableLoginNodeError(
         f"SSH host {host.get('Host')!r}: login node(s) {tried!r} not reachable."
     )
 
@@ -692,7 +696,9 @@ def materialize_ssh_for_cloud(
         probing.
     :raises SkypilotConfigCollisionError: On a foreign clash (see
         :func:`merge_ssh_blocks`).
-    :raises RuntimeError: If a host has no reachable ``HostName`` candidate.
+    :raises NoReachableLoginNodeError: If a host has no reachable ``HostName``
+        candidate. Selection runs before any file write, so a raise leaves
+        ``~/.<cloud>/config`` untouched and the whole call is safe to retry.
     """
     hosts = {"slurm": ssh.slurm, "lsf": ssh.lsf}.get(cloud)
     if not hosts:

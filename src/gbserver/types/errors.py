@@ -41,6 +41,19 @@ class SkypilotConfigCollisionError(Exception):
     """
 
 
+class NoReachableLoginNodeError(RuntimeError):
+    """Raised when no candidate SSH login node for a cluster answers the probe.
+
+    The pre-launch reachability probe (see ``gbserver.environment.skypilot``)
+    tries each candidate ``HostName`` once per sweep; this is raised only after a
+    sweep has probed every candidate and none answered. gbserver retries the
+    sweep a bounded number of times (``SSH_PROBE_SELECT_ATTEMPTS``) with a short
+    backoff before letting this propagate, so it surfaces on a sustained outage
+    rather than a momentary blip. A subclass of ``RuntimeError`` for backward
+    compatibility — callers that caught ``RuntimeError`` still catch it.
+    """
+
+
 ERR_CONNECTION_RESET_BY_PEER = "Connection reset by peer"
 
 

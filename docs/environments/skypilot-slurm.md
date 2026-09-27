@@ -97,8 +97,16 @@ default timeout, and a non-positive value there falls back to a built-in 30s and
 > for cluster …`. The probe is load-bearing (it picks the `HostName` the launch uses), so it always
 > runs and cannot be disabled. `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` only sets the default
 > `ConnectTimeout` (seconds); a per-host `ssh_probe_timeout_s` overrides it, and both must be positive.
-> If every candidate is unreachable the launch fails fast with a clear error; genuine blips on a
-> selected node are still retried as transient and the API server's traceback is still surfaced.
+> Within one sweep the probe falls through to the next candidate, so a single wedged node is skipped
+> as long as another answers. If a whole sweep finds *no* reachable candidate, gbserver re-shuffles and
+> re-probes the full set a bounded number of times (3 attempts, ~5s apart) before failing the launch
+> with a clear error. This absorbs a momentary DNS/connect blip that leaves every candidate unreachable
+> at once (most acutely on a single-node cluster) while still failing fast on a sustained outage. The
+> gate runs *before* provisioning and its own retry is separate from the launch-time transient-retry
+> classifier, which covers failures from `sky.launch` *after* a node is selected (those genuine blips
+> are retried as transient and the API server's traceback is still surfaced). Listing several candidate
+> login nodes further buys resilience: the launch fails only when *all* of them stay down across every
+> probe attempt.
 
 ### `cluster` / `zone`
 

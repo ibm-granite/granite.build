@@ -40,8 +40,10 @@ from tenacity import (
     AsyncRetrying,
     retry,
     retry_if_exception,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
+    wait_fixed,
 )
 
 from gbcommon.uri.uri import URI
@@ -63,6 +65,7 @@ from gbserver.types.environment.skypilot import StepSkypilotConfig
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import (
     ErrSkypilotInteractiveAuthFailed,
+    NoReachableLoginNodeError,
     WorkloadFailedException,
 )
 from gbserver.utils.logger import get_logger
@@ -420,6 +423,18 @@ _SSH_HPC_CLOUDS = ("slurm", "lsf")
 # disabling it. A per-host `ssh_probe_timeout_s` overrides it and is validated positive
 # at config load (ClusterSshConfigs).
 DEFAULT_SSH_PROBE_TIMEOUT_S = 30
+
+# Bounded retry for the pre-launch reachability probe. Each sweep probes every
+# candidate login node once; a momentary DNS/connect blip can leave every
+# candidate unreachable at once (most acutely a single-node cluster). Because
+# this probe runs BEFORE _provision_with_retry, a raised miss is not seen by the
+# transient classifier (_is_transient_provision_error), so we re-shuffle and
+# re-probe the whole candidate set a few times with a short backoff before
+# failing the launch. A sustained outage still fails within seconds; a transient
+# blip is absorbed — restoring the "genuine blips are retried" contract that the
+# old best-effort diagnostic probe provided via the launch-time classifier.
+SSH_PROBE_SELECT_ATTEMPTS = 3
+SSH_PROBE_SELECT_BACKOFF_S = 5
 
 
 def _ssh_probe_cmd(config_path: str, alias: str, timeout: int) -> List[str]:
@@ -1321,12 +1336,16 @@ class Skypilot(Environment):
         When a host's ``HostName`` is a list of candidate login nodes, one is picked
         at random and SSH-probed for reachability before it is written. The probe is
         a blocking ssh subprocess, so the whole materialize (probe + file merge) runs
-        off the event loop via ``asyncio.to_thread``.
+        off the event loop via ``asyncio.to_thread``. A sweep that finds no reachable
+        candidate is retried up to ``SSH_PROBE_SELECT_ATTEMPTS`` times with a
+        ``SSH_PROBE_SELECT_BACKOFF_S`` backoff, so a momentary blip does not fail the
+        launch (selection writes nothing until a node is chosen, so the retry is safe).
 
         :param cloud: The HPC cloud being provisioned (``"slurm"``/``"lsf"``).
         :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash, or
             a differing block for the same alias owned by another environment.
-        :raises RuntimeError: If a host's ``HostName`` list has no reachable node.
+        :raises NoReachableLoginNodeError: If a host's ``HostName`` candidates are all
+            unreachable across every probe attempt (a sustained outage).
         """
         cfg = self.config.config if self.config else {}
         ssh_raw = cfg.get("cluster_ssh_configs")
@@ -1338,14 +1357,25 @@ class Skypilot(Environment):
         ssh = ClusterSshConfigs.model_validate(ssh_raw)
         name = self.config.name if self.config else "unknown"
         secrets = self.secrets or {}
-        await asyncio.to_thread(
-            materialize_ssh_for_cloud,
-            name,
-            ssh,
-            secrets,
-            cloud,
-            hostname_probe=lambda h: _probe_ssh_hostname(h, secrets),
-        )
+        # Re-shuffle and re-probe the whole candidate set on each attempt, since a
+        # miss here is fatal before _provision_with_retry (see SSH_PROBE_SELECT_*).
+        # Mirrors the AsyncRetrying form used by _provision_with_retry; fixed backoff
+        # because a login node does not recover faster/slower with exponential spacing.
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type(NoReachableLoginNodeError),
+            wait=wait_fixed(SSH_PROBE_SELECT_BACKOFF_S),
+            stop=stop_after_attempt(SSH_PROBE_SELECT_ATTEMPTS),
+            reraise=True,
+        ):
+            with attempt:
+                await asyncio.to_thread(
+                    materialize_ssh_for_cloud,
+                    name,
+                    ssh,
+                    secrets,
+                    cloud,
+                    hostname_probe=lambda h: _probe_ssh_hostname(h, secrets),
+                )
 
     async def _prepare_ssh_for_launch(self: Self, cloud_group: str) -> None:
         """Materialize SSH config for an HPC launch, optionally resetting sockets.
@@ -1360,7 +1390,8 @@ class Skypilot(Environment):
 
         :param cloud_group: Normalized target cloud (first infra segment).
         :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash.
-        :raises RuntimeError: If a host's ``HostName`` list has no reachable node.
+        :raises NoReachableLoginNodeError: If a host's ``HostName`` candidates are
+            all unreachable across every probe attempt.
         """
         if cloud_group not in _SSH_HPC_CLOUDS:
             return

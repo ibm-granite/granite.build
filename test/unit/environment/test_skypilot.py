@@ -1917,6 +1917,44 @@ class TestInlineConfigMaterialization:
             m.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_ssh_materialize_retries_probe_then_succeeds(self):
+        """A blip that leaves every candidate unreachable is re-probed, not fatal."""
+        from gbserver.types.errors import NoReachableLoginNodeError
+
+        env = self._env(
+            {"cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": "h"}]}}
+        )
+        with (
+            patch(
+                "gbserver.environment.skypilot_config.materialize_ssh_for_cloud",
+                side_effect=[NoReachableLoginNodeError("blip"), None],
+            ) as m,
+            patch("gbserver.environment.skypilot.SSH_PROBE_SELECT_BACKOFF_S", 0),
+        ):
+            await env._materialize_ssh_for_launch("slurm")
+            assert m.call_count == 2  # first sweep failed, second succeeded
+
+    @pytest.mark.asyncio
+    async def test_ssh_materialize_raises_after_exhausting_probe_attempts(self):
+        """A sustained outage fails the launch with NoReachableLoginNodeError."""
+        from gbserver.environment.skypilot import SSH_PROBE_SELECT_ATTEMPTS
+        from gbserver.types.errors import NoReachableLoginNodeError
+
+        env = self._env(
+            {"cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": "h"}]}}
+        )
+        with (
+            patch(
+                "gbserver.environment.skypilot_config.materialize_ssh_for_cloud",
+                side_effect=NoReachableLoginNodeError("down"),
+            ) as m,
+            patch("gbserver.environment.skypilot.SSH_PROBE_SELECT_BACKOFF_S", 0),
+        ):
+            with pytest.raises(NoReachableLoginNodeError):
+                await env._materialize_ssh_for_launch("slurm")
+            assert m.call_count == SSH_PROBE_SELECT_ATTEMPTS
+
+    @pytest.mark.asyncio
     async def test_launch_inner_materializes_before_api_start(self):
         env = self._env(
             {"cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": "h"}]}}
