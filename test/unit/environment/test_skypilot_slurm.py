@@ -1380,7 +1380,8 @@ class TestSshControlSocketClear:
         clear.assert_not_called()
         mat.assert_called_once()  # SSH config is still materialized
 
-    def test_not_cleared_for_non_hpc_cloud(self, slurm_env, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_not_cleared_for_non_hpc_cloud(self, slurm_env, monkeypatch):
         # Even with the flag set, a non-HPC cloud (no shared SSH config file) is
         # a no-op: neither the clear nor the SSH materialization runs.
         monkeypatch.setenv("GBTEST_SKY_SSH_RESET", "true")
@@ -1390,7 +1391,7 @@ class TestSshControlSocketClear:
             ) as clear,
             patch.object(slurm_env, "_materialize_ssh_for_launch") as mat,
         ):
-            slurm_env._prepare_ssh_for_launch("k8s")
+            await slurm_env._prepare_ssh_for_launch("k8s")
         clear.assert_not_called()
         mat.assert_not_called()
 
