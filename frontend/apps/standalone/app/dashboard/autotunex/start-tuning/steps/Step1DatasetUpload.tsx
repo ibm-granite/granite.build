@@ -253,8 +253,10 @@ export function Step1DatasetUpload({
   // The saved-dataset list and the HF flag both arrive asynchronously, so a source
   // can disappear after being selected.
   useEffect(() => {
+    // A frozen import stays on its own tab even before HF/existing-datasets resolve.
+    if (pendingHfImport) return
     if (!availableSources.includes(dataSource)) setDataSource('upload')
-  }, [availableSources, dataSource])
+  }, [availableSources, dataSource, pendingHfImport])
   const { data: datasetTypes = {} } = useQuery({
     queryKey: ['autotunex', 'datasetTypes'],
     queryFn: getAutotuneDatasetTypes,
@@ -806,12 +808,12 @@ export function Step1DatasetUpload({
                       <SelectItem key={ds.id} value={ds.id} text={`${ds.name} (${(ds.train_records || 0) + (ds.validation_records || 0)} records)`} />
                     ))}
                   </Select>
+                ) : pendingHfImport ? (
+                  // No request behind this card, so it renders whether or not
+                  // appConfig (and hfConfig) has resolved yet.
+                  <HfImportSummaryCard snapshot={pendingHfImport} onChange={onDatasetChanged} />
                 ) : hfConfig ? (
-                  pendingHfImport ? (
-                    <HfImportSummaryCard snapshot={pendingHfImport} onChange={onDatasetChanged} />
-                  ) : (
-                    <HfImportForm hf={hf} mappableColumns={mappableColumns} hfConfig={hfConfig} />
-                  )
+                  <HfImportForm hf={hf} mappableColumns={mappableColumns} hfConfig={hfConfig} />
                 ) : null}
               </>
             )}

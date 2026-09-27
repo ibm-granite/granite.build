@@ -225,6 +225,8 @@ export function StartTuningWizard() {
     setTotalRecords(0)
     setDatasetId(null)
     setExistingDatasetId(null)
+    setPendingHfImport(null)
+    setHfDraft(null)
     // Cleared alongside `existingDatasetId`: leaving the object behind showed step 1
     // with no dataset while Step1DatasetUpload still read the stale one and rendered
     // null in place of the "Expected Dataset Format" panel.
