@@ -409,30 +409,43 @@ export function Step3ReviewLaunch({
               <div className={styles.launchSteps}>
                 {launchPlan?.uploadDataset && (
                   <>
-                    <div
-                      className={`${styles.launchStep} ${launchPhase === 'creating_dataset' ? styles.launchStepActive : ''} ${
-                        laterPhases('uploading_files', 'updating_config', 'creating_config', 'launching_job') ? styles.launchStepDone : ''
-                      }`}
-                    >
-                      {laterPhases('uploading_files', 'updating_config', 'creating_config', 'launching_job') && <Checkmark size={16} />}
-                      <span>Create dataset</span>
-                    </div>
-                    <div
-                      className={`${styles.launchStep} ${launchPhase === 'uploading_files' ? styles.launchStepActive : ''} ${
-                        laterPhases('updating_config', 'creating_config', 'launching_job') ? styles.launchStepDone : ''
-                      }`}
-                    >
-                      {laterPhases('updating_config', 'creating_config', 'launching_job') && <Checkmark size={16} />}
-                      <span>Upload files</span>
-                      {launchPhase === 'uploading_files' && uploadProgress > 0 && (
-                        <>
-                          <div style={{ flex: 1, maxWidth: 200 }}>
-                            <ProgressBar value={uploadProgress} max={100} size="small" label="Upload progress" hideLabel />
-                          </div>
-                          <span className={styles.progressLabel}>{uploadProgress}%</span>
-                        </>
-                      )}
-                    </div>
+                    {hfImport ? (
+                      <div
+                        className={`${styles.launchStep} ${launchPhase === 'importing_dataset' ? styles.launchStepActive : ''} ${
+                          laterPhases('updating_config', 'creating_config', 'launching_job') ? styles.launchStepDone : ''
+                        }`}
+                      >
+                        {laterPhases('updating_config', 'creating_config', 'launching_job') && <Checkmark size={16} />}
+                        <span>Import from HuggingFace</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div
+                          className={`${styles.launchStep} ${launchPhase === 'creating_dataset' ? styles.launchStepActive : ''} ${
+                            laterPhases('uploading_files', 'updating_config', 'creating_config', 'launching_job') ? styles.launchStepDone : ''
+                          }`}
+                        >
+                          {laterPhases('uploading_files', 'updating_config', 'creating_config', 'launching_job') && <Checkmark size={16} />}
+                          <span>Create dataset</span>
+                        </div>
+                        <div
+                          className={`${styles.launchStep} ${launchPhase === 'uploading_files' ? styles.launchStepActive : ''} ${
+                            laterPhases('updating_config', 'creating_config', 'launching_job') ? styles.launchStepDone : ''
+                          }`}
+                        >
+                          {laterPhases('updating_config', 'creating_config', 'launching_job') && <Checkmark size={16} />}
+                          <span>Upload files</span>
+                          {launchPhase === 'uploading_files' && uploadProgress > 0 && (
+                            <>
+                              <div style={{ flex: 1, maxWidth: 200 }}>
+                                <ProgressBar value={uploadProgress} max={100} size="small" label="Upload progress" hideLabel />
+                              </div>
+                              <span className={styles.progressLabel}>{uploadProgress}%</span>
+                            </>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
                 {launchPlan?.updateConfig && (
