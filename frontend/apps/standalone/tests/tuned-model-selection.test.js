@@ -49,6 +49,13 @@ describe('tunedModelCheckFailure', () => {
     assert.equal(result.retryable, false)
   })
 
+  it('reports a missing repository for a 404, without offering a retry', () => {
+    const result = tunedModelCheckFailure(404)
+
+    assert.match(result.reason, /repository no longer exists/)
+    assert.equal(result.retryable, false)
+  })
+
   it('offers a retry for anything else', () => {
     assert.equal(tunedModelCheckFailure(502).retryable, true)
     assert.equal(tunedModelCheckFailure(undefined).retryable, true)

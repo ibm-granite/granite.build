@@ -7,6 +7,7 @@ export type TunedModelCheck = { ok: true } | { ok: false; reason: string; retrya
 const ADAPTER_REASON = 'This output is a LoRA/PEFT adapter; only full-weight models can be tuned further.'
 const LEGACY_REASON = "This model's output predates model-at-root packaging and can't be used as a base."
 const BUILD_FAILED_REASON = "This job's build did not succeed."
+const MISSING_REPO_REASON = "This model's repository no longer exists."
 const UNREACHABLE_REASON = "Couldn't reach HuggingFace to verify this model."
 
 /** One-line ComboBox label: experiment · base model · tuning kind · repo. */
@@ -31,5 +32,6 @@ export function checkTunedModelAssets(assets: Pick<TuningAsset, 'path'>[]): Tune
 /** The check's outcome when the result-report request itself failed (409 = build not successful). */
 export function tunedModelCheckFailure(status: number | undefined): TunedModelCheck {
   if (status === 409) return { ok: false, reason: BUILD_FAILED_REASON, retryable: false }
+  if (status === 404) return { ok: false, reason: MISSING_REPO_REASON, retryable: false }
   return { ok: false, reason: UNREACHABLE_REASON, retryable: true }
 }

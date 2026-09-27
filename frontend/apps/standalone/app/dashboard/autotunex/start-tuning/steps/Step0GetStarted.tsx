@@ -103,10 +103,15 @@ export function Step0GetStarted({
   const modelCardTokenRef = useRef(0)
   const previousModelSource = useRef(modelSource)
 
-  // "My tuned models": the list, the item the user picked, and its loadability
-  // check. `selectedModel` stays '' until the check passes, which is what keeps
-  // Next/Launch disabled (isModelSelectionValid) without any new wizard state.
+  // "My tuned models": the list (with its loading/error status and the last
+  // search term), the item the user picked, and its loadability check.
+  // `selectedModel` is cleared for a fresh pick until its check passes, and
+  // kept during a remount re-check unless that check fails -- either way
+  // it's what keeps Next/Launch disabled (isModelSelectionValid) without any
+  // new wizard state.
   const [tunedModels, setTunedModels] = useState<TunedModel[]>([])
+  const [tunedListStatus, setTunedListStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [tunedQuery, setTunedQuery] = useState('')
   const [pickedTuned, setPickedTuned] = useState<TunedModel | null>(null)
   const [tunedCheck, setTunedCheck] = useState<'idle' | 'checking' | TunedModelCheck>('idle')
   // Same purpose as suggestTokenRef, for the tuned-model list and the pick check.
@@ -170,11 +175,13 @@ export function Step0GetStarted({
   useEffect(() => {
     if (modelSource === previousModelSource.current) return
     previousModelSource.current = modelSource
-    // A pick check already in flight (handleTunedModelChange's getJobAssets call)
+    // A pick check or list fetch already in flight (handleTunedModelChange's
+    // getJobAssets call, or the mount effect's restore lookup / fetchTunedModels)
     // must not land after the source has moved on — in either direction, away
     // from or back to 'tuned_model' — or it overwrites the state this effect is
     // about to reset.
     ++tunedCheckTokenRef.current
+    ++tunedListTokenRef.current
 
     if (modelSource === 'custom_path') {
       // No default and nothing to search — the user types a path. Clearing the
@@ -209,6 +216,7 @@ export function Step0GetStarted({
     if (modelSource === 'tuned_model') {
       const restored = selectedModel
       const token = ++tunedListTokenRef.current
+      setTunedListStatus('loading')
       ;(async () => {
         try {
           const { items } = await getTunedModels({
@@ -218,11 +226,14 @@ export function Step0GetStarted({
           })
           if (!alive || tunedListTokenRef.current !== token) return
           setTunedModels(items)
+          setTunedListStatus('ready')
           const match = items.find((m) => m.repo_id === restored)
-          if (match) handleTunedModelChange(match)
+          if (match) handleTunedModelChange(match, { keepSelection: true })
           else setSelectedModel('')
         } catch {
-          if (alive) setSelectedModel('')
+          if (!alive || tunedListTokenRef.current !== token) return
+          setTunedListStatus('error')
+          setSelectedModel('')
         }
       })()
     }
@@ -290,11 +301,17 @@ export function Step0GetStarted({
 
   async function fetchTunedModels(term: string) {
     const token = ++tunedListTokenRef.current
+    setTunedQuery(term.trim())
+    setTunedListStatus('loading')
     try {
       const { items } = await getTunedModels({ page: 1, pageSize: 20, q: term.trim() || undefined })
-      if (tunedListTokenRef.current === token) setTunedModels(items)
+      if (tunedListTokenRef.current !== token) return
+      setTunedModels(items)
+      setTunedListStatus('ready')
     } catch {
-      if (tunedListTokenRef.current === token) setTunedModels([])
+      if (tunedListTokenRef.current !== token) return
+      setTunedModels([])
+      setTunedListStatus('error')
     }
   }
 
@@ -306,9 +323,12 @@ export function Step0GetStarted({
     debounceRef.current = setTimeout(() => fetchTunedModels(inputValue), 500)
   }
 
-  async function handleTunedModelChange(item: TunedModel | null | undefined) {
+  async function handleTunedModelChange(
+    item: TunedModel | null | undefined,
+    options: { keepSelection?: boolean } = {}
+  ) {
     const token = ++tunedCheckTokenRef.current
-    setSelectedModel('')
+    if (!options.keepSelection) setSelectedModel('')
     setPickedTuned(item ?? null)
     if (!item) {
       setTunedCheck('idle')
@@ -319,10 +339,11 @@ export function Step0GetStarted({
       const result = checkTunedModelAssets(await getJobAssets(item.job_id))
       if (tunedCheckTokenRef.current !== token) return
       setTunedCheck(result)
-      if (result.ok) setSelectedModel(item.repo_id)
+      setSelectedModel(result.ok ? item.repo_id : '')
     } catch (err) {
       if (tunedCheckTokenRef.current !== token) return
       setTunedCheck(tunedModelCheckFailure(isAxiosError(err) ? err.response?.status : undefined))
+      setSelectedModel('')
     }
   }
 
@@ -429,8 +450,10 @@ export function Step0GetStarted({
                           titleText="Tuned model"
                           placeholder="Search your completed tunings..."
                           helperText={
-                            tunedModels.length === 0 && !pickedTuned
-                              ? 'No completed full-weight tuned models yet.'
+                            tunedListStatus === 'ready' && tunedModels.length === 0 && !pickedTuned
+                              ? tunedQuery
+                                ? 'No tuned models match your search.'
+                                : 'No completed full-weight tuned models yet.'
                               : undefined
                           }
                           items={tunedModels}
@@ -438,8 +461,33 @@ export function Step0GetStarted({
                           selectedItem={pickedTuned}
                           shouldFilterItem={() => true}
                           onInputChange={handleTunedInputChange}
-                          onChange={({ selectedItem }) => handleTunedModelChange(selectedItem)}
+                          onChange={({ selectedItem }) => {
+                            // Carbon fires onChange itself when `selectedItem` changes
+                            // programmatically (e.g. the restore lookup setting
+                            // `pickedTuned`) -- ignore that echo for the same item
+                            // rather than re-entering handleTunedModelChange without
+                            // keepSelection.
+                            if (selectedItem && selectedItem.job_id === pickedTuned?.job_id) return
+                            handleTunedModelChange(selectedItem)
+                          }}
                         />
+                        {tunedListStatus === 'loading' && tunedModels.length === 0 && (
+                          <InlineLoading description="Loading your tuned models..." />
+                        )}
+                        {tunedListStatus === 'error' && (
+                          <>
+                            <InlineNotification
+                              kind="error"
+                              lowContrast
+                              hideCloseButton
+                              title="Couldn't load your tuned models"
+                              subtitle="Check your connection and try again."
+                            />
+                            <Button kind="ghost" size="sm" onClick={() => fetchTunedModels(tunedQuery)}>
+                              Retry
+                            </Button>
+                          </>
+                        )}
                         {tunedCheck === 'checking' && (
                           <InlineLoading description="Checking this model can be tuned further..." />
                         )}
