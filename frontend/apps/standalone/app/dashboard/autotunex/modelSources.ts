@@ -1,15 +1,22 @@
-import type { ModelSource } from '@granite-build/ui-core/types'
+import type { ModelSource, WizardModelSource } from '@granite-build/ui-core/types'
 
-export const MODEL_SOURCE_LABELS: Record<ModelSource, string> = {
+export const MODEL_SOURCE_LABELS: Record<WizardModelSource, string> = {
   huggingface: 'Huggingface',
   custom_path: 'Local',
+  tuned_model: 'My tuned models',
 }
 
 /** Render order of the model-source radios in Start Tuning step 1. */
-export const MODEL_SOURCE_OPTIONS: { value: ModelSource; id: string, disabled?: boolean }[] = [
+export const MODEL_SOURCE_OPTIONS: { value: WizardModelSource; id: string, disabled?: boolean }[] = [
   { value: 'huggingface', id: 'model-source-hf', disabled: false },
   { value: 'custom_path', id: 'model-source-local', disabled: true },
+  { value: 'tuned_model', id: 'model-source-tuned', disabled: false },
 ]
+
+/** The `model_source` a job is launched with: a tuned model is an ordinary HuggingFace repo. */
+export function toWireModelSource(source: WizardModelSource): ModelSource {
+  return source === 'tuned_model' ? 'huggingface' : source
+}
 
 /**
  * Sources that can no longer be selected but still appear on jobs already in the
