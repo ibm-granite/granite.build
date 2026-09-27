@@ -26,6 +26,7 @@ import type {
 import {
   AUTOTUNEX_FEATURES,
   createDataset,
+  deleteDataset,
   estimateUsage,
   getAutotuneDatasetTypes,
   getConfiguration,
@@ -33,6 +34,7 @@ import {
   getDataset,
   getDatasets,
   getHFModels,
+  importHfDataset,
   startJob,
   updateConfiguration as apiUpdateConfiguration,
   createConfiguration as apiCreateConfiguration,
@@ -40,7 +42,11 @@ import {
 } from '@granite-build/ui-core/api/autotunex'
 import { getRequiredColumnsFromTypes, isModelSelectionValid, normalizeTokenizerListFields, overlayColumnMapping } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { normalizeVerlRows } from '@granite-build/ui-core/lib/autotunex/verlNormalize'
-import { DATASET_READY_TIMEOUT_MS } from '@granite-build/ui-core/lib/autotunex/datasetReady'
+import {
+  DATASET_READY_TIMEOUT_MS,
+  HF_IMPORT_POLL_MS,
+  HF_IMPORT_READY_TIMEOUT_MS,
+} from '@granite-build/ui-core/lib/autotunex/datasetReady'
 import { ALGORITHM_DETAILS, ALGORITHM_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import { clearDraft, loadDraft, resolveDraft, saveDraft } from './wizardDraft'
 import { firstIncompleteStep } from './launchReadiness'
@@ -49,7 +55,16 @@ import { Step1DatasetUpload } from './steps/Step1DatasetUpload'
 import { Step2Configure } from './steps/Step2Configure'
 import { StepRewardFunction } from './steps/StepRewardFunction'
 import { Step3ReviewLaunch } from './steps/Step3ReviewLaunch'
-import { HF_VALIDATION_PERCENTAGE, type HfImportSnapshot } from './steps/hfImport'
+import {
+  HF_VALIDATION_PERCENTAGE,
+  hfErrorStatus,
+  hfImportPollOutcome,
+  hfImportPostFailure,
+  pollStep,
+  problemDetail,
+  suffixWithRevision,
+  type HfImportSnapshot,
+} from './steps/hfImport'
 import { NO_VALIDATION } from './steps/useHfImport'
 import styles from './StartTuningWizard.module.scss'
 
@@ -189,6 +204,9 @@ export function StartTuningWizard() {
   // only covers the metadata POST, so a retry after the upload succeeded but the
   // readiness wait failed re-POSTed the same file into a populated record.
   const uploadedDatasetIdRef = useRef<string | null>(null)
+  // The dataset a launch attempt's HF import created. A retry polls it rather than
+  // importing a second copy; cleared when the import fails or the dataset changes.
+  const createdHfDatasetIdRef = useRef<string | null>(null)
   const createdConfigIdRef = useRef<string | null>(null)
 
   const [resourceEstimation, setResourceEstimation] = useState<Resources | null>(null)
@@ -605,6 +623,7 @@ export function StartTuningWizard() {
     createdDatasetIdRef.current = null
     uploadedDatasetIdRef.current = null
     setPendingHfImport(null)
+    createdHfDatasetIdRef.current = null
     setSelectedConfigId(null)
     setSelectedConfig(null)
     setPendingNewConfig(null)
@@ -641,6 +660,65 @@ export function StartTuningWizard() {
     setResourceEstimation(null)
   }
 
+  /**
+   * Imports the frozen HuggingFace request and returns the ready dataset's id.
+   *
+   * Retry-safe: an id already in `createdHfDatasetIdRef` is polled, never
+   * re-imported. A name collision gets the revision suffix once; an errored import
+   * is deleted so the next attempt is clean; a timed-out one is kept, since it may
+   * still finish. See `hfImportPostFailure` and `hfImportPollOutcome`.
+   */
+  async function importPendingHfDataset(snapshot: HfImportSnapshot): Promise<string> {
+    if (!createdHfDatasetIdRef.current) {
+      let payload = snapshot.payload
+      let retriedName = false
+      for (;;) {
+        try {
+          const created = await importHfDataset(payload)
+          createdHfDatasetIdRef.current = created.id
+          break
+        } catch (err) {
+          const status = hfErrorStatus(err)
+          if (hfImportPostFailure({ httpStatus: status, retriedName }) === 'suffix-and-retry') {
+            payload = { ...payload, name: suffixWithRevision(payload.name, payload.revision) }
+            retriedName = true
+            continue
+          }
+          throw new Error(
+            status === 409
+              ? `${problemDetail(err, 'A dataset with that name already exists.')} Rename the dataset in Step 1 and launch again.`
+              : problemDetail(err, (err as Error)?.message || 'Import failed.')
+          )
+        }
+      }
+    }
+
+    const id = createdHfDatasetIdRef.current as string
+    const deadline = Date.now() + HF_IMPORT_READY_TIMEOUT_MS
+    for (;;) {
+      // A failed poll is just a poll to retry, as in waitForDatasetReady.
+      let dataset: Dataset | null = null
+      try {
+        dataset = await getDataset(id)
+      } catch {
+        dataset = null
+      }
+      const outcome = hfImportPollOutcome(pollStep({ status: dataset?.status, expired: Date.now() > deadline }))
+      if (outcome === 'proceed') return id
+      if (outcome === 'fail-and-delete') {
+        createdHfDatasetIdRef.current = null
+        await deleteDataset(id).catch(() => undefined)
+        throw new Error(dataset?.status_detail || 'Import failed.')
+      }
+      if (outcome === 'fail-keep-row') {
+        throw new Error(
+          'Import timed out while processing. It may still finish -- launch again to keep waiting.'
+        )
+      }
+      await new Promise((resolve) => setTimeout(resolve, HF_IMPORT_POLL_MS))
+    }
+  }
+
   async function handleLaunch() {
     // Before any side effect: an invalid earlier step otherwise fails the launch
     // server-side only after the dataset has been created and uploaded.
@@ -662,6 +740,13 @@ export function StartTuningWizard() {
 
     try {
       let finalDatasetId = datasetId || existingDatasetId
+
+      // A HuggingFace dataset is imported only now, at Launch -- never at Step 1.
+      if (!finalDatasetId && pendingHfImport) {
+        setLaunchPhase('importing_dataset')
+        finalDatasetId = await importPendingHfDataset(pendingHfImport)
+        setDatasetId(finalDatasetId)
+      }
 
       if (!finalDatasetId && uploadedFile) {
         setLaunchPhase('creating_dataset')
@@ -941,7 +1026,13 @@ export function StartTuningWizard() {
             allTestsPassed={allTestsPassed}
             setAllTestsPassed={setAllTestsPassed}
             datasetId={datasetId || existingDatasetId}
-            parsedData={parsedData.length > 0 && !existingDatasetId ? normalizeVerlRows(overlayColumnMapping(parsedData, columnMapping)) : []}
+            parsedData={
+              parsedData.length > 0 && !existingDatasetId
+                ? normalizeVerlRows(overlayColumnMapping(parsedData, columnMapping))
+                : pendingHfImport
+                  ? normalizeVerlRows(pendingHfImport.mappedPreview.mapped_rows)
+                  : []
+            }
           />
         )}
         {currentStep === lastStepIndex && (
@@ -962,7 +1053,8 @@ export function StartTuningWizard() {
             columnMetadata={columnMetadata}
             experimentName={experimentName}
             setExperimentName={setExperimentName}
-            isPendingDataset={!existingDatasetId && !datasetId && !!uploadedFile}
+            isPendingDataset={!existingDatasetId && !datasetId && (!!uploadedFile || !!pendingHfImport)}
+            hfImport={pendingHfImport}
             isPendingConfig={selectedConfigId === '__pending__'}
             launchPhase={launchPhase}
             launchPlan={launchPlan}
@@ -988,7 +1080,9 @@ export function StartTuningWizard() {
             {isLaunching ? (
               <InlineLoading
                 description={
-                  launchPhase === 'creating_dataset'
+                  launchPhase === 'importing_dataset'
+                    ? 'Importing from HuggingFace... this can take several minutes'
+                    : launchPhase === 'creating_dataset'
                     ? 'Creating dataset...'
                     : launchPhase === 'uploading_files'
                       ? `Uploading files (${uploadProgress}%)...`

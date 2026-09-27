@@ -6,6 +6,7 @@ import type { ColumnMetadata, Configuration, Dataset, DatasetForm, LaunchPhase, 
 import { getConfigSummary } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { splitCounts } from '@granite-build/ui-core/lib/autotunex/splitCounts'
 import { MODEL_SOURCE_LABELS } from '../../modelSources'
+import { hfSnapshotSummary, type HfImportSnapshot } from './hfImport'
 import styles from './Step3ReviewLaunch.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
 
@@ -37,6 +38,8 @@ interface Step3ReviewLaunchProps {
   experimentName: string
   setExperimentName: (v: string) => void
   isPendingDataset: boolean
+  /** A HuggingFace import that runs at Launch. It has no files and no record counts yet. */
+  hfImport: HfImportSnapshot | null
   isPendingConfig: boolean
   launchPhase: LaunchPhase
   launchPlan: LaunchPlan | null
@@ -62,6 +65,7 @@ export function Step3ReviewLaunch({
   experimentName,
   setExperimentName,
   isPendingDataset,
+  hfImport,
   isPendingConfig,
   launchPhase,
   launchPlan,
@@ -77,11 +81,14 @@ export function Step3ReviewLaunch({
   onEditStep,
 }: Step3ReviewLaunchProps) {
   const isExisting = !!selectedExistingDataset
+  const hfSummary = hfImport ? hfSnapshotSummary(hfImport) : null
 
   const trainFileName = isExisting ? selectedExistingDataset!.train_file : uploadedFile?.name ?? null
   const valFileName = isExisting
     ? selectedExistingDataset!.validation_file
-    : validationFile?.name ?? (isSplitEnabled ? 'Auto-split from train' : null)
+    : hfSummary
+      ? null
+      : validationFile?.name ?? (isSplitEnabled ? 'Auto-split from train' : null)
   // Same arithmetic as Step 1 and the server -- see splitCounts.
   const split = splitCounts(totalRecords, 100 - splitRatio)
   const trainRecords = isExisting
@@ -165,7 +172,7 @@ export function Step3ReviewLaunch({
             <div className={styles.cardBody}>
               <div className={styles.cardRow}>
                 <span className={styles.cardLabel}>Name</span>
-                <span className={styles.cardValue}>{datasetForm.name}</span>
+                <span className={styles.cardValue}>{hfSummary ? hfSummary.name : datasetForm.name}</span>
               </div>
               {datasetForm.description && (
                 <div className={styles.cardRow}>
@@ -174,6 +181,31 @@ export function Step3ReviewLaunch({
                     {datasetForm.description}
                   </span>
                 </div>
+              )}
+
+              {hfSummary && (
+                <>
+                  <div className={styles.sectionDivider} />
+                  <span className={styles.sectionLabel}>HuggingFace</span>
+                  <div className={styles.cardRow}>
+                    <span className={styles.cardLabel}>Source</span>
+                    <span className={`${styles.cardValue} ${styles.cardValueTruncate}`} title={hfSummary.source}>
+                      {hfSummary.source}
+                    </span>
+                  </div>
+                  <div className={styles.cardRow}>
+                    <span className={styles.cardLabel}>Config</span>
+                    <span className={styles.cardValue}>{hfSummary.config}</span>
+                  </div>
+                  <div className={styles.cardRow}>
+                    <span className={styles.cardLabel}>Train split</span>
+                    <span className={styles.cardValue}>{hfSummary.trainSplit}</span>
+                  </div>
+                  <div className={styles.cardRow}>
+                    <span className={styles.cardLabel}>Validation</span>
+                    <span className={styles.cardValue}>{hfSummary.validation}</span>
+                  </div>
+                </>
               )}
 
               {trainFileName && (
