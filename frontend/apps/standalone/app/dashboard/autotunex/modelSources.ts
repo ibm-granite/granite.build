@@ -3,14 +3,14 @@ import type { ModelSource, WizardModelSource } from '@granite-build/ui-core/type
 export const MODEL_SOURCE_LABELS: Record<WizardModelSource, string> = {
   huggingface: 'Huggingface',
   custom_path: 'Local',
-  tuned_model: 'My tuned models',
+  tuned_model: 'Tuned Models',
 }
 
 /** Render order of the model-source radios in Start Tuning step 1. */
 export const MODEL_SOURCE_OPTIONS: { value: WizardModelSource; id: string, disabled?: boolean }[] = [
   { value: 'huggingface', id: 'model-source-hf', disabled: false },
-  { value: 'custom_path', id: 'model-source-local', disabled: true },
   { value: 'tuned_model', id: 'model-source-tuned', disabled: false },
+  { value: 'custom_path', id: 'model-source-local', disabled: true },
 ]
 
 /** The `model_source` a job is launched with: a tuned model is an ordinary HuggingFace repo. */

@@ -17,10 +17,10 @@ const {
 } = require('../app/dashboard/autotunex/modelSources.ts')
 
 describe('selectable model sources', () => {
-  it('offers Huggingface, Local and My tuned models, in that order', () => {
+  it('offers Huggingface, Tuned Models and Local, in that order', () => {
     assert.deepEqual(
       MODEL_SOURCE_OPTIONS.map((o) => o.value),
-      ['huggingface', 'custom_path', 'tuned_model'],
+      ['huggingface', 'tuned_model', 'custom_path'],
     )
   })
 
@@ -39,7 +39,7 @@ describe('modelSourceLabel', () => {
   it('labels the sources that are still selectable', () => {
     assert.equal(modelSourceLabel('huggingface'), 'Huggingface')
     assert.equal(modelSourceLabel('custom_path'), 'Local')
-    assert.equal(modelSourceLabel('tuned_model'), 'My tuned models')
+    assert.equal(modelSourceLabel('tuned_model'), 'Tuned Models')
   })
 
   it('still labels jobs launched against the retired PVC source', () => {

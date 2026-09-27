@@ -10,10 +10,38 @@ const BUILD_FAILED_REASON = "This job's build did not succeed."
 const MISSING_REPO_REASON = "This model's repository no longer exists."
 const UNREACHABLE_REASON = "Couldn't reach HuggingFace to verify this model."
 
-/** One-line ComboBox label: experiment · base model · tuning kind · repo. */
+/** ComboBox label: the experiment name alone; the repo id stands in when a job has none. */
 export function tunedModelLabel(m: TunedModel): string {
+  return m.experiment_name || m.repo_id
+}
+
+/**
+ * ComboBox labels for a list, keyed by `job_id`. Experiment names are not unique,
+ * so only the items whose name collides with another item in the list get the
+ * short repo id appended (`grpo-math · a69082b7`) — enough to tell them apart
+ * while keeping unique names bare.
+ */
+export function tunedModelLabels(models: TunedModel[]): Map<string, string> {
+  const counts = new Map<string, number>()
+  for (const m of models) counts.set(tunedModelLabel(m), (counts.get(tunedModelLabel(m)) ?? 0) + 1)
+  return new Map(
+    models.map((m) => {
+      const label = tunedModelLabel(m)
+      if ((counts.get(label) ?? 0) < 2) return [m.job_id, label]
+      const repoName = m.repo_id.split('/').pop() ?? m.repo_id
+      return [m.job_id, `${label} · ${repoName.replace(/^autotunex_/, '')}`]
+    }),
+  )
+}
+
+/** What the picked model is, shown below the ComboBox: base model, tuning kind, repo id. */
+export function tunedModelDetails(m: TunedModel): { label: string; value: string }[] {
   const kind = m.rl_tuner_type && m.rl_tuner_type !== 'none' ? m.rl_tuner_type : m.tuning_type
-  return [m.experiment_name, m.base_model, kind, m.repo_id].filter(Boolean).join(' · ')
+  return [
+    { label: 'Base model', value: m.base_model },
+    { label: 'Tuning kind', value: kind ?? '' },
+    { label: 'Repo id', value: m.repo_id },
+  ].filter((d) => d.value)
 }
 
 /**

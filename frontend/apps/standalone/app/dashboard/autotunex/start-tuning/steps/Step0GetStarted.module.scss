@@ -231,6 +231,27 @@
   min-width: 0;
 }
 
+.tunedModelDetails {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.8125rem;
+
+  div {
+    display: contents;
+  }
+
+  dt {
+    color: var(--cds-text-secondary, #525252);
+  }
+
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
 .modelCardContent {
   font-size: 0.875rem;
   line-height: 1.5;

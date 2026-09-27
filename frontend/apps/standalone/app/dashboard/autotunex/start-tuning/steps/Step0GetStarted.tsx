@@ -38,7 +38,8 @@ import { resolveModelComboItem, type ModelSuggestion } from '../modelComboSelect
 import {
   checkTunedModelAssets,
   tunedModelCheckFailure,
-  tunedModelLabel,
+  tunedModelDetails,
+  tunedModelLabels,
   type TunedModelCheck,
 } from '../tunedModelSelection'
 import styles from './Step0GetStarted.module.scss'
@@ -120,6 +121,19 @@ export function Step0GetStarted({
 
   // Must not be derived from `suggestions` — see resolveModelComboItem.
   const comboSelectedItem = useMemo(() => resolveModelComboItem(selectedModel), [selectedModel])
+
+  // Tuned-model labels, suffixed only where experiment names collide. The picked
+  // item is included even when a search has replaced the list, so its label is
+  // the one Carbon echoed into the input (see handleTunedInputChange).
+  const tunedLabels = useMemo(
+    () =>
+      tunedModelLabels(
+        pickedTuned && !tunedModels.some((m) => m.job_id === pickedTuned.job_id)
+          ? [...tunedModels, pickedTuned]
+          : tunedModels,
+      ),
+    [tunedModels, pickedTuned],
+  )
 
   function selectGoal(goal: TuningGoal) {
     setSelectedGoal(goal)
@@ -318,7 +332,7 @@ export function Step0GetStarted({
   function handleTunedInputChange(inputValue: string) {
     // Carbon echoes the picked item's label into the input; searching for it
     // would empty the list under the selection.
-    if (pickedTuned && inputValue === tunedModelLabel(pickedTuned)) return
+    if (pickedTuned && inputValue === tunedLabels.get(pickedTuned.job_id)) return
     clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => fetchTunedModels(inputValue), 500)
   }
@@ -457,7 +471,7 @@ export function Step0GetStarted({
                               : undefined
                           }
                           items={tunedModels}
-                          itemToString={(item) => (item ? tunedModelLabel(item) : '')}
+                          itemToString={(item) => (item ? (tunedLabels.get(item.job_id) ?? '') : '')}
                           selectedItem={pickedTuned}
                           shouldFilterItem={() => true}
                           onInputChange={handleTunedInputChange}
@@ -471,6 +485,16 @@ export function Step0GetStarted({
                             handleTunedModelChange(selectedItem)
                           }}
                         />
+                        {pickedTuned && (
+                          <dl className={styles.tunedModelDetails}>
+                            {tunedModelDetails(pickedTuned).map((d) => (
+                              <div key={d.label}>
+                                <dt>{d.label}</dt>
+                                <dd>{d.value}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        )}
                         {tunedListStatus === 'loading' && tunedModels.length === 0 && (
                           <InlineLoading description="Loading your tuned models..." />
                         )}
