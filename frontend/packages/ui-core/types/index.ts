@@ -256,6 +256,28 @@ export type TuningGoal = 'sft' | 'offline_rl' | 'online_rl'
  */
 export type ModelSource = 'huggingface' | 'custom_path'
 
+/**
+ * The Start Tuning wizard's model-source radios. `tuned_model` ("My tuned
+ * models") is wizard-only: it picks one of the caller's own tuned outputs, which
+ * is an ordinary HuggingFace repo, so it is sent as `huggingface` — see
+ * `toWireModelSource` in the app's modelSources.ts. `ModelSource` stays the wire type.
+ */
+export type WizardModelSource = ModelSource | 'tuned_model'
+
+/** A completed job's full-weight output usable as a base model (GET /jobs/tuned-models). */
+export interface TunedModel {
+  job_id: string
+  /** `owner/name` — submitted as `model`. */
+  repo_id: string
+  model_source: 'huggingface'
+  experiment_name: string
+  base_model: string
+  tuning_type: string | null
+  rl_tuner_type: string | null
+  finished_at: string | null
+  user: string
+}
+
 export type DatasetFormatType =
   | 'preference_pairs'
   | 'kto_format'
@@ -859,7 +881,7 @@ export interface WizardDraft {
   selectedGoal: TuningGoal | null
   selectedAlgorithm: string
   selectedModel: string
-  modelSource: ModelSource
+  modelSource: WizardModelSource
   datasetForm: { name: string; description: string }
   existingDatasetId: string | null
   splitRatio: number

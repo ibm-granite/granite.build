@@ -10,7 +10,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 
-const { pageQuery, toListResult, collectPages, adaptTrial, adaptJob, adaptConfiguration, adaptSuggestion, adaptAsset } = require(
+const { pageQuery, toListResult, collectPages, adaptTrial, adaptJob, adaptConfiguration, adaptSuggestion, adaptAsset, adaptTunedModel } = require(
   '../../../packages/ui-core/api/autotunexAdapters.ts'
 )
 
@@ -227,6 +227,33 @@ describe('adaptAsset', () => {
 
   it('preserves published:false (only null/undefined fall through to null)', () => {
     assert.equal(adaptAsset({ filename: 'x', published: false }).published, false)
+  })
+})
+
+describe('adaptTunedModel', () => {
+  it('maps a tuned-models item and pins the source to huggingface', () => {
+    const raw = {
+      job_id: 'j1',
+      repo_id: 'ibm-research/autotunex_aaaa0001',
+      model_source: 'huggingface',
+      experiment_name: 'sft-granite',
+      base_model: 'ibm-granite/granite-4.0-h-micro',
+      tuning_type: 'sft',
+      rl_tuner_type: null,
+      finished_at: '2026-09-20T10:00:00Z',
+      user: 'tester@example.com',
+    }
+
+    assert.deepEqual(adaptTunedModel(raw), raw)
+  })
+
+  it('fills absent optional fields with null', () => {
+    const adapted = adaptTunedModel({ job_id: 'j1', repo_id: 'a/b', experiment_name: 'e', base_model: 'm', user: 'u' })
+
+    assert.deepEqual(
+      [adapted.tuning_type, adapted.rl_tuner_type, adapted.finished_at, adapted.model_source],
+      [null, null, null, 'huggingface'],
+    )
   })
 })
 
