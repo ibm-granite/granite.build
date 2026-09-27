@@ -37,6 +37,10 @@ const {
   NO_VALIDATION,
   preselectValidationSplit,
   reconcileValidationSplit,
+  buildHfImportPayload,
+  hfSnapshotSummary,
+  hfImportPostFailure,
+  hfImportPollOutcome,
 } = require('../app/dashboard/autotunex/start-tuning/steps/hfImport.ts')
 
 describe('deriveDatasetName', () => {
@@ -415,7 +419,6 @@ describe('canImport', () => {
     mappingComplete: true,
     nameValid: true,
     survivalKind: 'ok',
-    importing: false,
     splitFromTrain: false,
     hasValidationSplit: true,
     validationPercentage: 10,
@@ -429,10 +432,6 @@ describe('canImport', () => {
   it('blocks a hidden or a blocked survival', () => {
     assert.equal(canImport({ ...base, survivalKind: 'hidden' }), false)
     assert.equal(canImport({ ...base, survivalKind: 'blocked' }), false)
-  })
-
-  it('blocks while a run is already importing', () => {
-    assert.equal(canImport({ ...base, importing: true }), false)
   })
 
   it('blocks an invalid name', () => {
@@ -584,5 +583,129 @@ describe('reconcileValidationSplit', () => {
     // Keeps the toggle OFF: forcing it back ON would silently discard a choice
     // the user made explicitly. '' blocks Import visibly instead.
     assert.equal(reconcileValidationSplit('validation', ['train', 'test']), '')
+  })
+})
+
+describe('buildHfImportPayload', () => {
+  const base = {
+    name: '  alpaca-gpt4  ',
+    repoId: 'vicgalle/alpaca-gpt4',
+    revision: 'a'.repeat(40),
+    config: 'default',
+    trainSplit: 'train',
+    validationSplit: NO_VALIDATION,
+    validationPercentage: 20,
+    mapping: { input: 'instruction', output: 'output' },
+  }
+
+  it('carries the pinned revision and trims the name', () => {
+    const payload = buildHfImportPayload(base)
+    assert.equal(payload.revision, 'a'.repeat(40))
+    assert.equal(payload.name, 'alpaca-gpt4')
+    assert.equal(payload.repo_id, 'vicgalle/alpaca-gpt4')
+    assert.equal(payload.config, 'default')
+    assert.equal(payload.train_split, 'train')
+    assert.equal(payload.description, 'Imported from HuggingFace vicgalle/alpaca-gpt4')
+  })
+
+  it('splits validation from train when no validation split is chosen', () => {
+    const payload = buildHfImportPayload(base)
+    assert.equal(payload.validation_split, null)
+    assert.equal(payload.validation_percentage, 20)
+  })
+
+  it('sends a chosen validation split and no percentage', () => {
+    const payload = buildHfImportPayload({ ...base, validationSplit: 'validation', validationPercentage: 20 })
+    assert.equal(payload.validation_split, 'validation')
+    assert.equal(payload.validation_percentage, null)
+  })
+
+  it('passes the mapping through unchanged', () => {
+    const payload = buildHfImportPayload(base)
+    assert.deepEqual(payload.column_mapping, { input: 'instruction', output: 'output' })
+  })
+})
+
+describe('hfSnapshotSummary', () => {
+  const snapshot = (overrides = {}) => ({
+    payload: {
+      name: 'alpaca-gpt4',
+      repo_id: 'vicgalle/alpaca-gpt4',
+      revision: '3f2a9c1' + 'b'.repeat(33),
+      config: 'default',
+      train_split: 'train',
+      validation_split: null,
+      validation_percentage: 20,
+      column_mapping: { input: 'instruction', output: 'output' },
+      ...overrides,
+    },
+    preview: { revision: 'x', columns: [], raw_rows: [], mapped_rows: [], sampled: 100, survived: 100 },
+    mappedPreview: { revision: 'x', columns: [], raw_rows: [], mapped_rows: [], sampled: 100, survived: 98 },
+  })
+
+  it('shows the repo with a seven-character revision', () => {
+    assert.equal(hfSnapshotSummary(snapshot()).source, 'vicgalle/alpaca-gpt4 @ 3f2a9c1')
+  })
+
+  it('labels a validation carved from train by its percentage', () => {
+    assert.equal(hfSnapshotSummary(snapshot()).validation, '20% split from train')
+  })
+
+  it('labels a chosen validation split by its name', () => {
+    const summary = hfSnapshotSummary(snapshot({ validation_split: 'validation', validation_percentage: null }))
+    assert.equal(summary.validation, 'split validation')
+  })
+
+  it('lists mapping entries in key order and drops blank sources', () => {
+    const summary = hfSnapshotSummary(snapshot({ column_mapping: { output: 'answer', input: 'question', system: '' } }))
+    assert.deepEqual(summary.mapping, [
+      { target: 'output', source: 'answer' },
+      { target: 'input', source: 'question' },
+    ])
+  })
+
+  it('reports usable rows from the mapped sample, not the raw probe', () => {
+    assert.equal(hfSnapshotSummary(snapshot()).usable, '98 of 100 sampled rows usable')
+  })
+
+  it('passes name, config and train split through', () => {
+    const summary = hfSnapshotSummary(snapshot())
+    assert.equal(summary.name, 'alpaca-gpt4')
+    assert.equal(summary.config, 'default')
+    assert.equal(summary.trainSplit, 'train')
+  })
+})
+
+describe('hfImportPostFailure', () => {
+  it('suffixes and retries the first 409', () => {
+    assert.equal(hfImportPostFailure({ httpStatus: 409, retriedName: false }), 'suffix-and-retry')
+  })
+
+  it('fails a second 409 instead of suffixing again', () => {
+    assert.equal(hfImportPostFailure({ httpStatus: 409, retriedName: true }), 'fail')
+  })
+
+  it('fails anything that is not a 409', () => {
+    assert.equal(hfImportPostFailure({ httpStatus: 422, retriedName: false }), 'fail')
+    assert.equal(hfImportPostFailure({ httpStatus: 503, retriedName: false }), 'fail')
+    assert.equal(hfImportPostFailure({ httpStatus: undefined, retriedName: false }), 'fail')
+  })
+})
+
+describe('hfImportPollOutcome', () => {
+  it('proceeds on ready', () => {
+    assert.equal(hfImportPollOutcome('ready'), 'proceed')
+  })
+
+  it('keeps waiting on wait', () => {
+    assert.equal(hfImportPollOutcome('wait'), 'wait')
+  })
+
+  it('deletes the row when the import errored', () => {
+    assert.equal(hfImportPollOutcome('error'), 'fail-and-delete')
+  })
+
+  it('keeps the row on a timeout, since the import may still finish', () => {
+    assert.equal(hfImportPollOutcome('timeout'), 'fail-keep-row')
   })
 })

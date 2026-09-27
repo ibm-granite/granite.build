@@ -9,7 +9,11 @@
  * resolution in Node). See wizardDraft.ts for the same constraint.
  */
 
-import type { HfProvenance } from '@granite-build/ui-core/types'
+import type {
+  HfImportPreview,
+  HfImportRequestPayload,
+  HfProvenance,
+} from '@granite-build/ui-core/types'
 
 /**
  * The share of the train split held back for validation when no separate
@@ -330,7 +334,6 @@ export function canImport(input: {
   mappingComplete: boolean
   nameValid: boolean
   survivalKind: SurvivalKind
-  importing: boolean
   /** True when no separate validation split is chosen, so the percentage applies. */
   splitFromTrain: boolean
   /**
@@ -343,7 +346,7 @@ export function canImport(input: {
   validationPercentage: number
 }): boolean {
   if (!input.hasRepo || !input.hasConfig || !input.hasTrainSplit) return false
-  if (!input.mappingComplete || !input.nameValid || input.importing) return false
+  if (!input.mappingComplete || !input.nameValid) return false
   if (input.survivalKind !== 'ok' && input.survivalKind !== 'warning') return false
   if (!input.splitFromTrain && !input.hasValidationSplit) return false
   if (
@@ -380,4 +383,107 @@ export function pruneMapping(
   const next: Record<string, string> = {}
   for (const key of kept) next[key] = mapping[key]
   return next
+}
+
+/**
+ * A HuggingFace import the user has approved but not yet sent: the exact request
+ * body, plus the two preview samples it was checked against.
+ *
+ * The import is deferred to Launch, so Step 1 hands this to the wizard instead of
+ * POSTing. The previews ride along because a returning Step 1 shows this frozen
+ * request read-only, and rebuilding its preview would mean a fresh request.
+ */
+export interface HfImportSnapshot {
+  payload: HfImportRequestPayload
+  preview: HfImportPreview
+  mappedPreview: HfImportPreview
+}
+
+/** The `POST /datasets/hf/import` body for a form selection. */
+export function buildHfImportPayload(input: {
+  name: string
+  repoId: string
+  revision: string
+  config: string
+  trainSplit: string
+  /** `NO_VALIDATION`, or the name of a real split. */
+  validationSplit: string
+  validationPercentage: number
+  mapping: Record<string, string>
+}): HfImportRequestPayload {
+  const splitFromTrain = input.validationSplit === NO_VALIDATION
+  return {
+    name: input.name.trim(),
+    description: `Imported from HuggingFace ${input.repoId}`,
+    repo_id: input.repoId,
+    revision: input.revision,
+    config: input.config,
+    train_split: input.trainSplit,
+    validation_split: splitFromTrain ? null : input.validationSplit,
+    validation_percentage: splitFromTrain ? input.validationPercentage : null,
+    column_mapping: input.mapping,
+  }
+}
+
+export interface HfSnapshotSummary {
+  name: string
+  /** `owner/repo @ <7-char revision>` */
+  source: string
+  config: string
+  trainSplit: string
+  validation: string
+  /** In the mapping's own key order; targets with a blank source are dropped. */
+  mapping: { target: string; source: string }[]
+  usable: string
+}
+
+/** What the read-only summary card shows for a frozen import. */
+export function hfSnapshotSummary(snapshot: HfImportSnapshot): HfSnapshotSummary {
+  const { payload, mappedPreview } = snapshot
+  return {
+    name: payload.name,
+    source: `${payload.repo_id} @ ${payload.revision.slice(0, 7)}`,
+    config: payload.config,
+    trainSplit: payload.train_split,
+    validation: payload.validation_split
+      ? `split ${payload.validation_split}`
+      : `${payload.validation_percentage}% split from train`,
+    mapping: Object.entries(payload.column_mapping)
+      .filter(([, source]) => source !== '')
+      .map(([target, source]) => ({ target, source })),
+    usable: `${mappedPreview.survived} of ${mappedPreview.sampled} sampled rows usable`,
+  }
+}
+
+export type HfImportPostFailure = 'suffix-and-retry' | 'fail'
+
+/**
+ * What Launch does when the import POST itself fails.
+ *
+ * A 409 means the name is taken. The same repo at a pinned revision is a legitimate
+ * second dataset, so the first 409 gets the revision suffix (`suffixWithRevision`)
+ * and one retry. A second 409 fails rather than stacking suffixes. Nothing else is
+ * retried: a 422 will not change, and a 503 is the user's call to retry.
+ */
+export function hfImportPostFailure(input: {
+  httpStatus: number | undefined
+  retriedName: boolean
+}): HfImportPostFailure {
+  return input.httpStatus === 409 && !input.retriedName ? 'suffix-and-retry' : 'fail'
+}
+
+export type HfImportPollOutcome = 'proceed' | 'wait' | 'fail-and-delete' | 'fail-keep-row'
+
+/**
+ * What Launch does with one `pollStep` decision while waiting for the import.
+ *
+ * An errored import is deleted so a retry starts clean and no dead row piles up. A
+ * timed-out one is kept: it may still finish, and a retry resumes polling it rather
+ * than importing a second copy.
+ */
+export function hfImportPollOutcome(decision: PollDecision): HfImportPollOutcome {
+  if (decision === 'ready') return 'proceed'
+  if (decision === 'error') return 'fail-and-delete'
+  if (decision === 'timeout') return 'fail-keep-row'
+  return 'wait'
 }
