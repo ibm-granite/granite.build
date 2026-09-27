@@ -99,10 +99,6 @@
   cursor: pointer;
 }
 
-.importRow {
-  margin-top: 1rem;
-}
-
 // A repo id is longer than a filename, and Carbon's file item will not shrink to
 // fit one. Both elements it can render the name into -- the plain `<p>`, and the
 // tooltip-wrapped `<button>` it swaps in once its own `offsetWidth < scrollWidth`

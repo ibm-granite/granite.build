@@ -49,7 +49,7 @@ import { Step1DatasetUpload } from './steps/Step1DatasetUpload'
 import { Step2Configure } from './steps/Step2Configure'
 import { StepRewardFunction } from './steps/StepRewardFunction'
 import { Step3ReviewLaunch } from './steps/Step3ReviewLaunch'
-import { HF_VALIDATION_PERCENTAGE } from './steps/hfImport'
+import { HF_VALIDATION_PERCENTAGE, type HfImportSnapshot } from './steps/hfImport'
 import { NO_VALIDATION } from './steps/useHfImport'
 import styles from './StartTuningWizard.module.scss'
 
@@ -151,6 +151,10 @@ export function StartTuningWizard() {
   const [hfValidationSplit, setHfValidationSplit] = useState(NO_VALIDATION)
   const [hfName, setHfName] = useState('')
   const [hfValidationPercentage, setHfValidationPercentage] = useState(HF_VALIDATION_PERCENTAGE)
+  // The import the HF form would send right now (reported live by Step 1), and the
+  // one frozen at the last Next. Only the frozen one is ever sent -- at Launch.
+  const [hfDraft, setHfDraft] = useState<HfImportSnapshot | null>(null)
+  const [pendingHfImport, setPendingHfImport] = useState<HfImportSnapshot | null>(null)
 
   // Step 2: Config
   const [selectedConfigId, setSelectedConfigId] = useState<string | null>(null)
@@ -263,6 +267,9 @@ export function StartTuningWizard() {
       case 0:
         return selectedGoal !== null && selectedAlgorithm !== '' && isModelSelectionValid(modelSource, selectedModel)
       case 1: {
+        // The HF form's own gate (canImport) already checked name, mapping and the
+        // validation choice, so a draft or a frozen import is enough.
+        if (pendingHfImport !== null || hfDraft !== null) return true
         const hasDataset = existingDatasetId !== null || parsedData.length > 0
         const hasName = datasetForm.name.trim() !== ''
         const requiredCols = getRequiredColumnsFromTypes(selectedAlgorithm, datasetTypes ?? {})
@@ -323,6 +330,8 @@ export function StartTuningWizard() {
     datasetTypes,
     isSplitEnabled,
     validationFile,
+    pendingHfImport,
+    hfDraft,
     selectedConfigId,
     pendingNewConfig,
     isEditingConfig,
@@ -485,6 +494,9 @@ export function StartTuningWizard() {
       setCurrentStep(1)
     } else if (currentStep === 1) {
       if (existingDatasetId) setDatasetId(existingDatasetId)
+      // Freeze the HF request only here, never continuously: a returning Step 1
+      // rebuilds its form, and a live freeze would let that replace it unseen.
+      if (hfDraft) setPendingHfImport(hfDraft)
       setCompletedSteps((prev) => prev.map((v, i) => (i === 1 ? true : v)))
       setCurrentStep(2)
     } else if (currentStep === 2) {
@@ -590,6 +602,7 @@ export function StartTuningWizard() {
     // into the dataset record created by a previous, failed attempt.
     createdDatasetIdRef.current = null
     uploadedDatasetIdRef.current = null
+    setPendingHfImport(null)
     setSelectedConfigId(null)
     setSelectedConfig(null)
     setPendingNewConfig(null)
@@ -893,6 +906,8 @@ export function StartTuningWizard() {
             setHfName={setHfName}
             hfValidationPercentage={hfValidationPercentage}
             setHfValidationPercentage={setHfValidationPercentage}
+            pendingHfImport={pendingHfImport}
+            onHfDraftChange={setHfDraft}
           />
         )}
         {currentStep === 2 && (

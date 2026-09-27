@@ -50,7 +50,8 @@ import { InfoTooltip } from './InfoTooltip'
 import { useHfImport } from './useHfImport'
 import { HfImportForm } from './HfImportForm'
 import { HfImportPreview } from './HfImportPreview'
-import { truncationNotice } from './hfImport'
+import { HfImportSummaryCard } from './HfImportSummaryCard'
+import { truncationNotice, type HfImportSnapshot } from './hfImport'
 import { ALGORITHM_DETAILS, ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import styles from './Step1DatasetUpload.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
@@ -140,6 +141,14 @@ interface Step1DatasetUploadProps {
   setHfName: Dispatch<SetStateAction<string>>
   hfValidationPercentage: number
   setHfValidationPercentage: Dispatch<SetStateAction<number>>
+
+  /**
+   * The HuggingFace import frozen at the last Next, or null. When set, the HF tab
+   * shows it read-only (HfImportSummaryCard) instead of rebuilding the form.
+   */
+  pendingHfImport: HfImportSnapshot | null
+  /** Reports the import the HF form would send right now, or null. */
+  onHfDraftChange: (snapshot: HfImportSnapshot | null) => void
 }
 
 export function Step1DatasetUpload({
@@ -183,6 +192,8 @@ export function Step1DatasetUpload({
   setHfName,
   hfValidationPercentage,
   setHfValidationPercentage,
+  pendingHfImport,
+  onHfDraftChange,
 }: Step1DatasetUploadProps) {
   const [isProcessing, setIsProcessing] = useState(false)
   const [processingProgress, setProcessingProgress] = useState('')
@@ -200,7 +211,8 @@ export function Step1DatasetUpload({
   // file overwrote the new file's columns, format and mapping, and the launch then
   // uploaded file B naming file A's columns.
   const uploadTokenRef = useRef(0)
-  const [dataSource, setDataSource] = useState<DataSource>('upload')
+  // A frozen HF import reopens on its own tab; Upload is otherwise the default.
+  const [dataSource, setDataSource] = useState<DataSource>(pendingHfImport ? 'hf' : 'upload')
 
   const [isAiSuggesting, setIsAiSuggesting] = useState(false)
   const [aiSuggestion, setAiSuggestion] = useState<{ confidence: number; reasoning: string; algorithm: string } | null>(null)
@@ -298,10 +310,9 @@ export function Step1DatasetUpload({
   // is keyed on the resolved dataset rather than on the splits response object, so
   // the refetch the tab round-trip triggers leaves a still-valid selection alone.
   const hf = useHfImport({
-    active: dataSource === 'hf',
+    active: dataSource === 'hf' && !pendingHfImport,
     requiredColumns,
     mappableColumns: mappableColumnNames,
-    onImported: handleHfImported,
     selectedAlgorithm,
     datasetTypes,
     repoId: hfRepoId,
@@ -317,6 +328,13 @@ export function Step1DatasetUpload({
     validationPercentage: hfValidationPercentage,
     setValidationPercentage: setHfValidationPercentage,
   })
+
+  // The wizard freezes this at Next (handleNext); reporting it live is what lets
+  // that happen after this step has unmounted.
+  useEffect(() => {
+    onHfDraftChange(hf.snapshot)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hf.snapshot])
 
   // Heuristic column-mapping suggestion when the algorithm changes (skipped once AI has suggested)
   useEffect(() => {
@@ -568,17 +586,6 @@ export function Step1DatasetUpload({
     await loadExistingDataset(datasetId, { suggestAlgorithm: true })
   }
 
-  async function handleHfImported(datasetId: string) {
-    // Same order as handleExistingDatasetSelect: bump the token so any in-flight
-    // parse or load is abandoned, tell the wizard the dataset changed, then let the
-    // existing loader apply it -- preview rows, column metadata, format detection,
-    // algorithm suggestion and record counts all come from there. An imported
-    // dataset is just a saved dataset, which is why nothing downstream changes.
-    uploadTokenRef.current += 1
-    onDatasetChanged()
-    await loadExistingDataset(datasetId, { suggestAlgorithm: true })
-  }
-
   // Applies a fetched dataset -- preview included -- to this step's state.
   //
   // `suggestAlgorithm` is for an explicit pick only, where the columns are new
@@ -800,7 +807,11 @@ export function Step1DatasetUpload({
                     ))}
                   </Select>
                 ) : hfConfig ? (
-                  <HfImportForm hf={hf} mappableColumns={mappableColumns} hfConfig={hfConfig} />
+                  pendingHfImport ? (
+                    <HfImportSummaryCard snapshot={pendingHfImport} onChange={onDatasetChanged} />
+                  ) : (
+                    <HfImportForm hf={hf} mappableColumns={mappableColumns} hfConfig={hfConfig} />
+                  )
                 ) : null}
               </>
             )}
@@ -982,9 +993,13 @@ export function Step1DatasetUpload({
       </div>
 
         <div className={styles.previewColumn}>
-          {dataSource === 'hf' && !existingDatasetId && hf.preview ? (
+          {dataSource === 'hf' && !existingDatasetId && (pendingHfImport || hf.preview) ? (
             <Tile className={styles.previewTile}>
-              <HfImportPreview preview={hf.preview} mappedPreview={hf.freshMappedPreview} />
+              {/* A frozen import shows the samples it was approved against, with no new request. */}
+              <HfImportPreview
+                preview={pendingHfImport ? pendingHfImport.preview : hf.preview}
+                mappedPreview={pendingHfImport ? pendingHfImport.mappedPreview : hf.freshMappedPreview}
+              />
             </Tile>
           ) : previewRows.length > 0 && previewHeaders.length > 0 ? (
             <Tile className={styles.previewTile}>

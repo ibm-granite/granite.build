@@ -1,44 +1,37 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import type {
   ColumnMapping,
-  Dataset,
   HfDatasetSplits,
   HfImportPreview,
 } from '@granite-build/ui-core/types'
 import {
   getAutotuneDatasetTypes,
-  getDataset,
   getHfSplits,
-  importHfDataset,
   previewHfDataset,
   searchHfDatasets,
   suggestColumnMappingAI,
 } from '@granite-build/ui-core/api/autotunex'
 import { aiMappingToColumnMapping } from '@granite-build/ui-core/lib/autotunex/aiColumnMapping'
 import {
-  HF_IMPORT_POLL_MS,
-  HF_IMPORT_READY_TIMEOUT_MS,
-} from '@granite-build/ui-core/lib/autotunex/datasetReady'
-import {
+  buildHfImportPayload,
   canImport as canImportGate,
   defaultConfig,
   defaultTrainSplit,
   deriveDatasetName,
   hfErrorStatus,
   HF_VALIDATION_PERCENTAGE,
+  type HfImportSnapshot,
   isDatasetNameValid,
   isMappingComplete,
   mappedPreviewKey,
   NO_VALIDATION,
-  pollStep,
   probeMapping,
   problemDetail,
   pruneMapping,
   reconcileValidationSplit,
-  suffixWithRevision,
   survivalSummary,
   type SurvivalSummary,
 } from './hfImport'
@@ -64,7 +57,6 @@ export interface UseHfImportOptions {
    * an optional target the user can see and clear is a legitimate mapping key.
    */
   mappableColumns: string[]
-  onImported: (datasetId: string) => void
   selectedAlgorithm: string
   datasetTypes: Record<string, any>
 
@@ -78,8 +70,6 @@ export interface UseHfImportOptions {
   // unconditionally, so a restored mapping would be wiped on remount anyway. The
   // probe refires on return and the AI re-derives the mapping, which is intended.
   //
-  // The setters are the raw `useState` dispatchers because `handleImport`'s 409
-  // branch calls `setName` with an updater function.
   repoId: string | null
   setRepoId: Dispatch<SetStateAction<string | null>>
   config: string
@@ -132,10 +122,12 @@ export interface UseHfImportResult {
   nameValid: boolean
 
   canSubmit: boolean
-  importing: boolean
-  importStatus: string
-  error: string
-  handleImport: () => Promise<void>
+  /**
+   * The import this selection would send, frozen by the wizard at Next. Null
+   * whenever the tab is inactive or `canSubmit` is false, so the wizard's draft
+   * is never a half-finished request.
+   */
+  snapshot: HfImportSnapshot | null
   resetState: () => void
 
   aiSuggestion: { confidence: number; reasoning: string } | null
@@ -148,7 +140,6 @@ export function useHfImport({
   active,
   requiredColumns,
   mappableColumns,
-  onImported,
   selectedAlgorithm,
   datasetTypes,
   // Local names match the lifted wizard state exactly, so the effects,
@@ -167,7 +158,6 @@ export function useHfImport({
   validationPercentage,
   setValidationPercentage,
 }: UseHfImportOptions): UseHfImportResult {
-  const queryClient = useQueryClient()
   const [suggestions, setSuggestions] = useState<string[]>([])
 
   const [preview, setPreview] = useState<HfImportPreview | null>(null)
@@ -184,9 +174,6 @@ export function useHfImport({
   // one -- see `freshMappedPreview` below.
   const [mappedPreview, setMappedPreview] = useState<{ key: string; preview: HfImportPreview } | null>(null)
   const [mappedPreviewError, setMappedPreviewError] = useState('')
-  const [error, setError] = useState('')
-  const [importing, setImporting] = useState(false)
-  const [importStatus, setImportStatus] = useState('')
 
   const [aiSuggestion, setAiSuggestion] = useState<
     { confidence: number; reasoning: string } | null
@@ -204,10 +191,6 @@ export function useHfImport({
   const previewTokenRef = useRef(0)
   // Exclusive to the mapped-preview effect, for the same reason in reverse.
   const mappedTokenRef = useRef(0)
-  // Every import run captures the id it started with and compares before writing
-  // state; bumping the counter abandons all prior runs for good. Same guard as
-  // SettingsDatasetCreate's, and it is what makes closing mid-import safe.
-  const runIdRef = useRef(0)
 
   const mappingComplete = isMappingComplete(mapping, requiredColumns)
   const mappingKey = JSON.stringify(mapping)
@@ -482,7 +465,6 @@ export function useHfImport({
   }, [active, repoId, splits, config, trainSplit, mappingComplete, mappingKey])
 
   function resetState() {
-    runIdRef.current += 1
     previewTokenRef.current += 1
     mappedTokenRef.current += 1
     suggestTokenRef.current += 1
@@ -501,9 +483,6 @@ export function useHfImport({
     setMappedPreviewError('')
     setValidationPercentage(HF_VALIDATION_PERCENTAGE)
     setName('')
-    setError('')
-    setImporting(false)
-    setImportStatus('')
     setAiSuggestion(null)
     setIsAiSuggesting(false)
     setShowAiReasoning(false)
@@ -581,121 +560,33 @@ export function useHfImport({
     mappingComplete,
     nameValid,
     survivalKind: survival.kind,
-    importing,
     splitFromTrain,
     hasValidationSplit: validationSplit !== '' && validationSplit !== NO_VALIDATION,
     validationPercentage,
   })
 
-  async function pollUntilReady(datasetId: string, runId: number): Promise<Dataset> {
-    const deadline = Date.now() + HF_IMPORT_READY_TIMEOUT_MS
-    while (runId === runIdRef.current) {
-      let dataset: Dataset | null = null
-      try {
-        dataset = await getDataset(datasetId)
-      } catch {
-        // A failed poll is just a poll to retry: the import is already running
-        // server-side, and one transient GET blip must not abandon it. Whatever
-        // this rejection was, `pollStep` below decides purely from the deadline,
-        // not from this error -- so a post-deadline network blip surfaces the
-        // authored timeout copy rather than an unrelated transport error.
-      }
-      if (runId !== runIdRef.current) throw new Error('superseded')
-      if (dataset) setImportStatus(dataset.status)
-      const decision = pollStep({ status: dataset?.status, expired: Date.now() > deadline })
-      if (decision === 'ready') {
-        // Only reachable when `dataset.status === 'ready'`, which requires `dataset`.
-        return dataset as Dataset
-      }
-      if (decision === 'error') {
-        throw new Error(dataset?.status_detail || 'Import failed.')
-      }
-      if (decision === 'timeout') {
-        throw new Error(
-          'Import timed out while processing. It may still finish -- check Settings > Datasets.'
-        )
-      }
-      await new Promise((resolve) => setTimeout(resolve, HF_IMPORT_POLL_MS))
-    }
-    throw new Error('superseded')
-  }
-
-  async function handleImport() {
-    if (!repoId || !canSubmit) return
-    const runId = ++runIdRef.current
-    // Captured now, not read from `splits` inside the catch below: changing the
-    // repo mid-import re-fires the splits query, so by the time a 409 lands
-    // `splits` may briefly be undefined and `suffixWithRevision` would silently
-    // leave the name unchanged while the error text claims a suffix was added.
-    const revision = splits?.revision ?? ''
-    // The server requires that sha, so an unresolved one is a guaranteed 422. Bail
-    // before touching the importing/status flags rather than after the round trip.
-    if (!revision) return
-    setImporting(true)
-    setError('')
-    setImportStatus('importing')
-    try {
-      const created = await importHfDataset({
-        name: name.trim(),
-        // Not required by the server. Set because the dataset otherwise reaches the
-        // table and the wizard's own name/description form with an empty
-        // description; strike this line if that is not wanted.
-        description: `Imported from HuggingFace ${repoId}`,
-        repo_id: repoId,
+  const revision = splits?.revision ?? ''
+  // Keyed on primitives plus the two preview objects (each stable until its own
+  // state changes), so the effect in Step 1 that reports this upward does not
+  // loop on a fresh object every render. `mapping` is tracked by `mappingKey`.
+  const snapshot = useMemo<HfImportSnapshot | null>(() => {
+    if (!active || !canSubmit || !repoId || !revision || !preview || !freshMappedPreview) return null
+    return {
+      payload: buildHfImportPayload({
+        name,
+        repoId,
         revision,
         config,
-        train_split: trainSplit,
-        validation_split: validationSplit === NO_VALIDATION ? null : validationSplit,
-        validation_percentage: validationSplit === NO_VALIDATION ? validationPercentage : null,
-        column_mapping: mapping,
-      })
-      // Unconditional and ahead of the runId check: the row exists server-side now,
-      // whether or not this run gets abandoned next (e.g. the user switches away
-      // from the HuggingFace tab while polling starts), so the list must learn
-      // about it either way.
-      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
-      const ready = await pollUntilReady(created.id, runId)
-      // Also unconditional, and in addition to the invalidate above rather than
-      // instead of it: that one only makes an abandoned run's row visible while it
-      // is still `importing`. Because the datasets list is an active query while
-      // this form is mounted, it refetches immediately and caches that snapshot;
-      // with no second invalidate here, nothing ever told it the row reached
-      // `ready`, so it stayed missing from Step 1's existing-dataset dropdown for
-      // the rest of the wizard session.
-      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
-      if (runId !== runIdRef.current) return
-      onImported(ready.id)
-      resetState()
-    } catch (err) {
-      // Unconditional and ahead of the runId check, mirroring the invalidate above:
-      // the record may already exist server-side whatever went wrong after the
-      // POST -- including a client-side timeout or dropped connection after the
-      // server had already committed the row -- so make it visible either way
-      // rather than leaving an orphan the user cannot see and whose name then
-      // collides on retry, even if this run has since been abandoned.
-      queryClient.invalidateQueries({ queryKey: ['autotunex', 'datasets'] })
-      if (runId !== runIdRef.current) return
-      const status = hfErrorStatus(err)
-      if (status === 409) {
-        // The same repo at a pinned revision is a legitimate second dataset, so the
-        // revision is what distinguishes it. Suffix and stop -- the second POST is
-        // the user's to make, not ours to fire silently. The server's own detail is
-        // rendered too: problemDetail alone would show only "already exists" and
-        // never tell the user the name changed underneath them.
-        setName((current) => suffixWithRevision(current, revision))
-        setError(
-          `${problemDetail(err, 'A dataset with that name already exists.')} A revision suffix has been added -- review the name and import again.`
-        )
-      } else {
-        setError(problemDetail(err, (err as Error)?.message || 'Import failed.'))
-      }
-    } finally {
-      if (runId === runIdRef.current) {
-        setImporting(false)
-        setImportStatus('')
-      }
+        trainSplit,
+        validationSplit,
+        validationPercentage,
+        mapping,
+      }),
+      preview,
+      mappedPreview: freshMappedPreview,
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, canSubmit, repoId, revision, preview, freshMappedPreview, name, config, trainSplit, validationSplit, validationPercentage, mappingKey])
 
   return {
     suggestions,
@@ -734,10 +625,7 @@ export function useHfImport({
     nameValid,
 
     canSubmit,
-    importing,
-    importStatus,
-    error,
-    handleImport,
+    snapshot,
     resetState,
 
     aiSuggestion,

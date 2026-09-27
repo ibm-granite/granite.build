@@ -1,7 +1,6 @@
 'use client'
 
 import {
-  Button,
   Callout,
   ComboBox,
   FileUploaderItem,
@@ -26,7 +25,7 @@ interface HfImportFormProps {
   /**
    * Every target to render a mapping select for, required first, as
    * Step1DatasetUpload's own mapping block does. Optional targets get a "None"
-   * option; required ones gate the Import button via the hook.
+   * option; required ones gate Next via the hook.
    */
   mappableColumns: { name: string; desc: string; required: boolean }[]
   hfConfig: HfImportConfig
@@ -71,7 +70,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
               onChange={({ selectedItem }) => {
                 if (selectedItem) hf.setRepoId(selectedItem)
               }}
-              disabled={hf.importing}
             />
             {/* <p className={styles.limits}>
               Up to {hfConfig.max_rows.toLocaleString('en-US')} rows and{' '}
@@ -94,7 +92,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
             invalid={hf.name.length > 0 && !hf.nameValid}
             invalidText={"Use up to 255 characters, without '/', '\\' or '..'."}
             onChange={(event) => hf.setName(event.target.value)}
-            disabled={hf.importing}
           />
         </div>
       )}
@@ -150,7 +147,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
                 itemToString={(item) => item ?? ''}
                 selectedItem={hf.config || null}
                 onChange={({ selectedItem }) => hf.handleConfigChange(selectedItem ?? '')}
-                disabled={hf.importing}
               />
             </div>
           )}
@@ -164,7 +160,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
                 labelText="Train split"
                 value={hf.trainSplit}
                 onChange={(event) => hf.handleTrainSplitChange(event.target.value)}
-                disabled={hf.importing}
               >
                 {hf.splitNames.map((split) => (
                   <SelectItem key={split} value={split} text={split} />
@@ -195,7 +190,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
                   )
                 }
                 size="sm"
-                disabled={hf.importing}
               />
             </div>
           )}
@@ -206,7 +200,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
                 labelText="Validation split"
                 value={hf.validationSplit}
                 onChange={(event) => hf.setValidationSplit(event.target.value)}
-                disabled={hf.importing}
               >
                 {/* Preselected only on an exact "validation" match, never on
                     "test": validating against the held-out test split is a
@@ -335,7 +328,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
                     onChange={(event) =>
                       hf.setMapping({ ...hf.mapping, [colInfo.name]: event.target.value })
                     }
-                    disabled={hf.importing}
                   >
                     {/* An optional target is legitimately unmapped, so its empty
                         option reads as a choice rather than as something missing.
@@ -374,37 +366,7 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
           {/* No validation-percentage field: the split is a constant
               (HF_VALIDATION_PERCENTAGE), because the Upload path offers no ratio
               control either. */}
-          <hr className={styles.sectionDivider} />
-
-          <div className={styles.importRow}>
-            <Button
-              kind="primary"
-              size="sm"
-              disabled={!hf.canSubmit}
-              onClick={() => hf.handleImport()}
-            >
-              {hf.importing ? 'Importing...' : 'Import'}
-            </Button>
-          </div>
         </>
-      )}
-
-      {hf.importing && (
-        <InlineLoading
-          description={`Importing from HuggingFace (${hf.importStatus || 'importing'})... this can take several minutes.`}
-          className={styles.section}
-        />
-      )}
-
-      {!!hf.error && (
-        <InlineNotification
-          kind="error"
-          title="Import failed"
-          subtitle={hf.error}
-          lowContrast
-          hideCloseButton
-          className={styles.section}
-        />
       )}
     </div>
   )
