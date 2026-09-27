@@ -500,6 +500,7 @@ export function StartTuningWizard() {
   }
 
   function goToStep(step: number) {
+    if (isLaunching) return
     if (step < 0 || step > lastStepIndex) return
     if (step <= currentStep || completedSteps[step - 1]) {
       setCurrentStep(step)
@@ -880,7 +881,7 @@ export function StartTuningWizard() {
                   {isCurrent ? (
                     item.label
                   ) : (
-                    <button type="button" className={styles.breadcrumbButton} onClick={() => goToStep(item.step)}>
+                    <button type="button" className={styles.breadcrumbButton} onClick={() => goToStep(item.step)} disabled={isLaunching}>
                       {item.label}
                     </button>
                   )}
@@ -933,15 +934,15 @@ export function StartTuningWizard() {
           past `lastStepIndex`. Keep this list free of falsy entries. */}
       <ProgressIndicator key={hasRewardStep ? 'with-reward' : 'no-reward'} currentIndex={currentStep} spaceEqually onChange={goToStep}>
         {[
-          <ProgressStep key="get-started" complete={completedSteps[0]} label="Get Started" description="Choose your approach" />,
-          <ProgressStep key="dataset" disabled={!completedSteps[0]} complete={completedSteps[1]} label="Upload Dataset" description="Upload and preview your data" />,
-          <ProgressStep key="configure" disabled={!completedSteps[1]} complete={completedSteps[2]} label="Configure" description="Select or create a configuration" />,
+          <ProgressStep key="get-started" disabled={isLaunching} complete={completedSteps[0]} label="Get Started" description="Choose your approach" />,
+          <ProgressStep key="dataset" disabled={!completedSteps[0] || isLaunching} complete={completedSteps[1]} label="Upload Dataset" description="Upload and preview your data" />,
+          <ProgressStep key="configure" disabled={!completedSteps[1] || isLaunching} complete={completedSteps[2]} label="Configure" description="Select or create a configuration" />,
           ...(hasRewardStep
             ? [
-                <ProgressStep key="reward" disabled={!completedSteps[2]} complete={completedSteps[3]} label="Reward Function" description="Define your reward function" />,
+                <ProgressStep key="reward" disabled={!completedSteps[2] || isLaunching} complete={completedSteps[3]} label="Reward Function" description="Define your reward function" />,
               ]
             : []),
-          <ProgressStep key="review" disabled={!completedSteps[hasRewardStep ? 3 : 2]} complete={completedSteps[hasRewardStep ? 4 : 3]} label="Review & Launch" description="Review and start tuning" />,
+          <ProgressStep key="review" disabled={!completedSteps[hasRewardStep ? 3 : 2] || isLaunching} complete={completedSteps[hasRewardStep ? 4 : 3]} label="Review & Launch" description="Review and start tuning" />,
         ]}
       </ProgressIndicator>
 
@@ -1068,6 +1069,7 @@ export function StartTuningWizard() {
             launchPlan={launchPlan}
             uploadProgress={uploadProgress}
             onEditStep={goToStep}
+            isLaunching={isLaunching}
           />
         )}
       </div>
