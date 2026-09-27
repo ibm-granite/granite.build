@@ -25,6 +25,7 @@ import threading
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from gbserver.environment import skypilot_config as sc
 from gbserver.types.environmentconfig import (
@@ -450,3 +451,121 @@ class TestNoTeardownAndConcurrency:
         text = _read(tmp_path / ".slurm" / "config")
         for i in range(8):
             assert f"Host c{i}" in text
+
+
+# --------------------------------------------------------------------------- #
+# HostName selection (multiple login nodes)
+# --------------------------------------------------------------------------- #
+class TestHostnameSelection:
+    _NODES = ["login1.ex.com", "login2.ex.com", "login3.ex.com"]
+
+    def test_no_hostname_unchanged(self):
+        # Nothing to select: a host without HostName is returned as-is, unprobed.
+        host = _host(User="root")
+        chosen = sc._select_reachable_hostname(
+            host, probe=lambda h: (_ for _ in ()).throw(AssertionError("probed"))
+        )
+        assert chosen is host
+
+    def test_scalar_reachable_selected(self):
+        # A scalar HostName is probed like a one-element list.
+        host = _host(HostName="only.ex.com", User="root")
+        chosen = sc._select_reachable_hostname(
+            host, probe=lambda h: h["HostName"] == "only.ex.com"
+        )
+        assert chosen["HostName"] == "only.ex.com"
+        assert chosen["User"] == "root"
+
+    def test_scalar_unreachable_raises(self):
+        # A lone unreachable login node fails fast rather than being accepted blind.
+        with pytest.raises(RuntimeError, match="only.ex.com"):
+            sc._select_reachable_hostname(
+                _host(HostName="only.ex.com"), probe=lambda h: False
+            )
+
+    def test_list_picks_reachable_candidate(self):
+        host = _host(HostName=list(self._NODES), User="root")
+        chosen = sc._select_reachable_hostname(
+            host, probe=lambda h: h["HostName"] == "login2.ex.com"
+        )
+        assert chosen["HostName"] == "login2.ex.com"
+        # Other directives are carried through onto the chosen candidate.
+        assert chosen["User"] == "root"
+
+    def test_probe_receives_scalar_candidate_dicts(self):
+        seen = []
+
+        def probe(h):
+            seen.append(h["HostName"])
+            return False  # force every candidate to be tried
+
+        with pytest.raises(RuntimeError, match="not reachable"):
+            sc._select_reachable_hostname(_host(HostName=list(self._NODES)), probe=probe)
+        assert sorted(seen) == sorted(self._NODES)  # every candidate probed once
+        assert all(isinstance(n, str) for n in seen)  # never a list
+
+    def test_raises_when_none_reachable(self):
+        with pytest.raises(RuntimeError, match="clusterA"):
+            sc._select_reachable_hostname(
+                _host(HostName=list(self._NODES)), probe=lambda h: False
+            )
+
+    def test_none_probe_picks_without_probing(self, monkeypatch):
+        # No probe => a random candidate is chosen (shuffle pinned for determinism).
+        monkeypatch.setattr(sc.random, "shuffle", lambda seq: None)
+        chosen = sc._select_reachable_hostname(
+            _host(HostName=list(self._NODES)), probe=None
+        )
+        assert chosen["HostName"] == "login1.ex.com"
+
+    def test_probe_timeout_key_never_rendered(self):
+        # The synthetic ssh_probe_timeout_s key must not leak into the OpenSSH block.
+        block = sc.render_ssh_host(
+            _host(HostName="h", ssh_probe_timeout_s=15, User="root"), {}
+        )
+        assert "ssh_probe_timeout_s" not in block
+        assert "HostName h" in block and "User root" in block
+
+    def test_materialize_writes_chosen_hostname(self, tmp_path):
+        ssh = ClusterSshConfigs(
+            lsf=[_host("bluevela", HostName=list(self._NODES), User="gb")]
+        )
+        sc.materialize_ssh_for_cloud(
+            "sky-lsf",
+            ssh,
+            {},
+            "lsf",
+            home=tmp_path,
+            hostname_probe=lambda h: h["HostName"] == "login3.ex.com",
+        )
+        text = _read(tmp_path / ".lsf" / "config")
+        assert "HostName login3.ex.com" in text
+        assert "login1.ex.com" not in text and "login2.ex.com" not in text
+        assert "ssh_probe_timeout_s" not in text
+
+
+class TestProbeTimeoutValidation:
+    """`ClusterSshConfigs` rejects a non-positive/non-integer ssh_probe_timeout_s.
+
+    The probe is mandatory, so the value that once opted a host out is now a load-time
+    configuration error.
+    """
+
+    def test_positive_integer_accepted(self):
+        cfg = ClusterSshConfigs(lsf=[_host("bluevela", ssh_probe_timeout_s=15)])
+        assert cfg.lsf[0]["ssh_probe_timeout_s"] == 15
+
+    def test_omitted_accepted(self):
+        # No per-host value => inherits the deployment default; nothing to validate.
+        assert ClusterSshConfigs(lsf=[_host("bluevela", HostName="h")]).lsf
+
+    @pytest.mark.parametrize("bad", [0, -1, -30])
+    def test_nonpositive_rejected(self, bad):
+        with pytest.raises(ValidationError, match="positive integer"):
+            ClusterSshConfigs(lsf=[_host("bluevela", ssh_probe_timeout_s=bad)])
+
+    @pytest.mark.parametrize("bad", ["30", 1.5, True])
+    def test_non_integer_rejected(self, bad):
+        # Strings, floats, and bool (an int subclass) are all rejected.
+        with pytest.raises(ValidationError, match="positive integer"):
+            ClusterSshConfigs(slurm=[_host("c", ssh_probe_timeout_s=bad)])

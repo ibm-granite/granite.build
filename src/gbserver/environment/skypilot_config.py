@@ -48,9 +48,10 @@ import configparser
 import hashlib
 import io
 import os
+import random
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 from filelock import FileLock
@@ -122,6 +123,12 @@ def _raise_collision(kind: str, key: str, env_a: str, env_b: str, dest: str) -> 
 # --------------------------------------------------------------------------- #
 # SSH config rendering
 # --------------------------------------------------------------------------- #
+# Synthetic per-host key: reachability-probe timeout in seconds, consumed at launch
+# (see the hostname-selection helpers below) and stripped before rendering so it
+# never appears in the materialized OpenSSH file. Not a real OpenSSH directive.
+PROBE_TIMEOUT_DIRECTIVE = "ssh_probe_timeout_s"
+
+
 def _render_value(value, secrets: Dict[str, str]) -> str:
     """Render one OpenSSH directive value (booleans -> ``yes``/``no``, else secret-resolved)."""
     if isinstance(value, bool):
@@ -163,7 +170,9 @@ def render_ssh_host(host: Dict[str, Any], secrets: Dict[str, str]) -> str:
     alias = host["Host"]
     lines = [f"Host {alias}"]
     for key, raw in host.items():
-        if key == "Host" or raw is None:
+        # Skip the alias itself, unset directives, and synthetic gbserver-only keys
+        # (PROBE_TIMEOUT_DIRECTIVE) that must never reach the OpenSSH file.
+        if key == "Host" or key == PROBE_TIMEOUT_DIRECTIVE or raw is None:
             continue
         raw_str = str(raw)
         in_secrets = raw_str in secrets
@@ -275,6 +284,54 @@ def _materialize_identity_keys(
         new_host["IdentityFile"] = str(key_path)
         result.append(new_host)
     return result
+
+
+# --------------------------------------------------------------------------- #
+# HostName selection (multiple login nodes)
+# --------------------------------------------------------------------------- #
+# A reachability probe: given a fully-resolved host mapping (a single scalar
+# ``HostName`` candidate plus its connection directives), return True if the login
+# node answers. Injected so this module stays pure/I-O-free and unit-testable; the
+# real ssh-echo probe lives in ``gbserver.environment.skypilot``.
+HostnameProbe = Callable[[Dict[str, Any]], bool]
+
+
+def _select_reachable_hostname(
+    host: Dict[str, Any], *, probe: Optional[HostnameProbe]
+) -> Dict[str, Any]:
+    """Collapse ``HostName`` to a single reachable candidate, failing if none is.
+
+    A scalar ``HostName`` is treated as a one-element candidate list, so it is
+    probed exactly like a list — reachability is load-bearing (it picks the login
+    node the launch uses), so an unreachable lone node fails fast rather than being
+    accepted blind. A list is tried in random order and the first candidate the
+    ``probe`` accepts is chosen; the returned host has a scalar ``HostName`` ready
+    for rendering. A host without a ``HostName`` is returned unchanged (nothing to
+    select). When ``probe`` is ``None`` (e.g. unit tests, no I/O) the first (random)
+    candidate is accepted without probing.
+
+    :param host: One host directive mapping (may carry a scalar or list ``HostName``
+        and the synthetic ``ssh_probe_timeout_s`` key, which is preserved so the
+        probe can read the per-host timeout).
+    :param probe: Reachability probe, or ``None`` to skip probing.
+    :returns: A host mapping with a single scalar ``HostName``.
+    :raises RuntimeError: If no candidate ``HostName`` is reachable.
+    """
+    candidates = host.get("HostName")
+    if candidates is None:
+        return host
+    if not isinstance(candidates, list):
+        candidates = [candidates]  # scalar: a one-element list, probed the same way
+    shuffled = list(candidates)
+    random.shuffle(shuffled)
+    for candidate in shuffled:
+        chosen = {**host, "HostName": candidate}
+        if probe is None or probe(chosen):
+            return chosen
+    tried = candidates[0] if len(candidates) == 1 else candidates
+    raise RuntimeError(
+        f"SSH host {host.get('Host')!r}: login node(s) {tried!r} not reachable."
+    )
 
 
 def _normalize(block: str) -> str:
@@ -617,6 +674,7 @@ def materialize_ssh_for_cloud(
     cloud: str,
     *,
     home: Optional[Path] = None,
+    hostname_probe: Optional[HostnameProbe] = None,
 ) -> None:
     """Merge one cloud's inline SSH ``Host`` blocks into ``~/.<cloud>/config``.
 
@@ -628,8 +686,13 @@ def materialize_ssh_for_cloud(
     :param secrets: Secret name -> value mapping for field resolution.
     :param cloud: ``"slurm"`` or ``"lsf"`` — the cloud whose hosts to merge.
     :param home: Home dir override (tests).
+    :param hostname_probe: Optional reachability probe used to select a login node.
+        Every host's ``HostName`` (scalar or list) is probed and the first reachable
+        candidate is chosen. ``None`` (the default) picks a random candidate without
+        probing.
     :raises SkypilotConfigCollisionError: On a foreign clash (see
         :func:`merge_ssh_blocks`).
+    :raises RuntimeError: If a host has no reachable ``HostName`` candidate.
     """
     hosts = {"slurm": ssh.slurm, "lsf": ssh.lsf}.get(cloud)
     if not hosts:
@@ -637,6 +700,8 @@ def materialize_ssh_for_cloud(
     # Resolve any IdentityKey directive to a managed key file + IdentityFile
     # before rendering (keeps render_ssh_host pure).
     hosts = _materialize_identity_keys(hosts, cloud, secrets, _home(home))
+    # Collapse any list-valued HostName to a single reachable login node.
+    hosts = [_select_reachable_hostname(h, probe=hostname_probe) for h in hosts]
     merge_ssh_blocks(
         cloud,
         render_ssh_hosts(hosts, secrets),

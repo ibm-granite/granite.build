@@ -1,33 +1,29 @@
 """Tests for SkyPilot HPC (slurm/lsf) control-plane SSH resilience.
 
-Covers the three defenses added after a bluevela launch failed with
+Covers the defenses added after a bluevela launch failed with
 ``ValueError: Failed to get partitions for cluster bluevela`` whose real cause was
 ``Connection timed out during banner exchange``:
 
 1. the retry classifier treats an SSH banner/session timeout as transient (and
    still treats an SSH *auth* rejection as fatal),
-2. the pre-launch ``echo`` reachability probe is bounded and never fatal,
+2. the login-node reachability probe selects a reachable ``HostName`` and fails the
+   launch fast when none answers (see ``_probe_ssh_hostname`` / ``_ssh_probe_cmd``),
 3. a failure traceback is logged as ONE record so line-per-record log ingestion
    cannot shred it.
 """
 
-import asyncio
-import logging
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Shared launch-mock scaffolding; kept in libgbtest so it doesn't drift across the
-# SkyPilot test files.
-from libgbtest.environments.skypilot_mocks import _make_env, _mock_sky
-
 from gbserver.environment.skypilot import (
-    Skypilot,
     _is_transient_provision_error,
     _log_remote_stacktrace,
+    _probe_ssh_hostname,
+    _ssh_probe_cmd,
 )
-from gbserver.types.environmentconfig import EnvironmentConfig
 
 # The verbatim failure from the production runner log (build
 # 00cb68b4-1f58-4802-b802-adcf681e254a), ANSI colour codes included, since the
@@ -38,16 +34,6 @@ PROD_BANNER_FAILURE = (
     "\x1b[31mFailed to get Slurm partitions.\x1b[0m\n\n"
     "Connection timed out during banner exchange\n"
 )
-
-
-@pytest.fixture
-def slurm_env():
-    config = EnvironmentConfig(
-        name="test-slurm",
-        type="Skypilot",
-        config={"default_cloud": "slurm"},
-    )
-    return Skypilot(event_q=asyncio.Queue(), environment_config=config)
 
 
 # ---------------------------------------------------------------------------
@@ -165,266 +151,6 @@ def test_auth_rejection_wins_over_transient_substring():
     assert _is_transient_provision_error(ValueError(msg)) is False
 
 
-# ---------------------------------------------------------------------------
-# 2. Pre-launch echo probe
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_probe_skipped_for_non_hpc_cloud(slurm_env):
-    """k8s/aws have no shared SSH config; the probe must not spawn anything."""
-    with patch("asyncio.create_subprocess_exec") as spawn:
-        await slurm_env._probe_hpc_login_node("k8s", "some-cluster")
-    spawn.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_probe_disabled_by_zero_timeout(slurm_env, tmp_path, caplog):
-    """0 skips the probe and says so; silence would read as code that never ran."""
-    cfg = tmp_path / ".slurm"
-    cfg.mkdir()
-    (cfg / "config").write_text("Host bluevela\n")
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch("gbserver.types.constants.GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S", 0),
-        patch("asyncio.create_subprocess_exec") as spawn,
-        caplog.at_level(logging.INFO),
-    ):
-        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
-    spawn.assert_not_called()
-    msgs = [r.message for r in caplog.records]
-    assert any("SSH probe disabled" in m for m in msgs)
-    # Names the var to change and the host skipped, so the line is actionable.
-    assert any("GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0" in m for m in msgs)
-    assert any("bluevela" in m for m in msgs)
-
-
-@pytest.mark.asyncio
-async def test_disable_log_is_silent_for_non_hpc_cloud(slurm_env, caplog):
-    """No disable log on the non-HPC path — every k8s/aws launch takes it.
-
-    Returns before touching the filesystem, so no ~/.slurm/config is needed.
-    """
-    with (
-        patch("gbserver.types.constants.GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S", 0),
-        caplog.at_level(logging.INFO),
-    ):
-        await slurm_env._probe_hpc_login_node("k8s", "some-cluster")
-    assert not any("SSH probe disabled" in r.message for r in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_probe_runs_echo_against_skypilot_ssh_config(slurm_env, tmp_path):
-    """A plain `echo` through ~/.slurm/config — never a scheduler command."""
-    cfg_dir = tmp_path / ".slurm"
-    cfg_dir.mkdir()
-    (cfg_dir / "config").write_text("Host bluevela\n    User me\n")
-
-    proc = MagicMock()
-    proc.communicate = _async_return((b"gbserver probe\n", b""))
-    proc.returncode = 0
-
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)) as spawn,
-    ):
-        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
-
-    args = spawn.call_args[0]
-    assert args[0] == "ssh"
-    assert "echo" in args
-    assert "bluevela" in args
-    assert "-F" in args
-    assert str(cfg_dir / "config") in args
-    # BatchMode prevents the probe itself from blocking on a password prompt.
-    assert "BatchMode=yes" in args
-    joined = " ".join(args)
-    for scheduler_cmd in ("scontrol", "squeue", "sbatch", "bhosts", "bsub"):
-        assert scheduler_cmd not in joined
-
-
-@pytest.mark.asyncio
-async def test_probe_disables_host_key_verification_by_default(slurm_env, tmp_path):
-    """The probe must not be stricter than the launch it predicts.
-
-    Regression guard: the probe passed BatchMode=yes but not
-    StrictHostKeyChecking/UserKnownHostsFile. BatchMode disables host-key
-    *confirmation* and OpenSSH defaults to StrictHostKeyChecking=ask, so on a pod
-    with an empty known_hosts an unknown key is a hard refusal ("Host key
-    verification failed", rc=255) — not an auto-accept. Envs whose
-    cluster_ssh_configs omit those directives (lsf/ibm-bluevela) therefore failed
-    every probe, silently, because the probe is best-effort. SkyPilot's own launch
-    hardcodes both in ssh_options_list.
-    """
-    cfg_dir = tmp_path / ".slurm"
-    cfg_dir.mkdir()
-    (cfg_dir / "config").write_text("Host bluevela\n    User me\n")
-
-    proc = MagicMock()
-    proc.communicate = _async_return((b"gbserver probe\n", b""))
-    proc.returncode = 0
-
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch(
-            "gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION",
-            False,
-        ),
-        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)) as spawn,
-    ):
-        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
-
-    args = spawn.call_args[0]
-    assert "StrictHostKeyChecking=no" in args
-    assert "UserKnownHostsFile=/dev/null" in args
-    # The destination must still be last-but-two (host, then `echo <msg>`).
-    assert args[-3:] == ("bluevela", "echo", "gbserver probe")
-
-
-@pytest.mark.asyncio
-async def test_probe_honours_strict_host_key_toggle(slurm_env, tmp_path):
-    """With verification explicitly enabled, the probe stays strict.
-
-    Mirrors Lsf.ssh_no_verification_flags(), which is gated on the same constant.
-    """
-    cfg_dir = tmp_path / ".slurm"
-    cfg_dir.mkdir()
-    (cfg_dir / "config").write_text("Host bluevela\n    User me\n")
-
-    proc = MagicMock()
-    proc.communicate = _async_return((b"gbserver probe\n", b""))
-    proc.returncode = 0
-
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch(
-            "gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION",
-            True,
-        ),
-        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)) as spawn,
-    ):
-        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
-
-    args = spawn.call_args[0]
-    assert "StrictHostKeyChecking=no" not in args
-    assert "UserKnownHostsFile=/dev/null" not in args
-
-
-@pytest.mark.asyncio
-async def test_probe_timeout_kills_child_and_does_not_raise(slurm_env, tmp_path):
-    """A hung probe is killed and reaped: wait_for alone leaks the ssh child."""
-    cfg_dir = tmp_path / ".slurm"
-    cfg_dir.mkdir()
-    (cfg_dir / "config").write_text("Host bluevela\n")
-
-    proc = MagicMock()
-
-    async def _hang():
-        await asyncio.sleep(3600)
-
-    proc.communicate = _hang
-    proc.wait = _async_return(0)
-
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch("gbserver.types.constants.GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S", 1),
-        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)),
-    ):
-        # Must return (not raise) so a probe quirk never blocks a good launch.
-        await asyncio.wait_for(
-            slurm_env._probe_hpc_login_node("slurm", "bluevela"), timeout=30
-        )
-
-    proc.kill.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_probe_failure_is_not_fatal(slurm_env, tmp_path):
-    """A non-zero probe still proceeds to launch; the classifier is the backstop."""
-    cfg_dir = tmp_path / ".slurm"
-    cfg_dir.mkdir()
-    (cfg_dir / "config").write_text("Host bluevela\n")
-
-    proc = MagicMock()
-    proc.communicate = _async_return((b"", b"ssh: connect to host ... timed out"))
-    proc.returncode = 255
-
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch("asyncio.create_subprocess_exec", side_effect=_spawns(proc)),
-    ):
-        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
-
-
-@pytest.mark.asyncio
-async def test_probe_noop_without_ssh_config(slurm_env, tmp_path):
-    """No materialized config (env defines none) => nothing to probe through."""
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch("asyncio.create_subprocess_exec") as spawn,
-    ):
-        await slurm_env._probe_hpc_login_node("slurm", "bluevela")
-    spawn.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_launch_spawns_no_probe_when_disabled(tmp_path):
-    """Asserted through launch_skypilot, not through _probe_hpc_login_node.
-
-    Every other probe test calls the probe directly and so cannot see what it does
-    TO the launch around it — the gap that let a 30s probe ship while it starved the
-    control SSH SkyPilot opens next.
-    """
-    cfg = tmp_path / ".slurm"
-    cfg.mkdir()
-    (cfg / "config").write_text("Host bluevela\n")
-    env = _make_env({"default_cloud": "slurm", "cluster": "bluevela", "zone": "normal"})
-    mock_sky = _mock_sky()
-
-    with (
-        patch("gbserver.environment.skypilot.sky", mock_sky),
-        patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch("gbserver.types.constants.GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S", 0),
-        patch("asyncio.create_subprocess_exec") as spawn,
-    ):
-        env._get_launch_ready_event("probe-off-1")
-        await env.launch_skypilot(
-            launch_id="probe-off-1",
-            launcher_config={"run": "hostname", "resources": {}},
-            config={},
-        )
-
-    # Guards against passing for the wrong reason: a launch that never reached the
-    # probe call site would also spawn no ssh.
-    mock_sky.launch.assert_called_once()
-    assert not any(
-        call.args and call.args[0] == "ssh" for call in spawn.call_args_list
-    ), f"launch spawned an ssh probe: {spawn.call_args_list}"
-
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-
-def _async_return(value):
-    async def _inner(*_a, **_kw):
-        return value
-
-    return _inner
-
-
-def _spawns(proc):
-    """Async side_effect for create_subprocess_exec (a bare coroutine is
-    awaitable only once)."""
-
-    async def _inner(*_a, **_kw):
-        return proc
-
-    return _inner
-
-
 class TestRemoteStacktraceLogging:
     """``_log_remote_stacktrace`` surfaces the SkyPilot API server's traceback.
 
@@ -450,3 +176,98 @@ class TestRemoteStacktraceLogging:
         with patch("gbserver.environment.skypilot.logger") as mock_logger:
             _log_remote_stacktrace(OSError(30, "Read-only file system"), "ctx")
         mock_logger.error.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 2. Login-node reachability probe
+# ---------------------------------------------------------------------------
+class TestSshProbeCmd:
+    """`_ssh_probe_cmd` — the argv builder for the reachability probe."""
+
+    def test_argv_shape_and_no_verification_flags(self):
+        with patch(
+            "gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION", False
+        ):
+            cmds = _ssh_probe_cmd("/tmp/cfg", "bluevela", 12)
+        assert cmds[:3] == ["ssh", "-F", "/tmp/cfg"]
+        assert "BatchMode=yes" in cmds
+        assert "ConnectTimeout=12" in cmds
+        assert "StrictHostKeyChecking=no" in cmds
+        assert "UserKnownHostsFile=/dev/null" in cmds
+        # Destination then `echo <msg>` are always the last three tokens.
+        assert cmds[-3:] == ["bluevela", "echo", "gbserver probe"]
+
+    def test_strict_toggle_keeps_verification(self):
+        with patch(
+            "gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION", True
+        ):
+            cmds = _ssh_probe_cmd("/tmp/cfg", "bluevela", 5)
+        assert "StrictHostKeyChecking=no" not in cmds
+        assert "UserKnownHostsFile=/dev/null" not in cmds
+
+
+class TestProbeSshHostname:
+    """`_probe_ssh_hostname` — blocking ssh-echo probe of one candidate."""
+
+    def _host(self, **extra):
+        return {"Host": "bluevela", "HostName": "login2.ex.com", "User": "gb", **extra}
+
+    def test_returncode_zero_is_reachable(self):
+        seen = {}
+
+        def fake_run(cmds, **_kw):
+            seen["cmds"] = cmds
+            # The rendered config (-F <path>) must carry the chosen HostName.
+            cfg_path = cmds[cmds.index("-F") + 1]
+            seen["cfg"] = Path(cfg_path).read_text(encoding="utf-8")
+            return MagicMock(returncode=0, stderr=b"")
+
+        with patch("gbserver.environment.skypilot.subprocess.run", fake_run):
+            assert _probe_ssh_hostname(self._host(), {}) is True
+        assert seen["cmds"][-3:] == ["bluevela", "echo", "gbserver probe"]
+        assert "HostName login2.ex.com" in seen["cfg"]
+        assert "ssh_probe_timeout_s" not in seen["cfg"]  # synthetic key stripped
+
+    def test_nonzero_returncode_is_unreachable(self):
+        with patch(
+            "gbserver.environment.skypilot.subprocess.run",
+            return_value=MagicMock(returncode=255, stderr=b"timed out"),
+        ):
+            assert _probe_ssh_hostname(self._host(), {}) is False
+
+    def test_timeout_is_unreachable(self):
+        with patch(
+            "gbserver.environment.skypilot.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=5),
+        ):
+            assert _probe_ssh_hostname(self._host(), {}) is False
+
+    def test_per_host_timeout_used_as_connecttimeout(self):
+        captured = {}
+
+        def fake_run(cmds, **kw):
+            captured["cmds"] = cmds
+            captured["timeout"] = kw.get("timeout")
+            return MagicMock(returncode=0, stderr=b"")
+
+        with patch("gbserver.environment.skypilot.subprocess.run", fake_run):
+            _probe_ssh_hostname(self._host(ssh_probe_timeout_s=7), {})
+        assert "ConnectTimeout=7" in captured["cmds"]
+        assert captured["timeout"] == 7 + 5  # subprocess wait = ConnectTimeout + buffer
+
+    def test_nonpositive_deployment_default_falls_back(self):
+        # The probe is mandatory. A host that pins no timeout inherits the deployment
+        # default; if that is mis-set non-positive it falls back to
+        # DEFAULT_SSH_PROBE_TIMEOUT_S (30) and still probes — never disabled.
+        captured = {}
+
+        def fake_run(cmds, **_kw):
+            captured["cmds"] = cmds
+            return MagicMock(returncode=0, stderr=b"")
+
+        with (
+            patch("gbserver.types.constants.GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S", 0),
+            patch("gbserver.environment.skypilot.subprocess.run", fake_run),
+        ):
+            assert _probe_ssh_hostname(self._host(), {}) is True
+        assert "ConnectTimeout=30" in captured["cmds"]

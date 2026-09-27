@@ -8,6 +8,7 @@ require it unless a Skypilot environment is actually configured.
 
 import asyncio
 import concurrent.futures
+import contextlib
 import functools
 import glob
 import json
@@ -15,6 +16,8 @@ import os
 import re
 import shlex
 import stat
+import subprocess
+import tempfile
 import threading
 import time
 import traceback
@@ -42,7 +45,6 @@ from tenacity import (
 )
 
 from gbcommon.uri.uri import URI
-from gbserver.environment._skypilot_ssh import _kill_and_reap
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.environment.shared_fs import (
     build_provider,
@@ -410,6 +412,106 @@ RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
 # handling groups them: skip the compute_config memory floor and force autostop
 # off. Compared against the normalized first infra segment (lowercased).
 _SSH_HPC_CLOUDS = ("slurm", "lsf")
+
+# Fallback ssh ConnectTimeout (seconds) for the login-node reachability probe when the
+# deployment knob GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S is set non-positive. The probe
+# is mandatory — it selects which login node the launch uses and fails the launch if
+# none answer — so a mis-set/zero deployment default falls back here rather than
+# disabling it. A per-host `ssh_probe_timeout_s` overrides it and is validated positive
+# at config load (ClusterSshConfigs).
+DEFAULT_SSH_PROBE_TIMEOUT_S = 30
+
+
+def _ssh_probe_cmd(config_path: str, alias: str, timeout: int) -> List[str]:
+    """Build the non-interactive ``ssh -F <config> <alias> echo`` probe argv.
+
+    The command for the login-node reachability probe (:func:`_probe_ssh_hostname`).
+    It connects by the ``Host`` alias against a rendered OpenSSH config, so the probe
+    follows the exact ``User``/``Port``/``IdentityFile``/``ProxyCommand`` directives
+    SkyPilot's own launch will — no hand-maintained directive→flag table.
+
+    ``BatchMode=yes`` disables host-key *confirmation*, and OpenSSH defaults to
+    ``StrictHostKeyChecking=ask``, so without the extra flags an unknown host key is a
+    hard refusal (``Host key verification failed``, rc=255), not an auto-accept — on a
+    fresh runner (empty ``known_hosts``) that fails every probe for an env whose
+    ``cluster_ssh_configs`` omits them (e.g. lsf/ibm-bluevela). SkyPilot's own launch
+    hardcodes both, so skipping them would make the probe stricter than the launch it
+    predicts. Gated on the same ``ENABLE_SSH_HOST_KEY_VERIFICATION`` toggle
+    :meth:`Lsf.ssh_no_verification_flags` uses, so strict probing stays available.
+
+    :param config_path: OpenSSH config file the probe reads (``-F``).
+    :param alias: The ``Host`` alias to connect to.
+    :param timeout: ssh ``ConnectTimeout`` in seconds.
+    :returns: The ``ssh`` command argv (destination + ``echo`` are the last tokens).
+    """
+    from gbserver.types.constants import ENABLE_SSH_HOST_KEY_VERIFICATION
+
+    cmds = ["ssh", "-F", config_path, "-o", "BatchMode=yes", "-o",
+            f"ConnectTimeout={timeout}"]
+    if not ENABLE_SSH_HOST_KEY_VERIFICATION:
+        cmds += ["-o", "StrictHostKeyChecking=no", "-o",
+                 "UserKnownHostsFile=/dev/null"]
+    cmds += [alias, "echo", "gbserver probe"]
+    return cmds
+
+
+def _probe_ssh_hostname(host: Dict[str, Any], secrets: Dict[str, str]) -> bool:
+    """Return True if the login node in ``host`` answers an ssh echo probe.
+
+    Renders the (single-``HostName``) host block to a throwaway OpenSSH config and
+    runs a non-interactive ``ssh ... echo`` against its alias, so the probe honours
+    exactly the directives (User/Port/IdentityFile/…) the launch will. Blocking;
+    call off the event loop.
+
+    The probe timeout comes from the host's synthetic ``ssh_probe_timeout_s`` key when
+    present (validated positive at config load), else from
+    ``GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S``; a non-positive deployment value falls
+    back to ``DEFAULT_SSH_PROBE_TIMEOUT_S`` rather than disabling the probe. There is no
+    "skip the probe" value — reachability is load-bearing (it selects the login node the
+    launch uses), so a false result makes the caller try the next candidate or fail.
+
+    :param host: A resolved host mapping with a scalar ``HostName`` (may carry the
+        synthetic ``ssh_probe_timeout_s`` per-host override).
+    :param secrets: Secret name -> value mapping for directive resolution.
+    :returns: True if ssh connected and the echo succeeded, False otherwise.
+    """
+    from gbserver.environment.skypilot_config import (
+        PROBE_TIMEOUT_DIRECTIVE,
+        render_ssh_host,
+    )
+    from gbserver.types.constants import GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
+
+    alias = str(host.get("Host"))
+    if PROBE_TIMEOUT_DIRECTIVE in host:
+        timeout = int(host[PROBE_TIMEOUT_DIRECTIVE])  # per-host value (validated > 0)
+    else:
+        timeout = GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
+    if timeout <= 0:  # deployment default mis-set; probing is mandatory, so fall back
+        timeout = DEFAULT_SSH_PROBE_TIMEOUT_S
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".sshcfg", delete=False)
+    try:
+        tmp.write(render_ssh_host(host, secrets) + "\n")
+        tmp.close()
+        cmds = _ssh_probe_cmd(tmp.name, alias, timeout)
+        logger.info("probing login node reachability for host %s", alias)
+        proc = subprocess.run(
+            cmds, capture_output=True, timeout=timeout + 5, check=False
+        )
+        if proc.returncode == 0:
+            return True
+        logger.warning(
+            "login node for host %s not reachable (rc=%s): %s",
+            alias,
+            proc.returncode,
+            proc.stderr.decode("utf-8", errors="replace").strip(),
+        )
+        return False
+    except (subprocess.TimeoutExpired, OSError) as e:  # unreachable / spawn error
+        logger.warning("login node for host %s not reachable: %s", alias, e)
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp.name)
 
 
 def _ssh_control_socket_dir() -> Optional[str]:
@@ -1202,7 +1304,7 @@ class Skypilot(Environment):
             materialize(name, None, cloud_config, aws, self.secrets or {})
         self._inline_configs_done = True
 
-    def _materialize_ssh_for_launch(self: Self, cloud: str) -> None:
+    async def _materialize_ssh_for_launch(self: Self, cloud: str) -> None:
         """Merge this env's inline SSH config for ``cloud`` into ``~/.<cloud>/config``.
 
         Idempotent, owner-aware last-writer-wins (see ``merge_ssh_blocks``): an
@@ -1210,9 +1312,15 @@ class Skypilot(Environment):
         owned by this same environment self-heals a re-keyed entry. No-op when the
         env defines no inline SSH config.
 
+        When a host's ``HostName`` is a list of candidate login nodes, one is picked
+        at random and SSH-probed for reachability before it is written. The probe is
+        a blocking ssh subprocess, so the whole materialize (probe + file merge) runs
+        off the event loop via ``asyncio.to_thread``.
+
         :param cloud: The HPC cloud being provisioned (``"slurm"``/``"lsf"``).
         :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash, or
             a differing block for the same alias owned by another environment.
+        :raises RuntimeError: If a host's ``HostName`` list has no reachable node.
         """
         cfg = self.config.config if self.config else {}
         ssh_raw = cfg.get("cluster_ssh_configs")
@@ -1223,9 +1331,17 @@ class Skypilot(Environment):
 
         ssh = ClusterSshConfigs.model_validate(ssh_raw)
         name = self.config.name if self.config else "unknown"
-        materialize_ssh_for_cloud(name, ssh, self.secrets or {}, cloud)
+        secrets = self.secrets or {}
+        await asyncio.to_thread(
+            materialize_ssh_for_cloud,
+            name,
+            ssh,
+            secrets,
+            cloud,
+            hostname_probe=lambda h: _probe_ssh_hostname(h, secrets),
+        )
 
-    def _prepare_ssh_for_launch(self: Self, cloud_group: str) -> None:
+    async def _prepare_ssh_for_launch(self: Self, cloud_group: str) -> None:
         """Materialize SSH config for an HPC launch, optionally resetting sockets.
 
         No-op for non-HPC clouds (k8s/aws have no shared SSH config file). For a
@@ -1238,6 +1354,7 @@ class Skypilot(Environment):
 
         :param cloud_group: Normalized target cloud (first infra segment).
         :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash.
+        :raises RuntimeError: If a host's ``HostName`` list has no reachable node.
         """
         if cloud_group not in _SSH_HPC_CLOUDS:
             return
@@ -1245,138 +1362,7 @@ class Skypilot(Environment):
 
         if is_sky_ssh_reset_enabled():
             _clear_skypilot_ssh_control_sockets()
-        self._materialize_ssh_for_launch(cloud_group)
-
-    async def _probe_hpc_login_node(self: Self, cloud_group: str, cluster: str) -> None:
-        """Probe the slurm/lsf login node with a trivial `echo` before launching.
-
-        SkyPilot runs its precheck control commands (``scontrol show partitions``)
-        over an `ssh` bounded only by ``ConnectTimeout`` — the TCP leg, not the
-        banner/login phase — with no command timeout and no retry, so a slow-banner
-        login node fails the launch as an opaque ``ValueError: Failed to get
-        partitions for cluster ...``. This names that condition up front, bounded by
-        ``ConnectTimeout`` plus an outer ``wait_for`` (the ``echo`` still incurs the
-        session-setup delay ``ConnectTimeout`` misses). Mirrors
-        ``Lsf.__is_ssh_node_reachable``.
-
-        An ``echo``, not a slurm command: tests SSH only, adds no scheduler load.
-
-        Best-effort — a failure warns and the launch proceeds, so a probe-only quirk
-        can't block a good launch; the retry classifier is the real backstop.
-
-        ``GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0`` skips it, and logs that it did.
-        Worth skipping where SSH slots are scarce: the probe holds one for up to
-        ``timeout``, starving the control connection SkyPilot opens next.
-
-        :param cloud_group: Normalized target cloud (``"slurm"``/``"lsf"``).
-        :param cluster: Cluster name — the ``Host`` alias in ``~/.<cloud>/config``.
-        """
-        from gbserver.types.constants import (
-            ENABLE_SSH_HOST_KEY_VERIFICATION,
-            ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S,
-            GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S,
-        )
-
-        timeout = GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
-        if cloud_group not in _SSH_HPC_CLOUDS or not cluster:
-            return
-        if timeout <= 0:
-            # After the cloud guard, so every k8s/aws launch stays quiet. Logged, not
-            # silent: otherwise a missing probe line reads as code that never ran.
-            logger.info(
-                "SSH probe disabled (%s=%s); skipping the %s login node %s "
-                "pre-launch probe",
-                ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S,
-                timeout,
-                cloud_group,
-                cluster,
-            )
-            return
-        # Reuse SkyPilot's own SSH config so the probe follows the same
-        # alias/user/key/ProxyCommand directives the launch will.
-        config_path = Path.home() / f".{cloud_group}" / "config"
-        if not config_path.is_file():
-            return
-        cmds = [
-            "ssh",
-            "-F",
-            str(config_path),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            f"ConnectTimeout={timeout}",
-        ]
-        # BatchMode=yes disables host-key *confirmation*, and OpenSSH defaults to
-        # StrictHostKeyChecking=ask, so without these an unknown host key is a hard
-        # refusal ("Host key verification failed", rc=255) — not an auto-accept. On a
-        # fresh runner pod (empty known_hosts) that fails every probe on any env whose
-        # cluster_ssh_configs omits them, e.g. lsf/ibm-bluevela. Since the probe is
-        # best-effort it would fail silently, never testing reachability at all.
-        # SkyPilot's own launch hardcodes both (ssh_options_list), so skipping them
-        # would make the probe stricter than the launch it predicts. Gated on the same
-        # toggle Lsf.ssh_no_verification_flags() uses, so strict probing stays
-        # available.
-        if not ENABLE_SSH_HOST_KEY_VERIFICATION:
-            cmds += [
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-            ]
-        cmds += [cluster, "echo", "gbserver probe"]
-        logger.info(
-            "probing %s login node %s for SSH reachability before launch",
-            cloud_group,
-            cluster,
-        )
-        started = time.monotonic()
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmds,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except Exception as e:  # noqa: BLE001 — probe is best-effort
-            logger.warning("could not spawn SSH probe for %s: %s", cluster, e)
-            return
-        try:
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.CancelledError:
-            # Don't leak the child when the launch itself is being cancelled.
-            await _kill_and_reap(proc)
-            raise
-        except Exception as e:  # noqa: BLE001 — timeout => treat as unreachable
-            # wait_for only cancels the await; kill and reap so a hung ssh (the
-            # exact late-banner case) cannot linger for the life of the runner.
-            await _kill_and_reap(proc)
-            logger.warning(
-                "SSH probe to %s login node %s did not complete within %ss (%s) — "
-                "the login node may be slow to send its SSH banner. Continuing to "
-                "launch anyway; a precheck failure from this will be retried.",
-                cloud_group,
-                cluster,
-                timeout,
-                type(e).__name__,
-            )
-            return
-        elapsed = time.monotonic() - started
-        if proc.returncode == 0:
-            logger.info(
-                "SSH probe to %s login node %s succeeded in %.1fs",
-                cloud_group,
-                cluster,
-                elapsed,
-            )
-            return
-        logger.warning(
-            "SSH probe to %s login node %s failed after %.1fs (rc=%s): %s — "
-            "continuing to launch anyway.",
-            cloud_group,
-            cluster,
-            elapsed,
-            proc.returncode,
-            (stderr or b"").decode("utf-8", errors="replace").strip(),
-        )
+        await self._materialize_ssh_for_launch(cloud_group)
 
     def _get_cloud(self: Self) -> str:
         """Get default cloud/infra from environment.yaml config."""
@@ -2073,17 +2059,7 @@ class Skypilot(Environment):
             # optionally reset SkyPilot's ControlMaster sockets when the test flag
             # is set. Done here — before the non-SSH materialize and the API start
             # below — so the config is in place before sky.launch connects.
-            self._prepare_ssh_for_launch(cloud_group)
-
-            # With the SSH config in place, probe the HPC login node with a
-            # trivial `echo` so a wedged/slow-banner node is reported as such
-            # instead of as an opaque SkyPilot precheck error. Best-effort: never
-            # blocks the launch (see _probe_hpc_login_node). The cluster is the
-            # middle infra segment (cloud/cluster[/partition]).
-            infra_parts = str(infra).split("/")
-            await self._probe_hpc_login_node(
-                cloud_group, infra_parts[1] if len(infra_parts) > 1 else ""
-            )
+            await self._prepare_ssh_for_launch(cloud_group)
 
             # Materialize non-SSH inline config (cloud_config / AWS creds) before
             # the API server starts / sky.launch builds the per-request config

@@ -46,6 +46,41 @@ gbserver-managed block for the same alias is **overwritten** (so a stale or re-k
 (`SkypilotConfigCollisionError`) — gbserver never clobbers user-owned entries.
 See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_configs--cloud_config--aws_credentials).
 
+#### Multiple login nodes (`HostName` list)
+
+`HostName` may be a single value (above) **or** a list of candidate login hostnames sharing one
+`Host` block — the fit for a cluster reached through several interchangeable login nodes:
+
+```yaml
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-docker
+        ssh_probe_timeout_s: 15       # Optional per-host probe timeout (seconds); see below.
+        HostName:                     # Candidate login nodes for this one cluster.
+          - login1.cluster.example.com
+          - login2.cluster.example.com
+        User: root
+        IdentityFile: ~/.ssh/slurm_docker_key
+```
+
+At launch gbserver shuffles the candidates, SSH-probes them in order (a trivial `echo` over `ssh`,
+honouring the same `User`/`Port`/`IdentityFile`/`ProxyCommand` directives the launch will use), and
+writes the first reachable one as a normal scalar `HostName`. If **none** answers, the launch fails
+with a clear error naming the alias and the hostnames tried. The `Host` alias stays fixed (it must
+equal `cluster:`), so all candidates share this block's `User`/`Port`/`IdentityFile`/etc. A scalar
+`HostName` is treated as a one-element list — it is probed the same way, so an unreachable lone login
+node fails the launch fast (same clear error) rather than leaving you SkyPilot's opaque `ValueError:
+Failed to get partitions for cluster …`. A list of *different* clusters still uses separate `Host`
+blocks with distinct aliases.
+
+`ssh_probe_timeout_s` (optional, per host) sets the probe's `ConnectTimeout` in seconds; it is a
+**synthetic** gbserver key — like `IdentityKey`, it is consumed at launch and stripped before
+`~/.slurm/config` is written, so it never becomes a bogus OpenSSH directive. It must be a **positive
+integer**; a non-positive or non-integer value is rejected at config load. When unset it falls back to
+`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` (default 30). The probe is mandatory — it selects the login
+node the launch uses — so there is no value that disables it; the deployment constant only sets the
+default timeout, and a non-positive value there falls back to a built-in 30s and still probes.
+
 > **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.slurm/config` self-heals,
 > SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key
 > — so a changed `IdentityFile`/`IdentityKey` can be masked by a live connection until its
@@ -56,16 +91,14 @@ See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_conf
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
 
-> **Slow login nodes and the pre-launch probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`).** Before an
-> HPC launch gbserver can run a trivial `echo` over SSH to name a wedged login node up front, rather
-> than leaving you SkyPilot's opaque `ValueError: Failed to get partitions for cluster …`. On a node
-> slow to send its SSH banner this backfires: the probe holds a session for up to its timeout
-> (default 30s), and where SSH slots are scarce that starves the control connection SkyPilot opens
-> next for `scontrol show partitions -o`. The symptom is `Connection timed out during banner
-> exchange` from the probe *and* the launch, once per provision retry — a diagnostic causing the
-> failure it reports. Set `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` to disable it (our deployments
-> do; the skip is logged). Costs no error handling: genuine blips are still retried as transient and
-> the API server's traceback is still surfaced.
+> **The reachability probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`).** Before an HPC launch gbserver
+> runs a trivial `echo` over SSH against each candidate login node to select a reachable one, naming a
+> wedged node up front rather than leaving you SkyPilot's opaque `ValueError: Failed to get partitions
+> for cluster …`. The probe is load-bearing (it picks the `HostName` the launch uses), so it always
+> runs and cannot be disabled. `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` only sets the default
+> `ConnectTimeout` (seconds); a per-host `ssh_probe_timeout_s` overrides it, and both must be positive.
+> If every candidate is unreachable the launch fails fast with a clear error; genuine blips on a
+> selected node are still retried as transient and the API server's traceback is still surfaced.
 
 ### `cluster` / `zone`
 

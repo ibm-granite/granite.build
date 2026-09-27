@@ -46,6 +46,45 @@ no manual `rm ~/.lsf/config`); a *foreign* (non-gbserver) entry for the same ali
 (`SkypilotConfigCollisionError`). An LSF and a SLURM env run concurrently (separate files). See
 [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_configs--cloud_config--aws_credentials).
 
+#### Multiple login nodes (`HostName` list)
+
+`HostName` may be a single value (above) **or** a list of candidate login hostnames under one `Host`
+block, for a cluster fronted by several interchangeable login nodes:
+
+```yaml
+  cluster_ssh_configs:
+    lsf:
+      - Host: bluevela
+        ssh_probe_timeout_s: 30       # Optional per-host probe timeout (seconds); see below.
+        HostName:                     # Candidate login nodes for this one cluster.
+          - login1.bluevela.rmf.ibm.com
+          - login2.bluevela.rmf.ibm.com
+          - login3.bluevela.rmf.ibm.com
+          - login4.bluevela.rmf.ibm.com
+        User: granitebuild
+        IdentityFile: ~/.ssh/ibm-bluevela.key
+        IdentitiesOnly: "yes"
+```
+
+At launch gbserver shuffles the candidates, SSH-probes them in order (a trivial `echo` over `ssh`,
+using the same `User`/`IdentityFile`/… directives the launch will), and writes the first reachable
+one as a scalar `HostName`. If **none** answers, the launch fails with a clear error naming the alias
+and the hostnames tried. The `Host` alias stays fixed (LSF derives the cluster name from it), so all
+candidates share this block's credentials. A scalar `HostName` is treated as a one-element list — it
+is probed the same way, so an unreachable lone login node fails the launch fast (with the same clear
+error) instead of stalling in an opaque SkyPilot precheck.
+
+`ssh_probe_timeout_s` (optional, per host) sets the probe's `ConnectTimeout` in seconds. It is a
+**synthetic** gbserver key — like `IdentityKey`, consumed at launch and stripped before `~/.lsf/config`
+is written, so it never becomes a bogus OpenSSH directive. It must be a **positive integer**; a
+non-positive or non-integer value is rejected at config load. The probe is mandatory (it selects the
+login node the launch uses), so there is no value that disables it.
+
+When a host does **not** pin its own `ssh_probe_timeout_s`, the timeout falls back to
+`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` (default 30). That deployment constant only sets the default
+timeout; it cannot disable probing, and if it is mis-set to a non-positive value the probe falls back
+to a built-in 30s timeout and still runs.
+
 > **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.lsf/config` self-heals,
 > SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key
 > — so a changed `IdentityFile`/`IdentityKey` can be masked by a live connection until its
@@ -56,9 +95,7 @@ no manual `rm ~/.lsf/config`); a *foreign* (non-gbserver) entry for the same ali
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
 
-The pre-launch SSH probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`) covers LSF as well as SLURM, and
-our deployments disable it for both — on a slow-banner login node it starves the control connection
-SkyPilot opens next. See
+The reachability probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`) covers LSF and SLURM identically. See
 [the probe note on the SLURM page](skypilot-slurm.md#cluster_ssh_configsslurm--reachability).
 
 ### `cloud_config.lsf` — behavioral tuning

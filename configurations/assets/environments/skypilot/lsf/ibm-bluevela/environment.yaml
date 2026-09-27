@@ -27,10 +27,30 @@ config:
   # bluevela entry, remove it first — gbserver refuses to overwrite foreign
   # entries (refuse-on-conflict). Testing a changed key? See the
   # GBTEST_SKY_SSH_RESET re-keying caveat in docs/environments/skypilot-lsf.md.
+  #
+  # MULTIPLE LOGIN NODES: `HostName` may be a single value OR (as below) a list of
+  # candidate login hostnames under one `Host` block. gbserver picks one at random
+  # and SSH-probes it (`echo` over ssh) at launch, trying the next until one
+  # answers; if none do (including a lone unreachable node), the launch fails. All
+  # candidates share this block's User/IdentityFile/etc. The optional per-host
+  # `ssh_probe_timeout_s` (synthetic — stripped before ~/.lsf/config is written,
+  # like IdentityKey) sets the probe ConnectTimeout in seconds; it must be a
+  # positive integer (default 30 when omitted). The probe is mandatory and cannot be
+  # disabled — it selects the login node the launch uses.
   cluster_ssh_configs:
     lsf:
       - Host: bluevela
-        HostName: login4.bluevela.rmf.ibm.com
+        # Per-host reachability-probe ConnectTimeout (seconds). Synthetic key,
+        # stripped before ~/.lsf/config is written. Optional (defaults to 30);
+        # shown as an explicit example. Must be a positive integer.
+        ssh_probe_timeout_s: 30
+        # Candidate login nodes: gbserver picks one at random and SSH-probes it at
+        # launch, trying the next until one answers (fails the launch if none do).
+        HostName:
+          - login2.bluevela.rmf.ibm.com
+          - login3.bluevela.rmf.ibm.com
+          - login4.bluevela.rmf.ibm.com
+          - login5.bluevela.rmf.ibm.com
         User: granitebuild
         # Set GBTEST_SKY_SSH_RESET=true (env) when testing modified credentials.
         IdentityFile: ~/.ssh/ibm-bluevela.key
