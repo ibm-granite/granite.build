@@ -99,6 +99,21 @@ export function isMappingComplete(
   return requiredColumns.every((column) => Boolean(mapping[column]))
 }
 
+/**
+ * The required targets a mapping does not cover, in `required` order.
+ *
+ * Used to check a *frozen* mapping against columns required by an algorithm
+ * chosen after the mapping was frozen (e.g. switching between two algorithms
+ * that share a goal), where `isMappingComplete`'s boolean is not enough to
+ * name which columns are missing.
+ */
+export function hfMissingRequiredColumns(
+  mapping: Record<string, string>,
+  required: string[]
+): string[] {
+  return required.filter((column) => !mapping[column])
+}
+
 export type SurvivalKind = 'hidden' | 'blocked' | 'warning' | 'ok'
 
 export interface SurvivalSummary {

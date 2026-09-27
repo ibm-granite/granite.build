@@ -60,6 +60,7 @@ import {
   hfErrorStatus,
   hfImportPollOutcome,
   hfImportPostFailure,
+  hfMissingRequiredColumns,
   pollStep,
   problemDetail,
   suffixWithRevision,
@@ -288,12 +289,18 @@ export function StartTuningWizard() {
       case 0:
         return selectedGoal !== null && selectedAlgorithm !== '' && isModelSelectionValid(modelSource, selectedModel)
       case 1: {
+        const requiredCols = getRequiredColumnsFromTypes(selectedAlgorithm, datasetTypes ?? {})
         // The HF form's own gate (canImport) already checked name, mapping and the
-        // validation choice, so a draft or a frozen import is enough.
-        if (pendingHfImport !== null || hfDraft !== null) return true
+        // validation choice, so a draft is enough. A frozen import is enough only
+        // when its mapping still covers the currently selected algorithm's required
+        // columns -- DPO and KTO share the offline_rl goal, so switching between them
+        // fires no reset and would otherwise let a stale mapping through.
+        if (hfDraft !== null) return true
+        if (pendingHfImport !== null) {
+          return hfMissingRequiredColumns(pendingHfImport.payload.column_mapping, requiredCols).length === 0
+        }
         const hasDataset = existingDatasetId !== null || parsedData.length > 0
         const hasName = datasetForm.name.trim() !== ''
-        const requiredCols = getRequiredColumnsFromTypes(selectedAlgorithm, datasetTypes ?? {})
         // Column mapping applies only to a fresh upload. An existing dataset was
         // already uploaded with its mapping applied, `columnMapping` is unused
         // downstream for it (neither the uploadDataset call nor the preview

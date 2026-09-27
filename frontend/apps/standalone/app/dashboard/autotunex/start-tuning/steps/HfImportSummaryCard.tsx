@@ -1,12 +1,14 @@
 'use client'
 
-import { Button, Tag } from '@carbon/react'
+import { Button, InlineNotification, Tag } from '@carbon/react'
 import { Edit } from '@carbon/icons-react'
-import { hfSnapshotSummary, type HfImportSnapshot } from './hfImport'
+import { hfMissingRequiredColumns, hfSnapshotSummary, type HfImportSnapshot } from './hfImport'
 import styles from './HfImportSummaryCard.module.scss'
 
 interface HfImportSummaryCardProps {
   snapshot: HfImportSnapshot
+  /** The currently selected algorithm's required columns, to check the frozen mapping against. */
+  requiredColumns: string[]
   /** Drops the frozen request; the HuggingFace form comes back in its place. */
   onChange: () => void
 }
@@ -17,14 +19,24 @@ interface HfImportSummaryCardProps {
  * on mount and the AI re-suggests it, which could silently replace a hand-corrected
  * mapping before Launch.
  */
-export function HfImportSummaryCard({ snapshot, onChange }: HfImportSummaryCardProps) {
+export function HfImportSummaryCard({ snapshot, requiredColumns, onChange }: HfImportSummaryCardProps) {
   const summary = hfSnapshotSummary(snapshot)
+  const missingColumns = hfMissingRequiredColumns(snapshot.payload.column_mapping, requiredColumns)
   return (
     <div className={styles.card}>
       <div className={styles.header}>
         <span className={styles.title}>HuggingFace dataset</span>
-        <Tag type="cyan" size="sm">Imported at launch</Tag>
+        <Tag type="cyan" size="sm">Imports at launch</Tag>
       </div>
+      {missingColumns.length > 0 && (
+        <InlineNotification
+          kind="warning"
+          lowContrast
+          hideCloseButton
+          title={`This mapping doesn't cover ${missingColumns.join(', ')} required by the selected algorithm.`}
+          subtitle="Click Change to remap."
+        />
+      )}
       <dl className={styles.rows}>
         <dt>Name</dt>
         <dd>{summary.name}</dd>

@@ -24,6 +24,7 @@ const {
   suffixWithRevision,
   probeMapping,
   isMappingComplete,
+  hfMissingRequiredColumns,
   survivalSummary,
   defaultConfig,
   defaultTrainSplit,
@@ -145,6 +146,24 @@ describe('isMappingComplete', () => {
     // Not vacuously true: with no known targets there is no valid import request
     // to build (column_mapping is min_length=1), so the import must stay blocked.
     assert.equal(isMappingComplete({}, []), false)
+  })
+})
+
+describe('hfMissingRequiredColumns', () => {
+  it('is empty when the mapping covers every required column', () => {
+    assert.deepEqual(hfMissingRequiredColumns({ input: 'instruction', output: 'output' }, ['input', 'output']), [])
+  })
+
+  it('returns the targets whose source is absent from the mapping', () => {
+    assert.deepEqual(hfMissingRequiredColumns({ input: 'instruction' }, ['input', 'output']), ['output'])
+  })
+
+  it('treats a blank source as missing', () => {
+    assert.deepEqual(hfMissingRequiredColumns({ input: 'instruction', output: '' }, ['input', 'output']), ['output'])
+  })
+
+  it('preserves the order of the required list when several columns are missing', () => {
+    assert.deepEqual(hfMissingRequiredColumns({}, ['prompt', 'chosen', 'rejected']), ['prompt', 'chosen', 'rejected'])
   })
 })
 
