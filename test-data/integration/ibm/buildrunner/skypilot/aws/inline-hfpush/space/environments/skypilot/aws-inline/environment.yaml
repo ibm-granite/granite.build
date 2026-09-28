@@ -26,8 +26,22 @@ config:
       default:
         aws:
           profile: gb-skypilot
-  # NO shared_filesystem block: the inline pull/push paths keep model data
-  # instance-local, so the whole build runs on one EC2 instance without EFS.
+  # Issue #390: hf push now runs as a dispatched step that REQUIRES a
+  # shared_filesystem to read the produced artifact, so this fixture ships a
+  # BYO pre-provisioned EFS (form per #378). shared_workdir is the explicit
+  # workdir under mount_point (decoupled per #404). Inline pull is kept below
+  # (#389, out of scope) so hfpull still folds into the consuming step.
+  # #391 will add `provision: ephemeral` (no-admin auto-provisioned EFS).
+  shared_workdir: /mnt/gb-shared/gbroot
+  shared_filesystem:
+    provider: efs
+    mount_point: /mnt/gb-shared
+    efs:
+      # Stand-in id: replace with the ibm-research shared-fs EFS (IBM), or your own
+      # pre-provisioned EFS, to run the gated test. See the header comment + #391.
+      file_system_id: fs-0abc123
+      region: us-east-1
+      tls: true
 assetstores:
   - store_uri: space://assetstores/s3/
     pull:
@@ -47,5 +61,4 @@ assetstores:
           inline: true
     push:
       - mode: default
-        config:
-          inline: true
+        config: {}
