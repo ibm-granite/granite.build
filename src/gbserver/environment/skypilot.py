@@ -3769,6 +3769,15 @@ class Skypilot(Environment):
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
 
+        if self._shared_fs_provider() is None:
+            raise ValueError(
+                f"hfstore push for '{binding_id}' requires a shared_filesystem on "
+                "SkyPilot/AWS: the artifact is produced on an ephemeral instance, so a "
+                "separate push step has nowhere to read it from. Configure "
+                "`shared_filesystem` in the environment (BYO EFS), or set "
+                "`shared_filesystem.provision: ephemeral` once available (#391)."
+            )
+
         space_name = output_config.space_name if output_config else None
         # Enterprise/non-enterprise split + config precedence (environment-level
         # storepush_config, overridden by build.yaml store_push) + table-first

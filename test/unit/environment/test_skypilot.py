@@ -2049,6 +2049,12 @@ class TestInlineHfpush:
     async def test_pushasset_hfstore_default_returns_step_config(self, skypilot_env):
         from gbserver.types.buildconfig import BuildTargetStepConfig
 
+        # The hfstore push preflight guard requires a resolved shared_filesystem
+        # provider; prime one here (scoped to this push test so the shared
+        # fixture stays provider-free for the run-script/monitor tests).
+        skypilot_env._shared_fs_provider_cache = MagicMock(
+            name="shared_filesystem_provider"
+        )
         cfg = MagicMock()
         cfg.config = {}  # no inline
         result = await skypilot_env.pushasset_hfstore(
