@@ -148,7 +148,7 @@ export function BuildDetails({
             </TabPanel>
             {/* Carbon mounts every TabPanel's children regardless of which tab is
                 active (see the same note in TrialsTable), and `display: none` only
-                hides them — so without the inner guard both panels fire their
+                hides them — so without the inner guard these panels fire their
                 own queries on every build page, linked job or not. Matches how
                 AutoTuneXPanel is gated in the Details panel above. */}
             <TabPanel style={{ display: tuningHide, overflowY: 'auto', height: '100%' }}>

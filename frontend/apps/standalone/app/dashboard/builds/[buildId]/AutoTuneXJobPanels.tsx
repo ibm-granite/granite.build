@@ -6,11 +6,13 @@ import { TuningLogViewer } from '@granite-build/ui-core/components/autotunex/tun
 import { TuningResultsPanel } from '@granite-build/ui-core/components/autotunex/tunings/TuningResultsPanel'
 
 /**
- * Trials & Logs for the AutoTuneX tuning job linked to a build, mirroring the
- * AutoTuneX tuning detail page.
+ * Trials, Logs & Results for the AutoTuneX tuning job linked to a build, mirroring
+ * the AutoTuneX tuning detail page.
  *
  * BuildDetails owns the linked-job lookup (see useLinkedTuningJob) and only mounts
- * these once it holds a job, so neither panel has a loading, error or empty state.
+ * these once it holds a job, so none of them has a loading, error or empty state
+ * for the lookup itself. (TuningResultsPanel's own states are about the job's
+ * assets, not the job.)
  *
  * The scope travels with the job: anything fetched *about* the job has to use the
  * same one, or an admin who resolved another user's job then 403s on its logs and
