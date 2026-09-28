@@ -145,7 +145,9 @@ class TestBuildRunTargetsQueueCancel:
 
     @pytest.mark.asyncio
     async def test_cancel_not_swallowed_when_event_arrives_same_tick(self) -> None:
-        """On 3.11 wait_for(q.get()) drops a same-tick cancel (gh-86296)."""
+        """On 3.11 wait_for(q.get()) drops a same-tick cancel (gh-86296).
+
+        Only discriminates on 3.11; 3.12's wait_for is already cancel-safe."""
         from gbserver.build.buildrun import BuildRun
 
         build_run = BuildRun.__new__(BuildRun)
@@ -167,3 +169,4 @@ class TestBuildRunTargetsQueueCancel:
             await asyncio.wait_for(task, timeout=5)
         for t in build_run.tasks:
             t.cancel()
+        await asyncio.gather(*build_run.tasks, return_exceptions=True)
