@@ -4,11 +4,11 @@ import type { TunedModel, TuningAsset } from '@granite-build/ui-core/types'
 
 export type TunedModelCheck = { ok: true } | { ok: false; reason: string; retryable: boolean }
 
-const ADAPTER_REASON = 'This output is a LoRA/PEFT adapter; only full-weight models can be tuned further.'
-const LEGACY_REASON = "This model's output predates model-at-root packaging and can't be used as a base."
-const BUILD_FAILED_REASON = "This job's build did not succeed."
-const MISSING_REPO_REASON = "This model's repository no longer exists."
-const UNREACHABLE_REASON = "Couldn't reach HuggingFace to verify this model."
+const ADAPTER_REASON = 'This tuning produced a LoRA adapter, not full model weights. Select a full-weight model.'
+const LEGACY_REASON = 'This model predates the current output format and cannot be loaded as a base model.'
+const BUILD_FAILED_REASON = 'The tuning job for this model did not succeed.'
+const MISSING_REPO_REASON = 'The repository for this model no longer exists. It may have been deleted or renamed.'
+const UNREACHABLE_REASON = 'Hugging Face could not be reached to verify this model. Retry, or try again later.'
 
 /** ComboBox label: the experiment name alone; the repo id stands in when a job has none. */
 export function tunedModelLabel(m: TunedModel): string {
@@ -34,13 +34,13 @@ export function tunedModelLabels(models: TunedModel[]): Map<string, string> {
   )
 }
 
-/** What the picked model is, shown below the ComboBox: base model, tuning kind, repo id. */
+/** What the picked model is, shown below the ComboBox: base model, tuning method, repository. */
 export function tunedModelDetails(m: TunedModel): { label: string; value: string }[] {
   const kind = m.rl_tuner_type && m.rl_tuner_type !== 'none' ? m.rl_tuner_type : m.tuning_type
   return [
     { label: 'Base model', value: m.base_model },
-    { label: 'Tuning kind', value: kind ?? '' },
-    { label: 'Repo id', value: m.repo_id },
+    { label: 'Tuning method', value: kind?.toUpperCase() ?? '' },
+    { label: 'Repository', value: m.repo_id },
   ].filter((d) => d.value)
 }
 

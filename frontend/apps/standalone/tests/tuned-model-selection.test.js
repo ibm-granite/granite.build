@@ -54,7 +54,7 @@ describe('tunedModelCheckFailure', () => {
   it('reports a missing repository for a 404, without offering a retry', () => {
     const result = tunedModelCheckFailure(404)
 
-    assert.match(result.reason, /repository no longer exists/)
+    assert.match(result.reason, /no longer exists/)
     assert.equal(result.retryable, false)
   })
 
@@ -99,24 +99,24 @@ describe('tunedModelDetails', () => {
     user: 'u',
   }
 
-  it('lists the base model, tuning kind and repo id, in that order', () => {
+  it('lists the base model, tuning method and repository, in that order', () => {
     assert.deepEqual(tunedModelDetails(base), [
       { label: 'Base model', value: 'ibm-granite/granite-4.0-h-micro' },
-      { label: 'Tuning kind', value: 'sft' },
-      { label: 'Repo id', value: 'ibm-research/autotunex_aaaa0001' },
+      { label: 'Tuning method', value: 'SFT' },
+      { label: 'Repository', value: 'ibm-research/autotunex_aaaa0001' },
     ])
   })
 
-  it('prefers the RL tuner as the tuning kind', () => {
+  it('prefers the RL tuner as the tuning method', () => {
     const kind = tunedModelDetails({ ...base, tuning_type: 'none', rl_tuner_type: 'grpo' })[1]
 
-    assert.deepEqual(kind, { label: 'Tuning kind', value: 'grpo' })
+    assert.deepEqual(kind, { label: 'Tuning method', value: 'GRPO' })
   })
 
-  it('omits the tuning kind when the job recorded none', () => {
+  it('omits the tuning method when the job recorded none', () => {
     const labels = tunedModelDetails({ ...base, tuning_type: null }).map((d) => d.label)
 
-    assert.deepEqual(labels, ['Base model', 'Repo id'])
+    assert.deepEqual(labels, ['Base model', 'Repository'])
   })
 })
 

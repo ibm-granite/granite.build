@@ -231,10 +231,21 @@
   min-width: 0;
 }
 
+.buttonSpacer {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+// Carbon's InlineNotification resets its margin to 0; the compound selector
+// outranks it so the notification clears the details list above.
+.tunedNotification:global(.cds--inline-notification) {
+  margin-top: 1rem;
+}
+
 .tunedModelDetails {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 0.25rem 1rem;
+  gap: 0.5rem 1.5rem;
   margin: 0.75rem 0 0;
   font-size: 0.8125rem;
 

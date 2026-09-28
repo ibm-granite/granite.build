@@ -501,11 +501,12 @@ export function Step0GetStarted({
                         {tunedListStatus === 'error' && (
                           <>
                             <InlineNotification
+                              className={styles.tunedNotification}
                               kind="error"
                               lowContrast
                               hideCloseButton
-                              title="Couldn't load your tuned models"
-                              subtitle="Check your connection and try again."
+                              title="Unable to load tuned models"
+                              subtitle="The list of tuned models could not be retrieved. Check your connection and retry."
                             />
                             <Button kind="ghost" size="sm" onClick={() => fetchTunedModels(tunedQuery)}>
                               Retry
@@ -513,14 +514,15 @@ export function Step0GetStarted({
                           </>
                         )}
                         {tunedCheck === 'checking' && (
-                          <InlineLoading description="Checking this model can be tuned further..." />
+                          <InlineLoading description="Verifying model compatibility..." />
                         )}
                         {typeof tunedCheck === 'object' && !tunedCheck.ok && (
                           <InlineNotification
+                            className={styles.tunedNotification}
                             kind="error"
                             lowContrast
                             hideCloseButton
-                            title="Can't use this model"
+                            title="Model not available as a base"
                             subtitle={tunedCheck.reason}
                           />
                         )}
@@ -557,6 +559,21 @@ export function Step0GetStarted({
                         if (modelCardStatus !== 'ready' && modelCardStatus !== 'loading') fetchModelCard(selectedModel)
                         setShowModelCardModal(true)
                       }}
+                    >
+                      View details
+                    </Button>
+                  )}
+                  {modelSource === 'tuned_model' && (
+                    // Invisible twin of the View details button: reserves the same
+                    // slot so the tuned-model dropdown matches the HF search box width.
+                    <Button
+                      kind="ghost"
+                      size="md"
+                      renderIcon={View}
+                      hasIconOnly={false}
+                      className={styles.buttonSpacer}
+                      aria-hidden="true"
+                      tabIndex={-1}
                     >
                       View details
                     </Button>
