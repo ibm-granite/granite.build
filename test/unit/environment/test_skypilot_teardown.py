@@ -143,6 +143,45 @@ class TestSkypilotTeardown:
         cluster_name = mock_sky.launch.call_args.kwargs["cluster_name"]
         assert cluster_name.startswith("gb-9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff-train-")
 
+    @pytest.mark.asyncio
+    async def test_cleanup_vm_is_floored_to_a_small_instance(self):
+        # The throwaway teardown VM only mounts the shared FS and rm's the per-run
+        # workdir, so it must be floored to a small instance. Without a cpus floor
+        # SkyPilot falls back to its oversized default (e.g. m6i.2xlarge, 8 vCPU),
+        # which is wasteful for an `rm`. See issue #425.
+        event_q = asyncio.Queue()
+        config = EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": "k8s", "shared_workdir": "/shared"},
+        )
+        env = Skypilot(event_q=event_q, environment_config=config)
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        await env.setup_skypilot(
+            setup_id,
+            runmetadata=EntityRunMetadata(
+                build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+                target_name="train",
+                targetrun_id="run-1",
+            ),
+        )
+
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-td")
+        mock_sky.stream_and_get = MagicMock(return_value=None)
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await env.teardown_skypilot(setup_id)
+
+        res_kwargs = mock_sky.Resources.call_args.kwargs
+        assert res_kwargs.get("cpus") == "2+", (
+            "teardown cleanup VM must pin a small cpus floor, got: " f"{res_kwargs!r}"
+        )
+
 
 class TestMonitorTreatsTeardownAsSuccess:
     """A monitor whose cluster was intentionally torn down must NOT raise.
