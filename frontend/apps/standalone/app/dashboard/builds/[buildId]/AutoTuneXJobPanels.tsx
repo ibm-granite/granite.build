@@ -3,6 +3,7 @@
 import type { JobDetail } from '@granite-build/ui-core/types'
 import { TrialsTable } from '@granite-build/ui-core/components/autotunex/trials/TrialsTable'
 import { TuningLogViewer } from '@granite-build/ui-core/components/autotunex/tunings/TuningLogViewer'
+import { TuningResultsPanel } from '@granite-build/ui-core/components/autotunex/tunings/TuningResultsPanel'
 
 /**
  * Trials & Logs for the AutoTuneX tuning job linked to a build, mirroring the
@@ -32,6 +33,16 @@ export function AutoTuneXLogsPanel({ job, scope }: { job: JobDetail; scope: 'own
   return (
     <div style={{ padding: '1rem 1.5rem' }}>
       <TuningLogViewer jobId={job.id} status={job.status} scope={scope} />
+    </div>
+  )
+}
+
+// No `scope` prop, for the same reason as AutoTuneXTrialsPanel: TuningResultsPanel
+// derives the identical scope from the same cached admin check.
+export function AutoTuneXResultsPanel({ job }: { job: JobDetail }) {
+  return (
+    <div style={{ padding: '1rem 1.5rem' }}>
+      <TuningResultsPanel jobId={job.id} jobStatus={job.status} />
     </div>
   )
 }

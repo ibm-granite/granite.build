@@ -141,3 +141,48 @@ describe('the tuning detail page reads the build id', () => {
     assert.ok(!getJob[0].includes('shape=lean'), 'getJob should not request the lean shape')
   })
 })
+
+describe('the Results tab on the build page', () => {
+  it('AutoTuneXResultsPanel reuses the tuning page\'s TuningResultsPanel', () => {
+    const panels = stripComments(read(BUILD_PAGE, 'AutoTuneXJobPanels.tsx'))
+    assert.ok(panels, 'AutoTuneXJobPanels.tsx should exist')
+    assert.match(panels, /export function AutoTuneXResultsPanel\(/, 'AutoTuneXResultsPanel should be exported')
+    assert.match(
+      panels,
+      /<TuningResultsPanel\s+jobId=\{job\.id\}\s+jobStatus=\{job\.status\}\s*\/>/,
+      'the build page should render the same Results panel as the tuning page, not a copy',
+    )
+  })
+
+  it('the Results tab is gated on a completed tuning job', () => {
+    const details = stripComments(read(BUILD_PAGE, 'BuildDetails.tsx'))
+    assert.ok(details, 'BuildDetails.tsx should exist')
+    assert.match(
+      details,
+      /const resultsJob = tuningJob\?\.status === 'completed' \? tuningJob : null/,
+      'results only exist once the tuning job completes',
+    )
+    assert.match(details, /<Tab style=\{\{ display: resultsHide \}\}>Results<\/Tab>/, 'the tab should hide until then')
+    // Carbon mounts every TabPanel, so an unguarded panel would request assets on
+    // every build page.
+    assert.match(
+      details,
+      /\{resultsJob && <AutoTuneXResultsPanel job=\{resultsJob\} \/>\}/,
+      'the panel should only mount for a completed job',
+    )
+  })
+
+  it('the Results tab and its panel sit in the same position', () => {
+    // Carbon pairs tabs with panels by index. A Results tab listed after Tuning
+    // Logs with its panel listed before would open the wrong pane.
+    const details = stripComments(read(BUILD_PAGE, 'BuildDetails.tsx'))
+    assert.ok(details, 'BuildDetails.tsx should exist')
+    const logsTab = details.indexOf('>Tuning Logs</Tab>')
+    const resultsTab = details.indexOf('>Results</Tab>')
+    const logsPanel = details.indexOf('<AutoTuneXLogsPanel')
+    const resultsPanel = details.indexOf('<AutoTuneXResultsPanel')
+    assert.ok(logsTab > -1 && resultsTab > -1 && logsPanel > -1 && resultsPanel > -1, 'all four markers should exist')
+    assert.ok(resultsTab > logsTab, 'the Results tab should come after Tuning Logs')
+    assert.ok(resultsPanel > logsPanel, 'the Results panel should come after the Tuning Logs panel')
+  })
+})

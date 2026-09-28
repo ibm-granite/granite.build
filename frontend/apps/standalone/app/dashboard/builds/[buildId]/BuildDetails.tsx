@@ -16,7 +16,7 @@ import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import type { Build, BuildEvent, BuildStatusDetail, BuildTargetRun } from '@granite-build/ui-core/types'
 import { DetailsPanel } from './DetailsPanel'
 import { AutoTuneXPanel } from './AutoTuneXPanel'
-import { AutoTuneXTrialsPanel, AutoTuneXLogsPanel } from './AutoTuneXJobPanels'
+import { AutoTuneXTrialsPanel, AutoTuneXLogsPanel, AutoTuneXResultsPanel } from './AutoTuneXJobPanels'
 import { useLinkedTuningJob } from './useLinkedTuningJob'
 import { LogsPanel } from './LogsPanel'
 import { TargetsPanel } from '@granite-build/ui-core/components/TargetsPanel'
@@ -58,6 +58,11 @@ export function BuildDetails({
   // deployed, or no access) hides all of this silently.
   const { job: tuningJob, scope: tuningScope } = useLinkedTuningJob(buildId)
   const tuningHide = tuningJob ? undefined : 'none'
+  // Output assets only exist once the tuning job completes, so the Results tab
+  // waits for that. useLinkedTuningJob keeps polling a running job, so the tab
+  // appears on an open page when the run finishes.
+  const resultsJob = tuningJob?.status === 'completed' ? tuningJob : null
+  const resultsHide = resultsJob ? undefined : 'none'
 
 
   // Fetch build archive to extract planned (not-yet-run) targets from the definition
@@ -109,6 +114,7 @@ export function BuildDetails({
             <Tab>Lineage</Tab>
             <Tab style={{ display: tuningHide }}>Hyperparameters</Tab>
             <Tab style={{ display: tuningHide }}>Tuning Logs</Tab>
+            <Tab style={{ display: resultsHide }}>Results</Tab>
           </TabListVertical>
           <TabPanels>
             <TabPanel style={{ overflowY: 'auto', height: '100%' }}>
@@ -150,6 +156,9 @@ export function BuildDetails({
             </TabPanel>
             <TabPanel style={{ display: tuningHide, overflowY: 'auto', height: '100%' }}>
               {tuningJob && <AutoTuneXLogsPanel job={tuningJob} scope={tuningScope} />}
+            </TabPanel>
+            <TabPanel style={{ display: resultsHide, overflowY: 'auto', height: '100%' }}>
+              {resultsJob && <AutoTuneXResultsPanel job={resultsJob} />}
             </TabPanel>
           </TabPanels>
         </TabsVertical>
