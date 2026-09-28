@@ -70,9 +70,11 @@ the directory returned by ``_get_yaml_spec_dir`` below.
 
 import os
 from pathlib import Path
+from typing import Optional, Tuple
 
 import pytest
 import yaml
+from libgbtest.aws_efs_noleak import list_gb_ephemeral, reap_leaked
 from libgbtest.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,
@@ -124,6 +126,45 @@ def _fixture_ships_placeholder_efs() -> bool:
         return True
     efs = (((data.get("config") or {}).get("shared_filesystem") or {}).get("efs")) or {}
     return efs.get("file_system_id", _PLACEHOLDER_EFS_FS_ID) == _PLACEHOLDER_EFS_FS_ID
+
+
+# The committed ephemeral fixture Space's aws-ephemeral environment; read (cloud-
+# free) to drive the no-leak check's boto3 session at the SAME region/profile the
+# build provisions against.
+_EPHEMERAL_ENV_YAML = (
+    get_test_data_dir_for(__file__)
+    / "ephemeral-efs"
+    / "space"
+    / "environments"
+    / "skypilot"
+    / "aws-ephemeral"
+    / "environment.yaml"
+)
+
+
+def _ephemeral_efs_env() -> Tuple[Optional[str], Optional[str]]:
+    """Return ``(region, aws_profile)`` for the ephemeral fixture's EFS mount.
+
+    Reads the committed environment.yaml (``shared_filesystem`` is a list; find
+    the ``provision: ephemeral`` mount) so the no-leak boto3 session targets the
+    same region and AWS profile the build uses. Profile falls back to
+    ``$AWS_PROFILE``.
+    """
+    data = yaml.safe_load(_EPHEMERAL_ENV_YAML.read_text(encoding="utf-8")) or {}
+    config = data.get("config") or {}
+    sfs = config.get("shared_filesystem")
+    mounts = sfs if isinstance(sfs, list) else [sfs] if sfs else []
+    region = None
+    for m in mounts:
+        efs = (m or {}).get("efs") or {}
+        if efs.get("provision") == "ephemeral":
+            region = efs.get("region")
+            break
+    profile = (
+        (((config.get("cloud_config") or {}).get("workspaces") or {}).get("default"))
+        or {}
+    ).get("aws", {}).get("profile") or os.environ.get("AWS_PROFILE")
+    return region, profile
 
 
 # Real-infra build test (SkyPilot provisions EC2 instances) — only run in the
@@ -200,14 +241,18 @@ class TestSkypilotAwsEphemeralEfs(AbstractYamlBuildRunnerTest):
     tests) there is no placeholder-EFS skip, and no HF token is needed (pure
     command I/O).
 
-    **No-leak.** Teardown deprovisions the filesystem; the deprovision path is
-    unit-tested in ``test/unit/environment/test_skypilot_teardown.py``
-    (``TestTeardownDeprovisionsEphemeral``), and a deprovision failure logs a
-    WARNING naming the orphan ``fsid``. On a real run, confirm nothing leaked by
-    querying the ``gb-ephemeral=true`` tag
-    (``aws efs describe-file-systems`` + ``list-tags-for-resource``); an automated
-    in-test boto3 no-leak assertion and the 2-EFS multi-FS smoke are deferred (see
-    the follow-up noted in the design's non-goals).
+    **No-leak.** ``test_runner`` is overridden to assert, over boto3, that the
+    build's teardown left nothing behind: it snapshots the ``gb-ephemeral=true``
+    EFS filesystems + NFS security groups in the region BEFORE the build, runs it
+    to SUCCESS (setup provisions, teardown deprovisions), then diffs AFTER. Any
+    net-new resource is a leak; the assertion best-effort reaps it (so the failing
+    test does not itself leave billable AWS resources) and then fails naming the
+    ``fsid``/``sg``. The before/after diff is reliable because the AWS build tests
+    share one ``xdist_group`` (serialized, no concurrent ephemeral run). The
+    deprovision path itself is also unit-tested in
+    ``test/unit/environment/test_skypilot_teardown.py`` and the no-leak helpers in
+    ``test/unit/environment/test_ephemeral_efs_noleak.py``. (A 2-EFS multi-FS smoke
+    remains deferred.)
 
     Gated like the BYO tests (``extended`` + AWS credentials; auto-skips in CI and
     without ``sky check aws``). Run it with ``AWS_PROFILE=gb-skypilot`` and
@@ -217,3 +262,34 @@ class TestSkypilotAwsEphemeralEfs(AbstractYamlBuildRunnerTest):
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
         return get_test_data_dir_for(__file__) / "ephemeral-efs" / "bare"
+
+    def test_runner(self):
+        """Run the producer->consumer build and assert nothing leaked afterward.
+
+        Wraps the inherited real build with a before/after boto3 tag diff so a
+        regression in the ephemeral EFS teardown/rollback surfaces as a test
+        failure rather than silent billable orphans.
+        """
+        boto3 = pytest.importorskip("boto3")
+        region, profile = _ephemeral_efs_env()
+        assert region, f"no ephemeral efs region in {_EPHEMERAL_ENV_YAML}"
+        session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+
+        before_fs, before_sg = list_gb_ephemeral(session, region)
+        super().test_runner()  # provisions, runs to SUCCESS, then deprovisions
+        after_fs, after_sg = list_gb_ephemeral(session, region)
+
+        leaked_fs = after_fs - before_fs
+        leaked_sg = after_sg - before_sg
+        if leaked_fs or leaked_sg:
+            reap_failures = reap_leaked(session, region, leaked_fs, leaked_sg)
+            reap_note = (
+                "reaped"
+                if not reap_failures
+                else "reap incomplete: " + "; ".join(reap_failures)
+            )
+            pytest.fail(
+                "ephemeral EFS leaked after teardown in "
+                f"{region}: filesystems={sorted(leaked_fs)} "
+                f"security_groups={sorted(leaked_sg)} ({reap_note})"
+            )
