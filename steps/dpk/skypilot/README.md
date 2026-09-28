@@ -175,10 +175,15 @@ backend is reachable:
 > build.yaml). Nothing exercises a two-target `env://` handoff end to end now; restore the
 > two-target form from git history if a handoff regression is ever suspected.
 
-> **Image mode has no cluster coverage either**, because the local Docker SLURM cluster has no
-> Pyxis SPANK plugin and so cannot run container images at all. `dpk_image` is exercised only
-> by render tests until the local cluster gains Pyxis or a future *image-mode* aws
-> fixture covers it (the current aws fixtures are bare-node).
+> **Image mode is covered only on BlueVela**, not by `make test`: the local Docker SLURM
+> cluster has no Pyxis SPANK plugin and so cannot run container images at all, and the
+> current aws fixtures are bare-node. The IBM-infra build test
+> `test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_dpk_tok_image.py` runs
+> `tokenization2arrow` with `validate: true` from a prebaked image on BlueVela SLURM; the
+> Dockerfile for that image sits beside its build.yaml. An image for this step must
+> provide **public** DPK (`dpk_<transform>.runtime`), not IBM-internal DPK, whose module
+> names differ. Its sibling `test_dpk_pii.py` covers the bare-node path on the same
+> cluster.
 
 > Container images require the Pyxis SPANK plugin on SLURM/LSF, which the local Docker
 > SLURM cluster does not have — so the slurm fixtures leave `dpk_image` empty and run on the
