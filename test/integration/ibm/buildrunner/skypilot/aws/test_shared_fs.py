@@ -126,10 +126,10 @@ def _fixture_ships_placeholder_efs() -> bool:
     return efs.get("file_system_id", _PLACEHOLDER_EFS_FS_ID) == _PLACEHOLDER_EFS_FS_ID
 
 
-# Real-infra build test (SkyPilot provisions EC2 instances against a BYO EFS) —
-# only run in the extended suite (make extended-tests), and only once an operator
-# has pointed the fixture at a real EFS. Shares the same xdist group as the other
+# Real-infra build test (SkyPilot provisions EC2 instances) — only run in the
+# extended suite (make extended-tests). Shares the same xdist group as the other
 # AWS tests so concurrent AWS provisions don't race on SkyPilot's local state.
+# These marks apply to EVERY test in the module (BYO and ephemeral alike).
 pytestmark = [
     extended_testing_only,
     pytest.mark.xdist_group(name="buildtest_aws"),
@@ -139,26 +139,31 @@ pytestmark = [
         "AWS_SECRET_ACCESS_KEY or provide ~/.aws/credentials); SkyPilot cannot "
         "provision an EC2 instance. Also requires `sky check aws` to pass.",
     ),
-    pytest.mark.skipif(
-        _fixture_ships_placeholder_efs(),
-        reason=(
-            "fixture Space still ships the placeholder EFS id "
-            f"({_PLACEHOLDER_EFS_FS_ID}); set shared_filesystem.efs "
-            f"file_system_id/region in {_ENV_YAML} to a validated BYO EFS to run "
-            "(see docs/environments/skypilot-aws.md)."
-        ),
-    ),
-    pytest.mark.skipif(
-        not _hf_token_available(),
-        reason=(
-            "no HF token in the environment (set HF_TOKEN or "
-            "HUGGING_FACE_HUB_TOKEN with write access to the hf:// output "
-            "namespace); the hf:// input is pulled and the output is pushed."
-        ),
-    ),
 ]
 
+# BYO-only gates (the ephemeral test references no BYO EFS id and needs no HF
+# token, so these must NOT gate it — they decorate the two BYO classes instead).
+_skip_placeholder_efs = pytest.mark.skipif(
+    _fixture_ships_placeholder_efs(),
+    reason=(
+        "fixture Space still ships the placeholder EFS id "
+        f"({_PLACEHOLDER_EFS_FS_ID}); set shared_filesystem.efs "
+        f"file_system_id/region in {_ENV_YAML} to a validated BYO EFS to run "
+        "(see docs/environments/skypilot-aws.md)."
+    ),
+)
+_skip_no_hf_token = pytest.mark.skipif(
+    not _hf_token_available(),
+    reason=(
+        "no HF token in the environment (set HF_TOKEN or "
+        "HUGGING_FACE_HUB_TOKEN with write access to the hf:// output "
+        "namespace); the hf:// input is pulled and the output is pushed."
+    ),
+)
 
+
+@_skip_placeholder_efs
+@_skip_no_hf_token
 class TestSkypilotAwsSharedFsBare(AbstractYamlBuildRunnerTest):
     """Bare EC2: the command step verifies the hf:// input the hidden hfpull step
     cached onto EFS (on a separate instance) is present, reading the mount on the
@@ -169,6 +174,8 @@ class TestSkypilotAwsSharedFsBare(AbstractYamlBuildRunnerTest):
         return get_test_data_dir_for(__file__) / "shared-fs" / "bare"
 
 
+@_skip_placeholder_efs
+@_skip_no_hf_token
 class TestSkypilotAwsSharedFsContainerized(AbstractYamlBuildRunnerTest):
     """Containerized: the same hfpull -> command -> hfpush flow, but the command
     runs inside the container and reads the hf:// input over the in-container NFS
@@ -177,3 +184,36 @@ class TestSkypilotAwsSharedFsContainerized(AbstractYamlBuildRunnerTest):
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
         return get_test_data_dir_for(__file__) / "shared-fs" / "containerized"
+
+
+class TestSkypilotAwsEphemeralEfs(AbstractYamlBuildRunnerTest):
+    """Ephemeral auto-provisioned EFS (#391), producer -> consumer across instances.
+
+    Unlike the BYO tests above, the ``aws-ephemeral`` environment's
+    ``shared_filesystem`` sets ``provision: ephemeral``, so gbserver CREATES the EFS
+    at target-run setup (boto3: filesystem + a mount target per subnet + an NFS
+    security group), mounts it on every worker, and DESTROYS it at teardown. The
+    2-step ``command`` build's producer writes ``probe.txt`` into the per-run
+    ``$GB_BUILD_WORKDIR`` and the consumer -- on a SEPARATE EC2 instance -- reads it
+    back under ``set -eu``; SUCCESS proves the auto-provisioned EFS carried state
+    across instances. No BYO ``file_system_id`` is referenced, so (unlike the BYO
+    tests) there is no placeholder-EFS skip, and no HF token is needed (pure
+    command I/O).
+
+    **No-leak.** Teardown deprovisions the filesystem; the deprovision path is
+    unit-tested in ``test/unit/environment/test_skypilot_teardown.py``
+    (``TestTeardownDeprovisionsEphemeral``), and a deprovision failure logs a
+    WARNING naming the orphan ``fsid``. On a real run, confirm nothing leaked by
+    querying the ``gb-ephemeral=true`` tag
+    (``aws efs describe-file-systems`` + ``list-tags-for-resource``); an automated
+    in-test boto3 no-leak assertion and the 2-EFS multi-FS smoke are deferred (see
+    the follow-up noted in the design's non-goals).
+
+    Gated like the BYO tests (``extended`` + AWS credentials; auto-skips in CI and
+    without ``sky check aws``). Run it with ``AWS_PROFILE=gb-skypilot`` and
+    ``PYTEST_ADDOPTS=-s``.
+    """
+
+    def _get_yaml_spec_dir(self) -> Path:
+        """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
+        return get_test_data_dir_for(__file__) / "ephemeral-efs" / "bare"

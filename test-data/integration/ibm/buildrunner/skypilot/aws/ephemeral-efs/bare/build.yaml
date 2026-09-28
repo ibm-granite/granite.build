@@ -1,0 +1,54 @@
+granite.build:
+  name: skypilot-aws-ephemeral-efs-probe
+  # Ephemeral EFS (#391) analog of the BYO shared-fs bare test. The environment's
+  # shared_filesystem uses `provision: ephemeral`, so gbserver CREATES an EFS at
+  # target-run setup, mounts it on every worker, and DESTROYS it at teardown — no
+  # pre-provisioned filesystem is referenced. Two `command` steps run in sequence,
+  # each on its OWN EC2 instance: the producer writes probe.txt into the per-run
+  # $GB_BUILD_WORKDIR (relative, since shared_filesystem cd's every step there),
+  # the consumer — on a SEPARATE instance — reads it back. Both run under `set -eu`
+  # so a missing/mismatched file fails the build; reaching SUCCESS proves the
+  # auto-provisioned EFS carried state across instances. Teardown then deprovisions
+  # the filesystem (verify no leak by the gb-ephemeral=true tag; see
+  # docs/environments/skypilot-aws.md).
+  targets:
+    ephemeral-efs-probe:
+      # The aws-ephemeral environment (shared_filesystem efs provision: ephemeral)
+      # carried by the committed Space at ../space.
+      environment_uri: space://environments/skypilot/aws-ephemeral
+      steps:
+        # Producer: writes a probe file to the per-run workdir on the ephemeral EFS.
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              image: ""  # bare EC2 host; reads/writes the EFS mount directly
+              command: >-
+                set -eu;
+                echo "producer on $(hostname) cwd=$(pwd)";
+                echo "gb-ephemeral-probe" > probe.txt;
+                echo "wrote probe.txt onto the ephemeral EFS per-run workdir"
+            launcher_config:
+              resources:
+                # Pin the EFS region (gbserver provisions the ephemeral EFS + mount
+                # targets in us-east-1; launches must land there to reach them).
+                infra: "aws/us-east-1"
+                instance_type: t3.small
+                disk_size: 40
+        # Consumer: a SEPARATE instance reads the producer's file back over EFS.
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              image: ""
+              command: >-
+                set -eu;
+                echo "consumer on $(hostname) cwd=$(pwd)";
+                test -e probe.txt;
+                grep -q gb-ephemeral-probe probe.txt;
+                echo "verified probe.txt from a separate instance over the ephemeral EFS"
+            launcher_config:
+              resources:
+                infra: "aws/us-east-1"
+                instance_type: t3.small
+                disk_size: 40
