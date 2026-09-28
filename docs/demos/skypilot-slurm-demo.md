@@ -56,10 +56,10 @@ export AWS_ACCESS_KEY_ID=gbadmin
 export AWS_SECRET_ACCESS_KEY=gbadmin
 
 # Fine-tuning checkpoint
-aws --endpoint-url http://localhost:9000 s3 ls s3://gb-checkpoints/outputs/trl-finetune/ --recursive
+aws --endpoint-url "http://localhost:${GB_S3_PORT:-9000}" s3 ls s3://gb-checkpoints/outputs/trl-finetune/ --recursive
 
 # Evaluation results
-aws --endpoint-url http://localhost:9000 s3 ls s3://gb-checkpoints/outputs/unitxt-eval/ --recursive
+aws --endpoint-url "http://localhost:${GB_S3_PORT:-9000}" s3 ls s3://gb-checkpoints/outputs/unitxt-eval/ --recursive
 ```
 
 ## Teardown

@@ -163,7 +163,7 @@ GB_S3_PORT=9000 bash scripts/s3/setup-s3.sh
 ```bash
 export AWS_ACCESS_KEY_ID=gbadmin
 export AWS_SECRET_ACCESS_KEY=gbadmin
-export AWS_ENDPOINT_URL=http://localhost:9000
+export AWS_ENDPOINT_URL="http://localhost:${GB_S3_PORT:-9000}"
 
 # List buckets
 aws s3 ls
@@ -222,6 +222,9 @@ SLURM_SSH_PORT=2223 make slurm-setup
 GB_S3_PORT=9010 make s3-setup
 ```
 
+`GB_S3_PORT` remaps only the host port; SLURM jobs still reach the store at `gb-s3:9000`.
+Export it in the shell running `demo-slurm.sh` and the verify commands so they use it too.
+
 ### GPU not detected
 
 1. Verify `nvidia-smi` works on the host
@@ -256,7 +259,7 @@ Bucket creation runs `aws s3 mb` from the host. Check that the AWS CLI is on `PA
 (`source .venv/bin/activate`) and that the store is healthy:
 
 ```bash
-curl -sf http://localhost:9000/healthz && echo OK
+curl -sf "http://localhost:${GB_S3_PORT:-9000}/healthz" && echo OK
 docker logs gb-s3
 ```
 
