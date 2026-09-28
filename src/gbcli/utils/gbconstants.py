@@ -168,7 +168,10 @@ View the list of both unrestricted use and restricted-use models in the project 
 For any help on how to use each option in more details see `gb artifact push --help`. For more information, ask a question in the `#llm-dot-build-users` channel."""
 
 
-WEB_UI_URL = gb_environment_config().web_ui_url
+# Paired with GBSERVER_HOST above: together they retarget the client (both the CLI
+# and GBClient) at an external deployment regardless of GB_ENVIRONMENT. Read at
+# import, so export before the first gbcli import — not just before the call.
+WEB_UI_URL = os.environ.get("GB_WEB_UI_URL", gb_environment_config().web_ui_url)
 
 ARTIFACT_LIST_HEADERS = [
     "UUID",

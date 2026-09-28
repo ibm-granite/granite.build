@@ -61,7 +61,9 @@ granite.build:
               # path outside $GB_BUILD_WORKDIR is NOT cross-node-visible and the
               # push fails with "<path> does not exist". Mirrors 2target.
               command: >-
+                set -e;
                 pwd=$(pwd);
+                test -e {{ bindings.hf_input.binding.path }} || { echo "missing hf input: {{ bindings.hf_input.binding.path }}" >&2; exit 1; };
                 mkdir -p out out2;
                 echo "slurm-run target on bluevela gpu-mid partition";
                 echo "hf input path: {{ bindings.hf_input.binding.path }}";

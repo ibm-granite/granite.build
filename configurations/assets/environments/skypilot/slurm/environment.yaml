@@ -4,6 +4,17 @@ subtype: slurm
 config:
   default_cloud: slurm
   idle_minutes_to_autostop: 0
+  # Optional env-wide SLURM #SBATCH defaults, forwarded verbatim to sbatch. Keys
+  # are directive names without the `--` (time/qos/account/constraint/...);
+  # `time` is SLURM's own format (bare minutes, "4:00:00", or "7-00:00:00") and
+  # must be <= the partition MaxTime. A step's config.launcher_config.sbatch_options
+  # overrides these per key. SkyPilot-managed keys (gres, mem, cpus-per-task,
+  # partition, nodes, ...) are silently dropped — use resources.accelerators /
+  # resources.memory / the infra string instead. SLURM-only (ignored with a
+  # WARNING on aws/k8s/lsf; for LSF use cloud_config.lsf...bsub_options.W). See
+  # docs/environments/skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
+  # sbatch_options:
+  #   time: "4:00:00"
   cluster: slurm-docker
   zone: normal
   shared_workdir: /shared

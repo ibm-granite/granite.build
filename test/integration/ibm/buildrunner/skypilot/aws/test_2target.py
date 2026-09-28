@@ -17,10 +17,9 @@
 `first` runs the generic `command` step to emit an output path and register it as
 artifact `out1`; `second` binds `first.out1` as an input, echoes the bound path,
 and registers its own output `out2`. This exercises cross-target output -> input
-binding over the env_local (env://) assetstore. It is the AWS analog of the
-sibling ``test/integration/ibm/buildrunner/skypilot/bluevela/test_2target.py``:
-bluevela runs on LSF, whereas SkyPilot on AWS provisions a small EC2 instance per
-target (bare command, no container).
+binding over the env_local (env://) assetstore. It is the AWS analog of the LSF
+(bluevela) path: there the targets run on LSF, whereas SkyPilot on AWS provisions
+a small EC2 instance per target (bare command, no container).
 
 ``env://`` (env_local) I/O is a no-op, so the test drives both command steps
 end-to-end without HF/S3 credentials.

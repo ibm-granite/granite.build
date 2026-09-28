@@ -7,6 +7,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Shared launch-mock scaffolding (also used by test_skypilot_sbatch_options.py);
+# kept in libgbtest so it doesn't drift across the SkyPilot test files.
+from libgbtest.environments.skypilot_mocks import (
+    _launch_and_get_resources,
+    _make_env,
+    _mock_sky,
+)
+
 from gbserver.environment.skypilot import (
     Skypilot,
     _is_interactive_auth_stdin_failure,
@@ -37,15 +45,6 @@ def slurm_env():
         },
     )
     return Skypilot(event_q=event_q, environment_config=config)
-
-
-def _mock_sky():
-    mock = MagicMock()
-    mock.Resources = MagicMock(return_value=MagicMock())
-    mock.Task = MagicMock(return_value=MagicMock())
-    mock.launch = MagicMock(return_value="req-slurm")
-    mock.stream_and_get = MagicMock(return_value=(1, MagicMock()))
-    return mock
 
 
 class TestSlurmInfraPath:
@@ -198,39 +197,6 @@ class TestSlurmInfraPath:
 
         call_kwargs = mock_sky.Resources.call_args[1]
         assert call_kwargs["infra"] == "slurm"
-
-
-def _make_env(config: dict) -> Skypilot:
-    """Build a Skypilot environment from a raw env-config dict.
-
-    :param config: the EnvironmentConfig.config payload (default_cloud,
-        cluster, zone, etc.).
-    :returns: a Skypilot instance wired to a fresh event queue.
-    """
-    return Skypilot(
-        event_q=asyncio.Queue(),
-        environment_config=EnvironmentConfig(
-            name="test-slurm", type="Skypilot", config=config
-        ),
-    )
-
-
-async def _launch_and_get_resources(env: Skypilot, launch_id: str, **launch_kwargs):
-    """Launch under mocked sky and return the sky.Resources call kwargs.
-
-    :param env: the Skypilot environment under test.
-    :param launch_id: unique id for this launch (arms the ready event).
-    :param launch_kwargs: forwarded to launch_skypilot (launcher_config, config).
-    :returns: the kwargs dict passed to the mocked sky.Resources constructor.
-    """
-    mock_sky = _mock_sky()
-    with (
-        patch("gbserver.environment.skypilot.sky", mock_sky),
-        patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
-    ):
-        env._get_launch_ready_event(launch_id)
-        await env.launch_skypilot(launch_id=launch_id, **launch_kwargs)
-    return mock_sky.Resources.call_args[1]
 
 
 class TestSlurmEnvConfigPartition:
@@ -793,6 +759,76 @@ class TestProvisionRetry:
                 )
 
         assert mock_sky.stream_and_get.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_generic_network_error_retried_when_step_overrides_cloud(self):
+        """A control-plane blip must be retried based on the cloud actually being
+        provisioned, not the env's ``default_cloud``.
+
+        Regression guard: the classifier was bound to ``self._get_cloud()``, so an
+        env defaulting to k8s running a step that overrides to slurm classified
+        with ``cloud="k8s"``, skipped _TRANSIENT_SSH_ONLY_SUBSTRINGS, and failed
+        the launch on the first blip — defeating this PR's whole mechanism on
+        cloud-overridden launches. Asserted through ``launch_skypilot`` so the
+        wiring is pinned, not just the predicate.
+        """
+        k8s_default_env = Skypilot(
+            event_q=asyncio.Queue(),
+            environment_config=EnvironmentConfig(
+                name="test-k8s-default",
+                type="Skypilot",
+                config={"default_cloud": "k8s", "idle_minutes_to_autostop": 0},
+            ),
+        )
+        assert k8s_default_env._get_cloud() == "k8s", "precondition: env says k8s"
+
+        mock_sky = _mock_sky()
+        mock_sky.stream_and_get.side_effect = [
+            Exception("Connection timed out"),  # generic wording, HPC-only tuple
+            (1, MagicMock()),
+        ]
+        s, h, bmax, batt = self._patches(mock_sky)
+        with s, h, bmax, batt:
+            k8s_default_env._get_launch_ready_event("prov-override")
+            await k8s_default_env.launch_skypilot(
+                launch_id="prov-override",
+                # The step overrides the cloud to slurm.
+                launcher_config={"run": "hostname", "resources": {"cloud": "slurm"}},
+                config={},
+            )
+
+        # Retried (2 attempts) rather than failing on the first blip.
+        assert mock_sky.stream_and_get.call_count == 2
+        # Cluster recorded (exact name is length-capped elsewhere; not asserted here).
+        assert "prov-override" in k8s_default_env._cluster_names
+
+    @pytest.mark.asyncio
+    async def test_generic_network_error_not_retried_on_non_hpc_cloud(self):
+        """The converse: on a genuine k8s launch the same generic wording must NOT
+        be retried, so a persistent misconfig fails fast instead of burning the
+        budget on teardown-per-attempt."""
+        k8s_env = Skypilot(
+            event_q=asyncio.Queue(),
+            environment_config=EnvironmentConfig(
+                name="test-k8s",
+                type="Skypilot",
+                config={"default_cloud": "k8s", "idle_minutes_to_autostop": 0},
+            ),
+        )
+        mock_sky = _mock_sky()
+        mock_sky.stream_and_get.side_effect = Exception("Connection timed out")
+        s, h, bmax, batt = self._patches(mock_sky)
+        with s, h, bmax, batt:
+            k8s_env._get_launch_ready_event("prov-k8s")
+            with pytest.raises(Exception, match="Connection timed out"):
+                await k8s_env.launch_skypilot(
+                    launch_id="prov-k8s",
+                    launcher_config={"run": "hostname", "resources": {}},
+                    config={},
+                )
+
+        assert mock_sky.stream_and_get.call_count == 1
+        assert mock_sky.down.call_count == 0
 
     @pytest.mark.asyncio
     async def test_cleanup_tolerates_cluster_already_gone(self, slurm_env):

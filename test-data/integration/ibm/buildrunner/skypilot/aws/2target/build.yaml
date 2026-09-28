@@ -6,7 +6,7 @@ granite.build:
   # echoes the bound path, then registers its own output `out2`. Exercises
   # cross-target output -> input binding over the env_local (env://) assetstore.
   #
-  # This is the AWS analog of skypilot/bluevela/2target: bluevela runs on LSF
+  # This is the AWS analog of the LSF (bluevela) 2target path: bluevela runs on LSF
   # (a single `cluster: bluevela`), whereas AWS provisions a small EC2 instance
   # per target. `second` depends on `first` (binding), so the two provision
   # sequentially.

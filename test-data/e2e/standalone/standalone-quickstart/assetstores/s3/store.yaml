@@ -1,4 +1,4 @@
-# S3-compatible object storage (AWS S3, MinIO, etc.)
+# S3-compatible object storage (AWS S3, IBM COS, SeaweedFS, etc.)
 # The Cosstore backend handles both s3:// and cos:// URIs.
 #
 # Required secrets (set via environment variables or space secret manager):

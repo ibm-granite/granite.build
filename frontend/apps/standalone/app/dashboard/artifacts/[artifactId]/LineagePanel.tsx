@@ -17,6 +17,7 @@ function artifactTypeToNodeType(artifactType: string): NodeType {
     case 'MODEL':   return 'Model'
     case 'DATASET': return 'Dataset'
     case 'FILESET': return 'Fileset'
+    case 'BUCKET':  return 'Bucket'
     default:        return 'Fileset'
   }
 }
@@ -178,6 +179,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             )}
             <Graph
               ref={graphRef}
+              graphKey={artifact.uuid}
               nodes={nodes}
               links={links}
               allLinks={links}

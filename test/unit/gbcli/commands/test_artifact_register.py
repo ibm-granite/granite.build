@@ -45,7 +45,7 @@ def register_env():
     with (
         patch("gbcli.commands.common_options.is_standalone", return_value=False),
         patch(
-            "gbcli.commands.command_artifact.check_current_and_latest_versions",
+            "gbcli.commands.command_artifact.enforce_version_check",
             return_value=None,
         ),
         patch("gbcli.commands.command_artifact.get_user_token", return_value="tok"),

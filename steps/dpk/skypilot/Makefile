@@ -32,9 +32,9 @@ drop-pycache:
 	@find $(SRC_DIR) -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 
 # Stand up the local infrastructure the slurm build test needs — a Docker SLURM
-# cluster and a MinIO (S3) endpoint — by delegating to the repo-root Makefile
-# targets (which source the repo-root .venv and run the setup scripts). Run once
-# before `make test`; both scripts are idempotent, so re-running is safe.
-# REPO_ROOT is provided by common.mk (the repo root relative to this step dir).
+# cluster — by delegating to the repo-root Makefile target (which sources the
+# repo-root .venv and runs the setup script). Run once before `make test`; the
+# script is idempotent, so re-running is safe. No S3 store: the test's outputs
+# are env://. REPO_ROOT is provided by common.mk (repo root relative to here).
 test-setup:
-	$(MAKE) -C $(REPO_ROOT) slurm-setup minio-setup
+	$(MAKE) -C $(REPO_ROOT) slurm-setup

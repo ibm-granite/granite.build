@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -273,27 +274,52 @@ def get_public_repo_tags(space_org: str, space_name: str) -> Any:
     Always targets public github.com (api.github.com) regardless of the configured
     enterprise domain, and sends no Authorization header. This lets callers query a
     public repo without GitHub credentials or SSH keys.
-    """
-    tags_url = f"https://api.github.com/repos/{space_org}/{space_name}/git/refs/tags"
 
+    Uses the ``/repos/{org}/{repo}/tags`` list endpoint rather than
+    ``/git/refs/tags``: it reports each tag already peeled to its ``commit.sha``, so an
+    *annotated* tag (e.g. a ``min-supported`` created with ``git tag -a``) resolves to
+    the same commit SHA as the ``vX.Y.Z`` tag it points at. ``/git/refs/tags`` instead
+    returns the tag-object SHA for annotated tags, which never matches — silently
+    breaking SHA-based floor resolution.
+
+    Returns tag objects shaped ``{"name": ..., "commit": {"sha": ...}}``. Follows
+    ``Link`` pagination so repos with more than one page of tags are covered. This runs
+    at the top of most commands, so it bounds the wait: no further page is requested once
+    the ``PUBLIC_REPO_TAGS_TIMEOUT_S`` deadline passes, and each request's connect and
+    read phases are each capped at the smaller of the remaining budget and that timeout
+    (``requests`` applies the timeout per phase, so a single hung page cannot exceed
+    roughly 2x the per-request cap — enough to keep a blackholed network from wedging the
+    CLI on a courtesy check).
+    """
+    url: Optional[str] = f"https://api.github.com/repos/{space_org}/{space_name}/tags"
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    # Request the max page size so the caller sees up to 100 tags without paginating.
-    # This runs at the top of most commands, so cap the wait: a blackholed network
-    # must not hang the CLI on a courtesy version check.
     params = {"per_page": 100}
 
-    logger.debug("Fetching public repo tags (unauthenticated) from %s", tags_url)
-    response = requests.get(
-        tags_url, headers=headers, params=params, timeout=PUBLIC_REPO_TAGS_TIMEOUT_S
-    )
-    response.raise_for_status()
-    data_obj = response.json()
-    logger.debug("Public repo tags response: %d tag(s)", len(data_obj))
+    tags: list = []
+    deadline = time.monotonic() + PUBLIC_REPO_TAGS_TIMEOUT_S
+    while url is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Budget spent mid-pagination: return what we have rather than hang or fail.
+            logger.debug("Public repo tags fetch hit time budget; stopping pagination")
+            break
+        # (connect, read) tuple so neither phase can outlast the remaining budget.
+        phase_timeout = min(remaining, PUBLIC_REPO_TAGS_TIMEOUT_S)
+        logger.debug("Fetching public repo tags (unauthenticated) from %s", url)
+        response = requests.get(
+            url, headers=headers, params=params, timeout=(phase_timeout, phase_timeout)
+        )
+        response.raise_for_status()
+        tags.extend(response.json())
+        # After the first request the `next` URL already carries the query params.
+        params = None
+        url = response.links.get("next", {}).get("url")
 
-    return data_obj
+    logger.debug("Public repo tags response: %d tag(s)", len(tags))
+    return tags
 
 
 def run_github_command(command, callback=None, final_command=None):

@@ -207,18 +207,18 @@ for node in slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
 done
 log "sshd started on compute nodes."
 
-# ---- Step 3c: Connect MinIO to slurm-net (if running) ----
-# Allows SLURM containers to reach MinIO at gb-minio:9000 for S3 artifact push.
+# ---- Step 3c: Connect the local S3 store to slurm-net (if running) ----
+# Allows SLURM containers to reach S3 at gb-s3:9000 for artifact push.
 
-if $DOCKER_CMD container inspect gb-minio &>/dev/null 2>&1; then
-    if ! $DOCKER_CMD network inspect slurm-net --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | grep -q gb-minio; then
-        $DOCKER_CMD network connect slurm-net gb-minio
-        log "Connected MinIO (gb-minio) to slurm-net."
+if $DOCKER_CMD container inspect gb-s3 &>/dev/null 2>&1; then
+    if ! $DOCKER_CMD network inspect slurm-net --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | grep -q gb-s3; then
+        $DOCKER_CMD network connect slurm-net gb-s3
+        log "Connected S3 store (gb-s3) to slurm-net."
     else
-        log "MinIO already connected to slurm-net."
+        log "S3 store already connected to slurm-net."
     fi
 else
-    warn "MinIO container (gb-minio) not found. Run: bash scripts/minio/setup-minio.sh"
+    warn "S3 container (gb-s3) not found (only the SLURM demo needs it). Run: make s3-setup"
 fi
 
 # ---- Step 4: Verify SSH connectivity ----

@@ -1,10 +1,10 @@
 granite.build:
   name: skypilot-aws-command-image
   # Single command-step target on AWS EC2 (via SkyPilot) that runs the command
-  # INSIDE a container image. This is the AWS analog of the bluevela
-  # skypilot/bluevela/1step-image fixture: bluevela runs the image through LSF's
-  # enroot, whereas on AWS the skypilot command step renders image_id to
-  # "docker:<image>" and SkyPilot pulls/runs it with Docker on the EC2 instance.
+  # INSIDE a container image. This is the AWS analog of the LSF (bluevela) path:
+  # there the image runs through LSF's enroot, whereas on AWS the skypilot command
+  # step renders image_id to "docker:<image>" and SkyPilot pulls/runs it with
+  # Docker on the EC2 instance.
   # A public registry image (quay.io) is used so no registry auth
   # (GBSERVER_SECRET_SKYPILOT_DOCKER_PASSWORD) is needed.
   #

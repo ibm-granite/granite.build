@@ -30,9 +30,11 @@ from gbserver.types.constants import (
     DEFAULT_DIR_PERMS,
     DEFAULT_LOG_LEVEL,
     ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX,
+    GBSERVER_LOG_RECORD_MAX_CHARS,
 )
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import configure_logging, get_logger
+from gbserver.utils.unwrap_errors import escape_for_one_record
 
 logger = get_logger(__name__)
 
@@ -63,7 +65,12 @@ class GraniteBuildServerCLI(click.Group):
             cmd_name = cmd_name.replace("-", "_")
             mod = importlib.import_module(f"gbserver.commands.command_{cmd_name}")
         except ImportError as e:
-            logger.error("%s", traceback.format_exc())
+            logger.error(
+                "%s",
+                escape_for_one_record(
+                    traceback.format_exc(), GBSERVER_LOG_RECORD_MAX_CHARS
+                ),
+            )
             logger.error(e)
             return None
         return mod.cli

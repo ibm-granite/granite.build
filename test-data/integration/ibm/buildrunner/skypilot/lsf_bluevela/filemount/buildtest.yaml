@@ -1,5 +1,5 @@
 # YAML-driven spec for
-# test/integration/ibm/buildrunner/skypilot/bluevela/test_filemount.py.
+# test/integration/ibm/buildrunner/skypilot/lsf_bluevela/test_filemount.py.
 # The target runs a custom step (space://steps/filemount-check) that copies a
 # directory shipped next to its step.yaml via file_mounts and verifies it is
 # present in the run command, on the BlueVela LSF (Skypilot) path. HF-free

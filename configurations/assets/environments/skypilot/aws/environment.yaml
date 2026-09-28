@@ -33,6 +33,27 @@ config:
       default:
         aws:
           profile: gb-skypilot
+  # Optional: a BYO pre-provisioned EFS filesystem so multi-step data flow works
+  # across the separate EC2 instances SkyPilot allocates per step. Opt-in.
+  # Requires: default_cloud: aws (rejected otherwise — the mount targets and
+  # teardown VM are AWS-only), EFS + mount targets per worker AZ + an SG allowing
+  # NFS 2049, and the EFS root chmod'd 1777 (see docs/environments/skypilot-aws.md).
+  # When shared_filesystem is set, shared_workdir is REQUIRED and must be an
+  # absolute path that is mount_point or a subdir of it (decoupled per #404).
+  # shared_workdir: /mnt/gb-shared/gbroot
+  # shared_filesystem:
+  #   provider: efs
+  #   mount_point: /mnt/gb-shared
+  #   efs:
+  #     file_system_id: fs-0abc123
+  #     region: us-east-1
+  #     tls: true
+  #     # cleanup_zone: us-east-1a   # pin the teardown VM to a mount-target AZ
+  #
+  # When enabling shared_filesystem, ALSO change the hf assetstore below to drop
+  # `cache_path: /tmp/hf_cache` and `inline: true`, so hfpull runs as its own step
+  # and caches to ${shared_workdir}/hf_cache (otherwise it caches instance-locally and
+  # the model never reaches EFS). i.e. replace the hf pull config with `config: {}`.
 assetstores:
   - store_uri: space://assetstores/s3/
     pull:

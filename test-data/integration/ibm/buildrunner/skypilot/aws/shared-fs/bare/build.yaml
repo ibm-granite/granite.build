@@ -1,0 +1,73 @@
+granite.build:
+  name: skypilot-aws-shared-fs-hfpull
+  # AWS/EFS analog of test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/
+  # 1step (which uses a SLURM shared_workdir). A single `command` step with a real
+  # hf:// input: buildrunner auto-queues a hidden hfpull step for the non-env
+  # input, and under shared_filesystem (EFS) that hfpull runs on its OWN EC2
+  # instance and caches the download onto the EFS-backed per-run $GB_BUILD_WORKDIR.
+  # The command step — which SkyPilot places on a DIFFERENT EC2 instance — then
+  # reads that pulled input back over the EFS mount. This exercises the REAL intent
+  # of shared_filesystem: an hfpull (lhpull, etc.) result is available to the
+  # referenced step across instances. `test -e` under `set -eu` fails the build if
+  # the input did not arrive, so reaching SUCCESS proves cross-instance visibility.
+  #
+  # Runs BARE (command_config.image empty): the command runs on the EC2 VM and
+  # reads the EFS mount directly (no container indirection).
+  targets:
+    efs-hfpull-command:
+      # The shared-fs aws environment (shared_filesystem efs block) carried by the
+      # committed Space at ../space; PRODUCES the per-target-run shared_workdir on EFS.
+      environment_uri: space://environments/skypilot/aws-shared-fs
+      inputs:
+        # Real hf:// input — buildrunner queues an hfpull step. Under
+        # shared_filesystem it runs as its own step on a separate instance and
+        # caches the download onto the EFS-backed shared workdir, then binds its
+        # local path. A tiny public model keeps the download fast and needs no read
+        # token.
+        hf_input:
+          uri: hf:///hf-internal-testing/tiny-random-gpt2
+      outputs:
+        # Real hf:// output — buildrunner queues an hfpush step that uploads the
+        # fileset the command registers via the GB_ARTIFACT marker below. hfpush
+        # refuses an empty/missing source, so the command writes a real file.
+        # Pushes to the test account's OWN user namespace (granite-build-test),
+        # not an Enterprise org: per the hf store.yaml, a push to an individual
+        # user namespace skips HF Enterprise resource groups, so this stays
+        # self-contained (no admin-provisioned resource group). Requires the
+        # granite-build-test HF token (write) that the extended suite runs with.
+        hf_output:
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-efs-test-output_{{ binding.path | short_hash }}
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Empty image => run BARE on the EC2 VM; the command reads the EFS
+              # mount directly.
+              image: ""
+              # set -eu: a missing hf input (test -e) fails the step — and thus the
+              # build — so reaching SUCCESS proves the hfpull output landed on EFS
+              # and is readable from this separate instance. The output goes into a
+              # RELATIVE out/ dir: shared_filesystem cd's every step into the same
+              # per-run $GB_BUILD_WORKDIR on EFS, so a relative path written here is
+              # visible to the separate hfpush instance (an absolute path outside
+              # $GB_BUILD_WORKDIR would not be cross-instance-visible).
+              command: >-
+                set -eu;
+                pwd=$(pwd);
+                mkdir -p out;
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                test -e "{{ bindings.hf_input.binding.path }}";
+                echo "verified hf input present on EFS (hfpull ran on a separate instance)";
+                echo '{"artifact": "hf_output", "produced_by": "efs-hfpull-command"}' > out/result.json;
+                echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$pwd/out"
+            launcher_config:
+              resources:
+                # Pin the EFS region (mount targets live in us-east-1); the
+                # shared_filesystem provider also constrains launches to it.
+                infra: "aws/us-east-1"
+                # t3.small = 2 vCPU / 2 GiB (~$0.02/hr): cheapest reliable size.
+                instance_type: t3.small
+                disk_size: 40

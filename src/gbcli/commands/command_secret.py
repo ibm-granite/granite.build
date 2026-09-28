@@ -8,11 +8,13 @@ from tabulate import tabulate
 
 from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
-from gbcli.commands.common_options import common_options
+from gbcli.commands.common_options import (
+    common_options,
+    enforce_version_check,
+)
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.utils import render_plain, render_pretty
-from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("secret")
@@ -43,15 +45,7 @@ def cli(ctx):
 @common_options
 def list(ctx, space, personal, format, skip_version_check, quiet):
     """List secrets"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if personal and space:
         click.echo(
@@ -142,15 +136,7 @@ def list(ctx, space, personal, format, skip_version_check, quiet):
 @common_options
 def get(ctx, secret_name, space, personal, format, skip_version_check, quiet):
     """Get secret"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if personal and space:
         click.echo(
@@ -258,15 +244,7 @@ def create(
     quiet,
 ):
     """Create secret"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if personal and space:
         click.echo(
@@ -388,15 +366,7 @@ def update(
     quiet,
 ):
     """Update secret"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if personal and space:
         click.echo(
@@ -486,15 +456,7 @@ def update(
 @common_options
 def delete(ctx, secret_name, space, personal, format, skip_version_check, quiet):
     """Delete secret"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if personal and space:
         click.echo(

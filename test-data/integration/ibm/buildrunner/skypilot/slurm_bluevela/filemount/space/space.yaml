@@ -1,0 +1,32 @@
+# Test-local space for the Skypilot/BlueVela-SLURM file_mounts build test.
+#
+# Unlike the sibling bluevela-LSF/standalone-slurm filemount spaces (which chain
+# to the local configurations/assets), the `skypilot/slurm/bluevela` environment
+# lives ONLY in the remote gb-test space. So this space:
+#   * carries the test-specific `steps/filemount-check` step in its own tree
+#     (the space's own dir is the first base_uri — see build/space.py — so
+#     `space://steps/filemount-check` resolves here), and
+#   * chains to the remote gb-test space via a `base_uris` git entry, from which
+#     `space://environments/skypilot/slurm/bluevela` and `space://assetstores/hf`
+#     resolve. The builtin `monitors/skypilot` is auto-added to base_uris by
+#     gbserver, so it needs no entry here.
+#
+# secret_manager is `ibmcloud` (matching gb-test) so the env's
+# `IdentityKey: BV_SSH_PRIVATE_KEY` SSH reference resolves — the same secret
+# path the sibling slurm_bluevela 1step/2target tests use when they point
+# space_uri directly at gb-test.
+name: filemount-slurm-bluevela-test
+secret_manager:
+  type: ibmcloud
+  # service_url mirrors gb-test's own space.yaml (a non-secret endpoint; the API
+  # key is supplied out-of-band via GBTEST_SPS_IBMCLOUD_API_KEY — see conftest).
+  # Required so BV_SSH_PRIVATE_KEY resolves for the env's SSH IdentityKey.
+  config:
+    service_url: https://3a634e1e-2591-4a19-baa8-34cf8f12defb.us-east.secrets-manager.appdomain.cloud
+base_uris:
+  # Resolve the bluevela SLURM environment + assetstores/hf from the remote
+  # gb-test space (git base_uris are passed through unchanged by space.py). Pin
+  # to the same ref the sibling slurm_bluevela tests use.
+  - git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
+variables:
+  DEFAULT_ENVIRONMENT: skypilot/slurm/bluevela

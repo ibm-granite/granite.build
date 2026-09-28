@@ -40,6 +40,9 @@ deployments:
       GBSERVER_LINEAGE_PROVIDER: wandb
       GBSERVER_WANDB_BASE_URL: https://ibm.wandb.io
       GBSERVER_WANDB_PROJECT: lineage-tracking
+      # 0 = off: on our slow-banner HPC login nodes the probe starves the control
+      # SSH SkyPilot opens next. Forwarded to each build-runner, which launches.
+      GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S: "0"
     envFromMainSecret:
     - GBSERVER_SQL_USER
     - GBSERVER_SQL_PASSWD

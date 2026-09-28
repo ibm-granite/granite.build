@@ -17,6 +17,7 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
+    enforce_version_check,
     pass_context_and_reject_standalone,
 )
 from gbcli.utils.click_utils import validation_formatting
@@ -57,7 +58,6 @@ from gbcli.utils.utils import (
     render_pretty,
     validate_tags,
 )
-from gbcli.utils.versionutil import check_current_and_latest_versions
 from gbcommon.types.gbenvconfig import is_standalone
 
 logger = logging.getLogger(__name__)
@@ -292,15 +292,7 @@ def init(
     """Create a build definition with the folder structure"""
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if filename is None:
         if build_name is None:
@@ -606,15 +598,8 @@ def start(
             click.echo(resolved, nl=False)
         return
 
-    if not skip_version_check and not is_standalone():
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    if not is_standalone():
+        enforce_version_check(ctx, skip_version_check)
 
     if not quiet:
         click.echo(f"🏁 {PROJECT_NAME} build start")
@@ -869,15 +854,7 @@ def validate(
     """Validate a build. Specify targets to run as arguments. If no target is specified, all targets in build.yaml are executed."""
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if not quiet:
         click.echo(f"🏁 {PROJECT_NAME} build validate")
@@ -1035,15 +1012,7 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     id_format = parse_build_identifier(build_id)
     if id_format not in ["uuid", "url"]:
@@ -1181,15 +1150,7 @@ def restart_build_cmd(ctx, build_id, format, skip_version_check, quiet):
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     id_format = parse_build_identifier(build_id)
     if id_format not in ["uuid", "url"]:
@@ -1262,15 +1223,7 @@ def lineage(ctx, build_id, format, skip_version_check, quiet):
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -1512,15 +1465,7 @@ def list(
     quiet,
 ):
     """List builds"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -1799,15 +1744,7 @@ def status(
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -2072,15 +2009,7 @@ def log(
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if follow and (end_date or sort == "asc" or head or tail or format == "json"):
         click.echo(
@@ -2394,15 +2323,7 @@ def describe(
 
         gb build describe -f template/build.yaml --raw --param ENV=skypilot/aws
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     quiet = True if format == "json" else quiet
 
@@ -2619,15 +2540,7 @@ def diff(ctx, build_id_1, build_id_2, space, format, skip_version_check, quiet):
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -2828,15 +2741,7 @@ def monitor(
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     id_format = parse_build_identifier(build_id)
     if id_format not in ["uuid", "url"]:
@@ -2963,15 +2868,7 @@ def notification(ctx, status, space, format, skip_version_check, quiet):
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if not quiet:
         click.echo(f"{CLIPBOARD_CHAR}{PROJECT_NAME} build notification")
@@ -3087,15 +2984,7 @@ def update(
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     build_client = GBClient.Build(get_user_token())
 

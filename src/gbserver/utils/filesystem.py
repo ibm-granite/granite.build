@@ -31,9 +31,13 @@ from typing import Any, Callable, List, Optional, Union
 
 import yaml
 
-from gbserver.types.constants import DEFAULT_DIR_PERMS
+from gbserver.types.constants import (
+    DEFAULT_DIR_PERMS,
+    GBSERVER_LOG_RECORD_MAX_CHARS,
+)
 from gbserver.utils.logger import get_logger
 from gbserver.utils.template import fill_template, fill_template_in_file
+from gbserver.utils.unwrap_errors import escape_for_one_record
 
 logger = get_logger(__name__)
 
@@ -73,7 +77,12 @@ def sync_or_copy_helper(
                 f"failed to copy asset from '{src}' to '{dest}' cwd: '{cwd}'"
             ) from e
         logger.error("shutil.copy failed, error: %s", e)
-        logger.error("%s", traceback.format_exc())
+        logger.error(
+            "%s",
+            escape_for_one_record(
+                traceback.format_exc(), GBSERVER_LOG_RECORD_MAX_CHARS
+            ),
+        )
     return False
 
 
@@ -98,13 +107,24 @@ def sync_or_copy(
         if result.returncode == 0:
             return True
         logger.error("rsync failed, returncode: %s", result.returncode)
-        logger.error("stdout: %s", result.stdout)
-        logger.error("stderr: %s", result.stderr)
+        logger.error(
+            "stdout: %s",
+            escape_for_one_record(str(result.stdout), GBSERVER_LOG_RECORD_MAX_CHARS),
+        )
+        logger.error(
+            "stderr: %s",
+            escape_for_one_record(str(result.stderr), GBSERVER_LOG_RECORD_MAX_CHARS),
+        )
         if raise_errors:
             raise ValueError(
                 f"failed to rsync asset from '{src}' to '{dest}' cwd: '{cwd}'"
             )
-        logger.error("%s", traceback.format_exc())
+        logger.error(
+            "%s",
+            escape_for_one_record(
+                traceback.format_exc(), GBSERVER_LOG_RECORD_MAX_CHARS
+            ),
+        )
         return False
     except FileNotFoundError as nfe:
         logger.error("rsync may not available, error: %s", nfe)

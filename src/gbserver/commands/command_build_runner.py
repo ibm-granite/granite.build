@@ -43,6 +43,7 @@ from gbserver.types.constants import (
 )
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.types.status import Status
+from gbserver.utils import spawned_groups
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -206,6 +207,18 @@ def run_build_handling_signals(build_runner: BuildRunner) -> None:
     finally:
         signal.signal(signal.SIGINT, prev_int)
         signal.signal(signal.SIGTERM, prev_term)
+        if terminating:
+            # Last resort after a signal: the build's environment reaps its workload
+            # on the normal cancel path, but a wedged teardown can leave the process
+            # group (launched start_new_session, so outside our own group) running
+            # past our exit. Best-effort -- it gives up rather than delaying exit.
+            survivors = spawned_groups.reap_all()
+            if survivors:
+                logger.error(
+                    "%d workload process(es) survived termination reaping: %s",
+                    len(survivors),
+                    survivors,
+                )
 
     # Propagate a build/storage failure so the CLI exits non-zero (a graceful
     # SIGINT/SIGTERM leaves start_and_wait returning normally, so nothing is

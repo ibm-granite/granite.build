@@ -1,11 +1,12 @@
 'use client'
 
 import * as React from 'react'
-import { Button, ComposedModal, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { Button, ComposedModal, IconButton, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import {
   ArrowLeft,
   ArrowRight,
   CenterSquare,
+  Close,
   Launch,
   ZoomFit,
   ZoomIn,
@@ -21,8 +22,29 @@ import { getArtifact } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
+import StepDetailsPanel, { stepDrawerSummary } from './StepDetailsPanel'
+import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
 
-const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending'])
+const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
+
+// Target nodes are keyed `target-${name}`; the details panel needs the name back.
+const TARGET_NODE_PREFIX = 'target-'
+
+const TARGET_NODE_HEIGHT = 64
+// Taller when a step subtitle is present, so the card doesn't clip it.
+const TARGET_NODE_HEIGHT_WITH_STEPS = 84
+
+// How many step names to name explicitly in a node subtitle before eliding.
+const SUBTITLE_MAX_STEPS = 3
+
+/** "3 steps: fetch → tune → eval", or "" when the target has no step runs. */
+function stepSubtitle(steps: { step_name: string }[]): string {
+  if (steps.length === 0) return ''
+  const names = steps.slice(0, SUBTITLE_MAX_STEPS).map((s) => s.step_name)
+  if (steps.length > SUBTITLE_MAX_STEPS) names.push('…')
+  const count = `${steps.length} step${steps.length === 1 ? '' : 's'}`
+  return `${count}: ${names.join(' → ')}`
+}
 
 interface PlannedTarget {
   target_name: string
@@ -68,6 +90,7 @@ function artifactTypeToNodeType(artifactType: string): NodeType {
     case 'MODEL': return 'Model'
     case 'DATASET': return 'Dataset'
     case 'FILESET': return 'Fileset'
+    case 'BUCKET': return 'Bucket'
     default: return 'Fileset'
   }
 }
@@ -91,16 +114,21 @@ function buildGraphData(
 
   // ── Actual lineage from runtime status ────────────────────────────────────
   for (const [targetName, targetRun] of Object.entries(buildStatus?.targets ?? {})) {
-    const targetId = `target-${targetName}`
+    const targetId = `${TARGET_NODE_PREFIX}${targetName}`
     seenTargets.add(targetName)
+
+    // The node advertises its steps; a target with no step runs yet gets no
+    // subtitle (and so keeps its normal height).
+    const subtitle = stepSubtitle(targetRun.steps ?? [])
 
     nodes.push({
       id: targetId,
       title: targetName,
       type: 'Build',
       width: 192,
-      height: 64,
+      height: subtitle ? TARGET_NODE_HEIGHT_WITH_STEPS : TARGET_NODE_HEIGHT,
       labels: [{ text: targetName }],
+      ...(subtitle ? { subtitle } : {}),
     })
 
     for (const [paramName, artifactId] of Object.entries(targetRun.inputs ?? {})) {
@@ -136,16 +164,18 @@ function buildGraphData(
       const targetName = plannedTarget.target_name
       if (seenTargets.has(targetName)) continue  // target already in actual lineage
 
-      const targetId = `target-${targetName}`
+      const targetId = `${TARGET_NODE_PREFIX}${targetName}`
       seenTargets.add(targetName)
 
+      // Planned targets have no step runs to describe, so they keep the plain
+      // height and get no subtitle.
       nodes.push({
         id: targetId,
         title: targetName,
         type: 'Build',
         planned: true,
         width: 192,
-        height: 64,
+        height: TARGET_NODE_HEIGHT,
         labels: [{ text: targetName }],
       })
 
@@ -196,6 +226,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     zoomIn: () => graphRef.current?.zoomIn(),
     zoomOut: () => graphRef.current?.zoomOut(),
     resetZoom: () => graphRef.current?.resetZoom(),
+    resetView: () => graphRef.current?.resetView(),
     currentZoom: () => graphRef.current?.currentZoom() ?? 90,
     centerOnNode: (nodeId: string) => graphRef.current?.centerOnNode(nodeId),
   }))
@@ -215,6 +246,75 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       archiveFiles[Object.keys(archiveFiles).find((k) => k.endsWith('.yaml') || k.endsWith('.yml')) ?? '']
     return yaml ? parseDefinitionTargets(yaml) : []
   }, [archiveFiles])
+
+  // Step metadata (issue #224): target nodes advertise their steps, and clicking
+  // one opens the step details. The step data already rides along on
+  // getBuildStatus, so this costs no extra request.
+  const [stepDetailTarget, setStepDetailTarget] = React.useState<string | null>(null)
+
+  // Where focus was before the drawer opened, so we can hand it back on close —
+  // otherwise a keyboard user is dropped at the top of the document.
+  const drawerReturnFocusRef = React.useRef<HTMLElement | null>(null)
+  const drawerCloseButtonRef = React.useRef<HTMLButtonElement | null>(null)
+  const drawerRef = React.useRef<HTMLDivElement | null>(null)
+  // Focus fallback when the drawer's trigger node has been detached by a re-render.
+  const graphContainerRef = React.useRef<HTMLDivElement | null>(null)
+
+  React.useEffect(() => {
+    if (!stepDetailTarget) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      // This is a non-modal drawer — the graph behind it stays interactive — so
+      // only swallow Escape when focus is actually inside the drawer. Otherwise
+      // a user mid-interaction with the graph would have the drawer yanked shut.
+      if (drawerRef.current?.contains(document.activeElement)) {
+        setStepDetailTarget(null)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [stepDetailTarget])
+
+  // Focus management for the drawer (role="dialog"): on open, remember the
+  // trigger and move focus to the close button; on close, restore focus. This is
+  // a non-modal drawer by design (the graph stays interactive), so no focus trap
+  // — just entry and restore, which is what keyboard/SR users expect.
+  //
+  // Capture the trigger only when opening from a *closed* drawer, and restore
+  // only when closing to a closed drawer. Switching directly A→B must neither
+  // recapture (B's trigger, not A's return element) nor restore (nothing closed
+  // yet) — doing either would leave the eventual restore pointing at the wrong
+  // element, a real regression for keyboard/SR users.
+  const drawerWasOpenRef = React.useRef(false)
+  React.useEffect(() => {
+    const wasOpen = drawerWasOpenRef.current
+    drawerWasOpenRef.current = Boolean(stepDetailTarget)
+
+    if (stepDetailTarget) {
+      // Opening from closed — record where focus was so we can hand it back.
+      // A→B switches (wasOpen already true) keep the original return element.
+      if (!wasOpen) {
+        drawerReturnFocusRef.current = document.activeElement as HTMLElement | null
+      }
+      drawerCloseButtonRef.current?.focus()
+      return
+    }
+
+    // stepDetailTarget is null. Only restore if a drawer was actually open.
+    if (!wasOpen) return
+    // The trigger is often a graph node inside an SVG that re-renders on the
+    // status poll; by close it may be detached, and focus() on a detached node
+    // is a silent no-op that drops focus to <body>. Restore only when the node
+    // is still connected, else fall back to the graph container so keyboard
+    // focus lands somewhere sensible rather than the top of the document.
+    const returnTo = drawerReturnFocusRef.current
+    if (returnTo?.isConnected) {
+      returnTo.focus?.()
+    } else {
+      graphContainerRef.current?.focus?.()
+    }
+    drawerReturnFocusRef.current = null
+  }, [stepDetailTarget])
 
   const { nodes: allNodes, links: allLinks, artifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
@@ -265,9 +365,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
 
   const artifactNavModalHeader = (artifactNavNode: { node: ElkNodeEx; hfUrl: string | null } | null) => {
     if (artifactNavNode) {
-      return <h4>Would you like to view <code>{artifactNavNode.node?.title || artifactNavNode.node?.id}</code> on HuggingFace or proceed to the artifact page?`</h4>
+      return <h4>Would you like to view <code>{artifactNavNode.node?.title || artifactNavNode.node?.id}</code> on HuggingFace or proceed to the artifact page?</h4>
     } else {
-      return <h4>Would you like to view this artifact on HuggingFace or proceed to the artifact page?`</h4>
+      return <h4>Would you like to view this artifact on HuggingFace or proceed to the artifact page?</h4>
     }
   }
 
@@ -289,6 +389,24 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     [showFocusNode, initialFocusNodeId, enrichedNodes]
   )
 
+  // The node whose step drawer is open. Opening that drawer is what shrinks the
+  // graph pane, so this is the node the resize compensation must keep on-screen —
+  // and, unlike currentArtifactNode, it is set on build pages (where the drawer
+  // exists) rather than only on artifact pages.
+  //
+  // Memoized on `stepDetailTarget` alone, not on `enrichedNodes`: both consumers
+  // of `selectedNode` read only `.id` (GraphNode's isSelected check, and the
+  // resize compensation's position lookup), and `enrichedNodes` is a fresh array
+  // on every status poll. Depending on it would hand Graph a new object each
+  // poll, defeating its React.memo and re-running the nodeElements effect on
+  // every tick of a live build with the drawer open.
+  const openDrawerNode = React.useMemo(
+    () => (stepDetailTarget
+      ? ({ id: `${TARGET_NODE_PREFIX}${stepDetailTarget}` } as ElkNodeEx)
+      : undefined),
+    [stepDetailTarget]
+  )
+
   const { filteredNodes, filteredLinks } = React.useMemo(() => {
     if (!focusNodeId || (upstreamLevels === Infinity && downstreamLevels === Infinity)) {
       return { filteredNodes: enrichedNodes, filteredLinks: allLinks }
@@ -297,13 +415,51 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     return { filteredNodes: sub.nodes, filteredLinks: sub.links }
   }, [focusNodeId, upstreamLevels, downstreamLevels, enrichedNodes, allLinks])
 
+  // If the open target disappears from a later relayout (renamed, or dropped from
+  // the build), close the drawer rather than leave it pointing at a target that no
+  // longer exists. The graph itself is the authority: a target is exactly as real
+  // as the node the user clicked, so validate against the rendered nodes rather
+  // than rebuilding the answer from buildStatus.targets plus plannedTargets.
+  //
+  // Those two sources cannot decide it. A planned target is absent from
+  // buildStatus.targets by definition, and plannedTargets is empty whenever the
+  // build archive has not loaded — the archive query is gated on isActive and
+  // yields [] for a finished build or an unparseable build.yaml. Checking them
+  // closed the drawer on every planned target, in the same frame it opened.
+  //
+  // Guarded on the node set being non-empty so a transient empty layout (first
+  // render, or a poll that briefly returns no targets) does not close it either.
+  React.useEffect(() => {
+    if (!stepDetailTarget || enrichedNodes.length === 0) return
+    const nodeId = `${TARGET_NODE_PREFIX}${stepDetailTarget}`
+    if (enrichedNodes.some((n) => n.id === nodeId)) return
+    setStepDetailTarget(null)
+  }, [stepDetailTarget, enrichedNodes])
+
   const handleNodeClick = (node: ElkNodeEx) => {
+    // Skeleton stubs are placeholders for hidden upstream/downstream branches,
+    // not real nodes: Graph synthesises them with an empty title and an id of
+    // `<nodeId>-upstream-skeleton`. That id still starts with TARGET_NODE_PREFIX
+    // when the node it hangs off is a target, so without this guard the target
+    // branch below opens the drawer for the non-existent target
+    // `<name>-upstream-skeleton`, which the reconcile effect then immediately
+    // closes again — the click reads as doing nothing at all.
+    if (node.type === 'skeleton-source' || node.type === 'skeleton-target') return
     if (!showFocusNode) {
       setFocusNodeId(node.id)
     }
     if (node.type !== 'Build' && isUUID(node.id)) {
       const uri = artifactUriMap.get(node.id)
+      // Close the step drawer first — otherwise the artifact modal stacks on top
+      // of it and the drawer is left open underneath once the modal is dismissed.
+      setStepDetailTarget(null)
       setArtifactNavNode({ node, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
+      return
+    }
+    // Clicking a target (run) node opens its step details. Artifact
+    // click-through is handled above and is unchanged.
+    if (node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)) {
+      setStepDetailTarget(node.id.slice(TARGET_NODE_PREFIX.length))
     }
   }
 
@@ -407,11 +563,16 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               className="overflow-item"
               itemText="Reset view"
               onClick={() => {
+                // Clear every filter, then fit. `resetView` fits against the
+                // current layout immediately and clears the user-adjusted flag,
+                // so a relayout triggered by the expanded node set simply
+                // auto-fits again over this one with nothing fighting it —
+                // whether or not the graph was actually filtered.
                 setFocusNodeId(null);
                 setUpstreamLevels(Infinity);
                 setDownstreamLevels(Infinity);
                 setPartial(false);
-                graphRef.current?.resetZoom();
+                graphRef.current?.resetView();
               }}
             />
           </OverflowMenu>
@@ -428,8 +589,16 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         </div>
       )}
 
-      {/* Graph area */}
-      <div className={styles.graphArea}>
+      {/* Graph and drawer are flex siblings in a row so opening the drawer
+          physically shrinks the graph's width. ELK lays out RIGHT (downstream
+          nodes toward the right edge — the same edge the drawer opens on), so if
+          the drawer merely overlaid the graph, a node near that edge could hide
+          behind the drawer it just triggered; shrinking the SVG instead fires
+          the graph's ResizeObserver, which refits the view. */}
+      <div className={styles.graphRow}>
+      {/* Graph area. tabIndex=-1 so it can receive programmatic focus as the
+          fallback when a closed drawer's trigger node is no longer in the DOM. */}
+      <div className={styles.graphArea} ref={graphContainerRef} tabIndex={-1}>
         {loading && (
           <div className={styles.centeredContent}>
             <InlineLoading description="Loading lineage…" />
@@ -459,15 +628,74 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             )}
             <Graph
               ref={graphRef}
+              graphKey={build?.uuid}
               nodes={filteredNodes}
               links={filteredLinks}
               allLinks={allLinks}
-              selectedNode={currentArtifactNode}
+              selectedNode={currentArtifactNode ?? openDrawerNode}
               onClick={handleNodeClick}
               onSvgRendered={() => setRendered(true)}
             />
           </>
         )}
+      </div>
+
+      {/* A drawer, not a modal: no overlay, so the graph behind stays visible
+          and clickable and picking another target just re-points the drawer. */}
+      {stepDetailTarget && (
+        <div
+          ref={drawerRef}
+          className={styles.stepSidePanel}
+          role="dialog"
+          aria-label={`Step details — ${stepDetailTarget}`}
+        >
+          {(() => {
+            // Own-property lookup: a bare-object index would return
+            // Object.prototype.toString (a function) for a target named `toString`.
+            const targets = buildStatus?.targets
+            const target =
+              targets && Object.prototype.hasOwnProperty.call(targets, stepDetailTarget)
+                ? targets[stepDetailTarget]
+                : undefined
+            const { status, subtitle, summary } = stepDrawerSummary(target, build)
+            return (
+              <>
+                <div className={styles.stepSidePanelHeader}>
+                  <div className={styles.stepSidePanelIdentity}>
+                    <h4 className={styles.stepSidePanelHeading}>{stepDetailTarget}</h4>
+                    <div className={styles.stepSidePanelSubtitle}>{subtitle}</div>
+                    {status && (
+                      <div className={styles.stepSidePanelStatus}>
+                        <BuildStatusBadge status={status} />
+                      </div>
+                    )}
+                    {summary && (
+                      <div className={styles.stepSidePanelSummary}>{summary}</div>
+                    )}
+                  </div>
+                  <IconButton
+                    ref={drawerCloseButtonRef}
+                    kind="ghost"
+                    label="Close"
+                    align="bottom"
+                    onClick={() => setStepDetailTarget(null)}
+                  >
+                    <Close />
+                  </IconButton>
+                </div>
+                <div className={styles.stepSidePanelBody}>
+                  <StepDetailsPanel
+                    targetName={stepDetailTarget}
+                    target={target}
+                    sourceUri={build?.source_uri}
+                    buildId={build?.uuid}
+                  />
+                </div>
+              </>
+            )
+          })()}
+        </div>
+      )}
       </div>
 
       {artifactNavNode?.hfUrl ? (

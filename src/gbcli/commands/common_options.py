@@ -3,7 +3,28 @@ from functools import wraps
 
 import click
 
+from gbcli.utils.versionutil import VersionStatus, evaluate_version_status
 from gbcommon.types.gbenvconfig import is_standalone
+
+
+def enforce_version_check(ctx: click.Context, skip_version_check: bool) -> None:
+    """Command-layer version gate. Echo and exit live here, not in ``versionutil``.
+
+    - ``skip_version_check``: do nothing.
+    - BELOW_FLOOR: echo the mandatory-upgrade message to stderr and ``ctx.exit(1)``.
+    - OUTDATED_WARN: echo an upgrade notice to stderr and proceed.
+    - UP_TO_DATE / UNKNOWN: silent, proceed.
+
+    The check is best-effort: a failed lookup is UNKNOWN and never blocks the command.
+    """
+    if skip_version_check:
+        return
+    result = evaluate_version_status()
+    if result.status is VersionStatus.BELOW_FLOOR:
+        click.echo(result.message, err=True)
+        ctx.exit(1)  # Exit with a non-zero status
+    elif result.status is VersionStatus.OUTDATED_WARN:
+        click.echo(result.message, err=True)
 
 
 def exit_if_standalone(command_name: str) -> None:

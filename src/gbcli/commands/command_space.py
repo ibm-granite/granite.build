@@ -10,13 +10,13 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
+    enforce_version_check,
     pass_context_and_reject_standalone,
 )
 from gbcli.utils.gbconstants import CLIPBOARD_CHAR, PROJECT_NAME, SPACE_LIST_HEADERS
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.spaceutil import get_spaces
 from gbcli.utils.utils import render_plain, render_pretty
-from gbcli.utils.versionutil import check_current_and_latest_versions
 from gbcommon.types.gbenvconfig import is_standalone
 
 
@@ -46,15 +46,7 @@ def list(
     ctx, format: str, all: bool, refresh: bool, skip_version_check: bool, quiet: bool
 ):
     """List the spaces set to the build or available for the current user"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -186,15 +178,7 @@ def set(ctx, space_name, default, name, format, skip_version_check, quiet):
     """Set an available space as target"""
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     reserved_space_keys = ["domain", "local"]
     try:

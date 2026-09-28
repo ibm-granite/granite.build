@@ -20,6 +20,7 @@ Run user provided bash scripts in the local filesystem.
 
 import asyncio
 import os
+import signal
 import sys
 from asyncio.subprocess import Process
 from pathlib import Path
@@ -45,12 +46,19 @@ from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.constants import FILE_SCHEME
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import LogMonitoringFailedException
+from gbserver.utils import spawned_groups
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 BASH_SCRIPTS = "bash_scripts"
 JOB_SUB_SH = "llmb_bash_jobsub.sh"
+
+# cleanup_nohup grace windows (seconds). Kept short so build shutdown does not
+# wait out the workload: SIGTERM lets the workload exit cleanly, then SIGKILL is
+# forced. These run serially per outstanding launch on the cancellation path.
+_NOHUP_SIGTERM_GRACE_S = 3.0
+_NOHUP_SIGKILL_GRACE_S = 2.0
 
 
 class Bash(Environment):
@@ -252,6 +260,10 @@ class Bash(Environment):
                 env=env,
             )
             self._launched_processes[launch_id] = process
+            # Also record the session leader process-wide: cleanup_nohup below reaps
+            # it on the normal paths, but if this build's thread wedges, watcher
+            # shutdown needs a way to reap it without the launch_id or this instance.
+            spawned_groups.register(process.pid, label=f"bash launch {launch_id}")
             # Release monitors BEFORE awaiting the process so the log_monitor tails
             # job.log concurrently while the workload runs.
             self._release_monitors(launch_id)
@@ -275,6 +287,117 @@ class Bash(Environment):
                 f"bash launch {launch_id} exited with code {returncode}",
                 build_id=build_id,
             )
+
+    async def cleanup_nohup(self: Self, launch_id: str, **kwargs) -> None:
+        """Reap the whole workload process group on step finish or cancellation.
+
+        Auto-discovered as the ``nohup`` cleanup and run by ``TargetStepRun.
+        _cleanup`` under ``Run.run``'s ``uncancel()`` guard, on both the success
+        and cancel paths. On cancel, ``launch_nohup``'s ``await process.wait()``
+        was unwound without reaping the child (launched ``start_new_session=True``,
+        so its own group leader), orphaning the tree (jobsub -> wrapper -> ``sh -c``
+        -> ``sleep``).
+
+        SIGTERM the group, poll until it is empty, then SIGKILL if the grace
+        elapses. The group emptiness — not ``proc.wait()`` — is the signal: the
+        leader dies first, but deeper members can outlive one SIGTERM, so waiting
+        only on the leader would leak them (the SIGTERM e2e flake). Also sets the
+        launch-stopped event so the log monitor stops, and drops the process.
+        """
+        proc = self._launched_processes.get(launch_id)
+        try:
+            if proc is None:
+                logger.debug("cleanup_nohup: nothing to reap for %s", launch_id)
+                return
+            # Only signal the child's own group: with start_new_session the child
+            # leads its group (pgid == pid). If they differ (an early cancel racing
+            # the child's setsid), killpg would hit the server's group — signal the
+            # pid alone instead.
+            try:
+                pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                logger.debug(
+                    "cleanup_nohup: %s pid %s already gone", launch_id, proc.pid
+                )
+                return
+            own_group = pgid == proc.pid
+            if not own_group:
+                logger.warning(
+                    "cleanup_nohup: %s pid %s not its own group leader (pgid=%s); "
+                    "signalling the pid only",
+                    launch_id,
+                    proc.pid,
+                    pgid,
+                )
+
+            def _signal_group(sig: int) -> bool:
+                """Signal the group (or lone pid); False once nothing is left."""
+                try:
+                    if own_group:
+                        os.killpg(pgid, sig)
+                    else:
+                        os.kill(proc.pid, sig)
+                    return True
+                except ProcessLookupError:
+                    return False
+                except PermissionError as exc:
+                    logger.debug("cleanup_nohup: signal %s: %s", sig, exc)
+                    return True
+
+            async def _wait_group_gone(grace: float) -> bool:
+                """Poll (signal 0) until the group is empty or ``grace`` elapses."""
+                deadline = asyncio.get_event_loop().time() + grace
+                while asyncio.get_event_loop().time() < deadline:
+                    if not _signal_group(0):
+                        return True
+                    await asyncio.sleep(0.2)
+                return not _signal_group(0)
+
+            logger.info(
+                "cleanup_nohup: terminating %s (pid=%s, pgid=%s)",
+                launch_id,
+                proc.pid,
+                pgid if own_group else "n/a",
+            )
+            # No-op if the workload already finished (empty group).
+            _signal_group(signal.SIGTERM)
+            if await _wait_group_gone(_NOHUP_SIGTERM_GRACE_S):
+                logger.info("cleanup_nohup: launch %s stopped after SIGTERM", launch_id)
+            else:
+                logger.warning(
+                    "cleanup_nohup: launch %s still alive after SIGTERM grace; "
+                    "sending SIGKILL",
+                    launch_id,
+                )
+                _signal_group(signal.SIGKILL)
+                if await _wait_group_gone(_NOHUP_SIGKILL_GRACE_S):
+                    logger.info(
+                        "cleanup_nohup: launch %s reaped after SIGKILL", launch_id
+                    )
+                else:
+                    logger.error(
+                        "cleanup_nohup: launch %s still alive after SIGKILL", launch_id
+                    )
+            # Reap the leader so it isn't left a zombie (the poll doesn't waitpid).
+            if proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=_NOHUP_SIGKILL_GRACE_S)
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        "cleanup_nohup: launch %s leader wait timed out", launch_id
+                    )
+        except Exception as e:  # noqa: BLE001 - cleanup must never raise
+            logger.error(
+                "cleanup_nohup: failed to clean up launch %s: %s", launch_id, e
+            )
+        finally:
+            # Unblock the log monitor's tail loop and drop the tracked process.
+            self._monitoring_cleanup(launch_id=launch_id)
+            dropped = self._launched_processes.pop(launch_id, None)
+            # This path owned the reap, so shutdown must not signal it again (the
+            # pid may by then belong to someone else).
+            if dropped is not None:
+                spawned_groups.unregister(dropped.pid)
 
     async def monitor_log_monitor(
         self: Self,

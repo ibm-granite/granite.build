@@ -39,7 +39,10 @@ granite.build:
               image: quay.io/itsme/debian:slim
               # Runs INSIDE a container (image set → image_id docker:<image>), the
               # SLURM containerized path that needs the Pyxis SPANK plugin BlueVela
-              # provides. Writes a REAL file so the hf push has something to upload. The
+              # provides. Verifies the hf-pulled `input_model` arrived on the node
+              # (`set -e` + `test -e`, mirroring `second`) so a missing bound input
+              # is a hard error rather than a silently-tolerated echo.
+              # Writes a REAL file so the hf push has something to upload. The
               # file is written RELATIVE (into the per-run $GB_BUILD_WORKDIR that
               # gbserver cd's every step into on the shared FS), but the
               # GB_ARTIFACT_PATH reported to the separate hfpush job (a different
@@ -47,9 +50,11 @@ granite.build:
               # workdir — a bare relative path is resolved against the hfpush
               # node's own CWD and is not cross-node-visible. Mirrors 1step.
               command: >-
+                set -e;
                 pwd=$(pwd);
                 echo "first target on bluevela gpu-mid partition";
                 echo "hf input path: {{ bindings.input_model.binding.path }}";
+                test -e {{ bindings.input_model.binding.path }} || { echo "missing hf input: {{ bindings.input_model.binding.path }}" >&2; exit 1; };
                 file=out1.json; echo '{"artifact": "out1", "produced_by": "first"}' > $file;
                 echo "GB_ARTIFACT_ID:out1 GB_ARTIFACT_PATH:$pwd/$file"
             # No launcher_config.resources.cluster or zone: the environment's
@@ -71,12 +76,13 @@ granite.build:
             poll_interval_seconds: 5
             command_config:
               image: quay.io/itsme/debian:slim
-              # Reads the path bound from first.out1 (proving the cross-target
-              # binding flows through), then writes its own REAL file for the hf
-              # push of out2.
+              # Checks the path bound from first.out1 exists (proving the
+              # cross-target binding flows through), then writes its own REAL file
+              # for the hf push of out2.
               command: >-
+                set -e;
                 echo "second target received first output path: {{ bindings.from_first.binding.path }}";
-                cat {{ bindings.from_first.binding.path }} || echo "first output not readable (ok if pull is a no-op)";
+                test -e {{ bindings.from_first.binding.path }} || { echo "missing input from first: {{ bindings.from_first.binding.path }}" >&2; exit 1; };
                 file=out2.json; echo '{"artifact": "out2", "produced_by": "second"}' > $file;
                 pwd=$(pwd);
                 echo "GB_ARTIFACT_ID:out2 GB_ARTIFACT_PATH:$pwd/$file"
