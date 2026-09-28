@@ -94,44 +94,72 @@ def provision_efs(
 
     created_sg = False
     sg_id = security_group_id
-    if not sg_id:
-        sg_id = ec2.create_security_group(
-            GroupName=f"gb-efs-{tags.get('gb-targetrun-id', 'x')[:12]}",
-            Description="granite.build ephemeral EFS (NFS 2049)",
-            VpcId=vpc_id,
-            TagSpecifications=[
-                {"ResourceType": "security-group", "Tags": _aws_tags(tags)}
-            ],
-        )["GroupId"]
-        created_sg = True
-        ec2.authorize_security_group_ingress(
-            GroupId=sg_id,
-            IpPermissions=[
-                {
-                    "IpProtocol": "tcp",
-                    "FromPort": 2049,
-                    "ToPort": 2049,
-                    "IpRanges": [{"CidrIp": vpc_cidr}],
-                }
-            ],
-        )
+    fsid = ""
+    mt_ids: List[str] = []
+    # Everything below creates real AWS infra. Any failure part-way through must
+    # not leak (issue #391): on error, best-effort tear down whatever we already
+    # created (reusing deprovision_efs) before re-raising the original error.
+    try:
+        if not sg_id:
+            sg_id = ec2.create_security_group(
+                GroupName=f"gb-efs-{tags.get('gb-targetrun-id', 'x')[:12]}",
+                Description="granite.build ephemeral EFS (NFS 2049)",
+                VpcId=vpc_id,
+                TagSpecifications=[
+                    {"ResourceType": "security-group", "Tags": _aws_tags(tags)}
+                ],
+            )["GroupId"]
+            created_sg = True
+            ec2.authorize_security_group_ingress(
+                GroupId=sg_id,
+                IpPermissions=[
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 2049,
+                        "ToPort": 2049,
+                        "IpRanges": [{"CidrIp": vpc_cidr}],
+                    }
+                ],
+            )
 
-    fsid = efs.create_file_system(
-        PerformanceMode="generalPurpose",
-        ThroughputMode="elastic",
-        Encrypted=True,
-        Tags=_aws_tags(tags),
-    )["FileSystemId"]
-    _wait_fs_available(efs, fsid)
+        fsid = efs.create_file_system(
+            PerformanceMode="generalPurpose",
+            ThroughputMode="elastic",
+            Encrypted=True,
+            Tags=_aws_tags(tags),
+        )["FileSystemId"]
+        _wait_fs_available(efs, fsid)
 
-    mt_ids = []
-    for sn in subnets:
-        mt_ids.append(
-            efs.create_mount_target(
-                FileSystemId=fsid, SubnetId=sn, SecurityGroups=[sg_id]
-            )["MountTargetId"]
+        for sn in subnets:
+            mt_ids.append(
+                efs.create_mount_target(
+                    FileSystemId=fsid, SubnetId=sn, SecurityGroups=[sg_id]
+                )["MountTargetId"]
+            )
+        _wait_mts_available(efs, fsid)
+    except Exception:
+        partial = ProvisionedResources(
+            region=region,
+            file_system_id=fsid,
+            dns_name=f"{fsid}.efs.{region}.amazonaws.com" if fsid else "",
+            mount_target_ids=mt_ids,
+            subnet_ids=list(subnets),
+            security_group_id=sg_id,
+            created_sg=created_sg,
         )
-    _wait_mts_available(efs, fsid)
+        rb_failures = deprovision_efs(session, partial)
+        if rb_failures:
+            logger.warning(
+                "provision_efs rollback incomplete; ORPHAN fsid=%s sg=%s "
+                "region=%s tags(build=%s,targetrun=%s): %s",
+                fsid or "<none>",
+                sg_id if created_sg else "<byo>",
+                region,
+                tags.get("gb-build-id"),
+                tags.get("gb-targetrun-id"),
+                "; ".join(rb_failures),
+            )
+        raise
 
     logger.info(
         "provisioned ephemeral EFS %s (%d mount targets) in %s",
@@ -159,14 +187,17 @@ def deprovision_efs(session, provisioned: ProvisionedResources) -> List[str]:
             efs.delete_mount_target(MountTargetId=mt)
         except Exception as e:  # noqa: BLE001 - best-effort reap
             failures.append(f"delete_mount_target {mt}: {e}")
-    try:
-        _wait_mts_gone(efs, provisioned.file_system_id)
-    except Exception as e:  # noqa: BLE001
-        failures.append(f"wait_mts_gone {provisioned.file_system_id}: {e}")
-    try:
-        efs.delete_file_system(FileSystemId=provisioned.file_system_id)
-    except Exception as e:  # noqa: BLE001
-        failures.append(f"delete_file_system {provisioned.file_system_id}: {e}")
+    # file_system_id is empty only on a partial-provision rollback where the FS
+    # was never created; skip the FS wait/delete so we don't log spurious errors.
+    if provisioned.file_system_id:
+        try:
+            _wait_mts_gone(efs, provisioned.file_system_id)
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"wait_mts_gone {provisioned.file_system_id}: {e}")
+        try:
+            efs.delete_file_system(FileSystemId=provisioned.file_system_id)
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"delete_file_system {provisioned.file_system_id}: {e}")
     if provisioned.created_sg and provisioned.security_group_id:
         try:
             ec2.delete_security_group(GroupId=provisioned.security_group_id)

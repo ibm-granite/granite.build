@@ -254,11 +254,14 @@ class TestTeardownWithProvider:
         )
 
         # Force the throwaway launch to fail, assert it is logged (not swallowed).
-        def _boom(*a, **k):
-            raise RuntimeError("no capacity in us-east-1a")
-
-        monkeypatch.setattr(
-            "gbserver.environment.skypilot.sky.launch", _boom, raising=False
+        # Patch the whole `sky` module (not `sky.launch`) so the test does not
+        # require the skypilot extra to be installed -- mirrors the sibling
+        # teardown tests, whose sky.launch is a MagicMock on a patched module.
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(
+            side_effect=RuntimeError("no capacity in us-east-1a")
         )
 
         env._setup_workdirs["sid"] = "/mnt/gb-shared/gbroot/builds/b1/runs/r1"
@@ -268,7 +271,11 @@ class TestTeardownWithProvider:
             "build_config_name": "c",
         }
 
-        with caplog.at_level("WARNING"):
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            caplog.at_level("WARNING"),
+        ):
             await env.teardown_skypilot("sid")
         # orphan surfaced (per-run dir under shared_workdir, mount at mount_point)
         assert "/mnt/gb-shared/gbroot/builds/b1/runs/r1" in caplog.text

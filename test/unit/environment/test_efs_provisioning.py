@@ -118,6 +118,80 @@ def test_provision_reuses_byo_sg(monkeypatch):
     assert _names(s, "create_security_group") == []
 
 
+def test_provision_rolls_back_created_resources_when_mount_target_wait_fails(
+    monkeypatch,
+):
+    """A failure after the SG/FS/mount targets are created must not leak: the
+    partial resources are torn down (issue #391 no-leak-on-partial-provision)."""
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_fs_available",
+        lambda *a, **k: None,
+    )
+
+    def _boom(*a, **k):
+        raise TimeoutError("mount targets not available")
+
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_available",
+        _boom,
+    )
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_gone",
+        lambda *a, **k: None,
+    )
+    s = FakeSession()
+    with pytest.raises(TimeoutError):
+        provision_efs(s, "us-east-1", TAGS)
+    # everything created is reaped, in the right order, so nothing leaks
+    assert sorted(c[2]["MountTargetId"] for c in _names(s, "delete_mount_target")) == [
+        "mt-subnet-a",
+        "mt-subnet-b",
+    ]
+    assert _names(s, "delete_file_system")[0][2]["FileSystemId"] == "fs-new"
+    assert _names(s, "delete_security_group")[0][2]["GroupId"] == "sg-new"
+
+
+def test_provision_rollback_deletes_only_sg_when_fs_creation_fails(monkeypatch):
+    """If the FS never gets created, rollback deletes the SG we created and does
+    not attempt (and log spurious failures for) a filesystem/mount-target delete."""
+
+    class NoFsClient(FakeClient):
+        def create_file_system(self, **kw):
+            raise RuntimeError("throttled")
+
+    class NoFsSession(FakeSession):
+        def client(self, kind, region_name=None):
+            return NoFsClient(kind, self.calls)
+
+    s = NoFsSession()
+    with pytest.raises(RuntimeError, match="throttled"):
+        provision_efs(s, "us-east-1", TAGS)
+    assert _names(s, "delete_security_group")[0][2]["GroupId"] == "sg-new"
+    assert _names(s, "delete_file_system") == []
+    assert _names(s, "delete_mount_target") == []
+
+
+def test_provision_rollback_keeps_byo_sg_on_failure(monkeypatch):
+    """A BYO security group is never deleted during rollback (we did not create it)."""
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_fs_available",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_available",
+        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("boom")),
+    )
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_gone",
+        lambda *a, **k: None,
+    )
+    s = FakeSession()
+    with pytest.raises(TimeoutError):
+        provision_efs(s, "us-east-1", TAGS, security_group_id="sg-byo")
+    assert _names(s, "delete_file_system")[0][2]["FileSystemId"] == "fs-new"
+    assert _names(s, "delete_security_group") == []  # BYO sg untouched
+
+
 def test_deprovision_deletes_in_order_and_skips_byo_sg(monkeypatch):
     monkeypatch.setattr(
         "gbserver.environment.shared_fs.efs_provisioning._wait_mts_gone",
