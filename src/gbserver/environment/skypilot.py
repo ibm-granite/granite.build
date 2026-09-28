@@ -1360,6 +1360,15 @@ class Skypilot(Environment):
             await asyncio.to_thread(sky.stream_and_get, request_id)
         except Exception as e:  # don't fail the build for cleanup
             logger.warning("teardown_skypilot rm -rf %s failed: %s", workdir, e)
+        finally:
+            # `down=True` relies on SkyPilot autodown, which SLURM/LSF do not
+            # support (see the autostop=None handling in the launch path), so on
+            # those clouds the td- cluster otherwise keeps its allocation
+            # indefinitely. Down it explicitly; _teardown tolerates a cluster
+            # that never came up.
+            cloud_group = (str(self._get_cloud()).split("/", 1)[0] or "").lower()
+            if cloud_group in _SSH_HPC_CLOUDS:
+                await self._teardown(cluster_name)
 
     @staticmethod
     def _parse_memory_gib(memory_str: str) -> Optional[float]:
