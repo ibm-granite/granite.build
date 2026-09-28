@@ -1,7 +1,7 @@
 import type { ModelSource, WizardModelSource } from '@granite-build/ui-core/types'
 
 export const MODEL_SOURCE_LABELS: Record<WizardModelSource, string> = {
-  huggingface: 'Huggingface',
+  huggingface: 'Hugging Face',
   custom_path: 'Local',
   tuned_model: 'Tuned Models',
 }

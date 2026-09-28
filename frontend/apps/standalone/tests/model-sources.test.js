@@ -1,6 +1,6 @@
 /**
  * The PVC (`dmf`) model source was retired. New tunings can only be launched
- * against Huggingface or Local, but jobs already in the database still carry
+ * against Hugging Face or Local, but jobs already in the database still carry
  * `dmf` and must keep reading "PVC" in the detail view.
  *
  * Usage: node --test tests/model-sources.test.js
@@ -17,7 +17,7 @@ const {
 } = require('../app/dashboard/autotunex/modelSources.ts')
 
 describe('selectable model sources', () => {
-  it('offers Huggingface, Tuned Models and Local, in that order', () => {
+  it('offers Hugging Face, Tuned Models and Local, in that order', () => {
     assert.deepEqual(
       MODEL_SOURCE_OPTIONS.map((o) => o.value),
       ['huggingface', 'tuned_model', 'custom_path'],
@@ -37,7 +37,7 @@ describe('selectable model sources', () => {
 
 describe('modelSourceLabel', () => {
   it('labels the sources that are still selectable', () => {
-    assert.equal(modelSourceLabel('huggingface'), 'Huggingface')
+    assert.equal(modelSourceLabel('huggingface'), 'Hugging Face')
     assert.equal(modelSourceLabel('custom_path'), 'Local')
     assert.equal(modelSourceLabel('tuned_model'), 'Tuned Models')
   })
