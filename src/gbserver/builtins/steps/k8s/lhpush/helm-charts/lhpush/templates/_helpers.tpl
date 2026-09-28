@@ -15,6 +15,18 @@ fi
 {{- $namespace := $config.lh.namespace | required ".Values.lhpush_config.lh.namespace is required." }}
 {{- $table_name := $config.lh.table_name | required ".Values.lhpush_config.lh.table_name is required." }}
 # -----------------------------------
+# RESERVED-TABLE GUARD
+# 'model' and 'model_shared' are the shared MODEL registries (in ANY namespace). They
+# are written by the sanctioned `dmf model push` path (CASE 2 below), which is
+# intentionally NOT guarded. Only a `table` push is guarded: it would run
+# `dmf table delete --table <name>` first and DESTROY the shared registry.
+# NOTE: this only protects the lhpush path; the authoritative control is a lakehouse
+# ACL that denies write/delete on these tables to everyone but the publish identity.
+{{- if and (eq $lhtype "table") (has $table_name (list "model" "model_shared")) }}
+echo "ERROR: '{{ $namespace }}.{{ $table_name }}' is a RESERVED shared-model table and must not be targeted by a 'table' push -- doing so would DELETE the shared registry. Rename the output table in your build.yaml." >&2
+exit 1
+{{- end }}
+# -----------------------------------
 {{- $use_aspera_flag := "" }}
 {{- if $config.use_aspera }}
 {{- $use_aspera_flag = "--use-aspera" }}

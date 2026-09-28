@@ -17,6 +17,20 @@ echo 'lhpush start'
 {%- set lh_table_name = lhpconf.table_name %}
 {%- set use_aspera_flag = '--use-aspera' if lhp.use_aspera is defined and lhp.use_aspera else '' %}
 
+# --------------------------------------------------------------------------
+# RESERVED-TABLE GUARD
+# 'model' and 'model_shared' are the shared MODEL registries (in ANY namespace). They
+# are written by the sanctioned `dmf model push` path (CASE 2 below), which is
+# intentionally NOT guarded. Only a `table` push is guarded: it would run
+# `dmf table delete --table <name>` first and DESTROY the shared registry.
+# NOTE: this only protects the lhpush path; the authoritative control is a lakehouse
+# ACL that denies write/delete on these tables to everyone but the publish identity.
+{%- set reserved_tables = ['model', 'model_shared'] %}
+{%- if lh_type == 'table' and lh_table_name in reserved_tables %}
+echo "ERROR: '{{ lh_namespace }}.{{ lh_table_name }}' is a RESERVED shared-model table and must not be targeted by a 'table' push -- doing so would DELETE the shared registry. Rename the output table in your build.yaml." >&2
+exit 1
+{%- endif %}
+
 export LAKEHOUSE_ENVIRONMENT='{{ lh_env }}'
 {%- if use_aspera_flag != '' %}
 export LAKEHOUSE_REUSE_ASPERA_DAEMON=True
