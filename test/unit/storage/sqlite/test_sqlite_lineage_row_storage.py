@@ -47,8 +47,8 @@ def storage_fixture():
 
 def row(
     job_id: str = "J",
-    source: str = "lh://prod/ns/models/t/a",
-    target: str = "lh://prod/ns/datasets/t/b",
+    input: str = "lh://prod/ns/models/t/a",
+    output: str = "lh://prod/ns/datasets/t/b",
     **kwargs,
 ) -> StoredLineageRow:
     """A row with URI endpoints.
@@ -64,7 +64,7 @@ def row(
         )
     assert not kwargs, f"unhandled row() keywords: {sorted(kwargs)}"
     return StoredLineageRow(
-        job_id=job_id, source=source, target=target, attributes=attributes
+        job_id=job_id, input=input, output=output, attributes=attributes
     )
 
 
@@ -72,45 +72,45 @@ class TestHops:
     """One indexed, batched query per traversal level."""
 
     def test_hop_by_source_finds_descendant_rows(self, storage):
-        storage.add(row(source="a", target="b"))
-        storage.add(row(job_id="J2", source="b", target="c"))
-        found = storage.get_rows_by_source(["a"])
-        assert [r.target for r in found] == ["b"]
+        storage.add(row(input="a", output="b"))
+        storage.add(row(job_id="J2", input="b", output="c"))
+        found = storage.get_rows_by_input(["a"])
+        assert [r.output for r in found] == ["b"]
 
     def test_hop_by_target_finds_ancestor_rows(self, storage):
-        storage.add(row(source="a", target="b"))
-        storage.add(row(job_id="J2", source="b", target="c"))
-        found = storage.get_rows_by_target(["c"])
-        assert [r.source for r in found] == ["b"]
+        storage.add(row(input="a", output="b"))
+        storage.add(row(job_id="J2", input="b", output="c"))
+        found = storage.get_rows_by_output(["c"])
+        assert [r.input for r in found] == ["b"]
 
     def test_hop_batches_a_whole_frontier(self, storage):
         for i in range(5):
-            storage.add(row(job_id=f"J{i}", source=f"s{i}", target=f"t{i}"))
-        found = storage.get_rows_by_source(["s0", "s2", "s4"])
-        assert sorted(r.source for r in found) == ["s0", "s2", "s4"]
+            storage.add(row(job_id=f"J{i}", input=f"s{i}", output=f"t{i}"))
+        found = storage.get_rows_by_input(["s0", "s2", "s4"])
+        assert sorted(r.input for r in found) == ["s0", "s2", "s4"]
 
     def test_empty_frontier_queries_nothing(self, storage):
         storage.add(row())
-        assert storage.get_rows_by_source([]) == []
-        assert storage.get_rows_by_target([]) == []
+        assert storage.get_rows_by_input([]) == []
+        assert storage.get_rows_by_output([]) == []
 
     def test_terminal_marker_never_reaches_a_query(self, storage):
         """Every creation row shares the terminal marker, so a hop matching on it
         would treat unrelated creations as one node.
         """
-        storage.add(row(job_id="C1", source=TERMINAL, target="x"))
-        storage.add(row(job_id="C2", source=TERMINAL, target="y"))
-        storage.add(row(job_id="N", source="real", target="z"))
+        storage.add(row(job_id="C1", input=TERMINAL, output="x"))
+        storage.add(row(job_id="C2", input=TERMINAL, output="y"))
+        storage.add(row(job_id="N", input="real", output="z"))
 
         # Both creations would match on the marker, collapsing them into one node.
-        assert storage.get_rows_by_source([TERMINAL]) == []
+        assert storage.get_rows_by_input([TERMINAL]) == []
         # A real identifier alongside the marker still matches, and only itself.
-        found = storage.get_rows_by_source([TERMINAL, "real"])
+        found = storage.get_rows_by_input([TERMINAL, "real"])
         assert [r.job_id for r in found] == ["N"]
 
     def test_frontier_is_deduplicated(self, storage):
-        storage.add(row(source="a", target="b"))
-        assert len(storage.get_rows_by_source(["a", "a", "a"])) == 1
+        storage.add(row(input="a", output="b"))
+        assert len(storage.get_rows_by_input(["a", "a", "a"])) == 1
 
 
 class TestJobGrouping:
@@ -124,7 +124,7 @@ class TestJobGrouping:
 
     def test_rows_by_job_recovers_the_whole_execution(self, storage):
         for src in ("lh://prod/ns/tables/i1", "lh://prod/ns/tables/i2"):
-            storage.add(row(job_id="J", source=src))
+            storage.add(row(job_id="J", input=src))
         assert len(storage.get_rows_by_job("J")) == 2
 
     def test_empty_job_id_returns_nothing(self, storage):
@@ -175,7 +175,7 @@ class TestDedupSupport:
         unrecorded forever and re-record on every scan.
         """
         for tgt in ("s3://b/o1", "s3://b/o2", "s3://b/o3"):
-            storage.add(row(job_id="MANY", target=tgt))
+            storage.add(row(job_id="MANY", output=tgt))
         assert storage.get_recorded_jobs(["MANY"]) == {"MANY"}
 
     def test_empty_batch_queries_nothing(self, storage):
@@ -190,36 +190,36 @@ class TestUniqueConstraint:
     """
 
     def test_same_triple_is_rejected(self, storage):
-        storage.add(row(job_id="J", source="a", target="b"))
+        storage.add(row(job_id="J", input="a", output="b"))
         with pytest.raises(Exception):
-            storage.add(row(job_id="J", source="a", target="b"))
+            storage.add(row(job_id="J", input="a", output="b"))
 
     def test_creation_terminal_is_protected(self, storage):
         """The reason source/target hold "" and not NULL: in SQL NULL never equals
         NULL, so a NULL endpoint would slip past the unique and leave creation rows
         as the only duplicable ones.
         """
-        storage.add(row(job_id="C", source=TERMINAL, target="x"))
+        storage.add(row(job_id="C", input=TERMINAL, output="x"))
         with pytest.raises(Exception):
-            storage.add(row(job_id="C", source=TERMINAL, target="x"))
+            storage.add(row(job_id="C", input=TERMINAL, output="x"))
 
     def test_deletion_terminal_is_protected(self, storage):
-        storage.add(row(job_id="D", source="x", target=TERMINAL))
+        storage.add(row(job_id="D", input="x", output=TERMINAL))
         with pytest.raises(Exception):
-            storage.add(row(job_id="D", source="x", target=TERMINAL))
+            storage.add(row(job_id="D", input="x", output=TERMINAL))
 
     def test_same_job_different_endpoints_is_allowed(self, storage):
         """An N*M job writes several rows under one job_id."""
-        storage.add(row(job_id="J", source="i1", target="o1"))
-        storage.add(row(job_id="J", source="i1", target="o2"))
-        storage.add(row(job_id="J", source="i2", target="o1"))
+        storage.add(row(job_id="J", input="i1", output="o1"))
+        storage.add(row(job_id="J", input="i1", output="o2"))
+        storage.add(row(job_id="J", input="i2", output="o1"))
         assert len(storage.get_rows_by_job("J")) == 3
 
     def test_same_endpoints_different_job_is_allowed(self, storage):
         """Two executions can relate the same pair of artifacts."""
-        storage.add(row(job_id="J1", source="a", target="b"))
-        storage.add(row(job_id="J2", source="a", target="b"))
-        assert len(storage.get_rows_by_source(["a"])) == 2
+        storage.add(row(job_id="J1", input="a", output="b"))
+        storage.add(row(job_id="J2", input="a", output="b"))
+        assert len(storage.get_rows_by_input(["a"])) == 2
 
 
 class TestSchema:
@@ -243,7 +243,7 @@ class TestSchema:
 
     @pytest.mark.parametrize(
         "column",
-        ["source", "target", "job_id"],
+        ["input", "output", "job_id"],
     )
     def test_column_is_indexed(self, storage, column):
         storage.add(row())
@@ -256,7 +256,7 @@ class TestSchema:
         statements = [sql or "" for _, sql in self._index_statements(storage)]
         unique = [s for s in statements if "UNIQUE" in s and "job_id" in s]
         assert unique, statements
-        assert "(job_id, source, target)" in unique[0]
+        assert "(job_id, input, output)" in unique[0]
 
     def test_every_promoted_column_is_text(self, storage):
         """get_by_where only builds an IN clause for string columns; anything else
@@ -279,15 +279,15 @@ class TestSchema:
         assert "build_id" not in columns
         assert "target_run_uuid" not in columns
 
-        for column in ("source", "target", "job_id"):
+        for column in ("input", "output", "job_id"):
             assert columns[column].startswith("VARCHAR"), (column, columns[column])
 
         non_text = {
             name: kind
             for name, kind in columns.items()
-            # "index" is the autoincrement PK and "json" is the blob; neither is
-            # ever a query predicate.
-            if name not in ("index", "json") and not kind.startswith("VARCHAR")
+            # "json" is the blob; it is never a query predicate. (There is no
+            # autoincrement "index" column -- uuid is the primary key.)
+            if name != "json" and not kind.startswith("VARCHAR")
         }
         assert not non_text, f"a non-text promoted column is a latent bug: {non_text}"
 
@@ -306,7 +306,7 @@ class TestSchema:
                 storage, f"PRAGMA table_info('{storage.table_name}')"
             )
         }
-        for column in ("source", "target"):
+        for column in ("input", "output"):
             assert columns[column] == f"VARCHAR({MAX_LINEAGE_URI_LENGTH})"
 
     def test_a_maximum_length_uri_survives_a_round_trip(self, storage):
@@ -315,18 +315,18 @@ class TestSchema:
 
         prefix = "hf://huggingface.co/models/org/"
         long_uri = prefix + "x" * (MAX_LINEAGE_URI_LENGTH - len(prefix))
-        storage.add(row(job_id="LONG", source=long_uri))
-        stored = storage.get_rows_by_source([long_uri])
+        storage.add(row(job_id="LONG", input=long_uri))
+        stored = storage.get_rows_by_input([long_uri])
         assert stored, "a maximum-length URI did not round trip"
-        assert stored[0].source == long_uri
+        assert stored[0].input == long_uri
 
 
 class TestRoundTrip:
     def test_all_fields_survive_storage(self, storage):
         original = StoredLineageRow(
             job_id="J",
-            source="lh://prod/ns/models/t/a",
-            target="hf://huggingface.co/models/org/b",
+            input="lh://prod/ns/models/t/a",
+            output="hf://huggingface.co/models/org/b",
             attributes={
                 "job_name": "train",
                 "owner": "someone",
@@ -341,8 +341,8 @@ class TestRoundTrip:
         storage.add(original)
         stored = storage.get_rows_by_job("J")[0]
 
-        assert stored.source == original.source
-        assert stored.target == original.target
+        assert stored.input == original.input
+        assert stored.output == original.output
         # Everything else lives in the JSON blob, whole -- including the process
         # ids, which are not columns.
         assert stored.attributes == original.attributes
@@ -364,7 +364,7 @@ class TestRoundTrip:
 
     def test_the_model_default_for_attributes_is_an_empty_dict(self, storage):
         """The field itself defaults empty; ``build_attributes`` is what fills it."""
-        storage.add(StoredLineageRow(job_id="RAW", source="s3://b/x", target="s3://b/y"))
+        storage.add(StoredLineageRow(job_id="RAW", input="s3://b/x", output="s3://b/y"))
         assert storage.get_rows_by_job("RAW")[0].attributes == {}
 
     def test_attributes_are_not_queryable(self, storage):
@@ -378,9 +378,9 @@ class TestRoundTrip:
         assert "attributes" not in storage.get_column_names()
 
     def test_terminal_helpers_survive_storage(self, storage):
-        storage.add(row(job_id="C", source=TERMINAL, target="x"))
-        storage.add(row(job_id="D", source="x", target=TERMINAL))
-        storage.add(row(job_id="S", source="tbl", target="tbl"))
+        storage.add(row(job_id="C", input=TERMINAL, output="x"))
+        storage.add(row(job_id="D", input="x", output=TERMINAL))
+        storage.add(row(job_id="S", input="tbl", output="tbl"))
 
         assert storage.get_rows_by_job("C")[0].is_creation()
         assert storage.get_rows_by_job("D")[0].is_deletion()
@@ -388,7 +388,7 @@ class TestRoundTrip:
 
     def test_creation_row_is_not_a_self_loop(self, storage):
         """Two terminal rows both have source == target == "" but are not loops."""
-        storage.add(row(job_id="C", source=TERMINAL, target=TERMINAL))
+        storage.add(row(job_id="C", input=TERMINAL, output=TERMINAL))
         assert not storage.get_rows_by_job("C")[0].is_self_loop()
 
 
@@ -403,8 +403,8 @@ class TestWalkAgainstRealStorage:
     def test_walks_a_chain_stored_in_sqlite(self, storage):
         from gbserver.lineage.walk import Direction, walk_lineage
 
-        storage.add(row(job_id="J1", source="a", target="b"))
-        storage.add(row(job_id="J2", source="b", target="c"))
+        storage.add(row(job_id="J1", input="a", output="b"))
+        storage.add(row(job_id="J2", input="b", output="c"))
 
         graph = walk_lineage(storage, ["a"], Direction.DESCENDANTS)
         assert graph.depths == {"a": 0, "b": 1, "c": 2}
@@ -415,8 +415,8 @@ class TestWalkAgainstRealStorage:
     def test_terminal_survives_a_round_trip(self, storage):
         from gbserver.lineage.walk import Direction, walk_lineage
 
-        storage.add(row(job_id="C", source=TERMINAL, target="a"))
-        storage.add(row(job_id="J", source="a", target="b"))
+        storage.add(row(job_id="C", input=TERMINAL, output="a"))
+        storage.add(row(job_id="J", input="a", output="b"))
 
         graph = walk_lineage(storage, ["b"], Direction.ANCESTORS)
         assert graph.depths == {"b": 0, "a": 1}
@@ -428,7 +428,7 @@ class TestWalkAgainstRealStorage:
 
         for src in ("i1", "i2", "i3"):
             for tgt in ("o1", "o2"):
-                storage.add(row(job_id="J", source=src, target=tgt))
+                storage.add(row(job_id="J", input=src, output=tgt))
 
         graph = walk_lineage(storage, ["i1"], Direction.DESCENDANTS)
         assert graph.depths == {"i1": 0, "o1": 1, "o2": 1}
@@ -455,20 +455,20 @@ class TestUriIsTheIdentity:
 
     def test_endpoints_hold_real_uris(self, storage):
         storage.add(
-            row(job_id="U", source="s3://bkt/in", target="hf:///org/out")
+            row(job_id="U", input="s3://bkt/in", output="hf:///org/out")
         )
         stored = storage.get_by_where({"job_id": "U"})[0]
-        assert stored.source == "s3://bkt/in"
-        assert stored.target == "hf:///org/out"
+        assert stored.input == "s3://bkt/in"
+        assert stored.output == "hf:///org/out"
 
     def test_a_uri_is_found_by_an_indexed_lookup(self, storage):
         """The read path resolves a root this way, with one query and no scan."""
-        storage.add(row(job_id="U", source="s3://bkt/in", target="s3://bkt/out"))
-        assert [r.job_id for r in storage.get_rows_by_source(["s3://bkt/in"])] == ["U"]
-        assert [r.job_id for r in storage.get_rows_by_target(["s3://bkt/out"])] == ["U"]
+        storage.add(row(job_id="U", input="s3://bkt/in", output="s3://bkt/out"))
+        assert [r.job_id for r in storage.get_rows_by_input(["s3://bkt/in"])] == ["U"]
+        assert [r.job_id for r in storage.get_rows_by_output(["s3://bkt/out"])] == ["U"]
 
     def test_differing_attributes_do_not_admit_a_duplicate_row(self, storage):
-        # Row identity is (job_id, source, target). Anything in the blob is
+        # Row identity is (job_id, input, output). Anything in the blob is
         # outside it, so re-ingesting a row whose metadata changed must not
         # double the edge.
         storage.add(row(attributes={"job_name": "one"}))

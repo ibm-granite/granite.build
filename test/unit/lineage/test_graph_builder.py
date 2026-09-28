@@ -31,8 +31,8 @@ from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 def row(
     job_id: str,
-    source: str,
-    target: str,
+    input: str,
+    output: str,
     **kwargs,
 ) -> StoredLineageRow:
     """A row whose endpoints are URIs.
@@ -46,8 +46,8 @@ def row(
     else:
         attributes = build_attributes(
             job_metadata=kwargs.pop("metadata", None),
-            source_artifact=_artifact_of(kwargs, "source"),
-            target_artifact=_artifact_of(kwargs, "target"),
+            input_artifact=_artifact_of(kwargs, "source"),
+            output_artifact=_artifact_of(kwargs, "target"),
             source_system=kwargs.pop("source_system", "granite.build"),
             ids={
                 "build_id": kwargs.pop("build_id", ""),
@@ -57,8 +57,8 @@ def row(
     assert not kwargs, f"unhandled row() keywords: {sorted(kwargs)}"
     return StoredLineageRow(
         job_id=job_id,
-        source=source,
-        target=target,
+        input=input,
+        output=output,
         attributes=attributes,
     )
 
@@ -78,7 +78,7 @@ def _artifact_of(kwargs: dict, side: str) -> dict:
 def graph_of(*rows) -> LineageGraph:
     depths = {}
     for r in rows:
-        for endpoint in (r.source, r.target):
+        for endpoint in (r.input, r.output):
             if endpoint and endpoint != TERMINAL:
                 depths.setdefault(endpoint, 1)
     return LineageGraph(rows=list(rows), depths=depths)

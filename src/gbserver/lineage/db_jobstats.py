@@ -181,7 +181,7 @@ class DBLineageStore(ILineageStore):
         ``target_run_uuid``; ``build_id`` holds the artifact's uuid instead, which
         is what the W&B sink also does -- its own comment says the "release_id" for
         a registered artifact *is* the artifact uuid, and that is the column
-        :meth:`count_release_ids` queries. The ``(job_id, source, target)`` unique
+        :meth:`count_release_ids` queries. The ``(job_id, input, output)`` unique
         still protects against duplicates, so having no target run costs nothing.
 
         One consequence worth knowing: these rows are never skipped by the
@@ -257,7 +257,7 @@ class DBLineageStore(ILineageStore):
         )
 
         for draft in drafts:
-            if not draft.source and not draft.target:
+            if not draft.input and not draft.output:
                 # Both endpoints unidentifiable: the row would be terminal on both
                 # sides, which identifies nothing and would join unrelated jobs.
                 continue
@@ -305,7 +305,7 @@ class DBLineageStore(ILineageStore):
     ) -> None:
         """Store one decomposed row, tolerating the duplicate case.
 
-        The ``(job_id, source, target)`` unique is what makes re-ingest idempotent,
+        The ``(job_id, input, output)`` unique is what makes re-ingest idempotent,
         so an IntegrityError here is the expected outcome of recording the same
         lineage twice -- not a failure.
         """
@@ -319,10 +319,10 @@ class DBLineageStore(ILineageStore):
         except Exception:
             logger.debug(
                 "Lineage row already present or could not be added "
-                "(job=%s, source=%r, target=%r)",
+                "(job=%s, input=%r, output=%r)",
                 row.job_id,
-                row.source,
-                row.target,
+                row.input,
+                row.output,
             )
 
     # -- Building (delegated, so both sinks agree on what lineage is) --------
@@ -598,7 +598,7 @@ def _row_from_draft(
     equals NULL, so NULL endpoints would slip past the unique index and leave
     creation/deletion rows as the only ones a re-ingest could duplicate.
 
-    Everything that is not ``job_id``/``source``/``target`` goes into the row's
+    Everything that is not ``job_id``/``input``/``output`` goes into the row's
     ``attributes`` blob, whose shape is defined by
     :mod:`gbserver.lineage.attributes` -- including the two process ids, which are
     deliberately not columns: a build and a target run are granite.build's own
@@ -616,12 +616,12 @@ def _row_from_draft(
     """
     return StoredLineageRow(
         job_id=draft.job_id,
-        source=draft.source or TERMINAL,
-        target=draft.target or TERMINAL,
+        input=draft.input or TERMINAL,
+        output=draft.output or TERMINAL,
         attributes=build_attributes(
             job_metadata=draft.metadata,
-            source_artifact=draft.source_artifact,
-            target_artifact=draft.target_artifact,
+            input_artifact=draft.input_artifact,
+            output_artifact=draft.output_artifact,
             source_system=source_system,
             ids={"build_id": build_id, "target_run_uuid": target_run_uuid},
         ),

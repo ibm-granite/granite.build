@@ -24,7 +24,7 @@ do not share structure.
 
 The specification it encodes:
 
-1. A row is ``(job_id, source, target)``; ``source``/``target`` are artifact
+1. A row is ``(job_id, input, output)``; ``input``/``output`` are artifact
    identifiers, or the terminal marker for a creation/deletion.
 2. Descendants: from node X, follow rows whose ``source`` is X, arriving at their
    ``target``. Ancestors: the mirror.
@@ -75,8 +75,8 @@ def reference_walk(
     out_edges: dict = {}
     in_edges: dict = {}
     for row in rows:
-        out_edges.setdefault(row.source, []).append(row)
-        in_edges.setdefault(row.target, []).append(row)
+        out_edges.setdefault(row.input, []).append(row)
+        in_edges.setdefault(row.output, []).append(row)
 
     start = sorted({s for s in seeds if s and s != TERMINAL})
     depths: dict = {s: 0 for s in start}
@@ -107,12 +107,12 @@ def reference_walk(
                 continue
 
             for row in adjacency.get(node, []):
-                row_keys.add((row.job_id, row.source, row.target))
+                row_keys.add((row.job_id, row.input, row.output))
 
-                nxt = row.target if way == Direction.DESCENDANTS else row.source
+                nxt = row.output if way == Direction.DESCENDANTS else row.input
                 if not nxt or nxt == TERMINAL:
                     continue  # property 4
-                if row.source == row.target:
+                if row.input == row.output:
                     continue  # property 5
                 if nxt in seen:
                     continue

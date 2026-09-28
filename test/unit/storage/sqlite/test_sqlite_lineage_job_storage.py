@@ -345,9 +345,9 @@ class TestSchema:
         non_text = {
             name: kind
             for name, kind in columns.items()
-            # "index" is the autoincrement PK and "json" is the blob; neither is
-            # ever a query predicate.
-            if name not in ("index", "json") and not kind.startswith("VARCHAR")
+            # "json" is the blob; it is never a query predicate. (There is no
+            # autoincrement "index" column -- uuid is the primary key.)
+            if name != "json" and not kind.startswith("VARCHAR")
         }
         assert not non_text, f"a non-text promoted column is a latent bug: {non_text}"
 
@@ -366,7 +366,7 @@ class TestSchema:
 
     def test_no_endpoint_columns_exist(self, storage):
         """A job has many endpoint pairs, so neither belongs here. Naming a column
-        ``source``/``target`` would also pick up the SQL layer's global wide-column
+        ``input``/``output`` would also pick up the SQL layer's global wide-column
         width, which is keyed on column name across every table.
         """
         storage.add(job())
@@ -376,8 +376,8 @@ class TestSchema:
                 storage, f"PRAGMA table_info('{storage.table_name}')"
             )
         }
-        assert "source" not in columns
-        assert "target" not in columns
+        assert "input" not in columns
+        assert "output" not in columns
 
     def test_no_tags_column_yet(self, storage):
         """Tags are deliberately out of scope for this table for now."""

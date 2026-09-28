@@ -131,7 +131,7 @@ def _row_key(row: StoredLineageRow) -> tuple:
     genuinely different rows never do. This is also what keeps ``BOTH`` from
     double-counting the row that both directions reach.
     """
-    return (row.job_id, row.source, row.target)
+    return (row.job_id, row.input, row.output)
 
 
 def walk_lineage(
@@ -236,7 +236,7 @@ def _walk_one_direction(
             # Stop at a self-loop. Legitimate for unversioned entities: several runs
             # rewriting one table converge on a single node. The row is included, but
             # chaining *through* it would loop forever.
-            if row.source == row.target:
+            if row.input == row.output:
                 continue
 
             if reached in visited:
@@ -270,7 +270,7 @@ def _walk_one_direction(
             # rows are terminals or self-loops is correctly not counted as more graph.
             if reached == TERMINAL or not reached or reached in visited:
                 continue
-            if r.source == r.target:
+            if r.input == r.output:
                 continue
             matched = _matched_on(r, direction)
             # The batched query can return rows for nodes beyond this frontier; keep
@@ -289,23 +289,23 @@ def _hop(
 ) -> list:
     """Fetch one level's rows with a single batched, indexed query."""
     if direction == Direction.DESCENDANTS:
-        return storage.get_rows_by_source(frontier)
-    return storage.get_rows_by_target(frontier)
+        return storage.get_rows_by_input(frontier)
+    return storage.get_rows_by_output(frontier)
 
 
 def _matched_on(row: StoredLineageRow, direction: Direction) -> str:
     """Return the identifier a row was matched *on*, the mirror of _continuation.
 
-    Walking toward descendants, ``_hop`` queries by ``source``, so a returned row
-    belongs to the frontier node in its ``source``.
+    Walking toward descendants, ``_hop`` queries by ``input``, so a returned row
+    belongs to the frontier node in its ``input``.
     """
-    return row.source if direction == Direction.DESCENDANTS else row.target
+    return row.input if direction == Direction.DESCENDANTS else row.output
 
 
 def _continuation(row: StoredLineageRow, direction: Direction) -> str:
     """Return the identifier a walk continues from, for one row.
 
-    Walking toward descendants, a row matched on its ``source`` continues from its
-    ``target``, and vice versa.
+    Walking toward descendants, a row matched on its ``input`` continues from its
+    ``output``, and vice versa.
     """
-    return row.target if direction == Direction.DESCENDANTS else row.source
+    return row.output if direction == Direction.DESCENDANTS else row.input

@@ -83,6 +83,7 @@ class BaseLineageJobStorage(BaseItemStorage[StoredLineageJob], ILineageJobStorag
             "source_system",
             "status",
             "started_at",
+            "recorded_at",
         }
         return item.model_dump(include=fields_to_include)
 
@@ -102,6 +103,7 @@ class BaseLineageJobStorage(BaseItemStorage[StoredLineageJob], ILineageJobStorag
             source_system="granite.build",
             status="SUCCEEDED",
             started_at="2026-01-01 00:00:00",
+            recorded_at="2000-01-01T00:00:00.000000+00:00",
         )
 
     def get_job(self, job_id: str) -> Optional[StoredLineageJob]:

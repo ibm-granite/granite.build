@@ -31,12 +31,12 @@ from gbserver.types.constants import GB_LINEAGE_TABLE_NAME
 class ILineageRowStorage(IItemStorage[StoredLineageRow]):
     """Interface for lineage row storage implementations."""
 
-    def get_rows_by_source(self, sources: List[str]) -> List[StoredLineageRow]:
-        """Return rows whose ``source`` is one of ``sources`` (descendant hop)."""
+    def get_rows_by_input(self, inputs: List[str]) -> List[StoredLineageRow]:
+        """Return rows whose ``input`` is one of ``inputs`` (descendant hop)."""
         raise NotImplementedError
 
-    def get_rows_by_target(self, targets: List[str]) -> List[StoredLineageRow]:
-        """Return rows whose ``target`` is one of ``targets`` (ancestor hop)."""
+    def get_rows_by_output(self, outputs: List[str]) -> List[StoredLineageRow]:
+        """Return rows whose ``output`` is one of ``outputs`` (ancestor hop)."""
         raise NotImplementedError
 
     def get_rows_by_job(self, job_id: str) -> List[StoredLineageRow]:
@@ -82,8 +82,9 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         """
         fields_to_include = {
             "job_id",
-            "source",
-            "target",
+            "input",
+            "output",
+            "recorded_at",
         }
         return item.model_dump(include=fields_to_include)
 
@@ -97,37 +98,37 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         """
         return StoredLineageRow(
             job_id="sample-job",
-            source="lh://prod/ns/models/tbl/sample",
-            target="hf://huggingface.co/models/org/sample",
+            input="lh://prod/ns/models/tbl/sample",
+            output="hf://huggingface.co/models/org/sample",
         )
 
-    def get_rows_by_source(self, sources: List[str]) -> List[StoredLineageRow]:
-        """Return rows whose ``source`` is one of ``sources``.
+    def get_rows_by_input(self, inputs: List[str]) -> List[StoredLineageRow]:
+        """Return rows whose ``input`` is one of ``inputs``.
 
         One batched, indexed query -- the descendant hop of a level-order walk.
 
         Args:
-            sources: normalized URIs of the current frontier. The terminal
-                marker is dropped: a creation row's source identifies no artifact,
+            inputs: normalized URIs of the current frontier. The terminal
+                marker is dropped: a creation row's input identifies no artifact,
                 so matching on it would join unrelated creations together.
 
         Returns:
             The matching rows, or an empty list when nothing is left to match.
         """
-        wanted = self._batchable(sources)
+        wanted = self._batchable(inputs)
         if not wanted:
             return []
-        return self.get_by_where({"source": wanted})
+        return self.get_by_where({"input": wanted})
 
-    def get_rows_by_target(self, targets: List[str]) -> List[StoredLineageRow]:
-        """Return rows whose ``target`` is one of ``targets``.
+    def get_rows_by_output(self, outputs: List[str]) -> List[StoredLineageRow]:
+        """Return rows whose ``output`` is one of ``outputs``.
 
-        The ancestor hop; see :meth:`get_rows_by_source`.
+        The ancestor hop; see :meth:`get_rows_by_input`.
         """
-        wanted = self._batchable(targets)
+        wanted = self._batchable(outputs)
         if not wanted:
             return []
-        return self.get_by_where({"target": wanted})
+        return self.get_by_where({"output": wanted})
 
     @staticmethod
     def _batchable(identifiers: List[str]) -> List[str]:

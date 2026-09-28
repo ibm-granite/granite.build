@@ -69,9 +69,13 @@ _VALID_SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 # a label. The width is the lineage row's limit, imported rather than restated so
 # the DB column and the guard that keeps a URI inside it cannot drift. It is
 # narrower than the 1024 the other URI columns get, because these two are indexed
-# AND both sit in the ``(job_id, source, target)`` unique index -- see
+# AND both sit in the ``(job_id, input, output)`` unique index -- see
 # MAX_LINEAGE_URI_LENGTH for why that matters.
-_WIDE_STRING_COLUMNS = frozenset({"source", "target"})
+#
+# ``source`` is no longer a lineage column; it stays so the events table's
+# ``source`` column keeps the width it has always had (this set is keyed on column
+# name across every table).
+_WIDE_STRING_COLUMNS = frozenset({"input", "output", "source"})
 
 
 def _validate_sql_identifier(name: str, identifier_type: str = "identifier") -> str:

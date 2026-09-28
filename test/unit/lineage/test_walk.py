@@ -49,19 +49,19 @@ class FakeStorage:
         self.rows = rows
         self.queries = 0
 
-    def get_rows_by_source(self, sources: list) -> list:
+    def get_rows_by_input(self, sources: list) -> list:
         self.queries += 1
         wanted = {s for s in sources if s and s != TERMINAL}
-        return [r for r in self.rows if r.source in wanted]
+        return [r for r in self.rows if r.input in wanted]
 
-    def get_rows_by_target(self, targets: list) -> list:
+    def get_rows_by_output(self, targets: list) -> list:
         self.queries += 1
         wanted = {t for t in targets if t and t != TERMINAL}
-        return [r for r in self.rows if r.target in wanted]
+        return [r for r in self.rows if r.output in wanted]
 
 
-def row(job_id: str, source: str, target: str) -> StoredLineageRow:
-    return StoredLineageRow(job_id=job_id, source=source, target=target)
+def row(job_id: str, input: str, output: str) -> StoredLineageRow:
+    return StoredLineageRow(job_id=job_id, input=input, output=output)
 
 
 def chain(*nodes: str) -> list:
@@ -70,7 +70,7 @@ def chain(*nodes: str) -> list:
 
 
 def keys(graph: LineageGraph) -> set:
-    return {(r.job_id, r.source, r.target) for r in graph.rows}
+    return {(r.job_id, r.input, r.output) for r in graph.rows}
 
 
 class TestDirections:

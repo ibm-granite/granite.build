@@ -38,10 +38,10 @@ B = "lh://prod/ns/tables/b"
 C = "lh://prod/ns/tables/c"
 
 
-def row(job_id: str, source: str, target: str, **kwargs) -> StoredLineageRow:
+def row(job_id: str, input: str, output: str, **kwargs) -> StoredLineageRow:
     """A row whose endpoint detail and job metadata go into ``attributes``."""
     attributes = dict(kwargs.pop("attributes", {}) or {})
-    for side in ("source", "target"):
+    for side, group in (("source", "input"), ("target", "output")):
         kind = kwargs.pop(f"{side}_kind", "")
         name = kwargs.pop(f"{side}_name", "")
         detail = {}
@@ -50,10 +50,10 @@ def row(job_id: str, source: str, target: str, **kwargs) -> StoredLineageRow:
         if name:
             detail["name"] = name
         if detail:
-            attributes[side] = detail
+            attributes[group] = detail
     assert not kwargs, f"unhandled row() keywords: {sorted(kwargs)}"
     return StoredLineageRow(
-        job_id=job_id, source=source, target=target, attributes=attributes
+        job_id=job_id, input=input, output=output, attributes=attributes
     )
 
 
@@ -75,13 +75,13 @@ class FakeStorage:
             if chunk or start == 0:
                 yield chunk
 
-    def get_rows_by_source(self, sources: list) -> list:
+    def get_rows_by_input(self, sources: list) -> list:
         wanted = {s for s in sources if s and s != TERMINAL}
-        return [r for r in self.rows if r.source in wanted]
+        return [r for r in self.rows if r.input in wanted]
 
-    def get_rows_by_target(self, targets: list) -> list:
+    def get_rows_by_output(self, targets: list) -> list:
         wanted = {t for t in targets if t and t != TERMINAL}
-        return [r for r in self.rows if r.target in wanted]
+        return [r for r in self.rows if r.output in wanted]
 
     def count(self, where=None) -> int:
         return len(self._matching(where))

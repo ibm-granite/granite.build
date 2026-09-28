@@ -45,6 +45,13 @@ class SQLLineageJobStorage(
       :mod:`gbserver.storage.stored_lineage_job`), so ordering is lexicographic --
       correct for the zero-padded forms the producers emit, and the reason the column
       must not be "helpfully" converted to ``DateTime``.
+    - ``recorded_at`` is this index's own write time, UTC ISO-8601, and the default
+      pagination order. Indexed because it is what a future high-water-mark
+      incremental import will range over. Deliberately not in the unique key: it
+      differs on every write, so including it would defeat the dedup.
+
+    There is no autoincrement ``index`` column: nothing reads it, so ``uuid`` is the
+    primary key.
 
     ``indexed_columns`` is single-column only; this layer has no composite
     non-unique index, and a composite is reachable only as a side effect of
@@ -55,7 +62,7 @@ class SQLLineageJobStorage(
     non-text indexed column is a latent wrong-results bug rather than merely a slow
     one.
 
-    No column is named ``source`` or ``target``: those names are in the SQL layer's
+    No column is named ``input`` or ``output``: those names are in the SQL layer's
     ``_WIDE_STRING_COLUMNS``, which is keyed on column name and applies to every table
     in the system, so using one here would silently widen it to the row table's URI
     width.
@@ -67,6 +74,7 @@ class SQLLineageJobStorage(
             "space_name",
             "owner",
             "started_at",
+            "recorded_at",
         ]
         # One row per execution. A second write for the same job is a no-op rather
         # than a duplicate, which is what makes re-recording idempotent and lets the
@@ -79,6 +87,5 @@ class SQLLineageJobStorage(
         # silently rather than loudly. That is why the promoted columns are held to
         # the inferred 256-char width instead of being widened.
         kwargs["unique_columns"] = {"job_id": None}
-        kwargs["autoincr_column"] = "index"
-        kwargs["default_pagination_sort_by_column"] = "index"
+        kwargs["default_pagination_sort_by_column"] = "recorded_at"
         super().__init__(**kwargs)

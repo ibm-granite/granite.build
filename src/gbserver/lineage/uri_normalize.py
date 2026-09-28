@@ -17,7 +17,7 @@
 """Normalize an artifact URI into a stable lineage identity.
 
 The lineage index keys nodes by URI: two rows describe the same artifact exactly
-when their ``source``/``target`` strings are equal. So every raw spelling of one
+when their ``input``/``output`` strings are equal. So every raw spelling of one
 artifact has to converge here, and -- far more importantly -- two spellings of
 *different* artifacts must never converge. A missed merge shows up as two
 disconnected subgraphs, which is visible and fixable; a wrong merge invents

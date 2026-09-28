@@ -28,7 +28,7 @@ import uuid as uuid_module
 import pytest
 
 from gbserver.lineage.attributes import (
-    SOURCE,
+    INPUT,
     endpoint_kind,
     endpoint_name,
     job_detail,
@@ -310,38 +310,38 @@ class TestRowContents:
         row = _row_from_draft(
             LineageRowDraft(
                 job_id="J1",
-                source="lh://prod/ns/models/tbl/label",
-                source_artifact={"name": "label", "artifact_type": "model"},
+                input="lh://prod/ns/models/tbl/label",
+                input_artifact={"name": "label", "artifact_type": "model"},
             ),
             build_id="BLD",
             target_run_uuid="TR",
         )
-        assert endpoint_kind(row.attributes, SOURCE) == "model"
-        assert endpoint_name(row.attributes, SOURCE) == "label"
+        assert endpoint_kind(row.attributes, INPUT) == "model"
+        assert endpoint_name(row.attributes, INPUT) == "label"
 
     def test_the_uri_is_not_repeated_inside_the_blob(self):
         """It is the row's identity; a second copy could only diverge from it."""
         row = _row_from_draft(
-            LineageRowDraft(job_id="J1", source="lh://prod/ns/tables/t"),
+            LineageRowDraft(job_id="J1", input="lh://prod/ns/tables/t"),
             build_id="BLD",
             target_run_uuid="TR",
         )
-        assert "uri" not in (row.attributes.get(SOURCE) or {})
+        assert "uri" not in (row.attributes.get(INPUT) or {})
 
     def test_none_endpoints_become_the_terminal_marker(self):
         row = _row_from_draft(
-            LineageRowDraft(job_id="J1", target="lh://prod/ns/tables/t"),
+            LineageRowDraft(job_id="J1", output="lh://prod/ns/tables/t"),
             build_id="BLD",
             target_run_uuid="TR",
         )
         # Not NULL: in SQL NULL never equals NULL, so NULL endpoints would slip
         # past the unique index.
-        assert row.source == ""
+        assert row.input == ""
         assert row.is_creation()
 
     def test_rows_record_the_producing_system(self):
         row = _row_from_draft(
-            LineageRowDraft(job_id="J1", source="lh://prod/ns/tables/t"),
+            LineageRowDraft(job_id="J1", input="lh://prod/ns/tables/t"),
             build_id="BLD",
             target_run_uuid="TR",
         )
@@ -350,7 +350,7 @@ class TestRowContents:
     def test_process_ids_are_carried_in_the_origin_group(self):
         """Carried but not indexed: they are empty for every imported source."""
         row = _row_from_draft(
-            LineageRowDraft(job_id="J1", source="lh://prod/ns/tables/t"),
+            LineageRowDraft(job_id="J1", input="lh://prod/ns/tables/t"),
             build_id="BLD",
             target_run_uuid="TR",
         )
@@ -363,7 +363,7 @@ class TestRowContents:
         Omitting the group lets a reader tell "not recorded" from "recorded empty".
         """
         row = _row_from_draft(
-            LineageRowDraft(job_id="J1", source="lh://prod/ns/tables/t"),
+            LineageRowDraft(job_id="J1", input="lh://prod/ns/tables/t"),
             build_id="",
             target_run_uuid="",
             source_system="lakehouse",
@@ -387,8 +387,8 @@ class TestRowContents:
             target_run_uuid="TR",
         )
         stored = rows.get_rows_by_job("J1")[0]
-        assert stored.source == "s3://bkt/raw"
-        assert stored.target == "hf://huggingface.co/models/org/repo"
+        assert stored.input == "s3://bkt/raw"
+        assert stored.output == "hf://huggingface.co/models/org/repo"
 
     def test_carried_metadata_survives(self, sink, rows):
         sink._write_job(
@@ -415,7 +415,7 @@ class TestArtifactRegistrationRows:
         # build_id holds the artifact uuid so count_release_ids finds them, while
         # target_run_uuid is absent: there is no target run.
         row = _row_from_draft(
-            LineageRowDraft(job_id="ART-UUID", source="lh://prod/ns/tables/t"),
+            LineageRowDraft(job_id="ART-UUID", input="lh://prod/ns/tables/t"),
             build_id="ART-UUID",
             target_run_uuid="",
         )

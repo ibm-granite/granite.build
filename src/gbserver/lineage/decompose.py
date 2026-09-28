@@ -86,7 +86,7 @@ class LineageRowDraft:
     A plain container rather than the storage model, so decomposition stays
     independent of the storage layer and testable without a database.
 
-    ``source`` and ``target`` are the artifacts' **normalized URIs**, and ``""``
+    ``input`` and ``output`` are the artifacts' **normalized URIs**, and ``""``
     for the terminal cases -- a creation job has no input, a deletion job no
     output. That empty string is real information, not a missing value, and the
     traversal stops there rather than chaining through it. It is also what
@@ -101,36 +101,36 @@ class LineageRowDraft:
     Attributes:
         job_id: identity of the job execution; the same value on every row of one
             job, and what makes the decomposition regroupable.
-        source: normalized URI of the input artifact, or ``""`` (creation).
-        target: normalized URI of the output artifact, or ``""`` (deletion).
-        source_artifact: the input artifact dict this row came from, if any.
-        target_artifact: the output artifact dict this row came from, if any.
+        input: normalized URI of the input artifact, or ``""`` (creation).
+        output: normalized URI of the output artifact, or ``""`` (deletion).
+        input_artifact: the input artifact dict this row came from, if any.
+        output_artifact: the output artifact dict this row came from, if any.
         metadata: the job metadata carried onto this row.
     """
 
     __slots__ = (
         "job_id",
-        "source",
-        "target",
-        "source_artifact",
-        "target_artifact",
+        "input",
+        "output",
+        "input_artifact",
+        "output_artifact",
         "metadata",
     )
 
     def __init__(
         self,
         job_id: str,
-        source: str = "",
-        target: str = "",
-        source_artifact: Optional[dict] = None,
-        target_artifact: Optional[dict] = None,
+        input: str = "",
+        output: str = "",
+        input_artifact: Optional[dict] = None,
+        output_artifact: Optional[dict] = None,
         metadata: Optional[dict] = None,
     ) -> None:
         self.job_id = job_id
-        self.source = source
-        self.target = target
-        self.source_artifact = source_artifact
-        self.target_artifact = target_artifact
+        self.input = input
+        self.output = output
+        self.input_artifact = input_artifact
+        self.output_artifact = output_artifact
         self.metadata = metadata if metadata is not None else {}
 
     def __eq__(self, other: object) -> bool:
@@ -140,15 +140,15 @@ class LineageRowDraft:
 
     def key(self) -> tuple:
         """Return the identity tuple the storage unique constraint mirrors."""
-        return (self.job_id, self.source, self.target)
+        return (self.job_id, self.input, self.output)
 
     def __hash__(self) -> int:
         return hash(self.key())
 
     def __repr__(self) -> str:
         return (
-            f"LineageRowDraft(job_id={self.job_id!r}, source={self.source!r}, "
-            f"target={self.target!r})"
+            f"LineageRowDraft(job_id={self.job_id!r}, input={self.input!r}, "
+            f"output={self.output!r})"
         )
 
 
@@ -284,10 +284,10 @@ def to_lineage_rows(job: dict) -> list[LineageRowDraft]:
     ) -> LineageRowDraft:
         return LineageRowDraft(
             job_id=job_id,
-            source=_endpoint(source),
-            target=_endpoint(target),
-            source_artifact=source,
-            target_artifact=target,
+            input=_endpoint(source),
+            output=_endpoint(target),
+            input_artifact=source,
+            output_artifact=target,
             metadata=dict(metadata),
         )
 
@@ -330,8 +330,8 @@ def group_by_job(rows: list[LineageRowDraft]) -> dict[str, dict[str, set]]:
     grouped: dict[str, dict[str, set]] = {}
     for row in rows:
         entry = grouped.setdefault(row.job_id, {"sources": set(), "targets": set()})
-        if row.source:
-            entry["sources"].add(row.source)
-        if row.target:
-            entry["targets"].add(row.target)
+        if row.input:
+            entry["sources"].add(row.input)
+        if row.output:
+            entry["targets"].add(row.output)
     return grouped

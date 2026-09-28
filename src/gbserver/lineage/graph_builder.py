@@ -43,8 +43,8 @@ from typing import Optional
 
 from gbcommon.uri.lh import URLSEGMENT_FILES, URLSEGMENT_MODELS as LH_URLSEGMENT_MODELS
 from gbserver.lineage.attributes import (
-    SOURCE,
-    TARGET,
+    INPUT,
+    OUTPUT,
     endpoint_kind,
     endpoint_name,
     job_detail,
@@ -140,40 +140,40 @@ def build_graph_dict(
 
     for row in graph.rows:
         if row.is_self_loop():
-            self_loop_rows.setdefault(row.source, []).append(row)
+            self_loop_rows.setdefault(row.input, []).append(row)
             continue
 
         run_id = _run_node_id(row)
         if run_id not in run_nodes:
             run_nodes[run_id] = _run_node(row, run_id)
 
-        if row.source != TERMINAL:
+        if row.input != TERMINAL:
             _ensure_artifact_node(
                 artifact_nodes,
-                uri=row.source,
-                kind=endpoint_kind(row.attributes, SOURCE),
-                name=endpoint_name(row.attributes, SOURCE),
-                depth=graph.depths.get(row.source),
+                uri=row.input,
+                kind=endpoint_kind(row.attributes, INPUT),
+                name=endpoint_name(row.attributes, INPUT),
+                depth=graph.depths.get(row.input),
             )
-            add_edge(row.source, run_id)
+            add_edge(row.input, run_id)
 
-        if row.target != TERMINAL:
+        if row.output != TERMINAL:
             _ensure_artifact_node(
                 artifact_nodes,
-                uri=row.target,
-                kind=endpoint_kind(row.attributes, TARGET),
-                name=endpoint_name(row.attributes, TARGET),
-                depth=graph.depths.get(row.target),
+                uri=row.output,
+                kind=endpoint_kind(row.attributes, OUTPUT),
+                name=endpoint_name(row.attributes, OUTPUT),
+                depth=graph.depths.get(row.output),
             )
-            add_edge(run_id, row.target)
+            add_edge(run_id, row.output)
 
     # One node per self-rewritten artifact, in place of one per row.
     for uri, rows in self_loop_rows.items():
         _ensure_artifact_node(
             artifact_nodes,
             uri=uri,
-            kind=endpoint_kind(rows[0].attributes, SOURCE),
-            name=endpoint_name(rows[0].attributes, SOURCE),
+            kind=endpoint_kind(rows[0].attributes, INPUT),
+            name=endpoint_name(rows[0].attributes, INPUT),
             depth=graph.depths.get(uri),
         )
         run_id = _self_loop_node_id(uri)

@@ -16,13 +16,13 @@
 
 """Storage model for one flat lineage row.
 
-A row is a ``(source, job_id, target)`` triple where the two endpoints are
+A row is an ``(input, job_id, output)`` triple where the two endpoints are
 **normalized URIs**. The URI is the identity: two rows describe the same artifact
 exactly when their endpoint strings are equal, which is what lets lineage from a
 source with no per-artifact uuid (Lakehouse, dmf-ng) be a first-class citizen
 instead of something an alias table has to compensate for.
 
-The graph has no node table. Its nodes are the distinct ``source``/``target``
+The graph has no node table. Its nodes are the distinct ``input``/``output``
 values, and the traversal walks by matching one row's endpoint against another's
 -- which is why those two columns are indexed.
 
@@ -44,14 +44,15 @@ together": it is the only identifier every source has by definition, so it is wh
 the sink's dedup asks about.
 """
 
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from pydantic import Field
 
 from gbserver.storage.stored_build import BaseStoredItem
 
-# Terminal marker for source/target. NOT NULL: in SQL, NULL never equals NULL, so
-# NULL endpoints would slip past the (job_id, source, target) unique index and
+# Terminal marker for input/output. NOT NULL: in SQL, NULL never equals NULL, so
+# NULL endpoints would slip past the (job_id, input, output) unique index and
 # leave creation/deletion rows -- the least visible ones -- as the only rows a
 # re-ingest could duplicate. The traversal runs in Python and the unique key
 # exists, so the sentinel costs nothing: the walk stops on a falsy endpoint
@@ -63,12 +64,12 @@ from gbserver.storage.stored_build import BaseStoredItem
 # silently fails to merge.
 TERMINAL = ""
 
-# Width of the ``source``/``target`` columns, restated for the SQL layer so the DB
+# Width of the ``input``/``output`` columns, restated for the SQL layer so the DB
 # column and the guard that keeps a URI inside it cannot drift.
 #
 # 512 rather than 1024, even though the other URI-bearing columns in this schema
 # get 1024: both of these are indexed AND both sit in the
-# ``(job_id, source, target)`` unique index, and MySQL caps an index key at 3072
+# ``(job_id, input, output)`` unique index, and MySQL caps an index key at 3072
 # bytes. Widening them makes that index larger still, and
 # ``__create_unique_indexes`` only *warns* when an index cannot be created -- so
 # an over-wide column would not fail loudly, it would silently cost the unique
@@ -86,6 +87,15 @@ TERMINAL = ""
 MAX_LINEAGE_URI_LENGTH = 512
 
 
+def utc_now_iso() -> str:
+    """Return the current UTC time as ISO-8601, the ``recorded_at`` form.
+
+    Fixed-width (microseconds always present, ``+00:00`` offset), so the column's
+    lexicographic order is its chronological order.
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
 class StoredLineageRow(BaseStoredItem):
     """One lineage row: an input, the job that ran, and an output.
 
@@ -95,9 +105,9 @@ class StoredLineageRow(BaseStoredItem):
             a job with 3 inputs and 2 outputs still say which inputs and which
             outputs that execution had. It is also what the read path groups on to
             rebuild a run node.
-        source: normalized URI of the input artifact, or :data:`TERMINAL` when the
+        input: normalized URI of the input artifact, or :data:`TERMINAL` when the
             job had no input (a creation).
-        target: normalized URI of the output artifact, or :data:`TERMINAL` when
+        output: normalized URI of the output artifact, or :data:`TERMINAL` when
             the job produced none (a deletion).
         attributes: everything else -- artifact kind and name per endpoint, the
             carried job metadata (name, status, owner, timestamps), the space and
@@ -106,16 +116,26 @@ class StoredLineageRow(BaseStoredItem):
             pipeline). Lives in the JSON blob,
             so nothing here is queryable; anything that needs filtering has to
             become a column first, and that is a deliberate bar to clear.
+        recorded_at: when this index wrote the row, UTC ISO-8601, stamped at write
+            time. Distinct from the job's ``started_at``, which keeps the source's
+            own form: this is *our* clock, not the producer's, and is the basis for
+            a future high-water-mark incremental import. Not part of the unique
+            key, so a re-ingest of the same relation still dedups.
     """
 
     job_id: str = Field(..., description="Identity of the job execution")
-    source: str = Field(
+    input: str = Field(
         default=TERMINAL,
         description="Normalized URI of the input artifact; TERMINAL if none",
     )
-    target: str = Field(
+    output: str = Field(
         default=TERMINAL,
         description="Normalized URI of the output artifact; TERMINAL if none",
+    )
+
+    recorded_at: str = Field(
+        default_factory=utc_now_iso,
+        description="UTC ISO-8601 time this index wrote the row",
     )
 
     attributes: Dict[str, Any] = Field(
@@ -125,11 +145,11 @@ class StoredLineageRow(BaseStoredItem):
 
     def is_creation(self) -> bool:
         """Whether the job produced this output with no recorded input."""
-        return self.source == TERMINAL
+        return self.input == TERMINAL
 
     def is_deletion(self) -> bool:
         """Whether the job consumed this input and produced nothing."""
-        return self.target == TERMINAL
+        return self.output == TERMINAL
 
     def is_self_loop(self) -> bool:
         """Whether the job rewrote its own input.
@@ -138,4 +158,4 @@ class StoredLineageRow(BaseStoredItem):
         converge on a single node. The traversal includes such a row but does not
         chain through it.
         """
-        return self.source == self.target and self.source != TERMINAL
+        return self.input == self.output and self.input != TERMINAL

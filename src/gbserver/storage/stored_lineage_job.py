@@ -17,7 +17,7 @@
 """Storage model for one job execution.
 
 One row per ``job_id``, where :mod:`gbserver.storage.stored_lineage_row` is one row
-per ``(source, job_id, target)``. That difference is the whole point of this table.
+per ``(input, job_id, output)``. That difference is the whole point of this table.
 
 A job with N inputs and M outputs decomposes into N*M lineage rows, and the job's
 metadata is copied onto every one of them (``decompose.JOB_METADATA_KEYS``). Four
@@ -49,7 +49,7 @@ rather than merely avoided by convention.
 ``String(256)``; the only wider-column mechanism is the module-level
 ``_WIDE_STRING_COLUMNS`` frozenset in the SQL layer, which is keyed on column *name*
 and so applies to every table in the system having a column of that name. That is
-why nothing here is named ``source`` or ``target`` (those are 512 globally, for the
+why nothing here is named ``input`` or ``output`` (those are 512 globally, for the
 row table's URIs) and why 256 is treated as the ceiling. ``job_namespace`` is
 ``"<space_name>/<build_name>"`` and fits comfortably.
 
@@ -66,6 +66,7 @@ from typing import Any, Dict
 from pydantic import Field
 
 from gbserver.storage.stored_build import BaseStoredItem
+from gbserver.storage.stored_lineage_row import utc_now_iso
 
 
 class StoredLineageJob(BaseStoredItem):
@@ -91,6 +92,10 @@ class StoredLineageJob(BaseStoredItem):
         status: job status as the source reported it.
         started_at: start timestamp in the source's own string form; see the module
             docstring.
+        recorded_at: when this index wrote the record, UTC ISO-8601, stamped at
+            write time. Distinct from :attr:`started_at` (the source's form, never
+            rewritten): this is our clock, and the basis for a future
+            high-water-mark incremental import.
         attributes: everything a response carries and no query filters on -- the
             light job detail (name, type, category, completion time), the
             originating system's ids, and the four large payloads this table exists
@@ -112,6 +117,10 @@ class StoredLineageJob(BaseStoredItem):
     status: str = Field(default="", description="Job status as reported")
     started_at: str = Field(
         default="", description="Start timestamp in the source's own string form"
+    )
+    recorded_at: str = Field(
+        default_factory=utc_now_iso,
+        description="UTC ISO-8601 time this index wrote the record",
     )
 
     attributes: Dict[str, Any] = Field(

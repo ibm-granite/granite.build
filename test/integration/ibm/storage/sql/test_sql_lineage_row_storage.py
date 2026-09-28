@@ -100,7 +100,7 @@ class TestSQLHops(HIDE_FROM_PYTEST.TestHops):
 
 
 @_SKIP_ADMIN
-class TestSQLSeeding(HIDE_FROM_PYTEST.TestSeeding):
+class TestSQLJobGrouping(HIDE_FROM_PYTEST.TestJobGrouping):
     pass
 
 
@@ -126,7 +126,7 @@ class TestSQLRoundTrip(HIDE_FROM_PYTEST.TestRoundTrip):
 
 
 @_SKIP_ADMIN
-class TestSQLStoredUriColumns(HIDE_FROM_PYTEST.TestStoredUriColumns):
+class TestSQLUriIsTheIdentity(HIDE_FROM_PYTEST.TestUriIsTheIdentity):
     pass
 
 
@@ -135,7 +135,7 @@ class TestSQLWalkAgainstRealStorage(HIDE_FROM_PYTEST.TestWalkAgainstRealStorage)
     """The traversal over a real postgres table.
 
     This is the one that matters most for the read API: ``walk_lineage`` issues
-    one ``WHERE source IN (frontier)`` per level, and ``get_by_where`` only builds
+    one ``WHERE input IN (frontier)`` per level, and ``get_by_where`` only builds
     an ``IN`` for string columns. On a non-string column it degrades to
     ``column == [list]`` instead of raising, so a dialect mismatch here shows up
     as an empty graph rather than an error.
@@ -148,8 +148,8 @@ class TestSQLWalkAgainstRealStorage(HIDE_FROM_PYTEST.TestWalkAgainstRealStorage)
     def test_walks_a_chain_stored_in_postgres(self, storage):
         from gbserver.lineage.walk import Direction, walk_lineage
 
-        storage.add(row(job_id="J1", source="a", target="b"))
-        storage.add(row(job_id="J2", source="b", target="c"))
+        storage.add(row(job_id="J1", input="a", output="b"))
+        storage.add(row(job_id="J2", input="b", output="c"))
 
         graph = walk_lineage(storage, ["a"], Direction.DESCENDANTS)
         assert graph.depths == {"a": 0, "b": 1, "c": 2}
@@ -180,7 +180,7 @@ class TestPostgresSchema:
 
     @pytest.mark.parametrize(
         "column",
-        ["source", "target", "job_id", "target_run_uuid", "build_id", "source_system"],
+        ["input", "output", "job_id", "recorded_at"],
     )
     def test_column_is_indexed(self, storage, column):
         definitions = " ".join(self._index_definitions(storage))
@@ -191,7 +191,7 @@ class TestPostgresSchema:
         definitions = self._index_definitions(storage)
         unique = [d for d in definitions if "UNIQUE" in d.upper() and "job_id" in d]
         assert unique, definitions
-        assert "(job_id, source, target)" in unique[0]
+        assert "(job_id, input, output)" in unique[0]
 
     def test_traversal_columns_are_text(self, storage):
         """``get_by_where`` only builds an ``IN`` clause for string columns."""
@@ -202,7 +202,7 @@ class TestPostgresSchema:
             {"table": storage.table_name},
         )
         columns = {name: kind for name, kind in rows}
-        for column in ("source", "target", "job_id"):
+        for column in ("input", "output", "job_id"):
             assert columns[column] == "character varying", (column, columns[column])
         # Every promoted column is text, so there is no non-string type to assert.
         # get_by_where builds an IN clause only for string columns and silently
@@ -210,6 +210,8 @@ class TestPostgresSchema:
         assert "derivable" not in columns
         assert "build_id" not in columns
         assert "target_run_uuid" not in columns
+        # uuid is the primary key; the autoincrement index column was dropped.
+        assert "index" not in columns
 
 
 @_SKIP_ADMIN
@@ -224,16 +226,16 @@ class TestPostgresIndexNameLimit:
     """
 
     def test_long_table_name_still_gets_its_unique_index(self):
-        # Long enough that "<table>_job_id_source_target" exceeds 63 chars.
+        # Long enough that "<table>_job_id_input_output" exceeds 63 chars.
         table = "t_lin_" + ("x" * 48) + uuid_module.uuid4().hex[:6]
         assert len(table) > 45
         storage = SQLStorageFactory().create_lineage_row_storage(table_name=table)
         try:
-            storage.add(row(job_id="J", source="a", target="b"))
+            storage.add(row(job_id="J", input="a", output="b"))
 
             # The guard still holds under the hashed name.
             with pytest.raises(Exception):
-                storage.add(row(job_id="J", source="a", target="b"))
+                storage.add(row(job_id="J", input="a", output="b"))
 
             from sqlalchemy import text
 
@@ -249,7 +251,7 @@ class TestPostgresIndexNameLimit:
                 ]
             unique = [d for d in definitions if "UNIQUE" in d.upper()]
             assert unique, definitions
-            assert "(job_id, source, target)" in unique[0]
+            assert "(job_id, input, output)" in unique[0]
             for definition in definitions:
                 # Every emitted identifier must be within postgres's limit.
                 name = definition.split(" ON ")[0].split()[-1].strip('"')
@@ -271,24 +273,24 @@ class TestPostgresTerminalSentinel:
     """
 
     def test_creation_rows_of_two_jobs_coexist(self, storage):
-        storage.add(row(job_id="C1", source=TERMINAL, target="x"))
-        storage.add(row(job_id="C2", source=TERMINAL, target="x"))
-        assert len(storage.get_rows_by_target(["x"])) == 2
+        storage.add(row(job_id="C1", input=TERMINAL, output="x"))
+        storage.add(row(job_id="C2", input=TERMINAL, output="x"))
+        assert len(storage.get_rows_by_output(["x"])) == 2
 
     def test_duplicate_creation_row_is_rejected(self, storage):
-        storage.add(row(job_id="C", source=TERMINAL, target="x"))
+        storage.add(row(job_id="C", input=TERMINAL, output="x"))
         with pytest.raises(Exception):
-            storage.add(row(job_id="C", source=TERMINAL, target="x"))
+            storage.add(row(job_id="C", input=TERMINAL, output="x"))
 
     def test_sentinel_is_stored_as_empty_string_not_null(self, storage):
         from sqlalchemy import text
 
-        storage.add(row(job_id="C", source=TERMINAL, target="x"))
+        storage.add(row(job_id="C", input=TERMINAL, output="x"))
         with storage._engine.connect() as connection:
             nulls = connection.execute(
                 text(
                     f"SELECT count(*) FROM {storage.table_name} "
-                    "WHERE source IS NULL OR target IS NULL"
+                    "WHERE input IS NULL OR output IS NULL"
                 )
             ).scalar()
         assert nulls == 0

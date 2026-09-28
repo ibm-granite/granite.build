@@ -165,7 +165,7 @@ class TestOneHop:
         self.raw = add_table(storage, "raw_tbl")
         target_uuid = str(uuid_module.uuid4())
         self.model = add_model(storage, self.build, target_uuid, "trained")
-        self.target = add_target(
+        self.output = add_target(
             storage,
             self.build,
             inputs={"raw": self.raw.uuid},
@@ -221,8 +221,8 @@ class TestOneHop:
     def test_the_row_connects_the_two_artifacts(self, storage):
         self.sink.add_jobstats_for_build(storage, self.build.uuid)
         row = all_rows(storage)[0]
-        assert row.source == normalize_uri(self.raw.uri)
-        assert row.target == normalize_uri(self.model.uri)
+        assert row.input == normalize_uri(self.raw.uri)
+        assert row.output == normalize_uri(self.model.uri)
 
     def test_the_endpoints_are_the_registered_uris(self, storage):
         """No separate URI column: the endpoint IS the URI.
@@ -233,8 +233,8 @@ class TestOneHop:
         """
         self.sink.add_jobstats_for_build(storage, self.build.uuid)
         row = all_rows(storage)[0]
-        assert row.source == normalize_uri(self.raw.uri)
-        assert row.target == normalize_uri(self.model.uri)
+        assert row.input == normalize_uri(self.raw.uri)
+        assert row.output == normalize_uri(self.model.uri)
         assert not hasattr(row, "source_uri")
 
     def test_downstream_reaches_the_model(self, storage):
@@ -270,10 +270,10 @@ class TestOneHop:
 
     def test_a_recorded_target_is_filtered_out(self, storage):
         self.sink.add_jobstats_for_build(storage, self.build.uuid)
-        assert self.sink.filter_unrecorded({self.target.uuid}) == set()
+        assert self.sink.filter_unrecorded({self.output.uuid}) == set()
 
     def test_an_unrecorded_target_is_reported(self, storage):
-        assert self.sink.filter_unrecorded({self.target.uuid}) == {self.target.uuid}
+        assert self.sink.filter_unrecorded({self.output.uuid}) == {self.output.uuid}
 
     def test_an_unidentifiable_uri_is_not_found(self, storage):
         """``None`` means "cannot key on this", never "nothing recorded".

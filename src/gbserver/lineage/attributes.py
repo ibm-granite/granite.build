@@ -16,7 +16,7 @@
 
 """The shape of a lineage row's ``attributes`` blob.
 
-The row has three columns -- ``job_id``, ``source``, ``target`` -- and everything
+The row has three columns -- ``job_id``, ``input``, ``output`` -- and everything
 else lives in one JSON blob. That blob needs a written contract more than the
 columns do, precisely because the database will not enforce it: it is ``Text``, so
 nothing in here is queryable, indexable, or validated on write. Without a contract
@@ -24,7 +24,7 @@ each producer invents its own keys and every reader has to tolerate all of them.
 
 Four top-level groups, by who owns the value:
 
-``source`` / ``target``
+``input`` / ``output``
     What each endpoint *is* -- ``kind`` and ``name``. The URI is already the row's
     identity, so it is not repeated here.
 
@@ -63,8 +63,8 @@ from typing import Any, Dict, Optional
 
 # Top-level groups. Named as constants because both the writer and the readers key
 # on them, and a typo in either place is a silently empty node rather than an error.
-SOURCE = "source"
-TARGET = "target"
+INPUT = "input"
+OUTPUT = "output"
 JOB = "job"
 ORIGIN = "origin"
 
@@ -73,7 +73,7 @@ ORIGIN = "origin"
 # (and to exclude, should one of them ever need excluding again).
 PAYLOAD = "payload"
 
-# Endpoint detail keys, inside SOURCE / TARGET.
+# Endpoint detail keys, inside INPUT / OUTPUT.
 KIND = "kind"
 NAME = "name"
 
@@ -159,8 +159,8 @@ _DROPPED_FLAT_KEYS = {
 
 def build_attributes(
     job_metadata: Optional[Dict[str, Any]] = None,
-    source_artifact: Optional[Dict[str, Any]] = None,
-    target_artifact: Optional[Dict[str, Any]] = None,
+    input_artifact: Optional[Dict[str, Any]] = None,
+    output_artifact: Optional[Dict[str, Any]] = None,
     source_system: str = "",
     ids: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
@@ -169,8 +169,8 @@ def build_attributes(
     Args:
         job_metadata: the flat job dict a producer emitted; translated onto the
             ``job`` group, dropping the keys in :data:`_DROPPED_FLAT_KEYS`.
-        source_artifact: the input artifact dict, read only for kind and name.
-        target_artifact: the output artifact dict, likewise.
+        input_artifact: the input artifact dict, read only for kind and name.
+        output_artifact: the output artifact dict, likewise.
         source_system: which system produced this row.
         ids: the originating system's own identifiers.
 
@@ -181,12 +181,12 @@ def build_attributes(
     """
     attributes: Dict[str, Any] = {}
 
-    source_detail = _endpoint_detail(source_artifact)
-    if source_detail:
-        attributes[SOURCE] = source_detail
-    target_detail = _endpoint_detail(target_artifact)
-    if target_detail:
-        attributes[TARGET] = target_detail
+    input_detail = _endpoint_detail(input_artifact)
+    if input_detail:
+        attributes[INPUT] = input_detail
+    output_detail = _endpoint_detail(output_artifact)
+    if output_detail:
+        attributes[OUTPUT] = output_detail
 
     job = _job_detail(job_metadata or {})
     if job:
@@ -243,7 +243,7 @@ def build_job_attributes(
 
     - It carries the :data:`PAYLOAD` group -- the four large payloads -- because at
       one row per job they are stored once rather than N*M times.
-    - It has no :data:`SOURCE` / :data:`TARGET` groups. Those describe one endpoint
+    - It has no :data:`INPUT` / :data:`OUTPUT` groups. Those describe one endpoint
       pair, which is a property of a row; a job has many.
 
     The ``job`` group here carries the same keys a row's group does, including the
@@ -293,7 +293,7 @@ def endpoint_kind(attributes: Optional[Dict[str, Any]], side: str) -> str:
 
     Args:
         attributes: the row's blob.
-        side: :data:`SOURCE` or :data:`TARGET`.
+        side: :data:`INPUT` or :data:`OUTPUT`.
     """
     return str(((attributes or {}).get(side) or {}).get(KIND, "") or "")
 

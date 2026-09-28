@@ -59,7 +59,7 @@ def pairs(rows) -> list[tuple]:
 
     A terminal stays "" -- it is a real value, not a missing one.
     """
-    return [(unname(row.source), unname(row.target)) for row in rows]
+    return [(unname(row.input), unname(row.output)) for row in rows]
 
 
 def unname(endpoint: str) -> str:
@@ -72,7 +72,7 @@ class TestTerminals:
     """An empty endpoint is real information, not a missing value.
 
     It is ``""`` rather than ``None`` so it survives SQL: NULL never equals NULL, so
-    NULL endpoints would slip past the ``(job_id, source, target)`` unique index and
+    NULL endpoints would slip past the ``(job_id, input, output)`` unique index and
     leave creation/deletion rows as the only ones a re-ingest could duplicate.
     """
 
@@ -319,20 +319,20 @@ class TestPartitionFiltersAreOutOfScope:
                 targets=[artifact("out2")],
             ),
         )
-        assert rows[0].source == other[0].source
+        assert rows[0].input == other[0].input
 
 
 class TestArtifactsAreCarried:
     def test_source_and_target_artifacts_are_kept(self):
         source, target = artifact("a", type="model"), artifact("x", type="dataset")
         rows = to_lineage_rows(job(sources=[source], targets=[target]))
-        assert rows[0].source_artifact == source
-        assert rows[0].target_artifact == target
+        assert rows[0].input_artifact == source
+        assert rows[0].output_artifact == target
 
     def test_terminal_rows_carry_only_one_side(self):
         rows = to_lineage_rows(job(targets=[artifact("x")]))
-        assert rows[0].source_artifact is None
-        assert rows[0].target_artifact is not None
+        assert rows[0].input_artifact is None
+        assert rows[0].output_artifact is not None
 
 
 class TestRejectedInput:
@@ -382,7 +382,7 @@ class TestRejectedInput:
 
 class TestRowIdentity:
     def test_key_is_the_storage_unique_triple(self):
-        row = LineageRowDraft(job_id="J", source="s3://b/a", target="s3://b/b")
+        row = LineageRowDraft(job_id="J", input="s3://b/a", output="s3://b/b")
         assert row.key() == ("J", "s3://b/a", "s3://b/b")
 
     def test_rows_of_one_job_have_distinct_keys(self):

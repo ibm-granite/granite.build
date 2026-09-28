@@ -42,8 +42,8 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple
 from gbserver.lineage.graph_builder import build_graph_dict
 from gbserver.lineage.openlineage_service import LineageService
 from gbserver.lineage.attributes import (
-    SOURCE,
-    TARGET,
+    INPUT,
+    OUTPUT,
     endpoint_kind,
     job_detail,
     origin_system,
@@ -187,12 +187,12 @@ class DBLineageService(LineageService):
         answer and there is nothing to reconcile.
         """
         for row in graph.rows:
-            if row.source == uri:
-                kind = endpoint_kind(row.attributes, SOURCE)
+            if row.input == uri:
+                kind = endpoint_kind(row.attributes, INPUT)
                 if kind:
                     return kind
-            if row.target == uri:
-                kind = endpoint_kind(row.attributes, TARGET)
+            if row.output == uri:
+                kind = endpoint_kind(row.attributes, OUTPUT)
                 if kind:
                     return kind
         return ""
@@ -326,7 +326,7 @@ class DBLineageService(LineageService):
 
         # Both directions, because "the runs touching this artifact" means the ones
         # that consumed it and the ones that produced it.
-        wheres = ({"source": normalized}, {"target": normalized})
+        wheres = ({"input": normalized}, {"output": normalized})
 
         # The total comes from SQL COUNT, not from walking the rows. An artifact with
         # 68,905 runs is exactly the case this endpoint exists for, and counting it in
@@ -339,9 +339,9 @@ class DBLineageService(LineageService):
         # 2x, which is worse than slow. Subtracting the overlap makes it exact and still
         # costs only one more indexed COUNT.
         total = (
-            self._safe_count({"source": normalized})
-            + self._safe_count({"target": normalized})
-            - self._safe_count({"source": normalized, "target": normalized})
+            self._safe_count({"input": normalized})
+            + self._safe_count({"output": normalized})
+            - self._safe_count({"input": normalized, "output": normalized})
         )
 
         # Streamed, and stopped as soon as the window is filled: pages are pulled only
@@ -354,7 +354,7 @@ class DBLineageService(LineageService):
                 break
             for chunk in self._safe_pages(where):
                 for row in chunk:
-                    key = (row.job_id, row.source, row.target)
+                    key = (row.job_id, row.input, row.output)
                     if key in seen:
                         continue
                     seen.add(key)
@@ -418,7 +418,7 @@ class DBLineageService(LineageService):
             return set()
         seeds: set = set()
         for row in rows:
-            for endpoint in (row.source, row.target):
+            for endpoint in (row.input, row.output):
                 if endpoint and endpoint != TERMINAL:
                     seeds.add(endpoint)
         return seeds
@@ -434,7 +434,7 @@ class DBLineageService(LineageService):
             for page in self.storage.get_paged():
                 seeds: set = set()
                 for row in page[:_RECENT_ACTIVITY_ROWS]:
-                    for endpoint in (row.source, row.target):
+                    for endpoint in (row.input, row.output):
                         if endpoint and endpoint != TERMINAL:
                             seeds.add(endpoint)
                 return seeds
@@ -503,8 +503,8 @@ def _run_entry(row) -> Dict:
     """
     return {
         "job_id": row.job_id,
-        "source": row.source,
-        "target": row.target,
+        "source": row.input,
+        "target": row.output,
         "is_self_loop": row.is_self_loop(),
         "job": job_detail(row.attributes),
         "source_system": origin_system(row.attributes),
