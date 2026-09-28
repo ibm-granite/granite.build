@@ -61,7 +61,7 @@ from gbcommon.uri.file import absolutize_file_uri
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
-from gbserver.environment.io.descriptors import InlineDeferredPush, OutputIO
+from gbserver.environment.io.descriptors import OutputIO
 from gbserver.messaging.messaging_base import MessagingBase
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
@@ -1622,23 +1622,21 @@ class Environment(ABC):
                 run_metadata=run_metadata,
                 output_config=output_config,
             )
-            is_sentinel = isinstance(result, InlineDeferredPush)
             if isinstance(result, BuildTargetStepConfig):
                 assert (
                     additional_targetsteps_queue is not None
                 ), "additional_targetsteps_queue is None"
                 await additional_targetsteps_queue.put(result)
-            elif not is_sentinel:
+            else:
                 # Synchronous inline push (memstore/envstore): available now.
                 Environment._thread_local.asset_events[uristr].set()
             await self.event_q.put(event)
             self.asset_bindings[uristr] = {BINDING_KEY: binding}
             # Immediate server-side ARTIFACT_PUSHED_EVENT only for synchronous
             # inline pushes, so the artifact transitions from pending to success.
-            # The InlineDeferredPush sentinel folds the upload into the producing
-            # step's epilogue, so PUSHED is deferred to that step's monitor
-            # ("Pushed HF URI:") — suppress the immediate emission here (spec §6).
-            if not isinstance(result, BuildTargetStepConfig) and not is_sentinel:
+            # A dispatched push step defers PUSHED to that step's monitor
+            # ("Pushed HF URI:"), so it is not emitted here.
+            if not isinstance(result, BuildTargetStepConfig):
                 pushed_event = BuildEvent(
                     run_metadata=run_metadata,
                     type=BuildEventType.ARTIFACT_PUSHED_EVENT,

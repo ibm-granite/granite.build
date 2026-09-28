@@ -47,7 +47,6 @@ from gbserver.environment.environment import Environment, EventLogLineParserConf
 from gbserver.environment.io.descriptors import (
     HfInputIO,
     HfOutputIO,
-    InlineDeferredPush,
 )
 from gbserver.environment.shared_fs import (
     build_provider,
@@ -3744,7 +3743,7 @@ class Skypilot(Environment):
         assetstore=None,
         output_config=None,
         **kwargs,
-    ) -> Union[BuildTargetStepConfig, InlineDeferredPush]:
+    ) -> BuildTargetStepConfig:
         """Push an artifact from the cluster to HuggingFace Hub via the hfpush step.
 
         Mirrors the K8s ``pushasset_hfstore`` resolution order for resource group
@@ -3769,22 +3768,6 @@ class Skypilot(Environment):
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
-
-        inline = (
-            storepush_config is not None
-            and isinstance(getattr(storepush_config, "config", None), dict)
-            and storepush_config.config.get("inline", False)
-        )
-        if inline:
-            # Upload was folded into the producing step's epilogue at launch
-            # (resolve_inline_output_hfstore + SkypilotIO.render_epilogue). This
-            # post-step call is a no-op that only lets pushasset emit CREATED (§6).
-            logger.info(
-                "pushasset_hfstore: inline mode — deferring upload to producing "
-                "step epilogue for %s",
-                str(hfuri),
-            )
-            return InlineDeferredPush()
 
         space_name = output_config.space_name if output_config else None
         # Enterprise/non-enterprise split + config precedence (environment-level

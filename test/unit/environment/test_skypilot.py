@@ -2046,22 +2046,6 @@ class TestInlineHfpush:
         return Skypilot(event_q=event_q, environment_config=config)
 
     @pytest.mark.asyncio
-    async def test_pushasset_hfstore_inline_returns_sentinel(self, skypilot_env):
-        from gbserver.environment.io.descriptors import InlineDeferredPush
-
-        cfg = MagicMock()
-        cfg.config = {"inline": True}
-        result = await skypilot_env.pushasset_hfstore(
-            binding={"path": "/out"},
-            binding_id="out",
-            storepush_config=cfg,
-            uri="hf:///ns/out",
-            assetstore=make_hfstore(),
-            output_config=None,
-        )
-        assert isinstance(result, InlineDeferredPush)
-
-    @pytest.mark.asyncio
     async def test_pushasset_hfstore_default_returns_step_config(self, skypilot_env):
         from gbserver.types.buildconfig import BuildTargetStepConfig
 

@@ -26,7 +26,6 @@ from libgbtest.buildrunner.buildtest import get_test_data_dir_for
 from gbcommon.uri.uri import URI
 from gbserver.environment.bash import Bash
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
-from gbserver.environment.io.descriptors import InlineDeferredPush
 from gbserver.types.buildevent import (
     ArtifactPushedEventPayload,
     ArtifactType,
@@ -168,40 +167,6 @@ def drain_event_queue(event_q: asyncio.Queue) -> List[BuildEvent]:
     while not event_q.empty():
         events.append(event_q.get_nowait())
     return events
-
-
-@pytest.mark.asyncio
-async def test_pushasset_sentinel_emits_created_only(pushasset_test_env):
-    """An InlineDeferredPush result emits CREATED and registers the binding but
-    suppresses the immediate PUSHED and does not signal asset_events (spec §6)."""
-    env = pushasset_test_env
-    input_uri = "hf:///ns/out"
-    # pushasset canonicalizes the URI, so the binding/asset_events keys use the
-    # normalized form, not the input string.
-    uristr = URI.get_uristr(URI.get_uri(input_uri))
-    with patch.dict(
-        env.pushasset_types,
-        {"hfstore": AsyncMock(return_value=InlineDeferredPush())},
-    ):
-        task = env.pushasset(
-            task_group=None,
-            binding={"path": "/out"},
-            uristr=input_uri,
-            binding_id="out",
-            run_metadata=EntityRunMetadata(build_id="build-sentinel"),
-            output_config=None,
-        )
-        await task
-
-    events = drain_event_queue(env.event_q)
-    types = [e.type for e in events]
-    # CREATED emitted, immediate PUSHED suppressed (deferred to step monitor).
-    assert BuildEventType.ARTIFACT_EVENT in types
-    assert BuildEventType.ARTIFACT_PUSHED_EVENT not in types
-    # Binding still registered for the produced artifact.
-    assert uristr in env.asset_bindings
-    # asset_events NOT signalled: the producing step's monitor sets PUSHED later.
-    assert not Environment._thread_local.asset_events[uristr].is_set()
 
 
 @pytest.mark.asyncio

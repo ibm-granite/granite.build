@@ -495,3 +495,63 @@ class TestPushassetHfstore:
         )
 
         assert step_config.step_uri == "space://steps/hfpush"
+
+
+@pytest.fixture
+def hf_env():
+    """A Skypilot env with a shared_filesystem provider already resolved.
+
+    Priming ``_shared_fs_provider_cache`` with a truthy object keeps the
+    fixture forward-compatible: a later task adds a guard requiring a
+    shared_filesystem provider on hfstore push, and this ensures that guard
+    is satisfied without touching real provider construction here.
+    """
+    from gbserver.environment.skypilot import Skypilot
+    from gbserver.types.environmentconfig import EnvironmentConfig
+
+    env = Skypilot(
+        event_q=asyncio.Queue(),
+        environment_config=EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": "k8s", "idle_minutes_to_autostop": 0},
+        ),
+    )
+    env._shared_fs_provider_cache = MagicMock(name="shared_filesystem_provider")
+    return env
+
+
+@pytest.fixture
+def hf_binding():
+    """A produced-artifact binding dict as pushasset_hfstore expects it."""
+    return {"path": "/workspace/output/model"}
+
+
+def _hf_assetstore(token: str = "tok-abc"):
+    """Return an Hfstore mock (Enterprise org so a resource group applies)."""
+    return _hfstore_mock(token=token)
+
+
+def _storepush(config):
+    """A minimal storepush_config carrying the given ``config`` dict."""
+    cfg = MagicMock()
+    cfg.mode = "default"
+    cfg.config = config
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_pushasset_hfstore_returns_step_config_even_with_legacy_inline(
+    hf_env, hf_binding, mock_hfuri, mock_resolve_rg
+):
+    # a legacy inline:true on the push config must NOT short-circuit to a sentinel
+    cfg = await hf_env.pushasset_hfstore(
+        binding=hf_binding,
+        binding_id="model",
+        storepush_config=_storepush(config={"inline": True}),
+        uri=mock_hfuri,
+        assetstore=_hf_assetstore(),
+        output_config=None,
+    )
+    assert isinstance(cfg, BuildTargetStepConfig)
+    assert cfg.step_uri == "space://steps/hfpush"

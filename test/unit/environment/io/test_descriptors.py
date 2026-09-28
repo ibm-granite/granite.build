@@ -1,7 +1,6 @@
 from gbserver.environment.io.descriptors import (
     HfInputIO,
     HfOutputIO,
-    InlineDeferredPush,
     InputIO,
     OutputIO,
 )
@@ -35,11 +34,3 @@ def test_hf_output_io_has_no_src_field():
     assert isinstance(io, OutputIO)
     # src is resolved at runtime from the GB_ARTIFACT_PATH marker, not stored.
     assert not hasattr(io, "src")
-
-
-def test_inline_deferred_push_is_distinct_sentinel():
-    from gbserver.types.buildconfig import BuildTargetStepConfig
-
-    sentinel = InlineDeferredPush()
-    assert not isinstance(sentinel, BuildTargetStepConfig)
-    assert isinstance(sentinel, InlineDeferredPush)

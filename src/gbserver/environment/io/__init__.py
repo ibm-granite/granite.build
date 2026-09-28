@@ -7,7 +7,6 @@ from gbserver.environment.io.base import EnvironmentIO
 from gbserver.environment.io.descriptors import (
     HfInputIO,
     HfOutputIO,
-    InlineDeferredPush,
     InputIO,
     OutputIO,
 )
@@ -18,7 +17,6 @@ __all__ = [
     "SkypilotIO",
     "HfInputIO",
     "HfOutputIO",
-    "InlineDeferredPush",
     "InputIO",
     "OutputIO",
     "build_env_io",

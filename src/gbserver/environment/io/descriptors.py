@@ -34,9 +34,3 @@ class HfOutputIO(OutputIO):
     binding_id: str
     token: str = ""
     hf_type: str = "model"
-
-
-class InlineDeferredPush:
-    """Third `pushasset_<store>` outcome: the upload was folded into the
-    producing step's epilogue, so the post-step push must be a no-op that
-    still emits CREATED and registers the binding (see spec §6)."""
