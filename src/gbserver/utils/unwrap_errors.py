@@ -17,6 +17,7 @@
 """Utility functions for better errors."""
 
 import asyncio
+from typing import Optional
 
 from gbserver.types.constants import FETCH_CLOUD_LOGS_MAX_RETRIES
 from gbserver.types.errors import LogMonitoringFailedException, WorkloadFailedException
@@ -26,10 +27,66 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def escape_for_one_record(text: str, max_chars: int) -> str:
+    """Collapse multi-line text into ONE log record, bounded to ``max_chars``.
+
+    The deployed log pipeline ingests one record per LINE (gbcli's
+    ``output_format_plain``), so a multi-line trace is split into N records that get
+    reordered and interleaved — which is why traces looked absent in the runner log.
+    Escaping newlines keeps the text in one record, in order, and reverses trivially.
+
+    Escapes BEFORE capping: escaping doubles every backslash and newline, so a cap
+    applied to the raw text would let a backslash/newline-heavy trace emit a record
+    up to 2x ``max_chars`` — the flood the cap exists to prevent. A cut is never left
+    on a dangling backslash, which would make the tail un-escape to something the
+    original never contained.
+
+    Args:
+        text: The raw, possibly multi-line text.
+        max_chars: Cap for the escaped result, before the truncation marker.
+
+    Returns:
+        A single-line string; truncated with the pre-escape length noted if capped.
+    """
+    escaped = text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "")
+    if len(escaped) <= max_chars:
+        return escaped
+    cut = escaped[:max_chars]
+    if (len(cut) - len(cut.rstrip("\\"))) % 2:
+        cut = cut[:-1]
+    return cut + f"... [truncated, {len(text)} chars total]"
+
+
+def with_remote_stacktrace(e: BaseException, err_stack: str) -> str:
+    """Append the remote API server's traceback to ``err_stack``, if it has one.
+
+    For a failure raised inside a remote API server, ``err_stack`` is just
+    "<Type>: <message>" — the re-raised object has no ``__traceback__`` — so the
+    frames naming the failing call/path live only on the exception's
+    ``stacktrace`` attribute (see :func:`remote_stacktrace`).
+
+    Call this once at the point ``err_stack`` is built, so every consumer (the
+    user-facing ``<details>`` body AND the single-record failure log) carries the
+    same text. Returns ``err_stack`` unchanged when there is no remote traceback,
+    or when it is already present.
+    """
+    server_stack = remote_stacktrace(e)
+    if server_stack is None or server_stack in err_stack:
+        return err_stack
+    return (
+        f"{err_stack.rstrip()}\n\n"
+        f"--- Traceback from the remote API server ---\n{server_stack}"
+    )
+
+
 def get_readable_error_message(e: Exception, err_stack: str) -> str:
     """Get a readable error message to post to the pull request."""
     logger.debug("get_readable_error_message start")
     readable_error = unwrap_errors(e)
+    # Defensive: callers should pass an err_stack already augmented via
+    # with_remote_stacktrace (so the log path carries it too), but augment here as
+    # well so a caller that forgets still gets the frames in the <details> body.
+    err_stack = with_remote_stacktrace(e, err_stack)
     body = f"""
 The run failed due to exception(s):
 {readable_error}
@@ -69,6 +126,52 @@ def format_oserror(e: OSError) -> str:
         if e.filename2:
             msg += f" -> {e.filename2!r}"
     return msg
+
+
+def remote_stacktrace(e: BaseException) -> Optional[str]:
+    """Return a traceback recorded on a remote server for ``e``, if any.
+
+    SkyPilot's client re-raises the *API server's* exception object on our side
+    (``sky/client/sdk.py:_raise_exception_object_on_client``). The object is
+    unpickled fresh, so ``__traceback__`` and ``__cause__`` are empty and
+    ``logger.exception``/``exc_info=True`` render a single bare line with no
+    frames. The server-side traceback survives as a ``stacktrace`` string
+    attribute (set by ``sky/server/requests/requests.py:set_exception_stacktrace``),
+    which is the only place the failing path appears for errors raised remotely —
+    an ``OSError`` built as ``OSError(errno, strerror)`` carries no ``filename``
+    for :func:`format_oserror` to report.
+
+    Searches the whole exception chain (``__cause__``/``__context__`` and
+    ``(Base)ExceptionGroup`` members), not just ``e``: by the time a failure
+    reaches a reporting layer it is typically wrapped — the production trace read
+    ``RunFailed -> ValueError: failed during loading artifacts`` over the
+    original OSError — and looking only at the outermost exception would skip the
+    server traceback exactly where it is needed. Mirrors the traversal in
+    :func:`unwrap_errors`.
+
+    Returns None when no exception in the chain carries a non-empty ``stacktrace``
+    string, so locally-raised exceptions (which have a real traceback) are
+    unaffected.
+    """
+    # Cycles are possible via __context__; bound the walk by identity.
+    seen: set[int] = set()
+
+    def _walk(exc: Optional[BaseException]) -> Optional[str]:
+        if exc is None or id(exc) in seen:
+            return None
+        seen.add(id(exc))
+        stacktrace = getattr(exc, "stacktrace", None)
+        if isinstance(stacktrace, str) and stacktrace.strip():
+            return stacktrace
+        if isinstance(exc, BaseExceptionGroup):
+            for member in exc.exceptions:
+                found = _walk(member)
+                if found is not None:
+                    return found
+        # __cause__ first (explicit `raise ... from`), then the implicit context.
+        return _walk(exc.__cause__) or _walk(exc.__context__)
+
+    return _walk(e)
 
 
 def format_failure_reason(e: BaseException) -> str:

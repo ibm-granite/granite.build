@@ -56,6 +56,17 @@ See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_conf
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
 
+> **Slow login nodes and the pre-launch probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`).** Before an
+> HPC launch gbserver can run a trivial `echo` over SSH to name a wedged login node up front, rather
+> than leaving you SkyPilot's opaque `ValueError: Failed to get partitions for cluster …`. On a node
+> slow to send its SSH banner this backfires: the probe holds a session for up to its timeout
+> (default 30s), and where SSH slots are scarce that starves the control connection SkyPilot opens
+> next for `scontrol show partitions -o`. The symptom is `Connection timed out during banner
+> exchange` from the probe *and* the launch, once per provision retry — a diagnostic causing the
+> failure it reports. Set `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` to disable it (our deployments
+> do; the skip is logged). Costs no error handling: genuine blips are still retried as transient and
+> the API server's traceback is still surfaced.
+
 ### `cluster` / `zone`
 
 - `cluster` is composed into `infra=slurm/<cluster>` for steps that don't set their own
@@ -78,9 +89,14 @@ whichever layer is most convenient:
 
 This precedence is implemented in `Skypilot._resolve_infra_and_zone` and applies to the HPC
 clouds (`slurm` and `lsf` — see [skypilot-lsf.md](skypilot-lsf.md); non-HPC clouds consult only
-the step launcher's `resources`). For a real-cluster example, the SLURM/BlueVela integration
-fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` target BlueVela's
-`gpu-mid` partition (reached at `login1`) via the `bluevela` environment.
+the step launcher's `resources`). Because the resolver ends by falling back to the environment's own
+`config.cluster` / `config.zone`, this env-wide default is **enforced for every step** — including
+step types not listed under `config.steps` (see
+[Per-step-type config defaults](README.md#per-step-type-config-defaults-configstepstype)). A `command`
+step with no `zone` of its own thus lands on the environment's partition, while `hfpull`/`hfpush` listed
+under `config.steps` take their per-type partition. For a real-cluster example, the SLURM/BlueVela
+integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` target
+BlueVela's `gpu-mid` partition (reached at `login1`) via the `bluevela` environment.
 
 > **The `bluevela` environment lives in a remote space, not this repo.** Those fixtures resolve
 > `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), which is

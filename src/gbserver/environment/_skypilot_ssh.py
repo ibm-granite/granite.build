@@ -5,10 +5,11 @@ both skypilot.py and skypilot_managed.py for post-launch tasks (sidecars).
 """
 
 import asyncio
+import contextlib
 import re
-import subprocess
+from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
@@ -81,6 +82,160 @@ def extract_host_ssh_info(cluster_name: str) -> Tuple[str, str]:
     return host_ip, ssh_key_path
 
 
+def _host_ssh_base_cmd(ssh_key: str, host_ip: str, connect_timeout: int) -> List[str]:
+    """Shared `ssh` prefix for the post-launch host connection.
+
+    Args:
+        ssh_key: Path to the SSH private key (``-i``).
+        host_ip: Host VM address; connected to as ``ubuntu@<host_ip>:22``.
+        connect_timeout: ``ConnectTimeout`` seconds — bounds the TCP leg only,
+            not the banner/auth phase (see :func:`_await_host_reachable`).
+
+    Returns:
+        The argv prefix, ending with the destination; append the remote command.
+    """
+    return [
+        "ssh",
+        "-i",
+        ssh_key,
+        "-p",
+        "22",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        f"ConnectTimeout={connect_timeout}",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=3",
+        f"ubuntu@{host_ip}",
+    ]
+
+
+# SSH failures that never succeed on retry — a rejected key stays rejected.
+# Mirrors _NON_TRANSIENT_PROVISION_SUBSTRINGS in skypilot.py (kept local: that
+# one is matched against SkyPilot exception text).
+#
+# Deliberately NOT here: "no such file or directory". It reads permanent, but an
+# identity file on a momentarily-unavailable shared mount emits exactly that, and
+# treating it as fatal aborts every remaining attempt on the first try — the
+# opposite of what this module exists to do. Retrying a genuinely missing key
+# costs a few bounded attempts before the same failure surfaces.
+_FATAL_SSH_SUBSTRINGS = (
+    "permission denied",
+    "too many authentication failures",
+    "host key verification failed",
+    "no such identity",
+    "invalid privatekey",
+    "unprotected private key file",
+    "bad configuration option",
+)
+
+
+def _is_fatal_ssh_error(stderr_text: str) -> bool:
+    """True if this SSH failure will not be fixed by retrying.
+
+    Args:
+        stderr_text: Raw stderr from the failed ``ssh`` invocation; matched
+            case-insensitively against _FATAL_SSH_SUBSTRINGS.
+
+    Returns:
+        True to stop retrying (auth/config rejection), False to back off and
+        retry — including for transient wording and anything unrecognized.
+    """
+    lowered = stderr_text.lower()
+    return any(sub in lowered for sub in _FATAL_SSH_SUBSTRINGS)
+
+
+async def _await_host_reachable(host_ip: str, ssh_key: str, login_timeout: int) -> None:
+    """Wait until the host completes an SSH login, retrying the connect phase.
+
+    ``ConnectTimeout`` bounds only the TCP leg, so a slow-banner host hangs past it;
+    an `echo` under ``wait_for`` bounds banner+auth+session setup. Retries only this
+    phase — never the caller's command, which may not be idempotent.
+    """
+    from gbserver.types.constants import GBSERVER_SKYPILOT_HOST_SSH_ATTEMPTS
+
+    attempts = max(1, GBSERVER_SKYPILOT_HOST_SSH_ATTEMPTS)
+    # Unlike the pre-launch probe's timeout, 0 is NOT "disabled" here: it would reach
+    # wait_for(timeout=0), fire immediately, fail every attempt, and raise before the
+    # payload ever runs. Floor it so a 0/negative setting cannot brick post-launch
+    # tasks; to skip the reachability wait, set attempts to 1 and rely on the payload.
+    login_timeout = max(1, login_timeout)
+    last = "no attempt made"
+    for attempt in range(1, attempts + 1):
+        cmds = _host_ssh_base_cmd(ssh_key, host_ip, login_timeout) + [
+            "echo",
+            "gbserver probe",
+        ]
+        fatal = False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmds,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as e:  # noqa: BLE001 — falls through to warn + backoff
+            last = f"could not spawn ssh: {e}"
+        else:
+            try:
+                _, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=login_timeout
+                )
+            except asyncio.CancelledError:
+                await _kill_and_reap(proc)
+                raise
+            except Exception as e:  # noqa: BLE001 — timeout => host not ready
+                # wait_for only cancels the await; kill so a hung ssh can't linger.
+                await _kill_and_reap(proc)
+                last = f"login did not complete within {login_timeout}s ({type(e).__name__})"
+            else:
+                if proc.returncode == 0:
+                    if attempt > 1:
+                        logger.info("host %s reachable on attempt %d", host_ip, attempt)
+                    return
+                last = (stderr or b"").decode("utf-8", errors="replace").strip() or (
+                    f"ssh exited {proc.returncode}"
+                )
+                # A rejected key stays rejected: fail now instead of burning the
+                # budget on identical retries (mirrors the non-transient set in
+                # skypilot.py).
+                fatal = _is_fatal_ssh_error(last)
+        logger.warning(
+            "host %s not ready for post-launch SSH (attempt %d/%d): %s",
+            host_ip,
+            attempt,
+            attempts,
+            last,
+        )
+        if fatal:
+            break
+        if attempt < attempts:
+            await asyncio.sleep(min(2 ** (attempt - 1), 10))
+    raise RuntimeError(
+        f"Host {host_ip} did not accept an SSH login after {attempts} attempt(s): {last}"
+    )
+
+
+async def _kill_and_reap(proc: Process) -> None:
+    """Kill a subprocess and reap it, ignoring an already-exited child.
+
+    Reaping matters after a ``wait_for`` timeout: cancelling the await leaves the
+    child running, so without this a hung ssh lingers for the life of the runner.
+
+    Args:
+        proc: The process to terminate; already-exited is not an error.
+    """
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    with contextlib.suppress(Exception):
+        await proc.wait()
+
+
 async def execute_on_host_via_ssh(
     host_ip: str,
     ssh_key: str,
@@ -93,15 +248,21 @@ async def execute_on_host_via_ssh(
     Establishes an SSH session to ubuntu@<host_ip>:22 (not container proxy
     on 10022) and runs the given commands with optional environment variables.
 
+    Waits for a bounded login first (:func:`_await_host_reachable`), so a slow-banner
+    host fails in ~login_timeout rather than hanging to ``timeout``. Only that phase
+    retries; ``commands`` runs at most once (it may not be idempotent).
+
     Args:
         host_ip: The host VM IP address.
         ssh_key: The path to the SSH private key.
         commands: The bash commands to execute.
         env_vars: Optional dict of environment variables to inject.
-        timeout: Max seconds to wait for command completion (default: 600).
+        timeout: Max seconds to wait for command completion (default: 600). Bounds
+            the payload only; the preceding reachability wait can add up to
+            attempts x login_timeout plus backoff (~93s at defaults) before it.
 
     Raises:
-        RuntimeError: If SSH execution fails or times out.
+        RuntimeError: If the host never accepts a login, or execution fails/times out.
     """
     # Build environment variable exports at the start of the command
     env_setup = ""
@@ -114,27 +275,20 @@ async def execute_on_host_via_ssh(
     # Build the full bash command with env vars injected
     full_command = f"{env_setup}{commands}"
 
-    # Build SSH command with connection timeouts to fail fast on
-    # dead/unreachable hosts instead of hanging until the subprocess timeout.
-    ssh_cmd = [
-        "ssh",
-        "-i",
-        ssh_key,
-        "-p",
-        "22",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "ConnectTimeout=10",
-        "-o",
-        "ServerAliveInterval=5",
-        "-o",
-        "ServerAliveCountMax=3",
-        f"ubuntu@{host_ip}",
-        "bash",
-    ]
+    from gbserver.types.constants import (
+        GBSERVER_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S as _LOGIN_TIMEOUT,
+    )
+
+    # Bound banner+auth before sending the payload; otherwise a wedged host hangs
+    # to `timeout` (600s default).
+    await _await_host_reachable(host_ip, ssh_key, _LOGIN_TIMEOUT)
+
+    # The payload opens its own connection, so its banner/auth phase is bounded
+    # only by `timeout` — accepted, not overlooked: a slow login still completes
+    # within that budget, and tolerating slowness is the point. Sharing the
+    # probe's proven connection would need ControlMaster, which SkyPilot owns on
+    # this path. ServerAlive* still bounds post-auth silence to ~15s.
+    ssh_cmd = _host_ssh_base_cmd(ssh_key, host_ip, _LOGIN_TIMEOUT) + ["bash"]
 
     logger.info(
         "Executing post-launch task on host %s via SSH (key=%s)",
@@ -143,31 +297,44 @@ async def execute_on_host_via_ssh(
     )
 
     try:
-        result = await asyncio.to_thread(
-            subprocess.run,
-            ssh_cmd,
-            input=full_command.encode("utf-8"),
-            timeout=timeout,
-            capture_output=True,
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode != 0:
-            stderr_str = result.stderr.decode("utf-8", errors="replace")
-            stdout_str = result.stdout.decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Post-launch task failed on {host_ip} (exit code {result.returncode}).\n"
-                f"stderr: {stderr_str}\nstdout: {stdout_str}"
-            )
-        stdout_str = result.stdout.decode("utf-8", errors="replace")
-        logger.info(
-            "Post-launch task succeeded on host %s. Output:\n%s", host_ip, stdout_str
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to start post-launch task on {host_ip}: {e}") from e
+
+    # Native async subprocess, not subprocess.run in a thread: a thread is
+    # unreachable by cancellation, so a cancelled build orphaned the ssh child.
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(
+            proc.communicate(input=full_command.encode("utf-8")), timeout=timeout
         )
-    except subprocess.TimeoutExpired as e:
+    except asyncio.CancelledError:
+        await _kill_and_reap(proc)
+        raise
+    except (asyncio.TimeoutError, TimeoutError) as e:
+        await _kill_and_reap(proc)
         raise RuntimeError(
             f"Post-launch task on {host_ip} timed out after {timeout}s"
         ) from e
-    except RuntimeError:
-        raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — IO/decode error, not a timeout
+        # Reported distinctly: labelling an IO failure a timeout sends a debugger
+        # down the wrong path.
+        await _kill_and_reap(proc)
         raise RuntimeError(
-            f"Failed to execute post-launch task on {host_ip}: {e}"
+            f"Post-launch task on {host_ip} failed while reading output: {e}"
         ) from e
+
+    stdout_str = (stdout_b or b"").decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        stderr_str = (stderr_b or b"").decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Post-launch task failed on {host_ip} (exit code {proc.returncode}).\n"
+            f"stderr: {stderr_str}\nstdout: {stdout_str}"
+        )
+    logger.info(
+        "Post-launch task succeeded on host %s. Output:\n%s", host_ip, stdout_str
+    )

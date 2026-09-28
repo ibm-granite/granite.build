@@ -46,6 +46,7 @@ from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.constants import FILE_SCHEME
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import LogMonitoringFailedException
+from gbserver.utils import spawned_groups
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.logger import get_logger
 
@@ -259,6 +260,10 @@ class Bash(Environment):
                 env=env,
             )
             self._launched_processes[launch_id] = process
+            # Also record the session leader process-wide: cleanup_nohup below reaps
+            # it on the normal paths, but if this build's thread wedges, watcher
+            # shutdown needs a way to reap it without the launch_id or this instance.
+            spawned_groups.register(process.pid, label=f"bash launch {launch_id}")
             # Release monitors BEFORE awaiting the process so the log_monitor tails
             # job.log concurrently while the workload runs.
             self._release_monitors(launch_id)
@@ -388,7 +393,11 @@ class Bash(Environment):
         finally:
             # Unblock the log monitor's tail loop and drop the tracked process.
             self._monitoring_cleanup(launch_id=launch_id)
-            self._launched_processes.pop(launch_id, None)
+            dropped = self._launched_processes.pop(launch_id, None)
+            # This path owned the reap, so shutdown must not signal it again (the
+            # pid may by then belong to someone else).
+            if dropped is not None:
+                spawned_groups.unregister(dropped.pid)
 
     async def monitor_log_monitor(
         self: Self,

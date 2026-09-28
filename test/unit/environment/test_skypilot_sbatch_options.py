@@ -181,3 +181,51 @@ class TestSbatchOptionsLaunch:
         )
         # Neither docker nor sbatch_options -> no cluster_config_overrides at all.
         assert overrides is None
+
+
+# ---------------------------------------------------------------------------
+# Interaction with the build-tracking --comment (from run_metadata). The
+# launcher applies the comment via apply_slurm_comment_override BEFORE the
+# per-step sbatch_options deep-merge, so the two must land together under
+# slurm.sbatch_options without clobbering. These guard that merge order.
+# ---------------------------------------------------------------------------
+class TestSbatchOptionsWithMetadataComment:
+    @pytest.mark.asyncio
+    async def test_comment_and_sbatch_options_coexist(self):
+        # Build-tracking comment (from run_metadata) and per-step sbatch
+        # directives coexist under slurm.sbatch_options; neither is dropped.
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-comment-coexist",
+            launcher_config={
+                "run": "hostname",
+                "resources": {},
+                "sbatch_options": {"time": 60, "qos": "high"},
+            },
+            config={},
+            run_metadata={"build_id": "b1", "target_name": "My Target"},
+        )
+        assert overrides["slurm"]["sbatch_options"] == {
+            "time": 60,
+            "qos": "high",
+            "comment": "build_id=b1;target=My_Target",
+        }
+
+    @pytest.mark.asyncio
+    async def test_explicit_sbatch_comment_overrides_metadata(self):
+        # An explicit `comment` in sbatch_options is merged last, so it wins
+        # over the build-tracking comment (documented precedence).
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-comment-override",
+            launcher_config={
+                "run": "hostname",
+                "resources": {},
+                "sbatch_options": {"comment": "operator-note"},
+            },
+            config={},
+            run_metadata={"build_id": "b1"},
+        )
+        assert overrides["slurm"]["sbatch_options"]["comment"] == "operator-note"

@@ -435,7 +435,9 @@ class BuildRun(Run):
         while True:
             event = None
             try:
-                event = await asyncio.wait_for(self.targets_queue.get(), timeout=1.0)
+                # Not wait_for: on 3.11 it can swallow a racing cancel (gh-86296).
+                async with asyncio.timeout(1.0):
+                    event = await self.targets_queue.get()
                 asyncio_runner = tg if tg is not None else asyncio
                 event_task = asyncio_runner.create_task(
                     self._process_event(event=event, tg=tg)  # type: ignore[arg-type]
