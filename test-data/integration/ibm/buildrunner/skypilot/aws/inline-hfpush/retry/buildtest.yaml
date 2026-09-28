@@ -1,0 +1,39 @@
+# YAML spec for the RETRY inline-hfpush build test (test_inline_hfpush.py).
+# Issue #390 §4.6 (retry over the dispatched-push topology). Same inline-pull ->
+# command -> dispatched-push flow as ../bare/, but run with the framework's
+# step-failure simulation ON: the environment injects one simulated step failure
+# once the workload starts and the RetryHandler absorbs it and retries in process,
+# so the build still reaches SUCCESS. Proves the dispatched-over-shared-FS topology
+# survives a step failure + in-process retry.
+#
+# HARNESS LIMITATION (documented in the task report): this framework simulation is
+# a step-level retry absorbed within the SAME target run (it does not record a
+# FAILED target run, so target_failure_count stays 0), and the harness does not
+# expose per-step run counts or WHICH step was retried. So this fixture cannot
+# assert the brief's "producer_run_count == 1 and push_run_count == 2" (only the
+# push re-ran, producer not re-run) — that signal is not observable here. The
+# closest observable signal the harness does expose is: the build reaches SUCCESS
+# through a simulated step failure + retry with the dispatched-push step count.
+targets:
+  - inline-hfpush-command
+target_expectations:
+  - target_name: inline-hfpush-command
+    # command (inline pull folded into its setup) + dispatched hfpush = 2, same as
+    # the bare variant. The simulated failure is absorbed by an in-process step
+    # retry within the same target run, so the final step count is unchanged.
+    step_count: 2
+    input_artifact_count: 1 # hf input (inline-pulled in the command step's setup)
+    output_artifact_count: 1 # hf output (uploaded by the dispatched hfpush step)
+    jobstats_count: 1
+# The committed Space (../space), shared with the bare/containerized/two-output
+# variants.
+space_uri: ../space
+# Only the basic build; skip the cancellation variant.
+tests:
+  - runner
+# Inject one simulated step failure once the workload starts; the RetryHandler
+# absorbs it and retries in process, so expected_status stays SUCCESS.
+simulate_step_failure: true
+# EC2 cold-start + SkyPilot setup for the command instance and the separate
+# dispatched push instance, plus the extra time for the simulated failure + retry.
+timeout_minutes: 45

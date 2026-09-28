@@ -1,0 +1,64 @@
+granite.build:
+  name: skypilot-aws-inline-hfpush-retry
+  # Retry variant of ../bare/build.yaml (#390 §4.6). Identical inline-pull ->
+  # command -> dispatched-push topology on the aws-inline environment (hf inline
+  # PULL, dispatched PUSH, shared_filesystem EFS block), run under the framework's
+  # step-failure simulation (buildtest.yaml simulate_step_failure: true): the
+  # environment injects one simulated step failure once the workload starts and the
+  # RetryHandler absorbs it and retries in process, so the build still reaches
+  # SUCCESS. Proves the dispatched-over-shared-FS topology survives a step failure +
+  # in-process retry.
+  #
+  # NOTE: the harness can only inject the failure at the environment/step level and
+  # observes the target-run and step records; it does NOT expose which specific step
+  # (command vs. the dispatched hfpush) was retried, nor per-step run counts, so this
+  # fixture cannot assert "only the push re-ran / the producer was not re-run"
+  # (see the test module docstring and the task report).
+  retries:
+    max_retries: 1
+  targets:
+    inline-hfpush-command:
+      # The aws-inline environment (hf assetstore inline PULL, dispatched PUSH,
+      # shared_filesystem EFS block) carried by the committed Space at ../space.
+      environment_uri: space://environments/skypilot/aws-inline
+      inputs:
+        # Real hf:// input — pull is inline, so the download folds into the command
+        # step's setup (no separate hfpull step). A tiny public model, no read token.
+        hf_input:
+          uri: hf:///hf-internal-testing/tiny-random-gpt2
+      outputs:
+        # Real hf:// output — the dispatched hfpush step uploads the fileset the
+        # command registers via the GB_ARTIFACT marker below. Distinct repo from the
+        # bare/containerized/two-output variants so they never collide. create_repo
+        # is exist_ok=True, so re-runs overwrite it.
+        hf_output:
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-inline-hfpush-e2e-retry-output
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Empty image => run BARE on the EC2 VM.
+              image: ""
+              # set -eu: a missing hf input (test -e) fails the step. The inline pull
+              # folded the download into this step's setup. The output goes into a
+              # RELATIVE out/ under the step's cwd; the dispatched hfpush step reads
+              # `$pwd/out` back over the EFS-backed shared workdir on its own instance.
+              command: >-
+                set -eu;
+                pwd=$(pwd);
+                mkdir -p out;
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                test -e "{{ bindings.hf_input.binding.path }}";
+                echo "verified inline-pulled hf input present (folded into setup)";
+                echo '{"artifact": "hf_output", "produced_by": "inline-hfpush-command"}' > out/result.json;
+                echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$pwd/out"
+            launcher_config:
+              resources:
+                # Pin the region to match the sibling aws tests / hf availability.
+                infra: "aws/us-east-1"
+                # t3.small = 2 vCPU / 2 GiB (~$0.02/hr): cheapest reliable size.
+                instance_type: t3.small
+                disk_size: 40

@@ -1,20 +1,22 @@
 # YAML spec for the CONTAINERIZED inline-hfpush build test (test_inline_hfpush.py).
-# Same inline hf:// input -> command -> hf:// output flow as ../bare/buildtest.yaml,
-# but the command step sets an image (image_id: docker:python:3.12-slim), so
-# setup+run execute INSIDE the container: the inline pull downloads into the
-# container fs and the inline push epilogue runs python/huggingface_hub in-container.
-# NO shared_filesystem; still ONE step on ONE instance (step_count 1). Reaching
-# SUCCESS proves the inline pull->compute->push path works from inside a container.
+# Same inline-pull -> command -> dispatched-push flow as ../bare/buildtest.yaml,
+# but the command step sets an image (image_id: docker:python:3.12-slim), so its
+# setup+run (including the inline hf pull) execute INSIDE the container. Issue #390:
+# hf push is a dispatched real step that reads the produced artifact from the
+# shared_filesystem (BYO EFS) and runs on its OWN EC2 instance — the inline PUSH
+# fold is gone. So this still runs as TWO steps (command + dispatched hfpush).
+# Reaching SUCCESS proves inline-pull (in-container) -> compute -> dispatched push
+# over shared FS.
 targets:
   - inline-hfpush-command
 target_expectations:
   - target_name: inline-hfpush-command
-    # SINGLE instance: inline pull folded into the command step's setup and inline
-    # push into its run epilogue, so exactly ONE step (no separate hfpull/hfpush) —
-    # the key contrast with shared-fs (step_count 3).
-    step_count: 1
+    # command (inline pull folded into the container's setup, no separate hfpull
+    # step) + the dispatched hfpush step = 2. The key change from #408's single
+    # folded instance (was step_count 1): the push is now a real separate step.
+    step_count: 2
     input_artifact_count: 1 # hf input (inline-pulled into the container in setup)
-    output_artifact_count: 1 # hf output (inline-pushed from the container in the epilogue)
+    output_artifact_count: 1 # hf output (uploaded by the dispatched hfpush step)
     jobstats_count: 1
 # The committed Space (../space) carries environments/skypilot/aws-inline and
 # chains base_uris to configurations/assets, shared with the bare variant.
@@ -23,9 +25,10 @@ space_uri: ../space
 tests:
   - runner
 # A single clean run with no injected synthetic failure: a missing input (test -e)
-# or a failed inline pull/push fails the build, so SUCCESS proves the inline
-# pull -> compute -> push path ran end to end inside a container on one instance.
+# or a failed inline pull / dispatched push fails the build, so SUCCESS proves the
+# inline pull -> compute -> dispatched push path ran end to end from a container.
 simulate_step_failure: false
-# EC2 cold-start + SkyPilot setup for ONE instance + container pull + the inline
-# hf pull/push. A shade higher than bare to allow for image pull into the VM.
-timeout_minutes: 30
+# EC2 cold-start + SkyPilot setup for the command instance (plus container image
+# pull) AND the separate dispatched push instance, the EFS mount, and the inline
+# hf pull + hf push. A shade higher than bare to allow for the image pull.
+timeout_minutes: 40

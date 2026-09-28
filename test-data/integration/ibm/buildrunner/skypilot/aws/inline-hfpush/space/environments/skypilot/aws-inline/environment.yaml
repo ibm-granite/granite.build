@@ -50,9 +50,13 @@ assetstores:
     push:
       - mode: default
         config: {}
-  # Inline pull AND inline push (no shared_filesystem): hfpull/hfpush run inline
-  # within the consuming/producing step so the model data lives instance-locally.
-  # cache_path pins the instance-local hf cache used by the inline download.
+  # Inline PULL, dispatched PUSH (#390). The hf pull is inline so the download
+  # folds into the consuming step's setup (no separate hfpull step); cache_path
+  # pins the instance-local hf cache used by that inline download. The hf push is
+  # NOT inline (config: {}): with a shared_filesystem set, hfpush now runs as its
+  # OWN dispatched step on a separate instance that reads the produced artifact
+  # back over the EFS-backed shared workdir and uploads it. The inline-push fold
+  # is gone (§4.1/§4.3).
   - store_uri: space://assetstores/hf
     pull:
       - mode: default
