@@ -68,7 +68,7 @@ JOB_METADATA_KEYS = (
     "source_code_details",
     # The originating endpoint records, when a source carries them. Lakehouse's
     # dmf.lineage keeps each endpoint as a struct whose snapshot_id, path and
-    # extra fields have no column in gb_lineage; carrying them here is the only
+    # extra fields have no column in gb_lineage_index; carrying them here is the only
     # way they survive, and they are not recoverable once Lakehouse is off.
     # Absent from every other source, so nothing else is affected.
     "source_object",

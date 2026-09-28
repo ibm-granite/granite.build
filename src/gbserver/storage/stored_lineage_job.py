@@ -74,7 +74,7 @@ class StoredLineageJob(BaseStoredItem):
 
     Attributes:
         job_id: identity of the execution, and the join key to
-            ``gb_lineage.job_id``. Unique. It is the only identifier every lineage
+            ``gb_lineage_index.job_id``. Unique. It is the only identifier every lineage
             source has by definition, which is why it -- rather than any process id
             -- keys this table: a build or a target run is granite.build's own
             concept and is absent from every imported job.
