@@ -35,11 +35,23 @@ from gbserver.environment.shared_fs.efs_provisioning import deprovision_efs
 
 _EPHEMERAL_TAG_KEY = "gb-ephemeral"
 _EPHEMERAL_TAG_VALUE = "true"
+# EFS delete is eventually consistent: a just-deleted filesystem is still returned
+# by describe_file_systems for a while in a terminal lifecycle state. Teardown
+# having *issued* the delete is enough -- treat these as gone so a correctly
+# deprovisioned run is not mis-read as a leak.
+_DEAD_LIFECYCLE = {"deleting", "deleted"}
+
+
+def _is_not_found(exc: Exception) -> bool:
+    """True for a boto3/botocore 'resource does not exist' error (e.g. the
+    filesystem finished deleting between detection and reap)."""
+    return "NotFound" in type(exc).__name__ or "does not exist" in str(exc)
 
 
 def list_gb_ephemeral(session, region: str) -> Tuple[Set[str], Set[str]]:
     """Return ``(filesystem_ids, security_group_ids)`` tagged gb-ephemeral=true in
-    ``region``.
+    ``region``, excluding filesystems already in a terminal (deleting/deleted)
+    lifecycle state.
 
     EFS ``describe_file_systems`` has no server-side tag filter, so its inline
     ``Tags`` are filtered client-side (paginated via ``Marker``/``NextMarker``);
@@ -53,6 +65,8 @@ def list_gb_ephemeral(session, region: str) -> Tuple[Set[str], Set[str]]:
     while True:
         resp = efs.describe_file_systems(**({"Marker": marker} if marker else {}))
         for fs in resp.get("FileSystems", []):
+            if fs.get("LifeCycleState") in _DEAD_LIFECYCLE:
+                continue
             tags = {t["Key"]: t["Value"] for t in fs.get("Tags", [])}
             if tags.get(_EPHEMERAL_TAG_KEY) == _EPHEMERAL_TAG_VALUE:
                 fsids.add(fs["FileSystemId"])
@@ -93,28 +107,35 @@ def reap_leaked(session, region: str, fsids: Set[str], sgids: Set[str]):
     failures = []
     efs = session.client("efs", region_name=region)
     for fsid in sorted(fsids):
-        mt_ids = [
-            m["MountTargetId"]
-            for m in efs.describe_mount_targets(FileSystemId=fsid).get(
-                "MountTargets", []
+        try:
+            mt_ids = [
+                m["MountTargetId"]
+                for m in efs.describe_mount_targets(FileSystemId=fsid).get(
+                    "MountTargets", []
+                )
+            ]
+            provisioned = ProvisionedResources(
+                region=region,
+                file_system_id=fsid,
+                dns_name="",
+                mount_target_ids=mt_ids,
+                subnet_ids=[],
+                security_group_id=None,
+                created_sg=False,
             )
-        ]
-        provisioned = ProvisionedResources(
-            region=region,
-            file_system_id=fsid,
-            dns_name="",
-            mount_target_ids=mt_ids,
-            subnet_ids=[],
-            security_group_id=None,
-            created_sg=False,
-        )
-        failures.extend(deprovision_efs(session, provisioned))
+            failures.extend(deprovision_efs(session, provisioned))
+        except Exception as e:  # noqa: BLE001 - best-effort reap
+            # The filesystem may have finished deleting between detection and reap;
+            # that is not a leak. Any other error is recorded, not raised.
+            if not _is_not_found(e):
+                failures.append(f"reap {fsid}: {e}")
 
     ec2 = session.client("ec2", region_name=region)
     for sgid in sorted(sgids):
         try:
             ec2.delete_security_group(GroupId=sgid)
         except Exception as e:  # noqa: BLE001 - best-effort reap
-            failures.append(f"delete_security_group {sgid}: {e}")
+            if not _is_not_found(e):
+                failures.append(f"delete_security_group {sgid}: {e}")
 
     return failures

@@ -69,6 +69,7 @@ the directory returned by ``_get_yaml_spec_dir`` below.
 """
 
 import os
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -80,6 +81,12 @@ from libgbtest.buildrunner.buildtest import (
     get_test_data_dir_for,
 )
 from libgbtest.constants import extended_testing_only
+
+# No-leak settle window: EFS/EC2 deletes are eventually consistent, so after
+# teardown poll up to _NO_LEAK_SETTLE_S (every _NO_LEAK_POLL_S) for the tagged
+# resources to disappear before declaring a leak.
+_NO_LEAK_SETTLE_S = 180
+_NO_LEAK_POLL_S = 10
 
 # The documented placeholder file_system_id the fixture Space ships (mirrors the
 # commented example in configurations/assets/environments/skypilot/aws/
@@ -277,19 +284,28 @@ class TestSkypilotAwsEphemeralEfs(AbstractYamlBuildRunnerTest):
 
         before_fs, before_sg = list_gb_ephemeral(session, region)
         super().test_runner()  # provisions, runs to SUCCESS, then deprovisions
-        after_fs, after_sg = list_gb_ephemeral(session, region)
 
-        leaked_fs = after_fs - before_fs
-        leaked_sg = after_sg - before_sg
-        if leaked_fs or leaked_sg:
-            reap_failures = reap_leaked(session, region, leaked_fs, leaked_sg)
-            reap_note = (
-                "reaped"
-                if not reap_failures
-                else "reap incomplete: " + "; ".join(reap_failures)
-            )
-            pytest.fail(
-                "ephemeral EFS leaked after teardown in "
-                f"{region}: filesystems={sorted(leaked_fs)} "
-                f"security_groups={sorted(leaked_sg)} ({reap_note})"
-            )
+        # EFS/EC2 deletes are eventually consistent, so poll: teardown having
+        # issued the delete is enough. list_gb_ephemeral already drops filesystems
+        # in a terminal lifecycle state; poll a bounded window for the rest to
+        # disappear before declaring a leak.
+        deadline = time.monotonic() + _NO_LEAK_SETTLE_S
+        while True:
+            after_fs, after_sg = list_gb_ephemeral(session, region)
+            leaked_fs = after_fs - before_fs
+            leaked_sg = after_sg - before_sg
+            if not leaked_fs and not leaked_sg:
+                break
+            if time.monotonic() >= deadline:
+                reap_failures = reap_leaked(session, region, leaked_fs, leaked_sg)
+                reap_note = (
+                    "reaped"
+                    if not reap_failures
+                    else "reap incomplete: " + "; ".join(reap_failures)
+                )
+                pytest.fail(
+                    "ephemeral EFS leaked after teardown in "
+                    f"{region}: filesystems={sorted(leaked_fs)} "
+                    f"security_groups={sorted(leaked_sg)} ({reap_note})"
+                )
+            time.sleep(_NO_LEAK_POLL_S)

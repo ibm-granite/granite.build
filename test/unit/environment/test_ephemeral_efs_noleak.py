@@ -11,11 +11,11 @@ import pytest
 from libgbtest.aws_efs_noleak import list_gb_ephemeral, reap_leaked
 
 
-def _fs(fsid, ephemeral=True):
+def _fs(fsid, ephemeral=True, lifecycle="available"):
     tags = [{"Key": "app", "Value": "granite.build"}]
     if ephemeral:
         tags.append({"Key": "gb-ephemeral", "Value": "true"})
-    return {"FileSystemId": fsid, "Tags": tags}
+    return {"FileSystemId": fsid, "Tags": tags, "LifeCycleState": lifecycle}
 
 
 class FakeEfs:
@@ -98,6 +98,50 @@ def test_list_gb_ephemeral_filters_by_tag():
     assert sgids == {"sg-eph"}
     ing = _names(s, "describe_security_groups")[0][2]
     assert ing["Filters"] == [{"Name": "tag:gb-ephemeral", "Values": ["true"]}]
+
+
+def test_list_gb_ephemeral_excludes_deleting_filesystems():
+    """A just-deleted filesystem still returned in a terminal lifecycle state is
+    NOT counted (EFS delete is eventually consistent -- else a correctly
+    deprovisioned run reads as a leak)."""
+    efs = FakeEfs(
+        None,
+        [
+            [
+                _fs("fs-live", lifecycle="available"),
+                _fs("fs-going", lifecycle="deleting"),
+                _fs("fs-gone", lifecycle="deleted"),
+            ]
+        ],
+    )
+    ec2 = FakeEc2(None, [[]])
+    s = FakeSession(efs, ec2)
+
+    fsids, _ = list_gb_ephemeral(s, "us-east-1")
+
+    assert fsids == {"fs-live"}
+
+
+def test_reap_leaked_tolerates_already_gone_filesystem(monkeypatch):
+    """If the filesystem finished deleting between detection and reap, the
+    resulting NotFound is swallowed (not a leak, not a crash)."""
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_gone",
+        lambda *a, **k: None,
+    )
+
+    class GoneEfs(FakeEfs):
+        def describe_mount_targets(self, **kw):
+            raise RuntimeError("FileSystem 'fs-leak' does not exist.")
+
+    efs = GoneEfs(None, [[]])
+    ec2 = FakeEc2(None, [[]])
+    s = FakeSession(efs, ec2)
+
+    failures = reap_leaked(s, "us-east-1", {"fs-leak"}, set())
+
+    assert failures == []
+    assert _names(s, "delete_file_system") == []
 
 
 def test_list_gb_ephemeral_paginates():
