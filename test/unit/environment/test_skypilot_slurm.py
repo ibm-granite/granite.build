@@ -381,7 +381,9 @@ class TestBuildWorkdir:
         result = await env.setup_skypilot(setup_id="setup-1", runmetadata=runmetadata)
 
         expected = "/shared/builds/b-123/runs/tr-456"
-        assert result == {"skypilot": {"build_workdir": expected}}
+        assert result == {
+            "skypilot": {"build_workdir": expected, "shared_fs_mounts": []}
+        }
         assert env._setup_workdirs["setup-1"] == expected
 
     @pytest.mark.asyncio
