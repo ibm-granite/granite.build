@@ -3,11 +3,12 @@
 # The aws-inline environment carried by the co-located test Space and referenced
 # by the inline-hfpush/build.yaml fixture as space://environments/skypilot/aws-inline.
 # It is modeled on the committed configurations/assets/environments/skypilot/aws/
-# environment.yaml inline path: NO shared_filesystem, and the hf assetstore runs
-# `inline: true` for BOTH pull and push. Inline mode folds the hf download into the
-# consuming step's setup and the upload into the producing step's run epilogue, so
-# there are no separate hfpull/hfpush steps — the whole build runs on ONE EC2
-# instance. No BYO EFS and no admin-provisioned resource group are needed.
+# environment.yaml: the hf assetstore's PUSH is a dispatched separate step that
+# reads the produced artifact from the shared_filesystem (EFS) and uploads it,
+# while inline hf PULL is retained (its removal is tracked in #389) so the hf
+# download still folds into the consuming step's setup. The shipped default is a
+# BYO pre-provisioned EFS; `provision: ephemeral` (no-admin auto-provisioned EFS)
+# arrives via #391.
 name: skypilot-aws-inline-e2e
 type: Skypilot
 subtype: aws

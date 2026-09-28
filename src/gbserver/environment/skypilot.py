@@ -2332,9 +2332,10 @@ class Skypilot(Environment):
                     logger.warning(note)
             cli_prefix = _compose_step_prologue(provider, build_workdir)
             # The helper owns the full run_script composition (it recomputes the
-            # same cli_prefix internally, tee-wraps the body, and appends the
-            # inline push epilogue when any `_inline_output` binding is present);
-            # do NOT prepend cli_prefix here too or the run phase double-prefixes.
+            # same cli_prefix internally and returns it followed by the base run;
+            # push destinations resolve at push time on the normal dispatched
+            # path, so there is no tee-wrap or inline push epilogue); do NOT
+            # prepend cli_prefix here too or the run phase double-prefixes.
             run_script = self._compose_inline_run_script(
                 launcher_config.get("run", ""),
                 kwargs.get("bindings"),
