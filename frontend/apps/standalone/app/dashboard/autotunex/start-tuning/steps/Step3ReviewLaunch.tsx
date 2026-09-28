@@ -274,7 +274,7 @@ export function Step3ReviewLaunch({
           </Tile>
         </div>
 
-        <div className={styles.cardColumnWide}>
+        <div className={styles.cardColumn}>
           <Tile className={styles.reviewCard}>
             <div className={styles.cardHeader}>
               <Settings size={20} className={styles.cardIcon} />
