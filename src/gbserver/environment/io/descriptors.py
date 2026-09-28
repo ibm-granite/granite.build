@@ -1,7 +1,10 @@
 """Env-agnostic, store-declared IO descriptors for the inline (same-instance)
-prologue/epilogue path. See docs/plans/2026-09-18-inline-hfpush-envio-design.md §4."""
+prologue path. See docs/plans/2026-09-18-inline-hfpush-envio-design.md §4.
 
-from typing import Optional
+Only the inline INPUT (download-before-step) path survives: SkyPilot/AWS
+artifact push is a dispatched step over a shared filesystem whose destination
+resolves at push time (#390), so the output/upload descriptors were removed.
+"""
 
 from pydantic import BaseModel
 
@@ -10,27 +13,9 @@ class InputIO(BaseModel):
     """Base for a declared inline input (download-before-step)."""
 
 
-class OutputIO(BaseModel):
-    """Base for a declared inline output (upload-after-step)."""
-
-
 class HfInputIO(InputIO):
     repo: str
     revision: str
     type: str = "model"
     dest: str
     token: str = ""
-
-
-class HfOutputIO(OutputIO):
-    # Destination only; the source path is resolved at runtime from the
-    # step's GB_ARTIFACT_PATH marker (marker-capture), so there is no `src`.
-    repo: str
-    revision: str = "main"
-    private: bool = True
-    resource_group_id: Optional[str] = None
-    path_in_repo: str = ""
-    uri: str
-    binding_id: str
-    token: str = ""
-    hf_type: str = "model"

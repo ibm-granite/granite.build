@@ -4,21 +4,14 @@ docs/plans/2026-09-18-inline-hfpush-envio-design.md §4."""
 from typing import Optional
 
 from gbserver.environment.io.base import EnvironmentIO
-from gbserver.environment.io.descriptors import (
-    HfInputIO,
-    HfOutputIO,
-    InputIO,
-    OutputIO,
-)
+from gbserver.environment.io.descriptors import HfInputIO, InputIO
 from gbserver.environment.io.skypilot import SkypilotIO
 
 __all__ = [
     "EnvironmentIO",
     "SkypilotIO",
     "HfInputIO",
-    "HfOutputIO",
     "InputIO",
-    "OutputIO",
     "build_env_io",
 ]
 

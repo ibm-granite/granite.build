@@ -1,9 +1,4 @@
-from gbserver.environment.io.descriptors import (
-    HfInputIO,
-    HfOutputIO,
-    InputIO,
-    OutputIO,
-)
+from gbserver.environment.io.descriptors import HfInputIO, InputIO
 
 
 def test_hf_input_io_fields():
@@ -17,20 +12,3 @@ def test_hf_input_io_fields():
     assert isinstance(io, InputIO)
     assert io.repo == "ns/model"
     assert io.dest == "/cache/ns/model/main"
-
-
-def test_hf_output_io_has_no_src_field():
-    io = HfOutputIO(
-        repo="ns/out",
-        revision="main",
-        private=True,
-        resource_group_id=None,
-        path_in_repo="",
-        uri="hf://ns/out",
-        binding_id="out",
-        token="tok",
-        hf_type="model",
-    )
-    assert isinstance(io, OutputIO)
-    # src is resolved at runtime from the GB_ARTIFACT_PATH marker, not stored.
-    assert not hasattr(io, "src")

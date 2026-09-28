@@ -1,13 +1,6 @@
 """Single source of the HF-push run shell (create_repo + hf upload + the
 `Pushed HF URI:` line). Kept byte-identical to the skypilot hfpush step.yaml
 run block; a drift test (test_hf_shell_drift.py) enforces it. See spec section 7.
-
-R1 note: Task 4's inline epilogue exports its own HF_* vars from the
-runtime-resolved source path, so it reuses HFPUSH_UPLOAD_BODY (the portion from
-the hf_mocked() definition onward), not the full HFPUSH_RUN_SHELL, whose leading
-set/trap/echo + Jinja HF_* assignment prologue is templated and meaningless
-inline. HFPUSH_UPLOAD_BODY is derived from HFPUSH_RUN_SHELL at import time to
-keep it DRY (single source of truth).
 """
 
 HF_PUSH_MOCK_ENV = "GBTEST_MOCK_HF"
@@ -259,10 +252,3 @@ PY
 echo "Pushed HF URI: ${HF_URI} for binding ${BINDING_ID}"
 echo 'hfpush end'
 """
-
-# R1: the inline epilogue reuses only the body from the hf_mocked() definition
-# onward. Derive it from HFPUSH_RUN_SHELL (do not hand-maintain a second copy)
-# so it stays in lock-step with the drift-guarded source.
-_UPLOAD_SPLIT = "hf_mocked() {"
-_idx = HFPUSH_RUN_SHELL.index(_UPLOAD_SPLIT)
-HFPUSH_UPLOAD_BODY = HFPUSH_RUN_SHELL[HFPUSH_RUN_SHELL.rindex("\n", 0, _idx) + 1 :]
