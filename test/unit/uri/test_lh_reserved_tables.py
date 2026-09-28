@@ -124,9 +124,10 @@ def _render_lsf_lhpush(lh: dict) -> str:
     )
 
 
-def test_lsf_lhpush_refuses_reserved_table_from_raw_config():
+@pytest.mark.parametrize("table_name", ["Model", " model_shared"])
+def test_lsf_lhpush_refuses_reserved_table_from_raw_config(table_name):
     # A hand-written lhpush_config never goes through LhURI; the step guards itself.
-    rendered = _render_lsf_lhpush({"type": "table", "table_name": "Model"})
+    rendered = _render_lsf_lhpush({"type": "table", "table_name": table_name})
     refuse = rendered.index("reserved Lakehouse table")
     assert "exit 1" in rendered[refuse : rendered.index("\n", refuse)]
     assert refuse < rendered.index("dmf table push")

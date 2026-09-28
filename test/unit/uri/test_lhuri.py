@@ -186,7 +186,17 @@ def test_add_uri_revision():
 
 
 @pytest.mark.parametrize(
-    "table_name", ["model", "model_shared", "fileset", "fileset_shared", "Model_Shared"]
+    "table_name",
+    # Padded names: bash word splitting in the step scripts would strip the spaces.
+    [
+        "model",
+        "model_shared",
+        "fileset",
+        "fileset_shared",
+        "Model_Shared",
+        " model",
+        "fileset ",
+    ],
 )
 def test_table_uri_rejects_reserved_table_name(table_name):
     with pytest.raises(ValueError, match="reserved Lakehouse table name"):

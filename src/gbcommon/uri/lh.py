@@ -157,7 +157,12 @@ class LhURI(URI):
                 )
         except Exception as e:
             raise ValueError(f"failed to create from uri: {original_uri}") from e
-        if lh_type is LhType.TABLE and table_name.lower() in RESERVED_LH_TABLE_NAMES:
+        # strip(): the step scripts paste the name into a bash command line, where
+        # word splitting drops surrounding whitespace ("tables/ model" -> model).
+        if (
+            lh_type is LhType.TABLE
+            and table_name.strip().lower() in RESERVED_LH_TABLE_NAMES
+        ):
             raise ValueError(
                 f"'{table_name}' is a reserved Lakehouse table name (holds model/fileset "
                 f"metadata) and cannot be used as a table artifact: {self.get_uristr(self)}"

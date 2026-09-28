@@ -36,7 +36,7 @@ fi
 {{- $push_args = printf "--namespace %s --table %s --filepath %s --use-batches --batch-size 50000000 %s" $namespace $table_name $filename $public_flag }}
 {{- end }}
 # -----------------------------------
-{{- if has (lower $table_name) (list "model" "model_shared" "fileset" "fileset_shared") }}
+{{- if has (lower (trim $table_name)) (list "model" "model_shared" "fileset" "fileset_shared") }}
 echo 'Refusing to push: "{{ $table_name }}" is a reserved Lakehouse table (model/fileset metadata)'; exit 1
 {{- end }}
 echo "Start=$(date)";

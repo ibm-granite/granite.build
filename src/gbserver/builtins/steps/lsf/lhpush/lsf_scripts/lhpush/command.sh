@@ -72,7 +72,7 @@ echo 'Pushing URI: {{ lhp.uri }} from path {{ lh_path }}'
 {%- set public_flag = '--public True' %}
 {%- endif %}
 # -----------------------------------
-{%- if lh_table_name | lower in ['model', 'model_shared', 'fileset', 'fileset_shared'] %}
+{%- if lh_table_name | trim | lower in ['model', 'model_shared', 'fileset', 'fileset_shared'] %}
 echo 'Refusing to push: "{{ lh_table_name }}" is a reserved Lakehouse table (model/fileset metadata)'; exit 1
 {%- endif %}
 # Artifacts are immutable: no delete/overwrite; dmf refuses an existing table.
