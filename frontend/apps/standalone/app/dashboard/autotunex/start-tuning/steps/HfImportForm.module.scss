@@ -6,12 +6,13 @@
   margin-top: 1rem;
 }
 
-/* Same grid as Step1DatasetUpload.module.scss's file rows, so the chosen repo
-   reads as the same kind of row as an uploaded train file. */
+/* Label above the repo, like the Dataset Name and Config fields under it. Beside
+   it, in Step1DatasetUpload's `120px 1fr` file-row grid, the name got ~150px and
+   an id like "ibm-research/watsonxDocsQA" broke mid-word; stacked, it gets the
+   tile's full width. */
 .fileRow {
-  display: grid;
-  grid-template-columns: 120px 1fr;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
 }
 
@@ -30,13 +31,6 @@
   font-size: 0.75rem;
   color: var(--cds-text-secondary, #525252);
   margin: 0.25rem 0 0.75rem;
-}
-
-.revision {
-  font-family: var(--cds-code-01-font-family, monospace);
-  font-size: 0.75rem;
-  color: var(--cds-text-secondary, #525252);
-  margin: 0.25rem 0 0;
 }
 
 .subheading {
@@ -103,15 +97,14 @@
 // fit one. Both elements it can render the name into -- the plain `<p>`, and the
 // tooltip-wrapped `<button>` it swaps in once its own `offsetWidth < scrollWidth`
 // check trips -- carry `white-space: nowrap`, which makes the item's min-content
-// width its full text width. As a grid item in the `120px 1fr` row above, it then
-// refuses the 212px track it was given and keeps its intrinsic 316px: the row's
-// content measured 444px inside a 340px tile, so "ibm-research/Wish-Summarization-
-// Llama" ran off the tile edge with no ellipsis, since nothing was clipping it.
+// width its full text width. When this row was a `120px 1fr` grid, the item
+// refused its 212px track and kept its intrinsic 316px: the row's content measured
+// 444px inside a 340px tile, so "ibm-research/Wish-Summarization-Llama" ran off
+// the tile edge with no ellipsis, since nothing was clipping it.
 //
-// Wrapping is what fits it, rather than `minmax(0, 1fr)` on the track -- that lets
-// the track shrink but not the item, and measured no change at all. Two lines also
-// beat the ellipsis Carbon intends here: the tail of a repo id is the dataset name,
-// so it is the half worth reading.
+// The row is stacked now, so most ids fit on one line; this still covers ids
+// longer than the tile. Two lines beat the ellipsis Carbon intends here: the tail
+// of a repo id is the dataset name, so it is the half worth reading.
 //
 // `anywhere` for the ids that offer no break opportunity: hyphens and slashes break
 // on their own, but `someorg/onelongunbrokentoken` would still overflow.

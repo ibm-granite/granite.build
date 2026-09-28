@@ -6,6 +6,7 @@ import {
   FileUploaderItem,
   InlineLoading,
   InlineNotification,
+  Loading,
   Select,
   SelectItem,
   Tag,
@@ -56,13 +57,20 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
             <ComboBox
               id="hf-dataset-search"
               titleText="HuggingFace dataset"
-              placeholder="Search the Hub, e.g. vicgalle/alpaca-gpt4"
+              placeholder="Search the Hub, e.g. ibm-research/watsonxDocsQA"
               items={hf.suggestions}
               itemToString={(item) => item ?? ''}
               // Server-side search, so the local filter must be disabled or it would
               // filter the results a second time against the same term.
               shouldFilterItem={() => true}
               onInputChange={hf.handleSearchInput}
+              // Inside the field rather than below it: the open results menu
+              // covers anything rendered under the ComboBox.
+              decorator={
+                hf.searching ? (
+                  <Loading small withOverlay={false} description="Searching Hugging Face datasets" />
+                ) : undefined
+              }
               // Deliberately uncontrolled: this branch renders only while
               // `hf.repoId` is falsy (a chosen repo is shown as the
               // FileUploaderItem above), so there is no selection to feed back in
@@ -213,11 +221,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
               </Select>
             </div>
           )}
-          {/* Outside both blocks above: a single-split dataset hides them, and the
-              revision is what identifies the snapshot being imported either way. */}
-          <p className={styles.revision} title={hf.splits.revision}>
-            Revision {hf.splits.revision.slice(0, 7)}
-          </p>
         </>
       )}
 

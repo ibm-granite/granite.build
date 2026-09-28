@@ -85,6 +85,8 @@ export interface UseHfImportOptions {
 
 export interface UseHfImportResult {
   suggestions: string[]
+  /** A dataset search request is in flight (after the debounce). */
+  searching: boolean
   repoId: string | null
   setRepoId: (id: string | null) => void
   handleSearchInput: (term: string) => void
@@ -158,6 +160,7 @@ export function useHfImport({
   setValidationPercentage,
 }: UseHfImportOptions): UseHfImportResult {
   const [suggestions, setSuggestions] = useState<string[]>([])
+  const [searching, setSearching] = useState(false)
 
   const [preview, setPreview] = useState<HfImportPreview | null>(null)
   // Two independent booleans, each set and cleared by exactly one effect below --
@@ -469,6 +472,7 @@ export function useHfImport({
     suggestTokenRef.current += 1
     if (debounceRef.current) clearTimeout(debounceRef.current)
     setSuggestions([])
+    setSearching(false)
     setRepoId(null)
     setConfig('')
     setTrainSplit('')
@@ -493,15 +497,23 @@ export function useHfImport({
     const token = ++suggestTokenRef.current
     const trimmed = term.trim()
     if (!trimmed) {
-      if (suggestTokenRef.current === token) setSuggestions([])
+      if (suggestTokenRef.current === token) {
+        setSuggestions([])
+        setSearching(false)
+      }
       return
     }
+    setSearching(true)
     try {
       const results = await searchHfDatasets(trimmed, SEARCH_LIMIT)
       if (suggestTokenRef.current !== token) return
       setSuggestions(results)
     } catch {
       if (suggestTokenRef.current === token) setSuggestions([])
+    } finally {
+      // Only the newest request owns the flag: an older one resolving late must
+      // not clear the spinner while the current term is still loading.
+      if (suggestTokenRef.current === token) setSearching(false)
     }
   }
 
@@ -589,6 +601,7 @@ export function useHfImport({
 
   return {
     suggestions,
+    searching,
     repoId,
     setRepoId,
     handleSearchInput,
