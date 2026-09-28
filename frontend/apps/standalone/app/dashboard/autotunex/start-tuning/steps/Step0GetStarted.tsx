@@ -27,6 +27,9 @@ import {
 } from '@carbon/icons-react'
 import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
+import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import { isAxiosError } from 'axios'
 import type { TunedModel, TuningGoal, WizardModelSource } from '@granite-build/ui-core/types'
 import { GOAL_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
@@ -44,6 +47,11 @@ import {
 } from '../tunedModelSelection'
 import styles from './Step0GetStarted.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
+
+const MODEL_CARD_SANITIZE_SCHEMA = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), 'caption'],
+}
 
 const GOAL_ICONS: Record<TuningGoal, ComponentType<{ size?: number }>> = {
   sft: Education,
@@ -608,7 +616,18 @@ export function Step0GetStarted({
           <InlineLoading description="Loading model card..." />
         ) : modelCard ? (
           <div className={styles.modelCardContent}>
-            <ReactMarkdown remarkPlugins={[remarkBreaks]}>{modelCard}</ReactMarkdown>
+            {/* Model cards are third-party content: `rehypeRaw` renders their HTML
+                (Granite's benchmark tables are raw <table> markup), and
+                `rehypeSanitize` must run after it to strip anything outside
+                GitHub's allow-list -- scripts, iframes, event handlers, styles.
+                The list omits <caption>, which Granite's tables use; unwrapped, its
+                text would land loose inside <table>. */}
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm, remarkBreaks]}
+              rehypePlugins={[rehypeRaw, [rehypeSanitize, MODEL_CARD_SANITIZE_SCHEMA]]}
+            >
+              {modelCard}
+            </ReactMarkdown>
           </div>
         ) : (
           <p>This model has no model card.</p>
