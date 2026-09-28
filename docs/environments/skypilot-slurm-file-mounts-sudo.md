@@ -1,8 +1,8 @@
 # `file_mounts` steps fail on BlueVela SLURM (sudo-less symlink wrap)
 
-**Status:** fixed in a local branch of the SkyPilot fork (`gb/dpk-bluevela-fixes`),
-green on BlueVela SLURM 2026-09-28; **pending** a PR to `cmadam/skypilot` and a re-pin of
-`gb-sky-v1-stable`. Diagnosed 2026-09-18. See [Resolution](#resolution).
+**Status:** fixed in the SkyPilot fork by
+[cmadam/skypilot PR 3](https://github.com/cmadam/skypilot/pull/3), green on BlueVela
+SLURM 2026-09-28; **pending** that PR's merge and a re-pin of `gb-sky-v1-stable`. Diagnosed 2026-09-18. See [Resolution](#resolution).
 **Affects:** any **bare (non-containerized)** step with a *relative* `file_mounts`
 destination, on any `skypilot`/`slurm` environment that sets `shared_workdir` and whose
 SSH user is not root. **Containerized steps are NOT affected** — see
@@ -366,8 +366,8 @@ Also ruled out, for the record:
 
 ## Resolution
 
-Implemented on branch `gb/dpk-bluevela-fixes` of a local clone of the fork (base
-`5f18669`), with unit tests beside the LSF ones:
+Implemented in [cmadam/skypilot PR 3](https://github.com/cmadam/skypilot/pull/3)
+(based on `granite-build` at `5f18669`), with unit tests beside the LSF ones:
 
 - `SlurmCommandRunner.__init__` takes `shared_fs_roots`; `get_unwrapped_mount_prefixes()`
   returns it (docstring covers both execution modes and the clobber-guard trade-off).
@@ -389,8 +389,8 @@ server restarted on it): `test_dpk_pii.py`, `test_dpk_tok_image.py`, `test_1step
 fixtures' own `runner_cancellation` opt-outs). The pii fixture also needed an explicit
 `launcher_config.resources.memory` (see below).
 
-**Remaining:** open the PR to `cmadam/skypilot`, re-point `gb-sky-v1-stable`, and until
-then note that only a venv with the patched fork installed can run the bare-mode test.
+**Remaining:** merge that PR and re-point `gb-sky-v1-stable`. Until then only a venv with
+the patched fork installed can run the bare-mode test (`test_dpk_pii.py`).
 `byoc` has the same `src: src` exposure and is covered by the same fix, but has not been
 run on BlueVela SLURM.
 
@@ -450,8 +450,6 @@ here should pre-install `curl fuse git rsync wget openssh-client` and be Debian/
 | Item | Location |
 |---|---|
 | Build ID | `ca7265ef-a134-4fc7-ac34-f115c2de4bfd` |
-| pytest output | `/tmp/dpk-real.txt` (local, transient) |
-| SkyPilot file_mounts log | `~/sky_logs/sky-2026-09-18-14-07-40-275680/file_mounts.log` |
 | Failing compute node | `p1-r08-n1` |
 | Partition | `gpu-mid` (from the env's `zone`) |
 | SSH user | `granitebuild` (BlueVela) vs `root` (local Docker SLURM) |
