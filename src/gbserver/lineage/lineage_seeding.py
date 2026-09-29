@@ -124,7 +124,10 @@ def _build_checkpoint(storage: SingletonAdminStorage, spec: str) -> dict:
 
 
 def seed_if_absent(
-    storage: SingletonAdminStorage, spec: str, force: bool = False
+    storage: SingletonAdminStorage,
+    spec: str,
+    force: bool = False,
+    key: str = LINEAGE_WATCHER_CHECKPOINT_KEY,
 ) -> bool:
     """Seed the checkpoint, by default only when one does not already exist.
 
@@ -142,6 +145,8 @@ def seed_if_absent(
     skips lineage permanently — so it must never live in a Deployment spec, where
     it would re-apply on every restart.
 
+    ``key`` names the checkpoint to seed; the lineage indexer keeps its own.
+
     Returns:
         True if the checkpoint was written, False if one already existed and
         was kept.
@@ -149,18 +154,18 @@ def seed_if_absent(
     Raises:
         LineageSeedError: When the anchor cannot be resolved.
     """
-    existing = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
+    existing = storage.kv_pair_storage.get_value(key)
     if existing is not None and force:
         # Resolve the new anchor before overwriting: if it cannot be resolved this
         # raises, and the existing checkpoint must survive that rather than being
         # cleared by a failed re-seed.
         checkpoint = _build_checkpoint(storage, spec)
-        storage.kv_pair_storage.set_value(LINEAGE_WATCHER_CHECKPOINT_KEY, checkpoint)
+        storage.kv_pair_storage.set_value(key, checkpoint)
         logger.warning(
             "Overwrote lineage checkpoint %s: %s -> %s (--force-build-id). "
             "Lineage between the two anchors is re-driven if the anchor moved "
             "back, or skipped for good if it moved forward.",
-            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            key,
             existing,
             checkpoint,
         )
@@ -169,18 +174,18 @@ def seed_if_absent(
         logger.info(
             "Lineage checkpoint %s already exists (%s); keeping it and ignoring "
             "the requested seed (%s).",
-            LINEAGE_WATCHER_CHECKPOINT_KEY,
+            key,
             existing,
             spec,
         )
         return False
 
     checkpoint = _build_checkpoint(storage, spec)
-    storage.kv_pair_storage.set_value(LINEAGE_WATCHER_CHECKPOINT_KEY, checkpoint)
+    storage.kv_pair_storage.set_value(key, checkpoint)
     logger.info(
         "Seeded lineage checkpoint %s = %s. The watcher records targets that "
         "finish at or after this point on its next scan.",
-        LINEAGE_WATCHER_CHECKPOINT_KEY,
+        key,
         checkpoint,
     )
     return True
