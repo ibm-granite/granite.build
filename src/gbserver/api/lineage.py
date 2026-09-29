@@ -16,9 +16,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 
 from gbserver.api.build_files_paths import authorize_build_read_access
@@ -26,6 +26,7 @@ from gbserver.api.utils import has_space_member_access
 from gbserver.lineage.uri_normalize import display_uri_from_url
 from gbserver.lineage.openlineage_models import (
     LineageGraphResponse,
+    LineageJobsResponse,
     LineageRunsResponse,
     LineageQueryRequest,
     ArtifactGraphRequest,
@@ -623,3 +624,47 @@ def list_lineage_runs(
         limit=result.get("limit", limit),
         offset=result.get("offset", offset),
     )
+
+
+@lineage_api.get("/jobs", tags=["db-backed"])
+def list_lineage_jobs_by_tags(
+    request: Request,
+    tags: List[str] = Query(default_factory=list),
+    required_tags: List[str] = Query(default_factory=list),
+    limit: int = 100,
+    offset: int = 0,
+) -> LineageJobsResponse:
+    """List the job executions matching a tag filter, paged.
+
+    The index's counterpart to W&B run-tag filtering: a job matches when it carries
+    **any** of ``tags`` and **all** of ``required_tags``, e.g.
+    ``?tags=build_id=<uuid>`` or ``?required_tags=team=nlp&required_tags=space_name=s``.
+    Tags are free-form and matched exactly. A build is one kind of tag among many.
+
+    Only the database-backed provider can answer this, so any other provider gets
+    501. Cross-space by the same decision as the other lineage routes -- see
+    :func:`query_lineage_graph`.
+    """
+    if not tags and not required_tags:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one of tags or required_tags must be provided",
+        )
+
+    # pylint: disable=import-outside-toplevel
+    from gbserver.lineage.db_service import DBLineageService
+
+    service = _get_openlineage_service()
+    if not isinstance(service, DBLineageService):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                "Listing lineage jobs by tag requires the database lineage provider; "
+                f"the configured provider is {type(service).__name__}."
+            ),
+        )
+
+    result = service.list_jobs_by_tags(
+        tags, required_tags=required_tags, limit=limit, offset=offset
+    )
+    return LineageJobsResponse(**result)

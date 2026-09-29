@@ -6,6 +6,7 @@ from gbserver.storage.sqlite.sqlite_storage import (
     SqliteEventStorage,
     SqliteKeyValuePairStorage,
     SqliteLineageJobStorage,
+    SqliteLineageJobTagStorage,
     SqliteLineageRowStorage,
     SqliteNodeFailureStorage,
     SqliteSpaceStorage,
@@ -43,6 +44,9 @@ class SqliteStorageFactory(StorageFactory):
 
     def create_lineage_job_storage(self, table_name: Optional[str] = None):
         return SqliteLineageJobStorage(table_name=table_name)
+
+    def create_lineage_job_tag_storage(self, table_name: Optional[str] = None):
+        return SqliteLineageJobTagStorage(table_name=table_name)
 
     def create_space_user_storage(self, table_name: Optional[str] = None):
         return SqliteSpaceUserStorage(table_name=table_name)

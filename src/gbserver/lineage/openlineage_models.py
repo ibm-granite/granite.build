@@ -245,6 +245,28 @@ class LineageRunsResponse(BaseModel):
     offset: int = 0
 
 
+class LineageJobEntry(BaseModel):
+    """One job execution matched by a tag filter."""
+
+    job_id: str
+    job_namespace: str = ""
+    space_name: str = ""
+    owner: str = ""
+    source_system: str = ""
+    status: str = ""
+    started_at: str = ""
+    tags: List[str] = Field(default_factory=list)
+
+
+class LineageJobsResponse(BaseModel):
+    """A page of the jobs matching a tag filter; ``total`` is the unpaged count."""
+
+    jobs: List[LineageJobEntry] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 100
+    offset: int = 0
+
+
 class LineageNodeRef(BaseModel):
     node_type: str
     name: str = ""

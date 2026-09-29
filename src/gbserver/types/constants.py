@@ -1125,6 +1125,7 @@ GB_TARGET_RUNS_TABLE_NAME = "gb_targets"
 GB_NODE_FAILURES_TABLE_NAME = "gb_ndfail"
 GB_LINEAGE_TABLE_NAME = "gb_lineage_index"
 GB_LINEAGE_JOB_TABLE_NAME = "gb_lineage_job"
+GB_LINEAGE_JOB_TAG_TABLE_NAME = "gb_lineage_job_tag"
 GB_SPACE_USERS_TABLE_NAME = "gb_space_users"
 GB_KV_PAIRS_TABLE_NAME = "gb_kv_pairs"
 

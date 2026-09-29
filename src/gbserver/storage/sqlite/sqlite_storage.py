@@ -30,6 +30,7 @@ from gbserver.storage.sql.build_storage import SQLBuildStorage
 from gbserver.storage.sql.event_storage import SQLEventStorage
 from gbserver.storage.sql.kv_pair_storage import SQLKeyValuePairStorage
 from gbserver.storage.sql.lineage_job_storage import SQLLineageJobStorage
+from gbserver.storage.sql.lineage_job_tag_storage import SQLLineageJobTagStorage
 from gbserver.storage.sql.lineage_row_storage import SQLLineageRowStorage
 from gbserver.storage.sql.node_failure_storage import SQLNodeFailureStorage
 from gbserver.storage.sql.space_storage import SQLSpaceStorage
@@ -184,6 +185,10 @@ class SqliteLineageRowStorage(SqliteStorageOverrides, SQLLineageRowStorage):
 
 class SqliteLineageJobStorage(SqliteStorageOverrides, SQLLineageJobStorage):
     """Sqlite storage for lineage job records."""
+
+
+class SqliteLineageJobTagStorage(SqliteStorageOverrides, SQLLineageJobTagStorage):
+    """Sqlite storage for lineage job tags."""
 
 
 class SqliteNodeFailureStorage(SqliteStorageOverrides, SQLNodeFailureStorage):

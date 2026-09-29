@@ -55,6 +55,8 @@ from gbserver.lineage.walk import (
     LineageGraph,
     walk_lineage,
 )
+from gbserver.storage.lineage_job_storage import ILineageJobStorage
+from gbserver.storage.lineage_job_tag_storage import ILineageJobTagStorage
 from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.stored_lineage_row import TERMINAL
 
@@ -89,13 +91,19 @@ class DBLineageService(LineageService):
         storage: the lineage row storage to read. Defaults to the process-wide
             admin storage, resolved lazily so importing this module does not
             require a configured database.
+        job_storage: the lineage job storage, resolved the same way.
+        tag_storage: the lineage job tag storage, resolved the same way.
     """
 
     def __init__(
         self,
         storage: Optional[ILineageRowStorage] = None,
+        job_storage: Optional[ILineageJobStorage] = None,
+        tag_storage: Optional[ILineageJobTagStorage] = None,
     ) -> None:
         self._storage = storage
+        self._job_storage = job_storage
+        self._tag_storage = tag_storage
 
     @property
     def storage(self) -> ILineageRowStorage:
@@ -270,9 +278,84 @@ class DBLineageService(LineageService):
         )
         # Only a single-artifact query has one root to flag; anything else has many.
         single_root = bool(root_uri) and not job_id
-        return build_graph_dict(
-            graph, root_uri=root_uri, root_is_artifact=single_root
-        )
+        return build_graph_dict(graph, root_uri=root_uri, root_is_artifact=single_root)
+
+    def list_jobs_by_tags(
+        self,
+        tags: List[str],
+        required_tags: Optional[List[str]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict:
+        """List the jobs matching a tag filter, paged -- W&B's run-tag filter.
+
+        A job matches when it carries **any** of ``tags`` and **all** of
+        ``required_tags``, the same ``$in`` + required shape as
+        ``count_runs_by_tags``. Tags are free-form (``build_id=...``,
+        ``space_name=...``, a user's own); matching is exact, never a substring.
+
+        One indexed ``IN`` on the tag table resolves the job ids; the page's job
+        records and tags are then fetched by ``job_id`` in one query each. Ordered
+        by ``job_id`` so paging is stable.
+
+        Returns:
+            ``{jobs, total, limit, offset}``. Empty for an empty filter: an
+            unfiltered request is not a tag query.
+        """
+        limit = max(1, min(int(limit), _MAX_RUNS_PAGE))
+        offset = max(0, int(offset))
+        empty = {"jobs": [], "total": 0, "limit": limit, "offset": offset}
+
+        tag_storage = self._resolved("_tag_storage", "lineage_job_tag_storage")
+        job_storage = self._resolved("_job_storage", "lineage_job_storage")
+        if tag_storage is None or job_storage is None:
+            return empty
+        try:
+            job_ids = sorted(
+                tag_storage.get_job_ids_by_tags(tags, all_of=required_tags)
+            )
+            page = job_ids[offset : offset + limit]
+            jobs = job_storage.get_jobs_by_id(page)
+            tags_by_job = tag_storage.get_tags(page)
+        except Exception:
+            logger.exception("Lineage job tag query failed")
+            return empty
+
+        entries = []
+        for job_id in page:
+            job = jobs.get(job_id)
+            entries.append(
+                {
+                    "job_id": job_id,
+                    "job_namespace": job.job_namespace if job else "",
+                    "space_name": job.space_name if job else "",
+                    "owner": job.owner if job else "",
+                    "source_system": job.source_system if job else "",
+                    "status": job.status if job else "",
+                    "started_at": job.started_at if job else "",
+                    "tags": tags_by_job.get(job_id, []),
+                }
+            )
+        return {**empty, "jobs": entries, "total": len(job_ids)}
+
+    def _resolved(self, attr: str, admin_attr: str):
+        """A storage given at construction, else the admin one, else ``None``.
+
+        Only the row storage is required by this service; the job and tag
+        storages serve the tag listing alone, so a missing one degrades that
+        listing to empty rather than failing construction.
+        """
+        if getattr(self, attr) is None:
+            if self._storage is not None:
+                return None
+            from gbserver.storage.singleton_storage import get_admin_storage
+
+            try:
+                setattr(self, attr, getattr(get_admin_storage(), admin_attr))
+            except Exception as exc:
+                logger.debug("No %s available: %s", admin_attr, exc)
+                return None
+        return getattr(self, attr)
 
     def list_runs(
         self,

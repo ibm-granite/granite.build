@@ -533,3 +533,95 @@ class TestNamespacePropagation:
         )
         stored = rows.get_rows_by_job("TR")[0]
         assert job_detail(stored.attributes)["namespace"] == "my-space/build-x"
+
+
+class TestJobTags:
+    """Every recorded job is tagged, and a release count uses the tag index."""
+
+    @pytest.fixture(name="tagged_sink")
+    def tagged_sink_fixture(self, rows):
+        suffix = uuid_module.uuid4().hex[:8]
+        factory = SqliteStorageFactory()
+        self.tags = factory.create_lineage_job_tag_storage(table_name=f"t_tag_{suffix}")
+        return DBLineageStore(
+            storage=rows,
+            job_storage=factory.create_lineage_job_storage(
+                table_name=f"t_job_{suffix}"
+            ),
+            tag_storage=self.tags,
+        )
+
+    def _write(self, sink, job_id, target_run, extra_tags=None, facet_tags=None):
+        entry = job(job_id, [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
+        if facet_tags:
+            entry["run"] = {"facets": {"tags": facet_tags}}
+        sink._write_job(
+            entry,
+            build_id="BLD",
+            target_run_uuid=target_run,
+            extra_tags=extra_tags,
+        )
+
+    def test_ids_facets_and_extra_tags_are_stored(self, tagged_sink):
+        self._write(
+            tagged_sink,
+            "J1",
+            "t1",
+            extra_tags=["team=nlp"],
+            facet_tags={"username": "alice", "space_name": "sp", "empty": ""},
+        )
+        assert self.tags.get_tags(["J1"])["J1"] == [
+            "build_id=BLD",
+            "space_name=sp",
+            "target_run_uuid=t1",
+            "team=nlp",
+            "username=alice",
+        ]
+
+    def test_unstorable_tags_are_dropped_not_truncated(self, tagged_sink):
+        self._write(tagged_sink, "J1", "t1", extra_tags=["", "x" * 300, "ok"])
+        assert "ok" in self.tags.get_tags(["J1"])["J1"]
+        assert not any(len(tag) > 256 for tag in self.tags.get_tags(["J1"])["J1"])
+
+    def test_re_recording_does_not_duplicate_tags(self, tagged_sink):
+        self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp"])
+        self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp", "new=1"])
+        tags = self.tags.get_tags(["J1"])["J1"]
+        assert tags.count("team=nlp") == 1
+        assert "new=1" in tags
+
+    def test_filter_by_any_tag(self, tagged_sink):
+        self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp"])
+        self._write(tagged_sink, "J2", "t2", extra_tags=["team=vision"])
+        assert self.tags.get_job_ids_by_tags(["team=nlp"]) == {"J1"}
+        assert self.tags.get_job_ids_by_tags(["build_id=BLD"]) == {"J1", "J2"}
+
+    def test_release_count_matches_the_scan(self, tagged_sink, rows):
+        self._write(tagged_sink, "J1", "t1")
+        self._write(tagged_sink, "J2", "t2")
+        untagged = DBLineageStore(storage=rows)  # no tag storage: scans
+        for target in (None, "t1", "t2", "t3"):
+            assert tagged_sink.count_release_ids(
+                "BLD", target_id=target
+            ) == untagged.count_release_ids("BLD", target_id=target)
+        assert tagged_sink.count_release_ids("BLD") == 2
+        assert tagged_sink.count_release_ids("BLD", target_id="t1") == 1
+
+    def test_the_read_service_lists_jobs_by_tag(self, tagged_sink, rows):
+        from gbserver.lineage.db_service import DBLineageService
+
+        self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp"])
+        self._write(tagged_sink, "J2", "t2", extra_tags=["team=vision"])
+        service = DBLineageService(
+            storage=rows,
+            job_storage=tagged_sink.job_storage,
+            tag_storage=self.tags,
+        )
+        result = service.list_jobs_by_tags(["build_id=BLD"], required_tags=["team=nlp"])
+        assert result["total"] == 1
+        assert result["jobs"][0]["job_id"] == "J1"
+        assert "team=nlp" in result["jobs"][0]["tags"]
+
+        paged = service.list_jobs_by_tags(["build_id=BLD"], limit=1, offset=1)
+        assert paged["total"] == 2
+        assert [job["job_id"] for job in paged["jobs"]] == ["J2"]

@@ -43,7 +43,7 @@ unrecorded forever and re-record on every scan.
 """
 
 import logging
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from gbserver.lineage.attributes import (
     build_attributes,
@@ -54,10 +54,15 @@ from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.jobstats import ILineageStore
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
+from gbserver.storage.lineage_job_tag_storage import ILineageJobTagStorage
 from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_lineage_job import StoredLineageJob
+from gbserver.storage.stored_lineage_job_tag import (
+    StoredLineageJobTag,
+    is_storable_tag,
+)
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 from gbserver.storage.stored_target_run import StoredTargetRun
 
@@ -84,15 +89,19 @@ class DBLineageStore(ILineageStore):
         job_storage: the lineage job storage to write. Resolved the same way, but
             only when ``storage`` was not given -- see :attr:`job_storage`. Without
             it the rows are still written; only the job record is skipped.
+        tag_storage: the lineage job tag storage to write. Resolved exactly like
+            ``job_storage``; without it the job's tags are skipped.
     """
 
     def __init__(
         self,
         storage: Optional[ILineageRowStorage] = None,
         job_storage: Optional[ILineageJobStorage] = None,
+        tag_storage: Optional[ILineageJobTagStorage] = None,
     ) -> None:
         self._row_storage = storage
         self._job_storage = job_storage
+        self._tag_storage = tag_storage
 
     @property
     def row_storage(self) -> ILineageRowStorage:
@@ -128,6 +137,26 @@ class DBLineageStore(ILineageStore):
                 logger.debug("No lineage job storage available: %s", exc)
                 return None
         return self._job_storage
+
+    @property
+    def tag_storage(self) -> Optional[ILineageJobTagStorage]:
+        """The lineage job tag storage, resolved on first use, or ``None``.
+
+        Same resolution rule as :attr:`job_storage`, for the same reason: a caller
+        that supplied its own row storage never has the singleton consulted.
+        """
+        if self._tag_storage is None:
+            if self._row_storage is not None:
+                return None
+
+            from gbserver.storage.singleton_storage import get_admin_storage
+
+            try:
+                self._tag_storage = get_admin_storage().lineage_job_tag_storage
+            except Exception as exc:
+                logger.debug("No lineage job tag storage available: %s", exc)
+                return None
+        return self._tag_storage
 
     # -- Recording -----------------------------------------------------------
 
@@ -220,13 +249,46 @@ class DBLineageStore(ILineageStore):
 
         events, _ = self.create_jobstats_for_target(storage, target, build)
         for job in events:
-            self._write_job(job, build_id=build.uuid, target_run_uuid=target.uuid)
+            # The build's own tags are the user's; they are not in the job entry,
+            # which the shared builder shapes for W&B, so they are passed alongside.
+            self._write_job(
+                job,
+                build_id=build.uuid,
+                target_run_uuid=target.uuid,
+                extra_tags=build.tags,
+            )
+
+    def write_job(
+        self,
+        job: dict,
+        build_id: str,
+        target_run_uuid: str,
+        extra_tags: Optional[List[str]] = None,
+    ) -> None:
+        """Index one already-built job entry.
+
+        The entry point for a caller that has the job entry in hand rather than a
+        target run to build it from -- the lineage indexer, reading entries back
+        out of another lineage store. Idempotent under the same unique indexes as
+        every other write here, so re-indexing an entry is a no-op.
+
+        Args:
+            extra_tags: tags to attach beyond those derived from the entry, e.g. a
+                source's own labels. Free-form; see :func:`_job_tags`.
+        """
+        self._write_job(
+            job,
+            build_id=build_id,
+            target_run_uuid=target_run_uuid,
+            extra_tags=extra_tags,
+        )
 
     def _write_job(
         self,
         job: dict,
         build_id: str,
         target_run_uuid: str,
+        extra_tags: Optional[List[str]] = None,
     ) -> None:
         """Decompose one job entry and add its rows.
 
@@ -254,6 +316,15 @@ class DBLineageStore(ILineageStore):
             _normalized_job(job),
             build_id=build_id,
             target_run_uuid=target_run_uuid,
+        )
+        self._add_tags(
+            str(_normalized_job(job).get("job_id") or ""),
+            _job_tags(
+                job,
+                build_id=build_id,
+                target_run_uuid=target_run_uuid,
+                extra_tags=extra_tags,
+            ),
         )
 
         for draft in drafts:
@@ -296,6 +367,27 @@ class DBLineageStore(ILineageStore):
                 "Lineage job already present or could not be added (job=%s)",
                 job.job_id,
             )
+
+    def _add_tags(self, job_id: str, tags: List[str]) -> None:
+        """Store a job's tags, one row each, tolerating duplicates.
+
+        The unique on ``(job_id, tag)`` makes re-recording a no-op. Tags are added
+        one at a time so a duplicate -- expected: every event of a target carries
+        the same base tags -- does not reject the new tags batched with it.
+        """
+        storage = self.tag_storage
+        if storage is None or not job_id:
+            return
+        for tag in tags:
+            try:
+                storage.add(StoredLineageJobTag(job_id=job_id, tag=tag))
+            except Exception:
+                logger.debug(
+                    "Lineage job tag already present or could not be added "
+                    "(job=%s, tag=%r)",
+                    job_id,
+                    tag,
+                )
 
     def _add_row(
         self,
@@ -389,6 +481,13 @@ class DBLineageStore(ILineageStore):
         """
         if not release_id:
             return 0
+
+        job_ids = self._job_ids_for_release(release_id, target_id)
+        if job_ids:
+            return self.row_storage.count({"job_id": sorted(job_ids)})
+
+        # No tagged job: either the release is unknown, or its rows predate job
+        # tags. Only the scan can tell those apart, so it stays as the fallback.
         matched = 0
         for page in self.row_storage.get_paged():
             for row in page:
@@ -400,6 +499,26 @@ class DBLineageStore(ILineageStore):
                     continue
                 matched += 1
         return matched
+
+    def _job_ids_for_release(
+        self, release_id: str, target_id: Optional[str]
+    ) -> Set[str]:
+        """The jobs tagged with a release (and target), by indexed tag lookup.
+
+        The tags are the ones :func:`_job_tags` derives from the same ``ids`` the
+        scan compares, so both answer the same question.
+        """
+        storage = self.tag_storage
+        if storage is None:
+            return set()
+        required = [f"target_run_uuid={target_id}"] if target_id else None
+        try:
+            return storage.get_job_ids_by_tags(
+                [f"build_id={release_id}"], all_of=required
+            )
+        except Exception as exc:
+            logger.debug("Lineage job tag lookup failed: %s", exc)
+            return set()
 
     def does_release_id_exist(
         self, release_id: str, expected_count: int, target_id: Optional[str] = None
@@ -537,6 +656,46 @@ def _normalized_job(job: dict) -> dict:
         if value and not normalized.get(flat_key):
             normalized[flat_key] = value
     return normalized
+
+
+def _job_tags(
+    job: dict,
+    build_id: str,
+    target_run_uuid: str,
+    extra_tags: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """The tags a job is filterable by, as ``k=v`` strings.
+
+    Three sources, all free-form -- a build is just one kind of tag:
+
+    - the originating ids (``build_id``, ``target_run_uuid``), the same values the
+      attributes blob carries under ``origin.ids``, which is not queryable;
+    - the entry's ``run.facets.tags``, the map the W&B sink turns into run tags
+      (``build_id``, ``target_id``, ``username``, ``space_name``, ``output_id``, ...),
+      so a filter that works against W&B works here too;
+    - ``extra_tags`` verbatim, e.g. the user's build tags.
+
+    Empty values are dropped rather than stored as ``k=``. A tag that does not fit
+    its column is logged and dropped, never truncated.
+    """
+    tags: List[str] = []
+    for key, value in (("build_id", build_id), ("target_run_uuid", target_run_uuid)):
+        if value:
+            tags.append(f"{key}={value}")
+    facet_tags = ((job.get("run") or {}).get("facets") or {}).get("tags") or {}
+    if isinstance(facet_tags, dict):
+        for key, value in facet_tags.items():
+            if value:
+                tags.append(f"{key}={value}")
+    tags.extend(extra_tags or [])
+
+    storable = []
+    for tag in dict.fromkeys(tags):
+        if is_storable_tag(tag):
+            storable.append(tag)
+        else:
+            logger.warning("Dropping unstorable lineage job tag %r", tag)
+    return storable
 
 
 def _job_from_metadata(

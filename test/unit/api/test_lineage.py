@@ -414,7 +414,7 @@ def test_query_graph_passes_every_filter_through():
 
 
 def test_query_graph_does_not_404_on_an_empty_graph():
-    """"Nothing recorded" is a real answer and must not read as an error.
+    """ "Nothing recorded" is a real answer and must not read as an error.
 
     This is the difference from ``POST /artifact``, whose ``None`` becomes the 404 the
     frontend renders as "lineage is not available".
@@ -729,3 +729,57 @@ def test_runs_reports_the_total_so_a_caller_can_page():
     assert len(resp.runs) == 1
     assert resp.runs[0].is_self_loop is True
     assert resp.runs[0].job["name"] == "append"
+
+
+# ----------------------------------------------------------- GET /lineage/jobs
+
+
+def test_jobs_requires_a_tag_filter():
+    with pytest.raises(HTTPException) as caught:
+        lineage_mod.list_lineage_jobs_by_tags(
+            _fake_request("member", "member@example.com"), tags=[], required_tags=[]
+        )
+    assert caught.value.status_code == 400
+
+
+def test_jobs_requires_the_db_provider():
+    service = SimpleNamespace()  # not a DBLineageService
+    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.list_lineage_jobs_by_tags(
+                _fake_request("member", "member@example.com"),
+                tags=["build_id=B"],
+                required_tags=[],
+            )
+    assert caught.value.status_code == 501
+
+
+def test_jobs_passes_the_filter_through():
+    seen = {}
+
+    def fake(tags, **kwargs):
+        seen.update(tags=tags, **kwargs)
+        return {
+            "jobs": [{"job_id": "J1", "tags": ["build_id=B", "team=nlp"]}],
+            "total": 1,
+            "limit": 10,
+            "offset": 0,
+        }
+
+    service = _db_service(list_jobs_by_tags=fake)
+    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
+        resp = lineage_mod.list_lineage_jobs_by_tags(
+            _fake_request("member", "member@example.com"),
+            tags=["build_id=B"],
+            required_tags=["team=nlp"],
+            limit=10,
+            offset=0,
+        )
+    assert seen == {
+        "tags": ["build_id=B"],
+        "required_tags": ["team=nlp"],
+        "limit": 10,
+        "offset": 0,
+    }
+    assert resp.total == 1
+    assert resp.jobs[0].tags == ["build_id=B", "team=nlp"]
