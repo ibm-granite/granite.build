@@ -182,6 +182,49 @@ class TestSkypilotTeardown:
             "teardown cleanup VM must pin a small cpus floor, got: " f"{res_kwargs!r}"
         )
 
+    @pytest.mark.parametrize("cloud", ["slurm", "lsf"])
+    @pytest.mark.asyncio
+    async def test_cleanup_vm_cpus_floor_is_a_bare_int_on_hpc_clouds(self, cloud):
+        # SkyPilot's LSF/SLURM cloud matches CPUs directly and rejects the "N+"
+        # minimum form (sky.Resources(infra="lsf", cpus="2+") raises), so the
+        # floor must be a bare int there -- the same gating _resources_from_
+        # compute_config applies. Regression guard: an unconditional "2+" would
+        # crash teardown on these backends, get swallowed by the except, and leak
+        # the per-run workdir. See issue #425.
+        event_q = asyncio.Queue()
+        config = EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": cloud, "shared_workdir": "/shared"},
+        )
+        env = Skypilot(event_q=event_q, environment_config=config)
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        await env.setup_skypilot(
+            setup_id,
+            runmetadata=EntityRunMetadata(
+                build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+                target_name="train",
+                targetrun_id="run-1",
+            ),
+        )
+
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-td")
+        mock_sky.stream_and_get = MagicMock(return_value=None)
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await env.teardown_skypilot(setup_id)
+
+        res_kwargs = mock_sky.Resources.call_args.kwargs
+        assert res_kwargs.get("cpus") == 2, (
+            f"teardown on {cloud} must pass a bare int cpus (the 'N+' form crashes "
+            f"the HPC cloud), got: {res_kwargs!r}"
+        )
+
 
 class TestMonitorTreatsTeardownAsSuccess:
     """A monitor whose cluster was intentionally torn down must NOT raise.

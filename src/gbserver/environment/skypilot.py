@@ -1710,9 +1710,12 @@ class Skypilot(Environment):
         # The cleanup VM only mounts the shared FS and rm's the per-run workdir,
         # so floor it to a small instance instead of SkyPilot's oversized default
         # (an unconstrained request lands an m6i.2xlarge just to run an `rm`).
-        # "N+" is the cloud-agnostic minimum form used elsewhere in this module.
-        # See issue #425.
-        res_kwargs = {"infra": self._get_cloud(), "cpus": "2+"}
+        # Gate the "N+" minimum form the same way _resources_from_compute_config
+        # does: it crashes SkyPilot's LSF/SLURM cloud (which matches CPUs directly,
+        # not via a catalog), so those backends take a bare int. See issue #425.
+        cloud = self._get_cloud()
+        res_kwargs: Dict[str, Any] = {"infra": cloud}
+        res_kwargs["cpus"] = 2 if cloud in _SSH_HPC_CLOUDS else "2+"
         zone = provider.cleanup_zone() if provider is not None else None
         if zone:
             res_kwargs["zone"] = zone  # land where a mount target exists
