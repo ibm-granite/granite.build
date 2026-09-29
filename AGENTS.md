@@ -72,7 +72,7 @@ Most directory names are self-describing; these carry non-obvious behavior worth
 ### Test Layout (`test/`)
 
 - **conftest.py** — Session fixture fetching test secrets from IBM Cloud Secret Manager via `GBTEST_SPS_IBMCLOUD_API_KEY`; also dumps build state on pytest failure.
-- **gbserver_test/** — Mirrors source structure. `secret_manager`-marked tests need real IBM Cloud and are excluded by default.
+- **unit/** — Mirrors source structure. `secret_manager`-marked tests need real IBM Cloud and are excluded by default.
 - Parallelism via `pytest-xdist` `--dist=loadgroup`.
 
 ## Environment Variables
@@ -90,7 +90,6 @@ The central registry is `src/gbserver/types/constants.py`. All gbserver env vars
 
 - Formatting: **black** (default config) + **isort** (profile: black)
 - Linting: **pylint** (config in `.pylintrc`) + **mypy** (`--disable-error-code=import-untyped`)
-- The `xformat`/`xcheck` targets diff against the `dev` branch, not `main`
 - Python 3.11+ required (3.12 for pylint target)
 - Apache License 2.0
 
@@ -208,8 +207,8 @@ A floating chat widget (rendered globally by `ClientShell`) backed by a hand-rol
 
 ## Deployment
 
-- Container images built on UBI 9 + Python 3.12
+- Container images built on UBI 10 minimal + Python 3.12
 - Three environments: dev, staging, prod — each with its own IBM Container Registry namespace (`us.icr.io/cil15-shared-registry/gb-{dev,staging,prod}`)
 - Kubernetes deployments managed via Helm charts in `k8s/chart/`
-- CI via Travis CI on `dev` and `main` branches
+- CI via GitHub Actions (`.github/workflows/`)
 - Image tags derived from git commit SHA (`commit-<hash>`)
