@@ -299,43 +299,84 @@ def _materialize_identity_keys(
 HostnameProbe = Callable[[Dict[str, Any]], bool]
 
 
+def _expand_hostname_candidates(
+    host: Dict[str, Any],
+) -> Optional[List[Dict[str, Any]]]:
+    """Expand a host's scalar/list ``HostName`` into per-candidate host dicts.
+
+    Pure and I/O-free: the shuffling half of login-node selection, split out so an
+    async caller can probe the candidates one at a time and reap a cancelled probe
+    (see :func:`gbserver.environment.skypilot._select_reachable_host_async`) instead
+    of driving the whole selection inside one un-interruptible thread.
+
+    A scalar ``HostName`` yields a one-element list, so it is probed exactly like a
+    list — reachability is load-bearing (it picks the login node the launch uses), so
+    an unreachable lone node fails fast rather than being accepted blind. Candidates
+    are returned in random order; each carries every other directive of ``host``
+    (including the synthetic ``ssh_probe_timeout_s``, so the probe can read the
+    per-host timeout) with ``HostName`` collapsed to that one scalar.
+
+    :param host: One host directive mapping (scalar or list ``HostName``).
+    :returns: The shuffled per-candidate host dicts, or ``None`` when ``host`` has no
+        ``HostName`` at all (nothing to select — the caller uses ``host`` unchanged).
+    """
+    candidates = host.get("HostName")
+    if candidates is None:
+        return None
+    if not isinstance(candidates, list):
+        candidates = [candidates]  # scalar: a one-element list, probed the same way
+    shuffled = list(candidates)
+    random.shuffle(shuffled)
+    return [{**host, "HostName": candidate} for candidate in shuffled]
+
+
+def _no_reachable_login_node_error(host: Dict[str, Any]) -> NoReachableLoginNodeError:
+    """Build the error raised when no ``HostName`` candidate of ``host`` is reachable.
+
+    Shared by the sync (:func:`_select_reachable_hostname`) and async selectors so
+    both raise the identical message.
+
+    :param host: The host whose ``HostName`` candidates were all unreachable.
+    :returns: A :class:`NoReachableLoginNodeError` naming the alias and tried nodes.
+    """
+    candidates = host.get("HostName")
+    if not isinstance(candidates, list):
+        candidates = [candidates]
+    tried = candidates[0] if len(candidates) == 1 else candidates
+    return NoReachableLoginNodeError(
+        f"SSH host {host.get('Host')!r}: login node(s) {tried!r} not reachable."
+    )
+
+
 def _select_reachable_hostname(
     host: Dict[str, Any], *, probe: Optional[HostnameProbe]
 ) -> Dict[str, Any]:
     """Collapse ``HostName`` to a single reachable candidate, failing if none is.
 
-    A scalar ``HostName`` is treated as a one-element candidate list, so it is
-    probed exactly like a list — reachability is load-bearing (it picks the login
-    node the launch uses), so an unreachable lone node fails fast rather than being
-    accepted blind. A list is tried in random order and the first candidate the
-    ``probe`` accepts is chosen; the returned host has a scalar ``HostName`` ready
-    for rendering. A host without a ``HostName`` is returned unchanged (nothing to
-    select). When ``probe`` is ``None`` (e.g. unit tests, no I/O) the first (random)
-    candidate is accepted without probing.
+    The synchronous selector used by :func:`materialize_ssh_for_cloud` (the
+    env-setup path and unit tests). The launch path instead selects asynchronously
+    so a cancel can reap an in-flight probe; both share
+    :func:`_expand_hostname_candidates` and :func:`_no_reachable_login_node_error`.
+
+    A host without a ``HostName`` is returned unchanged. Otherwise candidates are
+    tried in random order and the first the ``probe`` accepts is returned with a
+    scalar ``HostName`` ready for rendering. When ``probe`` is ``None`` (e.g. unit
+    tests, no I/O) the first (random) candidate is accepted without probing.
 
     :param host: One host directive mapping (may carry a scalar or list ``HostName``
-        and the synthetic ``ssh_probe_timeout_s`` key, which is preserved so the
-        probe can read the per-host timeout).
+        and the synthetic ``ssh_probe_timeout_s`` key).
     :param probe: Reachability probe, or ``None`` to skip probing.
     :returns: A host mapping with a single scalar ``HostName``.
     :raises NoReachableLoginNodeError: If no candidate ``HostName`` is reachable
         (a ``RuntimeError`` subclass; the caller retries the sweep before failing).
     """
-    candidates = host.get("HostName")
+    candidates = _expand_hostname_candidates(host)
     if candidates is None:
         return host
-    if not isinstance(candidates, list):
-        candidates = [candidates]  # scalar: a one-element list, probed the same way
-    shuffled = list(candidates)
-    random.shuffle(shuffled)
-    for candidate in shuffled:
-        chosen = {**host, "HostName": candidate}
+    for chosen in candidates:
         if probe is None or probe(chosen):
             return chosen
-    tried = candidates[0] if len(candidates) == 1 else candidates
-    raise NoReachableLoginNodeError(
-        f"SSH host {host.get('Host')!r}: login node(s) {tried!r} not reachable."
-    )
+    raise _no_reachable_login_node_error(host)
 
 
 def _normalize(block: str) -> str:
@@ -700,14 +741,69 @@ def materialize_ssh_for_cloud(
         candidate. Selection runs before any file write, so a raise leaves
         ``~/.<cloud>/config`` untouched and the whole call is safe to retry.
     """
-    hosts = {"slurm": ssh.slurm, "lsf": ssh.lsf}.get(cloud)
+    hosts = _resolve_cloud_hosts(ssh, secrets, cloud, home=home)
     if not hosts:
         return
-    # Resolve any IdentityKey directive to a managed key file + IdentityFile
-    # before rendering (keeps render_ssh_host pure).
-    hosts = _materialize_identity_keys(hosts, cloud, secrets, _home(home))
     # Collapse any list-valued HostName to a single reachable login node.
     hosts = [_select_reachable_hostname(h, probe=hostname_probe) for h in hosts]
+    _merge_selected_hosts(cloud, hosts, secrets, env_name, home=home)
+
+
+def _resolve_cloud_hosts(
+    ssh: ClusterSshConfigs,
+    secrets: Dict[str, str],
+    cloud: str,
+    *,
+    home: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Return one cloud's host dicts with ``IdentityKey`` resolved to ``IdentityFile``.
+
+    Phase 1 of the launch-time SSH materialization (see
+    :func:`materialize_ssh_for_cloud`), split out so the launch path can resolve
+    keys, then select a reachable login node *asynchronously*, then merge — reaping a
+    cancelled probe instead of grinding an un-interruptible thread through every
+    candidate. Writes managed key files but performs no network I/O, so it is safe to
+    run off the event loop via ``asyncio.to_thread``.
+
+    :param ssh: Inline cluster SSH configs.
+    :param secrets: Secret name -> value mapping for field resolution.
+    :param cloud: ``"slurm"`` or ``"lsf"`` — the cloud whose hosts to resolve.
+    :param home: Home dir override (tests).
+    :returns: The host dicts for ``cloud`` (``[]`` if none), each with any
+        ``IdentityKey`` rewritten to a managed ``IdentityFile`` and ``HostName`` still
+        scalar-or-list (candidate selection has not run yet).
+    :raises ValueError: If a host sets both ``IdentityKey`` and ``IdentityFile``, or
+        ``IdentityKey`` resolves to empty (see :func:`_materialize_identity_keys`).
+    """
+    hosts = {"slurm": ssh.slurm, "lsf": ssh.lsf}.get(cloud)
+    if not hosts:
+        return []
+    return _materialize_identity_keys(hosts, cloud, secrets, _home(home))
+
+
+def _merge_selected_hosts(
+    cloud: str,
+    hosts: List[Dict[str, Any]],
+    secrets: Dict[str, str],
+    env_name: str,
+    *,
+    home: Optional[Path] = None,
+) -> None:
+    """Render already-selected scalar-``HostName`` hosts and merge them into config.
+
+    Phase 3 of launch-time SSH materialization: the tail of
+    :func:`materialize_ssh_for_cloud`, callable on its own once the launch path has
+    resolved keys (:func:`_resolve_cloud_hosts`) and selected a reachable login node
+    per host. Local file I/O only.
+
+    :param cloud: ``"slurm"`` or ``"lsf"`` — the cloud whose config to merge into.
+    :param hosts: Host dicts with a single scalar ``HostName`` each.
+    :param secrets: Secret name -> value mapping for directive resolution.
+    :param env_name: The environment name (used in messages).
+    :param home: Home dir override (tests).
+    :raises SkypilotConfigCollisionError: On a foreign clash (see
+        :func:`merge_ssh_blocks`).
+    """
     merge_ssh_blocks(
         cloud,
         render_ssh_hosts(hosts, secrets),

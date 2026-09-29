@@ -7,21 +7,21 @@ Covers the defenses added after a bluevela launch failed with
 1. the retry classifier treats an SSH banner/session timeout as transient (and
    still treats an SSH *auth* rejection as fatal),
 2. the login-node reachability probe selects a reachable ``HostName`` and fails the
-   launch fast when none answers (see ``_probe_ssh_hostname`` / ``_ssh_probe_cmd``),
+   launch fast when none answers (see ``_probe_ssh_hostname_async`` / ``_ssh_probe_cmd``),
 3. a failure traceback is logged as ONE record so line-per-record log ingestion
    cannot shred it.
 """
 
-import subprocess
+import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gbserver.environment.skypilot import (
     _is_transient_provision_error,
     _log_remote_stacktrace,
-    _probe_ssh_hostname,
+    _probe_ssh_hostname_async,
     _ssh_probe_cmd,
 )
 
@@ -202,68 +202,110 @@ class TestSshProbeCmd:
         assert "UserKnownHostsFile=/dev/null" not in cmds
 
 
-class TestProbeSshHostname:
-    """`_probe_ssh_hostname` — blocking ssh-echo probe of one candidate."""
+def _fake_proc(returncode=0, stderr=b"", communicate_side_effect=None):
+    """Build a fake async ``Process`` for the ssh-echo probe.
+
+    :param returncode: The process return code exposed after ``communicate``.
+    :param stderr: The stderr bytes ``communicate`` yields.
+    :param communicate_side_effect: If set, ``communicate`` raises it instead
+        (e.g. ``asyncio.TimeoutError`` to exercise the kill-and-reap path).
+    :returns: A ``MagicMock`` with async ``communicate``/``wait`` and a ``kill``.
+    """
+    proc = MagicMock()
+    if communicate_side_effect is not None:
+        proc.communicate = AsyncMock(side_effect=communicate_side_effect)
+    else:
+        proc.communicate = AsyncMock(return_value=(b"", stderr))
+    proc.returncode = returncode
+    proc.kill = MagicMock()
+    proc.wait = AsyncMock()
+    return proc
+
+
+def _patch_exec(proc, capture):
+    """Return a fake ``create_subprocess_exec`` that records argv and rendered config.
+
+    :param proc: The fake process to hand back.
+    :param capture: Dict populated with the ``cmds`` argv and the ``-F`` config text.
+    :returns: An async callable suitable for patching ``asyncio.create_subprocess_exec``.
+    """
+
+    async def fake_exec(*cmds, **_kw):
+        capture["cmds"] = list(cmds)
+        cfg_path = cmds[cmds.index("-F") + 1]
+        capture["cfg"] = Path(cfg_path).read_text(encoding="utf-8")
+        return proc
+
+    return fake_exec
+
+
+class TestProbeSshHostnameAsync:
+    """`_probe_ssh_hostname_async` — cancellable ssh-echo probe of one candidate."""
 
     def _host(self, **extra):
         return {"Host": "bluevela", "HostName": "login2.ex.com", "User": "gb", **extra}
 
-    def test_returncode_zero_is_reachable(self):
+    @pytest.mark.asyncio
+    async def test_returncode_zero_is_reachable(self):
         seen = {}
-
-        def fake_run(cmds, **_kw):
-            seen["cmds"] = cmds
-            # The rendered config (-F <path>) must carry the chosen HostName.
-            cfg_path = cmds[cmds.index("-F") + 1]
-            seen["cfg"] = Path(cfg_path).read_text(encoding="utf-8")
-            return MagicMock(returncode=0, stderr=b"")
-
-        with patch("gbserver.environment.skypilot.subprocess.run", fake_run):
-            assert _probe_ssh_hostname(self._host(), {}) is True
+        with patch(
+            "asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), seen)
+        ):
+            assert await _probe_ssh_hostname_async(self._host(), {}) is True
         assert seen["cmds"][-3:] == ["bluevela", "echo", "gbserver probe"]
         assert "HostName login2.ex.com" in seen["cfg"]
         assert "ssh_probe_timeout_s" not in seen["cfg"]  # synthetic key stripped
 
-    def test_nonzero_returncode_is_unreachable(self):
+    @pytest.mark.asyncio
+    async def test_nonzero_returncode_is_unreachable(self):
         with patch(
-            "gbserver.environment.skypilot.subprocess.run",
-            return_value=MagicMock(returncode=255, stderr=b"timed out"),
+            "asyncio.create_subprocess_exec",
+            _patch_exec(_fake_proc(255, stderr=b"timed out"), {}),
         ):
-            assert _probe_ssh_hostname(self._host(), {}) is False
+            assert await _probe_ssh_hostname_async(self._host(), {}) is False
 
-    def test_timeout_is_unreachable(self):
-        with patch(
-            "gbserver.environment.skypilot.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=5),
-        ):
-            assert _probe_ssh_hostname(self._host(), {}) is False
+    @pytest.mark.asyncio
+    async def test_timeout_is_unreachable_and_reaps_child(self):
+        proc = _fake_proc(communicate_side_effect=TimeoutError())
+        with patch("asyncio.create_subprocess_exec", _patch_exec(proc, {})):
+            assert await _probe_ssh_hostname_async(self._host(), {}) is False
+        proc.kill.assert_called_once()  # hung ssh child must be reaped, not leaked
 
-    def test_per_host_timeout_used_as_connecttimeout(self):
+    @pytest.mark.asyncio
+    async def test_cancel_reaps_child_and_propagates(self):
+        proc = _fake_proc(communicate_side_effect=asyncio.CancelledError())
+        with patch("asyncio.create_subprocess_exec", _patch_exec(proc, {})):
+            with pytest.raises(asyncio.CancelledError):
+                await _probe_ssh_hostname_async(self._host(), {})
+        proc.kill.assert_called_once()  # cancel mid-probe kills the ssh child
+
+    @pytest.mark.asyncio
+    async def test_per_host_timeout_used_as_connecttimeout(self):
         captured = {}
 
-        def fake_run(cmds, **kw):
-            captured["cmds"] = cmds
-            captured["timeout"] = kw.get("timeout")
-            return MagicMock(returncode=0, stderr=b"")
+        async def fake_wait_for(coro, timeout):
+            captured["wait_timeout"] = timeout
+            return await coro
 
-        with patch("gbserver.environment.skypilot.subprocess.run", fake_run):
-            _probe_ssh_hostname(self._host(ssh_probe_timeout_s=7), {})
+        with (
+            patch("asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), captured)),
+            patch("asyncio.wait_for", fake_wait_for),
+        ):
+            await _probe_ssh_hostname_async(self._host(ssh_probe_timeout_s=7), {})
         assert "ConnectTimeout=7" in captured["cmds"]
-        assert captured["timeout"] == 7 + 5  # subprocess wait = ConnectTimeout + buffer
+        assert captured["wait_timeout"] == 7 + 5  # wait_for = ConnectTimeout + buffer
 
-    def test_nonpositive_deployment_default_falls_back(self):
+    @pytest.mark.asyncio
+    async def test_nonpositive_deployment_default_falls_back(self):
         # The probe is mandatory. A host that pins no timeout inherits the deployment
         # default; if that is mis-set non-positive it falls back to
         # DEFAULT_SSH_PROBE_TIMEOUT_S (30) and still probes — never disabled.
         captured = {}
-
-        def fake_run(cmds, **_kw):
-            captured["cmds"] = cmds
-            return MagicMock(returncode=0, stderr=b"")
-
         with (
             patch("gbserver.types.constants.GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S", 0),
-            patch("gbserver.environment.skypilot.subprocess.run", fake_run),
+            patch(
+                "asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), captured)
+            ),
         ):
-            assert _probe_ssh_hostname(self._host(), {}) is True
+            assert await _probe_ssh_hostname_async(self._host(), {}) is True
         assert "ConnectTimeout=30" in captured["cmds"]

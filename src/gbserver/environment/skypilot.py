@@ -16,7 +16,6 @@ import os
 import re
 import shlex
 import stat
-import subprocess
 import tempfile
 import threading
 import time
@@ -440,7 +439,7 @@ SSH_PROBE_SELECT_BACKOFF_S = 5
 def _ssh_probe_cmd(config_path: str, alias: str, timeout: int) -> List[str]:
     """Build the non-interactive ``ssh -F <config> <alias> echo`` probe argv.
 
-    The command for the login-node reachability probe (:func:`_probe_ssh_hostname`).
+    The command for the login-node reachability probe (:func:`_probe_ssh_hostname_async`).
     It connects by the ``Host`` alias against a rendered OpenSSH config, so the probe
     follows the exact ``User``/``Port``/``IdentityFile``/``ProxyCommand`` directives
     SkyPilot's own launch will — no hand-maintained directive→flag table.
@@ -476,63 +475,125 @@ def _ssh_probe_cmd(config_path: str, alias: str, timeout: int) -> List[str]:
     return cmds
 
 
-def _probe_ssh_hostname(host: Dict[str, Any], secrets: Dict[str, str]) -> bool:
-    """Return True if the login node in ``host`` answers an ssh echo probe.
+def _resolve_probe_timeout(host: Dict[str, Any]) -> int:
+    """Resolve the ssh ``ConnectTimeout`` (seconds) for probing ``host``.
 
-    Renders the (single-``HostName``) host block to a throwaway OpenSSH config and
-    runs a non-interactive ``ssh ... echo`` against its alias, so the probe honours
-    exactly the directives (User/Port/IdentityFile/…) the launch will. Blocking;
-    call off the event loop.
+    Prefers the host's synthetic ``ssh_probe_timeout_s`` (validated positive at config
+    load); else the deployment default ``GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S``; a
+    non-positive deployment value falls back to ``DEFAULT_SSH_PROBE_TIMEOUT_S`` rather
+    than disabling the mandatory probe. There is no "skip the probe" value —
+    reachability selects the login node the launch uses.
 
-    The probe timeout comes from the host's synthetic ``ssh_probe_timeout_s`` key when
-    present (validated positive at config load), else from
-    ``GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S``; a non-positive deployment value falls
-    back to ``DEFAULT_SSH_PROBE_TIMEOUT_S`` rather than disabling the probe. There is no
-    "skip the probe" value — reachability is load-bearing (it selects the login node the
-    launch uses), so a false result makes the caller try the next candidate or fail.
-
-    :param host: A resolved host mapping with a scalar ``HostName`` (may carry the
-        synthetic ``ssh_probe_timeout_s`` per-host override).
-    :param secrets: Secret name -> value mapping for directive resolution.
-    :returns: True if ssh connected and the echo succeeded, False otherwise.
+    :param host: A resolved host mapping (may carry ``ssh_probe_timeout_s``).
+    :returns: A positive ``ConnectTimeout`` in seconds.
     """
-    from gbserver.environment.skypilot_config import (
-        PROBE_TIMEOUT_DIRECTIVE,
-        render_ssh_host,
-    )
+    from gbserver.environment.skypilot_config import PROBE_TIMEOUT_DIRECTIVE
     from gbserver.types.constants import GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
 
-    alias = str(host.get("Host"))
     if PROBE_TIMEOUT_DIRECTIVE in host:
         timeout = int(host[PROBE_TIMEOUT_DIRECTIVE])  # per-host value (validated > 0)
     else:
         timeout = GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S
     if timeout <= 0:  # deployment default mis-set; probing is mandatory, so fall back
         timeout = DEFAULT_SSH_PROBE_TIMEOUT_S
+    return timeout
+
+
+async def _probe_ssh_hostname_async(
+    host: Dict[str, Any], secrets: Dict[str, str]
+) -> bool:
+    """Return True if the login node in ``host`` answers an ssh echo probe.
+
+    Renders the (single-``HostName``) host block to a throwaway OpenSSH config and
+    runs a non-interactive ``ssh ... echo`` against its alias as an *async*
+    subprocess, so the probe honours exactly the directives (User/Port/IdentityFile/…)
+    the launch will while staying cancellable: a launch cancelled mid-probe reaps the
+    ssh child (``_kill_and_reap``) instead of leaking it for the life of the runner. A
+    probe timeout is likewise reaped, not left hanging.
+
+    :param host: A resolved host mapping with a scalar ``HostName`` (may carry the
+        synthetic ``ssh_probe_timeout_s`` per-host override).
+    :param secrets: Secret name -> value mapping for directive resolution.
+    :returns: True if ssh connected and the echo succeeded, False otherwise.
+    :raises asyncio.CancelledError: If the launch is cancelled mid-probe (the ssh
+        child is reaped first).
+    """
+    from gbserver.environment.skypilot_config import render_ssh_host
+
+    alias = str(host.get("Host"))
+    timeout = _resolve_probe_timeout(host)
     tmp = tempfile.NamedTemporaryFile("w", suffix=".sshcfg", delete=False)
+    proc: Optional[asyncio.subprocess.Process] = None
     try:
         tmp.write(render_ssh_host(host, secrets) + "\n")
         tmp.close()
         cmds = _ssh_probe_cmd(tmp.name, alias, timeout)
         logger.info("probing login node reachability for host %s", alias)
-        proc = subprocess.run(
-            cmds, capture_output=True, timeout=timeout + 5, check=False
+        proc = await asyncio.create_subprocess_exec(
+            *cmds,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout + 5)
         if proc.returncode == 0:
             return True
         logger.warning(
             "login node for host %s not reachable (rc=%s): %s",
             alias,
             proc.returncode,
-            proc.stderr.decode("utf-8", errors="replace").strip(),
+            stderr.decode("utf-8", errors="replace").strip(),
         )
         return False
-    except (subprocess.TimeoutExpired, OSError) as e:  # unreachable / spawn error
+    except asyncio.CancelledError:  # launch cancelled: don't leak the ssh child
+        if proc is not None:
+            await _kill_and_reap(proc)
+        raise
+    except asyncio.TimeoutError:  # wait_for cancels the await only; reap the child
+        if proc is not None:
+            await _kill_and_reap(proc)
+        logger.warning(
+            "login node for host %s not reachable: probe timed out after %ss",
+            alias,
+            timeout + 5,
+        )
+        return False
+    except OSError as e:  # spawn error
         logger.warning("login node for host %s not reachable: %s", alias, e)
         return False
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp.name)
+
+
+async def _select_reachable_host_async(
+    host: Dict[str, Any], secrets: Dict[str, str]
+) -> Dict[str, Any]:
+    """Pick a reachable scalar-``HostName`` for ``host`` via an async ssh probe.
+
+    The cancel-safe counterpart to the pure module's ``_select_reachable_hostname``:
+    it expands candidates with ``_expand_hostname_candidates`` and probes them one at a
+    time with :func:`_probe_ssh_hostname_async`, so a launch cancelled mid-selection
+    reaps the in-flight ssh child rather than leaving an un-interruptible thread to
+    grind through every remaining candidate.
+
+    :param host: One host directive mapping (scalar or list ``HostName``).
+    :param secrets: Secret name -> value mapping for directive resolution.
+    :returns: A host mapping with a single reachable scalar ``HostName``, or ``host``
+        unchanged when it declares no ``HostName``.
+    :raises NoReachableLoginNodeError: If no candidate answers the probe.
+    """
+    from gbserver.environment.skypilot_config import (
+        _expand_hostname_candidates,
+        _no_reachable_login_node_error,
+    )
+
+    candidates = _expand_hostname_candidates(host)
+    if candidates is None:
+        return host
+    for chosen in candidates:
+        if await _probe_ssh_hostname_async(chosen, secrets):
+            return chosen
+    raise _no_reachable_login_node_error(host)
 
 
 def _ssh_control_socket_dir() -> Optional[str]:
@@ -910,6 +971,9 @@ from gbserver.environment._skypilot_metadata import (
     apply_slurm_comment_override,
     normalize_run_metadata,
     task_metadata_labels,
+)
+from gbserver.environment._skypilot_ssh import (
+    _kill_and_reap,
 )
 from gbserver.environment._skypilot_ssh import (
     execute_on_host_via_ssh as _execute_on_host_via_ssh,
@@ -1333,13 +1397,12 @@ class Skypilot(Environment):
         owned by this same environment self-heals a re-keyed entry. No-op when the
         env defines no inline SSH config.
 
-        When a host's ``HostName`` is a list of candidate login nodes, one is picked
-        at random and SSH-probed for reachability before it is written. The probe is
-        a blocking ssh subprocess, so the whole materialize (probe + file merge) runs
-        off the event loop via ``asyncio.to_thread``. A sweep that finds no reachable
-        candidate is retried up to ``SSH_PROBE_SELECT_ATTEMPTS`` times with a
-        ``SSH_PROBE_SELECT_BACKOFF_S`` backoff, so a momentary blip does not fail the
-        launch (selection writes nothing until a node is chosen, so the retry is safe).
+        Runs in three phases so the network probe stays cancellable: resolve any
+        ``IdentityKey`` to a key file and merge the chosen block off the loop (local
+        I/O), but select a reachable login node *asynchronously* in between. When a
+        host's ``HostName`` is a list, candidates are probed in random order and the
+        first reachable one is chosen; a launch cancelled mid-probe reaps the ssh
+        child instead of leaking it (see :func:`_probe_ssh_hostname_async`).
 
         :param cloud: The HPC cloud being provisioned (``"slurm"``/``"lsf"``).
         :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash, or
@@ -1351,16 +1414,46 @@ class Skypilot(Environment):
         ssh_raw = cfg.get("cluster_ssh_configs")
         if not ssh_raw:
             return
-        from gbserver.environment.skypilot_config import materialize_ssh_for_cloud
+        from gbserver.environment.skypilot_config import (
+            _merge_selected_hosts,
+            _resolve_cloud_hosts,
+        )
         from gbserver.types.environmentconfig import ClusterSshConfigs
 
         ssh = ClusterSshConfigs.model_validate(ssh_raw)
         name = self.config.name if self.config else "unknown"
         secrets = self.secrets or {}
-        # Re-shuffle and re-probe the whole candidate set on each attempt, since a
-        # miss here is fatal before _provision_with_retry (see SSH_PROBE_SELECT_*).
-        # Mirrors the AsyncRetrying form used by _provision_with_retry; fixed backoff
-        # because a login node does not recover faster/slower with exponential spacing.
+        # Phase 1: resolve IdentityKey -> managed key file (local I/O, off the loop).
+        hosts = await asyncio.to_thread(_resolve_cloud_hosts, ssh, secrets, cloud)
+        if not hosts:
+            return
+        # Phase 2: select a reachable login node per host (async, cancel-safe).
+        selected = await self._select_reachable_hosts_with_retry(hosts, secrets, cloud)
+        # Phase 3: render + merge the chosen scalar-HostName blocks (local I/O).
+        await asyncio.to_thread(_merge_selected_hosts, cloud, selected, secrets, name)
+
+    async def _select_reachable_hosts_with_retry(
+        self: Self,
+        hosts: List[Dict[str, Any]],
+        secrets: Dict[str, str],
+        cloud: str,
+    ) -> List[Dict[str, Any]]:
+        """Select a reachable login node per host, retrying the whole sweep on a miss.
+
+        Re-shuffles and re-probes the full candidate set on each attempt, since a miss
+        here is fatal *before* ``_provision_with_retry`` (see ``SSH_PROBE_SELECT_*``),
+        so its transient classifier never sees it. Mirrors the ``AsyncRetrying`` form
+        ``_provision_with_retry`` uses; fixed backoff because a down login node does
+        not recover faster or slower with exponential spacing. Selection writes
+        nothing, so re-running the sweep is safe.
+
+        :param hosts: Identity-resolved host dicts (from ``_resolve_cloud_hosts``).
+        :param secrets: Secret name -> value mapping for directive resolution.
+        :param cloud: The HPC cloud being provisioned (used only in messages).
+        :returns: The hosts with each ``HostName`` collapsed to a reachable scalar.
+        :raises NoReachableLoginNodeError: If a host stays unreachable across every
+            attempt (a sustained outage).
+        """
         async for attempt in AsyncRetrying(
             retry=retry_if_exception_type(NoReachableLoginNodeError),
             wait=wait_fixed(SSH_PROBE_SELECT_BACKOFF_S),
@@ -1368,14 +1461,12 @@ class Skypilot(Environment):
             reraise=True,
         ):
             with attempt:
-                await asyncio.to_thread(
-                    materialize_ssh_for_cloud,
-                    name,
-                    ssh,
-                    secrets,
-                    cloud,
-                    hostname_probe=lambda h: _probe_ssh_hostname(h, secrets),
-                )
+                return [
+                    await _select_reachable_host_async(h, secrets) for h in hosts
+                ]
+        raise AssertionError(  # unreachable: AsyncRetrying returns or reraises
+            f"AsyncRetrying exhausted without result for {cloud} probe"
+        )
 
     async def _prepare_ssh_for_launch(self: Self, cloud_group: str) -> None:
         """Materialize SSH config for an HPC launch, optionally resetting sockets.
