@@ -569,6 +569,10 @@ async def _probe_ssh_hostname_async(
         logger.warning("login node for host %s not reachable: %s", alias, e)
         return False
     finally:
+        # Free the fd even if render/write raised before the close above (a normal
+        # path has already closed it; a second close is a no-op), then remove the file.
+        with contextlib.suppress(OSError):
+            tmp.close()
         with contextlib.suppress(OSError):
             os.unlink(tmp.name)
 

@@ -278,6 +278,26 @@ class TestProbeSshHostnameAsync:
         proc.kill.assert_called_once()  # cancel mid-probe kills the ssh child
 
     @pytest.mark.asyncio
+    async def test_render_failure_closes_and_removes_tmp(self):
+        # A failure rendering the probe config (e.g. a missing directive raising
+        # KeyError) happens before the normal close and is not caught, so it
+        # propagates -- the finally must still close the fd (no leak) and unlink.
+        fake_tmp = MagicMock()
+        fake_tmp.name = "/tmp/gbserver-probe-does-not-exist.sshcfg"
+        with (
+            patch("tempfile.NamedTemporaryFile", return_value=fake_tmp),
+            patch(
+                "gbserver.environment.skypilot_config.render_probe_config",
+                side_effect=KeyError("Host"),
+            ),
+            patch("os.unlink") as unlink,
+        ):
+            with pytest.raises(KeyError):
+                await _probe_ssh_hostname_async(self._host(), {})
+        fake_tmp.close.assert_called_once()  # fd freed despite the early raise
+        unlink.assert_called_once_with(fake_tmp.name)
+
+    @pytest.mark.asyncio
     async def test_per_host_timeout_used_as_connecttimeout(self):
         captured = {}
 
