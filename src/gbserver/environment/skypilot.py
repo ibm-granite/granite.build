@@ -1461,9 +1461,7 @@ class Skypilot(Environment):
             reraise=True,
         ):
             with attempt:
-                return [
-                    await _select_reachable_host_async(h, secrets) for h in hosts
-                ]
+                return [await _select_reachable_host_async(h, secrets) for h in hosts]
         raise AssertionError(  # unreachable: AsyncRetrying returns or reraises
             f"AsyncRetrying exhausted without result for {cloud} probe"
         )

@@ -248,9 +248,7 @@ class TestProbeSshHostnameAsync:
     @pytest.mark.asyncio
     async def test_returncode_zero_is_reachable(self):
         seen = {}
-        with patch(
-            "asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), seen)
-        ):
+        with patch("asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), seen)):
             assert await _probe_ssh_hostname_async(self._host(), {}) is True
         assert seen["cmds"][-3:] == ["bluevela", "echo", "gbserver probe"]
         assert "HostName login2.ex.com" in seen["cfg"]
@@ -288,7 +286,9 @@ class TestProbeSshHostnameAsync:
             return await coro
 
         with (
-            patch("asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), captured)),
+            patch(
+                "asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), captured)
+            ),
             patch("asyncio.wait_for", fake_wait_for),
         ):
             await _probe_ssh_hostname_async(self._host(ssh_probe_timeout_s=7), {})
