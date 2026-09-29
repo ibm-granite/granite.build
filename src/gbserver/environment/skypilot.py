@@ -411,6 +411,14 @@ RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
 # off. Compared against the normalized first infra segment (lowercased).
 _SSH_HPC_CLOUDS = ("slurm", "lsf")
 
+# Clouds whose schedulers don't honor SkyPilot autostop/autodown (see the
+# autostop=None handling in the launch path), so a cluster launched with
+# down=True is never removed and keeps its allocation. teardown_skypilot downs
+# its td- cluster explicitly on these. Deliberately separate from
+# _SSH_HPC_CLOUDS: this tracks one capability, not HPC-ness. Observed on SLURM
+# (BlueVela); LSF included because it also has autostop forced off.
+_CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
+
 
 def _ssh_control_socket_dir() -> Optional[str]:
     """Return SkyPilot's per-user SSH ControlMaster socket *root* directory.
@@ -1757,13 +1765,12 @@ class Skypilot(Environment):
             )
             logger.debug("teardown_skypilot failure trace", exc_info=True)
         finally:
-            # `down=True` relies on SkyPilot autodown, which SLURM/LSF do not
-            # support (see the autostop=None handling in the launch path), so on
-            # those clouds the td- cluster otherwise keeps its allocation
-            # indefinitely. Down it explicitly; _teardown tolerates a cluster
-            # that never came up.
+            # `down=True` relies on SkyPilot autodown, which these clouds do not
+            # support (see _CLOUDS_NEEDING_MANUAL_TEARDOWN), so there the td-
+            # cluster otherwise keeps its allocation indefinitely. Down it
+            # explicitly; _teardown tolerates a cluster that never came up.
             cloud_group = (str(self._get_cloud()).split("/", 1)[0] or "").lower()
-            if cloud_group in _SSH_HPC_CLOUDS:
+            if cloud_group in _CLOUDS_NEEDING_MANUAL_TEARDOWN:
                 await self._teardown(cluster_name)
 
     @staticmethod
