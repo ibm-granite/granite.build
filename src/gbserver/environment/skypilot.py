@@ -1481,8 +1481,7 @@ class Skypilot(Environment):
                 # Pass the whole cloud host list as probe context so a
                 # ProxyJump/ProxyCommand naming a sibling alias resolves.
                 return [
-                    await _select_reachable_host_async(h, secrets, hosts)
-                    for h in hosts
+                    await _select_reachable_host_async(h, secrets, hosts) for h in hosts
                 ]
         raise AssertionError(  # unreachable: AsyncRetrying returns or reraises
             f"AsyncRetrying exhausted without result for {cloud} probe"
