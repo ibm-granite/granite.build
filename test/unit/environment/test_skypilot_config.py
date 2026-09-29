@@ -546,6 +546,27 @@ class TestHostnameSelection:
         assert "ssh_probe_timeout_s" not in text
 
 
+class TestRenderProbeConfig:
+    """`render_probe_config` — the throwaway OpenSSH config a probe runs against."""
+
+    def test_pins_candidate_and_includes_siblings(self):
+        # The probed alias's own entry is superseded by the pinned candidate, while
+        # every sibling block is kept so a ProxyJump/ProxyCommand naming a sibling
+        # alias resolves during the probe (single-block config would break it).
+        chosen = _host("bluevela", HostName="login2.ex.com", ProxyJump="bastion")
+        stale = _host("bluevela", HostName="login1.ex.com", ProxyJump="bastion")
+        bastion = _host("bastion", HostName="jump.ex.com", User="gb")
+        cfg = sc.render_probe_config(chosen, [stale, bastion], {})
+        assert "HostName login2.ex.com" in cfg  # pinned candidate wins
+        assert "login1.ex.com" not in cfg  # stale same-alias entry dropped
+        assert "Host bastion" in cfg and "HostName jump.ex.com" in cfg  # sibling kept
+
+    def test_no_context_renders_single_block(self):
+        # Empty context degrades to just the probed block (the pre-context behavior).
+        cfg = sc.render_probe_config(_host("c", HostName="h"), [], {})
+        assert cfg.count("Host ") == 1 and "HostName h" in cfg
+
+
 class TestProbeTimeoutValidation:
     """`ClusterSshConfigs` rejects a non-positive/non-integer ssh_probe_timeout_s.
 

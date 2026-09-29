@@ -500,32 +500,40 @@ def _resolve_probe_timeout(host: Dict[str, Any]) -> int:
 
 
 async def _probe_ssh_hostname_async(
-    host: Dict[str, Any], secrets: Dict[str, str]
+    host: Dict[str, Any],
+    secrets: Dict[str, str],
+    context: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """Return True if the login node in ``host`` answers an ssh echo probe.
 
-    Renders the (single-``HostName``) host block to a throwaway OpenSSH config and
-    runs a non-interactive ``ssh ... echo`` against its alias as an *async*
-    subprocess, so the probe honours exactly the directives (User/Port/IdentityFile/…)
-    the launch will while staying cancellable: a launch cancelled mid-probe reaps the
-    ssh child (``_kill_and_reap``) instead of leaking it for the life of the runner. A
-    probe timeout is likewise reaped, not left hanging.
+    Renders the probed host block *plus every sibling host block for the cloud*
+    (``context``) to a throwaway OpenSSH config and runs a non-interactive
+    ``ssh ... echo`` against its alias as an *async* subprocess, so the probe honours
+    exactly the directives (User/Port/IdentityFile/ProxyJump/ProxyCommand/…) the launch
+    will — including a ``ProxyJump``/``ProxyCommand`` that names a sibling alias, which
+    only resolves when those sibling blocks are present. It stays cancellable: a launch
+    cancelled mid-probe reaps the ssh child (``_kill_and_reap``) instead of leaking it
+    for the life of the runner, and a probe timeout is likewise reaped, not left hanging.
 
     :param host: A resolved host mapping with a scalar ``HostName`` (may carry the
         synthetic ``ssh_probe_timeout_s`` per-host override).
     :param secrets: Secret name -> value mapping for directive resolution.
+    :param context: All hosts materialized for the cloud, so a ``ProxyJump``/
+        ``ProxyCommand`` referencing a sibling ``Host`` alias resolves (see
+        :func:`gbserver.environment.skypilot_config.render_probe_config`). ``None``
+        probes ``host`` alone (only safe when nothing jumps through a sibling).
     :returns: True if ssh connected and the echo succeeded, False otherwise.
     :raises asyncio.CancelledError: If the launch is cancelled mid-probe (the ssh
         child is reaped first).
     """
-    from gbserver.environment.skypilot_config import render_ssh_host
+    from gbserver.environment.skypilot_config import render_probe_config
 
     alias = str(host.get("Host"))
     timeout = _resolve_probe_timeout(host)
     tmp = tempfile.NamedTemporaryFile("w", suffix=".sshcfg", delete=False)
     proc: Optional[asyncio.subprocess.Process] = None
     try:
-        tmp.write(render_ssh_host(host, secrets) + "\n")
+        tmp.write(render_probe_config(host, context or [], secrets))
         tmp.close()
         cmds = _ssh_probe_cmd(tmp.name, alias, timeout)
         logger.info("probing login node reachability for host %s", alias)
@@ -566,7 +574,9 @@ async def _probe_ssh_hostname_async(
 
 
 async def _select_reachable_host_async(
-    host: Dict[str, Any], secrets: Dict[str, str]
+    host: Dict[str, Any],
+    secrets: Dict[str, str],
+    context: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Pick a reachable scalar-``HostName`` for ``host`` via an async ssh probe.
 
@@ -578,6 +588,9 @@ async def _select_reachable_host_async(
 
     :param host: One host directive mapping (scalar or list ``HostName``).
     :param secrets: Secret name -> value mapping for directive resolution.
+    :param context: All hosts for the cloud, forwarded to the probe so a
+        ``ProxyJump``/``ProxyCommand`` referencing a sibling alias resolves; ``None``
+        probes each candidate against its own block alone.
     :returns: A host mapping with a single reachable scalar ``HostName``, or ``host``
         unchanged when it declares no ``HostName``.
     :raises NoReachableLoginNodeError: If no candidate answers the probe.
@@ -591,7 +604,7 @@ async def _select_reachable_host_async(
     if candidates is None:
         return host
     for chosen in candidates:
-        if await _probe_ssh_hostname_async(chosen, secrets):
+        if await _probe_ssh_hostname_async(chosen, secrets, context):
             return chosen
     raise _no_reachable_login_node_error(host)
 
@@ -1461,7 +1474,12 @@ class Skypilot(Environment):
             reraise=True,
         ):
             with attempt:
-                return [await _select_reachable_host_async(h, secrets) for h in hosts]
+                # Pass the whole cloud host list as probe context so a
+                # ProxyJump/ProxyCommand naming a sibling alias resolves.
+                return [
+                    await _select_reachable_host_async(h, secrets, hosts)
+                    for h in hosts
+                ]
         raise AssertionError(  # unreachable: AsyncRetrying returns or reraises
             f"AsyncRetrying exhausted without result for {cloud} probe"
         )

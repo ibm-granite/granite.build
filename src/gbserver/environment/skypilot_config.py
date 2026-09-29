@@ -206,6 +206,37 @@ def render_ssh_hosts(
     return {h["Host"]: render_ssh_host(h, secrets) for h in hosts}
 
 
+def render_probe_config(
+    chosen: Dict[str, Any],
+    context: List[Dict[str, Any]],
+    secrets: Dict[str, str],
+) -> str:
+    """Render the OpenSSH config a single login-node reachability probe should use.
+
+    Reproduces what the launch writes to ``~/.<cloud>/config`` faithfully enough that
+    the probe follows the same directives ``sky.launch`` will: the probed alias's
+    block first (``chosen`` — its ``HostName`` already collapsed to the one candidate
+    under test), then every *other* host block for the cloud. Those sibling blocks are
+    what let a ``ProxyJump``/``ProxyCommand`` that names another ``Host`` alias in the
+    same ``cluster_ssh_configs`` resolve while probing; a single-block config would
+    leave that jump alias undefined, so every candidate would look unreachable and the
+    launch would fail even though ``sky.launch`` (which reads the full config) connects.
+
+    :param chosen: The candidate host mapping (single scalar ``HostName``) to probe.
+    :param context: All hosts materialized for the cloud; the entry sharing
+        ``chosen``'s alias is superseded by ``chosen`` so the pinned candidate wins,
+        and the remaining blocks are emitted verbatim for alias resolution.
+    :param secrets: Secret name -> value mapping for directive resolution.
+    :returns: The multi-block OpenSSH config text (with a trailing newline).
+    """
+    alias = chosen.get("Host")
+    blocks = [render_ssh_host(chosen, secrets)]
+    blocks.extend(
+        render_ssh_host(h, secrets) for h in context if h.get("Host") != alias
+    )
+    return "\n\n".join(blocks) + "\n"
+
+
 # Directive that supplies the private key *contents* (secret-resolved) instead of
 # a path; materialized to a managed key file and rewritten as ``IdentityFile``.
 IDENTITY_KEY_DIRECTIVE = "IdentityKey"

@@ -296,6 +296,25 @@ class TestProbeSshHostnameAsync:
         assert captured["wait_timeout"] == 7 + 5  # wait_for = ConnectTimeout + buffer
 
     @pytest.mark.asyncio
+    async def test_sibling_blocks_rendered_for_proxyjump(self):
+        # A ProxyJump/ProxyCommand naming a sibling Host alias must resolve while
+        # probing, so the throwaway config carries every other host block for the
+        # cloud, not just the one candidate. Without the sibling block the jump alias
+        # is undefined and the candidate looks unreachable -- failing a launch that
+        # sky.launch (which reads the full config) would have completed.
+        seen = {}
+        probed = self._host(ProxyJump="bastion")
+        bastion = {"Host": "bastion", "HostName": "jump.ex.com", "User": "gb"}
+        with patch("asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), seen)):
+            assert (
+                await _probe_ssh_hostname_async(probed, {}, [probed, bastion]) is True
+            )
+        assert "Host bluevela" in seen["cfg"]  # the probed alias
+        assert "ProxyJump bastion" in seen["cfg"]  # its jump directive
+        assert "Host bastion" in seen["cfg"]  # sibling present for resolution
+        assert "HostName jump.ex.com" in seen["cfg"]
+
+    @pytest.mark.asyncio
     async def test_nonpositive_deployment_default_falls_back(self):
         # The probe is mandatory. A host that pins no timeout inherits the deployment
         # default; if that is mis-set non-positive it falls back to
