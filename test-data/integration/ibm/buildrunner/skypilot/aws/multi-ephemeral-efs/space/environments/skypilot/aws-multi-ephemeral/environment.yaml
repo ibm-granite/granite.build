@@ -1,0 +1,28 @@
+name: skypilot-aws-multi-ephemeral
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  # The workdir lives on the first ephemeral mount; the second is mounted at its
+  # own mount_point and written to via its absolute path (no per-run workdir).
+  shared_workdir: /mnt/gb-eph-a/gbroot
+  # TWO provision: ephemeral mounts (distinct mount_points) -- the exact pairing
+  # the PR headlines. gbserver creates a separate EFS + NFS security group per
+  # mount at setup (distinct SG names, one mount target per AZ) and destroys both
+  # at teardown.
+  shared_filesystem:
+    - provider: efs
+      mount_point: /mnt/gb-eph-a
+      efs:
+        provision: ephemeral
+        region: us-east-1
+    - provider: efs
+      mount_point: /mnt/gb-eph-b
+      efs:
+        provision: ephemeral
+        region: us-east-1
