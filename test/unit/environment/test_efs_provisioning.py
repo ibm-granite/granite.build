@@ -22,7 +22,12 @@ class FakeClient:
 
     def describe_subnets(self, **kw):
         self._rec("describe_subnets", **kw)
-        return {"Subnets": [{"SubnetId": "subnet-a"}, {"SubnetId": "subnet-b"}]}
+        return {
+            "Subnets": [
+                {"SubnetId": "subnet-a", "AvailabilityZone": "us-east-1a"},
+                {"SubnetId": "subnet-b", "AvailabilityZone": "us-east-1b"},
+            ]
+        }
 
     def create_security_group(self, **kw):
         self._rec("create_security_group", **kw)
@@ -101,6 +106,112 @@ def test_provision_discovers_vpc_and_creates_all(monkeypatch):
     # SG ingress on NFS 2049 from VPC CIDR
     ing = _names(s, "authorize")[0][2]
     assert ing["IpPermissions"][0]["FromPort"] == 2049
+
+
+def test_provision_dedupes_discovered_subnets_to_one_per_az(monkeypatch):
+    """Auto-discovery must create at most one mount target per AZ: EFS allows a
+    single mount target per AZ per filesystem, so two discovered subnets sharing
+    an AZ would otherwise raise MountTargetConflict on the second (issue #391;
+    custom VPCs commonly have >1 subnet per AZ)."""
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_fs_available",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_available",
+        lambda *a, **k: None,
+    )
+
+    class MultiAzClient(FakeClient):
+        def describe_subnets(self, **kw):
+            self._rec("describe_subnets", **kw)
+            return {
+                "Subnets": [
+                    {"SubnetId": "subnet-a1", "AvailabilityZone": "us-east-1a"},
+                    {"SubnetId": "subnet-a2", "AvailabilityZone": "us-east-1a"},
+                    {"SubnetId": "subnet-b1", "AvailabilityZone": "us-east-1b"},
+                ]
+            }
+
+    class MultiAzSession(FakeSession):
+        def client(self, kind, region_name=None):
+            return MultiAzClient(kind, self.calls)
+
+    s = MultiAzSession()
+    pr = provision_efs(s, "us-east-1", TAGS)
+    # one subnet per AZ (first seen wins): a1 for us-east-1a, b1 for us-east-1b.
+    mt_subnets = sorted(c[2]["SubnetId"] for c in _names(s, "create_mount_target"))
+    assert mt_subnets == ["subnet-a1", "subnet-b1"]
+    assert len(pr.mount_target_ids) == 2
+
+
+def test_two_ephemeral_mounts_get_distinct_sg_names(monkeypatch):
+    """setup_skypilot passes the same tags (same gb-targetrun-id) to every
+    provider, so the SG name must also fold in the mount_point -- otherwise two
+    ephemeral mounts in one VPC collide on InvalidGroup.Duplicate (issue #391)."""
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_fs_available",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_available",
+        lambda *a, **k: None,
+    )
+    s = FakeSession()
+    provision_efs(s, "us-east-1", TAGS, mount_point="/mnt/a")
+    provision_efs(s, "us-east-1", TAGS, mount_point="/mnt/b")
+    names = [c[2]["GroupName"] for c in _names(s, "create_security_group")]
+    assert len(names) == 2
+    assert names[0] != names[1], f"SG names collide across mounts: {names}"
+    # both still carry the target-run id so they're reclaimable by run
+    assert all(n.startswith("gb-efs-r1") for n in names)
+
+
+class FakeClientError(Exception):
+    """Mimics botocore.exceptions.ClientError's error-code shape without pulling
+    in botocore (this module is driven by an injected session)."""
+
+    def __init__(self, code):
+        self.response = {"Error": {"Code": code}}
+        super().__init__(code)
+
+
+def test_provision_adopts_leaked_sg_on_duplicate(monkeypatch):
+    """If a prior retry leaked this mount's SG (stable targetrun-id + mount_point
+    -> stable name), create_security_group raises InvalidGroup.Duplicate. Rather
+    than wedge the retry, provision adopts the existing SG (which already carries
+    the NFS ingress) and marks it ours so teardown reaps it (issue #391)."""
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_fs_available",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_available",
+        lambda *a, **k: None,
+    )
+
+    class DupSgClient(FakeClient):
+        def create_security_group(self, **kw):
+            self._rec("create_security_group", **kw)
+            raise FakeClientError("InvalidGroup.Duplicate")
+
+        def describe_security_groups(self, **kw):
+            self._rec("describe_security_groups", **kw)
+            return {"SecurityGroups": [{"GroupId": "sg-existing"}]}
+
+    class DupSgSession(FakeSession):
+        def client(self, kind, region_name=None):
+            return DupSgClient(kind, self.calls)
+
+    s = DupSgSession()
+    pr = provision_efs(s, "us-east-1", TAGS, mount_point="/mnt/a")
+    assert pr.security_group_id == "sg-existing"
+    assert pr.created_sg is True  # adopted -> teardown deletes it
+    # looked up by the exact name we tried to create, scoped to the VPC
+    dsg = _names(s, "describe_security_groups")[0][2]
+    assert {"Name": "vpc-id", "Values": ["vpc-def"]} in dsg["Filters"]
+    # the leaked SG already has the NFS ingress; don't re-authorize
+    assert _names(s, "authorize") == []
 
 
 def test_provision_reuses_byo_sg(monkeypatch):

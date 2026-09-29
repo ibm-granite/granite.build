@@ -123,6 +123,7 @@ class EfsProvider(SharedFilesystemProvider):
             self.cfg.vpc_id,
             self.cfg.subnets,
             self.cfg.security_group_id,
+            self.mount_point,
         )
 
     async def deprovision(self, provisioned, aws_profile):

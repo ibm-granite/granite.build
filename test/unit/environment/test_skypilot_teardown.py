@@ -127,6 +127,7 @@ class TestSkypilotTeardown:
             "target_name": "train",
             "build_id": "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
             "build_config_name": "",
+            "targetrun_id": "run-1",
         }
 
         mock_sky = MagicMock()
@@ -500,6 +501,102 @@ class TestTeardownDeprovisionsEphemeral:
             with caplog.at_level("WARNING"):
                 await env.teardown_skypilot("sid-2")
         assert "fs-orphan" in caplog.text and "ORPHAN" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_orphan_warning_names_real_targetrun_id_not_setup_id(self, caplog):
+        """The EFS is tagged with the gb-targetrun-id and the WARNING tells
+        operators to reclaim by tag, so it must print the real targetrun_id --
+        not the internal setup_id, which won't match any tag (issue #391)."""
+        from unittest import mock
+
+        from gbserver.environment.shared_fs.base import ProvisionedResources
+
+        env = make_skypilot_env(
+            {
+                "shared_workdir": "/mnt/e/work",
+                "shared_filesystem": [
+                    {
+                        "provider": "efs",
+                        "mount_point": "/mnt/e",
+                        "efs": {"provision": "ephemeral", "region": "us-east-1"},
+                    }
+                ],
+            }
+        )
+        pr = ProvisionedResources(
+            region="us-east-1",
+            file_system_id="fs-orphan",
+            dns_name="d",
+            mount_target_ids=["mt-1"],
+            subnet_ids=["subnet-a"],
+            security_group_id="sg-1",
+            created_sg=True,
+        )
+        prov = env._shared_fs_providers()[0]
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        # Drive setup so the run metadata is stashed by real code, then fail the
+        # deprovision and inspect the orphan WARNING.
+        with mock.patch.object(
+            type(prov), "provision", new=mock.AsyncMock(return_value=pr)
+        ):
+            await env.setup_skypilot(
+                setup_id,
+                runmetadata=EntityRunMetadata(
+                    build_id="b1",
+                    target_name="train",
+                    targetrun_id="run-abc123",
+                ),
+            )
+        with (
+            mock.patch.object(
+                type(prov),
+                "deprovision",
+                new=mock.AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            patch("gbserver.environment.skypilot.sky"),
+            caplog.at_level("WARNING"),
+        ):
+            await env.teardown_skypilot(setup_id)
+        orphan = [r.getMessage() for r in caplog.records if "ORPHAN" in r.getMessage()]
+        assert orphan, "expected an ORPHAN deprovision WARNING"
+        assert "targetrun=run-abc123" in orphan[0]
+        assert setup_id not in orphan[0]  # not the internal setup_id
+
+
+class TestWorkdirMountMemoization:
+    def test_workdir_mount_resolved_once_per_env(self, monkeypatch):
+        """resolve_workdir_mount re-runs full pydantic validation plus the
+        uniqueness/nesting scan on every call; the env resolves it once (like the
+        memoized provider list) so repeated launches/teardowns don't re-validate
+        (issue #391)."""
+        import gbserver.environment.skypilot as sky_mod
+
+        env = make_skypilot_env(
+            {
+                "shared_workdir": "/mnt/e/work",
+                "shared_filesystem": [
+                    {
+                        "provider": "efs",
+                        "mount_point": "/mnt/e",
+                        "efs": {"provision": "ephemeral", "region": "us-east-1"},
+                    }
+                ],
+            }
+        )
+        calls = {"n": 0}
+        real = sky_mod.resolve_workdir_mount
+
+        def counting(cfg):
+            calls["n"] += 1
+            return real(cfg)
+
+        monkeypatch.setattr(sky_mod, "resolve_workdir_mount", counting)
+
+        m1 = env._workdir_mount()
+        m2 = env._workdir_mount()
+        assert calls["n"] == 1  # resolved once, then cached
+        assert m1 is m2 and m1 is not None
+        assert m1.mount_point == "/mnt/e"
 
 
 class TestWorkdirLauncherEnvVars:
