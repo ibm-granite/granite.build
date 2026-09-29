@@ -78,23 +78,11 @@ def _project(monkeypatch):
 # -- source resolution ------------------------------------------------------
 
 
-def test_resolve_source_defaults_by_mode(monkeypatch):
-    monkeypatch.delenv("GBSERVER_LINEAGE_INDEXER_SOURCE", raising=False)
+def test_source_follows_startup_mode():
     with patch("gbcommon.types.gbenvconfig.is_standalone", return_value=True):
         assert idx.resolve_indexer_source() == idx.INDEXER_SOURCE_ADMIN_DB
     with patch("gbcommon.types.gbenvconfig.is_standalone", return_value=False):
         assert idx.resolve_indexer_source() == idx.INDEXER_SOURCE_LINEAGE_STORE
-
-
-def test_resolve_source_rejects_unknown(monkeypatch):
-    monkeypatch.setenv("GBSERVER_LINEAGE_INDEXER_SOURCE", "bogus")
-    with pytest.raises(idx.UnknownIndexerSource):
-        idx.resolve_indexer_source()
-
-
-def test_override_wins_over_env(monkeypatch):
-    monkeypatch.setenv("GBSERVER_LINEAGE_INDEXER_SOURCE", "lineage_store")
-    assert idx.resolve_indexer_source("admin_db") == "admin_db"
 
 
 # -- create_indexer ---------------------------------------------------------

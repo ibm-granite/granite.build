@@ -17,14 +17,14 @@
 """The lineage indexer: fills ``gb_lineage_index`` incrementally from one source.
 
 The sink is always the index (``DBLineageStore``). What varies is where new
-lineage is read from, chosen by ``GBSERVER_LINEAGE_INDEXER_SOURCE``:
+lineage is read from, chosen by how the server was started:
 
-``admin_db`` (the standalone default)
+``admin_db`` (standalone)
     Reads ``gb_build``/``gb_targets`` directly. This is the ``LineageWatcher``
     reconciliation loop pointed at the index sink, under its own checkpoint keys
     so it never shares a mark with a ``lineage-watch`` recording elsewhere.
 
-``lineage_store`` (the default everywhere else)
+``lineage_store`` (every other deployment)
     Reads the configured lineage store back out. For W&B that is the project's
     runs, paged by ``createdAt`` from a checkpoint. When the configured store *is*
     the index (``GBSERVER_LINEAGE_PROVIDER=db``) source and sink are the same
@@ -37,7 +37,6 @@ Both modes are idempotent at the sink -- jobs are unique by ``job_id`` and rows 
 rejected insert, never a duplicate.
 """
 
-import os
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -55,7 +54,6 @@ logger = get_logger(__name__)
 
 INDEXER_SOURCE_ADMIN_DB = "admin_db"
 INDEXER_SOURCE_LINEAGE_STORE = "lineage_store"
-VALID_INDEXER_SOURCES = (INDEXER_SOURCE_ADMIN_DB, INDEXER_SOURCE_LINEAGE_STORE)
 
 # Separate from the lineage-watch keys: in standard mode lineage-watch records to
 # W&B from gb_build while this indexer may read gb_build too, and one shared mark
@@ -89,33 +87,18 @@ _JOB_DETAIL_KEYS = (
 _PASSTHROUGH_FACET_KEYS = ("job_input_params", "execution_stats")
 
 
-class UnknownIndexerSource(ValueError):
-    """``GBSERVER_LINEAGE_INDEXER_SOURCE`` names no known source."""
+def resolve_indexer_source() -> str:
+    """Pick the source from how the server was started.
 
-
-def resolve_indexer_source(override: Optional[str] = None) -> str:
-    """Resolve which source the indexer reads.
-
-    ``override`` (the CLI flag) wins, then the environment variable, then the
-    deployment default: ``admin_db`` standalone, ``lineage_store`` otherwise.
-    Unknown values raise rather than fall back, for the same reason
-    ``_resolve_lineage_provider`` does.
+    Standalone reads ``gb_build`` directly (``admin_db``); every other deployment
+    reads the configured lineage store (``lineage_store``). Deliberately not
+    configurable: the mode already says which one is right.
     """
     from gbcommon.types.gbenvconfig import is_standalone
-    from gbserver.types.constants import ENV_VAR_PREFIX
 
-    default = (
-        INDEXER_SOURCE_ADMIN_DB if is_standalone() else INDEXER_SOURCE_LINEAGE_STORE
-    )
-    source = (
-        override or os.getenv(ENV_VAR_PREFIX + "_LINEAGE_INDEXER_SOURCE") or default
-    ).strip()
-    if source not in VALID_INDEXER_SOURCES:
-        raise UnknownIndexerSource(
-            f"{ENV_VAR_PREFIX}_LINEAGE_INDEXER_SOURCE is {source!r}; expected one "
-            f"of {', '.join(VALID_INDEXER_SOURCES)}"
-        )
-    return source
+    if is_standalone():
+        return INDEXER_SOURCE_ADMIN_DB
+    return INDEXER_SOURCE_LINEAGE_STORE
 
 
 def create_indexer(
@@ -148,7 +131,7 @@ def create_indexer(
     if provider == LINEAGE_PROVIDER_NONE:
         logger.info(
             "No lineage store is configured (GBSERVER_LINEAGE_PROVIDER=none); the "
-            "indexer has nothing to read. Use --source admin_db to index gb_build."
+            "indexer has nothing to read."
         )
         return None
     return WandBLineageIndexer(monitoring_interval=monitoring_interval, sink=sink)

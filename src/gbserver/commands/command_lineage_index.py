@@ -16,9 +16,8 @@
 
 """``gbserver lineage-index`` — incrementally fill ``gb_lineage_index``.
 
-Reads new lineage from ``gb_build`` (``--source admin_db``, standalone default) or
-from the configured lineage store (``--source lineage_store``, default elsewhere)
-and writes it to the index. See :mod:`gbserver.lineage.indexer`.
+Reads new lineage from ``gb_build`` in standalone, or from the configured lineage
+store everywhere else, and writes it to the index. See :mod:`gbserver.lineage.indexer`.
 """
 
 import traceback
@@ -28,8 +27,6 @@ import click
 from gbserver.lineage.indexer import (
     INDEXER_CHECKPOINT_KEY,
     INDEXER_SOURCE_ADMIN_DB,
-    VALID_INDEXER_SOURCES,
-    UnknownIndexerSource,
     create_indexer,
     resolve_indexer_source,
 )
@@ -51,37 +48,25 @@ logger = get_logger(__name__)
     help="Seconds between index scans.",
 )
 @click.option(
-    "--source",
-    required=False,
-    type=click.Choice(VALID_INDEXER_SOURCES),
-    default=None,
-    help=(
-        "Where to read lineage from. Defaults to GBSERVER_LINEAGE_INDEXER_SOURCE, "
-        "else admin_db in standalone and lineage_store elsewhere."
-    ),
-)
-@click.option(
     "--base-build-id",
     required=False,
     type=str,
     default=None,
     help=(
-        "admin_db only: seed the indexer checkpoint when absent. 'from-latest', "
+        "Standalone only: seed the indexer checkpoint when absent. 'from-latest', "
         "'all', or a build id. Never overwrites an existing checkpoint."
     ),
 )
 @pass_environment
-def cli(ctx: CliEnvironment, interval: float, source: str, base_build_id: str):
+def cli(ctx: CliEnvironment, interval: float, base_build_id: str):
     """Start the lineage indexer."""
-    try:
-        source = resolve_indexer_source(source)
-    except UnknownIndexerSource as exc:
-        raise click.ClickException(str(exc)) from exc
+    source = resolve_indexer_source()
 
     if base_build_id is not None:
         if source != INDEXER_SOURCE_ADMIN_DB:
             raise click.ClickException(
-                "--base-build-id only applies to --source admin_db."
+                "--base-build-id only applies in standalone, where the indexer reads "
+                "gb_build."
             )
         if not base_build_id.strip():
             raise click.ClickException(
