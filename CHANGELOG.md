@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **SkyPilot HPC (SLURM/LSF) — the login node is now chosen by a mandatory reachability
+  probe; `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` no longer disables probing.**
+  `cluster_ssh_configs` may now list several candidate `HostName`s for one cluster; before
+  an HPC launch gbserver SSH-probes the candidates (a trivial `echo`, in random order) and
+  configures SkyPilot to use the first reachable one, failing fast with a clear error naming
+  the alias and the hostnames tried when none answers — instead of SkyPilot's opaque
+  `Failed to get partitions for cluster …`. Because the probe now *selects* the login node
+  the launch uses, it always runs and can no longer be switched off. **Migration:** a
+  deployment that set `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` to opt out of the probe will
+  now probe with the built-in default `ConnectTimeout` (30s); the variable (and the per-host
+  `ssh_probe_timeout_s` synthetic key) now only sets that timeout, and a non-positive value
+  falls back to 30s. A login node that was genuinely unreachable — and previously slipped
+  through to an opaque post-launch failure — will now fail the launch up front.
 - **SkyPilot environment — secrets are now injected least-privilege (declared-only).**
   SkyPilot previously dumped the entire resolved space/user secret bag into the launched
   task environment. It now injects **only** the secrets a step declares under
