@@ -589,9 +589,9 @@ class BuildRunner(AbstractBuildRunner):
         while not self.stop_event.is_set():
             try:
                 logger.info("build %s waiting for events...", build_id)
-                event = await asyncio.wait_for(
-                    event_q.get(), timeout=self.monitoring_interval
-                )
+                # Not wait_for: on 3.11 it can swallow a racing cancel (gh-86296).
+                async with asyncio.timeout(self.monitoring_interval):
+                    event = await event_q.get()
                 assert isinstance(event, BuildEvent), f"invalid event: {event}"
                 logger.info(
                     "build %s got a new event: %s : %s",

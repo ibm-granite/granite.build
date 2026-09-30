@@ -130,8 +130,8 @@ run everywhere. They are Mode-1 only (not copied by `publish-step`), the same pl
 `test-data/<cluster>/` — real-infra, extended-suite only, each self-skipping unless its
 backend is reachable:
 
-- **slurm** — needs the local Docker SLURM cluster (+ MinIO). Bring them up once with
-  `make test-setup` (delegates to the repo-root `slurm-setup` / `minio-setup`). One target:
+- **slurm** — needs the local Docker SLURM cluster. Bring it up once with
+  `make test-setup` (delegates to the repo-root `slurm-setup`). One target:
   `transform: tokenization2arrow` with `validate: true`, and `output_path` left at its
   `./output` default. So it covers three things a render test cannot — the derivations
   against real DPK, the validator hook running on a compute node before the artifact
@@ -175,10 +175,15 @@ backend is reachable:
 > build.yaml). Nothing exercises a two-target `env://` handoff end to end now; restore the
 > two-target form from git history if a handoff regression is ever suspected.
 
-> **Image mode has no cluster coverage either**, because the local Docker SLURM cluster has no
-> Pyxis SPANK plugin and so cannot run container images at all. `dpk_image` is exercised only
-> by render tests until the local cluster gains Pyxis or a future *image-mode* aws
-> fixture covers it (the current aws fixtures are bare-node).
+> **Image mode is covered only on BlueVela**, not by `make test`: the local Docker SLURM
+> cluster has no Pyxis SPANK plugin and so cannot run container images at all, and the
+> current aws fixtures are bare-node. The IBM-infra build test
+> `test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_dpk_tok_image.py` runs
+> `tokenization2arrow` with `validate: true` from a prebaked image on BlueVela SLURM; the
+> Dockerfile for that image sits beside its build.yaml. An image for this step must
+> provide **public** DPK (`dpk_<transform>.runtime`), not IBM-internal DPK, whose module
+> names differ. Its sibling `test_dpk_pii.py` covers the bare-node path on the same
+> cluster.
 
 > Container images require the Pyxis SPANK plugin on SLURM/LSF, which the local Docker
 > SLURM cluster does not have — so the slurm fixtures leave `dpk_image` empty and run on the

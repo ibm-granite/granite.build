@@ -143,6 +143,146 @@ class TestSkypilotTeardown:
         cluster_name = mock_sky.launch.call_args.kwargs["cluster_name"]
         assert cluster_name.startswith("gb-9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff-train-")
 
+    @pytest.mark.asyncio
+    async def test_cleanup_vm_is_floored_to_a_small_instance(self):
+        # The throwaway teardown VM only mounts the shared FS and rm's the per-run
+        # workdir, so it must be floored to a small instance. Without a cpus floor
+        # SkyPilot falls back to its oversized default (e.g. m6i.2xlarge, 8 vCPU),
+        # which is wasteful for an `rm`. See issue #425.
+        event_q = asyncio.Queue()
+        config = EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": "k8s", "shared_workdir": "/shared"},
+        )
+        env = Skypilot(event_q=event_q, environment_config=config)
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        await env.setup_skypilot(
+            setup_id,
+            runmetadata=EntityRunMetadata(
+                build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+                target_name="train",
+                targetrun_id="run-1",
+            ),
+        )
+
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-td")
+        mock_sky.stream_and_get = MagicMock(return_value=None)
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await env.teardown_skypilot(setup_id)
+
+        res_kwargs = mock_sky.Resources.call_args.kwargs
+        assert res_kwargs.get("cpus") == "2+", (
+            "teardown cleanup VM must pin a small cpus floor, got: " f"{res_kwargs!r}"
+        )
+
+    @pytest.mark.parametrize("cloud", ["slurm", "lsf"])
+    @pytest.mark.asyncio
+    async def test_cleanup_vm_cpus_floor_is_a_bare_int_on_hpc_clouds(self, cloud):
+        # SkyPilot's LSF/SLURM cloud matches CPUs directly and rejects the "N+"
+        # minimum form (sky.Resources(infra="lsf", cpus="2+") raises), so the
+        # floor must be a bare int there -- the same gating _resources_from_
+        # compute_config applies. Regression guard: an unconditional "2+" would
+        # crash teardown on these backends, get swallowed by the except, and leak
+        # the per-run workdir. See issue #425.
+        event_q = asyncio.Queue()
+        config = EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": cloud, "shared_workdir": "/shared"},
+        )
+        env = Skypilot(event_q=event_q, environment_config=config)
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        await env.setup_skypilot(
+            setup_id,
+            runmetadata=EntityRunMetadata(
+                build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+                target_name="train",
+                targetrun_id="run-1",
+            ),
+        )
+
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-td")
+        mock_sky.stream_and_get = MagicMock(return_value=None)
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await env.teardown_skypilot(setup_id)
+
+        res_kwargs = mock_sky.Resources.call_args.kwargs
+        assert res_kwargs.get("cpus") == 2, (
+            f"teardown on {cloud} must pass a bare int cpus (the 'N+' form crashes "
+            f"the HPC cloud), got: {res_kwargs!r}"
+        )
+
+
+async def _run_workdir_teardown(default_cloud, stream_side_effect=None):
+    """Run teardown_skypilot against a mocked sky for ``default_cloud``.
+
+    :param default_cloud: the env's ``default_cloud`` (e.g. "slurm", "k8s").
+    :param stream_side_effect: optional side effect for ``sky.stream_and_get``.
+    :returns: (mock_sky, td_cluster_name).
+    """
+    config = EnvironmentConfig(
+        name="test-skypilot",
+        type="Skypilot",
+        config={"default_cloud": default_cloud, "shared_workdir": "/shared"},
+    )
+    env = Skypilot(event_q=asyncio.Queue(), environment_config=config)
+    setup_id = "3168aa02-1234-5678-9abc-def012345678"
+    await env.setup_skypilot(
+        setup_id,
+        runmetadata=EntityRunMetadata(
+            build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+            target_name="train",
+            targetrun_id="run-1",
+        ),
+    )
+    mock_sky = MagicMock()
+    mock_sky.launch = MagicMock(return_value="req-td")
+    mock_sky.stream_and_get = MagicMock(side_effect=stream_side_effect)
+    mock_sky.down = MagicMock(return_value="req-down")
+    with (
+        patch("gbserver.environment.skypilot.sky", mock_sky),
+        patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+    ):
+        await env.teardown_skypilot(setup_id)
+    return mock_sky, mock_sky.launch.call_args.kwargs["cluster_name"]
+
+
+class TestWorkdirTeardownReleasesHpcCluster:
+    """teardown_skypilot's td- cluster relies on autodown, which SLURM/LSF do
+    not support, so on those clouds it must be downed explicitly or it keeps
+    its allocation (observed on BlueVela: td- jobs still RUNNING 40 min on)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cloud", ["slurm", "lsf"])
+    async def test_hpc_td_cluster_is_downed(self, cloud):
+        mock_sky, td_name = await _run_workdir_teardown(cloud)
+        mock_sky.down.assert_called_once_with(td_name, purge=True)
+
+    @pytest.mark.asyncio
+    async def test_hpc_td_cluster_is_downed_even_if_rm_fails(self):
+        mock_sky, td_name = await _run_workdir_teardown(
+            "slurm", stream_side_effect=RuntimeError("rm failed")
+        )
+        mock_sky.down.assert_called_once_with(td_name, purge=True)
+
+    @pytest.mark.asyncio
+    async def test_autodown_cloud_is_left_to_autodown(self):
+        mock_sky, _ = await _run_workdir_teardown("k8s")
+        mock_sky.down.assert_not_called()
+
 
 class TestMonitorTreatsTeardownAsSuccess:
     """A monitor whose cluster was intentionally torn down must NOT raise.

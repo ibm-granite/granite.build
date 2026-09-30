@@ -1,0 +1,59 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_dpk_tok_image.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# DPK tokenization on BlueVela SLURM in IMAGE MODE (dpk_config.dpk_image set), i.e.
+# the containerized Pyxis path. Modeled on
+# steps/dpk/skypilot/test-data/slurm-tok/buildtest.yaml, which runs the same
+# transform bare on the local Docker SLURM cluster.
+targets:
+  - tokenize
+target_expectations:
+  # step_count 2: the auto-queued hfpull for the hf:// input, plus the dpk step.
+  # skypilot/slurm does NOT set `inline: true` on its hf assetstore pull (unlike
+  # skypilot/aws, where the download folds into the step's setup and the count is 1),
+  # so the download is its own step. The env:// output moves no bytes and queues no
+  # push step. Same shape as the bare slurm-tok fixture, and as the sibling
+  # dpk-pii fixture.
+  #
+  # Verified against green runs on 2026-09-28 (builds bf7d1a76, 39d28601).
+  - target_name: tokenize
+    step_count: 2              # hfpull(docs) + dpk
+    input_artifact_count: 1    # docs
+    output_artifact_count: 1   # tokens (env://, registered from the step's marker)
+    jobstats_count: 1
+    # Pin what this fixture is for: the build named the transform AND an image, and
+    # the step ran the transform from that image with no pip install. Read from
+    # step_storage, so it holds independently of the lineage store.
+    #
+    # NOTE: only keys the build.yaml actually supplied appear in the persisted step
+    # config — step-template.yaml defaults are NOT merged in — so assert only on
+    # values this build sets. In particular do not assert dpk_version: it is
+    # deliberately omitted because image mode ignores it.
+    expected_steps:
+      - step_uri: space://steps/dpk
+        config:
+          dpk_config:
+            transform: tokenization2arrow
+            validate: true
+            dpk_image: us.icr.io/cil15-shared-registry/preprocessing-pipelines/tokenization-python:dpk-1.1.8
+# Same space as the sibling slurm_bluevela fixtures. Both assets resolve through this
+# one chain, so no test-local space is needed:
+#   * space://environments/skypilot/slurm/bluevela -> gb-test itself
+#   * space://steps/dpk -> gb-test's own base_uri, the assets repo
+#     (assets.git@gbspace-config-dev), at steps/skypilot/dpk
+space_uri: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
+# Happy-path run only. The workload is short, so there is no stable RUNNING window to
+# cancel in; cancellation on this environment is covered by test_1step.py.
+tests:
+  - runner
+# No injected synthetic failure: a non-zero DPK exit fails the target, so SUCCESS is a
+# real signal, and `validate: true` means SUCCESS also proves the output is
+# self-consistent and complete.
+simulate_step_failure: false
+# 45 minutes. Generous because this is the FIRST image-mode dpk run on any cluster:
+# the initial enroot pull of a private ICR image onto a gpu-mid node is unmeasured and
+# is the dominant unknown, on top of real SLURM queueing. Unlike the bare fixtures
+# there is no pip install to pay for, so once the image is warm on a node this should
+# be much faster — retune after a few green runs.
+timeout_minutes: 45

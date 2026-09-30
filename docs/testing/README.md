@@ -22,7 +22,7 @@ Then `source .venv/bin/activate`. Loading test secrets from IBM Secrets Manager 
 | Command | What it runs |
 |---------|--------------|
 | `make quick-tests-setup quick-tests` | Fast suite — `GBTEST_MODE=mock`, `-m "not ibm and not extended"`, no infrastructure. |
-| `make extended-tests-setup extended-tests` | Full suite — `GBTEST_MODE=live`, `-m "not ibm"` (includes `extended`); setup also brings up [MinIO + SLURM](../environments/setup/skypilot-slurm-setup.md). |
+| `make extended-tests-setup extended-tests` | Full suite — `GBTEST_MODE=live`, `-m "not ibm"` (includes `extended`); setup also brings up [SLURM](../environments/setup/skypilot-slurm-setup.md). |
 | `make test-standalone` | Open-source CI suite — `test/unit`, no IBM infra. |
 | `make cicd-pr-test` / `make cicd-merge-test` | CI suites (abbreviated / extended), with coverage + parallelism. |
 | `make py-test ARGS="…"` | Quick local `pytest -s` with the default markers; pass extra pytest args via `ARGS`. |
@@ -52,7 +52,7 @@ while narrowing the paths. For example, to run just the SkyPilot-SLURM standalon
 through the extended suite (live mode):
 
 ```bash
-# one-time: provision the venv + MinIO + SLURM the extended suite needs
+# one-time: provision the venv + SLURM the extended suite needs
 make extended-tests-setup
 
 # then run just those tests (repeat as needed; the setup is reused)
@@ -99,7 +99,7 @@ The two you'll reach for most:
 
 Other markers: `standalone` (only standalone deps), `thirdparty` (open-source deps, CI-runnable),
 `secret_manager` (IBM Cloud Secrets Manager), `nats_server` (running NATS), `docker_required`
-(Docker/Podman daemon), `skypilot_integration` (local SLURM + MinIO — `make integration-test`),
+(Docker/Podman daemon), `skypilot_integration` (local SLURM — `make integration-test`),
 `hf_integration` (real HuggingFace Hub), `slow`, and `live` (opt specific services into live mode).
 
 ## Test modes and environment variables
@@ -194,4 +194,4 @@ gbtest path/to/buildtest.yaml
 
 - [CONTRIBUTING.md](../../CONTRIBUTING.md) — contributor quickstart
 - [`gbtest` CLI reference](../cli/gbtest-cli-reference.md) — the build-test harness
-- [SkyPilot SLURM setup](../environments/setup/skypilot-slurm-setup.md) — local MinIO + SLURM for extended tests
+- [SkyPilot SLURM setup](../environments/setup/skypilot-slurm-setup.md) — local SLURM for extended tests

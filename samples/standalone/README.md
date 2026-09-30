@@ -158,7 +158,7 @@ Uses `file:` URIs. No configuration needed.
 
 ### S3 (default for RunPod/SkyPilot)
 
-S3-compatible object storage (AWS S3, MinIO, etc.).
+S3-compatible object storage (AWS S3, IBM COS, SeaweedFS, etc.).
 
 ```bash
 export COS_ACCESS_KEY_ID="your-access-key"

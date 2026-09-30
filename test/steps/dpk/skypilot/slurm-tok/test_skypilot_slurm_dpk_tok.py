@@ -35,7 +35,7 @@ Input is a public ``hf://`` dataset, so no HF_TOKEN is needed — the launcher's
 ``hf download`` runs anonymously.
 
 Real-infra test, gated on a reachable Docker SLURM cluster, so it auto-skips in CI
-and on machines without one (``make test-setup`` brings up SLURM + MinIO). Extended
+and on machines without one (``make test-setup`` brings up SLURM). Extended
 suite only.
 
 The fixture's build.yaml and buildtest.yaml live in the directory returned by

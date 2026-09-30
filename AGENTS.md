@@ -30,7 +30,7 @@ make cicd-pr-test     # abbreviated CI set (coverage + parallel)
 make cicd-merge-test  # extended CI set (the `extended` marker)
 # `-setup` targets provision the venv and infra first:
 make quick-tests-setup quick-tests        # fast: GBTEST_MODE=mock, -m "not ibm and not extended"
-make extended-tests-setup extended-tests  # full: GBTEST_MODE=live, -m "not ibm"; setup also brings up MinIO + SLURM
+make extended-tests-setup extended-tests  # full: GBTEST_MODE=live, -m "not ibm"; setup also brings up SLURM
 ```
 
 ### Formatting and Linting

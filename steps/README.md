@@ -240,13 +240,13 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   with `OSError: [Errno 9] Bad file descriptor`. A single-launch test survives by luck, so
   the failure appears only in multi-target fixtures and looks intermittent.
 * **`test-setup`** — optional per-step hook that stands up the infrastructure a
-  step's tests need (e.g. a local SLURM + MinIO cluster). It is a **separate
+  step's tests need (e.g. a local Docker SLURM cluster). It is a **separate
   target, deliberately not a prerequisite of `test`**, so the (often slow) infra
   bring-up runs only when you ask: run `make test-setup` **once**, then iterate
   with `make test`. `common.mk` supplies a no-op default; a step opts in by
   setting `HAS_TEST_SETUP := true` **before** the `include` and defining its own
   `test-setup` target after it — typically delegating to the repo-root Makefile,
-  e.g. `test-setup: ; $(MAKE) -C $(REPO_ROOT) slurm-setup minio-setup` (the
+  e.g. `test-setup: ; $(MAKE) -C $(REPO_ROOT) slurm-setup` (the
   `HAS_TEST_SETUP` flag makes `common.mk` skip its default, avoiding an
   "overriding recipe" warning). `REPO_ROOT` is provided by `common.mk`.
 * **`clean`** — remove the generated `$(SPACE_DIR)/`.

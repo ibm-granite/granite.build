@@ -71,8 +71,17 @@ interface Props {
   showLabel?: boolean
 }
 
+// Shown when the status is not one we map. `adaptStatus` is an unchecked
+// `toLowerCase() as BuildStatus` cast over whatever the server sent, so an
+// unrecognised value (a status the backend adds before the frontend maps it) or
+// an absent one (which casts to '') reaches us as a plausible-looking
+// BuildStatus. Falling back to a real status would state something false —
+// `cancelled` in particular painted a healthy running target grey "Cancelled" —
+// so name the uncertainty instead.
+const UNKNOWN_CONFIG = { label: 'Unknown', color: GRAY, shape: 'diamond' as ShapeKind }
+
 export function BuildStatusBadge({ status, showLabel = true }: Props) {
-  const cfg = STATUS_CONFIG[status] ?? STATUS_CONFIG.cancelled
+  const cfg = STATUS_CONFIG[status] ?? UNKNOWN_CONFIG
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
       <Shape kind={cfg.shape} color={cfg.color} size={16} />

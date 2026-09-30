@@ -378,10 +378,9 @@ class RetryHandler:
         while not self.stop_processing:
             try:
                 # Wait for events with a timeout to allow checking stop_processing
-                event = await asyncio.wait_for(
-                    self.wrapper_queue.get(),
-                    timeout=1.0,
-                )
+                # Not wait_for: on 3.11 it can swallow a racing cancel (gh-86296).
+                async with asyncio.timeout(1.0):
+                    event = await self.wrapper_queue.get()
 
                 # Evaluate if this event should trigger a retry
                 retry_triggered = await self._evaluate_and_retry(event)

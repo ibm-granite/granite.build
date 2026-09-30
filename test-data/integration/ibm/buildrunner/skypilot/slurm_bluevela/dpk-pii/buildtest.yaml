@@ -1,0 +1,66 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_dpk_pii.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# The shared `dpk` step running a real DPK transform (pii_redactor) on BlueVela
+# SLURM (Skypilot), gpu-mid partition, on the BARE launcher node (no dpk_image,
+# so no Pyxis — unlike the sibling 1step/2target fixtures).
+targets:
+  - redact
+target_expectations:
+  # step_count 2: the auto-queued hfpull for the hf:// input, plus the dpk step.
+  # skypilot/slurm does NOT set `inline: true` on its hf assetstore pull (unlike
+  # skypilot/aws, where the download is folded into the step's setup and the
+  # count is 1), so the download is its own step. The env:// output moves no
+  # bytes and queues NO push step — which is also why this fixture needs only a
+  # read-scoped HF_TOKEN.
+  #
+  # Verified against green runs on 2026-09-28 (builds b6459799, deda8eac), which
+  # depend on the SkyPilot fork fix described in test_dpk_pii.py.
+  - target_name: redact
+    step_count: 2              # hfpull(docs) + dpk
+    input_artifact_count: 1    # docs
+    output_artifact_count: 1   # clean (env://, registered from the step's marker)
+    jobstats_count: 1
+    # Pin what this fixture is for: the build named the transform and the step
+    # derived its module and pip extra from it. Read from step_storage, so this
+    # assertion holds independently of the lineage store.
+    expected_steps:
+      - step_uri: space://steps/dpk
+        config:
+          dpk_config:
+            transform: pii_redactor
+# Same space as the sibling 1step/2target fixtures. Both assets this target needs
+# resolve through this one chain, so no test-local space is required:
+#   * space://environments/skypilot/slurm/bluevela -> gb-test itself
+#   * space://steps/dpk -> gb-test's own base_uri, the assets repo
+#     (assets.git@gbspace-config-dev), at steps/skypilot/dpk — byte-identical to
+#     the copy this repo publishes at
+#     configurations/assets/environments/skypilot/steps/dpk.
+# The step resolves for this env because its step.yaml declares
+# `environment_configs: {Skypilot: ...}` with NO `subtypes:` restriction, so it
+# admits all four SkyPilot endpoints, slurm included. If someone later adds a
+# subtypes restriction that omits slurm, this fixture fails at render, not at run.
+#space_uri: ../../../../../../../configurations/spaces/local
+#space_uri: ../../../../../../../../gb-test
+space_uri: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
+# Happy-path run only. Cancellation on this environment is already covered by
+# test_1step.py's runner_cancellation; this fixture is about the dpk step
+# resolving and running on BlueVela SLURM, not about cancel/retry behavior.
+tests:
+  - runner
+# No simulated failure: the step fails the build on a DPK non-zero exit, so
+# SUCCESS is a real signal that the transform ran.
+simulate_step_failure: false
+# REQUIRES the SlurmCommandRunner wrap-exemption fix in the pinned SkyPilot
+# fork; without it this fails in SkyPilot's file-mount stage (`sudo mkdir -p
+# /proj/...` needs a password on the compute node). See test_dpk_pii.py.
+# 60 minutes, rather than the 20-30 the sibling bluevela fixtures use. The
+# [pii-redactor] extra resolves to 125 packages including torch, flair, and
+# presidio (numpy pinned <1.29 by DPK's own constraint) and the transform
+# downloads a flair NER model on first use — that pip install alone measured
+# several minutes on the local Docker cluster, and here it is preceded by real
+# SLURM queueing on a shared partition. This is the strongest argument for a
+# prebaked dpk_config.dpk_image later; an image is deliberately not used so this
+# fixture stays off the Pyxis path that 1step already covers.
+timeout_minutes: 60
