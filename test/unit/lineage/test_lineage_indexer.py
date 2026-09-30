@@ -157,7 +157,7 @@ def test_first_scan_reads_from_the_beginning():
     assert api.runs.call_args.kwargs["filters"] == {}
 
 
-def test_running_run_stops_scan_without_advancing():
+def test_running_run_is_indexed_and_does_not_stop_scan():
     storage = _storage()
     ix, _, _ = _indexer(
         [
@@ -166,8 +166,8 @@ def test_running_run_stops_scan_without_advancing():
             _run("r3", D3, job_id="j3"),
         ]
     )
-    assert ix.scan_once(storage) == 1
-    assert _checkpoint(storage)["timestamp"] == D1
+    assert ix.scan_once(storage) == 3
+    assert _checkpoint(storage)["timestamp"] == D3
 
 
 def test_failing_run_retries_per_run_then_is_skipped():

@@ -496,9 +496,9 @@ def wandb_run_to_job(run: Any) -> Optional[dict]:
 class WandBLineageIndexer(JobLineageIndexer):
     """Lineage-store source: W&B lineage runs by ``createdAt``.
 
-    **A running run is pending.** ``emit_event`` logs artifacts before it finishes
-    the run, so a running run may not have all its outputs yet. Runs are finished
-    within one event, so this holds for seconds.
+    **Run state is ignored.** A W&B run executes nothing: it is only the record
+    ``emit_event`` writes for a job's lineage, so every run is indexed with the
+    inputs and outputs it carries.
 
     **Several runs, one job.** The W&B sink writes one run per output artifact, all
     carrying the target's ``job_id``. Each is indexed on its own and adds its own
@@ -547,9 +547,6 @@ class WandBLineageIndexer(JobLineageIndexer):
     def _item_id(self, job: Any) -> str:
         # Per run: the runs of one job share its job_id but fail independently.
         return job.id
-
-    def _is_pending(self, job: Any) -> bool:
-        return job.state == "running"
 
     def _jobs_since(
         self, storage: SingletonAdminStorage, timestamp: Optional[str]

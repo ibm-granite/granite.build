@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""``gbserver lineage-index`` — incrementally fill ``gb_lineage_index``.
+"""``gbserver lineage-indexer`` — incrementally fill ``gb_lineage_index``.
 
 Walks jobs by ``(timestamp, job_id)`` -- ``gb_targets`` in standalone, the
 configured lineage store everywhere else -- and writes them to the index. See :mod:`gbserver.lineage.indexer`.

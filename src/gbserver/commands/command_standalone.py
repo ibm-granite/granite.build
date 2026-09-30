@@ -190,6 +190,19 @@ def _run_standalone(
     watcher_thread.start()
     logger.info("BuildWatcher started in background thread")
 
+    # Start the lineage-indexer (fills gb_lineage_index from gb_targets). A failure
+    # here is logged, never fatal: lineage must not keep the API from starting.
+    lineage_indexer = None
+    try:
+        from gbserver.lineage.indexer import create_indexer, resolve_indexer_source
+
+        lineage_indexer = create_indexer(resolve_indexer_source())
+        if lineage_indexer is not None:
+            lineage_indexer.start()
+            logger.info("lineage-indexer started in background thread")
+    except Exception:
+        logger.exception("Failed to start the lineage-indexer; lineage is not indexed")
+
     # 4. Default the analytics service's env vars (if gb_ui_backend is installed).
     _configure_analytics_env(host=host, port=port)
 
@@ -224,6 +237,8 @@ def _run_standalone(
         server.run()
     finally:
         build_watcher.stop()
+        if lineage_indexer is not None:
+            lineage_indexer.stop()
         _stop_nats_server(nats_proc)
         logger.warning("Standalone server stopped!")
 
