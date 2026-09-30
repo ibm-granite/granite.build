@@ -1868,15 +1868,21 @@ class Skypilot(Environment):
             build_config_name=run_meta.get("build_config_name", ""),
         )
         # The cleanup VM only mounts the shared FS and rm's the per-run workdir,
-        # so floor it to a small instance instead of SkyPilot's oversized default
-        # (an unconstrained request lands an m6i.2xlarge just to run an `rm`). A
-        # floor of 2 lands a t3.small-class (2 vCPU / 2 GiB, ~$0.02/hr): going to
-        # 1 would let SkyPilot pick a sub-1-GiB t2.nano/micro too small for its
-        # Ray runtime, and the VM lives only seconds, so the delta is negligible.
-        # _cpus_floor gates the "N+" minimum form (crashes LSF/SLURM). Issue #425.
+        # so floor it to a tiny instance instead of SkyPilot's oversized default
+        # (an unconstrained request lands an m6i.2xlarge just to run an `rm`).
+        # Request a single vCPU: on slurm/lsf that is the smallest schedulable
+        # allocation and the easiest to place when the cluster is near capacity —
+        # a 2-CPU cleanup that cannot land just orphans the per-run tree. On cloud
+        # catalogs 1 vCPU alone could match a sub-1-GiB t2.nano/micro too small
+        # for SkyPilot's Ray runtime, so pair it with a 2-GiB memory floor there
+        # (slurm/lsf match CPUs directly and don't track memory, so it is skipped
+        # for them, mirroring _resources_from_compute_config). _cpus_floor gates
+        # the "N+" minimum form (crashes LSF/SLURM). Issue #425.
         cloud = self._get_cloud()
         res_kwargs: Dict[str, Any] = {"infra": cloud}
-        res_kwargs["cpus"] = _cpus_floor(cloud, 2)
+        res_kwargs["cpus"] = _cpus_floor(cloud, 1)
+        if cloud not in _SSH_HPC_CLOUDS:
+            res_kwargs["memory"] = "2+"  # keep Ray above the sub-1-GiB nano floor
         zone = provider.cleanup_zone() if provider is not None else None
         if zone:
             res_kwargs["zone"] = zone  # land where a mount target exists
@@ -1917,9 +1923,16 @@ class Skypilot(Environment):
             # format_oserror surfaces the underlying path/errno; the full trace
             # goes to debug.
             detail = format_oserror(e) if isinstance(e, OSError) else str(e)
+            # This cleanup VM runs after the build has already completed (whatever
+            # its outcome) and only reclaims the shared-FS workdir, so its failure
+            # does NOT change the build result. Say that explicitly: the exception
+            # detail can be a raw "Failed to provision ..." dump identical to a
+            # launch failure, and must not be misread as the build failing. The
+            # only consequence is a leaked per-run tree, to be reaped separately.
             logger.warning(
-                "teardown cleanup failed; per-run tree may be ORPHANED at %s "
-                "(setup_id=%s): %s",
+                "post-build cleanup failed; this does NOT affect the build "
+                "outcome. The per-run tree is ORPHANED at %s and must be reaped "
+                "separately (setup_id=%s). Cleanup failure cause: %s",
                 workdir,
                 setup_id,
                 detail,

@@ -178,8 +178,14 @@ class TestSkypilotTeardown:
             await env.teardown_skypilot(setup_id)
 
         res_kwargs = mock_sky.Resources.call_args.kwargs
-        assert res_kwargs.get("cpus") == "2+", (
-            "teardown cleanup VM must pin a small cpus floor, got: " f"{res_kwargs!r}"
+        assert res_kwargs.get("cpus") == "1+", (
+            "teardown cleanup VM must pin a single-vCPU floor, got: " f"{res_kwargs!r}"
+        )
+        # On cloud catalogs 1 vCPU alone could match a sub-1-GiB t2.nano too small
+        # for Ray, so a 2-GiB memory floor is paired with it (cloud only).
+        assert res_kwargs.get("memory") == "2+", (
+            "cloud cleanup VM must pin a memory floor so Ray fits, got: "
+            f"{res_kwargs!r}"
         )
 
     @pytest.mark.parametrize("cloud", ["slurm", "lsf"])
@@ -220,9 +226,15 @@ class TestSkypilotTeardown:
             await env.teardown_skypilot(setup_id)
 
         res_kwargs = mock_sky.Resources.call_args.kwargs
-        assert res_kwargs.get("cpus") == 2, (
+        assert res_kwargs.get("cpus") == 1, (
             f"teardown on {cloud} must pass a bare int cpus (the 'N+' form crashes "
             f"the HPC cloud), got: {res_kwargs!r}"
+        )
+        # slurm/lsf match CPUs directly and don't track memory as a consumable, so
+        # a --memory request fails resource matching: the floor must be skipped.
+        assert "memory" not in res_kwargs, (
+            f"teardown on {cloud} must NOT pass memory (breaks HPC matching), got: "
+            f"{res_kwargs!r}"
         )
 
 
