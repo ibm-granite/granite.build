@@ -140,7 +140,7 @@ class TestRootResolution:
         Without this the graph splits into two disconnected halves of the same
         thing, depending on which spelling the caller happened to have.
         """
-        hf = "hf://huggingface.co/models/org/repo"
+        hf = "https://huggingface.co/org/repo"
         svc = service(row("J1", hf, B))
         for spelling in (
             hf,
@@ -313,7 +313,7 @@ class TestQueryGraph:
         assert [n["id"] for n in result["nodes"] if n["is_root"]] == [A]
 
     def test_alternate_spellings_reach_one_artifact(self):
-        hf = "hf://huggingface.co/models/org/repo"
+        hf = "https://huggingface.co/org/repo"
         svc = service(row("J1", hf, B))
         for spelling in (hf, "hf:///org/repo", "https://huggingface.co/org/repo"):
             assert svc.query_graph(uri=spelling)["root_id"] == hf, spelling
@@ -322,9 +322,7 @@ class TestQueryGraph:
         svc = service(row("J1", A, B), row("J2", B, C))
         result = svc.query_graph(job_id="J1", direction="both")
         depths = {
-            n["id"]: n["depth"]
-            for n in result["nodes"]
-            if n["node_type"] == "artifact"
+            n["id"]: n["depth"] for n in result["nodes"] if n["node_type"] == "artifact"
         }
         # Both of J1's endpoints are seeds, so both are at depth 0.
         assert depths[A] == 0
@@ -432,7 +430,10 @@ class TestListRuns:
         svc = service(*[row(f"J{i}", A, B) for i in range(10)])
         seen = []
         for offset in range(0, 10, 3):
-            seen.extend(r["job_id"] for r in svc.list_runs(uri=A, limit=3, offset=offset)["runs"])
+            seen.extend(
+                r["job_id"]
+                for r in svc.list_runs(uri=A, limit=3, offset=offset)["runs"]
+            )
         assert len(set(seen)) == 10
 
     def test_the_page_size_is_capped(self):

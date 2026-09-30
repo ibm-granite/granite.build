@@ -41,6 +41,8 @@ CONVERGING_GROUPS = [
             "hf://huggingface.co/models/ibm-research/modelX/",
             "https://huggingface.co/ibm-research/modelX",
             "https://huggingface.co/models/ibm-research/modelX",
+            "https://huggingface.co/ibm-research/modelX/tree/main",
+            "https://huggingface.co/ibm-research/modelX/",
             # The missing-slash typo: HfURI parses "models" as the host and only
             # warns, which would otherwise mint a bogus separate node.
             "hf://models/ibm-research/modelX",
@@ -56,6 +58,16 @@ CONVERGING_GROUPS = [
             "https://huggingface.co/datasets/org/ds",
         ],
         id="hf-dataset",
+    ),
+    pytest.param(
+        [
+            # tree / blob / resolve all name the same revision and path.
+            "hf://huggingface.co/models/org/repo/main/config.json",
+            "https://huggingface.co/org/repo/tree/main/config.json",
+            "https://huggingface.co/org/repo/blob/main/config.json",
+            "https://huggingface.co/org/repo/resolve/main/config.json",
+        ],
+        id="hf-path-in-repo",
     ),
     pytest.param(
         [
@@ -252,6 +264,9 @@ def test_relative_file_uri_is_not_resolved():
         "bogus-scheme://host/path",
         "https://example.com/some/model",  # not huggingface.co
         "hf://huggingface.co/models/onlyowner",  # too few segments
+        "https://huggingface.co/org/repo/discussions/3",  # a page, not an artifact
+        "https://huggingface.co/org/repo/commit/abc123",  # not a revision marker
+        "https://huggingface.co/org/repo/tree",  # marker with no revision
         "s3://",  # no bucket
         "git+ssh://host.com/onlyowner",  # no repo
     ],
@@ -294,9 +309,7 @@ def test_normalized_or_none_distinguishes_unidentifiable_from_empty():
     """The optional wrapper lets a caller count dropped endpoints."""
     assert normalized_or_none("") is None
     assert normalized_or_none("bogus://x") is None
-    assert (
-        normalized_or_none("hf:///org/repo") == "hf://huggingface.co/models/org/repo"
-    )
+    assert normalized_or_none("hf:///org/repo") == "https://huggingface.co/org/repo"
 
 
 def test_hf_path_in_repo_keeps_its_revision():
@@ -306,7 +319,40 @@ def test_hf_path_in_repo_keeps_its_revision():
     ``.../repo/config.json`` two spellings whose round trip differs.
     """
     raw = "hf://huggingface.co/models/org/repo/main/config.json"
+    assert normalize_uri(raw) == "https://huggingface.co/org/repo/tree/main/config.json"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("hf:///org/repo", "https://huggingface.co/org/repo"),
+        ("hf:///datasets/org/ds", "https://huggingface.co/datasets/org/ds"),
+        ("hf:///spaces/org/app", "https://huggingface.co/spaces/org/app"),
+        ("hf:///org/repo/v2", "https://huggingface.co/org/repo/tree/v2"),
+        (
+            "hf:///buckets/org/b/some/key",
+            "https://huggingface.co/buckets/org/b/some/key",
+        ),
+    ],
+)
+def test_hf_identity_is_the_web_url(raw, expected):
+    """The HF identity is the ``https://huggingface.co`` URL, not ``hf://``.
+
+    The web URL is the spelling other systems understand; ``hf://`` is
+    granite.build's own scheme.
+    """
+    assert normalize_uri(raw) == expected
+
+
+def test_hf_on_another_host_keeps_its_hf_form():
+    """A private hub stays ``hf://``: no rule reads its web URL back as HF.
+
+    Emitting ``https://<host>/...`` would make the identity fail to normalize
+    to itself, so a walk seeded with it would find nothing.
+    """
+    raw = "hf://hub.example.com/models/org/repo"
     assert normalize_uri(raw) == raw
+    assert normalize_uri(normalize_uri(raw)) == raw
 
 
 def test_identity_fits_the_column_width():
@@ -328,13 +374,13 @@ def test_over_long_uri_is_dropped_not_truncated():
     artifacts sharing a long prefix would then collapse into one node. Losing the
     node is the lesser harm, and it is logged.
     """
-    raw = "hf://huggingface.co/models/org/" + "x" * MAX_LINEAGE_URI_LENGTH
+    raw = "https://huggingface.co/org/" + "x" * MAX_LINEAGE_URI_LENGTH
     assert normalize_uri(raw) == ""
 
 
 def test_uri_at_exactly_the_limit_is_kept():
     """The guard is a ceiling, not an off-by-one rejection."""
-    prefix = "hf://huggingface.co/models/org/"
+    prefix = "https://huggingface.co/org/"
     raw = prefix + "x" * (MAX_LINEAGE_URI_LENGTH - len(prefix))
     normalized = normalize_uri(raw)
     assert len(normalized) == MAX_LINEAGE_URI_LENGTH

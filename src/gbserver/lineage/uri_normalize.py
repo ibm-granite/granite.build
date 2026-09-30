@@ -47,6 +47,7 @@ from urllib.parse import urlparse, urlunparse
 from gbcommon.uri.cos import COS_SCHEME, S3_SCHEME
 from gbcommon.uri.git import split_repo_path
 from gbcommon.uri.hf import (
+    DEFAULT_REVISION,
     HF_HOST,
     HF_URI_SCHEME,
     URLSEGMENT_BUCKETS,
@@ -61,8 +62,8 @@ from gbcommon.uri.lh import (
     PRODUCTION_HOST,
     STAGING_HOST,
     URLSEGMENT_FILES,
-    URLSEGMENT_MODELS as LH_URLSEGMENT_MODELS,
 )
+from gbcommon.uri.lh import URLSEGMENT_MODELS as LH_URLSEGMENT_MODELS
 from gbserver.storage.stored_lineage_row import MAX_LINEAGE_URI_LENGTH
 from gbserver.types.constants import FILE_SCHEME, MEM_URI_SCHEME
 from gbserver.utils.logger import get_logger
@@ -79,6 +80,20 @@ _HF_TYPE_SEGMENTS = frozenset(
         URLSEGMENT_BUCKETS,
     }
 )
+
+# How the web URL spells each non-model repo type. A model has no segment, which
+# is the one difference from the ``hf://`` layout. Keyed by ``HfType`` value.
+_HF_WEB_TYPE_SEGMENT = {
+    "dataset": URLSEGMENT_DATASETS,
+    "space": URLSEGMENT_SPACES,
+    "bucket": URLSEGMENT_BUCKETS,
+}
+
+# The marker the canonical web URL puts before a revision, and every marker a web
+# URL may use there: ``tree`` for a directory, ``blob`` for a file page, ``resolve``
+# for a raw download. All three name the same revision and path.
+_HF_WEB_TREE = "tree"
+_HF_WEB_REVISION_MARKERS = frozenset({"tree", "blob", "resolve"})
 
 # LH types that carry a revision/version segment, and the default injected for
 # each. LhURI appends these in __init__ when the URI omits one, so the same
@@ -167,28 +182,55 @@ def normalize_uri(raw: str) -> str:
 
 
 def _normalize_hf(candidate: str, parsed) -> str:
-    """Canonicalize an ``hf://`` URI via the handler's own canonical form.
+    """Canonicalize an ``hf://`` URI to its ``https://huggingface.co`` web URL.
 
-    ``HfURI.custom_str`` is already an idempotent canonicalizer: it always emits
-    the host and the type segment, and it drops the revision when it is the
-    default and no path follows. Reuse it rather than restating those rules, so
-    this function cannot drift from what push/pull actually resolve.
+    The web URL is the identity rather than ``hf://`` because it is the spelling
+    every other system understands: a browser, a model card, another lineage
+    source. ``hf://`` is granite.build's own scheme and means nothing outside it.
+
+    The parsing is still ``HfURI``'s -- its ``custom_str`` is already an idempotent
+    canonicalizer (always the host and the type segment, the revision dropped when
+    it is the default and no path follows) -- and only the final spelling is
+    translated, so this cannot drift from what push/pull actually resolve.
 
     One fixup on top: ``hf://models/owner/repo`` (two slashes) parses the type
     segment as the *host*, which ``HfURI`` only logs a warning about. Left alone
     it would canonicalize to a bogus ``hf://models/...`` endpoint that never
     merges with the correctly spelled artifact.
+
+    A repo on a host other than ``huggingface.co`` keeps its ``hf://`` form: there
+    is no rule that recognizes an arbitrary ``https`` host as a hub, so its web URL
+    would not normalize back to itself.
     """
     # Import locally: gbcommon.uri.hf imports huggingface_hub at module scope,
     # and normalize_uri is called on paths that have no business requiring it.
-    from gbcommon.uri.hf import HfURI
+    from gbcommon.uri.hf import HfType, HfURI
 
     if (parsed.netloc or "").lower() in _HF_TYPE_SEGMENTS:
         # Re-spell as the three-slash form the author meant, then canonicalize.
         path = parsed.path or ""
         candidate = f"{HF_URI_SCHEME}://{HF_HOST}/{parsed.netloc}{path}"
 
-    return str(HfURI.parse(candidate))
+    hf = HfURI.parse(candidate)
+    canonical = str(hf)
+    parts = hf._parts()
+    if parts.host != HF_HOST:
+        return canonical
+
+    # The web URL omits the type segment for a model, and spells a revision or a
+    # path inside the repo as /tree/<revision>/<path>. A bucket has no revision.
+    segments = []
+    if parts.hf_type != HfType.MODEL:
+        segments.append(_HF_WEB_TYPE_SEGMENT[str(parts.hf_type)])
+    segments.extend([parts.owner, parts.repo])
+    if parts.hf_type == HfType.BUCKET:
+        if parts.path_in_repo:
+            segments.append(parts.path_in_repo)
+    elif parts.revision and (parts.revision != DEFAULT_REVISION or parts.path_in_repo):
+        segments.extend([_HF_WEB_TREE, parts.revision])
+        if parts.path_in_repo:
+            segments.append(parts.path_in_repo)
+    return f"https://{HF_HOST}/" + "/".join(segments)
 
 
 def _normalize_lh(candidate: str, parsed) -> str:
@@ -336,12 +378,19 @@ def _normalize_mem(candidate: str, parsed) -> str:
 
 
 def _normalize_https(candidate: str, parsed) -> str:
-    """Translate a HuggingFace web URL into its ``hf://`` identity.
+    """Canonicalize a HuggingFace web URL, the identity every HF spelling reaches.
 
     The same model is written both ways in practice -- a browser URL pasted into
     a build, and the ``hf://`` URI the runtime resolves -- and they must be one
-    node. Nothing in :mod:`gbcommon.uri` registers ``https``, so without this
-    the web spelling would be dropped entirely.
+    node. The web URL is translated into the ``hf://`` path layout and sent
+    through :func:`_normalize_hf`, so both spellings share one canonicalizer.
+
+    The web layout differs from ``hf://`` in one place: a revision is introduced
+    by a ``tree``/``blob``/``resolve`` marker rather than following the repo
+    directly. Any other page under a repo (``discussions``, ``commit/<sha>``,
+    ``settings``) is declined rather than guessed: it names something about the
+    repo, not an artifact, and folding it onto the repo -- or reading ``commit``
+    as a revision -- would merge things that are not the same.
 
     Only ``huggingface.co`` is translated. Any other ``https`` host is declined:
     there is no rule that would make a generic web URL an artifact identity, and
@@ -350,13 +399,30 @@ def _normalize_https(candidate: str, parsed) -> str:
     host = (parsed.netloc or "").lower()
     if host != HF_HOST:
         return ""
-    path = (parsed.path or "").strip("/")
-    if not path:
+    segments = [segment for segment in (parsed.path or "").split("/") if segment]
+    if not segments:
         return ""
-    return _normalize_hf(
-        f"{HF_URI_SCHEME}://{HF_HOST}/{path}",
-        urlparse(f"{HF_URI_SCHEME}://{HF_HOST}/{path}"),
-    )
+
+    type_segments = []
+    if segments[0] in _HF_TYPE_SEGMENTS:
+        type_segments, segments = [segments[0]], segments[1:]
+    if len(segments) < 2:
+        return ""
+    repo_segments, rest = segments[:2], segments[2:]
+
+    if rest:
+        if rest[0] in _HF_WEB_REVISION_MARKERS:
+            rest = rest[1:]
+            if not rest:
+                return ""
+        elif type_segments != [URLSEGMENT_BUCKETS]:
+            # A bucket has no revision, so what follows it is a path; for every
+            # other type an unmarked segment is a page, not a revision.
+            return ""
+
+    path = "/".join(type_segments + repo_segments + rest)
+    translated = f"{HF_URI_SCHEME}://{HF_HOST}/{path}"
+    return _normalize_hf(translated, urlparse(translated))
 
 
 # Scheme -> normalizer. A scheme absent from this table has no identity rule and
@@ -386,7 +452,7 @@ def normalized_or_none(raw: str) -> Optional[str]:
 
 
 def display_uri_from_url(url: Optional[str]) -> Optional[str]:
-    """Best-effort ``hf://`` URI for a web URL, for DISPLAY not identity.
+    """Best-effort canonical URI for a web URL, for DISPLAY not identity.
 
     Distinct from :func:`normalize_uri` in exactly one way, and it matters: this
     **falls back to the input unchanged** when it cannot translate, because its
@@ -401,7 +467,7 @@ def display_uri_from_url(url: Optional[str]) -> Optional[str]:
         url: the web URL, or ``None``.
 
     Returns:
-        The ``hf://`` URI when the URL is a recognizable HuggingFace one, the input
+        The canonical URI when the URL is a recognizable HuggingFace one, the input
         unchanged when it is not, or ``None`` for empty input.
     """
     if not url:

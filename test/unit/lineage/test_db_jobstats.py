@@ -28,7 +28,10 @@ import uuid as uuid_module
 import pytest
 
 from gbserver.lineage.attributes import (
+    ALT_URIS,
     INPUT,
+    OUTPUT,
+    endpoint_alt_uris,
     endpoint_kind,
     endpoint_name,
     job_detail,
@@ -388,7 +391,44 @@ class TestRowContents:
         )
         stored = rows.get_rows_by_job("J1")[0]
         assert stored.input == "s3://bkt/raw"
-        assert stored.output == "hf://huggingface.co/models/org/repo"
+        assert stored.output == "https://huggingface.co/org/repo"
+
+    def test_alternative_spellings_are_kept_in_the_blob(self, sink, rows):
+        """The forms normalization folds away are remembered, not lost.
+
+        The canonical URI is the column; every other recorded spelling -- the raw
+        ``uri``, the facet mirrors, and an explicit ``uri_aliases`` list such as
+        the physical path behind an ``lh://`` artifact -- lands in ``alt_uris``.
+        """
+        lh_raw = "lh://prod/ns/models/mdl_tbl/trained/granite-dot-build"
+        target = artifact("b", lh_raw)
+        target["facets"] = {
+            "gb-artifact-uri": lh_raw,
+            "uri_aliases": ["s3://bkt/models/trained/"],
+        }
+        sink._write_job(
+            job("J1", [artifact("a", "hf:///org/repo")], [target]),
+            build_id="BLD",
+            target_run_uuid="TR",
+        )
+        stored = rows.get_rows_by_job("J1")[0]
+        assert stored.input == "https://huggingface.co/org/repo"
+        assert stored.output == "lh://prod/ns/models/mdl_tbl/trained"
+        assert endpoint_alt_uris(stored.attributes, INPUT) == ["hf:///org/repo"]
+        assert endpoint_alt_uris(stored.attributes, OUTPUT) == [
+            lh_raw,
+            "s3://bkt/models/trained/",
+        ]
+
+    def test_a_canonical_spelling_has_no_alternatives(self, sink, rows):
+        sink._write_job(
+            job("J1", [artifact("a", "s3://bkt/raw")], [artifact("b", LH_TABLE)]),
+            build_id="BLD",
+            target_run_uuid="TR",
+        )
+        stored = rows.get_rows_by_job("J1")[0]
+        assert ALT_URIS not in stored.attributes[INPUT]
+        assert ALT_URIS not in stored.attributes[OUTPUT]
 
     def test_carried_metadata_survives(self, sink, rows):
         sink._write_job(

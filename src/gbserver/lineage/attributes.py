@@ -25,8 +25,13 @@ each producer invents its own keys and every reader has to tolerate all of them.
 Four top-level groups, by who owns the value:
 
 ``input`` / ``output``
-    What each endpoint *is* -- ``kind`` and ``name``. The URI is already the row's
-    identity, so it is not repeated here.
+    What each endpoint *is* -- ``kind`` and ``name`` -- plus ``alt_uris``, the
+    other spellings the producer recorded for it (``hf:///org/repo`` beside the
+    canonical web URL, ``lh://.../granite-dot-build`` beside the stripped form, an
+    explicit alias such as the physical ``s3://`` path). The canonical URI is
+    already the row's identity, so it is not repeated here. The alternatives are
+    carried for display and for a future alias lookup; like the rest of the blob
+    they are **not queryable**, so a walk never matches on them.
 
 ``job``
     The execution: name, status, owner, timestamps, namespace. Describes the run
@@ -59,7 +64,9 @@ row -- or, if dropped, would prune every node. See the note beside
 ``_JOB_KEY_FROM_FLAT``.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from gbserver.lineage.uri_normalize import normalize_uri
 
 # Top-level groups. Named as constants because both the writer and the readers key
 # on them, and a typo in either place is a silently empty node rather than an error.
@@ -76,6 +83,15 @@ PAYLOAD = "payload"
 # Endpoint detail keys, inside INPUT / OUTPUT.
 KIND = "kind"
 NAME = "name"
+ALT_URIS = "alt_uris"
+
+# Where an artifact dict may carry a URI. The first three are the spellings the
+# producers already write (see ``decompose._artifact_uri``); ``uri_aliases`` is the
+# explicit list a producer fills with forms that cannot be derived from the URI
+# string, such as the physical storage path behind an ``lh://`` artifact.
+_URI_KEYS = ("uri",)
+_FACET_URI_KEYS = ("artifact_uri", "gb-artifact-uri")
+URI_ALIASES = "uri_aliases"
 
 # Job keys. These mirror what the API handler needs to build an ArtifactRunEntry;
 # the names drop the redundant ``job_`` prefix they had when the blob was flat.
@@ -201,23 +217,49 @@ def build_attributes(
     return attributes
 
 
-def _endpoint_detail(artifact: Optional[Dict[str, Any]]) -> Dict[str, str]:
+def _endpoint_detail(artifact: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """What an endpoint *is*, from the artifact dict the producer supplied.
 
-    Only kind and name. The URI is the row's identity and is not repeated, and
-    anything else an artifact dict holds belongs to the system that produced it
-    rather than to the graph.
+    Kind, name, and the alternative spellings of its URI. The canonical URI is the
+    row's identity and is not repeated, and anything else an artifact dict holds
+    belongs to the system that produced it rather than to the graph.
     """
     if not artifact:
         return {}
-    detail: Dict[str, str] = {}
+    detail: Dict[str, Any] = {}
     kind = artifact.get("artifact_type") or artifact.get("type") or ""
     if kind:
         detail[KIND] = str(kind)
     name = artifact.get("name") or ""
     if name:
         detail[NAME] = str(name)
+    alternatives = _alt_uris(artifact)
+    if alternatives:
+        detail[ALT_URIS] = alternatives
     return detail
+
+
+def _alt_uris(artifact: Dict[str, Any]) -> List[str]:
+    """Every recorded spelling of the artifact's URI other than the canonical one.
+
+    Kept verbatim, not normalized: the point is to remember the forms the identity
+    rule folds away, and normalizing them would fold them back. Sorted and deduped
+    so the same artifact always yields the same blob, whatever order the producer
+    wrote its keys in.
+    """
+    facets = artifact.get("facets") or {}
+    recorded = [artifact.get(key) for key in _URI_KEYS]
+    recorded += [facets.get(key) for key in _FACET_URI_KEYS]
+    # The row's identity is the first URI key present, normalized -- the same rule
+    # decompose._artifact_uri applies -- so this drops exactly that URI.
+    identity = next((str(value).strip() for value in recorded if value), "")
+    canonical = normalize_uri(identity) if identity else ""
+
+    for aliases in (artifact.get(URI_ALIASES), facets.get(URI_ALIASES)):
+        if isinstance(aliases, (list, tuple)):
+            recorded.extend(aliases)
+    spellings = {str(value).strip() for value in recorded if value}
+    return sorted(set(spellings) - {"", canonical})
 
 
 def _job_detail(job_metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -301,6 +343,12 @@ def endpoint_kind(attributes: Optional[Dict[str, Any]], side: str) -> str:
 def endpoint_name(attributes: Optional[Dict[str, Any]], side: str) -> str:
     """The display name recorded for one endpoint, or ``""``."""
     return str(((attributes or {}).get(side) or {}).get(NAME, "") or "")
+
+
+def endpoint_alt_uris(attributes: Optional[Dict[str, Any]], side: str) -> List[str]:
+    """The alternative URI spellings recorded for one endpoint, or ``[]``."""
+    values = ((attributes or {}).get(side) or {}).get(ALT_URIS) or []
+    return [str(value) for value in values if value]
 
 
 def job_detail(attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:
