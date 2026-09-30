@@ -540,9 +540,7 @@ class SpaceURI(URI):
         if found is None:
             return None
         step_dir, rest = found
-        if not SpaceURI._step_env_ok(
-            step_dir / STEP_FILE_NAME, env_class, env_subtype
-        ):
+        if not SpaceURI._step_env_ok(step_dir / STEP_FILE_NAME, env_class, env_subtype):
             return None
         return SpaceURI._step_uri_from_dir(step_dir, rest)
 
