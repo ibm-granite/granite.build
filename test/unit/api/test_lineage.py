@@ -403,6 +403,7 @@ def test_query_graph_fills_in_its_defaults():
         # None, not a number: the per-level ceiling is the service's default unless a
         # caller explicitly raises it for a "show the full graph" request.
         "max_nodes_per_level": None,
+        "group_runs": True,
     }
     assert resp.root_id == ""
     assert resp.nodes == []
@@ -433,6 +434,7 @@ def test_query_graph_passes_every_filter_through():
         "direction": "upstream",
         "max_depth": 3,
         "max_nodes_per_level": 25_000,
+        "group_runs": True,
     }
 
 
@@ -731,6 +733,8 @@ def test_jobs_passes_every_filter_and_its_paging_through():
         "required_tags": ["team=nlp"],
         "limit": 10,
         "offset": 50,
+        "self_loop": False,
+        "output": None,
     }
     assert resp.limit == 10
     assert resp.offset == 50

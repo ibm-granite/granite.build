@@ -325,11 +325,30 @@ class TestSelfLoopCollapse:
         assert runs[0]["metadata"]["run_count"] == 500
 
     def test_the_collapsed_node_is_flagged(self):
-        """A client must be able to tell a collapsed node from a real run."""
+        """A client must be able to tell a looped node from a single run."""
         result = build_graph_dict(graph_of(row("J1", A, A)), root_uri=A)
         run = nodes_by_type(result, "run")[0]
-        assert run["metadata"]["collapsed"] is True
+        assert run["metadata"]["self_loop"] is True
         assert run["id"].startswith("runs:")
+
+    def test_it_is_named_after_the_first_job(self):
+        """Same as a repeated A -> B: the jobs share a step, so its name is theirs."""
+        rows = [row("J1", A, A, metadata={"job_name": "append"}), row("J2", A, A, metadata={"job_name": "other"})]
+        run = nodes_by_type(build_graph_dict(graph_of(*rows), root_uri=A), "run")[0]
+        assert run["name"] == "append"
+        assert run["metadata"]["run_count"] == 2
+
+    def test_it_says_how_to_list_its_jobs(self):
+        result = build_graph_dict(graph_of(row("J1", A, A)), root_uri=A)
+        metadata = nodes_by_type(result, "run")[0]["metadata"]
+        assert metadata["source_uri"] == metadata["target_uri"] == A
+        assert metadata["jobs_query"] == {"uri": A, "output": A}
+
+    def test_it_is_drawn_as_a_loop(self):
+        result = build_graph_dict(graph_of(row("J1", A, A)), root_uri=A)
+        run_id = nodes_by_type(result, "run")[0]["id"]
+        assert {"source": A, "target": run_id} in result["edges"]
+        assert {"source": run_id, "target": A} in result["edges"]
 
     def test_it_names_a_representative_job(self):
         """The count needs somewhere to lead; this is the caller's starting point."""
@@ -384,3 +403,46 @@ class TestSelfLoopCollapse:
         assert (
             nodes_by_type(result, "run")[0]["metadata"]["job_namespace"] == "sp/build"
         )
+
+
+class TestSameEndpointGrouping:
+    """Jobs with the same single input and output share one node, like self-loops."""
+
+    def test_parallel_jobs_become_one_node(self):
+        rows = [row(f"J{i}", A, B, metadata={"job_name": f"fdedup{i}"}) for i in range(12)]
+        result = build_graph_dict(graph_of(*rows), root_uri=A)
+        runs = nodes_by_type(result, "run")
+        assert len(runs) == 1
+        assert runs[0]["name"] == "fdedup0"
+        metadata = runs[0]["metadata"]
+        assert metadata["run_count"] == 12
+        assert metadata["self_loop"] is False
+        assert metadata["jobs_query"] == {"uri": A, "output": B}
+        assert runs[0]["id"] == f"runs:{A} \u2192 {B}"
+        assert {(e["source"], e["target"]) for e in result["edges"]} == {
+            (A, runs[0]["id"]),
+            (runs[0]["id"], B),
+        }
+
+    def test_a_single_job_is_untouched(self):
+        result = build_graph_dict(graph_of(row("J1", A, B)), root_uri=A)
+        assert [n["id"] for n in nodes_by_type(result, "run")] == ["run:J1"]
+
+    def test_jobs_with_more_endpoints_are_not_grouped(self):
+        """The pair filter would over-list them, so they stay separate."""
+        rows = [row("J1", A, B), row("J1", C, B), row("J2", A, B), row("J2", C, B)]
+        result = build_graph_dict(graph_of(*rows), root_uri=A)
+        assert {n["id"] for n in nodes_by_type(result, "run")} == {"run:J1", "run:J2"}
+
+    def test_ungrouped_returns_one_node_per_job(self):
+        rows = [row("J1", A, B), row("J2", A, B), row("J3", A, A), row("J4", A, A)]
+        result = build_graph_dict(graph_of(*rows), root_uri=A, group_runs=False)
+        runs = nodes_by_type(result, "run")
+        assert {n["id"] for n in runs} == {"run:J1", "run:J2", "run:J3", "run:J4"}
+        assert all("run_count" not in n["metadata"] for n in runs)
+        assert {"source": "run:J3", "target": A} in result["edges"]
+
+    def test_different_pairs_get_a_node_each(self):
+        rows = [row("J1", A, B), row("J2", A, B), row("J3", A, C), row("J4", A, C)]
+        result = build_graph_dict(graph_of(*rows), root_uri=A)
+        assert len(nodes_by_type(result, "run")) == 2

@@ -205,6 +205,14 @@ class LineageQueryRequest(BaseModel):
             "there is no value meaning 'no limit'."
         ),
     )
+    group_runs: bool = Field(
+        default=True,
+        description=(
+            "Fold the jobs with the same input and output (an in-place rewrite, or a "
+            "repeated A -> B step) into one node with a run_count. False returns one "
+            "node per job; beware that a heavily rewritten artifact can then be large."
+        ),
+    )
 
 
 class LineageGraphResponse(BaseModel):

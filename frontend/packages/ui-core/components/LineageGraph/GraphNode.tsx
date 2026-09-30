@@ -92,7 +92,13 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode, s
       width={width}
       className={styles.foreignObjectOverflow}
     >
-      <div className={nodeWrapperClass} style={isSelected ? { '--node-selected-bg': bgColor } as React.CSSProperties : undefined}>
+      <div
+        className={nodeWrapperClass}
+        style={isSelected || isHighlighted
+          // The root keeps a stronger tint of its type color than a plain selection.
+          ? { '--node-selected-bg': isHighlighted ? bgColor.replace(/[\d.]+\)$/, '0.35)') : bgColor } as React.CSSProperties
+          : undefined}
+      >
         <CardNode
           color={color}
           onClick={() => onClick && onClick(node)}

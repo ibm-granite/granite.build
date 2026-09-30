@@ -683,6 +683,12 @@ export async function getLineageJobs(params: {
   job_id?: string
   tags?: string[]
   required_tags?: string[]
+  // With `uri`: only the jobs whose source and target are both that artifact --
+  // the runs behind a looped (in-place rewrite) node of GET /lineage/graph.
+  self_loop?: boolean
+  // With `uri`: only the jobs that read `uri` and wrote `output` -- the runs behind
+  // a grouped node of GET /lineage/graph (metadata.jobs_query).
+  output?: string
   limit?: number
   offset?: number
 }): Promise<LineageJobsResult> {
@@ -702,6 +708,9 @@ export async function getLineageGraph(params: {
   // Raise the per-level frontier ceiling for one request, for an explicit
   // "show the full graph" action. Omit for the server default.
   max_nodes_per_level?: number
+  // Fold jobs with the same input and output into one node (server default true);
+  // false returns one node per job.
+  group_runs?: boolean
 }, opts?: { timeoutMs?: number }): Promise<LineageGraphResult> {
   const { data } = await client.get<LineageGraphResult>('/lineage/graph', {
     params,

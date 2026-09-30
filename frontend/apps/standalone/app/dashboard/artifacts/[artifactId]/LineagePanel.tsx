@@ -41,10 +41,16 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const expansion = useLineageExpansion()
 
   const base = React.useMemo(() => (data ? indexGraphToElk(data) : { nodes: [], links: [] }), [data])
-  const { nodes, links } = React.useMemo(() => mergeElkGraphs(base, expansion.extra), [base, expansion.extra])
+  const merged = React.useMemo(() => mergeElkGraphs(base, expansion.extra), [base, expansion.extra])
 
   // The index keys artifacts by normalized URI, so the root is root_id, not the UUID.
   const rootId = data?.root_id || artifact.uri!
+  // The artifact the graph is about keeps an outline even once another node is selected.
+  const nodes = React.useMemo(
+    () => merged.nodes.map((n) => (n.id === rootId ? { ...n, highlight: true } : n)),
+    [merged.nodes, rootId],
+  )
+  const links = merged.links
   const activeId = focusNodeId ?? rootId
 
   // The node the buttons expand from is the one highlighted: the artifact itself
@@ -150,7 +156,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             onClick={() => graphRef.current?.zoomIn()} />
           <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
             iconDescription="Reset Zoom" renderIcon={ZoomFit}
-            onClick={() => { setFocusNodeId(null); graphRef.current?.resetZoom() }} />
+            onClick={() => graphRef.current?.resetZoom(rootId)} />
           <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
             iconDescription="Zoom Out (-10%)" renderIcon={ZoomOut}
             onClick={() => graphRef.current?.zoomOut()} />
@@ -161,7 +167,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             <OverflowMenuItem
               className="overflow-item"
               itemText="Reset view"
-              onClick={() => { setFocusNodeId(null); setJobNodeId(null); expansion.reset(); graphRef.current?.resetZoom() }}
+              onClick={() => { setFocusNodeId(null); setJobNodeId(null); expansion.reset(); graphRef.current?.resetView() }}
             />
             <OverflowMenuItem
               className="overflow-item"
@@ -220,6 +226,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             <Graph
               ref={graphRef}
               graphKey={artifact.uuid}
+              centerNodeId={rootId}
               nodes={nodes}
               links={links}
               allLinks={links}

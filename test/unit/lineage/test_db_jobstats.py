@@ -727,6 +727,18 @@ class TestJobsTouchingInSQL:
         assert rows.count_jobs_touching(LH_MODEL) == 1
         assert rows.get_job_ids_touching(LH_MODEL, limit=10, offset=0) == ["J1"]
 
+    def test_self_loop_counts_only_in_place_rewrites_in_sql(self, sink, rows):
+        self._write(sink, "S1", [artifact("t", LH_TABLE)], [artifact("t", LH_TABLE)])
+        self._write(sink, "S2", [artifact("t", LH_TABLE)], [artifact("t", LH_TABLE)])
+        self._write(sink, "X", [artifact("t", LH_TABLE)], [artifact("o", LH_MODEL)])
+        assert rows.count_jobs_touching(LH_TABLE) == 3
+        assert rows.count_jobs_touching(LH_TABLE, self_loop=True) == 2
+        assert rows.get_job_ids_touching(LH_TABLE, 10, 0, self_loop=True) == ["S1", "S2"]
+        assert rows.filter_jobs_touching(LH_TABLE, ["S1", "X"], self_loop=True) == {"S1"}
+        assert rows.count_jobs_touching(LH_TABLE, output=LH_MODEL) == 1
+        assert rows.get_job_ids_touching(LH_TABLE, 10, 0, output=LH_MODEL) == ["X"]
+        assert rows.filter_jobs_touching(LH_TABLE, ["S1", "X"], output=LH_MODEL) == {"X"}
+
     def test_both_directions_are_counted_and_paged(self, sink, rows):
         for i in range(5):
             self._write(
@@ -745,4 +757,5 @@ class TestJobsTouchingInSQL:
 
     def test_a_terminal_or_empty_uri_touches_nothing(self, rows):
         assert rows.count_jobs_touching("") == 0
+        assert rows.count_jobs_touching("", self_loop=True) == 0
         assert rows.get_job_ids_touching("", limit=10, offset=0) == []

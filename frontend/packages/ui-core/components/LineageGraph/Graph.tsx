@@ -34,9 +34,10 @@ export interface ElkNodeEx extends ElkNode {
 export interface GraphHandle {
   zoomIn(): void
   zoomOut(): void
-  resetZoom(): void
-  /** Clear the user-adjusted flag so the next relayout auto-fits (no immediate
-   *  fit against stale positions). For callers that also change the node set. */
+  /** Back to 100%, centered on nodeId when given (else the graph's origin). */
+  resetZoom(nodeId?: string): void
+  /** Fit the whole graph, also on a relayout the same click causes. For callers
+   *  that also change the node set. */
   resetView(): void
   currentZoom(): number
   centerOnNode(nodeId: string): void
@@ -55,6 +56,8 @@ interface GraphProps {
    * graph; it must NOT change as the same graph grows or is re-filtered.
    */
   graphKey?: string
+  // Centered at 100% on the graph's first layout (per graphKey), if present.
+  centerNodeId?: string
   onClick?: (node: ElkNodeEx) => void
   selectedNode?: ElkNodeEx
   allLinks?: ElkExtendedEdge[]
@@ -98,12 +101,16 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   const [hoverNode, setHoverNode] = React.useState<ElkNodeEx | null>(null)
   const anchorIdRef = React.useRef<string | undefined>(undefined)
   const layoutRunRef = React.useRef(0)
-  // Set by resetZoom: a relayout the same click triggered (e.g. Reset view
+  // Set by resetView: a relayout the same click triggered (e.g. Reset view
   // dropping expanded nodes) fits the new layout instead of re-anchoring.
   const resetOnLayoutRef = React.useRef(false)
   // Set by centerOnNodeAfterLayout, the same way.
   const centerOnLayoutRef = React.useRef<string | null>(null)
   anchorIdRef.current = props.selectedNode?.id
+  const centerNodeIdRef = React.useRef(props.centerNodeId)
+  centerNodeIdRef.current = props.centerNodeId
+  // Cleared once the first layout containing centerNodeId has been centered.
+  const pendingInitialCenterRef = React.useRef(true)
 
 
   const buildSkeleton = (children: ElkNodeEx[], visibleLinks: ElkExtendedEdge[], allLinks: ElkExtendedEdge[]) => {
@@ -255,7 +262,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
         // measured on the final layout, keeping the zoom level.
         if (resetOnLayoutRef.current) {
           resetOnLayoutRef.current = false
-          // Stop resetZoom's transition, which is still easing to the old fit.
+          // Stop resetView's transition, which is still easing to the old fit.
           if (svgRef.current) d3.select(svgRef.current).interrupt()
           transformRef.current = fitTransform(g)
           setPositions(g)
@@ -286,6 +293,14 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
           centerOnLayoutRef.current = null
           const t = centerFitTransform(g, centerId, transformRef.current.k)
           if (t) transformRef.current = t
+        }
+        const initialId = centerNodeIdRef.current
+        if (pendingInitialCenterRef.current && initialId) {
+          const t = centerTransform(g, initialId, BASE_SCALE)
+          if (t) {
+            pendingInitialCenterRef.current = false
+            transformRef.current = t
+          }
         }
         setPositions(g)
         positionsRef.current = g
@@ -375,6 +390,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   React.useEffect(() => {
     transformRef.current = INITIAL_TRANSFORM
     wrapViewportRef.current = null
+    pendingInitialCenterRef.current = true
   }, [graphIdentity])
 
   React.useEffect(() => {
@@ -549,7 +565,16 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     }
   }, [])
 
-  const resetZoom = () => {
+  const resetZoom = (nodeId?: string) => {
+    if (!svgRef.current || !zoomRef.current) return
+    const t = (nodeId && positionsRef.current && centerTransform(positionsRef.current, nodeId, BASE_SCALE)) || INITIAL_TRANSFORM
+    d3.select(svgRef.current)
+      .transition()
+      .duration(300)
+      .call(zoomRef.current.transform, t)
+  }
+
+  const resetView = () => {
     // Effects of the click that called this run before a zero timeout, so a
     // relayout it caused has started by then; otherwise nothing will land.
     const run = layoutRunRef.current
@@ -575,8 +600,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       }
     },
     resetZoom,
-    // Reset view: the same fit, which also covers a relayout the reset causes.
-    resetView: resetZoom,
+    resetView,
     currentZoom: () => {
       if (svgRef.current) {
         // Relative to the default scale, as it was before BASE_SCALE moved into k.

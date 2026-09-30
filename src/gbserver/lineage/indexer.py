@@ -414,7 +414,11 @@ class TargetLineageIndexer(JobLineageIndexer):
     def _index(self, storage: SingletonAdminStorage, job: StoredTargetRun) -> bool:
         if not job.input_artifacts and not any(job.output_artifacts.values()):
             return False
-        if self._sink.row_storage.has_rows_for_job(job.uuid):
+        # Recorded only if *this* system wrote it: a copy another source imported
+        # first still needs granite.build's view merged in. See recorded_by_self.
+        if self._sink.row_storage.has_rows_for_job(
+            job.uuid
+        ) and self._sink.recorded_by_self([job.uuid]):
             return False
         self._sink.add_jobstats_for_build_target(
             storage, build_id=job.build_id, target_id=job.uuid

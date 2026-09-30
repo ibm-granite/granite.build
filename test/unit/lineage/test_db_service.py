@@ -107,19 +107,26 @@ class FakeStorage:
             raise RuntimeError("storage is down")
         return [r for r in self.rows if r.job_id in set(job_ids)]
 
-    def _touching(self, uri: str) -> set:
+    def _touching(self, uri: str, self_loop: bool = False, output=None) -> set:
         if self.fail:
             raise RuntimeError("storage is down")
+        output = uri if self_loop else output
+        if output:
+            return {r.job_id for r in self.rows if uri and (r.input, r.output) == (uri, output)}
         return {r.job_id for r in self.rows if uri and uri in (r.input, r.output)}
 
-    def count_jobs_touching(self, uri: str) -> int:
-        return len(self._touching(uri))
+    def count_jobs_touching(self, uri: str, self_loop: bool = False, output=None) -> int:
+        return len(self._touching(uri, self_loop, output))
 
-    def get_job_ids_touching(self, uri: str, limit: int, offset: int) -> list:
-        return sorted(self._touching(uri))[offset : offset + limit]
+    def get_job_ids_touching(
+        self, uri: str, limit: int, offset: int, self_loop: bool = False, output=None
+    ) -> list:
+        return sorted(self._touching(uri, self_loop, output))[offset : offset + limit]
 
-    def filter_jobs_touching(self, uri: str, job_ids) -> set:
-        return self._touching(uri) & set(job_ids)
+    def filter_jobs_touching(
+        self, uri: str, job_ids, self_loop: bool = False, output=None
+    ) -> set:
+        return self._touching(uri, self_loop, output) & set(job_ids)
 
     # No get_rows_by_build: a build is not a column. A build-seeded graph resolves
     # its artifacts through gb_targets and seeds the ordinary walk with their URIs.
@@ -430,6 +437,33 @@ class TestListJobs:
         )
         assert svc.list_jobs(uri=A)["total"] == 11
         assert svc.list_jobs(uri=C)["total"] == 1
+
+    def test_self_loop_lists_only_the_in_place_rewrites(self):
+        """The drill-down for a looped node: same source and target, nothing else."""
+        svc = service(
+            *[row(f"J{i}", A, A) for i in range(3)],
+            row("M", A, C),
+            row("N", B, A),
+        )
+        result = svc.list_jobs(uri=A, self_loop=True)
+        assert [j["job_id"] for j in result["jobs"]] == ["J0", "J1", "J2"]
+        assert result["total"] == 3
+
+    def test_self_loop_pages(self):
+        svc = service(*[row(f"J{i}", A, A) for i in range(5)], row("M", A, C))
+        pages = [svc.list_jobs(uri=A, self_loop=True, limit=2, offset=o) for o in (0, 2, 4)]
+        assert [j["job_id"] for p in pages for j in p["jobs"]] == [f"J{i}" for i in range(5)]
+
+    def test_output_lists_only_the_jobs_of_that_pair(self):
+        svc = service(row("P1", A, B), row("P2", A, B), row("P3", A, C))
+        result = svc.list_jobs(uri=A, output=B)
+        assert [j["job_id"] for j in result["jobs"]] == ["P1", "P2"]
+        assert result["total"] == 2
+
+    def test_self_loop_narrows_another_filter(self):
+        svc = service(row("J1", A, A), row("J2", A, C))
+        assert [j["job_id"] for j in svc.list_jobs(uri=A, job_id="J2", self_loop=True)["jobs"]] == []
+        assert [j["job_id"] for j in svc.list_jobs(uri=A, job_id="J1", self_loop=True)["jobs"]] == ["J1"]
 
     def test_an_entry_carries_its_endpoints_and_job_detail(self):
         svc = service(

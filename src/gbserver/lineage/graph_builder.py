@@ -38,6 +38,7 @@ it does have. Emitting a node for them would collapse every creation in the grap
 into one shared "nothing" node.
 """
 
+import copy
 import logging
 from typing import Optional
 
@@ -48,6 +49,7 @@ from gbserver.lineage.attributes import (
     OUTPUT,
     endpoint_kind,
     endpoint_name,
+    endpoint_produced_by,
     job_detail,
     origin_id,
     origin_system,
@@ -89,6 +91,7 @@ def build_graph_dict(
     graph: LineageGraph,
     root_uri: str = "",
     root_is_artifact: bool = True,
+    group_runs: bool = True,
 ) -> dict:
     """Project a walked graph into the API's graph dict.
 
@@ -102,13 +105,17 @@ def build_graph_dict(
             build-seeded graph, which has several roots and no single one to flag:
             nothing is marked ``is_root`` and no node is synthesized. Defaulting
             this to ``True`` would mint a bogus artifact node named after the build.
+        group_runs: fold the jobs with the same source and target into one node, as
+            described below. ``False`` returns one run node per job, self-loops
+            included -- the uncompacted graph, for a caller that wants every job.
 
     Returns:
         ``{root_id, nodes, edges, truncated, unexpanded}``. An empty artifact graph
         yields the root node alone with no edges: "nothing recorded" is a real answer and must
         not read as an error.
 
-    **Self-loops are collapsed.** A row whose source equals its target is an in-place
+    **Jobs with the same source and target share one node.** A self-loop is the
+    case where both are one artifact, and the reason this exists: a row whose source equals its target is an in-place
     rewrite -- an append to a dataset, a table refreshed in place -- and real data is
     full of them: 30.4% of an imported Lakehouse graph, with one dataset appended
     68,905 times. Rendering one run node per such row produced a 55 MB response
@@ -120,15 +127,22 @@ def build_graph_dict(
     frontier and reach no artifact the graph would otherwise miss. They are pure
     volume.
 
-    The collapsed node keeps a ``run_count`` and the id of one representative run, and
-    the full list stays available from ``GET /lineage/jobs?uri=...`` -- indexed, paged,
-    and never truncated. Nothing is lost, only moved off the graph response.
+    The other case is N jobs repeating one ``A -> B`` step, which would stack N
+    identical run nodes between A and B; see :func:`_repeated_single_edge_jobs`.
+
+    Either way the node is an ordinary run node named after the first job, with a
+    ``run_count``, and the jobs behind it are listed by
+    ``GET /lineage/jobs?uri=<source>&output=<target>`` -- indexed, paged, and never
+    truncated.
+    Nothing is lost, only moved off the graph response. See :func:`_grouped_node`.
     """
     artifact_nodes: dict[str, dict] = {}
     run_nodes: dict[str, dict] = {}
-    # Self-looped rows, grouped by the artifact they rewrite. Collected first so one
-    # collapsed node can carry the count, rather than emitting a node per row.
-    self_loop_rows: dict[str, list] = {}
+    # Rows grouped by (source, target), for the jobs that share one node: every
+    # self-loop, and the jobs repeating one ``A -> B``. See :func:`_grouped_node`.
+    grouped_rows: dict[tuple[str, str], list] = {}
+    # Each job's rows, to find the jobs with one input and one output.
+    job_rows: dict[str, list] = {}
     edges: list[dict] = []
     edge_keys: set[tuple[str, str]] = set()
 
@@ -140,13 +154,14 @@ def build_graph_dict(
         edges.append({"source": source, "target": target})
 
     for row in graph.rows:
-        if row.is_self_loop():
-            self_loop_rows.setdefault(row.input, []).append(row)
+        if group_runs and row.is_self_loop():
+            grouped_rows.setdefault((row.input, row.output), []).append(row)
             continue
 
         run_id = _run_node_id(row)
         if run_id not in run_nodes:
             run_nodes[run_id] = _run_node(row, run_id)
+        job_rows.setdefault(run_id, []).append(row)
 
         if row.input != TERMINAL:
             _ensure_artifact_node(
@@ -155,6 +170,7 @@ def build_graph_dict(
                 kind=endpoint_kind(row.attributes, INPUT),
                 name=endpoint_name(row.attributes, INPUT),
                 depth=graph.depths.get(row.input),
+                produced_by=endpoint_produced_by(row.attributes, INPUT),
             )
             add_edge(row.input, run_id)
 
@@ -165,25 +181,38 @@ def build_graph_dict(
                 kind=endpoint_kind(row.attributes, OUTPUT),
                 name=endpoint_name(row.attributes, OUTPUT),
                 depth=graph.depths.get(row.output),
+                produced_by=endpoint_produced_by(row.attributes, OUTPUT),
             )
             add_edge(run_id, row.output)
 
-    # One node per self-rewritten artifact, in place of one per row.
-    for uri, rows in self_loop_rows.items():
-        _ensure_artifact_node(
-            artifact_nodes,
-            uri=uri,
-            kind=endpoint_kind(rows[0].attributes, INPUT),
-            name=endpoint_name(rows[0].attributes, INPUT),
-            depth=graph.depths.get(uri),
-        )
-        run_id = _self_loop_node_id(uri)
-        run_nodes[run_id] = _self_loop_node(rows, run_id)
-        # Both directions, so the rewrite reads as a cycle on the artifact rather than
-        # a dangling node. The edge set dedups, so this is two edges however many rows
-        # collapsed into it.
-        add_edge(uri, run_id)
-        add_edge(run_id, uri)
+    grouped_ids = (
+        _repeated_single_edge_jobs(job_rows, grouped_rows) if group_runs else set()
+    )
+    if grouped_ids:
+        for run_id in grouped_ids:
+            del run_nodes[run_id]
+        edges = [
+            e for e in edges if e["source"] not in grouped_ids and e["target"] not in grouped_ids
+        ]
+        edge_keys = {(e["source"], e["target"]) for e in edges}
+
+    # One node per (source, target) group, in place of one per job.
+    for (source, target), rows in grouped_rows.items():
+        for uri, side in ((source, INPUT), (target, OUTPUT)):
+            _ensure_artifact_node(
+                artifact_nodes,
+                uri=uri,
+                kind=endpoint_kind(rows[0].attributes, side),
+                name=endpoint_name(rows[0].attributes, side),
+                depth=graph.depths.get(uri),
+                produced_by=endpoint_produced_by(rows[0].attributes, side),
+            )
+        run_id = _grouped_runs_node_id(source, target)
+        run_nodes[run_id] = _grouped_node(rows, source, target, run_id)
+        # For a self-loop both edges touch one artifact, so the rewrite reads as a
+        # cycle on it rather than a dangling node.
+        add_edge(source, run_id)
+        add_edge(run_id, target)
 
     if root_is_artifact and root_uri:
         # The root may appear in no row -- an artifact with no lineage recorded yet.
@@ -214,6 +243,7 @@ def _ensure_artifact_node(
     kind: str,
     name: str,
     depth: Optional[int] = None,
+    produced_by: Optional[dict] = None,
 ) -> None:
     """Add an artifact node for ``uri`` if it is not already present.
 
@@ -227,14 +257,22 @@ def _ensure_artifact_node(
     that recorded neither leaves them to the URI-derived fallback rather than
     showing an unnamed node.
 
+    ``produced_by`` is the exception: it is filled from any row that has it, not
+    only the first, because an artifact's producer is one fact that only some rows
+    record (the consumer's push may carry it while the producer's own row does not).
+    It lands in ``metadata`` as ``gb_build_id`` / ``gb_target_run_uuid`` /
+    ``gb_artifact_id``, the same prefix the run node uses.
+
     Args:
         nodes: the accumulator, keyed by URI.
         uri: the artifact's normalized URI.
         kind: its artifact type, if the row carried one.
         name: its display name, if the row carried one.
         depth: hops from the seed, when the walk reached it.
+        produced_by: the granite.build execution that produced it, if recorded.
     """
     if uri in nodes:
+        _add_produced_by(nodes[uri]["metadata"], produced_by)
         return
 
     nodes[uri] = {
@@ -246,6 +284,13 @@ def _ensure_artifact_node(
         "depth": depth,
         "metadata": {"uri": uri},
     }
+    _add_produced_by(nodes[uri]["metadata"], produced_by)
+
+
+def _add_produced_by(metadata: dict, produced_by: Optional[dict]) -> None:
+    for key, value in (produced_by or {}).items():
+        if value:
+            metadata.setdefault(f"gb_{key}", value)
 
 
 def _name_from_uri(uri: str) -> str:
@@ -277,49 +322,79 @@ def _name_from_uri(uri: str) -> str:
     return segments[-1]
 
 
-def _self_loop_node_id(uri: str) -> str:
-    """Identity of the node standing in for every in-place rewrite of one artifact.
+def _grouped_node(rows: list, source: str, target: str, run_id: str) -> dict:
+    """Build the one run node for every job with ``source`` as input and ``target`` as output.
 
-    Keyed by artifact rather than by job, which is the whole point: the rows being
-    collapsed have distinct ``job_id``s and that is exactly the multiplicity being
-    removed. Prefixed like a run node so it cannot collide with an artifact URI in the
-    shared id space, and distinctly from ``run:`` so a client can tell a collapsed node
-    from a real one without inspecting metadata.
+    Covers both cases alike: a self-loop (``source == target``, an in-place rewrite)
+    and a repeated ``A -> B`` step. A run node like any other, built from the first
+    row walked and named after that job -- the jobs share a step, so its name is
+    theirs. The representative is the first row, not a choice of "most recent":
+    ordering rows by time would need a timestamp the blob does not promise. See
+    :func:`_mark_grouped` for the metadata a client lists the jobs with.
     """
-    return f"runs:{uri}"
+    node = _run_node(rows[0], run_id)
+    _mark_grouped(node, source, target, len({row.job_id for row in rows}))
+    return node
 
 
-def _self_loop_node(rows: list, run_id: str) -> dict:
-    """Build the collapsed node for one artifact's in-place rewrites.
+def _repeated_single_edge_jobs(
+    job_rows: dict[str, list], grouped_rows: dict[tuple[str, str], list]
+) -> set:
+    """Move the jobs repeating one ``A -> B`` into ``grouped_rows``; return their ids.
 
-    Carries the count and one representative job id. The representative is the first
-    row walked, not a choice of "most recent" -- ordering rows by time would need a
-    timestamp the blob does not promise, and claiming a "latest" that is not one is
-    worse than not claiming it.
+    N executions of one step (the same dedup re-run over one table, say) otherwise
+    render as N identical run nodes stacked between A and B. Only jobs with exactly
+    one row, both endpoints real, qualify: ``GET /lineage/jobs?uri=A&output=B`` is
+    how the group is listed, and a job with more endpoints would also match the pair
+    while belonging to a different group. A lone job keeps its own node.
     """
-    representative = rows[0]
-    metadata = {
-        "run_count": len(rows),
-        "collapsed": True,
-        "representative_job_id": representative.job_id,
-        "source_system": origin_system(representative.attributes),
-    }
-    job = job_detail(representative.attributes)
-    if job.get("namespace"):
-        # Kept so the per-run space filter on POST /artifact still has something to
-        # read; without it a collapsed node fails closed and vanishes from that route.
-        metadata["job_namespace"] = job["namespace"]
-    if job.get("owner"):
-        metadata["owner"] = job["owner"]
+    pairs: dict[tuple[str, str], list] = {}
+    for run_id, rows in job_rows.items():
+        if len(rows) != 1 or TERMINAL in (rows[0].input, rows[0].output):
+            continue
+        pairs.setdefault((rows[0].input, rows[0].output), []).append(run_id)
 
-    return {
-        "id": run_id,
-        "node_type": NODE_TYPE_RUN,
-        "name": f"{len(rows)} in-place rewrites",
-        "artifact_type": None,
-        "is_root": False,
-        "metadata": metadata,
-    }
+    moved: set = set()
+    for pair, run_ids in pairs.items():
+        if len(run_ids) < 2:
+            continue
+        grouped_rows.setdefault(pair, []).extend(job_rows[r][0] for r in run_ids)
+        moved.update(run_ids)
+    return moved
+
+
+def _grouped_runs_node_id(source: str, target: str) -> str:
+    """Identity of the node standing in for every ``source -> target`` job.
+
+    Keyed by the endpoint pair rather than by job, which is the whole point: the
+    jobs being grouped have distinct ``job_id``s and that is exactly the
+    multiplicity being removed. Prefixed ``runs:`` so it cannot collide with an
+    artifact URI, and distinctly from ``run:`` so a client can tell a grouped node
+    from a single job. A self-loop keeps the short ``runs:<uri>`` form.
+    """
+    if source == target:
+        return f"runs:{source}"
+    return f"runs:{source} → {target}"
+
+
+def _mark_grouped(node: dict, source: str, target: str, count: int) -> None:
+    """Turn a representative run node into the node for all ``source -> target`` jobs.
+
+    Shared by both groupings -- jobs that rewrite one artifact in place, and jobs
+    that read and write the same pair -- so a client handles them alike:
+    ``run_count`` is how many jobs, and ``jobs_query`` is the ``GET /lineage/jobs``
+    filter that lists exactly them, paged. ``self_loop`` flags the in-place case.
+    """
+    node["metadata"].update(
+        {
+            "run_count": count,
+            "self_loop": source == target,
+            "representative_job_id": node["metadata"].get("job_id"),
+            "source_uri": source,
+            "target_uri": target,
+            "jobs_query": {"uri": source, "output": target},
+        }
+    )
 
 
 def _run_node_id(row: StoredLineageRow) -> str:

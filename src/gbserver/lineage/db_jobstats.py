@@ -52,6 +52,7 @@ from gbserver.lineage.attributes import (
 )
 from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.jobstats import ILineageStore
+from gbserver.lineage.merge import upsert_job, upsert_row
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_job_tag_storage import ILineageJobTagStorage
@@ -274,7 +275,7 @@ class DBLineageStore(ILineageStore):
 
         Args:
             extra_tags: tags to attach beyond those derived from the entry, e.g. a
-                source's own labels. Free-form; see :func:`_job_tags`.
+                source's own labels. Free-form; see :func:`job_tags`.
         """
         self._write_job(
             job,
@@ -319,7 +320,7 @@ class DBLineageStore(ILineageStore):
         )
         self._add_tags(
             str(_normalized_job(job).get("job_id") or ""),
-            _job_tags(
+            job_tags(
                 job,
                 build_id=build_id,
                 target_run_uuid=target_run_uuid,
@@ -344,11 +345,12 @@ class DBLineageStore(ILineageStore):
         build_id: str,
         target_run_uuid: str,
     ) -> None:
-        """Store one job record, tolerating the duplicate case.
+        """Store one job record, merging into one another writer already stored.
 
-        The unique on ``job_id`` is what makes re-recording idempotent, so an
-        IntegrityError here is the expected outcome of recording the same execution
-        twice -- not a failure, and not a reason to abandon the rows.
+        The same execution can arrive from more than one source -- a target run the
+        Lakehouse importer wrote first, say -- so a collision on ``job_id`` fills
+        what the stored copy lacks rather than being dropped. See
+        :mod:`gbserver.lineage.merge`.
         """
         storage = self.job_storage
         if storage is None:
@@ -361,11 +363,12 @@ class DBLineageStore(ILineageStore):
         if not job:
             return
         try:
-            storage.add(job)
+            upsert_job(storage, job)
         except Exception:
             logger.debug(
-                "Lineage job already present or could not be added (job=%s)",
+                "Lineage job could not be added or merged (job=%s)",
                 job.job_id,
+                exc_info=True,
             )
 
     def _add_tags(self, job_id: str, tags: List[str]) -> None:
@@ -395,11 +398,11 @@ class DBLineageStore(ILineageStore):
         build_id: str,
         target_run_uuid: str,
     ) -> None:
-        """Store one decomposed row, tolerating the duplicate case.
+        """Store one decomposed row, merging into the same edge already stored.
 
-        The ``(job_id, input, output)`` unique is what makes re-ingest idempotent,
-        so an IntegrityError here is the expected outcome of recording the same
-        lineage twice -- not a failure.
+        Re-ingest stays idempotent -- a merge that adds nothing writes nothing -- and
+        an edge another source recorded first gains what this one knows. See
+        :mod:`gbserver.lineage.merge`.
         """
         row = _row_from_draft(
             draft,
@@ -407,10 +410,10 @@ class DBLineageStore(ILineageStore):
             target_run_uuid=target_run_uuid,
         )
         try:
-            self.row_storage.add(row)
+            upsert_row(self.row_storage, row)
         except Exception:
             logger.debug(
-                "Lineage row already present or could not be added "
+                "Lineage row could not be added or merged "
                 "(job=%s, input=%r, output=%r)",
                 row.job_id,
                 row.input,
@@ -505,7 +508,7 @@ class DBLineageStore(ILineageStore):
     ) -> Set[str]:
         """The jobs tagged with a release (and target), by indexed tag lookup.
 
-        The tags are the ones :func:`_job_tags` derives from the same ``ids`` the
+        The tags are the ones :func:`job_tags` derives from the same ``ids`` the
         scan compares, so both answer the same question.
         """
         storage = self.tag_storage
@@ -563,13 +566,38 @@ class DBLineageStore(ILineageStore):
         if not target_ids:
             return set()
         try:
-            recorded = self.row_storage.get_recorded_jobs(list(target_ids))
+            recorded = self.recorded_by_self(
+                self.row_storage.get_recorded_jobs(list(target_ids))
+            )
         except Exception as exc:
             logger.warning("Lineage dedup query failed; treating all as unrecorded")
             if on_query_error is not None:
                 on_query_error(exc)
             return set(target_ids)
         return {target_id for target_id in target_ids if target_id not in recorded}
+
+    def recorded_by_self(self, job_ids: Iterable[str]) -> Set[str]:
+        """Narrow ``job_ids`` that have rows to those granite.build itself recorded.
+
+        A target run another source imported first -- Lakehouse keeps granite.build
+        runs under ``job_id = targetrun.uuid`` -- has rows, but not this system's
+        view of it: no namespace, which the read path needs to authorize it. Such a
+        job is reported unrecorded so the scan writes it, and the write merges into
+        the imported copy rather than duplicating it.
+
+        With no job storage there is no provenance to check, so presence decides,
+        as it did before the importer existed.
+        """
+        job_ids = set(job_ids)
+        storage = self.job_storage
+        if storage is None or not job_ids:
+            return job_ids
+        jobs = storage.get_jobs_by_id(list(job_ids))
+        return {
+            job_id
+            for job_id in job_ids
+            if job_id not in jobs or jobs[job_id].source_system == SOURCE_SYSTEM
+        }
 
     # -- Helpers -------------------------------------------------------------
 
@@ -658,7 +686,7 @@ def _normalized_job(job: dict) -> dict:
     return normalized
 
 
-def _job_tags(
+def job_tags(
     job: dict,
     build_id: str,
     target_run_uuid: str,

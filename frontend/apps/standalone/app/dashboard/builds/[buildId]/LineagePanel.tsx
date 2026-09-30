@@ -216,7 +216,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   React.useImperativeHandle(ref, () => ({
     zoomIn: () => graphRef.current?.zoomIn(),
     zoomOut: () => graphRef.current?.zoomOut(),
-    resetZoom: () => graphRef.current?.resetZoom(),
+    resetZoom: (nodeId?: string) => graphRef.current?.resetZoom(nodeId),
     resetView: () => graphRef.current?.resetView(),
     currentZoom: () => graphRef.current?.currentZoom() ?? 90,
     centerOnNode: (nodeId: string) => graphRef.current?.centerOnNode(nodeId),
@@ -662,7 +662,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             tooltipPosition="right"
             iconDescription="Reset Zoom"
             renderIcon={ZoomFit}
-            onClick={() => graphRef.current?.resetZoom()}
+            onClick={() => graphRef.current?.resetZoom((currentArtifactNode ?? focusNode ?? openDrawerNode)?.id)}
           />
           <Button
             size="sm"
@@ -692,7 +692,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
                 setPartial(false);
                 expansion.reset();
                 setJobNodeId(null);
-                graphRef.current?.resetZoom();
+                graphRef.current?.resetView();
               }}
             />
             <OverflowMenuItem

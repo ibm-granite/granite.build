@@ -209,6 +209,7 @@ class DBLineageService(LineageService):
         direction: str = "both",
         max_depth: int = 10,
         max_nodes_per_level: Optional[int] = None,
+        group_runs: bool = True,
     ) -> Dict:
         """Return a lineage graph seeded by an artifact, a job, or both.
 
@@ -238,6 +239,9 @@ class DBLineageService(LineageService):
             max_nodes_per_level: raise the per-level frontier ceiling for this one
                 request, for an explicit "show the full graph" action. ``None`` uses
                 the server default.
+            group_runs: fold the jobs with the same input and output into one node
+                (the default); ``False`` returns one node per job. See
+                :func:`~gbserver.lineage.graph_builder.build_graph_dict`.
 
         Returns:
             ``{root_id, nodes, edges, truncated, unexpanded}``. ``root_id`` is the
@@ -268,7 +272,9 @@ class DBLineageService(LineageService):
             # The caller named something this index cannot key on. An empty graph
             # rather than an error: "nothing matches" is a real answer, and the URI
             # drop is already logged by normalize_uri.
-            return build_graph_dict(LineageGraph(), root_uri=root_uri)
+            return build_graph_dict(
+                LineageGraph(), root_uri=root_uri, group_runs=group_runs
+            )
 
         graph = walk_lineage(
             storage=self.storage,
@@ -279,7 +285,12 @@ class DBLineageService(LineageService):
         )
         # Only a single-artifact query has one root to flag; anything else has many.
         single_root = bool(root_uri) and not job_id
-        return build_graph_dict(graph, root_uri=root_uri, root_is_artifact=single_root)
+        return build_graph_dict(
+            graph,
+            root_uri=root_uri,
+            root_is_artifact=single_root,
+            group_runs=group_runs,
+        )
 
     def list_jobs(
         self,
@@ -289,6 +300,8 @@ class DBLineageService(LineageService):
         required_tags: Optional[List[str]] = None,
         limit: int = 100,
         offset: int = 0,
+        self_loop: bool = False,
+        output: Optional[str] = None,
     ) -> Dict:
         """List job executions matching every given filter, paged.
 
@@ -300,6 +313,10 @@ class DBLineageService(LineageService):
           ``build_graph_dict`` folds an artifact's in-place rewrites into one node,
           because one run node per append produced a 55 MB response for a single
           dataset, and a count with no way to expand it would be a dead end.
+        - ``self_loop`` (with ``uri``) -- only the jobs whose input and output are
+          both that artifact: exactly the runs behind its looped node in the graph.
+        - ``output`` (with ``uri``) -- only the jobs with a ``uri -> output`` row:
+          the runs behind a node grouping jobs with the same inputs and outputs.
         - ``job_id`` -- that one execution.
         - ``tags`` / ``required_tags`` -- W&B's run-tag filter: **any** of ``tags``
           and **all** of ``required_tags``, matched exactly.
@@ -340,11 +357,20 @@ class DBLineageService(LineageService):
                 normalized = normalize_uri(uri)
                 if not normalized:
                     return empty
+                target = normalize_uri(output) if output else None
+                if output and not target:
+                    return empty
                 if candidates is None:
-                    total = self.storage.count_jobs_touching(normalized)
-                    page = self.storage.get_job_ids_touching(normalized, limit, offset)
+                    total = self.storage.count_jobs_touching(
+                        normalized, self_loop, output=target
+                    )
+                    page = self.storage.get_job_ids_touching(
+                        normalized, limit, offset, self_loop, output=target
+                    )
                     return {**empty, "jobs": self._job_entries(page), "total": total}
-                candidates = self.storage.filter_jobs_touching(normalized, candidates)
+                candidates = self.storage.filter_jobs_touching(
+                    normalized, candidates, self_loop, output=target
+                )
 
             if candidates is None:
                 page, total = self._recent_job_ids(limit, offset)

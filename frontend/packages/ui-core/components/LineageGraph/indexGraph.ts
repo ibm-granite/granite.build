@@ -24,9 +24,10 @@ export function artifactTypeToNodeType(artifactType: string | null | undefined):
 }
 
 // Seed for expanding a node through GET /lineage/graph. Run nodes are `run:<job_id>`;
-// collapsed in-place rewrites are `runs:<uri>` and expand from their artifact.
+// grouped jobs are `runs:<source> → <target>` (or `runs:<uri>` for in-place
+// rewrites) and expand from their source artifact.
 export function expansionSeed(nodeId: string): { uri?: string; job_id?: string } {
-  if (nodeId.startsWith('runs:')) return { uri: nodeId.slice('runs:'.length) }
+  if (nodeId.startsWith('runs:')) return { uri: nodeId.slice('runs:'.length).split(' → ')[0] }
   if (nodeId.startsWith('run:')) return { job_id: nodeId.slice('run:'.length) }
   return { uri: nodeId }
 }

@@ -474,6 +474,7 @@ def query_lineage_graph_get(
     direction: str = "both",
     depth: int = 10,
     max_nodes_per_level: Optional[int] = None,
+    group_runs: bool = True,
 ) -> LineageGraphResponse:
     """Query the lineage graph by URI, by job, or both; one of them is required.
 
@@ -487,6 +488,7 @@ def query_lineage_graph_get(
             direction=direction,
             max_depth=depth,
             max_nodes_per_level=max_nodes_per_level,
+            group_runs=group_runs,
         ),
     )
 
@@ -558,6 +560,7 @@ def query_lineage_graph(
             direction=body.direction,
             max_depth=body.max_depth,
             max_nodes_per_level=body.max_nodes_per_level,
+            group_runs=body.group_runs,
         )
     except ValueError as e:
         raise HTTPException(
@@ -581,6 +584,8 @@ def list_lineage_jobs(
     job_id: Optional[str] = None,
     tags: List[str] = Query(default_factory=list),
     required_tags: List[str] = Query(default_factory=list),
+    self_loop: bool = False,
+    output: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> LineageJobsResponse:
@@ -592,6 +597,10 @@ def list_lineage_jobs(
       graph node's ``run_count``: the graph collapses an artifact's in-place
       rewrites into one node, and this lists them.
     - ``job_id`` -- one execution.
+    - ``self_loop`` (with ``uri``) -- only the jobs that rewrote the artifact in
+      place (same source and target): the runs behind its looped graph node.
+    - ``output`` (with ``uri``) -- only the jobs that read ``uri`` and wrote
+      ``output``: the runs behind a graph node grouping same-signature jobs.
     - ``tags`` (match any) / ``required_tags`` (match all) -- e.g.
       ``?tags=build_id=<uuid>``. Tags are free-form and matched exactly.
     - none -- the most recently recorded jobs.
@@ -618,5 +627,7 @@ def list_lineage_jobs(
         required_tags=required_tags,
         limit=limit,
         offset=offset,
+        self_loop=self_loop,
+        output=output,
     )
     return LineageJobsResponse(**result)

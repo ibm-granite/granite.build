@@ -54,6 +54,7 @@
 
 .nodeWrapperHighlighted {
   :global(.cds--cc--card-node--button) {
+    background-color: var(--node-selected-bg, var(--cds-layer-02)) !important;
     outline: 1px solid var(--cds-interactive);
     outline-offset: -1px;
   }

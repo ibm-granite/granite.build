@@ -33,6 +33,11 @@ Four top-level groups, by who owns the value:
     carried for display and for a future alias lookup; like the rest of the blob
     they are **not queryable**, so a walk never matches on them.
 
+    Optionally ``produced_by`` -- ``{build_id, target_run_uuid, artifact_id}`` --
+    the granite.build execution that produced the artifact, as the artifact records
+    it. That is not this row's job when the row consumes it, and it is kept because
+    the producing job is often missing from the index. See :data:`PRODUCED_BY`.
+
 ``job``
     The execution: name, status, owner, timestamps, namespace. Describes the run
     node the read path rebuilds by grouping rows on ``job_id``.
@@ -84,6 +89,24 @@ PAYLOAD = "payload"
 KIND = "kind"
 NAME = "name"
 ALT_URIS = "alt_uris"
+# Which granite.build execution produced the artifact, as the artifact itself
+# records it -- not the job of this row, which may only have consumed it. Kept on
+# the endpoint because the producing job is often absent from the index (a quarter
+# of the granite.build inputs in the Lakehouse dump), and then this is the only
+# place that says where the artifact came from. A map of the keys below, blanks
+# omitted.
+PRODUCED_BY = "produced_by"
+PRODUCED_BY_BUILD_ID = "build_id"
+PRODUCED_BY_TARGET_RUN_UUID = "target_run_uuid"
+PRODUCED_BY_ARTIFACT_ID = "artifact_id"
+
+# Where an artifact dict records its producer: the facet keys granite.build writes
+# (``wandb_jobstats``), which Lakehouse keeps verbatim in an endpoint's ``extra``.
+_PRODUCED_BY_FROM_FACET = {
+    "gb-build-id": PRODUCED_BY_BUILD_ID,
+    "gb-target-id": PRODUCED_BY_TARGET_RUN_UUID,
+    "gb-artifact-id": PRODUCED_BY_ARTIFACT_ID,
+}
 
 # Where an artifact dict may carry a URI. The first three are the spellings the
 # producers already write (see ``decompose._artifact_uri``); ``uri_aliases`` is the
@@ -236,7 +259,28 @@ def _endpoint_detail(artifact: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     alternatives = _alt_uris(artifact)
     if alternatives:
         detail[ALT_URIS] = alternatives
+    produced_by = _produced_by(artifact)
+    if produced_by:
+        detail[PRODUCED_BY] = produced_by
     return detail
+
+
+def _produced_by(artifact: Dict[str, Any]) -> Dict[str, str]:
+    """The artifact's producing build, target run and artifact id, blanks omitted.
+
+    Read from the ``gb-*`` facets, where granite.build writes them. An explicit
+    :data:`PRODUCED_BY` map on the artifact dict wins key by key.
+    """
+    facets = artifact.get("facets") or {}
+    produced_by = {
+        key: str(facets[facet])
+        for facet, key in _PRODUCED_BY_FROM_FACET.items()
+        if facets.get(facet)
+    }
+    explicit = artifact.get(PRODUCED_BY)
+    if isinstance(explicit, dict):
+        produced_by.update({k: str(v) for k, v in explicit.items() if v})
+    return produced_by
 
 
 def _alt_uris(artifact: Dict[str, Any]) -> List[str]:
@@ -343,6 +387,14 @@ def endpoint_kind(attributes: Optional[Dict[str, Any]], side: str) -> str:
 def endpoint_name(attributes: Optional[Dict[str, Any]], side: str) -> str:
     """The display name recorded for one endpoint, or ``""``."""
     return str(((attributes or {}).get(side) or {}).get(NAME, "") or "")
+
+
+def endpoint_produced_by(
+    attributes: Optional[Dict[str, Any]], side: str
+) -> Dict[str, str]:
+    """The producing build / target run / artifact recorded for one endpoint, or ``{}``."""
+    value = ((attributes or {}).get(side) or {}).get(PRODUCED_BY) or {}
+    return {str(k): str(v) for k, v in value.items() if v} if isinstance(value, dict) else {}
 
 
 def endpoint_alt_uris(attributes: Optional[Dict[str, Any]], side: str) -> List[str]:
