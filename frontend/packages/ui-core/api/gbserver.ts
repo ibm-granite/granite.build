@@ -654,6 +654,46 @@ export interface LineageGraphResult {
   unexpanded?: number
 }
 
+// ── Lineage job listing (GET /lineage/jobs) ────────────────────────────────────
+
+// One job execution as the lineage index recorded it, with what it read and wrote.
+export interface LineageJobEntry {
+  job_id: string
+  job_namespace: string
+  space_name: string
+  owner: string
+  source_system: string
+  status: string
+  started_at: string
+  tags: string[]
+  inputs: string[]
+  outputs: string[]
+  job: Record<string, unknown>
+}
+
+export interface LineageJobsResult {
+  jobs: LineageJobEntry[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export async function getLineageJobs(params: {
+  uri?: string
+  job_id?: string
+  tags?: string[]
+  required_tags?: string[]
+  limit?: number
+  offset?: number
+}): Promise<LineageJobsResult> {
+  const { data } = await client.get<LineageJobsResult>('/lineage/jobs', {
+    params,
+    // FastAPI reads repeated keys (`tags=a&tags=b`), not axios' default `tags[]=`.
+    paramsSerializer: { indexes: null },
+  })
+  return data
+}
+
 export async function getLineageGraph(params: {
   uri?: string
   job_id?: string

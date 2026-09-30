@@ -1,15 +1,15 @@
 'use client'
 
 import * as React from 'react'
-import { Button, IconButton, InlineLoading, Loading, OverflowMenu, OverflowMenuItem } from '@carbon/react'
-import { ArrowLeft, ArrowRight, Close, Launch, ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
+import { Button, InlineLoading, Loading, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { ArrowLeft, ArrowRight, Launch, ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
 import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import type { Artifact } from '@granite-build/ui-core/types'
 import { getBuild, getBuildStatus, getLineageGraph, listArtifacts } from '@granite-build/ui-core/api/gbserver'
 import BuildLineagePanel from '../../builds/[buildId]/LineagePanel'
 import styles from '../../builds/[buildId]/LineagePanel.module.scss'
-import StepDrawer from '../../builds/[buildId]/StepDrawer'
+import JobDrawer from '../../builds/[buildId]/JobDrawer'
 import Graph, { type GraphHandle } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { depthForNextLevel, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
@@ -73,32 +73,11 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const noLineage = !isLoading && !error && nodes.length <= 1
   const busy = expansion.loading !== null
 
-  // A job (run) node opens its details. One granite.build ran is shown with the
-  // build's own step drawer: the index records the build and the target run.
+  // A job (run) node opens its details (see JobDrawer).
   const [jobNodeId, setJobNodeId] = React.useState<string | null>(null)
   const jobNode = React.useMemo(
     () => (jobNodeId ? (nodes.find((n) => n.id === jobNodeId) as IndexElkNode | undefined) : undefined),
     [nodes, jobNodeId]
-  )
-  const jobMeta = jobNode?.indexNode?.metadata
-  const jobBuildId = typeof jobMeta?.gb_build_id === 'string' ? jobMeta.gb_build_id : undefined
-  const jobRunId = jobMeta?.gb_target_run_uuid ?? jobMeta?.job_id
-  const { data: jobBuild } = useQuery({
-    queryKey: ['build', jobBuildId],
-    queryFn: () => getBuild(jobBuildId!),
-    enabled: Boolean(jobBuildId),
-    staleTime: 5 * 60 * 1000,
-  })
-  const { data: jobBuildStatus } = useQuery({
-    queryKey: ['build-status', jobBuildId],
-    queryFn: () => getBuildStatus(jobBuildId!),
-    enabled: Boolean(jobBuildId),
-    staleTime: 5 * 60 * 1000,
-    retry: false,
-  })
-  const jobTarget = React.useMemo(
-    () => Object.values(jobBuildStatus?.targets ?? {}).find((t) => t.uuid === jobRunId),
-    [jobBuildStatus, jobRunId]
   )
   const drawerRef = React.useRef<HTMLDivElement | null>(null)
   React.useEffect(() => {
@@ -249,53 +228,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
         )}
       </div>
 
-      {jobNode && (jobBuildId
-        ? (
-          <StepDrawer
-            targetName={jobTarget?.target_name ?? jobNode.title ?? jobNode.id}
-            target={jobTarget}
-            build={jobBuild}
-            onClose={() => setJobNodeId(null)}
-            drawerRef={drawerRef}
-          />
-        )
-        : <JobMetadataDrawer node={jobNode} onClose={() => setJobNodeId(null)} drawerRef={drawerRef} />
-      )}
-      </div>
-    </div>
-  )
-}
-
-// A job the index knows but granite.build did not run (no gb_build_id): there is
-// no target to show steps for, so show what the index recorded about it.
-function JobMetadataDrawer({ node, onClose, drawerRef }: {
-  node: IndexElkNode
-  onClose: () => void
-  drawerRef: React.Ref<HTMLDivElement>
-}) {
-  const meta = node.indexNode?.metadata ?? {}
-  const status = typeof meta.job_status === 'string' ? meta.job_status : undefined
-  const rows = Object.entries(meta).filter(([, v]) => v !== null && v !== undefined && v !== '')
-  return (
-    <div ref={drawerRef} className={styles.stepSidePanel} role="dialog" aria-label={`Job details — ${node.title}`}>
-      <div className={styles.stepSidePanelHeader}>
-        <div className={styles.stepSidePanelIdentity}>
-          <h4 className={styles.stepSidePanelHeading}>{node.title}</h4>
-          <div className={styles.stepSidePanelSubtitle}>Job{status ? ` · ${status}` : ''}</div>
-        </div>
-        <IconButton kind="ghost" label="Close" align="bottom" onClick={onClose}>
-          <Close />
-        </IconButton>
-      </div>
-      <div className={styles.stepSidePanelBody}>
-        <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.5rem 1rem', fontSize: '0.875rem' }}>
-          {rows.map(([k, v]) => (
-            <React.Fragment key={k}>
-              <dt style={{ color: 'var(--cds-text-secondary)' }}>{k}</dt>
-              <dd style={{ wordBreak: 'break-all' }}>{typeof v === 'string' ? v : JSON.stringify(v)}</dd>
-            </React.Fragment>
-          ))}
-        </dl>
+      {jobNode && <JobDrawer node={jobNode} onClose={() => setJobNodeId(null)} drawerRef={drawerRef} />}
       </div>
     </div>
   )

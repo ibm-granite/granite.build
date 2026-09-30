@@ -21,9 +21,10 @@ import { getArtifact } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
-import { artifactTypeToNodeType, depthForNextLevel, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import { artifactTypeToNodeType, depthForNextLevel, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion, type ExpandDirection } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
 import StepDrawer from './StepDrawer'
+import JobDrawer from './JobDrawer'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
 
@@ -242,6 +243,11 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // one opens the step details. The step data already rides along on
   // getBuildStatus, so this costs no extra request.
   const [stepDetailTarget, setStepDetailTarget] = React.useState<string | null>(null)
+  // A job an expansion brought in that is not one of this build's targets: it has
+  // no target in buildStatus, so its drawer is read from the lineage index.
+  const [jobNodeId, setJobNodeId] = React.useState<string | null>(null)
+  // Whichever drawer is open: Escape and focus handling cover both.
+  const openDrawerKey = stepDetailTarget ?? jobNodeId
 
   // Where focus was before the drawer opened, so we can hand it back on close —
   // otherwise a keyboard user is dropped at the top of the document.
@@ -252,7 +258,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   const graphContainerRef = React.useRef<HTMLDivElement | null>(null)
 
   React.useEffect(() => {
-    if (!stepDetailTarget) return
+    if (!openDrawerKey) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       // This is a non-modal drawer — the graph behind it stays interactive — so
@@ -260,11 +266,12 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       // a user mid-interaction with the graph would have the drawer yanked shut.
       if (drawerRef.current?.contains(document.activeElement)) {
         setStepDetailTarget(null)
+        setJobNodeId(null)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [stepDetailTarget])
+  }, [openDrawerKey])
 
   // Focus management for the drawer (role="dialog"): on open, remember the
   // trigger and move focus to the close button; on close, restore focus. This is
@@ -279,9 +286,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   const drawerWasOpenRef = React.useRef(false)
   React.useEffect(() => {
     const wasOpen = drawerWasOpenRef.current
-    drawerWasOpenRef.current = Boolean(stepDetailTarget)
+    drawerWasOpenRef.current = Boolean(openDrawerKey)
 
-    if (stepDetailTarget) {
+    if (openDrawerKey) {
       // Opening from closed — record where focus was so we can hand it back.
       // A→B switches (wasOpen already true) keep the original return element.
       if (!wasOpen) {
@@ -305,7 +312,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       graphContainerRef.current?.focus?.()
     }
     drawerReturnFocusRef.current = null
-  }, [stepDetailTarget])
+  }, [openDrawerKey])
 
   const { nodes: buildNodes, links: buildLinks, artifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
@@ -428,6 +435,11 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     [stepDetailTarget]
   )
 
+  const jobNode = React.useMemo(
+    () => (jobNodeId ? (enrichedNodes.find((n) => n.id === jobNodeId) as IndexElkNode | undefined) : undefined),
+    [enrichedNodes, jobNodeId]
+  )
+
   const { filteredNodes, filteredLinks } = React.useMemo(() => {
     if (!focusNodeId || (upstreamLevels === Infinity && downstreamLevels === Infinity)) {
       return { filteredNodes: enrichedNodes, filteredLinks: allLinks }
@@ -466,11 +478,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     // opening the drawer for one would close again at once.
     if (node.type === 'skeleton-source' || node.type === 'skeleton-target') return
     setFocusNodeId(node.id)
-    setStepDetailTarget(
-      node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)
-        ? node.id.slice(TARGET_NODE_PREFIX.length)
-        : null
-    )
+    const isTarget = node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)
+    setStepDetailTarget(isTarget ? node.id.slice(TARGET_NODE_PREFIX.length) : null)
+    setJobNodeId(node.type === 'Build' && !isTarget && (node as IndexElkNode).indexNode ? node.id : null)
   }
 
   const handleOpenArtifact = () => {
@@ -669,6 +679,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
                 setDownstreamLevels(Infinity);
                 setPartial(false);
                 expansion.reset();
+                setJobNodeId(null);
                 graphRef.current?.resetZoom();
               }}
             />
@@ -775,6 +786,14 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             : undefined}
           build={build}
           onClose={() => setStepDetailTarget(null)}
+          drawerRef={drawerRef}
+          closeButtonRef={drawerCloseButtonRef}
+        />
+      )}
+      {!stepDetailTarget && jobNode && (
+        <JobDrawer
+          node={jobNode}
+          onClose={() => setJobNodeId(null)}
           drawerRef={drawerRef}
           closeButtonRef={drawerCloseButtonRef}
         />
