@@ -75,12 +75,17 @@ const WRAP_WIDTH_FACTOR = 2
 const WRAP_RATIO_FACTORS = [1, 1.5, 2, 3, 4, 6, 8]
 // One zoom button click.
 const ZOOM_STEP = 1.1
-// When an expansion grows the graph past the viewport it zooms out this many
-// button steps at most, and never below MIN_READABLE_SCALE (node labels still read).
-const MAX_GROW_ZOOM_STEPS = 2
 const MIN_READABLE_SCALE = 0.6
 // Breathing room, in px, between a selected node and the pane edge on resize.
 const FIT_PADDING = 32
+
+// Whether two layouts show the same real nodes (skeleton placeholders aside).
+const sameNodes = (a: ElkNode | null, b: ElkNode): boolean => {
+  const ids = (l: ElkNode | null) =>
+    new Set((l?.children ?? []).filter((n) => !n.id.endsWith('-skeleton')).map((n) => n.id))
+  const [x, y] = [ids(a), ids(b)]
+  return x.size === y.size && [...x].every((id) => y.has(id))
+}
 
 function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   const { onClick } = props
@@ -169,9 +174,8 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     if (!viewport?.width || !viewport.height) return straight
     const widthOf = (g: ElkNode) => Math.max(0, ...(g.children ?? []).map((n) => (n.x ?? 0) + (n.width ?? 0)))
     if (widthOf(straight) <= WRAP_WIDTH_FACTOR * (viewport.width / BASE_SCALE)) return straight
-    // A graph long enough to wrap ends up zoomed out to the readable minimum (see
-    // MAX_GROW_ZOOM_STEPS), so size rows to fill the viewport at that scale, in
-    // layout units.
+    // A graph long enough to wrap is shown near the readable minimum, so size
+    // rows to fill the viewport at that scale, in layout units.
     const rowWidth = (viewport.width - 2 * INITIAL_TRANSFORM.x) / MIN_READABLE_SCALE
 
     // ELK sizes rows from `aspectRatio`, but undershoots it badly (asked 2.4, a
@@ -258,25 +262,19 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
           const dx = ((after.x ?? 0) - (before.x ?? 0)) * t.k
           const dy = ((after.y ?? 0) - (before.y ?? 0)) * t.k
           transformRef.current = d3.zoomIdentity.translate(t.x - dx, t.y - dy).scale(t.k)
-
-          // The graph grew: zoom out a little toward fitting it, at most
-          // MAX_GROW_ZOOM_STEPS and never below a scale that still reads. Around
-          // the anchor, so it stays put.
-          const grew = (g.children?.length ?? 0) > (positionsRef.current?.children?.length ?? 0)
-          const fitK = fitScale(g)
-          const cur = transformRef.current
-          if (grew && fitK < cur.k) {
-            const k = Math.max(fitK, cur.k / ZOOM_STEP ** MAX_GROW_ZOOM_STEPS, MIN_READABLE_SCALE)
-            if (k < cur.k) {
-              const sx = cur.x + cur.k * ((after.x ?? 0) + (after.width ?? 0) / 2)
-              const sy = cur.y + cur.k * ((after.y ?? 0) + (after.height ?? 0) / 2)
-              const r = k / cur.k
-              transformRef.current = d3.zoomIdentity.translate(sx - (sx - cur.x) * r, sy - (sy - cur.y) * r).scale(k)
-            }
-          }
         }
+        // An expansion that grew the graph fits it like Reset view does, instead
+        // of centering on the expanded node, but never below a scale that still reads.
+        if (centerOnLayoutRef.current && !sameNodes(positionsRef.current, g) && (g.children?.length ?? 0) > (positionsRef.current?.children?.length ?? 0)) {
+          centerOnLayoutRef.current = null
+          const fit = fitTransform(g)
+          transformRef.current = fit.k >= MIN_READABLE_SCALE ? fit : fit.scale(MIN_READABLE_SCALE / fit.k)
+        }
+        // An expansion that brought nothing new keeps the view as it was. Kept
+        // pending on an unchanged relayout: the click's own relayout lands before
+        // the index fetch that may still add nodes.
         const centerId = centerOnLayoutRef.current
-        if (centerId) {
+        if (centerId && !sameNodes(positionsRef.current, g)) {
           centerOnLayoutRef.current = null
           const t = centerFitTransform(g, centerId, transformRef.current.k)
           if (t) transformRef.current = t
@@ -582,16 +580,9 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       return 90
     },
     centerOnNodeAfterLayout: (nodeId: string) => {
-      const run = layoutRunRef.current
+      // Applied by the relayout the expansion causes, and only if it added or
+      // dropped nodes: an unchanged graph keeps the user's pan and zoom.
       centerOnLayoutRef.current = nodeId
-      setTimeout(() => {
-        if (layoutRunRef.current !== run || !svgRef.current || !zoomRef.current || !positionsRef.current) return
-        centerOnLayoutRef.current = null
-        const t = centerFitTransform(positionsRef.current, nodeId, transformRef.current.k)
-        // No transition: an index fetch landing mid-animation would anchor the
-        // selected node where it was halfway there.
-        if (t) d3.select(svgRef.current).interrupt().call(zoomRef.current.transform, t)
-      }, 0)
     },
     centerOnNode: (nodeId: string) => {
       if (!svgRef.current || !zoomRef.current || !positionsRef.current) return

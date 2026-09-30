@@ -1,12 +1,11 @@
 'use client'
 
 import * as React from 'react'
-import { Button, ComposedModal, IconButton, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { Button, ComposedModal, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import {
   ArrowLeft,
   ArrowRight,
   CenterSquare,
-  Close,
   Launch,
   ZoomFit,
   ZoomIn,
@@ -24,8 +23,7 @@ import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite
 import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
 import { artifactTypeToNodeType, depthForNextLevel, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion, type ExpandDirection } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
-import StepDetailsPanel, { stepDrawerSummary } from './StepDetailsPanel'
-import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
+import StepDrawer from './StepDrawer'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
 
@@ -401,7 +399,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   const [artifactNavNode, setArtifactNavNode] = React.useState<{ node: ElkNodeEx; hfUrl: string | null } | null>(null)
   const router = useRouter()
   const [rendered, setRendered] = React.useState(false)
-  const [showBuildInfo, setShowBuildInfo] = React.useState(false)
+  const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
   // The current artifact's node is always highlighted on artifact pages
   // (showFocusNode is only true there) — this is not click-driven.
@@ -767,61 +765,19 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         )}
       </div>
 
-      {/* A drawer, not a modal: no overlay, so the graph behind stays visible
-          and clickable and picking another target just re-points the drawer. */}
       {stepDetailTarget && (
-        <div
-          ref={drawerRef}
-          className={styles.stepSidePanel}
-          role="dialog"
-          aria-label={`Step details — ${stepDetailTarget}`}
-        >
-          {(() => {
-            // Own-property lookup: a bare-object index would return
-            // Object.prototype.toString (a function) for a target named `toString`.
-            const targets = buildStatus?.targets
-            const target =
-              targets && Object.prototype.hasOwnProperty.call(targets, stepDetailTarget)
-                ? targets[stepDetailTarget]
-                : undefined
-            const { status, subtitle, summary } = stepDrawerSummary(target, build)
-            return (
-              <>
-                <div className={styles.stepSidePanelHeader}>
-                  <div className={styles.stepSidePanelIdentity}>
-                    <h4 className={styles.stepSidePanelHeading}>{stepDetailTarget}</h4>
-                    <div className={styles.stepSidePanelSubtitle}>{subtitle}</div>
-                    {status && (
-                      <div className={styles.stepSidePanelStatus}>
-                        <BuildStatusBadge status={status} />
-                      </div>
-                    )}
-                    {summary && (
-                      <div className={styles.stepSidePanelSummary}>{summary}</div>
-                    )}
-                  </div>
-                  <IconButton
-                    ref={drawerCloseButtonRef}
-                    kind="ghost"
-                    label="Close"
-                    align="bottom"
-                    onClick={() => setStepDetailTarget(null)}
-                  >
-                    <Close />
-                  </IconButton>
-                </div>
-                <div className={styles.stepSidePanelBody}>
-                  <StepDetailsPanel
-                    targetName={stepDetailTarget}
-                    target={target}
-                    sourceUri={build?.source_uri}
-                    buildId={build?.uuid}
-                  />
-                </div>
-              </>
-            )
-          })()}
-        </div>
+        <StepDrawer
+          targetName={stepDetailTarget}
+          // Own-property lookup: a bare-object index would return
+          // Object.prototype.toString (a function) for a target named `toString`.
+          target={buildStatus?.targets && Object.prototype.hasOwnProperty.call(buildStatus.targets, stepDetailTarget)
+            ? buildStatus.targets[stepDetailTarget]
+            : undefined}
+          build={build}
+          onClose={() => setStepDetailTarget(null)}
+          drawerRef={drawerRef}
+          closeButtonRef={drawerCloseButtonRef}
+        />
       )}
       </div>
 

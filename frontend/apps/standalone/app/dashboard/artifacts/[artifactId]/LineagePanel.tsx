@@ -1,14 +1,15 @@
 'use client'
 
 import * as React from 'react'
-import { Button, InlineLoading, Loading, OverflowMenu, OverflowMenuItem } from '@carbon/react'
-import { ArrowLeft, ArrowRight, CenterSquare, Launch, ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
+import { Button, IconButton, InlineLoading, Loading, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { ArrowLeft, ArrowRight, Close, Launch, ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
 import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import type { Artifact } from '@granite-build/ui-core/types'
 import { getBuild, getBuildStatus, getLineageGraph, listArtifacts } from '@granite-build/ui-core/api/gbserver'
 import BuildLineagePanel from '../../builds/[buildId]/LineagePanel'
 import styles from '../../builds/[buildId]/LineagePanel.module.scss'
+import StepDrawer from '../../builds/[buildId]/StepDrawer'
 import Graph, { type GraphHandle } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { depthForNextLevel, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
@@ -28,7 +29,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const graphRef = React.useRef<GraphHandle>(null)
   const [rendered, setRendered] = React.useState(false)
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(null)
-  const [showBuildInfo, setShowBuildInfo] = React.useState(false)
+  const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['lineage-graph', artifact.uri],
@@ -72,6 +73,43 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const noLineage = !isLoading && !error && nodes.length <= 1
   const busy = expansion.loading !== null
 
+  // A job (run) node opens its details. One granite.build ran is shown with the
+  // build's own step drawer: the index records the build and the target run.
+  const [jobNodeId, setJobNodeId] = React.useState<string | null>(null)
+  const jobNode = React.useMemo(
+    () => (jobNodeId ? (nodes.find((n) => n.id === jobNodeId) as IndexElkNode | undefined) : undefined),
+    [nodes, jobNodeId]
+  )
+  const jobMeta = jobNode?.indexNode?.metadata
+  const jobBuildId = typeof jobMeta?.gb_build_id === 'string' ? jobMeta.gb_build_id : undefined
+  const jobRunId = jobMeta?.gb_target_run_uuid ?? jobMeta?.job_id
+  const { data: jobBuild } = useQuery({
+    queryKey: ['build', jobBuildId],
+    queryFn: () => getBuild(jobBuildId!),
+    enabled: Boolean(jobBuildId),
+    staleTime: 5 * 60 * 1000,
+  })
+  const { data: jobBuildStatus } = useQuery({
+    queryKey: ['build-status', jobBuildId],
+    queryFn: () => getBuildStatus(jobBuildId!),
+    enabled: Boolean(jobBuildId),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  })
+  const jobTarget = React.useMemo(
+    () => Object.values(jobBuildStatus?.targets ?? {}).find((t) => t.uuid === jobRunId),
+    [jobBuildStatus, jobRunId]
+  )
+  const drawerRef = React.useRef<HTMLDivElement | null>(null)
+  React.useEffect(() => {
+    if (!jobNodeId) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && drawerRef.current?.contains(document.activeElement)) setJobNodeId(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [jobNodeId])
+
   // Index nodes are keyed by normalized URI, not UUID: the artifact page is
   // found by the raw URI the index keeps in metadata, which the registry filters
   // on exactly. The artifact itself is already open.
@@ -107,10 +145,6 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             onClick={() => expand('upstream')}>
             Upstream
           </Button>
-          <Button size="sm" kind="ghost" renderIcon={CenterSquare}
-            onClick={() => { setFocusNodeId(null); graphRef.current?.centerOnNode(rootId) }}>
-            Focus Node
-          </Button>
           <Button size="sm" kind="ghost" renderIcon={ArrowRight}
             disabled={busy || noLineage || down.exhausted}
             title={down.exhausted ? `Nothing more downstream of ${activeName}` : `Load level ${down.depth + 1} downstream of ${activeName}`}
@@ -130,7 +164,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             onClick={() => graphRef.current?.zoomIn()} />
           <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
             iconDescription="Reset Zoom" renderIcon={ZoomFit}
-            onClick={() => graphRef.current?.resetZoom()} />
+            onClick={() => { setFocusNodeId(null); graphRef.current?.resetZoom() }} />
           <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
             iconDescription="Zoom Out (-10%)" renderIcon={ZoomOut}
             onClick={() => graphRef.current?.zoomOut()} />
@@ -141,7 +175,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             <OverflowMenuItem
               className="overflow-item"
               itemText="Reset view"
-              onClick={() => { setFocusNodeId(null); expansion.reset(); graphRef.current?.resetZoom() }}
+              onClick={() => { setFocusNodeId(null); setJobNodeId(null); expansion.reset(); graphRef.current?.resetZoom() }}
             />
             <OverflowMenuItem
               className="overflow-item"
@@ -172,7 +206,8 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
         </div>
       )}
 
-      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+      <div className={styles.graphRow}>
+      <div className={styles.graphArea}>
         {isLoading && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
             <Loading withOverlay={false} description="Loading lineage…" />
@@ -203,12 +238,64 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
               links={links}
               allLinks={links}
               selectedNode={activeNode}
-              onClick={(node) => setFocusNodeId(node.id)}
+              onClick={(node) => {
+                setFocusNodeId(node.id)
+                setJobNodeId(node.type === 'Build' ? node.id : null)
+              }}
               showBuildInfo={showBuildInfo}
               onSvgRendered={() => setRendered(true)}
             />
           </>
         )}
+      </div>
+
+      {jobNode && (jobBuildId
+        ? (
+          <StepDrawer
+            targetName={jobTarget?.target_name ?? jobNode.title ?? jobNode.id}
+            target={jobTarget}
+            build={jobBuild}
+            onClose={() => setJobNodeId(null)}
+            drawerRef={drawerRef}
+          />
+        )
+        : <JobMetadataDrawer node={jobNode} onClose={() => setJobNodeId(null)} drawerRef={drawerRef} />
+      )}
+      </div>
+    </div>
+  )
+}
+
+// A job the index knows but granite.build did not run (no gb_build_id): there is
+// no target to show steps for, so show what the index recorded about it.
+function JobMetadataDrawer({ node, onClose, drawerRef }: {
+  node: IndexElkNode
+  onClose: () => void
+  drawerRef: React.Ref<HTMLDivElement>
+}) {
+  const meta = node.indexNode?.metadata ?? {}
+  const status = typeof meta.job_status === 'string' ? meta.job_status : undefined
+  const rows = Object.entries(meta).filter(([, v]) => v !== null && v !== undefined && v !== '')
+  return (
+    <div ref={drawerRef} className={styles.stepSidePanel} role="dialog" aria-label={`Job details — ${node.title}`}>
+      <div className={styles.stepSidePanelHeader}>
+        <div className={styles.stepSidePanelIdentity}>
+          <h4 className={styles.stepSidePanelHeading}>{node.title}</h4>
+          <div className={styles.stepSidePanelSubtitle}>Job{status ? ` · ${status}` : ''}</div>
+        </div>
+        <IconButton kind="ghost" label="Close" align="bottom" onClick={onClose}>
+          <Close />
+        </IconButton>
+      </div>
+      <div className={styles.stepSidePanelBody}>
+        <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.5rem 1rem', fontSize: '0.875rem' }}>
+          {rows.map(([k, v]) => (
+            <React.Fragment key={k}>
+              <dt style={{ color: 'var(--cds-text-secondary)' }}>{k}</dt>
+              <dd style={{ wordBreak: 'break-all' }}>{typeof v === 'string' ? v : JSON.stringify(v)}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
       </div>
     </div>
   )
