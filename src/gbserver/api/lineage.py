@@ -215,6 +215,27 @@ def _get_openlineage_service() -> LineageService:
     return _openlineage_service
 
 
+_index_service = None
+
+
+def _get_index_service():
+    """The reader of ``gb_lineage_index``, whatever the configured provider.
+
+    The ``lineage-index`` routes read the index directly: the lineage-indexer
+    fills it from ``gb_targets`` or the lineage store, so it has data even when
+    the provider is ``wandb`` or ``none``.
+    """
+    global _index_service
+    if _index_service is None:
+        # Deferred: importing the DB service at module scope would pull the storage
+        # layer into every environment that never serves these routes.
+        # pylint: disable=import-outside-toplevel
+        from gbserver.lineage.db_service import DBLineageService
+
+        _index_service = DBLineageService()
+    return _index_service
+
+
 @lineage_api.post("/")
 def ingest_lineage_event(event: OpenLineageEvent):
     service = _get_openlineage_service()
@@ -495,8 +516,7 @@ def query_lineage_graph(
     build-scoped view goes through ``POST /build``, which resolves the build outside
     the index and seeds this same walk.
 
-    Only the database-backed provider can answer this: the external backends have no
-    such query, so this reports 501 rather than inventing an empty answer.
+    Reads the lineage index directly, whatever the configured provider.
 
     **The graph is cross-space and is NOT filtered per space.** That is deliberate,
     and it is the one design decision here worth stating twice.
@@ -523,21 +543,7 @@ def query_lineage_graph(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="direction must be 'downstream', 'upstream', or 'both'",
         )
-
-    # Deferred: importing the DB service at module scope would pull the storage layer
-    # into every environment that serves lineage from an external backend.
-    # pylint: disable=import-outside-toplevel
-    from gbserver.lineage.db_service import DBLineageService
-
-    service = _get_openlineage_service()
-    if not isinstance(service, DBLineageService):
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                "Lineage graph queries require the database lineage provider; "
-                f"the configured provider is {type(service).__name__}."
-            ),
-        )
+    service = _get_index_service()
 
     try:
         result = service.query_graph(
@@ -585,8 +591,7 @@ def list_lineage_runs(
     Paged rather than capped, unlike the graph: a flat list has no shape to preserve, so
     a caller can walk the whole thing. ``total`` is the unpaged count.
 
-    Only the database-backed provider can answer this: the external backends have no
-    such query, so this reports 501 rather than inventing an empty answer.
+    Reads the lineage index directly, whatever the configured provider.
 
     Cross-space by the same decision as the graph routes -- see
     :func:`query_lineage_graph` for why a lineage answer is not filtered per space, and
@@ -597,21 +602,7 @@ def list_lineage_runs(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either uri or job_id must be provided",
         )
-
-    # Deferred: importing the DB service at module scope would pull the storage layer
-    # into every environment that serves lineage from an external backend.
-    # pylint: disable=import-outside-toplevel
-    from gbserver.lineage.db_service import DBLineageService
-
-    service = _get_openlineage_service()
-    if not isinstance(service, DBLineageService):
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                "Listing lineage runs requires the database lineage provider; "
-                f"the configured provider is {type(service).__name__}."
-            ),
-        )
+    service = _get_index_service()
 
     result = service.list_runs(uri=uri, job_id=job_id, limit=limit, offset=offset)
     return LineageRunsResponse(
@@ -637,8 +628,7 @@ def list_lineage_jobs_by_tags(
     ``?tags=build_id=<uuid>`` or ``?required_tags=team=nlp&required_tags=space_name=s``.
     Tags are free-form and matched exactly. A build is one kind of tag among many.
 
-    Only the database-backed provider can answer this, so any other provider gets
-    501. Cross-space by the same decision as the other lineage routes -- see
+    Reads the lineage index directly, whatever the configured provider. Cross-space by the same decision as the other lineage routes -- see
     :func:`query_lineage_graph`.
     """
     if not tags and not required_tags:
@@ -647,18 +637,7 @@ def list_lineage_jobs_by_tags(
             detail="At least one of tags or required_tags must be provided",
         )
 
-    # pylint: disable=import-outside-toplevel
-    from gbserver.lineage.db_service import DBLineageService
-
-    service = _get_openlineage_service()
-    if not isinstance(service, DBLineageService):
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                "Listing lineage jobs by tag requires the database lineage provider; "
-                f"the configured provider is {type(service).__name__}."
-            ),
-        )
+    service = _get_index_service()
 
     result = service.list_jobs_by_tags(
         tags, required_tags=required_tags, limit=limit, offset=offset

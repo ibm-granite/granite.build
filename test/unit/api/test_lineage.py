@@ -347,16 +347,28 @@ def test_query_graph_rejects_an_unknown_direction():
     assert caught.value.status_code == 400
 
 
-def test_query_graph_requires_the_db_provider():
-    """The external backends have no such query, so 501 rather than an empty answer."""
-    service = SimpleNamespace()  # not a DBLineageService
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
-        with pytest.raises(HTTPException) as caught:
-            lineage_mod.query_lineage_graph(
-                _fake_request("member", "member@example.com"),
-                LineageQueryRequest(uri="s3://b/x"),
-            )
-    assert caught.value.status_code == 501
+def test_index_routes_read_the_index_whatever_the_provider():
+    """The index is filled by the lineage-indexer, so a wandb/none provider still has data."""
+    service = _db_service(
+        query_graph=lambda **_kw: {"root_id": "", "nodes": [], "edges": []},
+        list_runs=lambda **_kw: {"runs": [], "total": 0},
+        list_jobs_by_tags=lambda *_a, **_kw: {
+            "jobs": [],
+            "total": 0,
+            "limit": 100,
+            "offset": 0,
+        },
+    )
+    req = _fake_request("member", "member@example.com")
+    with (
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+        patch.object(
+            lineage_mod, "_get_openlineage_service", side_effect=AssertionError
+        ),
+    ):
+        lineage_mod.query_lineage_graph(req, LineageQueryRequest(uri="s3://b/x"))
+        lineage_mod.list_lineage_runs(req, uri="s3://b/x")
+        lineage_mod.list_lineage_jobs_by_tags(req, tags=["build_id=B"], required_tags=[])
 
 
 def test_query_graph_accepts_a_request_with_no_filters():
@@ -368,7 +380,7 @@ def test_query_graph_accepts_a_request_with_no_filters():
         return {"root_id": "", "nodes": [], "edges": [], "truncated": False}
 
     service = _db_service(query_graph=fake)
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
         resp = lineage_mod.query_lineage_graph(
             _fake_request("member", "member@example.com"), LineageQueryRequest()
         )
@@ -393,7 +405,7 @@ def test_query_graph_passes_every_filter_through():
         return {"root_id": "s3://b/x", "nodes": [], "edges": [], "truncated": False}
 
     service = _db_service(query_graph=fake)
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
         lineage_mod.query_lineage_graph(
             _fake_request("member", "member@example.com"),
             LineageQueryRequest(
@@ -427,7 +439,7 @@ def test_query_graph_does_not_404_on_an_empty_graph():
             "truncated": False,
         }
     )
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
         resp = lineage_mod.query_lineage_graph(
             _fake_request("member", "member@example.com"),
             LineageQueryRequest(uri="s3://b/absent"),
@@ -469,7 +481,7 @@ def test_query_graph_carries_node_depth_to_the_response():
     with (
         is_admin,
         is_member,
-        patch.object(lineage_mod, "_get_openlineage_service", return_value=service),
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
     ):
         resp = lineage_mod.query_lineage_graph(
             _fake_request("member", "member@example.com"),
@@ -488,7 +500,7 @@ def test_query_graph_get_form_maps_its_query_params():
         return {"root_id": "", "nodes": [], "edges": [], "truncated": False}
 
     service = _db_service(query_graph=fake)
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
         lineage_mod.query_lineage_graph_get(
             _fake_request("member", "member@example.com"),
             uri="s3://b/x",
@@ -537,7 +549,7 @@ def _query_graph_as_member_of(space: str, graph: dict):
     with (
         is_admin,
         is_member,
-        patch.object(lineage_mod, "_get_openlineage_service", return_value=service),
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
     ):
         return lineage_mod.query_lineage_graph(
             _fake_request("member", "member@example.com"),
@@ -672,16 +684,6 @@ def test_runs_requires_a_uri_or_a_job_id():
     assert caught.value.status_code == 400
 
 
-def test_runs_requires_the_db_provider():
-    service = SimpleNamespace()  # not a DBLineageService
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
-        with pytest.raises(HTTPException) as caught:
-            lineage_mod.list_lineage_runs(
-                _fake_request("member", "member@example.com"), uri="s3://b/x"
-            )
-    assert caught.value.status_code == 501
-
-
 def test_runs_passes_its_paging_through():
     seen = {}
 
@@ -690,7 +692,7 @@ def test_runs_passes_its_paging_through():
         return {"runs": [], "total": 0, "limit": 25, "offset": 50}
 
     service = _db_service(list_runs=fake)
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
         resp = lineage_mod.list_lineage_runs(
             _fake_request("member", "member@example.com"),
             uri="s3://b/x",
@@ -721,7 +723,7 @@ def test_runs_reports_the_total_so_a_caller_can_page():
             "offset": 0,
         }
     )
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
         resp = lineage_mod.list_lineage_runs(
             _fake_request("member", "member@example.com"), uri="s3://b/x"
         )
@@ -742,18 +744,6 @@ def test_jobs_requires_a_tag_filter():
     assert caught.value.status_code == 400
 
 
-def test_jobs_requires_the_db_provider():
-    service = SimpleNamespace()  # not a DBLineageService
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
-        with pytest.raises(HTTPException) as caught:
-            lineage_mod.list_lineage_jobs_by_tags(
-                _fake_request("member", "member@example.com"),
-                tags=["build_id=B"],
-                required_tags=[],
-            )
-    assert caught.value.status_code == 501
-
-
 def test_jobs_passes_the_filter_through():
     seen = {}
 
@@ -767,7 +757,7 @@ def test_jobs_passes_the_filter_through():
         }
 
     service = _db_service(list_jobs_by_tags=fake)
-    with patch.object(lineage_mod, "_get_openlineage_service", return_value=service):
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
         resp = lineage_mod.list_lineage_jobs_by_tags(
             _fake_request("member", "member@example.com"),
             tags=["build_id=B"],
