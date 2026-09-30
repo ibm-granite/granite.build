@@ -56,6 +56,8 @@ from gbcli.utils.utils import (
     remove_suffix,
 )
 from gbcommon.types.gbenvconfig import gb_environment_config
+from gbcommon.uri.lh import LhURI
+from gbcommon.uri.uri import URI
 from gbcommon.utils.hf_utils import is_enterprise_hf_org
 
 if TYPE_CHECKING:
@@ -121,6 +123,9 @@ def upload_to_lh(
         )
 
     elif type == "dataset" or type == "table":
+        if type == "table" and table_name:
+            # Parse as an LhURI so its reserved-table-name guard applies.
+            URI.get_uri(LhURI.get_table_uri(table_name, namespace=namespace))
         return upload_file_lh(
             lh=lh,
             path_name=path_name,

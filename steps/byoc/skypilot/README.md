@@ -46,9 +46,8 @@ self-skips unless its backend is reachable, so neither runs by accident:
 make -C steps/byoc/skypilot test   # uses the repo-root .venv; runs `make space` first
 ```
 
-- **slurm test** — needs the local Docker SLURM cluster + MinIO endpoint. Bring
-  them up once with `make test-setup` (delegates to the repo-root `slurm-setup` /
-  `minio-setup`).
+- **slurm test** — needs the local Docker SLURM cluster. Bring it up once with
+  `make test-setup` (delegates to the repo-root `slurm-setup`).
 - **aws test** — needs AWS credentials in the environment (below).
 
 ### Environment variables for the aws test

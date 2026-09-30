@@ -931,6 +931,13 @@ GBSERVER_CLEANUP_MAX_RETRIES = int(
 GBSERVER_CLEANUP_RETRY_BASE_DELAY = int(
     os.getenv(ENV_VAR_PREFIX + "_CLEANUP_RETRY_BASE_DELAY", "10"), base=10
 )
+# How long a build may sit PENDING with no live runner before the BuildWatcher re-arms
+# it (drops it from the seen-list to re-dispatch next poll). Only a cheap, guarded
+# re-dispatch, not a failure, so a short cycle is fine; a healthy dispatch has a live
+# thread in the same poll, so this never fires on it. Floored at 1. Default 3 min.
+GBSERVER_STUCK_BUILD_TIMEOUT_SECONDS = max(
+    1, int(os.getenv(ENV_VAR_PREFIX + "_STUCK_BUILD_TIMEOUT", "180"), base=10)
+)
 USE_LESS_COMPUTE_ON_DRY_RUN = (
     os.getenv(ENV_VAR_USE_LESS_COMPUTE_ON_DRY_RUN, "True").lower() == "true"
 )

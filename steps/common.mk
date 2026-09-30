@@ -26,7 +26,7 @@
 #                 the step's Python tests in $(TEST_DIR)/ (adjacent to src/,
 #                 organised in per-cluster subdirs; not bundled)
 #   test-setup    OPTIONAL per-step hook: stand up any infrastructure the step's
-#                 tests need (e.g. a local SLURM + MinIO cluster). Run it once
+#                 tests need (e.g. a local Docker SLURM cluster). Run it once
 #                 before `make test`; it is deliberately NOT a prerequisite of
 #                 `test`. common.mk supplies a no-op default; a step overrides it
 #                 (see HAS_TEST_SETUP below)
@@ -41,7 +41,7 @@
 #                `test-setup` target (below the include). common.mk then skips its
 #                no-op default so there is no "overriding recipe" warning. A step
 #                with test infrastructure sets this and delegates to the repo-root
-#                Makefile, e.g.  test-setup:  $(MAKE) -C $(REPO_ROOT) slurm-setup minio-setup
+#                Makefile, e.g.  test-setup:  $(MAKE) -C $(REPO_ROOT) slurm-setup
 #
 # Whether a step builds a custom image is auto-detected: if a Dockerfile sits
 # next to the including Makefile, `image`/`publish-image` are real and the
@@ -525,14 +525,14 @@ test: space image
 
 # ---- Optional pre-test setup hook ------------------------------------------
 # `test-setup` is where a step brings up the infrastructure its tests need (a
-# local SLURM + MinIO cluster, a mock service, seed data, ...). It is a SEPARATE
+# local Docker SLURM cluster, a mock service, seed data, ...). It is a SEPARATE
 # target — deliberately NOT a prerequisite of `test` — so the (often slow) infra
 # bring-up runs only when you ask for it: run `make test-setup` once, then iterate
 # with `make test`.
 #
 # A step opts in by setting `HAS_TEST_SETUP := true` BEFORE the include and
 # defining its own `test-setup` target after it (typically delegating to the
-# repo-root Makefile, e.g. `$(MAKE) -C $(REPO_ROOT) slurm-setup minio-setup`).
+# repo-root Makefile, e.g. `$(MAKE) -C $(REPO_ROOT) slurm-setup`).
 # When HAS_TEST_SETUP is not `true`, common.mk supplies the no-op default below
 # so `make test-setup` is always a valid, harmless target; the guard also avoids
 # a "overriding recipe for target 'test-setup'" warning when a step defines one.

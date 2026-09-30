@@ -18,6 +18,7 @@ export function artifactTypeToNodeType(artifactType: string | null | undefined):
     case 'MODEL': return 'Model'
     case 'DATASET': return 'Dataset'
     case 'FILESET': return 'Fileset'
+    case 'BUCKET': return 'Bucket'
     default: return 'Fileset'
   }
 }

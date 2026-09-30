@@ -68,6 +68,10 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode, s
   }
 
   const { icon, color, bgColor, subtitleLabel } = getNodeConfig(type)
+  // A node-supplied subtitle (e.g. a target's step summary, "3 steps: a → b →
+  // c") wins over the generic type label ("Process"), since it describes this
+  // node rather than its category. Falls back to the type label when absent.
+  const subtitle = node.subtitle || subtitleLabel
   const isSelected = selectedNode?.id === node.id
   const isHighlighted = node.highlight
   // Short form fits the node; the full id is in the tooltip.
@@ -115,12 +119,12 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode, s
             >
               {title}
             </CardNodeTitle>
-            {subtitleLabel && (
+            {subtitle && (
               <CardNodeSubtitle
                 style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                 title={buildInfo ? node.buildId : undefined}
               >
-                {buildInfo ? `${subtitleLabel} · ${buildInfo}` : subtitleLabel}
+                {buildInfo ? `${subtitle} · ${buildInfo}` : subtitle}
               </CardNodeSubtitle>
             )}
           </CardNodeColumn>

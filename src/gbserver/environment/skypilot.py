@@ -411,6 +411,32 @@ RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
 # off. Compared against the normalized first infra segment (lowercased).
 _SSH_HPC_CLOUDS = ("slurm", "lsf")
 
+# Clouds whose schedulers don't honor SkyPilot autostop/autodown (see the
+# autostop=None handling in the launch path), so a cluster launched with
+# down=True is never removed and keeps its allocation. teardown_skypilot downs
+# its td- cluster explicitly on these. Deliberately separate from
+# _SSH_HPC_CLOUDS: this tracks one capability, not HPC-ness. Observed on SLURM
+# (BlueVela); LSF included because it also has autostop forced off.
+_CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
+
+
+def _cpus_floor(cloud: str, n: int) -> Union[int, str]:
+    """Return a SkyPilot ``cpus`` floor of ``n`` vCPUs in the form ``cloud`` accepts.
+
+    Cloud catalogs take the ``"{n}+"`` *minimum* form so matching picks the
+    smallest instance with at least ``n`` vCPUs; a bare int is an EXACT request
+    no catalog satisfies for odd sizes ("Catalog does not contain any instances
+    satisfying the request"). SkyPilot's SLURM/LSF cloud matches CPUs directly
+    and crashes on the ``"+"`` form, so those take a bare int. Shared by
+    ``_resources_from_compute_config`` and the ``teardown_skypilot`` cleanup VM
+    so both gate the ``"+"`` the same way.
+
+    :param cloud: the normalized target cloud (lowercased first infra segment).
+    :param n: the minimum number of vCPUs.
+    :returns: a bare int on slurm/lsf, else the ``"{n}+"`` minimum string.
+    """
+    return n if cloud in _SSH_HPC_CLOUDS else f"{n}+"
+
 
 def _ssh_control_socket_dir() -> Optional[str]:
     """Return SkyPilot's per-user SSH ControlMaster socket *root* directory.
@@ -1707,7 +1733,16 @@ class Skypilot(Environment):
             build_id=run_meta.get("build_id", ""),
             build_config_name=run_meta.get("build_config_name", ""),
         )
-        res_kwargs = {"infra": self._get_cloud()}
+        # The cleanup VM only mounts the shared FS and rm's the per-run workdir,
+        # so floor it to a small instance instead of SkyPilot's oversized default
+        # (an unconstrained request lands an m6i.2xlarge just to run an `rm`). A
+        # floor of 2 lands a t3.small-class (2 vCPU / 2 GiB, ~$0.02/hr): going to
+        # 1 would let SkyPilot pick a sub-1-GiB t2.nano/micro too small for its
+        # Ray runtime, and the VM lives only seconds, so the delta is negligible.
+        # _cpus_floor gates the "N+" minimum form (crashes LSF/SLURM). Issue #425.
+        cloud = self._get_cloud()
+        res_kwargs: Dict[str, Any] = {"infra": cloud}
+        res_kwargs["cpus"] = _cpus_floor(cloud, 2)
         zone = provider.cleanup_zone() if provider is not None else None
         if zone:
             res_kwargs["zone"] = zone  # land where a mount target exists
@@ -1756,6 +1791,14 @@ class Skypilot(Environment):
                 detail,
             )
             logger.debug("teardown_skypilot failure trace", exc_info=True)
+        finally:
+            # `down=True` relies on SkyPilot autodown, which these clouds do not
+            # support (see _CLOUDS_NEEDING_MANUAL_TEARDOWN), so there the td-
+            # cluster otherwise keeps its allocation indefinitely. Down it
+            # explicitly; _teardown tolerates a cluster that never came up.
+            cloud_group = (str(self._get_cloud()).split("/", 1)[0] or "").lower()
+            if cloud_group in _CLOUDS_NEEDING_MANUAL_TEARDOWN:
+                await self._teardown(cluster_name)
 
     @staticmethod
     def _parse_memory_gib(memory_str: str) -> Optional[float]:
@@ -1823,14 +1866,11 @@ class Skypilot(Environment):
             # Same exact-match trap as memory (below): a bare number is an EXACT
             # request and no cloud catalog has an instance with, e.g., exactly 3
             # vCPUs, so SkyPilot dies with "Catalog does not contain any
-            # instances satisfying the request". Emit a minimum ("{n}+") so it
-            # picks the smallest instance with at least that many vCPUs. slurm/lsf
-            # keep the bare int: the "+" form crashes the fork's LSF cloud, and
-            # those schedulers match CPUs directly, so an exact request is fine.
-            if cloud in _SSH_HPC_CLOUDS:
-                resources["cpus"] = num_cpus
-            else:
-                resources["cpus"] = f"{num_cpus}+"
+            # instances satisfying the request". _cpus_floor emits a minimum
+            # ("{n}+") so it picks the smallest instance with at least that many
+            # vCPUs; slurm/lsf keep the bare int (the "+" form crashes the fork's
+            # LSF cloud, and those schedulers match CPUs directly).
+            resources["cpus"] = _cpus_floor(cloud, num_cpus)
         # SLURM/LSF (bare HPC schedulers) commonly don't track memory as a
         # consumable resource (RealMemory unset in slurm.conf), so a --memory
         # request fails at resource matching ("Catalog does not contain any

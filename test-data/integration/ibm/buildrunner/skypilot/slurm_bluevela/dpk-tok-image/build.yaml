@@ -1,0 +1,127 @@
+granite.build:
+  name: skypilot-bluevela-slurm-dpk-tokenize-image
+  # DPK tokenization on BlueVela SLURM (via Skypilot) in IMAGE MODE — the first
+  # fixture anywhere to run `dpk` with `dpk_config.dpk_image` set on a real cluster.
+  # Modeled on steps/dpk/skypilot/test-data/slurm-tok/build.yaml (local Docker SLURM,
+  # bare node); what changes here is the ENVIRONMENT and the IMAGE, not the transform.
+  #
+  # WHY IMAGE MODE HERE. The bare-node path is currently BROKEN on this environment:
+  # a bare step's file_mounts are wrapped with `sudo mkdir` on the host as
+  # `granitebuild`, which has no passwordless sudo (see
+  # docs/environments/skypilot-slurm-file-mounts-sudo.md, and the failing sibling
+  # test_dpk_pii.py). A containerized step runs its file_mounts INSIDE the enroot
+  # container as root, where SkyPilot aliases `sudo` to a no-op, so the wrap succeeds.
+  #
+  # THESE TWO FIXTURES ARE COMPLEMENTARY — do not "fix" the failing one by copying
+  # this one. test_dpk_pii.py failing is the signal that the bare path is still
+  # broken; this fixture is working coverage on the containerized path. Deleting or
+  # containerizing the former would hide the defect.
+  #
+  # IMAGE MODE CHANGES WHAT THE STEP DOES:
+  #   * `dpk_version` is IGNORED and the venv + `uv pip install` are SKIPPED
+  #     entirely — the image must already provide DPK (step.yaml: "A base image
+  #     WITHOUT DPK is therefore not supported"). So `dpk_version`/`pip_index_url`
+  #     are deliberately omitted below; setting them here would be misleading.
+  #   * file_mounts still happens — only the install is skipped — so `./src` is still
+  #     staged and `bash ./src/dpk_run.sh` still drives the run.
+  #   * Requires the Pyxis SPANK plugin, which BlueVela provides (proven by the
+  #     sibling 1step/2target fixtures) and which the local Docker SLURM cluster does
+  #     NOT, which is why image mode had no cluster coverage before this.
+  targets:
+
+    tokenize:
+      # BlueVela SLURM, resolved from the gb-test space. The gpu-mid partition comes
+      # from the environment's `zone`, so no partition is set here.
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        docs:
+          # Public dataset: DPK's own tokenization test fixture (5 parquet, 2
+          # deliberately empty, Apache-2.0). Public, so the launcher's `hf download`
+          # runs anonymously and this fixture needs no HF_TOKEN at all.
+          uri: hf:///datasets/shalisha-witherspoon/dpk-tokenization-sample
+      outputs:
+        tokens:
+          # Terminal output, and `output_path` is omitted below so the step uses its
+          # default ./output inside the per-target workdir — hence this uri names no
+          # path to match. Mirrors slurm-tok. env:// push moves no bytes and only
+          # registers the concrete path the marker reports.
+          uri: "env:///tokens"
+          type: dataset
+      steps:
+        - step_uri: space://steps/dpk
+          config:
+            # Fast completion detection (the skypilot monitor default is 300s, which
+            # would dominate wall-clock for this quick job).
+            poll_interval_seconds: 5
+            dpk_config:
+              transform: tokenization2arrow
+              # IMAGE MODE. Private IBM Container Registry reference, given plain —
+              # the step prepends `docker:` and the SkyPilot SLURM provisioner
+              # rewrites it to Pyxis' registry syntax (`us.icr.io#cil15-.../...`,
+              # see sky/provision/slurm/instance.py and the Pyxis registry-syntax
+              # wiki), so nothing needs to spell the `#` here.
+              #
+              # AUTH IS NOT SUPPLIED BY GRANITE.BUILD. The SkyPilot SLURM path has no
+              # registry-credential surface (`_docker_login_config` is wired only into
+              # the runpod/yotta/vast/docker-VM provisioners, not provision/slurm),
+              # and the pull happens at provision time rather than inside the job, so
+              # no job env var can authenticate it. This therefore relies on enroot on
+              # the BlueVela nodes already holding credentials for this namespace —
+              # plausible because existing LSF ibm-bluevela steps (sage-py311,
+              # bfcl-py311, code-server) pull from the same registry. If the pull
+              # fails with an auth error, that assumption is wrong and the fix is
+              # cluster-side, not here.
+              #
+              # PINNED TAG, not `:latest`. This matters more than usual here: image
+              # mode ignores `dpk_version`, so the image tag is the ONLY thing
+              # pinning the DPK version this test asserts against — a floating
+              # `:latest` would let a republish silently change what the test covers.
+              #
+              # `dpk-1.1.8` is built from the Dockerfile beside this build.yaml:
+              # python:3.10-slim-bookworm + SkyPilot's in-container prerequisites
+              # (so its apt bootstrap has nothing to fetch) + PUBLIC
+              # data-prep-toolkit-transforms[tokenization2arrow]==1.1.8. It replaced
+              # `gb_v1`, which was built from IBM-internal DPK: that ships the
+              # transform as `tokenization2arrow_transform_python`, not the public
+              # `dpk_tokenization2arrow.runtime` this step derives, so the run died
+              # with "No module named 'dpk_tokenization2arrow'" (build d8cd80c0,
+              # 2026-09-28). An image for this step must provide PUBLIC DPK.
+              dpk_image: us.icr.io/cil15-shared-registry/preprocessing-pipelines/tokenization-python:dpk-1.1.8
+              # A PATH, resolved from this target's own declared input — the byoc
+              # pattern. The step never learns binding NAMES, so it cannot be wrong
+              # about them.
+              input_path: "{{ bindings.docs.binding.path }}"
+              output: tokens
+              # Set to the value the step's own rule already derives, so this asserts
+              # the override path is READ, not that a different runtime works (weak on
+              # purpose — a divergent value would fail for unrelated reasons). In image
+              # mode this module must be importable by the IMAGE's python, since there
+              # is no venv.
+              module: dpk_tokenization2arrow.runtime
+              # Runs src/validate_tokenization2arrow.py in-container before the
+              # artifact marker, as slurm-tok does. The image provides its deps
+              # (pyarrow); verified locally against this image and the sample:
+              # 3 arrow files, 6 documents, 85 tokens, completeness 3 of 5 (2 empty).
+              validate: true
+              args:
+                # Full flag names as DPK spells them — tokenization's prefix is `tkn_`,
+                # which is NOT derivable from the module name, so they pass through
+                # verbatim.
+                tkn_tokenizer: hf-internal-testing/llama-tokenizer
+                tkn_doc_id_column: document_id
+                tkn_doc_content_column: contents
+                tkn_text_lang: en
+                tkn_chunk_size: 0
+                # Parallel branch, matching num_cpus_per_node below so 2 workers get 2
+                # cores. The step injects no default, so a pool appears only because a
+                # build asked for one.
+                runtime_num_processors: 2
+            compute_config:
+              # Asking for CPUs is what makes SLURM export SLURM_CPUS_PER_TASK and
+              # keeps the pool from oversubscribing.
+              num_cpus_per_node: 2
+              num_gpus_per_node: 0
+              # Advisory on SLURM (the compute_config memory floor is skipped for the
+              # SLURM/LSF clouds), so this documents intent rather than selecting a
+              # node.
+              total_memory_per_node: 4Gi

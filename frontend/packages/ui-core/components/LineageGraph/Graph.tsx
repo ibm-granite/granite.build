@@ -35,6 +35,9 @@ export interface GraphHandle {
   zoomIn(): void
   zoomOut(): void
   resetZoom(): void
+  /** Clear the user-adjusted flag so the next relayout auto-fits (no immediate
+   *  fit against stale positions). For callers that also change the node set. */
+  resetView(): void
   currentZoom(): number
   centerOnNode(nodeId: string): void
   // Centers nodeId, zooming out only as far as needed to fit the graph, on the relayout this click causes if
@@ -46,6 +49,12 @@ export interface GraphHandle {
 interface GraphProps {
   nodes: ElkNodeEx[]
   links: ElkExtendedEdge[]
+  /**
+   * Stable identity of the subject being graphed (the build or artifact id).
+   * Changing it earns a fresh auto-fit even if the user had panned the previous
+   * graph; it must NOT change as the same graph grows or is re-filtered.
+   */
+  graphKey?: string
   onClick?: (node: ElkNodeEx) => void
   selectedNode?: ElkNodeEx
   allLinks?: ElkExtendedEdge[]
@@ -70,6 +79,8 @@ const ZOOM_STEP = 1.1
 // button steps at most, and never below MIN_READABLE_SCALE (node labels still read).
 const MAX_GROW_ZOOM_STEPS = 2
 const MIN_READABLE_SCALE = 0.6
+// Breathing room, in px, between a selected node and the pane edge on resize.
+const FIT_PADDING = 32
 
 function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   const { onClick } = props
@@ -328,17 +339,36 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       })
   }
 
+  // Nodes depend on layout + selection only — NOT on hoverNode, which is used
+  // solely for edge highlighting below. Rebuilding nodeElements on every hover
+  // produced a fresh array that reran the zoom-setup effect (a synchronous
+  // getBoundingClientRect + O(n) bounds scan + zoom listener rebind) on every
+  // mouse-enter/leave; keeping this off hoverNode avoids that thrash.
   React.useEffect(() => {
-    if (positions) {
-      setNodeElements(buildNodes(positions))
-      setLinkElements(buildLinks(positions, hoverNode))
-    }
-  }, [positions, hoverNode, props.selectedNode, props.showBuildInfo])
+    if (positions) setNodeElements(buildNodes(positions))
+  }, [positions, props.selectedNode, props.showBuildInfo])
+
+  React.useEffect(() => {
+    if (positions) setLinkElements(buildLinks(positions, hoverNode))
+  }, [positions, hoverNode])
 
   const svgRef = React.useRef<SVGSVGElement | null>(null)
   const containerRef = React.useRef<SVGGElement | null>(null)
   const zoomRef = React.useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null)
   const transformRef = React.useRef(INITIAL_TRANSFORM)
+  // The resize observer needs the *current* selection, but must not re-subscribe
+  // every time it changes (that would re-seed lastWidth and lose the delta), so
+  // read it through a ref rather than closing over the prop.
+  const selectedNodeRef = React.useRef(props.selectedNode)
+  selectedNodeRef.current = props.selectedNode
+
+  // A different graph (new artifact/build) starts from the home transform rather
+  // than the previous graph's pan/zoom. Callers pass the subject's id: a live
+  // build gaining nodes or an expansion is still the same graph.
+  const graphIdentity = props.graphKey ?? ''
+  React.useEffect(() => {
+    transformRef.current = INITIAL_TRANSFORM
+  }, [graphIdentity])
 
   React.useEffect(() => {
     requestAnimationFrame(() => {
@@ -433,10 +463,102 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     })
 
     svg.call(zoomRef.current)
+
+    // Programmatic: fires the `zoom` handler with no sourceEvent, so the fit
+    // itself is not mistaken for a user adjustment.
     svg.call(zoomRef.current.transform, transformRef.current)
 
-    return () => { svg.on('.zoom', null) }
-  }, [nodeElements])
+    return () => {
+      svg.on('.zoom', null)
+    }
+    // Keyed on `positions` (layout), not `nodeElements`: nodeElements also
+    // rebuilds on `props.selectedNode` (for the node-highlight prop), and this
+    // effect doing the same rebind + fit on every click would repeat the exact
+    // "thrash" the hoverNode split above was written to avoid, just gated on
+    // click instead of hover.
+  }, [positions])
+
+  // Handle container resize. Coalesce bursts (a drag-resize fires the observer
+  // many times per second) into one update per animation frame rather than
+  // recomputing + applying a transform on every single firing.
+  //
+  // Keep the scale and shift by half the width delta, so whatever was centered
+  // stays centered, then pull the selected node back inside the pane if the
+  // shift still left it outside. Opening the ~33rem drawer shrinks the SVG by
+  // ~528px; without this focused content slides out of view.
+  React.useEffect(() => {
+    const svg = svgRef.current
+    if (!svg || typeof ResizeObserver === 'undefined') return
+
+    // Seeded on first observation below, so the initial firing is a no-op rather
+    // than a shift against a phantom width of 0.
+    let lastWidth = 0
+    let rafId = 0
+    const observer = new ResizeObserver(() => {
+      if (rafId) return
+      rafId = requestAnimationFrame(() => {
+        rafId = 0
+        if (!zoomRef.current) return
+        const width = svg.clientWidth
+        const previousWidth = lastWidth
+        lastWidth = width
+
+        // Recentre on the user's own transform. `transformRef` is kept current by
+        // the zoom handler, so this composes with their latest pan/zoom rather
+        // than a stale one.
+        if (!previousWidth || !width || width === previousWidth) return
+        const current = transformRef.current
+        let shifted = current.translate((width - previousWidth) / 2 / current.k, 0)
+
+        // Half-the-delta keeps the *centre* fixed, which is the right default but
+        // not enough on its own: a selected node already near an edge can still
+        // land outside the narrowed pane. When there is a selection — the node
+        // whose drawer caused the resize, and the one thing the user is certainly
+        // looking at — pull it back inside the visible band instead.
+        const selected = selectedNodeRef.current
+        const pos = selected
+          ? positionsRef.current?.children?.find((n) => n.id === selected.id)
+          : undefined
+        if (pos && width > FIT_PADDING * 2) {
+          const applied = shifted.k
+          // Node bounds in screen space under the shifted transform.
+          const left = shifted.x + (pos.x ?? 0) * applied
+          const right = left + (pos.width ?? 0) * applied
+          const overflowRight = right - (width - FIT_PADDING)
+          const overflowLeft = FIT_PADDING - left
+          // Correct the left edge first. A node wider than the pane overflows both
+          // sides at once and cannot be fully shown; pinning its left edge reveals
+          // where it starts, and picking one side unconditionally also keeps the
+          // choice stable instead of alternating between edges on every resize.
+          const correction =
+            overflowLeft > 0 ? overflowLeft : overflowRight > 0 ? -overflowRight : 0
+          if (correction !== 0) shifted = shifted.translate(correction / shifted.k, 0)
+        }
+
+        d3.select(svg).call(zoomRef.current.transform, shifted)
+      })
+    })
+    observer.observe(svg)
+    lastWidth = svg.clientWidth
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId)
+      observer.disconnect()
+    }
+  }, [])
+
+  const resetZoom = () => {
+    // Effects of the click that called this run before a zero timeout, so a
+    // relayout it caused has started by then; otherwise nothing will land.
+    const run = layoutRunRef.current
+    resetOnLayoutRef.current = true
+    setTimeout(() => { if (layoutRunRef.current === run) resetOnLayoutRef.current = false }, 0)
+    if (svgRef.current && zoomRef.current) {
+      d3.select(svgRef.current)
+        .transition()
+        .duration(300)
+        .call(zoomRef.current.transform, fitTransform())
+    }
+  }
 
   React.useImperativeHandle(ref, () => ({
     zoomIn: () => {
@@ -449,19 +571,9 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
         d3.select(svgRef.current).call(zoomRef.current.scaleBy, 1 / ZOOM_STEP)
       }
     },
-    resetZoom: () => {
-      // Effects of the click that called this run before a zero timeout, so a
-      // relayout it caused has started by then; otherwise nothing will land.
-      const run = layoutRunRef.current
-      resetOnLayoutRef.current = true
-      setTimeout(() => { if (layoutRunRef.current === run) resetOnLayoutRef.current = false }, 0)
-      if (svgRef.current && zoomRef.current) {
-        d3.select(svgRef.current)
-          .transition()
-          .duration(300)
-          .call(zoomRef.current.transform, fitTransform())
-      }
-    },
+    resetZoom,
+    // Reset view: the same fit, which also covers a relayout the reset causes.
+    resetView: resetZoom,
     currentZoom: () => {
       if (svgRef.current) {
         // Relative to the default scale, as it was before BASE_SCALE moved into k.

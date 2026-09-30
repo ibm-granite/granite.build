@@ -9,7 +9,7 @@ runs against. For the `environment.yaml` reference for each backend, see the
 - [skypilot-kubernetes-setup.md](skypilot-kubernetes-setup.md) — configure SkyPilot against a
   Kubernetes or OpenShift cluster (RBAC, GPU setup, troubleshooting). See also [SkyPilot on
   Kubernetes](../skypilot-kubernetes.md).
-- [skypilot-slurm-setup.md](skypilot-slurm-setup.md) — bring up a local Docker SLURM cluster + MinIO
+- [skypilot-slurm-setup.md](skypilot-slurm-setup.md) — bring up a local Docker SLURM cluster + S3 store
   for development and integration testing. See also [SkyPilot on SLURM](../skypilot-slurm.md).
 - [runpod-setup.md](runpod-setup.md) — run gbserver as a persistent CPU orchestrator on RunPod with
   on-demand GPU pods. See also the [RunPod environment](../runpod.md).
