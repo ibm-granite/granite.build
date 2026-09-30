@@ -135,7 +135,7 @@ def test_run_without_job_id_is_not_lineage():
 D1, D2, D3 = "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"
 
 
-def test_scan_indexes_and_checkpoints_only_a_timestamp():
+def test_scan_checkpoints_the_timestamp_and_the_ids_done_on_it():
     storage = _storage()
     ix, api, sink = _indexer([_run("r1", D1, job_id="j1"), _run("r2", D2, job_id="j2")])
 
@@ -143,7 +143,8 @@ def test_scan_indexes_and_checkpoints_only_a_timestamp():
     assert sink.write_job.call_count == 2
     assert _checkpoint(storage) == {
         "timestamp": D2,
-        "version": idx.INDEXER_CHECKPOINT_VERSION,
+        "item_ids": ["r2"],
+        "version": 1,
     }
 
     api.runs.return_value = []
@@ -168,6 +169,41 @@ def test_running_run_is_indexed_and_does_not_stop_scan():
     )
     assert ix.scan_once(storage) == 3
     assert _checkpoint(storage)["timestamp"] == D3
+
+
+def test_runs_on_the_same_instant_are_all_indexed_across_a_crash():
+    """Two runs on one second: the first is done, the next scan picks up the second."""
+    storage = _storage()
+    ix, api, sink = _indexer([_run("r1", D1, job_id="j1"), _run("r2", D1, job_id="j2")])
+    sink.write_job.side_effect = lambda job, **kw: (
+        (_ for _ in ()).throw(RuntimeError("crash"))
+        if job["run"]["runId"] == "r2"
+        else None
+    )
+    assert ix.scan_once(storage) == 1
+    assert _checkpoint(storage)["item_ids"] == ["r1"]
+
+    sink.write_job.reset_mock(side_effect=True)
+    assert ix.scan_once(storage) == 1
+    assert [c.args[0]["run"]["runId"] for c in sink.write_job.call_args_list] == [
+        "r2"
+    ]
+    assert _checkpoint(storage) == {
+        "timestamp": D1,
+        "item_ids": ["r1", "r2"],
+        "version": 1,
+    }
+
+
+def test_caught_up_scan_neither_reindexes_nor_writes_the_checkpoint():
+    storage = _storage()
+    ix, _, sink = _indexer([_run("r1", D1, job_id="j1"), _run("r2", D2, job_id="j2")])
+    ix.scan_once(storage)
+    sink.write_job.reset_mock()
+    with patch.object(storage.kv_pair_storage, "set_value") as set_value:
+        assert ix.scan_once(storage) == 0
+    sink.write_job.assert_not_called()
+    set_value.assert_not_called()
 
 
 def test_failing_run_retries_per_run_then_is_skipped():
@@ -287,34 +323,41 @@ def test_targets_are_indexed_oldest_first_across_builds():
     assert _checkpoint(storage)["timestamp"] == _ts(2)
 
 
-def test_targets_before_checkpoint_minus_lookback_are_not_read():
+def test_targets_behind_the_checkpoint_are_not_read():
     storage = _storage()
-    storage.kv_pair_storage.set_value(
-        idx.INDEXER_CHECKPOINT_KEY,
-        {"timestamp": _ts(60)},
-    )
+    mark = {"timestamp": _ts(60), "item_ids": ["at"], "version": 1}
+    storage.kv_pair_storage.set_value(idx.INDEXER_CHECKPOINT_KEY, dict(mark))
     ix, sink, page = _target_indexer(
-        [_target("old", 0), _target("late", 58), _target("new", 61)]
+        [_target("old", 58), _target("at", 60), _target("tie", 60), _target("new", 61)]
     )
     with page:
         assert ix.scan_once(storage) == 2
     ids = [
         c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
     ]
-    # "late" landed behind the mark but inside the lookback: still indexed,
-    # and it does not rewind the checkpoint.
-    assert ids == ["late", "new"]
+    # "at" is listed as done on the mark; "tie" shares its instant and is not.
+    assert ids == ["tie", "new"]
     assert _checkpoint(storage)["timestamp"] == _ts(61)
+    assert _checkpoint(storage)["item_ids"] == ["new"]
 
 
-def test_overlap_does_not_move_checkpoint_back():
+def test_target_scan_reads_past_a_page_that_reaches_the_checkpoint():
+    """A newer row on a later page (SQLite text order) must still be read."""
     storage = _storage()
-    mark = _ts(60)
-    storage.kv_pair_storage.set_value(idx.INDEXER_CHECKPOINT_KEY, {"timestamp": mark})
-    ix, _, page = _target_indexer([_target("late", 58)])
-    with page:
-        ix.scan_once(storage)
-    assert _checkpoint(storage) == {"timestamp": mark}
+    storage.kv_pair_storage.set_value(
+        idx.INDEXER_CHECKPOINT_KEY, {"timestamp": _ts(60), "item_ids": []}
+    )
+    ix = idx.TargetLineageIndexer(sink=MagicMock())
+    ix._sink.row_storage.has_rows_for_job.return_value = False
+    first = [_target(f"old{i}", 0) for i in range(idx._SCAN_PAGE_SIZE)]
+    pages = [first, [_target("missorted", 61)]]
+    with patch.object(
+        idx,
+        "_successful_targets_page",
+        side_effect=lambda storage, i: pages[i] if i < len(pages) else [],
+    ):
+        assert ix.scan_once(storage) == 1
+    assert _checkpoint(storage)["item_ids"] == ["missorted"]
 
 
 def test_already_indexed_and_artifactless_targets_are_not_rewritten():

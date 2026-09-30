@@ -18,12 +18,12 @@
 
 The index exists to navigate and rebuild the graph from any artifact URI, so how
 it is filled does not depend on builds. Both sources walk **jobs** in timestamp
-order and share one checkpoint: a single ``timestamp``, the instant of the last
-job indexed. That is all incremental needs. A scan reads from it *inclusive*, so
-jobs sharing the boundary instant are re-read rather than lost, and re-reading
-costs a rejected insert, never a duplicate, because the sink is unique by
-``job_id`` and ``(job_id, input, output)``. Identity lives in the sink, not in the
-checkpoint.
+order and share one checkpoint: the ``timestamp`` of the last job indexed, plus
+the ``item_ids`` already indexed *at exactly that instant*. A scan reads from the
+timestamp *inclusive*, so a job sharing the boundary instant is never lost, and
+skips the ids listed, so a caught-up scan neither re-indexes the boundary job nor
+rewrites the checkpoint. The id list only ever holds the jobs tied on one
+instant: it is reset whenever the timestamp moves forward.
 
 The sink is always the index (``DBLineageStore``). The source follows how the
 server was started:
@@ -47,8 +47,8 @@ the question an operator actually has.
 """
 
 import threading
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.jobstats import (
@@ -86,12 +86,6 @@ INDEXER_CHECKPOINT_VERSION = 1
 _MAX_JOB_ATTEMPTS = 5
 
 _WANDB_PAGE_SIZE = 200
-
-# How far before the checkpoint the gb_targets scan re-reads. finished_at is
-# stamped before the row commits, so a target can land with a timestamp just
-# behind one already indexed; the overlap catches it, and already-indexed jobs
-# are skipped by job_id.
-_TARGET_LOOKBACK = timedelta(minutes=5)
 
 # Config keys WandBLineageService.emit_event copies out of job_details; read back
 # here into the same place. Duplicated rather than imported so this module does
@@ -167,9 +161,12 @@ class JobLineageIndexer:
     checkpoint, seeding, retry bound and lifecycle live here, so both sources
     advance the same way.
 
-    **The checkpoint** is written after each job, so a crash mid-scan resumes at
-    the job it was on. It never moves backwards: a job re-read by an overlap is
-    indexed (a no-op if already there) but does not rewind the mark.
+    **The checkpoint** is written after each job that changes it, so a crash
+    mid-scan resumes at the job it was on. It is ``(timestamp, item_ids)``: jobs
+    at the checkpoint instant whose id is listed are done and skipped; any other
+    job at or after it is indexed. Two jobs on the same instant are therefore both
+    indexed, and a crash between them resumes at the second. It never moves
+    backwards, and a scan with nothing new writes nothing.
 
     **A pending job stops the scan.** A source may list a job whose lineage is
     not complete yet; advancing past it would skip whatever lands later.
@@ -231,14 +228,19 @@ class JobLineageIndexer:
             return None
         return value
 
-    def _write_checkpoint(self, storage: SingletonAdminStorage, job: Any) -> None:
-        self._write_timestamp(storage, self._timestamp(job))
-
     @staticmethod
-    def _write_timestamp(storage: SingletonAdminStorage, timestamp: str) -> None:
+    def _write_timestamp(
+        storage: SingletonAdminStorage,
+        timestamp: str,
+        item_ids: Optional[List[str]] = None,
+    ) -> None:
         storage.kv_pair_storage.set_value(
             INDEXER_CHECKPOINT_KEY,
-            {"timestamp": timestamp, "version": INDEXER_CHECKPOINT_VERSION},
+            {
+                "timestamp": timestamp,
+                "item_ids": list(item_ids or []),
+                "version": INDEXER_CHECKPOINT_VERSION,
+            },
         )
 
     def seed_if_absent(self, storage: SingletonAdminStorage, spec: str) -> bool:
@@ -304,12 +306,22 @@ class JobLineageIndexer:
         """
         storage = storage or get_admin_storage()
         checkpoint = self.read_checkpoint(storage)
-        mark = _parse_ts(checkpoint["timestamp"]) if checkpoint else None
+        mark: Optional[Tuple[datetime, List[str]]] = (
+            (_parse_ts(checkpoint["timestamp"]), list(checkpoint.get("item_ids") or []))
+            if checkpoint
+            else None
+        )
         indexed = 0
         for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"]):
             if self.stop_event.is_set():
                 break
             item_id = self._item_id(job)
+            job_ts = _parse_ts(self._timestamp(job))
+            if mark is not None and (
+                job_ts < mark[0] or (job_ts == mark[0] and item_id in mark[1])
+            ):
+                # Behind the mark, or on it and already done.
+                continue
             if self._is_pending(job):
                 logger.debug("Job %s still pending; stopping the scan", item_id)
                 break
@@ -334,10 +346,12 @@ class JobLineageIndexer:
                     attempts,
                 )
             self._failed_attempts.pop(item_id, None)
-            job_ts = _parse_ts(self._timestamp(job))
-            if mark is None or job_ts >= mark:
-                self._write_checkpoint(storage, job)
-                mark = job_ts
+            if mark is not None and job_ts == mark[0]:
+                ids = mark[1] + [item_id]
+            else:
+                ids = [item_id]
+            self._write_timestamp(storage, self._timestamp(job), ids)
+            mark = (job_ts, ids)
         return indexed
 
     # -- Lifecycle -----------------------------------------------------------
@@ -371,6 +385,12 @@ class JobLineageIndexer:
 class TargetLineageIndexer(JobLineageIndexer):
     """Standalone source: successful ``gb_targets`` rows by ``finished_at``.
 
+    Every page is read, never stopping at the first row behind the checkpoint:
+    SQLite orders ``finished_at`` as text and the column holds two spellings
+    (``' '`` and ``'T'`` separators), so a newer row can sort below an older one
+    (see ``select_builds_from_checkpoint``, which reads every page for the same
+    reason).
+
     Builds play no part in the walk; a target's ``build_id`` is only used to load
     the target's own lineage. Targets with no ``finished_at`` are not finished
     and are not listed, so there is nothing pending to stop at. Targets with no
@@ -387,23 +407,21 @@ class TargetLineageIndexer(JobLineageIndexer):
     def _jobs_since(
         self, storage: SingletonAdminStorage, timestamp: Optional[str]
     ) -> List[StoredTargetRun]:
-        cutoff = _parse_ts(timestamp) - _TARGET_LOOKBACK if timestamp else None
+        cutoff = _parse_ts(timestamp) if timestamp else None
         selected: List[StoredTargetRun] = []
         page_index = 0
         while True:
             page = _successful_targets_page(storage, page_index)
             if not page:
                 break
-            reached_cutoff = False
             for target in page:
                 # Unfinished rows are skipped, never a stop: NULLs can interleave.
                 if target.finished_at is None:
                     continue
                 if cutoff is not None and as_aware(target.finished_at) < cutoff:
-                    reached_cutoff = True
                     continue
                 selected.append(target)
-            if reached_cutoff or len(page) < _SCAN_PAGE_SIZE:
+            if len(page) < _SCAN_PAGE_SIZE:
                 break
             page_index += 1
         # The DB sort can disagree with instant order (SQLite stores wall-clock
