@@ -210,9 +210,7 @@ def test_seed_never_overwrites_and_all_writes_nothing():
     storage = _storage()
     assert ix.seed_if_absent(storage, "all") is False
     assert storage.kv_pair_storage.values == {}
-    storage.kv_pair_storage.set_value(
-        idx.INDEXER_CHECKPOINT_KEY, {"timestamp": D1}
-    )
+    storage.kv_pair_storage.set_value(idx.INDEXER_CHECKPOINT_KEY, {"timestamp": D1})
     assert ix.seed_if_absent(storage, "j1") is False
     api.runs.assert_not_called()
 
@@ -264,7 +262,9 @@ def test_targets_are_indexed_oldest_first_across_builds():
     )
     with page:
         assert ix.scan_once(storage) == 2
-    assert [c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list] == ["t1", "t2"]
+    assert [
+        c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
+    ] == ["t1", "t2"]
     assert _checkpoint(storage)["timestamp"] == _ts(2)
 
 
@@ -279,7 +279,9 @@ def test_targets_before_checkpoint_minus_lookback_are_not_read():
     )
     with page:
         assert ix.scan_once(storage) == 2
-    ids = [c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list]
+    ids = [
+        c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
+    ]
     # "late" landed behind the mark but inside the lookback: still indexed,
     # and it does not rewind the checkpoint.
     assert ids == ["late", "new"]
@@ -289,9 +291,7 @@ def test_targets_before_checkpoint_minus_lookback_are_not_read():
 def test_overlap_does_not_move_checkpoint_back():
     storage = _storage()
     mark = _ts(60)
-    storage.kv_pair_storage.set_value(
-        idx.INDEXER_CHECKPOINT_KEY, {"timestamp": mark}
-    )
+    storage.kv_pair_storage.set_value(idx.INDEXER_CHECKPOINT_KEY, {"timestamp": mark})
     ix, _, page = _target_indexer([_target("late", 58)])
     with page:
         ix.scan_once(storage)

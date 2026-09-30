@@ -23,27 +23,23 @@ from pydantic import BaseModel, ConfigDict
 
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import has_space_member_access
-from gbserver.lineage.uri_normalize import display_uri_from_url
 from gbserver.lineage.openlineage_models import (
-    LineageGraphResponse,
-    LineageJobsResponse,
-    LineageRunsResponse,
-    LineageQueryRequest,
     ArtifactGraphRequest,
     ArtifactGraphResponse,
     ArtifactRunEntry,
 )
 from gbserver.lineage.openlineage_models import LineageEvent as OpenLineageEvent
-from gbserver.lineage.uri_normalize import display_uri_from_url
 from gbserver.lineage.openlineage_models import (
     LineageGraphResponse,
-    LineageRunsResponse,
-    LineageQueryRequest,
+    LineageJobsResponse,
     LineageNodeRef,
+    LineageQueryRequest,
+    LineageRunsResponse,
     PaginatedResponse,
     TagSearchRequest,
 )
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
+from gbserver.lineage.uri_normalize import display_uri_from_url
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -450,7 +446,7 @@ def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
 # indexed text column, so there is no shape a caller can ask for that forces a scan.
 # There is no POST form: the filters are a handful of scalars, so a body would carry
 # nothing a query string cannot, at the cost of an unbookmarkable URL.
-@lineage_api.get("/graph", tags=["db-backed"])
+@lineage_api.get("/graph", tags=["lineage-index"])
 def query_lineage_graph_get(
     request: Request,
     uri: Optional[str] = None,
@@ -566,7 +562,7 @@ def query_lineage_graph(
     )
 
 
-@lineage_api.get("/runs", tags=["db-backed"])
+@lineage_api.get("/runs", tags=["lineage-index"])
 def list_lineage_runs(
     request: Request,
     uri: Optional[str] = None,
@@ -626,7 +622,7 @@ def list_lineage_runs(
     )
 
 
-@lineage_api.get("/jobs", tags=["db-backed"])
+@lineage_api.get("/jobs", tags=["lineage-index"])
 def list_lineage_jobs_by_tags(
     request: Request,
     tags: List[str] = Query(default_factory=list),

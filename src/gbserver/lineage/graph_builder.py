@@ -41,7 +41,8 @@ into one shared "nothing" node.
 import logging
 from typing import Optional
 
-from gbcommon.uri.lh import URLSEGMENT_FILES, URLSEGMENT_MODELS as LH_URLSEGMENT_MODELS
+from gbcommon.uri.lh import URLSEGMENT_FILES
+from gbcommon.uri.lh import URLSEGMENT_MODELS as LH_URLSEGMENT_MODELS
 from gbserver.lineage.attributes import (
     INPUT,
     OUTPUT,
@@ -263,9 +264,14 @@ def _name_from_uri(uri: str) -> str:
     segments = [segment for segment in without_scheme.split("/") if segment]
     if not segments:
         return uri
-    if uri.startswith("lh://") and len(segments) >= 5 and segments[2] in (
-        LH_URLSEGMENT_MODELS,
-        URLSEGMENT_FILES,
+    if (
+        uri.startswith("lh://")
+        and len(segments) >= 5
+        and segments[2]
+        in (
+            LH_URLSEGMENT_MODELS,
+            URLSEGMENT_FILES,
+        )
     ):
         return segments[-2]
     return segments[-1]

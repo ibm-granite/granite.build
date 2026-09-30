@@ -52,7 +52,6 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         raise NotImplementedError
 
 
-
 class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorage):
     """Base storage implementation for lineage rows.
 

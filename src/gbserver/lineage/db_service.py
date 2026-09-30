@@ -39,8 +39,6 @@ index by identifier in the first place.
 import logging
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
-from gbserver.lineage.graph_builder import build_graph_dict
-from gbserver.lineage.openlineage_service import LineageService
 from gbserver.lineage.attributes import (
     INPUT,
     OUTPUT,
@@ -48,6 +46,8 @@ from gbserver.lineage.attributes import (
     job_detail,
     origin_system,
 )
+from gbserver.lineage.graph_builder import build_graph_dict
+from gbserver.lineage.openlineage_service import LineageService
 from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.lineage.walk import (
     DEFAULT_MAX_NODES_PER_LEVEL,

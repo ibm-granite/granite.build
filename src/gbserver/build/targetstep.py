@@ -169,9 +169,7 @@ def _env_step_config(env_config: Optional[dict], step_slug: str) -> dict:
     # by reference, so returning the live nested dicts (e.g. ``launcher_config``)
     # would let a later step's in-place mutation corrupt the environment config
     # for every subsequent step in the run.
-    overrides = {
-        k: deepcopy(v) for k, v in entry.items() if k != "environment_configs"
-    }
+    overrides = {k: deepcopy(v) for k, v in entry.items() if k != "environment_configs"}
     logger.info(
         "Applying environment config.steps['%s'] defaults (keys: %s)",
         step_slug,

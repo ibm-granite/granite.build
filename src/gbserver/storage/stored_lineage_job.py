@@ -113,9 +113,7 @@ class StoredLineageJob(BaseStoredItem):
         default="", description="Space the job ran in; empty if the source has none"
     )
     owner: str = Field(default="", description="Username the job is attributed to")
-    source_system: str = Field(
-        default="", description="Which system produced this job"
-    )
+    source_system: str = Field(default="", description="Which system produced this job")
     status: str = Field(default="", description="Job status as reported")
     started_at: str = Field(
         default="", description="Start timestamp in the source's own string form"

@@ -381,4 +381,6 @@ class TestSelfLoopCollapse:
             graph_of(row("J1", A, A, metadata={"job_namespace": "sp/build"})),
             root_uri=A,
         )
-        assert nodes_by_type(result, "run")[0]["metadata"]["job_namespace"] == "sp/build"
+        assert (
+            nodes_by_type(result, "run")[0]["metadata"]["job_namespace"] == "sp/build"
+        )

@@ -31,9 +31,9 @@ from datetime import datetime, timezone
 import pytest
 
 from gbcommon.uri.lh import LhURI
+from gbserver.lineage.attributes import origin_id
 from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.db_service import DBLineageService
-from gbserver.lineage.attributes import origin_id
 from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
@@ -258,9 +258,7 @@ class TestOneHop:
         graph = self.service.get_artifact_graph(
             artifact_url=self.raw.uri, direction="downstream"
         )
-        node = next(
-            n for n in graph["nodes"] if n["id"] == normalize_uri(self.raw.uri)
-        )
+        node = next(n for n in graph["nodes"] if n["id"] == normalize_uri(self.raw.uri))
         assert node["metadata"]["uri"] == self.raw.uri
 
     def test_recording_twice_does_not_duplicate(self, storage):

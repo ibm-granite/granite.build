@@ -65,7 +65,7 @@ def pairs(rows) -> list[tuple]:
 def unname(endpoint: str) -> str:
     """Inverse of uri_for, so an assertion can talk in short names."""
     prefix = "s3://bucket/"
-    return endpoint[len(prefix):] if endpoint.startswith(prefix) else endpoint
+    return endpoint[len(prefix) :] if endpoint.startswith(prefix) else endpoint
 
 
 class TestTerminals:
@@ -77,9 +77,7 @@ class TestTerminals:
     """
 
     def test_no_targets_is_a_deletion_terminal(self):
-        rows = to_lineage_rows(
-            job(sources=[artifact("a"), artifact("b")], targets=[])
-        )
+        rows = to_lineage_rows(job(sources=[artifact("a"), artifact("b")], targets=[]))
         assert pairs(rows) == [("a", ""), ("b", "")]
 
     def test_no_sources_is_a_creation_terminal(self):
@@ -114,9 +112,7 @@ class TestFanShapes:
         assert pairs(rows) == [("in", "x"), ("in", "y")]
 
     def test_one_to_one(self):
-        rows = to_lineage_rows(
-            job(sources=[artifact("in")], targets=[artifact("out")])
-        )
+        rows = to_lineage_rows(job(sources=[artifact("in")], targets=[artifact("out")]))
         assert pairs(rows) == [("in", "out")]
 
 
@@ -217,9 +213,7 @@ class TestRegrouping:
     def test_several_jobs_stay_separate(self):
         rows = to_lineage_rows(
             job("J1", sources=[artifact("a")], targets=[artifact("x")])
-        ) + to_lineage_rows(
-            job("J2", sources=[artifact("b")], targets=[artifact("y")])
-        )
+        ) + to_lineage_rows(job("J2", sources=[artifact("b")], targets=[artifact("y")]))
         grouped = group_by_job(rows)
         assert set(grouped) == {"J1", "J2"}
         assert grouped["J1"]["sources"] == {uri_for("a")}
@@ -259,9 +253,7 @@ class TestMetadata:
         assert "not_a_key" not in rows[0].metadata
 
     def test_absent_metadata_is_omitted_not_defaulted(self):
-        rows = to_lineage_rows(
-            job(sources=[artifact("a")], targets=[artifact("x")])
-        )
+        rows = to_lineage_rows(job(sources=[artifact("a")], targets=[artifact("x")]))
         assert rows[0].metadata == {"job_id": "J"}
 
     def test_each_row_owns_its_metadata(self):

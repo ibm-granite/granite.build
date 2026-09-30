@@ -138,7 +138,9 @@ class TestJobGrouping:
         that is what these were: the importer contract sets both to "" for every
         source that is not granite.build.
         """
-        storage.add(row(job_id="P", attributes={"build_id": "b1", "target_run_uuid": "tr1"}))
+        storage.add(
+            row(job_id="P", attributes={"build_id": "b1", "target_run_uuid": "tr1"})
+        )
         names = storage.get_column_names()
         assert "build_id" not in names
         assert "target_run_uuid" not in names
@@ -454,9 +456,7 @@ class TestUriIsTheIdentity:
         assert "target_uri" not in names
 
     def test_endpoints_hold_real_uris(self, storage):
-        storage.add(
-            row(job_id="U", input="s3://bkt/in", output="hf:///org/out")
-        )
+        storage.add(row(job_id="U", input="s3://bkt/in", output="hf:///org/out"))
         stored = storage.get_by_where({"job_id": "U"})[0]
         assert stored.input == "s3://bkt/in"
         assert stored.output == "hf:///org/out"

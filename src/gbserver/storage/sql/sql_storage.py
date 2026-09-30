@@ -33,7 +33,6 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from gbserver.storage.stored_lineage_row import MAX_LINEAGE_URI_LENGTH
 from gbserver.storage.sql.cert_file import get_ssl_cert_file
 from gbserver.storage.sql.engine_cache import get_singleton_engine_cache
 from gbserver.storage.storage import (
@@ -45,6 +44,7 @@ from gbserver.storage.storage import (
     QueryControl,
     SortOrder,
 )
+from gbserver.storage.stored_lineage_row import MAX_LINEAGE_URI_LENGTH
 from gbserver.types.constants import (
     GBSERVER_SQL_DBNAME,
     GBSERVER_SQL_HOST,

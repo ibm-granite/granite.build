@@ -193,7 +193,10 @@ class TestPayloads:
         )
         attributes = storage.get_job("J1").attributes
         assert attributes["job"]["name"] == "train"
-        assert attributes["origin"]["ids"] == {"build_id": "b1", "target_run_uuid": "t1"}
+        assert attributes["origin"]["ids"] == {
+            "build_id": "b1",
+            "target_run_uuid": "t1",
+        }
 
 
 class TestFields:
