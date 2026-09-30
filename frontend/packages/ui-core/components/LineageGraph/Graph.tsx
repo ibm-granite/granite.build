@@ -111,6 +111,9 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   centerNodeIdRef.current = props.centerNodeId
   // Cleared once the first layout containing centerNodeId has been centered.
   const pendingInitialCenterRef = React.useRef(true)
+  // The initial center is measured before the pane has settled its size (e.g. a
+  // tab just shown), so resizes redo it until the user pans or zooms.
+  const initialViewRef = React.useRef<string | null>(null)
 
 
   const buildSkeleton = (children: ElkNodeEx[], visibleLinks: ElkExtendedEdge[], allLinks: ElkExtendedEdge[]) => {
@@ -296,9 +299,10 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
         }
         const initialId = centerNodeIdRef.current
         if (pendingInitialCenterRef.current && initialId) {
-          const t = centerTransform(g, initialId, BASE_SCALE)
+          const t = centerFitTransform(g, initialId, BASE_SCALE)
           if (t) {
             pendingInitialCenterRef.current = false
+            initialViewRef.current = initialId
             transformRef.current = t
           }
         }
@@ -481,6 +485,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
 
     zoomRef.current.on('zoom', (event) => {
       const t = event.transform
+      if (event.sourceEvent) initialViewRef.current = null
       container.attr('transform', `translate(${t.x},${t.y}) scale(${t.k})`)
       transformRef.current = event.transform
     })
@@ -516,6 +521,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     // Seeded on first observation below, so the initial firing is a no-op rather
     // than a shift against a phantom width of 0.
     let lastWidth = 0
+    let lastHeight = 0
     let rafId = 0
     const observer = new ResizeObserver(() => {
       if (rafId) return
@@ -523,8 +529,18 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
         rafId = 0
         if (!zoomRef.current) return
         const width = svg.clientWidth
+        const height = svg.clientHeight
         const previousWidth = lastWidth
+        const previousHeight = lastHeight
         lastWidth = width
+        lastHeight = height
+
+        const initialId = initialViewRef.current
+        if (initialId && positionsRef.current && width && height && (width !== previousWidth || height !== previousHeight)) {
+          const t = centerFitTransform(positionsRef.current, initialId, BASE_SCALE)
+          if (t) d3.select(svg).call(zoomRef.current.transform, t)
+          return
+        }
 
         // Start from the user's own transform. `transformRef` is kept current by
         // the zoom handler, so this composes with their latest pan/zoom rather
@@ -559,6 +575,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     })
     observer.observe(svg)
     lastWidth = svg.clientWidth
+    lastHeight = svg.clientHeight
     return () => {
       if (rafId) cancelAnimationFrame(rafId)
       observer.disconnect()
@@ -566,6 +583,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   }, [])
 
   const resetZoom = (nodeId?: string) => {
+    initialViewRef.current = null
     if (!svgRef.current || !zoomRef.current) return
     const t = (nodeId && positionsRef.current && centerTransform(positionsRef.current, nodeId, BASE_SCALE)) || INITIAL_TRANSFORM
     d3.select(svgRef.current)
@@ -575,6 +593,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   }
 
   const resetView = () => {
+    initialViewRef.current = null
     // Effects of the click that called this run before a zero timeout, so a
     // relayout it caused has started by then; otherwise nothing will land.
     const run = layoutRunRef.current
@@ -590,11 +609,13 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
 
   React.useImperativeHandle(ref, () => ({
     zoomIn: () => {
+      initialViewRef.current = null
       if (svgRef.current && zoomRef.current) {
         d3.select(svgRef.current).call(zoomRef.current.scaleBy, ZOOM_STEP)
       }
     },
     zoomOut: () => {
+      initialViewRef.current = null
       if (svgRef.current && zoomRef.current) {
         d3.select(svgRef.current).call(zoomRef.current.scaleBy, 1 / ZOOM_STEP)
       }
@@ -611,9 +632,11 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     centerOnNodeAfterLayout: (nodeId: string) => {
       // Applied by the relayout the expansion causes, and only if it added or
       // dropped nodes: an unchanged graph keeps the user's pan and zoom.
+      initialViewRef.current = null
       centerOnLayoutRef.current = nodeId
     },
     centerOnNode: (nodeId: string) => {
+      initialViewRef.current = null
       if (!svgRef.current || !zoomRef.current || !positionsRef.current) return
       const t = centerTransform(positionsRef.current, nodeId, BASE_SCALE)
       if (!t) return
