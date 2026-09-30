@@ -140,5 +140,9 @@ IFBENCH_OPTIONS: ""
 CLUSTER: "bluevela"
 QUEUE: "normal"
 GPU_MEMORY: 256
+# The CPU-only score targets (`<bench>`, after `<bench>-generate`). SWE-bench graders
+# run SWEBENCH_*_WORKERS enroot sandboxes at once.
+SCORE_CPUS: 16
+SCORE_MEMORY: 64
 POLL_INTERVAL_SECONDS: 300
 LOG_RETRIEVAL_INTERVAL_SECONDS: 300

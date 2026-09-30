@@ -38,6 +38,7 @@ steps:
 | `workers` | `32` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | A prepared RULER setup dir overrides the in-job generation. |
 | `options` | `""` | Space-separated `key=value` benchmark options: `tasks` (comma-separated subset, for debugging), `tokenizer`, `enable_thinking`, `thinking_budget`, `sample_length`, `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>`, `answers=gold`. |
+| `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `131072` | vLLM. The run stops if the served context is shorter than a sample plus the thinking budget. |
 | `sandbox_cache` | `/proj/granite-build/g4os/sage2/enroot-cache` | Unused here (shared config contract). |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
@@ -52,13 +53,23 @@ generation and scoring; it should score 1.0.
 
 ## Output
 
-`sage2_results` (dataset): the `results.json` file, with per-task accuracies. Declare
-it on the target:
+`sage2_results` (dataset): the `results.json` file, with per-task accuracies (phase
+`all` or `score`). `sage2_generation` (dataset): the `generation.json` file (phase
+`generate`). A split run is two targets on the same `output_dir`: the score target binds
+the generate target's output, so it runs after it:
 
 ```yaml
-outputs:
-  sage2_results:
-    uri: "env://{{ binding.path }}"
+<bench>-generate:            # GPU
+  outputs:
+    sage2_generation:
+      uri: "env://{{ binding.path }}"
+<bench>:                     # CPU only, phase: score
+  inputs:
+    generation:
+      binding: <bench>-generate.sage2_generation
+  outputs:
+    sage2_results:
+      uri: "env://{{ binding.path }}"
 ```
 
 Generations are kept next to it under `output/ruler/<task>/output-rs<k>.jsonl`.

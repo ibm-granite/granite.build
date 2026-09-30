@@ -1,11 +1,48 @@
 granite.build:
   name: sage2-eval-granite42
-  # Sage2 Granite 4.2 suite: one target per benchmark, all reading the same checkpoint.
-  # Targets are added in suite order as each benchmark lands in sage2-evals; the full
-  # list and bring-up status is `sage2-evals list --suite granite42`.
+  # Sage2 Granite 4.2 suite, all reading the same checkpoint. Each benchmark is two
+  # targets on one output dir: `<bench>-generate` holds the GPU only while the model
+  # generates, and `<bench>` grades that output on CPUs (sandboxes, verifiers, paid
+  # judges) with no vLLM, so no GPU sits idle. `<bench>` binds the generate target's
+  # output, so selecting it runs both. terminal-bench-2.1 and mmlu-prox-lite grade
+  # inside generation and stay one GPU target. The full list and bring-up status is
+  # `sage2-evals list --suite granite42`.
   targets:
+    swebench-verified-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-swebench-verified
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-verified"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${SWEBENCH_WORKERS}"
+              dataset: "$${SWEBENCH_DATASET}"
+              options: "$${SWEBENCH_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
     swebench-verified:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: swebench-verified-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -25,6 +62,37 @@ granite.build:
               workers: "$${SWEBENCH_WORKERS}"
               dataset: "$${SWEBENCH_DATASET}"
               options: "$${SWEBENCH_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    swebench-pro-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-swebench-pro
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-pro"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${SWEBENCH_PRO_WORKERS}"
+              dataset: "$${SWEBENCH_PRO_DATASET}"
+              options: "$${SWEBENCH_PRO_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -35,6 +103,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     swebench-pro:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: swebench-pro-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -54,6 +125,37 @@ granite.build:
               workers: "$${SWEBENCH_PRO_WORKERS}"
               dataset: "$${SWEBENCH_PRO_DATASET}"
               options: "$${SWEBENCH_PRO_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    swebench-multilingual-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-swebench-multilingual
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-multilingual"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${SWEBENCH_ML_WORKERS}"
+              dataset: "$${SWEBENCH_ML_DATASET}"
+              options: "$${SWEBENCH_ML_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -64,6 +166,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     swebench-multilingual:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: swebench-multilingual-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -83,14 +188,15 @@ granite.build:
               workers: "$${SWEBENCH_ML_WORKERS}"
               dataset: "$${SWEBENCH_ML_DATASET}"
               options: "$${SWEBENCH_ML_OPTIONS}"
+              phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
               resources:
-                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
-                memory: $${GPU_MEMORY}
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
     terminal-bench-2.1:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       outputs:
@@ -112,6 +218,36 @@ granite.build:
               workers: "$${TBENCH_WORKERS}"
               dataset: "$${TBENCH_DATASET}"
               options: "$${TBENCH_OPTIONS}"
+              phase: "all"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    birdbench-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-birdbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_BIRD}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/birdbench"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${BIRDBENCH_WORKERS}"
+              options: "$${BIRDBENCH_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -122,6 +258,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     birdbench:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: birdbench-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -140,6 +279,37 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${BIRDBENCH_WORKERS}"
               options: "$${BIRDBENCH_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-bench-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-bench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-bench"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -150,6 +320,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     tau3-bench:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-bench-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -169,6 +342,37 @@ granite.build:
               workers: "$${TAU_WORKERS}"
               dataset: "$${TAU_DATASET}"
               options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-airline-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-airline
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-airline"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -179,6 +383,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     tau3-airline:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-airline-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -198,6 +405,37 @@ granite.build:
               workers: "$${TAU_WORKERS}"
               dataset: "$${TAU_DATASET}"
               options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-banking-knowledge-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-banking-knowledge
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-banking-knowledge"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -208,6 +446,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     tau3-banking-knowledge:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-banking-knowledge-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -227,6 +468,37 @@ granite.build:
               workers: "$${TAU_WORKERS}"
               dataset: "$${TAU_DATASET}"
               options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-retail-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-retail
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-retail"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -237,6 +509,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     tau3-retail:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-retail-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -256,6 +531,37 @@ granite.build:
               workers: "$${TAU_WORKERS}"
               dataset: "$${TAU_DATASET}"
               options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-telecom-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-telecom
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-telecom"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -266,6 +572,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     tau3-telecom:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-telecom-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -285,6 +594,35 @@ granite.build:
               workers: "$${TAU_WORKERS}"
               dataset: "$${TAU_DATASET}"
               options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    bfcl-v4-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-bfcl-v4
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_BFCL}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/bfcl-v4"
+              limit: "$${SAGE2_LIMIT}"
+              workers: "$${BFCL_WORKERS}"
+              options: "$${BFCL_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -295,6 +633,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     bfcl-v4:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: bfcl-v4-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -312,6 +653,37 @@ granite.build:
               limit: "$${SAGE2_LIMIT}"
               workers: "$${BFCL_WORKERS}"
               options: "$${BFCL_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    gdpval-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-gdpval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_JUDGED}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/gdpval"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${GDPVAL_WORKERS}"
+              dataset: "$${GDPVAL_DATASET}"
+              options: "$${GDPVAL_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -322,6 +694,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     gdpval:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: gdpval-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -341,6 +716,37 @@ granite.build:
               workers: "$${GDPVAL_WORKERS}"
               dataset: "$${GDPVAL_DATASET}"
               options: "$${GDPVAL_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    profbench-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-profbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_JUDGED}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/profbench"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${PROFBENCH_WORKERS}"
+              dataset: "$${PROFBENCH_DATASET}"
+              options: "$${PROFBENCH_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -351,6 +757,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     profbench:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: profbench-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -370,6 +779,36 @@ granite.build:
               workers: "$${PROFBENCH_WORKERS}"
               dataset: "$${PROFBENCH_DATASET}"
               options: "$${PROFBENCH_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    aime25-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-aime25
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/aime25"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${AIME25_WORKERS}"
+              options: "$${AIME25_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -380,6 +819,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     aime25:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: aime25-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -398,6 +840,36 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${AIME25_WORKERS}"
               options: "$${AIME25_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    hmmt-feb25-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-hmmt-feb25
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/hmmt-feb25"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${HMMT_FEB25_WORKERS}"
+              options: "$${HMMT_FEB25_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -408,6 +880,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     hmmt-feb25:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: hmmt-feb25-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -426,6 +901,36 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${HMMT_FEB25_WORKERS}"
               options: "$${HMMT_FEB25_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    gpqa-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-gpqa
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/gpqa"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${GPQA_WORKERS}"
+              options: "$${GPQA_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -436,6 +941,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     gpqa:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: gpqa-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -454,6 +962,36 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${GPQA_WORKERS}"
               options: "$${GPQA_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    livecodebench-v6-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-livecodebench-v6
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/livecodebench-v6"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${LIVECODEBENCH_WORKERS}"
+              options: "$${LIVECODEBENCH_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -464,6 +1002,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     livecodebench-v6:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: livecodebench-v6-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -482,6 +1023,36 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${LIVECODEBENCH_WORKERS}"
               options: "$${LIVECODEBENCH_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    scicode-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-scicode
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/scicode"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${SCICODE_WORKERS}"
+              options: "$${SCICODE_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -492,6 +1063,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     scicode:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: scicode-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -510,6 +1084,36 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${SCICODE_WORKERS}"
               options: "$${SCICODE_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    mmlu-pro-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-mmlu-pro
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/mmlu-pro"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${MMLU_PRO_WORKERS}"
+              options: "$${MMLU_PRO_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -520,6 +1124,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     mmlu-pro:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: mmlu-pro-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -538,14 +1145,15 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${MMLU_PRO_WORKERS}"
               options: "$${MMLU_PRO_OPTIONS}"
+              phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
               resources:
-                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
-                memory: $${GPU_MEMORY}
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
     mmlu-prox-lite:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       outputs:
@@ -566,6 +1174,36 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${MMLU_PROX_LITE_WORKERS}"
               options: "$${MMLU_PROX_LITE_OPTIONS}"
+              phase: "all"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    arena-hard-v2-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-arena-hard-v2
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/arena-hard-v2"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${ARENA_HARD_V2_WORKERS}"
+              options: "$${ARENA_HARD_V2_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -576,6 +1214,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     arena-hard-v2:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: arena-hard-v2-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -594,6 +1235,36 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${ARENA_HARD_V2_WORKERS}"
               options: "$${ARENA_HARD_V2_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    ifbench-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-ifbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_IFBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ifbench"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${IFBENCH_WORKERS}"
+              options: "$${IFBENCH_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
@@ -604,6 +1275,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     ifbench:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: ifbench-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -622,7 +1296,38 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${IFBENCH_WORKERS}"
               options: "$${IFBENCH_OPTIONS}"
+              phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    ruler-128k-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-ruler-128k
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ruler-128k"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${RULER_WORKERS}"
+              options: "$${RULER_OPTIONS} $${RULER_128K_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              max_model_len: "131072"
               hf_home: "$${HF_HOME}"
             launcher_config:
               resources:
@@ -632,6 +1337,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     ruler-128k:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: ruler-128k-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -650,6 +1358,37 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${RULER_WORKERS}"
               options: "$${RULER_OPTIONS} $${RULER_128K_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              max_model_len: "131072"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    ruler-64k-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-ruler-64k
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ruler-64k"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${RULER_WORKERS}"
+              options: "$${RULER_OPTIONS}"
+              phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "131072"
               hf_home: "$${HF_HOME}"
@@ -661,6 +1400,9 @@ granite.build:
                 memory: $${GPU_MEMORY}
     ruler-64k:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: ruler-64k-generate.sage2_generation
       outputs:
         sage2_results:
           uri: "env://{{ binding.path }}"
@@ -679,12 +1421,13 @@ granite.build:
               repeats: "$${SAGE2_REPEATS}"
               workers: "$${RULER_WORKERS}"
               options: "$${RULER_OPTIONS}"
+              phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "131072"
               hf_home: "$${HF_HOME}"
             launcher_config:
               resources:
-                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
-                memory: $${GPU_MEMORY}
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"

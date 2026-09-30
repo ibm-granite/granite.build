@@ -51,6 +51,7 @@ Judge calls go through sage2-evals' spend meter: with `SAGE2_SPEND_LEDGER` and
 | `workers` | `4` | Concurrent tasks (agent sandboxes). |
 | `dataset` / `dataset_revision` | `""` | Override the dataset pinned in sage2-evals (`openai/gdpval` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value`: `judge_model`, `judge_base_url`, `judge_api_key_env`, `judge_orders` (2), `max_turns` (250), `shell_timeout` (600), `max_tokens` (32768), `context_window` (131072), `temperature`, `top_p`, `sandbox_image` (`python:3.13-bookworm`), `sandbox_setup`, `tasks` (regex), `elo_anchor` (1000), `deliverables=expert`. |
+| `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `/proj/granite-build/g4os/sage2/enroot-cache` | Shared squashfs cache for the sandbox image. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
@@ -70,12 +71,23 @@ the file rendering and the judge: expect a win rate near 0.5 and a value near 10
 
 ## Output
 
-`sage2_results` (dataset): the `results.json` file. Declare it on the target:
+`sage2_results` (dataset): the `results.json` file (phase `all` or `score`).
+`sage2_generation` (dataset): the `generation.json` file (phase `generate`). A split run
+is two targets on the same `output_dir`: the score target binds the generate target's
+output, so it runs after it:
 
 ```yaml
-outputs:
-  sage2_results:
-    uri: "env://{{ binding.path }}"
+<bench>-generate:            # GPU
+  outputs:
+    sage2_generation:
+      uri: "env://{{ binding.path }}"
+<bench>:                     # CPU only, phase: score
+  inputs:
+    generation:
+      binding: <bench>-generate.sage2_generation
+  outputs:
+    sage2_results:
+      uri: "env://{{ binding.path }}"
 ```
 
 Per-task deliverables, agent trajectories and judge answers are kept next to it under

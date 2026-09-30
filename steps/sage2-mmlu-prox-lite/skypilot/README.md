@@ -34,6 +34,7 @@ steps:
 | `workers` | `64` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | Override the data pinned in sage2-evals (`li-lab/MMLU-ProX-Lite` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `languages` (`ibm`, `all` or a comma list), `temperature`, `top_p`, `max_tokens`, `stop` (`task`, `none` or a comma list of up to 4 percent-encoded strings, e.g. `stop=%3C/s%3E,Q:`), `thinking=off`, `max_retries`, `request_timeout`, `answers=gold`. |
+| `phase` | `"all"` | Only `all`: this benchmark scores inside generation, so it runs as one GPU job |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `""` | Unused: this benchmark runs no sandbox. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |

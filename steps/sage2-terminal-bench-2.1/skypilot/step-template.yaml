@@ -18,6 +18,9 @@ version: 0.1.0
 # enroot sandbox started from the task's prebuilt image, then harbor's verifier runs the
 # task's tests in it. Writes one results.json (schema: sage2_evals/results.py).
 #
+# PHASES. This benchmark scores inside generation, so it runs as one GPU job
+# (phase: all); see the sibling sage2-* steps for the generate/score split.
+#
 # CUSTOM, not EVAL: gbcommon's StepType has no EVAL member.
 type: custom
 config:
@@ -49,6 +52,9 @@ config:
     # "temperature=0.6 max_turns=100" or "agent=oracle" (run the reference solutions:
     # checks images + sandbox + tests without a model; model_path may be "none").
     options: ""
+    # "all" only: this benchmark scores inside generation, so it cannot be split into
+    # a GPU and a CPU job (the key exists because every sage2 step shares one contract).
+    phase: "all"
     # vLLM.
     tensor_parallel_size: "1"
     gpu_memory_utilization: "0.9"
@@ -59,8 +65,12 @@ config:
     # Empty leaves the image's HF cache default alone.
     hf_home: ""
 outputs:
-  required:
+  optional:
+    # phase all | score: the scored results.json.
     sage2_results:
+      type: dataset
+    # phase generate: generation.json, which the score target binds to.
+    sage2_generation:
       type: dataset
 
 environment_configs:
@@ -118,12 +128,19 @@ environment_configs:
               {% if config.sage2_config.dataset_revision %}--dataset-revision "{{ config.sage2_config.dataset_revision }}"{% endif %} \
               --tensor-parallel-size {{ config.sage2_config.tensor_parallel_size }} \
               --gpu-memory-utilization "{{ config.sage2_config.gpu_memory_utilization }}" \
+              --phase "{{ config.sage2_config.phase }}" \
               {% if config.sage2_config.max_model_len %}--max-model-len {{ config.sage2_config.max_model_len }}{% endif %} \
               "${OPTS[@]}" \
               2>&1 | tee "$OUTPUT_DIR/sage2.log"
-            RESULT_FILE="$OUTPUT_DIR/results.json"
-            test -s "$RESULT_FILE" || { echo "sage2: no $RESULT_FILE"; exit 1; }
-            echo "GB_ARTIFACT_ID:sage2_results GB_ARTIFACT_PATH:${RESULT_FILE}"
+            if [ "{{ config.sage2_config.phase }}" = generate ]; then
+              RESULT_FILE="$OUTPUT_DIR/generation.json"
+              test -s "$RESULT_FILE" || { echo "sage2: no $RESULT_FILE"; exit 1; }
+              echo "GB_ARTIFACT_ID:sage2_generation GB_ARTIFACT_PATH:${RESULT_FILE}"
+            else
+              RESULT_FILE="$OUTPUT_DIR/results.json"
+              test -s "$RESULT_FILE" || { echo "sage2: no $RESULT_FILE"; exit 1; }
+              echo "GB_ARTIFACT_ID:sage2_results GB_ARTIFACT_PATH:${RESULT_FILE}"
+            fi
     monitors:
       skypilot_monitor:
         ref: space://monitors/skypilot
@@ -134,7 +151,7 @@ environment_configs:
             interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
           extra_event_configs:
             - event_type: WORKLOAD_STATUS_EVENT
-              line_regex: "(vLLM ready at|terminal-bench-2\\.1: \\d+ tasks|terminal-bench-2\\.1 repeat \\d+: |sage2-evals: terminal-bench-2\\.1 =)"
+              line_regex: "(vLLM ready at|terminal-bench-2\\.1: \\d+ tasks|terminal-bench-2\\.1 repeat \\d+: |sage2-evals: terminal-bench-2\\.1 =|sage2-evals: \\S+ generated)"
               event_fields:
                 - field_name: status
                   field_value_template: "RUNNING"

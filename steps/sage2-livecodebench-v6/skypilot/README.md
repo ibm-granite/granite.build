@@ -28,6 +28,7 @@ steps:
 | `workers` | `64` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | Override the dataset pinned in sage2-evals (`livecodebench/code_generation_lite` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>` (raw NeMo-Skills overrides), `answers=gold`. |
+| `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `/proj/granite-build/g4os/sage2/enroot-cache` | Unused here (shared config contract). |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
@@ -42,12 +43,23 @@ evaluator on a new cluster; it should score 1.0.
 
 ## Output
 
-`sage2_results` (dataset): the `results.json` file. Declare it on the target:
+`sage2_results` (dataset): the `results.json` file (phase `all` or `score`).
+`sage2_generation` (dataset): the `generation.json` file (phase `generate`). A split run
+is two targets on the same `output_dir`: the score target binds the generate target's
+output, so it runs after it:
 
 ```yaml
-outputs:
-  sage2_results:
-    uri: "env://{{ binding.path }}"
+<bench>-generate:            # GPU
+  outputs:
+    sage2_generation:
+      uri: "env://{{ binding.path }}"
+<bench>:                     # CPU only, phase: score
+  inputs:
+    generation:
+      binding: <bench>-generate.sage2_generation
+  outputs:
+    sage2_results:
+      uri: "env://{{ binding.path }}"
 ```
 
 NeMo-Skills' generations and per-problem grades are kept next to it under

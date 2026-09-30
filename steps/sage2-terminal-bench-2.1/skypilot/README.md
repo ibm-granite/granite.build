@@ -27,6 +27,7 @@ steps:
 | `workers` | `8` | Concurrent tasks. Tasks that serve on fixed ports run one at a time. |
 | `dataset` / `dataset_revision` | `""` | Override the tasks pinned in sage2-evals (upstream `harborframework/terminal-bench-2.1` at a fixed commit, checked against the published task digests). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `max_tokens`, `max_turns`, `timeout_multiplier`, `max_retries`, `tasks` (regex), `exclude` (comma list, or `none`), `agent=oracle`. |
+| `phase` | `"all"` | Only `all`: this benchmark scores inside generation, so it runs as one GPU job |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `/proj/granite-build/g4os/sage2/enroot-cache` | Shared squashfs cache for task images. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |

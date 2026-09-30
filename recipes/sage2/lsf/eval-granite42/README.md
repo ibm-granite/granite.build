@@ -1,8 +1,20 @@
 # sage2 / eval-granite42
 
-Scores one checkpoint on the Sage2 **Granite 4.2** suite on BlueVela. Each benchmark is
-its own target and step (`space://steps/sage2-<benchmark>`), so a failure or a rerun
-stays local to that benchmark. Each target writes a `results.json` (`sage2_results`).
+Scores one checkpoint on the Sage2 **Granite 4.2** suite on BlueVela. Each benchmark
+runs its own step (`space://steps/sage2-<benchmark>`), so a failure or a rerun stays
+local to that benchmark.
+
+Each benchmark is two targets on one output dir, so no GPU sits idle while grading:
+
+| Target | Resources | Does | Writes |
+|---|---|---|---|
+| `<bench>-generate` | `TENSOR_PARALLEL_SIZE` x H100, `GPU_MEMORY` | serves the model (vLLM) and generates | `generation.json` (`sage2_generation`) |
+| `<bench>` | `SCORE_CPUS`, `SCORE_MEMORY`, no GPU | grades the saved outputs: sandboxes, verifiers, paid judges | `results.json` (`sage2_results`) |
+
+`<bench>` binds `<bench>-generate`'s output, so selecting `<bench>` runs both, in order.
+The score job checks that `generation.json` matches its model, limit, repeats and
+dataset, and never generates. `terminal-bench-2.1` and `mmlu-prox-lite` grade inside
+generation and stay one GPU target (`phase: all`).
 
 The runtime is [sage2-evals](https://github.com/laminair/sage2-evals), shipped as one
 prebuilt image per harness family (pinned in `parameters.yaml`). Nothing is built
@@ -34,12 +46,19 @@ gb build start -f $R aime25 gpqa --param MODEL_PATH=...
 gb build start -f $R --param SAGE2_LIMIT=5 --param SAGE2_REPEATS=1 ...
 ```
 
-Every target takes 1x H100 (`TENSOR_PARALLEL_SIZE`), `GPU_MEMORY`=256 GB and `QUEUE`.
-Options are space-separated `key=value` in `<BENCH>_OPTIONS`.
+Generate targets take 1x H100 (`TENSOR_PARALLEL_SIZE`) and `GPU_MEMORY`=256 GB; score
+targets take `SCORE_CPUS`=16 and `SCORE_MEMORY`=64 GB. All use `QUEUE`. Options are
+space-separated `key=value` in `<BENCH>_OPTIONS`.
+
+Rerunning `<bench>` alone also reruns `<bench>-generate`. That job skips every example
+already generated, but still takes a GPU and starts vLLM briefly. Options with
+`judge_model=self` grade with the served model, so the score job refuses them: for those,
+run the step as one GPU target with `phase: all`.
 
 **Check a target before scoring a model**: the reference mode serves the reference
 answers (or patches, or oracle agents) through the full pipeline and should score 1.0
-(`--param <BENCH>_OPTIONS=<gold>`; no GPU, no paid API):
+(`--param <BENCH>_OPTIONS=<gold>`; no paid API; the generate job needs no GPU in this
+mode but the target still requests one):
 
 | Gold option | Targets |
 |---|---|
@@ -49,7 +68,7 @@ answers (or patches, or oracle agents) through the full pipeline and should scor
 | `agent=gold` | `tau3-*` |
 | `answers=gold` | `aime25`, `hmmt-feb25`, `gpqa`, `mmlu-pro`, `livecodebench-v6`, `scicode`, `mmlu-prox-lite`, `ruler-*` (still needs `MODEL_PATH` for the tokenizer) |
 | `responses=o3 judge_model=human` | `profbench` (the dataset's human labels on o3's reports: 0.527, no key) |
-| `deliverables=expert judge_model=self` | `gdpval` (expert vs expert: 1000) |
+| `deliverables=expert` | `gdpval` (expert vs expert: about 1000; the paid judge runs in the score job, a few cents at `SAGE2_LIMIT=5`) |
 
 ## Targets and favored configs
 

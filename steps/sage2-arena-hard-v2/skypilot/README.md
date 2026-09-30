@@ -27,6 +27,7 @@ steps:
 | `workers` | `32` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | Override the data pinned in sage2-evals (arena-hard-auto v2.0 questions and baseline answers, pinned by commit and sha256). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>`, `judge_model` (default `aws/claude-sonnet-5`; `self` = the served model), `judge_base_url` (default IBM LiteLLM), `judge_api_key_env` (default `SAGE2_JUDGE_API_KEY`), `judge_max_tokens`, `judge_workers`, `judge.<key>=<value>`. |
+| `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `""` | Unused: this benchmark runs no sandbox. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
@@ -44,12 +45,23 @@ judge's token usage (`details.judge_usage`) and cost (`details.api_spend`).
 
 ## Output
 
-`sage2_results` (dataset): the `results.json` file. Declare it on the target:
+`sage2_results` (dataset): the `results.json` file (phase `all` or `score`).
+`sage2_generation` (dataset): the `generation.json` file (phase `generate`). A split run
+is two targets on the same `output_dir`: the score target binds the generate target's
+output, so it runs after it:
 
 ```yaml
-outputs:
-  sage2_results:
-    uri: "env://{{ binding.path }}"
+<bench>-generate:            # GPU
+  outputs:
+    sage2_generation:
+      uri: "env://{{ binding.path }}"
+<bench>:                     # CPU only, phase: score
+  inputs:
+    generation:
+      binding: <bench>-generate.sage2_generation
+  outputs:
+    sage2_results:
+      uri: "env://{{ binding.path }}"
 ```
 
 The prepared data, per-repeat NeMo-Skills outputs (`generation/output-rs<k>.jsonl`, `judged/`, `judge/usage.jsonl`)

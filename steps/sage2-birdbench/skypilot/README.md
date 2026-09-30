@@ -34,6 +34,7 @@ steps:
 | `workers` | `32` | Concurrent questions. |
 | `dataset` / `dataset_revision` | `""` | A local extracted `dev_20240627` dir overrides the pinned dev.zip. |
 | `options` | `""` | Space-separated `key=value` options: `temperature`, `top_p`, `max_tokens` (default: the checkpoint's generation_config), `evidence=true` (prefix BIRD's external knowledge), `timeout` (s, default 30), `sql=gold`. |
+| `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `/proj/granite-build/g4os/sage2/enroot-cache` | Unused by this benchmark. |
 | `hf_home` | `""` | Overrides `HF_HOME`, and with it the dev-set cache. |
@@ -47,12 +48,23 @@ longer than the 30 s budget and score as timeouts.
 
 ## Output
 
-`sage2_results` (dataset): the `results.json` file. Declare it on the target:
+`sage2_results` (dataset): the `results.json` file (phase `all` or `score`).
+`sage2_generation` (dataset): the `generation.json` file (phase `generate`). A split run
+is two targets on the same `output_dir`: the score target binds the generate target's
+output, so it runs after it:
 
 ```yaml
-outputs:
-  sage2_results:
-    uri: "env://{{ binding.path }}"
+<bench>-generate:            # GPU
+  outputs:
+    sage2_generation:
+      uri: "env://{{ binding.path }}"
+<bench>:                     # CPU only, phase: score
+  inputs:
+    generation:
+      binding: <bench>-generate.sage2_generation
+  outputs:
+    sage2_results:
+      uri: "env://{{ binding.path }}"
 ```
 
 Per-question generations, extracted SQL and execution status are kept next to it

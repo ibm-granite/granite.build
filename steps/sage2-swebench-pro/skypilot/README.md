@@ -29,6 +29,7 @@ steps:
 | `workers` | `8` | Concurrent instances. |
 | `dataset` / `dataset_revision` | `""` | Override the dataset pinned in sage2-evals (upstream `ScaleAI/SWE-bench_Pro` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `subset=hard` (HARD-51), `agent_timeout` (s, default 2940), `step_limit`, `temperature`, `top_p`, `max_tokens`, `eval_timeout` (s, default 3000), `instances` (regex), `patch=gold`, `check=data`. |
+| `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `/proj/granite-build/g4os/sage2/enroot-cache` | Shared squashfs cache for task images (`ghcr.io/scaleapi/swe-bench_pro-v2`, ~1 GB each compressed). |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
@@ -50,12 +51,23 @@ task on an empty patch).
 
 ## Output
 
-`sage2_results` (dataset): the `results.json` file. Declare it on the target:
+`sage2_results` (dataset): the `results.json` file (phase `all` or `score`).
+`sage2_generation` (dataset): the `generation.json` file (phase `generate`). A split run
+is two targets on the same `output_dir`: the score target binds the generate target's
+output, so it runs after it:
 
 ```yaml
-outputs:
-  sage2_results:
-    uri: "env://{{ binding.path }}"
+<bench>-generate:            # GPU
+  outputs:
+    sage2_generation:
+      uri: "env://{{ binding.path }}"
+<bench>:                     # CPU only, phase: score
+  inputs:
+    generation:
+      binding: <bench>-generate.sage2_generation
+  outputs:
+    sage2_results:
+      uri: "env://{{ binding.path }}"
 ```
 
 Per-instance trajectories, patches and test logs are kept next to it under

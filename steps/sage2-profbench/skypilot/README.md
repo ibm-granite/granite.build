@@ -45,6 +45,7 @@ Judge calls go through sage2-evals' spend meter: with `SAGE2_SPEND_LEDGER` and
 | `workers` | `16` | Concurrent report generations. |
 | `dataset` / `dataset_revision` | `""` | Override the dataset pinned in sage2-evals (`nvidia/ProfBench` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value`: `judge_model`, `judge_base_url`, `judge_api_key_env`, `judge_workers` (16), `version` (`lite`/`full`/`debug`), `samples` (cap per task), `temperature`, `top_p`, `max_tokens` (64000), `responses`. |
+| `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `/proj/granite-build/g4os/sage2/enroot-cache` | Unused (no sandboxes); shared step contract. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
@@ -60,12 +61,23 @@ labels (upstream's judge-quality metric).
 
 ## Output
 
-`sage2_results` (dataset): the `results.json` file. Declare it on the target:
+`sage2_results` (dataset): the `results.json` file (phase `all` or `score`).
+`sage2_generation` (dataset): the `generation.json` file (phase `generate`). A split run
+is two targets on the same `output_dir`: the score target binds the generate target's
+output, so it runs after it:
 
 ```yaml
-outputs:
-  sage2_results:
-    uri: "env://{{ binding.path }}"
+<bench>-generate:            # GPU
+  outputs:
+    sage2_generation:
+      uri: "env://{{ binding.path }}"
+<bench>:                     # CPU only, phase: score
+  inputs:
+    generation:
+      binding: <bench>-generate.sage2_generation
+  outputs:
+    sage2_results:
+      uri: "env://{{ binding.path }}"
 ```
 
 Per-sample reports and judge ratings are kept next to it under

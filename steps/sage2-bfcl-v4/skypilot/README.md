@@ -33,6 +33,7 @@ steps:
 | `workers` | `8` | Concurrent test entries (BFCL `--num-threads`). |
 | `dataset` / `dataset_revision` | `""` | Unused: the data ships inside the pinned bfcl-eval package. |
 | `options` | `""` | Space-separated `key=value` options: `categories` (comma-separated BFCL categories or groups, default `all_scoring`), `temperature`, `top_p`, `max_tokens` (default: the checkpoint's generation_config), `search_mcp_url`, `include_input_log`. |
+| `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `/proj/granite-build/g4os/sage2/enroot-cache` | Unused by this benchmark. |
 | `hf_home` | `""` | Overrides `HF_HOME`. The memory_vector category downloads `all-MiniLM-L6-v2` into it. |
@@ -43,12 +44,23 @@ the model fetches, and Hugging Face.
 
 ## Output
 
-`sage2_results` (dataset): the `results.json` file. Declare it on the target:
+`sage2_results` (dataset): the `results.json` file (phase `all` or `score`).
+`sage2_generation` (dataset): the `generation.json` file (phase `generate`). A split run
+is two targets on the same `output_dir`: the score target binds the generate target's
+output, so it runs after it:
 
 ```yaml
-outputs:
-  sage2_results:
-    uri: "env://{{ binding.path }}"
+<bench>-generate:            # GPU
+  outputs:
+    sage2_generation:
+      uri: "env://{{ binding.path }}"
+<bench>:                     # CPU only, phase: score
+  inputs:
+    generation:
+      binding: <bench>-generate.sage2_generation
+  outputs:
+    sage2_results:
+      uri: "env://{{ binding.path }}"
 ```
 
 BFCL's own result and score files are kept next to it under `output/bfcl/`, with

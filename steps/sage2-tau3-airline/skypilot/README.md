@@ -27,6 +27,7 @@ steps:
 | `workers` | `16` | Concurrent simulations. |
 | `dataset` / `dataset_revision` | `""` | Override the task data (default: `data/tau2` of the pinned tau2-bench commit, baked into the image). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `user_model`, `user_base_url`, `user_api_key_env`, `user_reasoning_effort`, `judge_*` (same), `temperature`, `top_p`, `max_tokens`, `enable_thinking`, `max_steps`, `max_errors`, `tasks` (regex), `task_split`, `retrieval_config`, `agent=gold`. |
+| `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `""` | Unused (no sandboxes); kept for the shared sage2-* contract. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
@@ -47,12 +48,23 @@ and the grading on a new cluster.
 
 ## Output
 
-`sage2_results` (dataset): the `results.json` file. Declare it on the target:
+`sage2_results` (dataset): the `results.json` file (phase `all` or `score`).
+`sage2_generation` (dataset): the `generation.json` file (phase `generate`). A split run
+is two targets on the same `output_dir`: the score target binds the generate target's
+output, so it runs after it:
 
 ```yaml
-outputs:
-  sage2_results:
-    uri: "env://{{ binding.path }}"
+<bench>-generate:            # GPU
+  outputs:
+    sage2_generation:
+      uri: "env://{{ binding.path }}"
+<bench>:                     # CPU only, phase: score
+  inputs:
+    generation:
+      binding: <bench>-generate.sage2_generation
+  outputs:
+    sage2_results:
+      uri: "env://{{ binding.path }}"
 ```
 
 Per-simulation records, with the full harness trajectory, are kept next to it under
