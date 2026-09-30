@@ -834,6 +834,155 @@ class TestTier3Fallback:
 
 
 # --------------------------------------------------------------------------- #
+# Nested (multi-segment) step identity — steps/<a>/<b> addressed as
+# space://steps/<a>/<b> across every tier
+# --------------------------------------------------------------------------- #
+
+
+class TestNestedStepIdentity:
+    """A step whose dir is nested more than one level under a ``steps/`` ancestor
+    (e.g. ``steps/distill/foo``) is addressable as ``space://steps/distill/foo``.
+
+    The step name is the longest ``steps/``-relative prefix of the URI suffix
+    whose directory holds a ``step.yaml``; the remainder is a contained
+    sub-asset.  Name selection is by ``step.yaml`` existence and is orthogonal
+    to the env gate, so identity is deterministic.
+    """
+
+    def test_space_root_nested_step(self, tmp_path):
+        """Tier 1a: a nested step the space itself ships resolves off base_uris[0]."""
+        space_root = tmp_path / "space"
+        nested = _write_step(space_root / "steps" / "distill" / "foo")
+        env_dir = tmp_path / "assets" / "skypilot" / "slurm"
+        env_dir.mkdir(parents=True)
+        _set_bases(space_root, tmp_path / "assets")
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_ancestor_walk_nested_step(self, tmp_path):
+        """Tier 1b: a nested step co-located with the env family resolves via the
+        ancestor-walk."""
+        base = tmp_path / "assets"
+        nested = _write_step(base / "skypilot" / "steps" / "distill" / "foo")
+        env_dir = base / "skypilot" / "kubernetes"
+        env_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_class_match_nested_step(self, tmp_path):
+        """Tier 2: a nested step under a ``steps/`` ancestor is matched by its
+        ``steps/``-relative path (``distill/foo``), not a bare leaf dir name."""
+        base = tmp_path / "base"
+        nested = _write_step(
+            base / "k8s" / "steps" / "distill" / "foo", env_classes=["K8s"]
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("K8s"):
+            resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_fallback_nested_step(self, tmp_path):
+        """Tier 3: with no active env, a nested step resolves via the plain
+        base_uris fallback."""
+        base = tmp_path / "base"
+        nested = _write_step(base / "steps" / "distill" / "foo")
+        _set_bases(base)
+
+        resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_both_exist_longest_prefix_wins(self, tmp_path):
+        """Both ``steps/distill/step.yaml`` and ``steps/distill/foo/step.yaml``
+        exist: ``space://steps/distill/foo`` binds to the NESTED step, not
+        'step distill + sub-asset foo'.
+
+        The two steps are scoped to different env classes so the choice is
+        observable through the env gate: the URI resolves only because the
+        *nested* step's ``step.yaml`` (Skypilot) is the one consulted.
+        """
+        base = tmp_path / "base"
+        _write_step(base / "steps" / "distill", env_classes=["Bash"])
+        nested = _write_step(
+            base / "steps" / "distill" / "foo", env_classes=["Skypilot"]
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_nested_step_subasset(self, tmp_path):
+        """A sub-asset of a nested step resolves against the nested step dir:
+        ``space://steps/distill/foo/helm-charts`` → step ``distill/foo`` + rest."""
+        base = tmp_path / "base"
+        step_dir = _write_step(base / "steps" / "distill" / "foo")
+        sub = step_dir / "helm-charts"
+        sub.mkdir()
+        _set_bases(base)
+
+        resolved = _resolve("space://steps/distill/foo/helm-charts")
+
+        assert _resolved_dir(resolved).samefile(sub)
+
+    def test_nested_step_rest_traversal_rejected(self, tmp_path):
+        """A ``<rest>`` escaping a nested step dir (``../../../secret``) is still
+        rejected by the containment guard."""
+        base = tmp_path / "base"
+        _write_step(base / "steps" / "distill" / "foo")
+        (base / "secret").write_text("password\n")  # real file, outside step dir
+        _set_bases(base)
+
+        with pytest.raises(ValueError, match="Unresolvable space uri"):
+            _resolve("space://steps/distill/foo/../../../secret")
+
+    def test_subasset_not_treated_as_nested_step(self, tmp_path):
+        """When no ``step.yaml`` exists at the longer prefix, resolution is
+        unchanged: ``space://steps/digit/helm-charts`` → step ``digit`` + the
+        ``helm-charts`` sub-asset (regression pin for single-segment steps)."""
+        base = tmp_path / "base"
+        step_dir = _write_step(base / "steps" / "digit")
+        sub = step_dir / "helm-charts"  # plain sub-asset dir, NO step.yaml
+        sub.mkdir()
+        _set_bases(base)
+
+        resolved = _resolve("space://steps/digit/helm-charts")
+
+        assert _resolved_dir(resolved).samefile(sub)
+
+    def test_env_excluded_nested_not_demoted_to_outer(self, tmp_path):
+        """A nested step present but env-excluded must NOT silently demote to
+        'outer step + sub-asset'.
+
+        Name selection is by ``step.yaml`` existence, not the env gate: with the
+        nested ``distill/foo`` scoped to another class (Bash) and a universal
+        outer ``distill``, ``space://steps/distill/foo`` is Unresolvable for
+        Skypilot — it does not fall back to resolving ``foo`` as a sub-asset of
+        the universal ``distill``.
+        """
+        base = tmp_path / "base"
+        _write_step(base / "steps" / "distill")  # universal outer step
+        _write_step(
+            base / "steps" / "distill" / "foo", env_classes=["Bash"]
+        )  # nested, excludes Skypilot
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/distill/foo")
+
+
+# --------------------------------------------------------------------------- #
 # Git base_uris — resolution off the reused local clone (no re-clone)
 # --------------------------------------------------------------------------- #
 
@@ -870,7 +1019,7 @@ class TestGitBaseUri:
         monkeypatch.setattr(
             SpaceURI, "_uri_to_local_path", staticmethod(lambda _: None)
         )
-        assert SpaceURI._fallback_steps_ok(_GIT_BASE, ("digit", ""))
+        assert SpaceURI._fallback_steps_ok(_GIT_BASE, "digit")
 
     def test_git_fallback_resolves_step(self, tmp_path, monkeypatch):
         """`space://steps/digit` resolves against a git base via the reused
