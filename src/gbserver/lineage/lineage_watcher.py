@@ -96,29 +96,14 @@ class LineageWatcher:
     # unbounded retry would pin it forever.
     _MAX_RECORD_ATTEMPTS = 3
 
-    def __init__(
-        self,
-        monitoring_interval: float = 30.0,
-        store: Optional[ILineageStore] = None,
-        checkpoint_key: str = LINEAGE_WATCHER_CHECKPOINT_KEY,
-        dropped_key: str = LINEAGE_WATCHER_DROPPED_KEY,
-    ) -> None:
+    def __init__(self, monitoring_interval: float = 30.0) -> None:
         """Initialize the LineageWatcher.
 
         Args:
             monitoring_interval: Sleep duration between reconciliation scans
                 (seconds).
-            store: the sink to record into. Defaults to the configured lineage
-                store; the lineage indexer passes the index sink explicitly.
-            checkpoint_key: ``gb_kv_pairs`` key of the checkpoint. A second
-                watcher over a different sink needs its own, or the two would
-                advance one shared mark past lineage only one of them recorded.
-            dropped_key: ``gb_kv_pairs`` key of the drop set, for the same reason.
         """
         self.monitoring_interval = monitoring_interval
-        self.checkpoint_key = checkpoint_key
-        self.dropped_key = dropped_key
-        self._configured_store = store
         self.stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
         self._store: Optional[ILineageStore] = None
@@ -165,7 +150,7 @@ class LineageWatcher:
             logger.error("lineage watcher thread is already running")
             return
 
-        self._store = self._configured_store or get_lineage_store()
+        self._store = get_lineage_store()
         storage = get_admin_storage()
         # Load the durable drop set up front so a target already given up on stays
         # skipped from the first scan. _reconcile re-reads it every scan too; this
@@ -214,12 +199,12 @@ class LineageWatcher:
         which is why the value goes in the log while it still exists.
         """
         try:
-            value = storage.kv_pair_storage.get_value(self.dropped_key)
+            value = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_DROPPED_KEY)
         except Exception:
             logger.exception(
                 "Failed to read the lineage drop set from %s; keeping the current "
                 "in-memory set (%d target(s)) for this scan.",
-                self.dropped_key,
+                LINEAGE_WATCHER_DROPPED_KEY,
                 len(self._dropped),
             )
             return
@@ -243,7 +228,7 @@ class LineageWatcher:
             logger.error(
                 "Lineage drop set under %s is unusable (%r); keeping the current "
                 "in-memory set (%d target(s)). Expected {'target_ids': [...]}.",
-                self.dropped_key,
+                LINEAGE_WATCHER_DROPPED_KEY,
                 value,
                 len(self._dropped),
             )
@@ -267,7 +252,7 @@ class LineageWatcher:
         """
         try:
             storage.kv_pair_storage.set_value(
-                self.dropped_key, {"target_ids": sorted(self._dropped)}
+                LINEAGE_WATCHER_DROPPED_KEY, {"target_ids": sorted(self._dropped)}
             )
         except Exception:
             self._dropped_unpersisted |= self._dropped
@@ -275,7 +260,7 @@ class LineageWatcher:
                 "Failed to persist the lineage drop set to %s; the in-memory set "
                 "still applies for this process, but the drop decision will not "
                 "survive a restart.",
-                self.dropped_key,
+                LINEAGE_WATCHER_DROPPED_KEY,
             )
             return
 
@@ -671,12 +656,12 @@ class LineageWatcher:
         for one scan is safe, whereas raising would abort the loop iteration.
         """
         try:
-            value = storage.kv_pair_storage.get_value(self.checkpoint_key)
+            value = storage.kv_pair_storage.get_value(LINEAGE_WATCHER_CHECKPOINT_KEY)
         except Exception:
             logger.exception(
                 "Failed to read the lineage checkpoint from %s; recording nothing "
                 "this scan.",
-                self.checkpoint_key,
+                LINEAGE_WATCHER_CHECKPOINT_KEY,
             )
             return None
 
@@ -685,7 +670,7 @@ class LineageWatcher:
                 logger.info(
                     "No lineage checkpoint under %s; recording nothing until one "
                     "is seeded (see the lineage-watch command's --base-build-id).",
-                    self.checkpoint_key,
+                    LINEAGE_WATCHER_CHECKPOINT_KEY,
                 )
                 self._missing_checkpoint_logged = True
             return None
@@ -721,7 +706,7 @@ class LineageWatcher:
             logger.error(
                 "Lineage checkpoint under %s has no build_id (%s); recording "
                 "nothing this scan.",
-                self.checkpoint_key,
+                LINEAGE_WATCHER_CHECKPOINT_KEY,
                 value,
             )
             return None
@@ -738,7 +723,7 @@ class LineageWatcher:
                 logger.error(
                     "Lineage checkpoint under %s has an unparseable created_time "
                     "(%r): %s. Recording nothing this scan.",
-                    self.checkpoint_key,
+                    LINEAGE_WATCHER_CHECKPOINT_KEY,
                     raw_created,
                     exc,
                 )
@@ -766,7 +751,7 @@ class LineageWatcher:
                 "target-shaped form, but that build has no readable creation "
                 "time now. Recording nothing this scan; re-seed the checkpoint to "
                 "continue.",
-                self.checkpoint_key,
+                LINEAGE_WATCHER_CHECKPOINT_KEY,
                 build_id,
             )
             return None
@@ -774,7 +759,7 @@ class LineageWatcher:
         logger.info(
             "Migrating the lineage checkpoint under %s from the target-shaped "
             "form to the build-shaped one: build %s, created %s.",
-            self.checkpoint_key,
+            LINEAGE_WATCHER_CHECKPOINT_KEY,
             build_id,
             created,
         )
@@ -812,7 +797,7 @@ class LineageWatcher:
             "version": LINEAGE_WATCHER_CHECKPOINT_VERSION,
         }
         try:
-            storage.kv_pair_storage.set_value(self.checkpoint_key, payload)
+            storage.kv_pair_storage.set_value(LINEAGE_WATCHER_CHECKPOINT_KEY, payload)
         except Exception:
             logger.exception(
                 "Failed to persist the lineage checkpoint at build %s; it will be "

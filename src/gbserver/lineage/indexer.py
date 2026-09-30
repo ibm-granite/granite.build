@@ -16,29 +16,36 @@
 
 """The lineage indexer: fills ``gb_lineage_index`` incrementally from one source.
 
-The sink is always the index (``DBLineageStore``). What varies is where new
-lineage is read from, chosen by how the server was started:
+The index exists to navigate and rebuild the graph from any artifact URI, so how
+it is filled does not depend on builds. Both sources walk **jobs** in timestamp
+order and share one checkpoint: a single ``timestamp``, the instant of the last
+job indexed. That is all incremental needs. A scan reads from it *inclusive*, so
+jobs sharing the boundary instant are re-read rather than lost, and re-reading
+costs a rejected insert, never a duplicate, because the sink is unique by
+``job_id`` and ``(job_id, input, output)``. Identity lives in the sink, not in the
+checkpoint.
+
+The sink is always the index (``DBLineageStore``). The source follows how the
+server was started:
 
 ``admin_db`` (standalone)
-    Reads ``gb_build``/``gb_targets`` directly. This is the ``LineageWatcher``
-    reconciliation loop pointed at the index sink, under its own checkpoint keys
-    so it never shares a mark with a ``lineage-watch`` recording elsewhere.
+    Successful ``gb_targets`` rows, ordered by ``finished_at``. A target run *is*
+    a job there (``job_id = targetrun.uuid``). This is not ``LineageWatcher``:
+    that one walks builds for ``lineage-watch`` and is left alone.
 
 ``lineage_store`` (every other deployment)
-    Reads the configured lineage store back out. For W&B that is the project's
-    runs, paged by ``createdAt`` from a checkpoint. When the configured store *is*
-    the index (``GBSERVER_LINEAGE_PROVIDER=db``) source and sink are the same
-    table, so there is nothing to copy: the indexer says so and does nothing,
-    rather than re-writing every row onto itself. ``none`` has nothing to read and
-    is a no-op for the same reason.
+    The configured lineage store read back out. For W&B that is the project's
+    runs, ordered by ``createdAt``. When the configured store *is* the index
+    (``GBSERVER_LINEAGE_PROVIDER=db``) source and sink are the same table, so the
+    indexer says so and does nothing; ``none`` has nothing to read.
 
-Both modes are idempotent at the sink -- jobs are unique by ``job_id`` and rows by
-``(job_id, input, output)`` -- so the overlap each scan re-reads on purpose costs a
-rejected insert, never a duplicate.
+No checkpoint means "from the beginning". ``--base-job-id`` seeds one at a job
+(``from-latest``, ``all`` or a ``job_id``), only when none exists yet.
 """
 
 import threading
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, List, Optional
 
 from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.jobstats import (
@@ -46,8 +53,18 @@ from gbserver.lineage.jobstats import (
     LINEAGE_PROVIDER_NONE,
     _resolve_lineage_provider,
 )
-from gbserver.lineage.lineage_watcher import LineageWatcher
+from gbserver.lineage.lineage_reconciler import (
+    _SCAN_PAGE_SIZE,
+    _successful_targets_page,
+    as_aware,
+)
+from gbserver.lineage.lineage_seeding import (
+    SEED_ALL,
+    SEED_FROM_LATEST,
+    LineageSeedError,
+)
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
+from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -55,20 +72,23 @@ logger = get_logger(__name__)
 INDEXER_SOURCE_ADMIN_DB = "admin_db"
 INDEXER_SOURCE_LINEAGE_STORE = "lineage_store"
 
-# Separate from the lineage-watch keys: in standard mode lineage-watch records to
-# W&B from gb_build while this indexer may read gb_build too, and one shared mark
-# would let either advance past lineage only the other had recorded.
-INDEXER_CHECKPOINT_KEY = "lineage_index_latest_build_id"
-INDEXER_DROPPED_KEY = "lineage_index_dropped_target_ids"
-INDEXER_WANDB_CHECKPOINT_KEY = "lineage_index_wandb_created_at"
-INDEXER_WANDB_CHECKPOINT_VERSION = 1
+# One key for both sources: the source is fixed by the startup mode, and the
+# value has the same shape either way. Separate from every lineage-watch key.
+INDEXER_CHECKPOINT_KEY = "lineage_index_checkpoint"
+INDEXER_CHECKPOINT_VERSION = 1
 
-# Attempts at one W&B run before it is skipped. The scan stops at a failing run
-# rather than stepping past it, so without a bound one unreadable run would pin
+# Attempts at one job before it is skipped. The scan stops at a failing job
+# rather than stepping past it, so without a bound one unreadable job would pin
 # the checkpoint forever.
-_MAX_RUN_ATTEMPTS = 5
+_MAX_JOB_ATTEMPTS = 5
 
 _WANDB_PAGE_SIZE = 200
+
+# How far before the checkpoint the gb_targets scan re-reads. finished_at is
+# stamped before the row commits, so a target can land with a timestamp just
+# behind one already indexed; the overlap catches it, and already-indexed jobs
+# are skipped by job_id.
+_TARGET_LOOKBACK = timedelta(minutes=5)
 
 # Config keys WandBLineageService.emit_event copies out of job_details; read back
 # here into the same place. Duplicated rather than imported so this module does
@@ -90,9 +110,9 @@ _PASSTHROUGH_FACET_KEYS = ("job_input_params", "execution_stats")
 def resolve_indexer_source() -> str:
     """Pick the source from how the server was started.
 
-    Standalone reads ``gb_build`` directly (``admin_db``); every other deployment
-    reads the configured lineage store (``lineage_store``). Deliberately not
-    configurable: the mode already says which one is right.
+    Standalone reads ``gb_targets`` directly (``admin_db``); every other
+    deployment reads the configured lineage store (``lineage_store``).
+    Deliberately not configurable: the mode already says which one is right.
     """
     from gbcommon.types.gbenvconfig import is_standalone
 
@@ -108,17 +128,12 @@ def create_indexer(
 ):
     """Build the indexer loop for ``source``, or ``None`` when it has nothing to do.
 
-    The returned object has the watcher's lifecycle: ``start()``, ``stop()`` and a
-    ``stop_event`` to block on.
+    The returned object has ``start()``, ``stop()``, a ``stop_event`` to block on,
+    and ``seed_if_absent()``.
     """
     sink = sink or DBLineageStore()
     if source == INDEXER_SOURCE_ADMIN_DB:
-        return LineageWatcher(
-            monitoring_interval=monitoring_interval,
-            store=sink,
-            checkpoint_key=INDEXER_CHECKPOINT_KEY,
-            dropped_key=INDEXER_DROPPED_KEY,
-        )
+        return TargetLineageIndexer(monitoring_interval=monitoring_interval, sink=sink)
 
     provider = _resolve_lineage_provider()
     if provider == LINEAGE_PROVIDER_DB:
@@ -135,6 +150,272 @@ def create_indexer(
         )
         return None
     return WandBLineageIndexer(monitoring_interval=monitoring_interval, sink=sink)
+
+
+def _parse_ts(value: str) -> datetime:
+    """Parse a checkpoint timestamp; naive is read as local, like ``as_aware``."""
+    return as_aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
+
+
+class JobLineageIndexer:
+    """Walks one source's jobs in timestamp order into the index.
+
+    Subclasses say how to list jobs from a timestamp and how to index one; the
+    checkpoint, seeding, retry bound and lifecycle live here, so both sources
+    advance the same way.
+
+    **The checkpoint** is written after each job, so a crash mid-scan resumes at
+    the job it was on. It never moves backwards: a job re-read by an overlap is
+    indexed (a no-op if already there) but does not rewind the mark.
+
+    **A pending job stops the scan.** A source may list a job whose lineage is
+    not complete yet; advancing past it would skip whatever lands later.
+    """
+
+    _thread_name = "lineage-indexer"
+
+    def __init__(
+        self,
+        monitoring_interval: float = 30.0,
+        sink: Optional[DBLineageStore] = None,
+    ) -> None:
+        self.monitoring_interval = monitoring_interval
+        self.stop_event = threading.Event()
+        self.worker_thread: Optional[threading.Thread] = None
+        self._sink = sink or DBLineageStore()
+        self._failed_attempts: Dict[str, int] = {}
+
+    # -- Source (per subclass) -----------------------------------------------
+
+    def _jobs_since(
+        self, storage: SingletonAdminStorage, timestamp: Optional[str]
+    ) -> Iterable[Any]:
+        """Jobs at or after ``timestamp`` (all when ``None``), oldest first."""
+        raise NotImplementedError
+
+    def _timestamp(self, job: Any) -> str:
+        """The instant a job is ordered by, as the checkpoint stores it."""
+        raise NotImplementedError
+
+    def _item_id(self, job: Any) -> str:
+        """The source item's id, for logs and counting failed attempts."""
+        raise NotImplementedError
+
+    def _is_pending(self, job: Any) -> bool:
+        return False
+
+    def _index(self, storage: SingletonAdminStorage, job: Any) -> bool:
+        """Index one job; return whether it was written (vs. nothing to write)."""
+        raise NotImplementedError
+
+    def _latest_job(self, storage: SingletonAdminStorage) -> Optional[Any]:
+        raise NotImplementedError
+
+    def _find_job(self, storage: SingletonAdminStorage, job_id: str) -> Optional[Any]:
+        raise NotImplementedError
+
+    # -- Checkpoint ----------------------------------------------------------
+
+    @staticmethod
+    def read_checkpoint(storage: SingletonAdminStorage) -> Optional[dict]:
+        value = storage.kv_pair_storage.get_value(INDEXER_CHECKPOINT_KEY)
+        if not value or not value.get("timestamp"):
+            return None
+        return value
+
+    def _write_checkpoint(self, storage: SingletonAdminStorage, job: Any) -> None:
+        storage.kv_pair_storage.set_value(
+            INDEXER_CHECKPOINT_KEY,
+            {"timestamp": self._timestamp(job), "version": INDEXER_CHECKPOINT_VERSION},
+        )
+
+    def seed_if_absent(self, storage: SingletonAdminStorage, spec: str) -> bool:
+        """Place the checkpoint at a job, only when there is none yet.
+
+        ``spec`` is ``from-latest``, ``all``, or a ``job_id``. ``all`` writes
+        nothing: no checkpoint already means "from the beginning". Seed-if-absent
+        so the flag is safe to leave in a pod spec. Returns True if written.
+
+        Raises:
+            LineageSeedError: When the anchor resolves to no job.
+        """
+        existing = self.read_checkpoint(storage)
+        if existing is not None:
+            logger.info(
+                "Lineage index checkpoint %s already exists (%s); ignoring the "
+                "requested seed (%s).",
+                INDEXER_CHECKPOINT_KEY,
+                existing,
+                spec,
+            )
+            return False
+        if spec == SEED_ALL:
+            return False
+
+        if spec == SEED_FROM_LATEST:
+            job = self._latest_job(storage)
+            scope = "the source"
+        else:
+            job = self._find_job(storage, spec)
+            scope = f"job_id {spec}"
+        if job is None:
+            raise LineageSeedError(
+                f"No job found for {scope}; nothing to anchor a checkpoint at."
+            )
+        self._write_checkpoint(storage, job)
+        logger.info(
+            "Seeded lineage index checkpoint %s at %s (job %s).",
+            INDEXER_CHECKPOINT_KEY,
+            self._timestamp(job),
+            self._item_id(job),
+        )
+        return True
+
+    # -- Scanning ------------------------------------------------------------
+
+    def scan_once(self, storage: Optional[SingletonAdminStorage] = None) -> int:
+        """Index every job since the checkpoint; return how many were written.
+
+        A job that fails is retried on the next scan, up to ``_MAX_JOB_ATTEMPTS``
+        times, and then skipped with an error log.
+        """
+        storage = storage or get_admin_storage()
+        checkpoint = self.read_checkpoint(storage)
+        mark = _parse_ts(checkpoint["timestamp"]) if checkpoint else None
+        indexed = 0
+        for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"]):
+            if self.stop_event.is_set():
+                break
+            item_id = self._item_id(job)
+            if self._is_pending(job):
+                logger.debug("Job %s still pending; stopping the scan", item_id)
+                break
+            try:
+                if self._index(storage, job):
+                    indexed += 1
+            except Exception:
+                attempts = self._failed_attempts.get(item_id, 0) + 1
+                self._failed_attempts[item_id] = attempts
+                if attempts < _MAX_JOB_ATTEMPTS:
+                    logger.exception(
+                        "Failed to index job %s (attempt %d/%d); retrying next scan.",
+                        item_id,
+                        attempts,
+                        _MAX_JOB_ATTEMPTS,
+                    )
+                    break
+                logger.error(
+                    "Giving up on job %s after %d attempts; its lineage is NOT in "
+                    "the index.",
+                    item_id,
+                    attempts,
+                )
+            self._failed_attempts.pop(item_id, None)
+            job_ts = _parse_ts(self._timestamp(job))
+            if mark is None or job_ts >= mark:
+                self._write_checkpoint(storage, job)
+                mark = job_ts
+        return indexed
+
+    # -- Lifecycle -----------------------------------------------------------
+
+    def start(self) -> None:
+        if self.worker_thread is not None and self.worker_thread.is_alive():
+            logger.error("lineage indexer thread is already running")
+            return
+        self.worker_thread = threading.Thread(
+            target=self._run, name=self._thread_name, daemon=True
+        )
+        self.worker_thread.start()
+        logger.info("%s started", type(self).__name__)
+
+    def _run(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                count = self.scan_once()
+                if count:
+                    logger.info("Indexed %d lineage job(s)", count)
+            except Exception:
+                logger.exception("Lineage index scan failed; retrying next scan")
+            self.stop_event.wait(self.monitoring_interval)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self.stop_event.set()
+        if self.worker_thread is not None:
+            self.worker_thread.join(timeout=timeout)
+
+
+class TargetLineageIndexer(JobLineageIndexer):
+    """Standalone source: successful ``gb_targets`` rows by ``finished_at``.
+
+    Builds play no part in the walk; a target's ``build_id`` is only used to load
+    the target's own lineage. Targets with no ``finished_at`` are not finished
+    and are not listed, so there is nothing pending to stop at. Targets with no
+    artifacts at all have no edge to index and are passed over (the checkpoint
+    still advances past them).
+    """
+
+    def _timestamp(self, job: StoredTargetRun) -> str:
+        return as_aware(job.finished_at).isoformat()
+
+    def _item_id(self, job: StoredTargetRun) -> str:
+        return job.uuid
+
+    def _jobs_since(
+        self, storage: SingletonAdminStorage, timestamp: Optional[str]
+    ) -> List[StoredTargetRun]:
+        cutoff = _parse_ts(timestamp) - _TARGET_LOOKBACK if timestamp else None
+        selected: List[StoredTargetRun] = []
+        page_index = 0
+        while True:
+            page = _successful_targets_page(storage, page_index)
+            if not page:
+                break
+            reached_cutoff = False
+            for target in page:
+                # Unfinished rows are skipped, never a stop: NULLs can interleave.
+                if target.finished_at is None:
+                    continue
+                if cutoff is not None and as_aware(target.finished_at) < cutoff:
+                    reached_cutoff = True
+                    continue
+                selected.append(target)
+            if reached_cutoff or len(page) < _SCAN_PAGE_SIZE:
+                break
+            page_index += 1
+        # The DB sort can disagree with instant order (SQLite stores wall-clock
+        # text), so order by the aware instant here; uuid only makes ties stable.
+        selected.sort(key=lambda t: (as_aware(t.finished_at), t.uuid))
+        return selected
+
+    def _index(self, storage: SingletonAdminStorage, job: StoredTargetRun) -> bool:
+        if not job.input_artifacts and not any(job.output_artifacts.values()):
+            return False
+        if self._sink.row_storage.has_rows_for_job(job.uuid):
+            return False
+        self._sink.add_jobstats_for_build_target(
+            storage, build_id=job.build_id, target_id=job.uuid
+        )
+        return True
+
+    def _latest_job(self, storage: SingletonAdminStorage) -> Optional[StoredTargetRun]:
+        page_index = 0
+        while True:
+            page = _successful_targets_page(storage, page_index)
+            if not page:
+                return None
+            finished = [t for t in page if t.finished_at is not None]
+            if finished:
+                return max(finished, key=lambda t: as_aware(t.finished_at))
+            page_index += 1
+
+    def _find_job(
+        self, storage: SingletonAdminStorage, job_id: str
+    ) -> Optional[StoredTargetRun]:
+        found = storage.target_storage.get_by_uuid(job_id)
+        if not isinstance(found, StoredTargetRun) or found.finished_at is None:
+            return None
+        return found
 
 
 def _tags_of(run: Any) -> Dict[str, str]:
@@ -193,23 +474,20 @@ def wandb_run_to_job(run: Any) -> Optional[dict]:
     }
 
 
-class WandBLineageIndexer:
-    """Copies new W&B lineage runs into the index, in ``createdAt`` order.
+class WandBLineageIndexer(JobLineageIndexer):
+    """Lineage-store source: W&B lineage runs by ``createdAt``.
 
-    **The checkpoint** is the ``createdAt`` of the last run indexed, and a scan
-    reads from it *inclusive*. Re-reading that one run each scan is the price of
-    never losing a run that shares its timestamp; the unique indexes make it free.
-
-    **A running run stops the scan.** ``emit_event`` logs artifacts before it
-    finishes the run, so a running run may not have all its outputs yet. Advancing
-    past it would skip whatever lands later; stopping keeps it in range until it
-    finishes. Runs are finished within one event, so this holds for seconds.
+    **A running run is pending.** ``emit_event`` logs artifacts before it finishes
+    the run, so a running run may not have all its outputs yet. Runs are finished
+    within one event, so this holds for seconds.
 
     **Several runs, one job.** The W&B sink writes one run per output artifact, all
-    carrying the target's ``job_id``. Each is indexed on its own; they add their
-    own rows under the shared job, which is why dedup here is by the sink's unique
+    carrying the target's ``job_id``. Each is indexed on its own and adds its own
+    rows under the shared job, which is why dedup here is by the sink's unique
     indexes and not by "does this job already have rows".
     """
+
+    _thread_name = "lineage-indexer-wandb"
 
     def __init__(
         self,
@@ -217,14 +495,8 @@ class WandBLineageIndexer:
         sink: Optional[DBLineageStore] = None,
         api: Any = None,
     ) -> None:
-        self.monitoring_interval = monitoring_interval
-        self.stop_event = threading.Event()
-        self.worker_thread: Optional[threading.Thread] = None
-        self._sink = sink or DBLineageStore()
+        super().__init__(monitoring_interval=monitoring_interval, sink=sink)
         self._api = api
-        self._failed_attempts: Dict[str, int] = {}
-
-    # -- W&B access ----------------------------------------------------------
 
     def _wandb_api(self) -> Any:
         if self._api is None:
@@ -250,8 +522,20 @@ class WandBLineageIndexer:
             return f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}"
         return GBSERVER_WANDB_PROJECT
 
-    def _runs_since(self, created_at: Optional[str]) -> List[Any]:
-        filters = {"createdAt": {"$gte": created_at}} if created_at else {}
+    def _timestamp(self, job: Any) -> str:
+        return job.created_at
+
+    def _item_id(self, job: Any) -> str:
+        # Per run: the runs of one job share its job_id but fail independently.
+        return job.id
+
+    def _is_pending(self, job: Any) -> bool:
+        return job.state == "running"
+
+    def _jobs_since(
+        self, storage: SingletonAdminStorage, timestamp: Optional[str]
+    ) -> Iterable[Any]:
+        filters = {"createdAt": {"$gte": timestamp}} if timestamp else {}
         return self._wandb_api().runs(
             self._project_path(),
             filters=filters,
@@ -259,96 +543,25 @@ class WandBLineageIndexer:
             per_page=_WANDB_PAGE_SIZE,
         )
 
-    # -- Checkpoint ----------------------------------------------------------
-
-    @staticmethod
-    def _read_checkpoint(storage: SingletonAdminStorage) -> Optional[str]:
-        value = storage.kv_pair_storage.get_value(INDEXER_WANDB_CHECKPOINT_KEY)
-        return (value or {}).get("created_at") or None
-
-    @staticmethod
-    def _write_checkpoint(storage: SingletonAdminStorage, run: Any) -> None:
-        storage.kv_pair_storage.set_value(
-            INDEXER_WANDB_CHECKPOINT_KEY,
-            {
-                "created_at": run.created_at,
-                "run_id": run.id,
-                "version": INDEXER_WANDB_CHECKPOINT_VERSION,
-            },
+    def _index(self, storage: SingletonAdminStorage, job: Any) -> bool:
+        entry = wandb_run_to_job(job)
+        if entry is None:
+            return False
+        tags = _tags_of(job)
+        self._sink.write_job(
+            entry,
+            build_id=tags.get("build_id", ""),
+            target_run_uuid=tags.get("target_id", ""),
         )
+        return True
 
-    # -- Scanning ------------------------------------------------------------
+    def _first_run(self, **kwargs: Any) -> Optional[Any]:
+        return next(iter(self._wandb_api().runs(self._project_path(), **kwargs)), None)
 
-    def scan_once(self, storage: Optional[SingletonAdminStorage] = None) -> int:
-        """Index every run created since the checkpoint; return how many were indexed.
+    def _latest_job(self, storage: SingletonAdminStorage) -> Optional[Any]:
+        return self._first_run(order="-created_at", per_page=1)
 
-        The checkpoint is written after each run, so a crash mid-scan resumes at
-        the run it was on. A run that fails is retried on the next scan, up to
-        ``_MAX_RUN_ATTEMPTS`` times, and then skipped with an error log.
-        """
-        storage = storage or get_admin_storage()
-        indexed = 0
-        for run in self._runs_since(self._read_checkpoint(storage)):
-            if self.stop_event.is_set():
-                break
-            if run.state == "running":
-                logger.debug("W&B run %s still running; stopping the scan", run.id)
-                break
-            try:
-                job = wandb_run_to_job(run)
-                if job is not None:
-                    tags = _tags_of(run)
-                    self._sink.write_job(
-                        job,
-                        build_id=tags.get("build_id", ""),
-                        target_run_uuid=tags.get("target_id", ""),
-                    )
-                    indexed += 1
-            except Exception:
-                attempts = self._failed_attempts.get(run.id, 0) + 1
-                self._failed_attempts[run.id] = attempts
-                if attempts < _MAX_RUN_ATTEMPTS:
-                    logger.exception(
-                        "Failed to index W&B run %s (attempt %d/%d); retrying next "
-                        "scan.",
-                        run.id,
-                        attempts,
-                        _MAX_RUN_ATTEMPTS,
-                    )
-                    break
-                logger.error(
-                    "Giving up on W&B run %s after %d attempts; its lineage is NOT "
-                    "in the index.",
-                    run.id,
-                    attempts,
-                )
-            self._failed_attempts.pop(run.id, None)
-            self._write_checkpoint(storage, run)
-        return indexed
-
-    # -- Lifecycle (same shape as LineageWatcher) ----------------------------
-
-    def start(self) -> None:
-        if self.worker_thread is not None and self.worker_thread.is_alive():
-            logger.error("lineage indexer thread is already running")
-            return
-        self.worker_thread = threading.Thread(
-            target=self._run, name="lineage-indexer", daemon=True
+    def _find_job(self, storage: SingletonAdminStorage, job_id: str) -> Optional[Any]:
+        return self._first_run(
+            filters={"config.job_id": job_id}, order="+created_at", per_page=1
         )
-        self.worker_thread.start()
-        logger.info("WandBLineageIndexer started")
-
-    def _run(self) -> None:
-        while not self.stop_event.is_set():
-            try:
-                count = self.scan_once()
-                if count:
-                    logger.info("Indexed %d W&B lineage run(s)", count)
-            except Exception:
-                logger.exception("W&B lineage index scan failed; retrying next scan")
-            self.stop_event.wait(self.monitoring_interval)
-
-    def stop(self, timeout: float = 5.0) -> None:
-        self.stop_event.set()
-        if self.worker_thread is not None:
-            self.worker_thread.join(timeout=timeout)

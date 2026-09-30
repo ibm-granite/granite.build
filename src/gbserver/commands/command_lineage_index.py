@@ -16,21 +16,16 @@
 
 """``gbserver lineage-index`` — incrementally fill ``gb_lineage_index``.
 
-Reads new lineage from ``gb_build`` in standalone, or from the configured lineage
-store everywhere else, and writes it to the index. See :mod:`gbserver.lineage.indexer`.
+Walks jobs by ``(timestamp, job_id)`` -- ``gb_targets`` in standalone, the
+configured lineage store everywhere else -- and writes them to the index. See :mod:`gbserver.lineage.indexer`.
 """
 
 import traceback
 
 import click
 
-from gbserver.lineage.indexer import (
-    INDEXER_CHECKPOINT_KEY,
-    INDEXER_SOURCE_ADMIN_DB,
-    create_indexer,
-    resolve_indexer_source,
-)
-from gbserver.lineage.lineage_seeding import LineageSeedError, seed_if_absent
+from gbserver.lineage.indexer import create_indexer, resolve_indexer_source
+from gbserver.lineage.lineage_seeding import LineageSeedError
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
@@ -48,39 +43,33 @@ logger = get_logger(__name__)
     help="Seconds between index scans.",
 )
 @click.option(
-    "--base-build-id",
+    "--base-job-id",
     required=False,
     type=str,
     default=None,
     help=(
-        "Standalone only: seed the indexer checkpoint when absent. 'from-latest', "
-        "'all', or a build id. Never overwrites an existing checkpoint."
+        "Seed the indexer checkpoint when absent: 'from-latest', 'all', or a "
+        "job_id. Never overwrites an existing checkpoint."
     ),
 )
 @pass_environment
-def cli(ctx: CliEnvironment, interval: float, base_build_id: str):
+def cli(ctx: CliEnvironment, interval: float, base_job_id: str):
     """Start the lineage indexer."""
     source = resolve_indexer_source()
-
-    if base_build_id is not None:
-        if source != INDEXER_SOURCE_ADMIN_DB:
-            raise click.ClickException(
-                "--base-build-id only applies in standalone, where the indexer reads "
-                "gb_build."
-            )
-        if not base_build_id.strip():
-            raise click.ClickException(
-                "--base-build-id was given an empty value; pass 'from-latest', "
-                "'all', or a build id."
-            )
-        try:
-            seed_if_absent(
-                get_admin_storage(), base_build_id, key=INDEXER_CHECKPOINT_KEY
-            )
-        except LineageSeedError as exc:
-            raise click.ClickException(str(exc)) from exc
-
     indexer = create_indexer(source, monitoring_interval=interval)
+
+    if base_job_id is not None:
+        if not base_job_id.strip():
+            raise click.ClickException(
+                "--base-job-id was given an empty value; pass 'from-latest', "
+                "'all', or a job_id."
+            )
+        if indexer is not None:
+            try:
+                indexer.seed_if_absent(get_admin_storage(), base_job_id)
+            except LineageSeedError as exc:
+                raise click.ClickException(str(exc)) from exc
+
     if indexer is None:
         return
 
