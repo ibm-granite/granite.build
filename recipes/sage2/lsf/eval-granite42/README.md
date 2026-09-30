@@ -60,7 +60,7 @@ repeat count, and the suite's upstream harness at a pinned commit.
 | Target | Metric | Image | Favored config / notes |
 |---|---|---|---|
 | `swebench-verified` | pass@1[avg-of-3] resolve rate | `swebench` | mini-swe-agent in enroot sandboxes, 8 workers |
-| `swebench-pro` | pass@1[avg-of-3] resolve rate | `swebench` | V2 (642 tasks); `subset=hard` = HARD-51. Deviates from Scale's harness: agent sandbox has network, verifier runs in enroot, an empty patch is scored unresolved without running the verifier |
+| `swebench-pro` | pass@1[avg-of-3] resolve rate | `swebench` | V2 (642 tasks); `subset=hard` = HARD-51. Deviates from Scale's harness: agent sandbox has network, verifier runs in enroot, an empty patch is scored unresolved without running the verifier. Sandboxes share the node's network and resolve `localhost` to 127.0.0.1 only: NodeBB's test server listens on IPv4, and the node's `/etc/hosts` also maps `localhost` to `::1` |
 | `swebench-multilingual` | pass@1[avg-of-3] resolve rate | `swebench` | 300 tasks. Java tests that resolve artifacts at test time fail on the environment without `SAGE2_MAVEN_MIRROR` (mirror URL still open) |
 | `terminal-bench-2.1` | pass@1[avg-of-8] resolve rate | `tbench` | Scored out of 87 of 89: `configure-git-webserver`, `git-multibranch` excluded (they ssh to localhost:22, which on the shared host network is the node's own sshd; `exclude=none` runs them). Oracle also fails `build-pov-ray` (upstream download 403) and `build-cython-ext` (unpinned `planarity` 1.0) |
 | `birdbench` | pass@1 execution match | `bird` | NeMo-Skills protocol, no evidence |

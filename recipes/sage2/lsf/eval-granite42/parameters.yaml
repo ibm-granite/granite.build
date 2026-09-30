@@ -18,9 +18,9 @@ SAGE2_IMAGE_IFBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-ifbench:952082c"
 SAGE2_IMAGE_JUDGED: "icr.io/tir-hew-sage2-evals/sage2-evals-judged:952082c"
 SAGE2_IMAGE_LMEVAL: "icr.io/tir-hew-sage2-evals/sage2-evals-lmeval:949fcb0"
 SAGE2_IMAGE_NEMOSKILLS: "icr.io/tir-hew-sage2-evals/sage2-evals-nemoskills:888fe27"
-SAGE2_IMAGE_SWEBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-swebench:bf1858d"
+SAGE2_IMAGE_SWEBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-swebench:9ad9571"
 SAGE2_IMAGE_TAU: "icr.io/tir-hew-sage2-evals/sage2-evals-tau:952082c"
-SAGE2_IMAGE_TBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-tbench:bf1858d"
+SAGE2_IMAGE_TBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-tbench:9ad9571"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 # Empty = full dataset and each benchmark's own repeat count.
