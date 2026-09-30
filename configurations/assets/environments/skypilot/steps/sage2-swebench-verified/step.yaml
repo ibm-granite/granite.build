@@ -1,0 +1,141 @@
+name: sage2-swebench-verified
+version: 0.1.0
+# Sage2 benchmark: SWE Bench Verified, pass@1[avg-of-3] resolve rate.
+#
+# ONE STEP PER SAGE2 BENCHMARK. Every steps/sage2-*/ template has the same shape and
+# differs only in `name`, the BENCHMARK id passed to sage2-evals, and its defaults;
+# skypilot/test/test_step_template.py holds them to that. Recipes (recipes/sage2/...) choose
+# which benchmarks a model family is scored on.
+#
+# THE CODE LIVES OUTSIDE THIS REPO. The benchmark runtime is the sage2-evals project
+# (github.com/laminair/sage2-evals), shipped as a prebuilt image per benchmark family
+# and pinned below by tag. Nothing is built from this directory, so there is no
+# Dockerfile and common.mk treats it as a non-image step; the image is chosen at run
+# time from sage2_config.image, the byoc way.
+#
+# WHAT RUNS. `sage2-evals run swebench-verified` serves model_path with vLLM inside the
+# job, drives mini-swe-agent against it in one enroot sandbox per SWE-bench instance,
+# grades each patch in a fresh sandbox with the swebench harness, and writes one
+# results.json (schema: sage2_evals/results.py).
+#
+# CUSTOM, not EVAL: gbcommon's StepType has no EVAL member.
+type: custom
+config:
+  sage2_config:
+    # The sage2-evals image for this benchmark family (`make image EXTRA=swebench` in
+    # sage2-evals), pinned by its commit tag; results.json records the versions inside.
+    # Recipes set it once, as the SAGE2_IMAGE_SWEBENCH parameter.
+    image: ""
+    # The checkpoint to score, as a LOCAL PATH (normally a distill-hf-export `hf_model`
+    # or an hfpull binding). Required.
+    model_path: ""
+    # Name the model is served under; empty = basename of model_path.
+    served_model_name: ""
+    # Relative values resolve against $GB_BUILD_WORKDIR.
+    output_dir: "output"
+    # SMOKE KNOB: score only the first N instances (sorted by instance_id, so two smoke
+    # runs are comparable). Empty = the full 500.
+    limit: ""
+    # pass@1[avg-of-k]: independent agent runs per instance. Empty = benchmark default (3).
+    repeats: ""
+    # Instances worked on concurrently (agent sandboxes + requests to vLLM).
+    workers: "8"
+    # Dataset: empty = the upstream dataset and commit pinned in sage2-evals
+    # (SWE-bench/SWE-bench_Verified). A hub id or local path overrides it.
+    dataset: ""
+    dataset_revision: ""
+    # Space-separated key=value benchmark options passed as --option, e.g.
+    # "step_limit=100 temperature=0.6" or "patch=gold" (grade the reference patches:
+    # checks images + sandbox + grading without a model; model_path may be "none").
+    options: ""
+    # vLLM.
+    tensor_parallel_size: "1"
+    gpu_memory_utilization: "0.9"
+    max_model_len: ""
+    # Where SWE-bench instance images are imported to as squashfs. On a shared
+    # filesystem, every job after the first reuses them instead of pulling again.
+    sandbox_cache: "/proj/granite-build/g4os/sage2/enroot-cache"
+    # Empty leaves the image's HF cache default alone.
+    hf_home: ""
+outputs:
+  required:
+    sage2_results:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: sage2
+    launchers:
+      sage2:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: '{{ ("docker:" ~ config.sage2_config.image) if config.sage2_config.image else "" }}'
+          resources: {}
+          run: |
+            set -e
+            set -o pipefail
+            BENCHMARK=swebench-verified
+            echo "=== sage2 $BENCHMARK on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+            # vLLM refuses to start inside an initialised torch.distributed env.
+            unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
+            # The image's ENV PATH can be lost on BlueVela: the LSF provider flattens
+            # enroot's layers in reverse order, so enroot's layer 0 (/etc/environment)
+            # ends up under the base image's. The venv path is fixed by the image.
+            export PATH="/opt/sage2-evals/.venv/bin:$PATH"
+            command -v sage2-evals >/dev/null || { echo "sage2: sage2-evals not on PATH; is sage2_config.image set to a sage2-evals image?"; exit 1; }
+            test -n "{{ config.sage2_config.model_path }}" || { echo "sage2: sage2_config.model_path is required"; exit 1; }
+
+            {% if config.sage2_config.hf_home %}export HF_HOME="{{ config.sage2_config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
+
+            # Sandboxes: enroot inside this job's container. Image squashfs files go to
+            # the shared cache; the per-sandbox rootfs goes to node-local scratch.
+            export SAGE2_SANDBOX=enroot
+            export SAGE2_ENROOT_CACHE="{{ config.sage2_config.sandbox_cache }}"
+            SCRATCH="${TMPDIR:-/tmp}/sage2-$$"
+            export ENROOT_DATA_PATH="$SCRATCH/enroot-data" ENROOT_CACHE_PATH="$SCRATCH/enroot-cache" ENROOT_RUNTIME_PATH="$SCRATCH/enroot-run" ENROOT_TEMP_PATH="$SCRATCH/enroot-tmp"
+            mkdir -p "$SAGE2_ENROOT_CACHE" "$ENROOT_DATA_PATH" "$ENROOT_CACHE_PATH" "$ENROOT_RUNTIME_PATH" "$ENROOT_TEMP_PATH"
+            trap 'rm -rf "$SCRATCH"' EXIT
+
+            OUTPUT_DIR="{{ config.sage2_config.output_dir }}"
+            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
+            mkdir -p "$OUTPUT_DIR"
+
+            OPTS=()
+            for kv in {{ config.sage2_config.options }}; do OPTS+=(--option "$kv"); done
+
+            sage2-evals run "$BENCHMARK" \
+              --model "{{ config.sage2_config.model_path }}" \
+              --output-dir "$OUTPUT_DIR" \
+              {% if config.sage2_config.served_model_name %}--served-model-name "{{ config.sage2_config.served_model_name }}"{% endif %} \
+              {% if config.sage2_config.limit %}--limit {{ config.sage2_config.limit }}{% endif %} \
+              {% if config.sage2_config.repeats %}--repeats {{ config.sage2_config.repeats }}{% endif %} \
+              --workers {{ config.sage2_config.workers }} \
+              {% if config.sage2_config.dataset %}--dataset "{{ config.sage2_config.dataset }}"{% endif %} \
+              {% if config.sage2_config.dataset_revision %}--dataset-revision "{{ config.sage2_config.dataset_revision }}"{% endif %} \
+              --tensor-parallel-size {{ config.sage2_config.tensor_parallel_size }} \
+              --gpu-memory-utilization "{{ config.sage2_config.gpu_memory_utilization }}" \
+              {% if config.sage2_config.max_model_len %}--max-model-len {{ config.sage2_config.max_model_len }}{% endif %} \
+              "${OPTS[@]}" \
+              2>&1 | tee "$OUTPUT_DIR/sage2.log"
+            RESULT_FILE="$OUTPUT_DIR/results.json"
+            test -s "$RESULT_FILE" || { echo "sage2: no $RESULT_FILE"; exit 1; }
+            echo "GB_ARTIFACT_ID:sage2_results GB_ARTIFACT_PATH:${RESULT_FILE}"
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
+          extra_event_configs:
+            - event_type: WORKLOAD_STATUS_EVENT
+              line_regex: "(vLLM ready at|swebench-verified: \\d+ instances|swebench-verified repeat \\d+: |sage2-evals: swebench-verified =)"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"
+                - field_name: message
+                  field_regex: ".+"

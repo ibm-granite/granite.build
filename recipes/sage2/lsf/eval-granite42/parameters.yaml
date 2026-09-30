@@ -1,0 +1,144 @@
+# Sage2 Granite 4.2 suite on BlueVela. Override with: gb build start --param KEY=VALUE
+#
+# Smoke run (a few instances, one repeat):
+#   --param SAGE2_LIMIT=5 --param SAGE2_REPEATS=1
+
+# ─── Model ────────────────────────────────────────────────────────────
+# A local HF checkpoint dir, or a hub id vLLM downloads into HF_HOME.
+MODEL_PATH: "ibm-granite/granite-4.2-3b"
+SERVED_MODEL_NAME: ""
+RUN_NAME: "granite-4.2-3b"
+OUTPUT_ROOT: "/proj/granite-build/g4os/sage2/runs"
+HF_HOME: "/proj/granite-build/g4os/sage2/hf-home"
+
+# ─── Images (sage2-evals, `make publish-image EXTRA=<family>`) ────────
+SAGE2_IMAGE_BFCL: "icr.io/tir-hew-sage2-evals/sage2-evals-bfcl:952082c"
+SAGE2_IMAGE_BIRD: "icr.io/tir-hew-sage2-evals/sage2-evals-bird:952082c"
+SAGE2_IMAGE_IFBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-ifbench:952082c"
+SAGE2_IMAGE_JUDGED: "icr.io/tir-hew-sage2-evals/sage2-evals-judged:952082c"
+SAGE2_IMAGE_LMEVAL: "icr.io/tir-hew-sage2-evals/sage2-evals-lmeval:949fcb0"
+SAGE2_IMAGE_NEMOSKILLS: "icr.io/tir-hew-sage2-evals/sage2-evals-nemoskills:888fe27"
+SAGE2_IMAGE_SWEBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-swebench:bf1858d"
+SAGE2_IMAGE_TAU: "icr.io/tir-hew-sage2-evals/sage2-evals-tau:952082c"
+SAGE2_IMAGE_TBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-tbench:bf1858d"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+# Empty = full dataset and each benchmark's own repeat count.
+SAGE2_LIMIT: ""
+SAGE2_REPEATS: ""
+TENSOR_PARALLEL_SIZE: 1
+
+# ─── SWE Bench Verified ───────────────────────────────────────────────
+SWEBENCH_WORKERS: 8
+# Empty = SWE-bench/SWE-bench_Verified at the commit pinned in sage2-evals.
+SWEBENCH_DATASET: ""
+SWEBENCH_OPTIONS: ""
+
+# ─── SWE Bench Pro ────────────────────────────────────────────────────
+SWEBENCH_PRO_WORKERS: 8
+# Empty = ScaleAI/SWE-bench_Pro (V2, 642 tasks) at the commit pinned in sage2-evals.
+SWEBENCH_PRO_DATASET: ""
+# e.g. "subset=hard" (HARD-51) or "patch=gold".
+SWEBENCH_PRO_OPTIONS: ""
+
+# ─── SWE Bench Multilingual ───────────────────────────────────────────
+SWEBENCH_ML_WORKERS: 8
+# Empty = SWE-bench/SWE-bench_Multilingual at the commit pinned in sage2-evals.
+SWEBENCH_ML_DATASET: ""
+SWEBENCH_ML_OPTIONS: ""
+
+# ─── Terminal-Bench 2.1 ───────────────────────────────────────────────
+TBENCH_WORKERS: 8
+# Empty = harborframework/terminal-bench-2.1 at the commit pinned in sage2-evals.
+TBENCH_DATASET: ""
+# e.g. "agent=oracle" (reference solutions, no model) or "temperature=0.6".
+TBENCH_OPTIONS: ""
+
+# ─── BirdBench ────────────────────────────────────────────────────────
+BIRDBENCH_WORKERS: 32
+# e.g. "sql=gold" (score the gold SQL, no model) or "temperature=0.6".
+BIRDBENCH_OPTIONS: ""
+
+# ─── BFCL v4 ──────────────────────────────────────────────────────────
+# Single run: SAGE2_REPEATS does not apply.
+BFCL_WORKERS: 8
+# e.g. "categories=simple_python,web_search".
+BFCL_OPTIONS: ""
+
+# ─── tau3-bench (tau3-bench, tau3-airline, tau3-retail, tau3-telecom, tau3-banking-knowledge)
+TAU_WORKERS: 16
+# Empty = data/tau2 of the tau2-bench commit pinned in sage2-evals (baked into the image).
+TAU_DATASET: ""
+# The user simulator (and retail's NL judge) default to aws/claude-sonnet-5 on the IBM
+# LiteLLM gateway: PAID, needs SAGE2_USER_API_KEY / SAGE2_JUDGE_API_KEY in the job env and
+# is metered against SAGE2_SPEND_LEDGER. "user_model=self judge_model=self" = no paid API.
+TAU_OPTIONS: ""
+
+# ─── LLM-judged benchmarks (judged image) ─────────────────────────────
+# The judge (default aws/claude-sonnet-5 on IBM LiteLLM) is paid and needs its key in
+# the job as SAGE2_JUDGE_API_KEY. "judge_model=self" in the options judges with the
+# served model instead (key-less smoke runs only).
+
+# ─── GDPval (Elo is an APPROXIMATION: win rate vs expert, not GDPval-AA) ─
+GDPVAL_WORKERS: 4
+# Empty = openai/gdpval at the commit pinned in sage2-evals.
+GDPVAL_DATASET: ""
+GDPVAL_OPTIONS: ""
+
+# ─── ProfBench ────────────────────────────────────────────────────────
+PROFBENCH_WORKERS: 16
+# Empty = nvidia/ProfBench at the commit pinned in sage2-evals.
+PROFBENCH_DATASET: ""
+# Favored: the judge at max effort (results.json records the request it sent).
+PROFBENCH_OPTIONS: "judge_reasoning_effort=max judge_thinking=adaptive judge_effort=max"
+
+# ─── NeMo-Skills: AIME25, HMMT Feb25, GPQA, MMLU-Pro, Arena-Hard-V2 ───
+# WORKERS = concurrent requests to vLLM. OPTIONS as in each step's README, e.g.
+# "max_tokens=32768" or "answers=gold" (reference answers; not arena-hard-v2).
+# GPQA's dataset (Idavidrein/gpqa) is gated: the job env needs HF_TOKEN.
+# ARENA_HARD_V2 is judged by aws/claude-sonnet-5 (IBM LiteLLM): the job env needs
+# SAGE2_JUDGE_API_KEY; "judge_model=self" judges with the served model instead.
+AIME25_WORKERS: 32
+AIME25_OPTIONS: ""
+HMMT_FEB25_WORKERS: 32
+HMMT_FEB25_OPTIONS: ""
+GPQA_WORKERS: 64
+GPQA_OPTIONS: ""
+MMLU_PRO_WORKERS: 128
+MMLU_PRO_OPTIONS: ""
+ARENA_HARD_V2_WORKERS: 32
+ARENA_HARD_V2_OPTIONS: ""
+
+# ─── LiveCodeBench v6 / SciCode (NeMo-Skills) ─────────────────────────
+LIVECODEBENCH_WORKERS: 64
+LIVECODEBENCH_OPTIONS: ""
+SCICODE_WORKERS: 64
+SCICODE_OPTIONS: ""
+
+# ─── RULER 128k / 64k (NeMo-Skills) ───────────────────────────────────
+# Data are generated in the job for MODEL_PATH's tokenizer. Thinking is on by default
+# (a thinking budget on top of ns's answer budgets; scored after the reasoning parser),
+# and both targets serve at 131072.
+RULER_WORKERS: 32
+RULER_OPTIONS: ""
+# ruler-128k only. A 128k sample plus the thinking budget exceeds granite-4.2-3b's
+# 131072 context, so the thinking run cannot score full-length samples. PLACEHOLDER so
+# the target runs end to end: thinking off (ns's RULER exactly). The experiment config
+# is still open; the alternative is "sample_length=N" (N = 131072 - thinking budget;
+# shorter samples with thinking on, a departure). "" makes the run stop and name both.
+RULER_128K_OPTIONS: "enable_thinking=false"
+
+# ─── Chat & IF: MMLU-ProX lite (lm-eval), IFBench (NeMo-Skills) ───────
+# WORKERS = concurrent requests to vLLM. OPTIONS as in each step's README, e.g.
+# "languages=all", "max_tokens=8192" or "answers=gold" (mmlu-prox-lite only).
+MMLU_PROX_LITE_WORKERS: 128
+MMLU_PROX_LITE_OPTIONS: ""
+IFBENCH_WORKERS: 64
+IFBENCH_OPTIONS: ""
+
+# ─── Infrastructure ───────────────────────────────────────────────────
+CLUSTER: "bluevela"
+QUEUE: "normal"
+GPU_MEMORY: 256
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

@@ -1,0 +1,690 @@
+granite.build:
+  name: sage2-eval-granite42
+  # Sage2 Granite 4.2 suite: one target per benchmark, all reading the same checkpoint.
+  # Targets are added in suite order as each benchmark lands in sage2-evals; the full
+  # list and bring-up status is `sage2-evals list --suite granite42`.
+  targets:
+    swebench-verified:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-swebench-verified
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-verified"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${SWEBENCH_WORKERS}"
+              dataset: "$${SWEBENCH_DATASET}"
+              options: "$${SWEBENCH_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    swebench-pro:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-swebench-pro
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-pro"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${SWEBENCH_PRO_WORKERS}"
+              dataset: "$${SWEBENCH_PRO_DATASET}"
+              options: "$${SWEBENCH_PRO_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    swebench-multilingual:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-swebench-multilingual
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-multilingual"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${SWEBENCH_ML_WORKERS}"
+              dataset: "$${SWEBENCH_ML_DATASET}"
+              options: "$${SWEBENCH_ML_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    terminal-bench-2.1:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-terminal-bench-2.1
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/terminal-bench-2.1"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TBENCH_WORKERS}"
+              dataset: "$${TBENCH_DATASET}"
+              options: "$${TBENCH_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    birdbench:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-birdbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_BIRD}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/birdbench"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${BIRDBENCH_WORKERS}"
+              options: "$${BIRDBENCH_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-bench:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-bench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-bench"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-airline:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-airline
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-airline"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-banking-knowledge:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-banking-knowledge
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-banking-knowledge"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-retail:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-retail
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-retail"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-telecom:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-tau3-telecom
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-telecom"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    bfcl-v4:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-bfcl-v4
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_BFCL}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/bfcl-v4"
+              limit: "$${SAGE2_LIMIT}"
+              workers: "$${BFCL_WORKERS}"
+              options: "$${BFCL_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    gdpval:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-gdpval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_JUDGED}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/gdpval"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${GDPVAL_WORKERS}"
+              dataset: "$${GDPVAL_DATASET}"
+              options: "$${GDPVAL_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    profbench:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-profbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_JUDGED}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/profbench"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${PROFBENCH_WORKERS}"
+              dataset: "$${PROFBENCH_DATASET}"
+              options: "$${PROFBENCH_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    aime25:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-aime25
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/aime25"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${AIME25_WORKERS}"
+              options: "$${AIME25_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    hmmt-feb25:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-hmmt-feb25
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/hmmt-feb25"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${HMMT_FEB25_WORKERS}"
+              options: "$${HMMT_FEB25_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    gpqa:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-gpqa
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/gpqa"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${GPQA_WORKERS}"
+              options: "$${GPQA_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    livecodebench-v6:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-livecodebench-v6
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/livecodebench-v6"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${LIVECODEBENCH_WORKERS}"
+              options: "$${LIVECODEBENCH_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    scicode:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-scicode
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/scicode"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${SCICODE_WORKERS}"
+              options: "$${SCICODE_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    mmlu-pro:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-mmlu-pro
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/mmlu-pro"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${MMLU_PRO_WORKERS}"
+              options: "$${MMLU_PRO_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    mmlu-prox-lite:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-mmlu-prox-lite
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_LMEVAL}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/mmlu-prox-lite"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${MMLU_PROX_LITE_WORKERS}"
+              options: "$${MMLU_PROX_LITE_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    arena-hard-v2:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-arena-hard-v2
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/arena-hard-v2"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${ARENA_HARD_V2_WORKERS}"
+              options: "$${ARENA_HARD_V2_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    ifbench:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-ifbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_IFBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ifbench"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${IFBENCH_WORKERS}"
+              options: "$${IFBENCH_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    ruler-128k:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-ruler-128k
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ruler-128k"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${RULER_WORKERS}"
+              options: "$${RULER_OPTIONS} $${RULER_128K_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              max_model_len: "131072"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    ruler-64k:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        sage2_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/sage2-ruler-64k
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            sage2_config:
+              image: "$${SAGE2_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ruler-64k"
+              limit: "$${SAGE2_LIMIT}"
+              repeats: "$${SAGE2_REPEATS}"
+              workers: "$${RULER_WORKERS}"
+              options: "$${RULER_OPTIONS}"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              max_model_len: "131072"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
