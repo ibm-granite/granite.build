@@ -815,6 +815,23 @@ class TestSkypilotComputeConfigResources:
             {"total_memory_per_node": "512Mi"}, cloud="aws"
         ) == {"memory": "0.5+"}
 
+    def test_cpus_floor_gates_the_plus_by_cloud(self):
+        """``_cpus_floor`` emits the ``"{n}+"`` catalog-minimum on cloud
+        catalogs but a bare int on slurm/lsf.
+
+        SkyPilot's SLURM/LSF cloud matches CPUs directly and rejects the ``"+"``
+        minimum form, so those backends take a bare int; cloud catalogs need the
+        ``"{n}+"`` minimum (a bare int is an EXACT request no catalog satisfies
+        for odd sizes). Shared by ``_resources_from_compute_config`` and the
+        ``teardown_skypilot`` cleanup VM so both gate the ``"+"`` identically.
+        """
+        from gbserver.environment.skypilot import _cpus_floor
+
+        assert _cpus_floor("aws", 2) == "2+"
+        assert _cpus_floor("k8s", 3) == "3+"
+        for hpc_cloud in ("slurm", "lsf"):
+            assert _cpus_floor(hpc_cloud, 2) == 2
+
 
 class TestMonitorSkypilotMonitor:
     @pytest.fixture
