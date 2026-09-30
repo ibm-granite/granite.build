@@ -16,6 +16,7 @@ interface NodeItemProps {
   onClick?: (node: ElkNodeEx) => void
   onMouseHover?: (node: ElkNodeEx | null) => void
   selectedNode?: ElkNodeEx
+  showBuildInfo?: boolean
 }
 
 function getNodeConfig(type: string | undefined) {
@@ -47,7 +48,7 @@ function SkeletonNode({ direction }: { direction: 'left' | 'right' }) {
   )
 }
 
-export default function GraphNode({ node, onClick, onMouseHover, selectedNode }: NodeItemProps) {
+export default function GraphNode({ node, onClick, onMouseHover, selectedNode, showBuildInfo }: NodeItemProps) {
   const { x, y, height, width, type, title } = node
 
   if (type === 'skeleton-source') {
@@ -69,6 +70,8 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode }:
   const { icon, color, bgColor, subtitleLabel } = getNodeConfig(type)
   const isSelected = selectedNode?.id === node.id
   const isHighlighted = node.highlight
+  // Short form fits the node; the full id is in the tooltip.
+  const buildInfo = showBuildInfo && type === 'Build' && node.buildId ? `build ${node.buildId.slice(0, 8)}` : undefined
 
   const nodeWrapperClass = [
     styles.nodeWrapper,
@@ -114,9 +117,10 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode }:
             </CardNodeTitle>
             {subtitleLabel && (
               <CardNodeSubtitle
-                style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)' }}
+                style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                title={buildInfo ? node.buildId : undefined}
               >
-                {subtitleLabel}
+                {buildInfo ? `${subtitleLabel} · ${buildInfo}` : subtitleLabel}
               </CardNodeSubtitle>
             )}
           </CardNodeColumn>

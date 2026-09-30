@@ -26,6 +26,8 @@ export interface ElkNodeEx extends ElkNode {
   type?: NodeType | string
   highlight?: boolean
   planned?: boolean
+  // The Granite.build build a run node belongs to, shown when showBuildInfo is on.
+  buildId?: string
   children?: ElkNodeEx[]
 }
 
@@ -35,6 +37,10 @@ export interface GraphHandle {
   resetZoom(): void
   currentZoom(): number
   centerOnNode(nodeId: string): void
+  // Centers nodeId, zooming out only as far as needed to fit the graph, on the relayout this click causes if
+  // any, else right away. Relayouts keep the selected node put, so a later one
+  // (an index fetch landing) leaves it centered.
+  centerOnNodeAfterLayout(nodeId: string): void
 }
 
 interface GraphProps {
@@ -44,10 +50,26 @@ interface GraphProps {
   selectedNode?: ElkNodeEx
   allLinks?: ElkExtendedEdge[]
   onSvgRendered?: (svg: SVGSVGElement) => void
+  // Show each run node's build id under its title.
+  showBuildInfo?: boolean
 }
 
 const elk = new ELK()
-const INITIAL_TRANSFORM = d3.zoomIdentity.translate(48, 32)
+// The default scale lives inside the d3 transform, and the transform is drawn as
+// is: scaling it again at draw time would make d3's anchor maths wrong, so every
+// zoom click would drift the graph.
+const BASE_SCALE = 0.85
+const INITIAL_TRANSFORM = d3.zoomIdentity.translate(48, 32).scale(BASE_SCALE)
+// A layout wider than this many viewports is wrapped into rows.
+const WRAP_WIDTH_FACTOR = 2
+// Multipliers on the viewport's aspect ratio tried when wrapping, narrowest first.
+const WRAP_RATIO_FACTORS = [1, 1.5, 2, 3, 4, 6, 8]
+// One zoom button click.
+const ZOOM_STEP = 1.1
+// When an expansion grows the graph past the viewport it zooms out this many
+// button steps at most, and never below MIN_READABLE_SCALE (node labels still read).
+const MAX_GROW_ZOOM_STEPS = 2
+const MIN_READABLE_SCALE = 0.6
 
 function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   const { onClick } = props
@@ -58,6 +80,14 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   const [nodeElements, setNodeElements] = React.useState<React.ReactNode>(null)
   const [linkElements, setLinkElements] = React.useState<React.ReactNode>(null)
   const [hoverNode, setHoverNode] = React.useState<ElkNodeEx | null>(null)
+  const anchorIdRef = React.useRef<string | undefined>(undefined)
+  const layoutRunRef = React.useRef(0)
+  // Set by resetZoom: a relayout the same click triggered (e.g. Reset view
+  // dropping expanded nodes) fits the new layout instead of re-anchoring.
+  const resetOnLayoutRef = React.useRef(false)
+  // Set by centerOnNodeAfterLayout, the same way.
+  const centerOnLayoutRef = React.useRef<string | null>(null)
+  anchorIdRef.current = props.selectedNode?.id
 
 
   const buildSkeleton = (children: ElkNodeEx[], visibleLinks: ElkExtendedEdge[], allLinks: ElkExtendedEdge[]) => {
@@ -118,6 +148,43 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       ],
     } as ElkNodeEx))
 
+  // Lays the graph out in one row, as always, unless that row is more than
+  // WRAP_WIDTH_FACTOR viewports wide: then ELK wraps it into rows stacked
+  // downward, shaped like the viewport, so a long chain fits the screen instead of
+  // running off to the side. Small graphs keep their straight layout.
+  const layoutFitting = async (graph: ElkNode): Promise<ElkNode> => {
+    const straight = await elk.layout(structuredClone(graph))
+    const viewport = svgRef.current?.parentElement?.getBoundingClientRect()
+    if (!viewport?.width || !viewport.height) return straight
+    const widthOf = (g: ElkNode) => Math.max(0, ...(g.children ?? []).map((n) => (n.x ?? 0) + (n.width ?? 0)))
+    if (widthOf(straight) <= WRAP_WIDTH_FACTOR * (viewport.width / BASE_SCALE)) return straight
+    // A graph long enough to wrap ends up zoomed out to the readable minimum (see
+    // MAX_GROW_ZOOM_STEPS), so size rows to fill the viewport at that scale, in
+    // layout units.
+    const rowWidth = (viewport.width - 2 * INITIAL_TRANSFORM.x) / MIN_READABLE_SCALE
+
+    // ELK sizes rows from `aspectRatio`, but undershoots it badly (asked 2.4, a
+    // chain came back near-square, two nodes a row), and elkjs cannot take manual
+    // cuts. So widen the ratio step by step and keep the widest wrap whose rows
+    // still fit the viewport: fewest rows, nothing off to the side.
+    const wrapped = (factor: number) => elk.layout({
+      ...structuredClone(graph),
+      layoutOptions: {
+        ...graph.layoutOptions,
+        'elk.layered.wrapping.strategy': 'SINGLE_EDGE',
+        'elk.aspectRatio': String((viewport.width / viewport.height) * factor),
+        'elk.layered.wrapping.additionalEdgeSpacing': '40',
+      },
+    })
+    let best = await wrapped(WRAP_RATIO_FACTORS[0])
+    for (const factor of WRAP_RATIO_FACTORS.slice(1)) {
+      const g = await wrapped(factor)
+      if (widthOf(g) > rowWidth) break
+      best = g
+    }
+    return best
+  }
+
   const updateGraph = React.useCallback(() => {
     setNodeElements(null)
     setLinkElements(null)
@@ -154,8 +221,58 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
 
     cleanNodePositions(graph)
 
-    elk.layout(graph)
-      .then((g) => { setPositions(g); positionsRef.current = g })
+    const run = ++layoutRunRef.current
+    layoutFitting(graph)
+      .then((g) => {
+        // Layouts are async (and a wrapped one takes two passes): only the latest
+        // may land, or a stale one would move the anchor back.
+        if (run !== layoutRunRef.current) return
+        // A relayout (nodes added upstream, or the graph wrapping into rows) moves
+        // everything. Pan so the selected node stays where it was on screen,
+        // measured on the final layout, keeping the zoom level.
+        if (resetOnLayoutRef.current) {
+          resetOnLayoutRef.current = false
+          // Stop resetZoom's transition, which is still easing to the old fit.
+          if (svgRef.current) d3.select(svgRef.current).interrupt()
+          transformRef.current = fitTransform(g)
+          setPositions(g)
+          positionsRef.current = g
+          return
+        }
+        const anchorId = anchorIdRef.current
+        const before = anchorId ? positionsRef.current?.children?.find((n) => n.id === anchorId) : undefined
+        const after = anchorId ? g.children?.find((n) => n.id === anchorId) : undefined
+        if (before && after) {
+          const t = transformRef.current
+          const dx = ((after.x ?? 0) - (before.x ?? 0)) * t.k
+          const dy = ((after.y ?? 0) - (before.y ?? 0)) * t.k
+          transformRef.current = d3.zoomIdentity.translate(t.x - dx, t.y - dy).scale(t.k)
+
+          // The graph grew: zoom out a little toward fitting it, at most
+          // MAX_GROW_ZOOM_STEPS and never below a scale that still reads. Around
+          // the anchor, so it stays put.
+          const grew = (g.children?.length ?? 0) > (positionsRef.current?.children?.length ?? 0)
+          const fitK = fitScale(g)
+          const cur = transformRef.current
+          if (grew && fitK < cur.k) {
+            const k = Math.max(fitK, cur.k / ZOOM_STEP ** MAX_GROW_ZOOM_STEPS, MIN_READABLE_SCALE)
+            if (k < cur.k) {
+              const sx = cur.x + cur.k * ((after.x ?? 0) + (after.width ?? 0) / 2)
+              const sy = cur.y + cur.k * ((after.y ?? 0) + (after.height ?? 0) / 2)
+              const r = k / cur.k
+              transformRef.current = d3.zoomIdentity.translate(sx - (sx - cur.x) * r, sy - (sy - cur.y) * r).scale(k)
+            }
+          }
+        }
+        const centerId = centerOnLayoutRef.current
+        if (centerId) {
+          centerOnLayoutRef.current = null
+          const t = centerFitTransform(g, centerId, transformRef.current.k)
+          if (t) transformRef.current = t
+        }
+        setPositions(g)
+        positionsRef.current = g
+      })
       .catch(console.error)
   }, [props.nodes, props.links, props.allLinks])
 
@@ -174,6 +291,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
         type: src?.type ?? elkNode.type,
         highlight: src?.highlight ?? elkNode.highlight,
         subtitle: src?.subtitle ?? elkNode.subtitle,
+        buildId: src?.buildId ?? elkNode.buildId,
       }
       return (
         <GraphNode
@@ -182,6 +300,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
           onClick={onClick}
           onMouseHover={(hovered) => setHoverNode(hovered)}
           selectedNode={props.selectedNode}
+          showBuildInfo={props.showBuildInfo}
         />
       )
     })
@@ -214,7 +333,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
       setNodeElements(buildNodes(positions))
       setLinkElements(buildLinks(positions, hoverNode))
     }
-  }, [positions, hoverNode, props.selectedNode])
+  }, [positions, hoverNode, props.selectedNode, props.showBuildInfo])
 
   const svgRef = React.useRef<SVGSVGElement | null>(null)
   const containerRef = React.useRef<SVGGElement | null>(null)
@@ -231,7 +350,61 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     })
   }, [linkElements])
 
-  const BASE_SCALE = 0.85
+  // The transform that shows the whole layout, never enlarging past the default
+  // scale. INITIAL_TRANSFORM when it already fits, so small graphs look as before.
+  // The scale at which `layout` fits the viewport, capped at the default scale.
+  const fitScale = (layout: ElkNode | null): number => {
+    if (!svgRef.current || !layout?.children?.length) return BASE_SCALE
+    const { width: W, height: H } = svgRef.current.getBoundingClientRect()
+    const w = Math.max(...layout.children.map((n) => (n.x ?? 0) + (n.width ?? 0)))
+    const h = Math.max(...layout.children.map((n) => (n.y ?? 0) + (n.height ?? 0)))
+    const k = Math.min(BASE_SCALE, (W - 2 * INITIAL_TRANSFORM.x) / w, (H - 2 * INITIAL_TRANSFORM.y) / h)
+    return k > 0 ? k : BASE_SCALE
+  }
+
+  // Pans `layout` so `nodeId` sits at the viewport's center, at scale k.
+  const centerTransform = (layout: ElkNode, nodeId: string, k: number): d3.ZoomTransform | null => {
+    const node = layout.children?.find((n) => n.id === nodeId)
+    if (!svgRef.current || !node || node.x === undefined || node.y === undefined) return null
+    const { width: W, height: H } = svgRef.current.getBoundingClientRect()
+    const cx = node.x + (node.width ?? 0) / 2
+    const cy = node.y + (node.height ?? 0) / 2
+    return d3.zoomIdentity.translate(W / 2 - k * cx, H / 2 - k * cy).scale(k)
+  }
+
+  // Like centerTransform, but zoomed out (never in, never past the readable
+  // minimum) until the whole layout fits around the centered node.
+  const centerFitTransform = (layout: ElkNode, nodeId: string, k: number): d3.ZoomTransform | null => {
+    const node = layout.children?.find((n) => n.id === nodeId)
+    if (!svgRef.current || !node || node.x === undefined || node.y === undefined || !layout.children) return null
+    const { width: W, height: H } = svgRef.current.getBoundingClientRect()
+    const cx = node.x + (node.width ?? 0) / 2
+    const cy = node.y + (node.height ?? 0) / 2
+    const spanX = Math.max(...layout.children.map((n) => Math.max(cx - (n.x ?? 0), (n.x ?? 0) + (n.width ?? 0) - cx)))
+    const spanY = Math.max(...layout.children.map((n) => Math.max(cy - (n.y ?? 0), (n.y ?? 0) + (n.height ?? 0) - cy)))
+    const fitK = Math.min((W / 2 - INITIAL_TRANSFORM.x) / spanX, (H / 2 - INITIAL_TRANSFORM.y) / spanY)
+    const scale = Math.max(Math.min(k, fitK), Math.min(k, MIN_READABLE_SCALE))
+    const t = centerTransform(layout, nodeId, scale)
+    if (!t) return null
+    // Held at the readable minimum the graph may still fit off-center: shift
+    // the node from the center just enough to keep every node on screen.
+    const clamp = (tr: number, lo: number, hi: number, size: number, m: number) => {
+      if (scale * (hi - lo) > size - 2 * m) return tr
+      return Math.min(Math.max(tr, m - scale * lo), size - m - scale * hi)
+    }
+    const xs = layout.children.map((n) => [n.x ?? 0, (n.x ?? 0) + (n.width ?? 0)]).flat()
+    const ys = layout.children.map((n) => [n.y ?? 0, (n.y ?? 0) + (n.height ?? 0)]).flat()
+    const tx = clamp(t.x, Math.min(...xs), Math.max(...xs), W, INITIAL_TRANSFORM.x)
+    const ty = clamp(t.y, Math.min(...ys), Math.max(...ys), H, INITIAL_TRANSFORM.y)
+    return d3.zoomIdentity.translate(tx, ty).scale(scale)
+  }
+
+  const fitTransform = (layout: ElkNode | null = positionsRef.current): d3.ZoomTransform => {
+    const [mx, my] = [INITIAL_TRANSFORM.x, INITIAL_TRANSFORM.y]
+    const k = fitScale(layout)
+    if (k >= BASE_SCALE) return INITIAL_TRANSFORM
+    return d3.zoomIdentity.translate(mx, my).scale(k)
+  }
 
   React.useEffect(() => {
     if (!svgRef.current || !containerRef.current) return
@@ -244,11 +417,18 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
         .zoom<SVGSVGElement, unknown>()
         .filter((event) => event.ctrlKey || event.type !== 'wheel')
         .scaleExtent([0.1, 10])
+        // d3 defaults the extent to the svg's width/height attributes, which are
+        // sized to the layout, not the visible viewport: zoom buttons would then
+        // anchor on an off-screen point and push the graph sideways.
+        .extent(function (this: SVGSVGElement): [[number, number], [number, number]] {
+          const { width, height } = this.getBoundingClientRect()
+          return [[0, 0], [width, height]]
+        })
     }
 
     zoomRef.current.on('zoom', (event) => {
       const t = event.transform
-      container.attr('transform', `translate(${t.x},${t.y}) scale(${BASE_SCALE * t.k})`)
+      container.attr('transform', `translate(${t.x},${t.y}) scale(${t.k})`)
       transformRef.current = event.transform
     })
 
@@ -261,43 +441,54 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   React.useImperativeHandle(ref, () => ({
     zoomIn: () => {
       if (svgRef.current && zoomRef.current) {
-        d3.select(svgRef.current).call(zoomRef.current.scaleBy, 1.1)
+        d3.select(svgRef.current).call(zoomRef.current.scaleBy, ZOOM_STEP)
       }
     },
     zoomOut: () => {
       if (svgRef.current && zoomRef.current) {
-        d3.select(svgRef.current).call(zoomRef.current.scaleBy, 1 / 1.1)
+        d3.select(svgRef.current).call(zoomRef.current.scaleBy, 1 / ZOOM_STEP)
       }
     },
     resetZoom: () => {
+      // Effects of the click that called this run before a zero timeout, so a
+      // relayout it caused has started by then; otherwise nothing will land.
+      const run = layoutRunRef.current
+      resetOnLayoutRef.current = true
+      setTimeout(() => { if (layoutRunRef.current === run) resetOnLayoutRef.current = false }, 0)
       if (svgRef.current && zoomRef.current) {
         d3.select(svgRef.current)
           .transition()
           .duration(300)
-          .call(zoomRef.current.transform, INITIAL_TRANSFORM)
+          .call(zoomRef.current.transform, fitTransform())
       }
     },
     currentZoom: () => {
       if (svgRef.current) {
-        return d3.zoomTransform(svgRef.current).k * 100
+        // Relative to the default scale, as it was before BASE_SCALE moved into k.
+        return (d3.zoomTransform(svgRef.current).k / BASE_SCALE) * 100
       }
       return 90
     },
+    centerOnNodeAfterLayout: (nodeId: string) => {
+      const run = layoutRunRef.current
+      centerOnLayoutRef.current = nodeId
+      setTimeout(() => {
+        if (layoutRunRef.current !== run || !svgRef.current || !zoomRef.current || !positionsRef.current) return
+        centerOnLayoutRef.current = null
+        const t = centerFitTransform(positionsRef.current, nodeId, transformRef.current.k)
+        // No transition: an index fetch landing mid-animation would anchor the
+        // selected node where it was halfway there.
+        if (t) d3.select(svgRef.current).interrupt().call(zoomRef.current.transform, t)
+      }, 0)
+    },
     centerOnNode: (nodeId: string) => {
-      if (!svgRef.current || !zoomRef.current) return
-      const pos = positionsRef.current
-      if (!pos?.children) return
-      const node = pos.children.find((n) => n.id === nodeId)
-      if (!node || node.x === undefined || node.y === undefined) return
-      const { width: W, height: H } = svgRef.current.getBoundingClientRect()
-      const cx = (node.x ?? 0) + (node.width ?? 0) / 2
-      const cy = (node.y ?? 0) + (node.height ?? 0) / 2
-      const tx = W / 2 - BASE_SCALE * cx
-      const ty = H / 2 - BASE_SCALE * cy
+      if (!svgRef.current || !zoomRef.current || !positionsRef.current) return
+      const t = centerTransform(positionsRef.current, nodeId, BASE_SCALE)
+      if (!t) return
       d3.select(svgRef.current)
         .transition()
         .duration(400)
-        .call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty))
+        .call(zoomRef.current.transform, t)
     },
   }), [])
 

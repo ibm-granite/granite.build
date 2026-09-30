@@ -110,6 +110,7 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
   const inputArtifacts = (raw.input_artifacts as Record<string, string>) ?? {}
   const outputArtifacts = (raw.output_artifacts as Record<string, unknown[]>) ?? {}
   return {
+    uuid: raw.uuid as string | undefined,
     target_name: (raw.name as string) || (raw.uuid as string),
     status: adaptStatus(raw.status as string),
     started_at: raw.started_at as string | undefined,
@@ -395,6 +396,7 @@ export async function cancelBuild(buildId: string): Promise<void> {
 // ── Artifacts ─────────────────────────────────────────────────────────────────
 
 export interface ListArtifactsParams {
+  uri?: string
   space_name?: string
   tags?: string[]
   username?: string
@@ -409,6 +411,7 @@ export interface ArtifactListResult {
 
 export async function listArtifacts(params: ListArtifactsParams): Promise<ArtifactListResult> {
   const qp = new URLSearchParams()
+  if (params.uri)        qp.set('uri', params.uri)
   if (params.space_name) qp.set('space_name', params.space_name)
   if (params.username)   qp.set('username', params.username)
   for (const tag of params.tags ?? []) qp.append('tag', tag)

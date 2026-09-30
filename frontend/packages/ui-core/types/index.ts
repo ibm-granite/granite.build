@@ -25,6 +25,8 @@ export interface BuildStepRun {
 }
 
 export interface BuildTargetRun {
+  // The target run's id; the lineage index records the same value as the job_id.
+  uuid?: string
   target_name: string
   status: BuildStatus
   started_at?: string
