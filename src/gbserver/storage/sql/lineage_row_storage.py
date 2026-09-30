@@ -16,12 +16,17 @@
 
 """SQL storage implementation for lineage rows."""
 
+from contextlib import contextmanager
+from typing import List
+
+from sqlalchemy import distinct, func, or_
+
 from gbserver.storage.lineage_row_storage import (
     BaseLineageRowStorage,
     ILineageRowStorage,
 )
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
-from gbserver.storage.stored_lineage_row import StoredLineageRow
+from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 
 class SQLLineageRowStorage(
@@ -88,3 +93,63 @@ class SQLLineageRowStorage(
         kwargs["unique_columns"] = {("job_id", "input", "output"): None}
         kwargs["default_pagination_sort_by_column"] = "recorded_at"
         super().__init__(**kwargs)
+
+    def count_jobs_touching(self, uri: str) -> int:
+        """Count the distinct jobs touching ``uri`` in one ``COUNT(DISTINCT)``.
+
+        The artifact this exists for has 68,905 runs; counting them by reading the
+        rows cost seconds per request, whatever the page size.
+        """
+        with self._touching(uri) as query:
+            if query is None:
+                return 0
+            return int(query.with_entities(func.count(distinct(self._job_id))).scalar())
+
+    def get_job_ids_touching(self, uri: str, limit: int, offset: int) -> List[str]:
+        """Return one page of the distinct jobs touching ``uri``, in SQL."""
+        with self._touching(uri) as query:
+            if query is None:
+                return []
+            page = (
+                query.with_entities(self._job_id)
+                .distinct()
+                .order_by(self._job_id)
+                .limit(limit)
+                .offset(offset)
+            )
+            return [job_id for (job_id,) in page.all()]
+
+    @property
+    def _job_id(self):
+        return self._sql_alchemy_model.job_id
+
+    @contextmanager
+    def _touching(self, uri: str):
+        """The rows with ``uri`` on either side, or ``None`` when none can exist.
+
+        ``input = u OR output = u`` over two indexed columns, which every supported
+        backend answers from both indexes (bitmap OR, index merge, OR-by-union)
+        rather than by a scan.
+        """
+        if not uri or uri == TERMINAL or not self._ensure_table():
+            yield None
+            return
+        session = self._BaseSQLItemStorage__get_session_without_retry()
+        try:
+            model = self._sql_alchemy_model
+            yield session.query(model).filter(
+                or_(model.input == uri, model.output == uri)
+            )
+        finally:
+            session.close()
+
+    def _ensure_table(self) -> bool:
+        """Initialize the model if needed; whether the table exists to query.
+
+        ``__initialize_storage`` is name-mangled private, so this replicates it
+        through the protected API, as ``SQLSpaceUserStorage`` does.
+        """
+        if self._sql_alchemy_model is None:
+            sample = self._convert_item_to_row_dict(self._get_sample_item())
+            self._create_or_adjust_schema_item_dict(sample)
+        return self._does_table_exist()

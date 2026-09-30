@@ -37,7 +37,7 @@ index by identifier in the first place.
 """
 
 import logging
-from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from gbserver.lineage.attributes import (
     INPUT,
@@ -67,15 +67,12 @@ logger = logging.getLogger(__name__)
 # easy to invert by accident: the prototype's "downstream" walks toward origins,
 # but the live W&B backend treats downstream as used_by() -- toward descendants --
 # and the frontend sends it with that meaning. This follows the live backend.
-# How many of the newest rows seed an unfiltered query. A graph of "everything" is
-# neither useful nor bounded, so the newest activity stands in for it.
-_RECENT_ACTIVITY_ROWS = 50
 
-# Ceiling on one page of the run listing. Generous, because the rows are small and the
-# whole point of the endpoint is to make a 68,905-run artifact reachable -- but bounded,
-# so a caller cannot ask for all of them in one response and recreate the problem the
-# graph collapse exists to avoid.
-_MAX_RUNS_PAGE = 1000
+# Ceiling on one page of the job listing. Generous, because the entries are small and
+# the whole point of the listing is to make a 68,905-run artifact reachable -- but
+# bounded, so a caller cannot ask for all of them in one response and recreate the
+# problem the graph collapse exists to avoid.
+_MAX_JOBS_PAGE = 1000
 
 _WIRE_DIRECTIONS = {
     "downstream": Direction.DESCENDANTS,
@@ -213,7 +210,7 @@ class DBLineageService(LineageService):
         max_depth: int = 10,
         max_nodes_per_level: Optional[int] = None,
     ) -> Dict:
-        """Return a lineage graph for any combination of optional filters.
+        """Return a lineage graph seeded by an artifact, a job, or both.
 
         The general entry point: a caller asks however it holds the artifact, rather
         than the index dictating one lookup shape.
@@ -222,12 +219,16 @@ class DBLineageService(LineageService):
         - ``job_id`` -- seeds from every endpoint of that execution.
         - both -- seeds from the union, so a job's inputs and one specific artifact
           can be expanded together.
-        - neither -- seeds from the most recent lineage activity, capped.
+
+        One of the two is required. A graph needs somewhere to start, and "the most
+        recent activity" is not a question anyone asks of a lineage graph -- it is an
+        arbitrary slice of unrelated chains. The job listing answers "what ran
+        lately" instead.
 
         Never returns ``None``: unlike :meth:`get_artifact_graph` there is nothing to
-        report as "unknown", because a query with no filters is a legitimate request
-        and an empty index is a legitimate answer. An empty graph means "nothing
-        recorded", which the caller must not render as an error.
+        report as "unknown", because an artifact with no lineage recorded is a
+        legitimate answer. An empty graph means "nothing recorded", which the caller
+        must not render as an error.
 
         Args:
             uri: the artifact's URI, normalized here.
@@ -240,14 +241,16 @@ class DBLineageService(LineageService):
 
         Returns:
             ``{root_id, nodes, edges, truncated, unexpanded}``. ``root_id`` is the
-            resolved URI when exactly one artifact was named, else ``""``: a job-seeded or
-            unfiltered query has several roots, and flagging one arbitrarily would
+            resolved URI when exactly one artifact was named, else ``""``: a job-seeded
+            query has several roots, and flagging one arbitrarily would
             misreport what was asked about.
 
         Raises:
-            ValueError: if ``direction`` is not a wire direction. The API layer maps
-                this to a 400.
+            ValueError: if neither ``uri`` nor ``job_id`` is given, or ``direction``
+                is not a wire direction. The API layer maps this to a 400.
         """
+        if not uri and not job_id:
+            raise ValueError("Either uri or job_id must be provided")
         walk_direction = _WIRE_DIRECTIONS.get(direction)
         if walk_direction is None:
             raise ValueError(
@@ -262,12 +265,10 @@ class DBLineageService(LineageService):
             seeds.update(self._job_endpoint_uris(job_id))
 
         if not seeds:
-            if uri or job_id:
-                # The caller named something this index cannot key on. An empty graph
-                # rather than an error: "nothing matches" is a real answer, and the
-                # URI drop is already logged by normalize_uri.
-                return build_graph_dict(LineageGraph(), root_uri=root_uri)
-            seeds = self._recent_activity_seeds()
+            # The caller named something this index cannot key on. An empty graph
+            # rather than an error: "nothing matches" is a real answer, and the URI
+            # drop is already logged by normalize_uri.
+            return build_graph_dict(LineageGraph(), root_uri=root_uri)
 
         graph = walk_lineage(
             storage=self.storage,
@@ -280,70 +281,134 @@ class DBLineageService(LineageService):
         single_root = bool(root_uri) and not job_id
         return build_graph_dict(graph, root_uri=root_uri, root_is_artifact=single_root)
 
-    def list_jobs_by_tags(
+    def list_jobs(
         self,
-        tags: List[str],
+        uri: Optional[str] = None,
+        job_id: Optional[str] = None,
+        tags: Optional[List[str]] = None,
         required_tags: Optional[List[str]] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> Dict:
-        """List the jobs matching a tag filter, paged -- W&B's run-tag filter.
+        """List job executions matching every given filter, paged.
 
-        A job matches when it carries **any** of ``tags`` and **all** of
-        ``required_tags``, the same ``$in`` + required shape as
-        ``count_runs_by_tags``. Tags are free-form (``build_id=...``,
-        ``space_name=...``, a user's own); matching is exact, never a substring.
+        The one listing over the index. Filters AND together, so
+        ``uri=X&tags=build_id=Y`` is "the jobs that touched X within build Y":
 
-        One indexed ``IN`` on the tag table resolves the job ids; the page's job
-        records and tags are then fetched by ``job_id`` in one query each. Ordered
-        by ``job_id`` so paging is stable.
+        - ``uri`` -- jobs that consumed **or** produced the artifact, in any
+          spelling. The drill-down for a graph node's ``run_count``:
+          ``build_graph_dict`` folds an artifact's in-place rewrites into one node,
+          because one run node per append produced a 55 MB response for a single
+          dataset, and a count with no way to expand it would be a dead end.
+        - ``job_id`` -- that one execution.
+        - ``tags`` / ``required_tags`` -- W&B's run-tag filter: **any** of ``tags``
+          and **all** of ``required_tags``, matched exactly.
+        - none -- the most recently recorded jobs.
+
+        Paged rather than capped, unlike the graph: a flat list has no shape to
+        preserve, so a caller can walk the whole thing.
+
+        The narrowest filter is resolved first. A lone ``uri`` is paged and counted
+        in SQL, because its artifact may have tens of thousands of jobs; combined
+        with another filter it only checks that filter's (small) job set.
 
         Returns:
-            ``{jobs, total, limit, offset}``. Empty for an empty filter: an
-            unfiltered request is not a tag query.
+            ``{jobs, total, limit, offset}``. ``total`` is the unpaged count of
+            distinct jobs -- never rows, which overstate a many-input job. Filtered jobs
+            are ordered by ``job_id`` so paging is stable; unfiltered ones newest
+            first. A failed read degrades to empty rather than raising.
         """
-        limit = max(1, min(int(limit), _MAX_RUNS_PAGE))
+        limit = max(1, min(int(limit), _MAX_JOBS_PAGE))
         offset = max(0, int(offset))
         empty = {"jobs": [], "total": 0, "limit": limit, "offset": offset}
 
-        tag_storage = self._resolved("_tag_storage", "lineage_job_tag_storage")
-        job_storage = self._resolved("_job_storage", "lineage_job_storage")
-        if tag_storage is None or job_storage is None:
-            return empty
         try:
-            job_ids = sorted(
-                tag_storage.get_job_ids_by_tags(tags, all_of=required_tags)
-            )
-            page = job_ids[offset : offset + limit]
-            jobs = job_storage.get_jobs_by_id(page)
-            tags_by_job = tag_storage.get_tags(page)
+            # None means "not constrained yet", which is not the same as empty.
+            candidates: Optional[Set[str]] = None
+            if job_id:
+                candidates = {job_id} if self.storage.get_rows_by_job(job_id) else set()
+            if tags or required_tags:
+                tag_storage = self._resolved("_tag_storage", "lineage_job_tag_storage")
+                if tag_storage is None:
+                    return empty
+                tagged = tag_storage.get_job_ids_by_tags(
+                    tags or [], all_of=required_tags
+                )
+                candidates = tagged if candidates is None else candidates & tagged
+
+            if uri:
+                normalized = normalize_uri(uri)
+                if not normalized:
+                    return empty
+                if candidates is None:
+                    total = self.storage.count_jobs_touching(normalized)
+                    page = self.storage.get_job_ids_touching(normalized, limit, offset)
+                    return {**empty, "jobs": self._job_entries(page), "total": total}
+                candidates = self.storage.filter_jobs_touching(normalized, candidates)
+
+            if candidates is None:
+                page, total = self._recent_job_ids(limit, offset)
+            else:
+                ordered = sorted(candidates)
+                page, total = ordered[offset : offset + limit], len(ordered)
+            return {**empty, "jobs": self._job_entries(page), "total": total}
         except Exception:
-            logger.exception("Lineage job tag query failed")
+            logger.exception("Lineage job listing failed")
             return empty
 
-        entries = []
-        for job_id in page:
-            job = jobs.get(job_id)
-            entries.append(
-                {
-                    "job_id": job_id,
-                    "job_namespace": job.job_namespace if job else "",
-                    "space_name": job.space_name if job else "",
-                    "owner": job.owner if job else "",
-                    "source_system": job.source_system if job else "",
-                    "status": job.status if job else "",
-                    "started_at": job.started_at if job else "",
-                    "tags": tags_by_job.get(job_id, []),
-                }
+    def _recent_job_ids(self, limit: int, offset: int) -> Tuple[List[str], int]:
+        """One page of the newest job records, and how many there are.
+
+        Streamed and stopped once the window is filled, so an early page costs an
+        early exit rather than a read of the whole table.
+        """
+        job_storage = self._resolved("_job_storage", "lineage_job_storage")
+        if job_storage is None:
+            return [], 0
+        page: List[str] = []
+        position = 0
+        for chunk in job_storage.get_paged():
+            for job in chunk:
+                if position >= offset:
+                    page.append(job.job_id)
+                position += 1
+                if len(page) >= limit:
+                    return page, int(job_storage.count())
+        return page, int(job_storage.count())
+
+    def _job_entries(self, job_ids: List[str]) -> List[Dict]:
+        """The listing entries for one page, in the page's order.
+
+        Three batched queries whatever the page size: job records, tags and rows.
+        A job with rows but no record -- rows can precede or outlive it -- still
+        lists, its detail read from the rows instead.
+        """
+        if not job_ids:
+            return []
+        job_storage = self._resolved("_job_storage", "lineage_job_storage")
+        tag_storage = self._resolved("_tag_storage", "lineage_job_tag_storage")
+        jobs = job_storage.get_jobs_by_id(job_ids) if job_storage else {}
+        tags_by_job = tag_storage.get_tags(job_ids) if tag_storage else {}
+        rows_by_job: Dict[str, List] = {}
+        for row in self.storage.get_rows_by_jobs(job_ids):
+            rows_by_job.setdefault(row.job_id, []).append(row)
+        return [
+            _job_entry(
+                job_id,
+                jobs.get(job_id),
+                rows_by_job.get(job_id, []),
+                tags_by_job.get(job_id, []),
             )
-        return {**empty, "jobs": entries, "total": len(job_ids)}
+            for job_id in job_ids
+        ]
 
     def _resolved(self, attr: str, admin_attr: str):
         """A storage given at construction, else the admin one, else ``None``.
 
         Only the row storage is required by this service; the job and tag
-        storages serve the tag listing alone, so a missing one degrades that
-        listing to empty rather than failing construction.
+        storages serve the job listing alone, so a missing one degrades that
+        listing -- empty for a tag filter, detail-less entries otherwise --
+        rather than failing construction.
         """
         if getattr(self, attr) is None:
             if self._storage is not None:
@@ -356,137 +421,6 @@ class DBLineageService(LineageService):
                 logger.debug("No %s available: %s", admin_attr, exc)
                 return None
         return getattr(self, attr)
-
-    def list_runs(
-        self,
-        uri: Optional[str] = None,
-        job_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> Dict:
-        """List the job executions touching an artifact, paged.
-
-        The drill-down the graph deliberately does not carry. ``build_graph_dict``
-        collapses an artifact's in-place rewrites into one node with a ``run_count``,
-        because rendering 68,905 of them produced a 55 MB response describing a single
-        dataset -- and a count with no way to expand it would just be a dead end. This
-        is that way.
-
-        Paged rather than capped: unlike the graph, a flat list has no shape to
-        preserve, so there is no reason to truncate it instead of letting a caller walk
-        it.
-
-        Args:
-            uri: the artifact whose runs to list, in any spelling; normalized here.
-                Matches a run that consumed it OR produced it.
-            job_id: list the rows of one execution instead.
-            limit: page size, capped at :data:`_MAX_RUNS_PAGE`.
-            offset: rows to skip.
-
-        Returns:
-            ``{runs, total, limit, offset}``. ``runs`` carries one entry per row, each
-            with its job id, endpoints and job detail.
-
-            ``total`` is exact, from three indexed SQL counts: rows with this artifact
-            as source, plus as target, minus the self-loops that are both (without that
-            third term an in-place-rewritten artifact reports double).
-        """
-        limit = max(1, min(int(limit), _MAX_RUNS_PAGE))
-        offset = max(0, int(offset))
-
-        if job_id:
-            rows = self._safe(lambda: self.storage.get_rows_by_job(job_id))
-            return {
-                "runs": [_run_entry(row) for row in rows[offset : offset + limit]],
-                "total": len(rows),
-                "limit": limit,
-                "offset": offset,
-            }
-
-        normalized = normalize_uri(uri or "")
-        if not normalized:
-            return {"runs": [], "total": 0, "limit": limit, "offset": offset}
-
-        # Both directions, because "the runs touching this artifact" means the ones
-        # that consumed it and the ones that produced it.
-        wheres = ({"input": normalized}, {"output": normalized})
-
-        # The total comes from SQL COUNT, not from walking the rows. An artifact with
-        # 68,905 runs is exactly the case this endpoint exists for, and counting it in
-        # Python cost ~3s per request whatever the page size -- recreating in the read
-        # path the expense the graph collapse removed.
-        #
-        # Three counts, not two: a self-loop row matches BOTH the source and the target
-        # query, so summing them double-counts every in-place rewrite. On the real hub
-        # that reported 137,811 runs for an artifact with 68,906 -- a number wrong by
-        # 2x, which is worse than slow. Subtracting the overlap makes it exact and still
-        # costs only one more indexed COUNT.
-        total = (
-            self._safe_count({"input": normalized})
-            + self._safe_count({"output": normalized})
-            - self._safe_count({"input": normalized, "output": normalized})
-        )
-
-        # Streamed, and stopped as soon as the window is filled: pages are pulled only
-        # until the requested slice exists, so an early offset costs an early exit.
-        seen: set = set()
-        page: List = []
-        position = 0
-        for where in wheres:
-            if len(page) >= limit:
-                break
-            for chunk in self._safe_pages(where):
-                for row in chunk:
-                    key = (row.job_id, row.input, row.output)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    if position >= offset:
-                        page.append(row)
-                    position += 1
-                    if len(page) >= limit:
-                        break
-                if len(page) >= limit:
-                    break
-
-        return {
-            "runs": [_run_entry(row) for row in page],
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-        }
-
-    def _safe_count(self, where: Dict) -> int:
-        """Count matching rows in SQL, reporting a failure as zero."""
-        try:
-            return int(self.storage.count(where))
-        except Exception:
-            logger.exception("Lineage run count query failed")
-            return 0
-
-    def _safe_pages(self, where: Dict) -> Iterator[List]:
-        """Yield pages for a where clause, reporting a failure as "no more".
-
-        A failed read must not turn a listing into a 500; the caller sees a smaller
-        total and the exception is logged.
-        """
-        try:
-            yield from self.storage.get_paged(where)
-        except Exception:
-            logger.exception("Lineage run listing query failed")
-
-    @staticmethod
-    def _safe(fetch) -> List:
-        """Run a storage read, reporting a failure as "nothing" rather than raising.
-
-        One failed page must not turn a listing into a 500; the caller sees a smaller
-        total, and the exception is logged.
-        """
-        try:
-            return list(fetch())
-        except Exception:
-            logger.exception("Lineage run listing query failed")
-            return []
 
     def _job_endpoint_uris(self, job_id: str) -> set:
         """Every endpoint of one job execution, as seeds.
@@ -505,25 +439,6 @@ class DBLineageService(LineageService):
                 if endpoint and endpoint != TERMINAL:
                     seeds.add(endpoint)
         return seeds
-
-    def _recent_activity_seeds(self) -> set:
-        """Seeds for an unfiltered query: the most recently recorded endpoints.
-
-        Deliberately capped and taken from the first page only. "Everything" is not a
-        useful answer for a graph and would be an unbounded walk; the newest rows are
-        what an operator opening an empty view actually wants to see.
-        """
-        try:
-            for page in self.storage.get_paged():
-                seeds: set = set()
-                for row in page[:_RECENT_ACTIVITY_ROWS]:
-                    for endpoint in (row.input, row.output):
-                        if endpoint and endpoint != TERMINAL:
-                            seeds.add(endpoint)
-                return seeds
-        except Exception:
-            logger.exception("Could not read recent lineage activity")
-        return set()
 
     # -- Write-path methods. This service reads an index that another writer
     # populates, so none of these apply; each returns the value that makes a caller
@@ -577,18 +492,27 @@ class DBLineageService(LineageService):
         return target_ids
 
 
-def _run_entry(row) -> Dict:
-    """One row of a run listing.
+def _job_entry(job_id: str, job, rows: List, tags: List[str]) -> Dict:
+    """One entry of the job listing.
 
-    Flat and endpoint-first: a caller reaching here already has the artifact and wants
-    to know which executions touched it, so the job detail matters more than the graph
-    shape. Terminals are reported as empty strings, exactly as stored.
+    Job-first: a caller reaching here wants to know which executions matched, and
+    what each read and wrote. The endpoints come from the job's own rows, terminals
+    left out, so a self-rewrite shows its artifact on both sides.
     """
+    attributes = rows[0].attributes if rows else {}
     return {
-        "job_id": row.job_id,
-        "source": row.input,
-        "target": row.output,
-        "is_self_loop": row.is_self_loop(),
-        "job": job_detail(row.attributes),
-        "source_system": origin_system(row.attributes),
+        "job_id": job_id,
+        "job_namespace": job.job_namespace if job else "",
+        "space_name": job.space_name if job else "",
+        "owner": job.owner if job else "",
+        "source_system": (job.source_system if job else "")
+        or origin_system(attributes),
+        "status": job.status if job else "",
+        "started_at": job.started_at if job else "",
+        "tags": tags,
+        "inputs": sorted({r.input for r in rows if r.input and r.input != TERMINAL}),
+        "outputs": sorted(
+            {r.output for r in rows if r.output and r.output != TERMINAL}
+        ),
+        "job": job_detail(attributes),
     }

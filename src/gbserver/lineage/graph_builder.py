@@ -121,7 +121,7 @@ def build_graph_dict(
     volume.
 
     The collapsed node keeps a ``run_count`` and the id of one representative run, and
-    the full list stays available from ``GET /lineage/runs?uri=...`` -- indexed, paged,
+    the full list stays available from ``GET /lineage/jobs?uri=...`` -- indexed, paged,
     and never truncated. Nothing is lost, only moved off the graph response.
     """
     artifact_nodes: dict[str, dict] = {}

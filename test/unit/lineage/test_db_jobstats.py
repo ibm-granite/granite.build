@@ -657,11 +657,92 @@ class TestJobTags:
             job_storage=tagged_sink.job_storage,
             tag_storage=self.tags,
         )
-        result = service.list_jobs_by_tags(["build_id=BLD"], required_tags=["team=nlp"])
+        result = service.list_jobs(tags=["build_id=BLD"], required_tags=["team=nlp"])
         assert result["total"] == 1
         assert result["jobs"][0]["job_id"] == "J1"
         assert "team=nlp" in result["jobs"][0]["tags"]
+        assert result["jobs"][0]["inputs"] == [LH_TABLE]
+        assert result["jobs"][0]["outputs"] == [LH_MODEL]
 
-        paged = service.list_jobs_by_tags(["build_id=BLD"], limit=1, offset=1)
+        paged = service.list_jobs(tags=["build_id=BLD"], limit=1, offset=1)
         assert paged["total"] == 2
         assert [job["job_id"] for job in paged["jobs"]] == ["J2"]
+
+    def test_the_read_service_combines_a_uri_with_a_tag(self, tagged_sink, rows):
+        """AND, not OR: the jobs that touched this artifact within this team."""
+        from gbserver.lineage.db_service import DBLineageService
+
+        self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp"])
+        self._write(tagged_sink, "J2", "t2", extra_tags=["team=vision"])
+        service = DBLineageService(
+            storage=rows,
+            job_storage=tagged_sink.job_storage,
+            tag_storage=self.tags,
+        )
+        both = service.list_jobs(uri=LH_TABLE)
+        assert [job["job_id"] for job in both["jobs"]] == ["J1", "J2"]
+        narrowed = service.list_jobs(uri=LH_TABLE, tags=["team=nlp"])
+        assert [job["job_id"] for job in narrowed["jobs"]] == ["J1"]
+        assert narrowed["total"] == 1
+        assert service.list_jobs(uri=LH_MODEL, job_id="J2")["total"] == 1
+        assert (
+            service.list_jobs(uri="s3://b/elsewhere", tags=["team=nlp"])["total"] == 0
+        )
+
+    def test_the_read_service_lists_recent_jobs_with_no_filter(self, tagged_sink, rows):
+        from gbserver.lineage.db_service import DBLineageService
+
+        self._write(tagged_sink, "J1", "t1")
+        self._write(tagged_sink, "J2", "t2")
+        service = DBLineageService(
+            storage=rows,
+            job_storage=tagged_sink.job_storage,
+            tag_storage=self.tags,
+        )
+        result = service.list_jobs()
+        assert result["total"] == 2
+        assert {job["job_id"] for job in result["jobs"]} == {"J1", "J2"}
+
+
+class TestJobsTouchingInSQL:
+    """The SQL overrides that keep a lone-``uri`` listing off the rows.
+
+    Counted in distinct jobs: a many-input job repeats its output on every row, so
+    a row count would overstate it.
+    """
+
+    def _write(self, sink, job_id, sources, targets):
+        sink._write_job(
+            job(job_id, sources, targets), build_id="BLD", target_run_uuid=job_id
+        )
+
+    def test_a_job_repeating_an_artifact_counts_once(self, sink, rows):
+        self._write(
+            sink,
+            "J1",
+            [artifact("i1", LH_TABLE), artifact("i2", "s3://b/i2")],
+            [artifact("o1", LH_MODEL)],
+        )
+        assert len(rows.get_rows_by_job("J1")) == 2
+        assert rows.count_jobs_touching(LH_MODEL) == 1
+        assert rows.get_job_ids_touching(LH_MODEL, limit=10, offset=0) == ["J1"]
+
+    def test_both_directions_are_counted_and_paged(self, sink, rows):
+        for i in range(5):
+            self._write(
+                sink, f"J{i}", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)]
+            )
+        self._write(sink, "K", [artifact("b", LH_MODEL)], [artifact("c", "s3://b/c")])
+        assert rows.count_jobs_touching(LH_MODEL) == 6
+        pages = [rows.get_job_ids_touching(LH_MODEL, limit=4, offset=o) for o in (0, 4)]
+        assert pages == [["J0", "J1", "J2", "J3"], ["J4", "K"]]
+
+    def test_filtering_a_job_set_by_artifact(self, sink, rows):
+        self._write(sink, "J1", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
+        self._write(sink, "J2", [artifact("b", LH_MODEL)], [artifact("c", "s3://b/c")])
+        assert rows.filter_jobs_touching(LH_TABLE, ["J1", "J2"]) == {"J1"}
+        assert rows.filter_jobs_touching(LH_MODEL, ["J1", "J2", "nope"]) == {"J1", "J2"}
+
+    def test_a_terminal_or_empty_uri_touches_nothing(self, rows):
+        assert rows.count_jobs_touching("") == 0
+        assert rows.get_job_ids_touching("", limit=10, offset=0) == []

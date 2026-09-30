@@ -102,6 +102,25 @@ class FakeStorage:
             return []
         return [r for r in self.rows if r.job_id == job_id]
 
+    def get_rows_by_jobs(self, job_ids: list) -> list:
+        if self.fail:
+            raise RuntimeError("storage is down")
+        return [r for r in self.rows if r.job_id in set(job_ids)]
+
+    def _touching(self, uri: str) -> set:
+        if self.fail:
+            raise RuntimeError("storage is down")
+        return {r.job_id for r in self.rows if uri and uri in (r.input, r.output)}
+
+    def count_jobs_touching(self, uri: str) -> int:
+        return len(self._touching(uri))
+
+    def get_job_ids_touching(self, uri: str, limit: int, offset: int) -> list:
+        return sorted(self._touching(uri))[offset : offset + limit]
+
+    def filter_jobs_touching(self, uri: str, job_ids) -> set:
+        return self._touching(uri) & set(job_ids)
+
     # No get_rows_by_build: a build is not a column. A build-seeded graph resolves
     # its artifacts through gb_targets and seeds the ordinary walk with their URIs.
 
@@ -340,18 +359,10 @@ class TestQueryGraph:
         ids = {n["id"] for n in result["nodes"] if n["node_type"] == "artifact"}
         assert {A, B, C} <= ids
 
-    def test_no_filter_returns_recent_activity(self):
-        svc = service(row("J1", A, B), row("J2", B, C))
-        result = svc.query_graph()
-        ids = {n["id"] for n in result["nodes"] if n["node_type"] == "artifact"}
-        assert ids == {A, B, C}
-        assert result["root_id"] == ""
-
-    def test_no_filter_on_an_empty_index_is_an_empty_graph(self):
-        result = service().query_graph()
-        assert result["nodes"] == []
-        assert result["edges"] == []
-        assert result["truncated"] is False
+    def test_no_filter_is_refused(self):
+        """A graph needs somewhere to start; "what ran lately" is the job listing."""
+        with pytest.raises(ValueError):
+            service(row("J1", A, B)).query_graph()
 
     def test_an_unmatchable_uri_is_an_empty_graph_not_none(self):
         """The distinction from get_artifact_graph, which would return None here."""
@@ -396,76 +407,92 @@ class TestQueryGraph:
         assert svc.query_graph(job_id="J1") is not None
 
 
-class TestListRuns:
-    """The drill-down for what the graph collapses.
+class TestListJobs:
+    """The one listing over the index, and the drill-down for what the graph collapses.
 
     ``build_graph_dict`` folds an artifact's in-place rewrites into one node with a
     ``run_count``; real data has one appended 68,905 times. A count with no way to
-    expand it is a dead end, so this is that way -- paged rather than capped, because a
-    flat list has no shape to preserve.
+    expand it is a dead end, so ``uri`` is that way -- paged rather than capped,
+    because a flat list has no shape to preserve.
     """
 
-    def test_it_lists_runs_touching_an_artifact_in_both_directions(self):
+    def test_it_lists_jobs_touching_an_artifact_in_both_directions(self):
         svc = service(row("J1", A, B), row("J2", B, C))
-        result = svc.list_runs(uri=B)
-        assert {r["job_id"] for r in result["runs"]} == {"J1", "J2"}
+        result = svc.list_jobs(uri=B)
+        assert [j["job_id"] for j in result["jobs"]] == ["J1", "J2"]
 
-    def test_the_total_is_exact_for_a_self_rewritten_artifact(self):
-        """Three counts, not two.
+    def test_the_total_counts_jobs_not_rows(self):
+        """A self-rewrite is one job, and so is a many-input job repeating its output."""
+        svc = service(
+            *[row(f"J{i}", A, A) for i in range(10)],
+            row("M", B, C),
+            row("M", A, C),
+        )
+        assert svc.list_jobs(uri=A)["total"] == 11
+        assert svc.list_jobs(uri=C)["total"] == 1
 
-        A self-loop row matches the source query AND the target query, so summing them
-        reports double. On the real hub that meant 137,811 runs for an artifact with
-        68,906 -- wrong by 2x, which is worse than slow.
-        """
-        svc = service(*[row(f"J{i}", A, A) for i in range(10)])
-        assert svc.list_runs(uri=A)["total"] == 10
+    def test_an_entry_carries_its_endpoints_and_job_detail(self):
+        svc = service(
+            row("J1", A, C, attributes={"job": {"name": "train"}}), row("J1", B, C)
+        )
+        entry = svc.list_jobs(uri=A)["jobs"][0]
+        assert entry["inputs"] == [A, B]
+        assert entry["outputs"] == [C]
+        assert entry["job"]["name"] == "train"
 
-    def test_a_self_loop_row_appears_once_in_the_page(self):
-        svc = service(row("J1", A, A))
-        runs = svc.list_runs(uri=A)["runs"]
-        assert len(runs) == 1
-        assert runs[0]["is_self_loop"] is True
+    def test_a_self_rewrite_shows_its_artifact_on_both_sides(self):
+        entry = service(row("J1", A, A)).list_jobs(uri=A)["jobs"][0]
+        assert entry["inputs"] == entry["outputs"] == [A]
+
+    def test_terminals_are_not_endpoints(self):
+        entry = service(row("J1", TERMINAL, A)).list_jobs(job_id="J1")["jobs"][0]
+        assert entry["inputs"] == []
+        assert entry["outputs"] == [A]
 
     def test_paging_walks_the_whole_list(self):
         svc = service(*[row(f"J{i}", A, B) for i in range(10)])
         seen = []
         for offset in range(0, 10, 3):
             seen.extend(
-                r["job_id"]
-                for r in svc.list_runs(uri=A, limit=3, offset=offset)["runs"]
+                j["job_id"]
+                for j in svc.list_jobs(uri=A, limit=3, offset=offset)["jobs"]
             )
-        assert len(set(seen)) == 10
+        assert sorted(seen) == sorted(f"J{i}" for i in range(10))
 
     def test_the_page_size_is_capped(self):
         """A caller must not be able to ask for everything and recreate the problem."""
         svc = service(*[row(f"J{i}", A, B) for i in range(5)])
-        assert svc.list_runs(uri=A, limit=10**9)["limit"] == 1000
+        assert svc.list_jobs(uri=A, limit=10**9)["limit"] == 1000
 
     def test_a_zero_or_negative_limit_is_clamped(self):
         svc = service(row("J1", A, B))
-        assert svc.list_runs(uri=A, limit=0)["limit"] == 1
-        assert svc.list_runs(uri=A, offset=-5)["offset"] == 0
+        assert svc.list_jobs(uri=A, limit=0)["limit"] == 1
+        assert svc.list_jobs(uri=A, offset=-5)["offset"] == 0
 
     def test_by_job_id(self):
         svc = service(row("J1", A, B), row("J2", B, C))
-        result = svc.list_runs(job_id="J1")
-        assert [r["job_id"] for r in result["runs"]] == ["J1"]
+        result = svc.list_jobs(job_id="J1")
+        assert [j["job_id"] for j in result["jobs"]] == ["J1"]
         assert result["total"] == 1
 
-    def test_an_unresolvable_uri_is_empty_not_an_error(self):
-        result = service(row("J1", A, B)).list_runs(uri="bogus://x")
-        assert result == {"runs": [], "total": 0, "limit": 100, "offset": 0}
+    def test_an_unknown_job_id_is_empty(self):
+        assert service(row("J1", A, B)).list_jobs(job_id="nope")["total"] == 0
 
-    def test_no_filter_is_empty(self):
-        assert service(row("J1", A, B)).list_runs()["runs"] == []
+    def test_filters_combine_with_and(self):
+        svc = service(row("J1", A, B), row("J2", B, C))
+        assert [j["job_id"] for j in svc.list_jobs(uri=B, job_id="J2")["jobs"]] == [
+            "J2"
+        ]
+        assert svc.list_jobs(uri=A, job_id="J2")["total"] == 0
+
+    def test_a_tag_filter_with_no_tag_storage_is_empty(self):
+        """Without the tag table a tag filter cannot be answered; it must not match all."""
+        assert service(row("J1", A, B)).list_jobs(tags=["build_id=X"])["total"] == 0
+
+    def test_an_unresolvable_uri_is_empty_not_an_error(self):
+        result = service(row("J1", A, B)).list_jobs(uri="bogus://x")
+        assert result == {"jobs": [], "total": 0, "limit": 100, "offset": 0}
 
     def test_a_storage_failure_does_not_raise(self):
         svc = service(row("J1", A, B), fail=True)
-        assert svc.list_runs(uri=A)["runs"] == []
-
-    def test_an_entry_carries_its_endpoints_and_job_detail(self):
-        svc = service(row("J1", A, B, attributes={"job": {"name": "train"}}))
-        entry = svc.list_runs(uri=A)["runs"][0]
-        assert entry["source"] == A
-        assert entry["target"] == B
-        assert entry["job"]["name"] == "train"
+        assert svc.list_jobs(uri=A)["jobs"] == []

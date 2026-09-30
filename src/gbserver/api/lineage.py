@@ -34,7 +34,6 @@ from gbserver.lineage.openlineage_models import (
     LineageJobsResponse,
     LineageNodeRef,
     LineageQueryRequest,
-    LineageRunsResponse,
     PaginatedResponse,
     TagSearchRequest,
 )
@@ -476,7 +475,7 @@ def query_lineage_graph_get(
     depth: int = 10,
     max_nodes_per_level: Optional[int] = None,
 ) -> LineageGraphResponse:
-    """Query the lineage graph by URI, by job, or with no filter at all.
+    """Query the lineage graph by URI, by job, or both; one of them is required.
 
     The HTTP surface for :func:`query_lineage_graph`; see it for the semantics.
     """
@@ -495,7 +494,7 @@ def query_lineage_graph_get(
 def query_lineage_graph(
     request: Request, body: LineageQueryRequest
 ) -> LineageGraphResponse:
-    """Query the lineage graph with any combination of optional filters.
+    """Query the lineage graph seeded by an artifact, a job, or both.
 
     One entry point so a caller asks however it holds the artifact rather than the
     index dictating a lookup shape:
@@ -504,7 +503,9 @@ def query_lineage_graph(
       and the runtime's own URI normalize to one artifact.
     - ``job_id`` -- seeded from every endpoint of that execution.
     - both -- the union of their seeds.
-    - neither -- the most recent lineage activity, capped.
+
+    One of the two is required -- a 400 otherwise. A graph needs somewhere to start;
+    "what ran lately" is ``GET /jobs`` with no filter.
 
     Unlike ``POST /artifact`` this returns the node/edge graph directly, with a
     ``depth`` per node, instead of re-projecting it into run-centred entries. It also
@@ -538,6 +539,11 @@ def query_lineage_graph(
     an artifact URI or a job name is ever itself a secret, this route is the wrong
     place to keep it.
     """
+    if not body.uri and not body.job_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either uri or job_id must be provided",
+        )
     if body.direction not in ("downstream", "upstream", "both"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -568,78 +574,49 @@ def query_lineage_graph(
     )
 
 
-@lineage_api.get("/runs", tags=["lineage-index"])
-def list_lineage_runs(
+@lineage_api.get("/jobs", tags=["lineage-index"])
+def list_lineage_jobs(
     request: Request,
     uri: Optional[str] = None,
     job_id: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> LineageRunsResponse:
-    """List the job executions touching one artifact, paged.
-
-    The drill-down for what the graph deliberately does not carry. A graph response
-    collapses an artifact's in-place rewrites into a single node with a ``run_count``:
-    real data has a dataset appended 68,905 times, and one run node per append produced
-    a 55 MB response describing one artifact. That count needs somewhere to lead, and
-    this is it.
-
-    ``uri`` matches a run that consumed the artifact **or** produced it, since "the runs
-    touching this" means both; ``job_id`` lists one execution's rows instead. Both are
-    single indexed lookups.
-
-    Paged rather than capped, unlike the graph: a flat list has no shape to preserve, so
-    a caller can walk the whole thing. ``total`` is the unpaged count.
-
-    Reads the lineage index directly, whatever the configured provider.
-
-    Cross-space by the same decision as the graph routes -- see
-    :func:`query_lineage_graph` for why a lineage answer is not filtered per space, and
-    what that costs.
-    """
-    if not uri and not job_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either uri or job_id must be provided",
-        )
-    service = _get_index_service()
-
-    result = service.list_runs(uri=uri, job_id=job_id, limit=limit, offset=offset)
-    return LineageRunsResponse(
-        runs=result.get("runs", []),
-        total=result.get("total", 0),
-        limit=result.get("limit", limit),
-        offset=result.get("offset", offset),
-    )
-
-
-@lineage_api.get("/jobs", tags=["lineage-index"])
-def list_lineage_jobs_by_tags(
-    request: Request,
     tags: List[str] = Query(default_factory=list),
     required_tags: List[str] = Query(default_factory=list),
     limit: int = 100,
     offset: int = 0,
 ) -> LineageJobsResponse:
-    """List the job executions matching a tag filter, paged.
+    """List the job executions matching every given filter, paged.
 
-    The index's counterpart to W&B run-tag filtering: a job matches when it carries
-    **any** of ``tags`` and **all** of ``required_tags``, e.g.
-    ``?tags=build_id=<uuid>`` or ``?required_tags=team=nlp&required_tags=space_name=s``.
-    Tags are free-form and matched exactly. A build is one kind of tag among many.
+    Filters AND together, and each is optional:
 
-    Reads the lineage index directly, whatever the configured provider. Cross-space by the same decision as the other lineage routes -- see
-    :func:`query_lineage_graph`.
+    - ``uri`` -- jobs that consumed or produced the artifact. The drill-down for a
+      graph node's ``run_count``: the graph collapses an artifact's in-place
+      rewrites into one node, and this lists them.
+    - ``job_id`` -- one execution.
+    - ``tags`` (match any) / ``required_tags`` (match all) -- e.g.
+      ``?tags=build_id=<uuid>``. Tags are free-form and matched exactly.
+    - none -- the most recently recorded jobs.
+
+    So ``?uri=X&tags=build_id=Y`` is "the jobs that touched X within build Y". Each
+    entry carries the job's record, its tags and the artifacts it read and wrote.
+
+    A GET because every filter is a scalar or a flat list; there is nothing a body
+    would carry that a query string cannot, and a GET stays linkable and cacheable.
+
+    Paged rather than capped, unlike the graph: a flat list has no shape to
+    preserve. ``total`` is the unpaged count of distinct jobs.
+
+    Reads the lineage index directly, whatever the configured provider. Cross-space
+    by the same decision as the graph -- see :func:`query_lineage_graph` for why a
+    lineage answer is not filtered per space, and what that costs.
     """
-    if not tags and not required_tags:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one of tags or required_tags must be provided",
-        )
-
     service = _get_index_service()
 
-    result = service.list_jobs_by_tags(
-        tags, required_tags=required_tags, limit=limit, offset=offset
+    result = service.list_jobs(
+        uri=uri,
+        job_id=job_id,
+        tags=tags,
+        required_tags=required_tags,
+        limit=limit,
+        offset=offset,
     )
     return LineageJobsResponse(**result)

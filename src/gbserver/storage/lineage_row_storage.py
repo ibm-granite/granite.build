@@ -21,7 +21,7 @@ each direction, seeding by build, and a presence check for dedup. Each is a sing
 indexed query, so a graph walk costs one query per level rather than a scan.
 """
 
-from typing import List
+from typing import Iterable, List, Set
 
 from gbserver.storage.storage import BaseItemStorage, IItemStorage
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
@@ -43,8 +43,24 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         """Return every row of one job execution."""
         raise NotImplementedError
 
+    def get_rows_by_jobs(self, job_ids: List[str]) -> List[StoredLineageRow]:
+        """Return every row of several job executions, in one query."""
+        raise NotImplementedError
+
     def has_rows_for_job(self, job_id: str) -> bool:
         """Whether any row is already recorded for a job."""
+        raise NotImplementedError
+
+    def count_jobs_touching(self, uri: str) -> int:
+        """Count the distinct jobs that consumed or produced ``uri``."""
+        raise NotImplementedError
+
+    def get_job_ids_touching(self, uri: str, limit: int, offset: int) -> List[str]:
+        """Return one page of the distinct jobs touching ``uri``, by ``job_id``."""
+        raise NotImplementedError
+
+    def filter_jobs_touching(self, uri: str, job_ids: Iterable[str]) -> Set[str]:
+        """Return which of ``job_ids`` consumed or produced ``uri``."""
         raise NotImplementedError
 
     def get_recorded_jobs(self, job_ids: List[str]) -> set:
@@ -149,6 +165,57 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         if not job_id:
             return []
         return self.get_by_where({"job_id": job_id})
+
+    def get_rows_by_jobs(self, job_ids: List[str]) -> List[StoredLineageRow]:
+        """Return every row of several job executions, in one batched query."""
+        wanted = self._batchable(list(job_ids))
+        if not wanted:
+            return []
+        return self.get_by_where({"job_id": wanted})
+
+    def count_jobs_touching(self, uri: str) -> int:
+        """Count the distinct jobs that consumed or produced ``uri``.
+
+        Jobs, not rows: a job can touch one artifact in several of its rows (an
+        output is repeated on every row of a many-input job), so a row count
+        overstates it. This fallback walks the rows; the SQL backend
+        overrides it with one ``COUNT(DISTINCT job_id)``.
+        """
+        return len(self._jobs_touching(uri))
+
+    def get_job_ids_touching(self, uri: str, limit: int, offset: int) -> List[str]:
+        """Return one page of the distinct jobs touching ``uri``, ordered by ``job_id``.
+
+        Ordered by ``job_id`` so paging is stable and matches the tag listing. See
+        :meth:`count_jobs_touching` for this fallback's cost.
+        """
+        return sorted(self._jobs_touching(uri))[offset : offset + limit]
+
+    def filter_jobs_touching(self, uri: str, job_ids: Iterable[str]) -> Set[str]:
+        """Return which of ``job_ids`` consumed or produced ``uri``.
+
+        Two indexed queries bounded by ``job_ids``, so a narrow filter -- a build's
+        tag -- stays cheap however many runs the artifact has.
+        """
+        wanted = self._batchable(list(job_ids))
+        if not wanted or not uri or uri == TERMINAL:
+            return set()
+        return {
+            row.job_id
+            for column in ("input", "output")
+            for row in self.get_by_where({column: uri, "job_id": wanted})
+        }
+
+    def _jobs_touching(self, uri: str) -> Set[str]:
+        """Every job with ``uri`` as an input or an output, read row by row."""
+        if not uri or uri == TERMINAL:
+            return set()
+        return {
+            row.job_id
+            for column in ("input", "output")
+            for page in self.get_paged({column: uri})
+            for row in page
+        }
 
     def has_rows_for_job(self, job_id: str) -> bool:
         """Whether any row is already recorded for a job."""

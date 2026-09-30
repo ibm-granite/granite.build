@@ -342,7 +342,7 @@ def test_query_graph_rejects_an_unknown_direction():
     with pytest.raises(HTTPException) as caught:
         lineage_mod.query_lineage_graph(
             _fake_request("member", "member@example.com"),
-            LineageQueryRequest(direction="sideways"),
+            LineageQueryRequest(uri="s3://b/x", direction="sideways"),
         )
     assert caught.value.status_code == 400
 
@@ -351,8 +351,7 @@ def test_index_routes_read_the_index_whatever_the_provider():
     """The index is filled by the lineage-indexer, so a wandb/none provider still has data."""
     service = _db_service(
         query_graph=lambda **_kw: {"root_id": "", "nodes": [], "edges": []},
-        list_runs=lambda **_kw: {"runs": [], "total": 0},
-        list_jobs_by_tags=lambda *_a, **_kw: {
+        list_jobs=lambda **_kw: {
             "jobs": [],
             "total": 0,
             "limit": 100,
@@ -367,12 +366,23 @@ def test_index_routes_read_the_index_whatever_the_provider():
         ),
     ):
         lineage_mod.query_lineage_graph(req, LineageQueryRequest(uri="s3://b/x"))
-        lineage_mod.list_lineage_runs(req, uri="s3://b/x")
-        lineage_mod.list_lineage_jobs_by_tags(req, tags=["build_id=B"], required_tags=[])
+        lineage_mod.list_lineage_jobs(
+            req, uri="s3://b/x", tags=["build_id=B"], required_tags=[]
+        )
 
 
-def test_query_graph_accepts_a_request_with_no_filters():
-    """An unfiltered query is legitimate: it means "show me recent activity"."""
+def test_query_graph_requires_a_uri_or_a_job_id():
+    """A graph needs somewhere to start; "what ran lately" is GET /jobs."""
+    service = _db_service(query_graph=lambda **_kw: pytest.fail("must not walk"))
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.query_lineage_graph_get(
+                _fake_request("member", "member@example.com")
+            )
+    assert caught.value.status_code == 400
+
+
+def test_query_graph_fills_in_its_defaults():
     seen = {}
 
     def fake(**kwargs):
@@ -382,11 +392,12 @@ def test_query_graph_accepts_a_request_with_no_filters():
     service = _db_service(query_graph=fake)
     with patch.object(lineage_mod, "_get_index_service", return_value=service):
         resp = lineage_mod.query_lineage_graph(
-            _fake_request("member", "member@example.com"), LineageQueryRequest()
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(job_id="J1"),
         )
     assert seen == {
         "uri": None,
-        "job_id": None,
+        "job_id": "J1",
         "direction": "both",
         "max_depth": 10,
         # None, not a number: the per-level ceiling is the service's default unless a
@@ -675,45 +686,66 @@ def test_artifact_graph_still_filters_per_space():
     assert [r.job_namespace.split("/", 1)[0] for r in resp.runs] == [MY_SPACE]
 
 
-# ----------------------------------------------------------- GET /lineage/runs
+# ----------------------------------------------------------- GET /lineage/jobs
 
 
-def test_runs_requires_a_uri_or_a_job_id():
-    with pytest.raises(HTTPException) as caught:
-        lineage_mod.list_lineage_runs(_fake_request("member", "member@example.com"))
-    assert caught.value.status_code == 400
+def test_jobs_accepts_a_request_with_no_filters():
+    """An unfiltered listing is legitimate: it means "the most recent jobs"."""
+    service = _db_service(
+        list_jobs=lambda **_kw: {"jobs": [], "total": 0, "limit": 100, "offset": 0}
+    )
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        resp = lineage_mod.list_lineage_jobs(
+            _fake_request("member", "member@example.com"), tags=[], required_tags=[]
+        )
+    assert resp.total == 0
 
 
-def test_runs_passes_its_paging_through():
+def test_jobs_passes_every_filter_and_its_paging_through():
     seen = {}
 
     def fake(**kwargs):
         seen.update(kwargs)
-        return {"runs": [], "total": 0, "limit": 25, "offset": 50}
+        return {
+            "jobs": [{"job_id": "J1", "tags": ["build_id=B", "team=nlp"]}],
+            "total": 1,
+            "limit": 10,
+            "offset": 50,
+        }
 
-    service = _db_service(list_runs=fake)
+    service = _db_service(list_jobs=fake)
     with patch.object(lineage_mod, "_get_index_service", return_value=service):
-        resp = lineage_mod.list_lineage_runs(
+        resp = lineage_mod.list_lineage_jobs(
             _fake_request("member", "member@example.com"),
             uri="s3://b/x",
-            limit=25,
+            job_id="J1",
+            tags=["build_id=B"],
+            required_tags=["team=nlp"],
+            limit=10,
             offset=50,
         )
-    assert seen == {"uri": "s3://b/x", "job_id": None, "limit": 25, "offset": 50}
-    assert resp.limit == 25
+    assert seen == {
+        "uri": "s3://b/x",
+        "job_id": "J1",
+        "tags": ["build_id=B"],
+        "required_tags": ["team=nlp"],
+        "limit": 10,
+        "offset": 50,
+    }
+    assert resp.limit == 10
     assert resp.offset == 50
+    assert resp.jobs[0].tags == ["build_id=B", "team=nlp"]
 
 
-def test_runs_reports_the_total_so_a_caller_can_page():
+def test_jobs_reports_the_total_so_a_caller_can_page():
     """The count is what makes a collapsed graph node expandable."""
     service = _db_service(
-        list_runs=lambda **_kw: {
-            "runs": [
+        list_jobs=lambda **_kw: {
+            "jobs": [
                 {
                     "job_id": "J1",
-                    "source": "s3://b/x",
-                    "target": "s3://b/x",
-                    "is_self_loop": True,
+                    "inputs": ["s3://b/x"],
+                    "outputs": ["s3://b/x"],
                     "job": {"name": "append"},
                     "source_system": "lakehouse",
                 }
@@ -724,52 +756,12 @@ def test_runs_reports_the_total_so_a_caller_can_page():
         }
     )
     with patch.object(lineage_mod, "_get_index_service", return_value=service):
-        resp = lineage_mod.list_lineage_runs(
-            _fake_request("member", "member@example.com"), uri="s3://b/x"
+        resp = lineage_mod.list_lineage_jobs(
+            _fake_request("member", "member@example.com"),
+            uri="s3://b/x",
+            tags=[],
+            required_tags=[],
         )
     assert resp.total == 68906
-    assert len(resp.runs) == 1
-    assert resp.runs[0].is_self_loop is True
-    assert resp.runs[0].job["name"] == "append"
-
-
-# ----------------------------------------------------------- GET /lineage/jobs
-
-
-def test_jobs_requires_a_tag_filter():
-    with pytest.raises(HTTPException) as caught:
-        lineage_mod.list_lineage_jobs_by_tags(
-            _fake_request("member", "member@example.com"), tags=[], required_tags=[]
-        )
-    assert caught.value.status_code == 400
-
-
-def test_jobs_passes_the_filter_through():
-    seen = {}
-
-    def fake(tags, **kwargs):
-        seen.update(tags=tags, **kwargs)
-        return {
-            "jobs": [{"job_id": "J1", "tags": ["build_id=B", "team=nlp"]}],
-            "total": 1,
-            "limit": 10,
-            "offset": 0,
-        }
-
-    service = _db_service(list_jobs_by_tags=fake)
-    with patch.object(lineage_mod, "_get_index_service", return_value=service):
-        resp = lineage_mod.list_lineage_jobs_by_tags(
-            _fake_request("member", "member@example.com"),
-            tags=["build_id=B"],
-            required_tags=["team=nlp"],
-            limit=10,
-            offset=0,
-        )
-    assert seen == {
-        "tags": ["build_id=B"],
-        "required_tags": ["team=nlp"],
-        "limit": 10,
-        "offset": 0,
-    }
-    assert resp.total == 1
-    assert resp.jobs[0].tags == ["build_id=B", "team=nlp"]
+    assert resp.jobs[0].inputs == resp.jobs[0].outputs == ["s3://b/x"]
+    assert resp.jobs[0].job["name"] == "append"

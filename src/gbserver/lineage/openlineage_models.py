@@ -168,11 +168,12 @@ class BuildGraphResponse(BaseModel):
 
 
 class LineageQueryRequest(BaseModel):
-    """A lineage query where every filter is optional.
+    """A lineage query seeded by an artifact, a job, or both.
 
     One entry point so a caller can ask however it happens to hold the artifact:
-    by URI in any spelling, by the job that produced it, or with nothing at all.
-    Both filters map to an indexed text column, so any combination is one predicate.
+    by URI in any spelling, or by the job that produced it. Each field is optional
+    on its own, but one of the two is required -- the route answers 400 otherwise.
+    Both map to an indexed text column, so either combination is one predicate.
 
     There is deliberately no ``build_id`` filter: the index has no such column
     (a build is granite.build's own concept, empty on every imported row), and a
@@ -221,32 +222,8 @@ class LineageGraphResponse(BaseModel):
     unexpanded: int = 0
 
 
-class LineageRunEntry(BaseModel):
-    """One job execution touching an artifact, as the run listing reports it."""
-
-    job_id: str
-    source: str = ""
-    target: str = ""
-    is_self_loop: bool = False
-    job: Dict[str, Any] = Field(default_factory=dict)
-    source_system: str = ""
-
-
-class LineageRunsResponse(BaseModel):
-    """A page of the runs touching one artifact.
-
-    The drill-down for a graph node the walk collapsed. ``total`` is the unpaged count,
-    so a caller can tell how much is left rather than guessing from a short page.
-    """
-
-    runs: List[LineageRunEntry] = Field(default_factory=list)
-    total: int = 0
-    limit: int = 100
-    offset: int = 0
-
-
 class LineageJobEntry(BaseModel):
-    """One job execution matched by a tag filter."""
+    """One job execution in the job listing, with what it read and wrote."""
 
     job_id: str
     job_namespace: str = ""
@@ -256,10 +233,17 @@ class LineageJobEntry(BaseModel):
     status: str = ""
     started_at: str = ""
     tags: List[str] = Field(default_factory=list)
+    inputs: List[str] = Field(default_factory=list)
+    outputs: List[str] = Field(default_factory=list)
+    job: Dict[str, Any] = Field(default_factory=dict)
 
 
 class LineageJobsResponse(BaseModel):
-    """A page of the jobs matching a tag filter; ``total`` is the unpaged count."""
+    """A page of the jobs matching a filter.
+
+    ``total`` is the unpaged count of distinct jobs, so a caller can tell how much is
+    left rather than guessing from a short page.
+    """
 
     jobs: List[LineageJobEntry] = Field(default_factory=list)
     total: int = 0
