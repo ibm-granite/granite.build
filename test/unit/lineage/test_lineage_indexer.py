@@ -197,12 +197,21 @@ def test_non_lineage_run_advances_checkpoint_without_writing():
 # -- W&B seeding ------------------------------------------------------------
 
 
-def test_wandb_seed_by_job_id_checkpoints_at_its_first_run():
-    ix, api, _ = _indexer([_run("r1", D1, job_id="j1")])
+def test_wandb_seed_by_timestamp_is_spelled_like_created_at():
+    """A seed reads like a checkpoint a scan wrote: UTC with a trailing Z."""
+    ix, api, _ = _indexer([])
     storage = _storage()
-    assert ix.seed_if_absent(storage, "j1") is True
-    assert api.runs.call_args.kwargs["filters"] == {"config.job_id": "j1"}
+    assert ix.seed_if_absent(storage, "2026-01-01T03:00:00+03:00") is True
     assert _checkpoint(storage)["timestamp"] == D1
+    api.runs.assert_not_called()
+
+
+def test_wandb_seeded_timestamp_is_the_scan_filter():
+    ix, api, _ = _indexer([])
+    storage = _storage()
+    ix.seed_if_absent(storage, D2)
+    ix.scan_once(storage)
+    assert api.runs.call_args.kwargs["filters"] == {"createdAt": {"$gte": D2}}
 
 
 def test_seed_never_overwrites_and_all_writes_nothing():
@@ -211,14 +220,24 @@ def test_seed_never_overwrites_and_all_writes_nothing():
     assert ix.seed_if_absent(storage, "all") is False
     assert storage.kv_pair_storage.values == {}
     storage.kv_pair_storage.set_value(idx.INDEXER_CHECKPOINT_KEY, {"timestamp": D1})
-    assert ix.seed_if_absent(storage, "j1") is False
+    assert ix.seed_if_absent(storage, D2) is False
+    assert _checkpoint(storage)["timestamp"] == D1
     api.runs.assert_not_called()
 
 
-def test_wandb_seed_unknown_job_id_raises():
+def test_seed_that_is_not_a_timestamp_raises():
+    """A job_id (the old flag's value) is refused, not silently read as a date."""
+    ix, _, _ = _indexer([])
+    storage = _storage()
+    with pytest.raises(idx.LineageSeedError):
+        ix.seed_if_absent(storage, "3cd41742-fb87-4ead-9fce-84dba81f3edf")
+    assert storage.kv_pair_storage.values == {}
+
+
+def test_wandb_seed_from_latest_with_no_runs_raises():
     ix, _, _ = _indexer([])
     with pytest.raises(idx.LineageSeedError):
-        ix.seed_if_absent(_storage(), "nope")
+        ix.seed_if_absent(_storage(), "from-latest")
 
 
 # -- gb_targets scanning (standalone) ---------------------------------------
@@ -313,13 +332,24 @@ def test_already_indexed_and_artifactless_targets_are_not_rewritten():
 # -- gb_targets seeding -----------------------------------------------------
 
 
-def test_target_seed_by_job_id_anchors_at_its_finished_at():
+def test_target_seed_by_timestamp_keeps_its_offset():
+    """gb_targets' form: the aware isoformat, never rewritten to UTC."""
     storage = _storage()
-    storage.target_storage = MagicMock()
-    storage.target_storage.get_by_uuid.return_value = _target("t1", 5)
     ix, _, _ = _target_indexer([])
-    assert ix.seed_if_absent(storage, "t1") is True
-    assert _checkpoint(storage)["timestamp"] == _ts(5)
+    assert ix.seed_if_absent(storage, "2026-01-01T02:05:00+02:00") is True
+    assert _checkpoint(storage)["timestamp"] == "2026-01-01T02:05:00+02:00"
+
+
+def test_target_seed_indexes_from_that_instant_inclusive():
+    storage = _storage()
+    ix, sink, page = _target_indexer([_target("t1", 1), _target("t2", 5)])
+    ix.seed_if_absent(storage, _ts(5))
+    with page:
+        ix.scan_once(storage)
+    indexed = [
+        c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
+    ]
+    assert "t2" in indexed
 
 
 def test_target_seed_from_latest_takes_newest_finished():
@@ -330,13 +360,13 @@ def test_target_seed_from_latest_takes_newest_finished():
     assert _checkpoint(storage)["timestamp"] == _ts(2)
 
 
-def test_target_seed_unknown_job_id_raises():
+def test_target_seed_naive_timestamp_is_read_as_local():
     storage = _storage()
-    storage.target_storage = MagicMock()
-    storage.target_storage.get_by_uuid.return_value = None
     ix, _, _ = _target_indexer([])
-    with pytest.raises(idx.LineageSeedError):
-        ix.seed_if_absent(storage, "nope")
+    ix.seed_if_absent(storage, "2026-01-01T00:00:00")
+    stored = datetime.fromisoformat(_checkpoint(storage)["timestamp"])
+    assert stored.tzinfo is not None
+    assert stored.replace(tzinfo=None) == datetime(2026, 1, 1)
 
 
 # -- DBLineageStore.write_job ----------------------------------------------

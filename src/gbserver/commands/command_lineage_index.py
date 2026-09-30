@@ -43,30 +43,31 @@ logger = get_logger(__name__)
     help="Seconds between index scans.",
 )
 @click.option(
-    "--base-job-id",
+    "--base-timestamp",
     required=False,
     type=str,
     default=None,
     help=(
-        "Seed the indexer checkpoint when absent: 'from-latest', 'all', or a "
-        "job_id. Never overwrites an existing checkpoint."
+        "Seed the indexer checkpoint when absent: 'from-latest', 'all', or an "
+        "ISO-8601 timestamp (naive is local time). Jobs at or after it are "
+        "indexed. Never overwrites an existing checkpoint."
     ),
 )
 @pass_environment
-def cli(ctx: CliEnvironment, interval: float, base_job_id: str):
+def cli(ctx: CliEnvironment, interval: float, base_timestamp: str):
     """Start the lineage indexer."""
     source = resolve_indexer_source()
     indexer = create_indexer(source, monitoring_interval=interval)
 
-    if base_job_id is not None:
-        if not base_job_id.strip():
+    if base_timestamp is not None:
+        if not base_timestamp.strip():
             raise click.ClickException(
-                "--base-job-id was given an empty value; pass 'from-latest', "
-                "'all', or a job_id."
+                "--base-timestamp was given an empty value; pass 'from-latest', "
+                "'all', or an ISO-8601 timestamp."
             )
         if indexer is not None:
             try:
-                indexer.seed_if_absent(get_admin_storage(), base_job_id)
+                indexer.seed_if_absent(get_admin_storage(), base_timestamp.strip())
             except LineageSeedError as exc:
                 raise click.ClickException(str(exc)) from exc
 

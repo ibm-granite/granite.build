@@ -39,8 +39,11 @@ server was started:
     (``GBSERVER_LINEAGE_PROVIDER=db``) source and sink are the same table, so the
     indexer says so and does nothing; ``none`` has nothing to read.
 
-No checkpoint means "from the beginning". ``--base-job-id`` seeds one at a job
-(``from-latest``, ``all`` or a ``job_id``), only when none exists yet.
+No checkpoint means "from the beginning". ``--base-timestamp`` seeds one
+(``from-latest``, ``all`` or an ISO-8601 timestamp), only when none exists yet.
+A timestamp is the natural anchor: it is what the checkpoint already holds, it
+means the same thing in both sources, and "index everything since this date" is
+the question an operator actually has.
 """
 
 import threading
@@ -211,7 +214,12 @@ class JobLineageIndexer:
     def _latest_job(self, storage: SingletonAdminStorage) -> Optional[Any]:
         raise NotImplementedError
 
-    def _find_job(self, storage: SingletonAdminStorage, job_id: str) -> Optional[Any]:
+    def _format_timestamp(self, instant: datetime) -> str:
+        """An instant spelled as this source's jobs spell ``_timestamp``.
+
+        A seeded checkpoint must read like one a scan wrote, so the same mark
+        does not look different depending on who wrote it.
+        """
         raise NotImplementedError
 
     # -- Checkpoint ----------------------------------------------------------
@@ -224,20 +232,30 @@ class JobLineageIndexer:
         return value
 
     def _write_checkpoint(self, storage: SingletonAdminStorage, job: Any) -> None:
+        self._write_timestamp(storage, self._timestamp(job))
+
+    @staticmethod
+    def _write_timestamp(storage: SingletonAdminStorage, timestamp: str) -> None:
         storage.kv_pair_storage.set_value(
             INDEXER_CHECKPOINT_KEY,
-            {"timestamp": self._timestamp(job), "version": INDEXER_CHECKPOINT_VERSION},
+            {"timestamp": timestamp, "version": INDEXER_CHECKPOINT_VERSION},
         )
 
     def seed_if_absent(self, storage: SingletonAdminStorage, spec: str) -> bool:
-        """Place the checkpoint at a job, only when there is none yet.
+        """Place the checkpoint at a timestamp, only when there is none yet.
 
-        ``spec`` is ``from-latest``, ``all``, or a ``job_id``. ``all`` writes
-        nothing: no checkpoint already means "from the beginning". Seed-if-absent
-        so the flag is safe to leave in a pod spec. Returns True if written.
+        ``spec`` is ``from-latest`` (the newest job's timestamp), ``all``, or an
+        ISO-8601 timestamp; a timestamp without an offset is read as local time,
+        like every other naive instant here. ``all`` writes nothing: no
+        checkpoint already means "from the beginning". Seed-if-absent so the flag
+        is safe to leave in a pod spec. Returns True if written.
+
+        Scans read from the checkpoint inclusively, so a job at exactly the
+        seeded instant is indexed.
 
         Raises:
-            LineageSeedError: When the anchor resolves to no job.
+            LineageSeedError: When ``from-latest`` finds no job, or ``spec`` is
+                not a timestamp.
         """
         existing = self.read_checkpoint(storage)
         if existing is not None:
@@ -254,20 +272,25 @@ class JobLineageIndexer:
 
         if spec == SEED_FROM_LATEST:
             job = self._latest_job(storage)
-            scope = "the source"
+            if job is None:
+                raise LineageSeedError(
+                    "No job found in the source; nothing to anchor a checkpoint at."
+                )
+            timestamp = self._timestamp(job)
         else:
-            job = self._find_job(storage, spec)
-            scope = f"job_id {spec}"
-        if job is None:
-            raise LineageSeedError(
-                f"No job found for {scope}; nothing to anchor a checkpoint at."
-            )
-        self._write_checkpoint(storage, job)
+            try:
+                instant = _parse_ts(spec)
+            except ValueError as exc:
+                raise LineageSeedError(
+                    f"{spec!r} is not '{SEED_FROM_LATEST}', '{SEED_ALL}', or an "
+                    "ISO-8601 timestamp (e.g. 2026-09-01T00:00:00+00:00)."
+                ) from exc
+            timestamp = self._format_timestamp(instant)
+        self._write_timestamp(storage, timestamp)
         logger.info(
-            "Seeded lineage index checkpoint %s at %s (job %s).",
+            "Seeded lineage index checkpoint %s at %s.",
             INDEXER_CHECKPOINT_KEY,
-            self._timestamp(job),
-            self._item_id(job),
+            timestamp,
         )
         return True
 
@@ -409,13 +432,9 @@ class TargetLineageIndexer(JobLineageIndexer):
                 return max(finished, key=lambda t: as_aware(t.finished_at))
             page_index += 1
 
-    def _find_job(
-        self, storage: SingletonAdminStorage, job_id: str
-    ) -> Optional[StoredTargetRun]:
-        found = storage.target_storage.get_by_uuid(job_id)
-        if not isinstance(found, StoredTargetRun) or found.finished_at is None:
-            return None
-        return found
+    def _format_timestamp(self, instant: datetime) -> str:
+        # Same form as _timestamp: the aware isoformat, offset kept as given.
+        return as_aware(instant).isoformat()
 
 
 def _tags_of(run: Any) -> Dict[str, str]:
@@ -561,7 +580,7 @@ class WandBLineageIndexer(JobLineageIndexer):
     def _latest_job(self, storage: SingletonAdminStorage) -> Optional[Any]:
         return self._first_run(order="-created_at", per_page=1)
 
-    def _find_job(self, storage: SingletonAdminStorage, job_id: str) -> Optional[Any]:
-        return self._first_run(
-            filters={"config.job_id": job_id}, order="+created_at", per_page=1
-        )
+    def _format_timestamp(self, instant: datetime) -> str:
+        # W&B's createdAt is UTC with a trailing Z, and the $gte filter compares
+        # against it; spell a seed the same way.
+        return instant.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
