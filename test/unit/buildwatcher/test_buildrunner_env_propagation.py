@@ -75,12 +75,14 @@ def test_forwarded_settings_are_in_the_extra_env_dict():
     """Each forwarded knob is a value in the extra-env dict, keyed by its name const."""
     pairs = _extra_env_pairs()
     for key_const, value_const in _FORWARDED_PAIRS.items():
-        assert pairs.get(key_const) == value_const, (
-            f"{key_const} not forwarded to the build runner; found {pairs}"
-        )
+        assert (
+            pairs.get(key_const) == value_const
+        ), f"{key_const} not forwarded to the build runner; found {pairs}"
 
 
-@pytest.mark.parametrize("name", sorted(set(_FORWARDED_PAIRS) | set(_FORWARDED_PAIRS.values())))
+@pytest.mark.parametrize(
+    "name", sorted(set(_FORWARDED_PAIRS) | set(_FORWARDED_PAIRS.values()))
+)
 def test_forwarded_names_are_imported(name):
     """A name used in the dict must be imported, or the module fails at import."""
     tree = ast.parse(_BUILDRUNNERJOB.read_text(encoding="utf-8"))

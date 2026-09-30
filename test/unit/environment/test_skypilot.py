@@ -1961,7 +1961,11 @@ class TestInlineConfigMaterialization:
         """When the launched alias matches no SSH host, the rotator has nothing to
         rotate through, so rotate() is a no-op (a true outage surfaces via reraise)."""
         env = self._env(
-            {"cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": ["h1", "h2"]}]}}
+            {
+                "cluster_ssh_configs": {
+                    "slurm": [{"Host": "c", "HostName": ["h1", "h2"]}]
+                }
+            }
         )
         with patch("gbserver.environment.skypilot_config._merge_selected_hosts"):
             rotator = await env._materialize_ssh_for_launch("slurm", "other")
