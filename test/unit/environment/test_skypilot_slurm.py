@@ -852,6 +852,93 @@ class TestProvisionRetry:
         mock_sky.down.assert_called_once()
         assert "td-1" not in slurm_env._cluster_names
 
+    @staticmethod
+    def _failover_env():
+        """A slurm env whose ``bluevela`` cluster lists two candidate login nodes."""
+        return Skypilot(
+            event_q=asyncio.Queue(),
+            environment_config=EnvironmentConfig(
+                name="test-failover",
+                type="Skypilot",
+                config={
+                    "default_cloud": "slurm",
+                    "idle_minutes_to_autostop": 0,
+                    "cluster_ssh_configs": {
+                        "slurm": [
+                            {"Host": "bluevela", "HostName": ["h1", "h2"], "User": "gb"}
+                        ]
+                    },
+                },
+            ),
+        )
+
+    async def _run_failover_launch(self, first_error, launch_id):
+        """Launch bluevela with ``first_error`` on attempt 1 then success, recording
+        the login-node ``HostName`` written on each SSH materialize.
+
+        The random pick is pinned (no-op shuffle) so the initial selection is ``h1``
+        and the writes are deterministic; ``_merge_selected_hosts`` is patched to
+        capture without touching the filesystem.
+
+        :param first_error: Exception raised by ``stream_and_get`` on attempt 1.
+        :param launch_id: The launch id to run under.
+        :returns: ``(mock_sky, merged_hostnames)`` for assertions.
+        """
+        env = self._failover_env()
+        merged_hostnames = []
+
+        def _record(cloud, hosts, secrets, env_name, *, home=None):
+            merged_hostnames.append(hosts[0]["HostName"])
+
+        mock_sky = _mock_sky()
+        mock_sky.stream_and_get.side_effect = [first_error, (1, MagicMock())]
+        s, h, bmax, batt = self._patches(mock_sky)
+        with (
+            s,
+            h,
+            bmax,
+            batt,
+            patch(
+                "gbserver.environment.skypilot_config._merge_selected_hosts", _record
+            ),
+            patch(
+                "gbserver.environment.skypilot_config.random.shuffle", lambda seq: None
+            ),
+        ):
+            env._get_launch_ready_event(launch_id)
+            await env.launch_skypilot(
+                launch_id=launch_id,
+                launcher_config={
+                    "run": "hostname",
+                    "resources": {"cloud": "slurm", "cluster": "bluevela"},
+                },
+                config={},
+            )
+        return mock_sky, merged_hostnames
+
+    @pytest.mark.asyncio
+    async def test_ssh_transient_fails_over_to_next_login_node(self):
+        """A transient SSH control-plane error rotates the target cluster's HostName
+        to its next candidate login node before the retry, which then succeeds."""
+        mock_sky, merged = await self._run_failover_launch(
+            Exception("Connection timed out during banner exchange"), "fo-ssh"
+        )
+        assert mock_sky.stream_and_get.call_count == 2  # blip, then success
+        # Initial materialize picked h1; the SSH blip rotated to h2 before the retry.
+        assert merged == ["h1", "h2"]
+        assert mock_sky.down.call_count == 1  # bounded teardown between attempts
+
+    @pytest.mark.asyncio
+    async def test_capacity_error_does_not_fail_over(self):
+        """A capacity shortfall is retried but must NOT rotate login nodes — every
+        candidate hits it alike, so the same node is retried."""
+        mock_sky, merged = await self._run_failover_launch(
+            Exception("Failed to acquire resources in normal for {Slurm(cpus=1+)}"),
+            "fo-cap",
+        )
+        assert mock_sky.stream_and_get.call_count == 2  # retried
+        assert merged == ["h1"]  # never rotated: only the initial materialize wrote
+
 
 class TestMonitorRetryHandoff:
     """monitor_skypilot_monitor must AWAIT a (possibly slow) relaunch rather
@@ -1345,7 +1432,7 @@ class TestSshControlSocketClear:
             patch.object(
                 slurm_env,
                 "_materialize_ssh_for_launch",
-                side_effect=lambda _c: order.append("materialize"),
+                side_effect=lambda _c, _a: order.append("materialize"),
             ),
         ):
             slurm_env._get_launch_ready_event("clear-1")
@@ -1391,7 +1478,7 @@ class TestSshControlSocketClear:
             ) as clear,
             patch.object(slurm_env, "_materialize_ssh_for_launch") as mat,
         ):
-            await slurm_env._prepare_ssh_for_launch("k8s")
+            await slurm_env._prepare_ssh_for_launch("k8s", None)
         clear.assert_not_called()
         mat.assert_not_called()
 

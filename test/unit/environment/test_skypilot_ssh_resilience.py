@@ -4,25 +4,24 @@ Covers the defenses added after a bluevela launch failed with
 ``ValueError: Failed to get partitions for cluster bluevela`` whose real cause was
 ``Connection timed out during banner exchange``:
 
-1. the retry classifier treats an SSH banner/session timeout as transient (and
-   still treats an SSH *auth* rejection as fatal),
-2. the login-node reachability probe selects a reachable ``HostName`` and fails the
-   launch fast when none answers (see ``_probe_ssh_hostname_async`` / ``_ssh_probe_cmd``),
+1. the retry classifier (``_is_transient_provision_error``) treats an SSH
+   banner/session timeout as transient (and still treats an SSH *auth* rejection as
+   fatal),
+2. the narrower login-node failover classifier (``_is_transient_ssh_error``) fires
+   on those same SSH control-plane blips but NOT on capacity errors — so a wedged
+   login node fails over to a candidate while a full cluster does not,
 3. a failure traceback is logged as ONE record so line-per-record log ingestion
    cannot shred it.
 """
 
-import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from gbserver.environment.skypilot import (
     _is_transient_provision_error,
+    _is_transient_ssh_error,
     _log_remote_stacktrace,
-    _probe_ssh_hostname_async,
-    _ssh_probe_cmd,
 )
 
 # The verbatim failure from the production runner log (build
@@ -179,172 +178,76 @@ class TestRemoteStacktraceLogging:
 
 
 # ---------------------------------------------------------------------------
-# 2. Login-node reachability probe
+# 2. Login-node failover classifier (_is_transient_ssh_error)
 # ---------------------------------------------------------------------------
-class TestSshProbeCmd:
-    """`_ssh_probe_cmd` — the argv builder for the reachability probe."""
+class TestIsTransientSshError:
+    """`_is_transient_ssh_error` — the narrower classifier that gates login-node
+    failover. It must match SSH control-plane blips (so a wedged login node rotates
+    to a candidate) but NOT capacity errors (a full cluster is not the node's fault)
+    or auth rejections (a bad key never succeeds on retry)."""
 
-    def test_argv_shape_and_no_verification_flags(self):
-        with patch("gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION", False):
-            cmds = _ssh_probe_cmd("/tmp/cfg", "bluevela", 12)
-        assert cmds[:3] == ["ssh", "-F", "/tmp/cfg"]
-        assert "BatchMode=yes" in cmds
-        assert "ConnectTimeout=12" in cmds
-        assert "StrictHostKeyChecking=no" in cmds
-        assert "UserKnownHostsFile=/dev/null" in cmds
-        # Destination then `echo <msg>` are always the last three tokens.
-        assert cmds[-3:] == ["bluevela", "echo", "gbserver probe"]
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            # Unambiguously-SSH wording: a reason to fail over on any cloud.
+            "Connection timed out during banner exchange",
+            "Failed to get partitions for cluster bluevela",
+            "Failed to get Slurm partitions.",
+            "Failed to query Slurm jobs.",
+            "kex_exchange_identification: Connection closed by remote host",
+            "ssh_exchange_identification: read: Connection reset by peer",
+        ],
+    )
+    def test_ssh_control_plane_blip_triggers_failover(self, msg):
+        assert _is_transient_ssh_error(ValueError(msg)) is True
+        # Cloud-independent for the unambiguous SSH substrings.
+        assert _is_transient_ssh_error(ValueError(msg), cloud="slurm") is True
+        assert _is_transient_ssh_error(ValueError(msg), cloud="k8s") is True
 
-    def test_strict_toggle_keeps_verification(self):
-        with patch("gbserver.types.constants.ENABLE_SSH_HOST_KEY_VERIFICATION", True):
-            cmds = _ssh_probe_cmd("/tmp/cfg", "bluevela", 5)
-        assert "StrictHostKeyChecking=no" not in cmds
-        assert "UserKnownHostsFile=/dev/null" not in cmds
+    @pytest.mark.parametrize("msg", _GENERIC_NETWORK_MSGS)
+    @pytest.mark.parametrize("cloud", ["slurm", "lsf", "slurm/bluevela", "LSF"])
+    def test_generic_network_error_fails_over_on_hpc(self, msg, cloud):
+        """Generic TCP/DNS wording is an SSH blip only on the HPC path — fail over."""
+        assert _is_transient_ssh_error(ValueError(msg), cloud=cloud) is True
 
+    @pytest.mark.parametrize("msg", _GENERIC_NETWORK_MSGS)
+    @pytest.mark.parametrize("cloud", ["k8s", "gcp", "aws", None])
+    def test_generic_network_error_no_failover_off_hpc(self, msg, cloud):
+        assert _is_transient_ssh_error(ValueError(msg), cloud=cloud) is False
 
-def _fake_proc(returncode=0, stderr=b"", communicate_side_effect=None):
-    """Build a fake async ``Process`` for the ssh-echo probe.
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            # Capacity/resource failures ARE retried by the provision classifier,
+            # but every login node hits them alike, so they must NOT rotate.
+            "Failed to acquire resources in normal for cluster bluevela",
+            "Failed to provision all possible launchable resources",
+            "Resources unavailable",
+        ],
+    )
+    @pytest.mark.parametrize("cloud", ["slurm", "lsf", None])
+    def test_capacity_error_does_not_fail_over(self, msg, cloud):
+        assert _is_transient_ssh_error(ValueError(msg), cloud=cloud) is False
+        # Sanity: the provision classifier still treats capacity as retriable.
+        assert _is_transient_provision_error(ValueError(msg), cloud="slurm") is True
 
-    :param returncode: The process return code exposed after ``communicate``.
-    :param stderr: The stderr bytes ``communicate`` yields.
-    :param communicate_side_effect: If set, ``communicate`` raises it instead
-        (e.g. ``asyncio.TimeoutError`` to exercise the kill-and-reap path).
-    :returns: A ``MagicMock`` with async ``communicate``/``wait`` and a ``kill``.
-    """
-    proc = MagicMock()
-    if communicate_side_effect is not None:
-        proc.communicate = AsyncMock(side_effect=communicate_side_effect)
-    else:
-        proc.communicate = AsyncMock(return_value=(b"", stderr))
-    proc.returncode = returncode
-    proc.kill = MagicMock()
-    proc.wait = AsyncMock()
-    return proc
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "ubuntu@bluevela: Permission denied (publickey,password).",
+            "Host key verification failed.",
+            "Too many authentication failures",
+            "no such identity: /keys/id_rsa: No such file or directory",
+        ],
+    )
+    def test_auth_rejection_does_not_fail_over(self, msg):
+        """A bad key never succeeds on another node — rotating would waste attempts."""
+        assert _is_transient_ssh_error(ValueError(msg), cloud="slurm") is False
 
-
-def _patch_exec(proc, capture):
-    """Return a fake ``create_subprocess_exec`` that records argv and rendered config.
-
-    :param proc: The fake process to hand back.
-    :param capture: Dict populated with the ``cmds`` argv and the ``-F`` config text.
-    :returns: An async callable suitable for patching ``asyncio.create_subprocess_exec``.
-    """
-
-    async def fake_exec(*cmds, **_kw):
-        capture["cmds"] = list(cmds)
-        cfg_path = cmds[cmds.index("-F") + 1]
-        capture["cfg"] = Path(cfg_path).read_text(encoding="utf-8")
-        return proc
-
-    return fake_exec
-
-
-class TestProbeSshHostnameAsync:
-    """`_probe_ssh_hostname_async` — cancellable ssh-echo probe of one candidate."""
-
-    def _host(self, **extra):
-        return {"Host": "bluevela", "HostName": "login2.ex.com", "User": "gb", **extra}
-
-    @pytest.mark.asyncio
-    async def test_returncode_zero_is_reachable(self):
-        seen = {}
-        with patch("asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), seen)):
-            assert await _probe_ssh_hostname_async(self._host(), {}) is True
-        assert seen["cmds"][-3:] == ["bluevela", "echo", "gbserver probe"]
-        assert "HostName login2.ex.com" in seen["cfg"]
-        assert "ssh_probe_timeout_s" not in seen["cfg"]  # synthetic key stripped
-
-    @pytest.mark.asyncio
-    async def test_nonzero_returncode_is_unreachable(self):
-        with patch(
-            "asyncio.create_subprocess_exec",
-            _patch_exec(_fake_proc(255, stderr=b"timed out"), {}),
-        ):
-            assert await _probe_ssh_hostname_async(self._host(), {}) is False
-
-    @pytest.mark.asyncio
-    async def test_timeout_is_unreachable_and_reaps_child(self):
-        proc = _fake_proc(communicate_side_effect=TimeoutError())
-        with patch("asyncio.create_subprocess_exec", _patch_exec(proc, {})):
-            assert await _probe_ssh_hostname_async(self._host(), {}) is False
-        proc.kill.assert_called_once()  # hung ssh child must be reaped, not leaked
-
-    @pytest.mark.asyncio
-    async def test_cancel_reaps_child_and_propagates(self):
-        proc = _fake_proc(communicate_side_effect=asyncio.CancelledError())
-        with patch("asyncio.create_subprocess_exec", _patch_exec(proc, {})):
-            with pytest.raises(asyncio.CancelledError):
-                await _probe_ssh_hostname_async(self._host(), {})
-        proc.kill.assert_called_once()  # cancel mid-probe kills the ssh child
-
-    @pytest.mark.asyncio
-    async def test_render_failure_closes_and_removes_tmp(self):
-        # A failure rendering the probe config (e.g. a missing directive raising
-        # KeyError) happens before the normal close and is not caught, so it
-        # propagates -- the finally must still close the fd (no leak) and unlink.
-        fake_tmp = MagicMock()
-        fake_tmp.name = "/tmp/gbserver-probe-does-not-exist.sshcfg"
-        with (
-            patch("tempfile.NamedTemporaryFile", return_value=fake_tmp),
-            patch(
-                "gbserver.environment.skypilot_config.render_probe_config",
-                side_effect=KeyError("Host"),
-            ),
-            patch("os.unlink") as unlink,
-        ):
-            with pytest.raises(KeyError):
-                await _probe_ssh_hostname_async(self._host(), {})
-        fake_tmp.close.assert_called_once()  # fd freed despite the early raise
-        unlink.assert_called_once_with(fake_tmp.name)
-
-    @pytest.mark.asyncio
-    async def test_per_host_timeout_used_as_connecttimeout(self):
-        captured = {}
-
-        async def fake_wait_for(coro, timeout):
-            captured["wait_timeout"] = timeout
-            return await coro
-
-        with (
-            patch(
-                "asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), captured)
-            ),
-            patch("asyncio.wait_for", fake_wait_for),
-        ):
-            await _probe_ssh_hostname_async(self._host(ssh_probe_timeout_s=7), {})
-        assert "ConnectTimeout=7" in captured["cmds"]
-        assert captured["wait_timeout"] == 7 + 5  # wait_for = ConnectTimeout + buffer
-
-    @pytest.mark.asyncio
-    async def test_sibling_blocks_rendered_for_proxyjump(self):
-        # A ProxyJump/ProxyCommand naming a sibling Host alias must resolve while
-        # probing, so the throwaway config carries every other host block for the
-        # cloud, not just the one candidate. Without the sibling block the jump alias
-        # is undefined and the candidate looks unreachable -- failing a launch that
-        # sky.launch (which reads the full config) would have completed.
-        seen = {}
-        probed = self._host(ProxyJump="bastion")
-        bastion = {"Host": "bastion", "HostName": "jump.ex.com", "User": "gb"}
-        with patch("asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), seen)):
-            assert (
-                await _probe_ssh_hostname_async(probed, {}, [probed, bastion]) is True
-            )
-        assert "Host bluevela" in seen["cfg"]  # the probed alias
-        assert "ProxyJump bastion" in seen["cfg"]  # its jump directive
-        assert "Host bastion" in seen["cfg"]  # sibling present for resolution
-        assert "HostName jump.ex.com" in seen["cfg"]
-
-    @pytest.mark.asyncio
-    async def test_nonpositive_deployment_default_falls_back(self):
-        # The probe is mandatory. A host that pins no timeout inherits the deployment
-        # default; if that is mis-set non-positive it falls back to
-        # DEFAULT_SSH_PROBE_TIMEOUT_S (30) and still probes — never disabled.
-        captured = {}
-        with (
-            patch("gbserver.types.constants.GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S", 0),
-            patch(
-                "asyncio.create_subprocess_exec", _patch_exec(_fake_proc(0), captured)
-            ),
-        ):
-            assert await _probe_ssh_hostname_async(self._host(), {}) is True
-        assert "ConnectTimeout=30" in captured["cmds"]
+    def test_auth_rejection_wins_over_ssh_substring(self):
+        """Both an SSH blip and an auth rejection => no failover (auth wins)."""
+        msg = (
+            "Connection timed out during banner exchange\n"
+            "Permission denied (publickey)."
+        )
+        assert _is_transient_ssh_error(ValueError(msg), cloud="slurm") is False

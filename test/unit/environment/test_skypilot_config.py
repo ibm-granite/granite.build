@@ -25,7 +25,6 @@ import threading
 
 import pytest
 import yaml
-from pydantic import ValidationError
 
 from gbserver.environment import skypilot_config as sc
 from gbserver.types.environmentconfig import (
@@ -148,25 +147,27 @@ class TestSshMerge:
         assert "HostName NEW" in text and "HostName a" not in text
 
     def test_cross_env_alias_collision_raises(self, tmp_path):
-        # A differing managed block owned by a DIFFERENT environment is a
-        # cross-environment clash, not a re-key: gbserver refuses and names both
-        # environments rather than silently clobbering the other's host.
+        # A managed block owned by a DIFFERENT environment that differs in a
+        # non-HostName directive (here User) is a genuine cross-environment clash,
+        # not a re-key: gbserver refuses and names both environments rather than
+        # silently clobbering the other's host. (A HostName-only difference is
+        # instead last-writer-wins — see TestHostnameOnlyMergeRelaxation.)
         sc.merge_ssh_blocks(
             "slurm",
-            sc.render_ssh_hosts([_host("clusterA", HostName="a")], {}),
+            sc.render_ssh_hosts([_host("clusterA", HostName="a", User="gb")], {}),
             "envA",
             home=tmp_path,
         )
         with pytest.raises(SkypilotConfigCollisionError, match="envA"):
             sc.merge_ssh_blocks(
                 "slurm",
-                sc.render_ssh_hosts([_host("clusterA", HostName="NEW")], {}),
+                sc.render_ssh_hosts([_host("clusterA", HostName="a", User="root")], {}),
                 "envB",
                 home=tmp_path,
             )
         # The first environment's entry is left intact (no partial overwrite).
         text = _read(tmp_path / ".slurm" / "config")
-        assert "HostName a" in text and "HostName NEW" not in text
+        assert "User gb" in text and "User root" not in text
 
     def test_foreign_content_preserved_and_differing_alias_conflicts(self, tmp_path):
         dest = tmp_path / ".slurm" / "config"
@@ -456,139 +457,89 @@ class TestNoTeardownAndConcurrency:
 # --------------------------------------------------------------------------- #
 # HostName selection (multiple login nodes)
 # --------------------------------------------------------------------------- #
-class TestHostnameSelection:
+class TestHostnameCandidates:
+    """`_expand_hostname_candidates` / `_collapse_to_random_hostname` — turning a
+    scalar-or-list ``HostName`` into per-candidate host dicts and picking one at
+    random. Pure and I/O-free: candidate login nodes reach the same scheduler, so any
+    one is a valid launch target (no reachability probe) and the rest are failover
+    alternates the launch path retains."""
+
     _NODES = ["login1.ex.com", "login2.ex.com", "login3.ex.com"]
 
-    def test_no_hostname_unchanged(self):
-        # Nothing to select: a host without HostName is returned as-is, unprobed.
+    def test_no_hostname_expands_to_none(self):
+        # Nothing to select: a host without HostName has no candidates.
+        assert sc._expand_hostname_candidates(_host(User="root")) is None
+
+    def test_scalar_expands_to_one_candidate(self):
+        cands = sc._expand_hostname_candidates(_host(HostName="only.ex.com", User="r"))
+        assert [c["HostName"] for c in cands] == ["only.ex.com"]
+        assert cands[0]["User"] == "r"  # other directives carried onto the candidate
+
+    def test_list_expands_to_all_candidates_as_scalars(self):
+        cands = sc._expand_hostname_candidates(
+            _host(HostName=list(self._NODES), User="root")
+        )
+        assert {c["HostName"] for c in cands} == set(self._NODES)  # every candidate
+        assert all(isinstance(c["HostName"], str) for c in cands)  # each a scalar
+        assert all(c["User"] == "root" for c in cands)  # directives carried through
+
+    def test_collapse_no_hostname_unchanged(self):
         host = _host(User="root")
-        chosen = sc._select_reachable_hostname(
-            host, probe=lambda h: (_ for _ in ()).throw(AssertionError("probed"))
-        )
-        assert chosen is host
+        assert sc._collapse_to_random_hostname(host) is host
 
-    def test_scalar_reachable_selected(self):
-        # A scalar HostName is probed like a one-element list.
-        host = _host(HostName="only.ex.com", User="root")
-        chosen = sc._select_reachable_hostname(
-            host, probe=lambda h: h["HostName"] == "only.ex.com"
-        )
-        assert chosen["HostName"] == "only.ex.com"
-        assert chosen["User"] == "root"
-
-    def test_scalar_unreachable_raises(self):
-        # A lone unreachable login node fails fast rather than being accepted blind.
-        with pytest.raises(RuntimeError, match="only.ex.com"):
-            sc._select_reachable_hostname(
-                _host(HostName="only.ex.com"), probe=lambda h: False
-            )
-
-    def test_list_picks_reachable_candidate(self):
-        host = _host(HostName=list(self._NODES), User="root")
-        chosen = sc._select_reachable_hostname(
-            host, probe=lambda h: h["HostName"] == "login2.ex.com"
-        )
-        assert chosen["HostName"] == "login2.ex.com"
-        # Other directives are carried through onto the chosen candidate.
-        assert chosen["User"] == "root"
-
-    def test_probe_receives_scalar_candidate_dicts(self):
-        seen = []
-
-        def probe(h):
-            seen.append(h["HostName"])
-            return False  # force every candidate to be tried
-
-        with pytest.raises(RuntimeError, match="not reachable"):
-            sc._select_reachable_hostname(
-                _host(HostName=list(self._NODES)), probe=probe
-            )
-        assert sorted(seen) == sorted(self._NODES)  # every candidate probed once
-        assert all(isinstance(n, str) for n in seen)  # never a list
-
-    def test_raises_when_none_reachable(self):
-        with pytest.raises(RuntimeError, match="clusterA"):
-            sc._select_reachable_hostname(
-                _host(HostName=list(self._NODES)), probe=lambda h: False
-            )
-
-    def test_none_probe_picks_without_probing(self, monkeypatch):
-        # No probe => a random candidate is chosen (shuffle pinned for determinism).
+    def test_collapse_picks_single_candidate(self, monkeypatch):
+        # shuffle pinned to a no-op => the first listed candidate is chosen.
         monkeypatch.setattr(sc.random, "shuffle", lambda seq: None)
-        chosen = sc._select_reachable_hostname(
-            _host(HostName=list(self._NODES)), probe=None
-        )
+        chosen = sc._collapse_to_random_hostname(_host(HostName=list(self._NODES)))
         assert chosen["HostName"] == "login1.ex.com"
 
-    def test_probe_timeout_key_never_rendered(self):
-        # The synthetic ssh_probe_timeout_s key must not leak into the OpenSSH block.
-        block = sc.render_ssh_host(
-            _host(HostName="h", ssh_probe_timeout_s=15, User="root"), {}
-        )
-        assert "ssh_probe_timeout_s" not in block
-        assert "HostName h" in block and "User root" in block
-
-    def test_materialize_writes_chosen_hostname(self, tmp_path):
+    def test_materialize_collapses_list_to_one_hostname(self, tmp_path, monkeypatch):
+        # A list HostName is written to ~/.<cloud>/config as a single scalar.
+        monkeypatch.setattr(sc.random, "shuffle", lambda seq: None)
         ssh = ClusterSshConfigs(
             lsf=[_host("bluevela", HostName=list(self._NODES), User="gb")]
         )
-        sc.materialize_ssh_for_cloud(
-            "sky-lsf",
-            ssh,
-            {},
-            "lsf",
-            home=tmp_path,
-            hostname_probe=lambda h: h["HostName"] == "login3.ex.com",
-        )
+        sc.materialize_ssh_for_cloud("sky-lsf", ssh, {}, "lsf", home=tmp_path)
         text = _read(tmp_path / ".lsf" / "config")
-        assert "HostName login3.ex.com" in text
-        assert "login1.ex.com" not in text and "login2.ex.com" not in text
-        assert "ssh_probe_timeout_s" not in text
+        assert "HostName login1.ex.com" in text  # the (pinned) random pick
+        assert "login2.ex.com" not in text and "login3.ex.com" not in text
 
 
-class TestRenderProbeConfig:
-    """`render_probe_config` — the throwaway OpenSSH config a probe runs against."""
+class TestHostnameOnlyMergeRelaxation:
+    """A block differing from another environment's ONLY in ``HostName`` is not a
+    collision — the candidate login nodes are interchangeable, so the same alias owned
+    by a different env last-writer-wins rather than raising. Any other differing
+    directive stays a genuine cross-environment clash."""
 
-    def test_pins_candidate_and_includes_siblings(self):
-        # The probed alias's own entry is superseded by the pinned candidate, while
-        # every sibling block is kept so a ProxyJump/ProxyCommand naming a sibling
-        # alias resolves during the probe (single-block config would break it).
-        chosen = _host("bluevela", HostName="login2.ex.com", ProxyJump="bastion")
-        stale = _host("bluevela", HostName="login1.ex.com", ProxyJump="bastion")
-        bastion = _host("bastion", HostName="jump.ex.com", User="gb")
-        cfg = sc.render_probe_config(chosen, [stale, bastion], {})
-        assert "HostName login2.ex.com" in cfg  # pinned candidate wins
-        assert "login1.ex.com" not in cfg  # stale same-alias entry dropped
-        assert "Host bastion" in cfg and "HostName jump.ex.com" in cfg  # sibling kept
+    def test_blocks_differ_only_in_hostname_true_for_hostname_only(self):
+        a = sc.render_ssh_host(_host("c", HostName="h1", User="gb"), {})
+        b = sc.render_ssh_host(_host("c", HostName="h2", User="gb"), {})
+        assert sc._blocks_differ_only_in_hostname(a, b) is True
 
-    def test_no_context_renders_single_block(self):
-        # Empty context degrades to just the probed block (the pre-context behavior).
-        cfg = sc.render_probe_config(_host("c", HostName="h"), [], {})
-        assert cfg.count("Host ") == 1 and "HostName h" in cfg
+    def test_blocks_differ_only_in_hostname_false_for_other_directive(self):
+        a = sc.render_ssh_host(_host("c", HostName="h1", User="gb"), {})
+        b = sc.render_ssh_host(_host("c", HostName="h1", User="root"), {})
+        assert sc._blocks_differ_only_in_hostname(a, b) is False  # User differs
 
+    def test_blocks_differ_only_in_hostname_false_when_equivalent(self):
+        # An exact match is handled by _blocks_equivalent, not this predicate.
+        a = sc.render_ssh_host(_host("c", HostName="h1", User="gb"), {})
+        assert sc._blocks_differ_only_in_hostname(a, a) is False
 
-class TestProbeTimeoutValidation:
-    """`ClusterSshConfigs` rejects a non-positive/non-integer ssh_probe_timeout_s.
-
-    The probe is mandatory, so the value that once opted a host out is now a load-time
-    configuration error.
-    """
-
-    def test_positive_integer_accepted(self):
-        cfg = ClusterSshConfigs(lsf=[_host("bluevela", ssh_probe_timeout_s=15)])
-        assert cfg.lsf[0]["ssh_probe_timeout_s"] == 15
-
-    def test_omitted_accepted(self):
-        # No per-host value => inherits the deployment default; nothing to validate.
-        assert ClusterSshConfigs(lsf=[_host("bluevela", HostName="h")]).lsf
-
-    @pytest.mark.parametrize("bad", [0, -1, -30])
-    def test_nonpositive_rejected(self, bad):
-        with pytest.raises(ValidationError, match="positive integer"):
-            ClusterSshConfigs(lsf=[_host("bluevela", ssh_probe_timeout_s=bad)])
-
-    @pytest.mark.parametrize("bad", ["30", 1.5, True])
-    def test_non_integer_rejected(self, bad):
-        # Strings, floats, and bool (an int subclass) are all rejected.
-        with pytest.raises(ValidationError, match="positive integer"):
-            ClusterSshConfigs(slurm=[_host("c", ssh_probe_timeout_s=bad)])
+    def test_cross_env_hostname_only_is_last_writer_wins(self, tmp_path):
+        # envA then envB name the same alias, differing only in HostName: no raise,
+        # envB's login node wins.
+        sc.merge_ssh_blocks(
+            "slurm",
+            sc.render_ssh_hosts([_host("c", HostName="h1", User="gb")], {}),
+            "envA",
+            home=tmp_path,
+        )
+        sc.merge_ssh_blocks(
+            "slurm",
+            sc.render_ssh_hosts([_host("c", HostName="h2", User="gb")], {}),
+            "envB",
+            home=tmp_path,
+        )
+        text = _read(tmp_path / ".slurm" / "config")
+        assert "HostName h2" in text and "HostName h1" not in text  # last writer wins

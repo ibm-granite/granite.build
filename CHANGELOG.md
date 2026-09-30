@@ -23,19 +23,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **SkyPilot HPC (SLURM/LSF) — the login node is now chosen by a mandatory reachability
-  probe; `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` no longer disables probing.**
-  `cluster_ssh_configs` may now list several candidate `HostName`s for one cluster; before
-  an HPC launch gbserver SSH-probes the candidates (a trivial `echo`, in random order) and
-  configures SkyPilot to use the first reachable one, failing fast with a clear error naming
-  the alias and the hostnames tried when none answers — instead of SkyPilot's opaque
-  `Failed to get partitions for cluster …`. Because the probe now *selects* the login node
-  the launch uses, it always runs and can no longer be switched off. **Migration:** a
-  deployment that set `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` to opt out of the probe will
-  now probe with the built-in default `ConnectTimeout` (30s); the variable (and the per-host
-  `ssh_probe_timeout_s` synthetic key) now only sets that timeout, and a non-positive value
-  falls back to 30s. A login node that was genuinely unreachable — and previously slipped
-  through to an opaque post-launch failure — will now fail the launch up front.
+- **SkyPilot HPC (SLURM/LSF) — `cluster_ssh_configs` may list several candidate login
+  nodes for one cluster, with automatic failover.** A `Host` block's `HostName` may now be a
+  list of interchangeable login hostnames. gbserver picks one at random per launch (spreading
+  load), and if provisioning fails with a *transient SSH control-plane* error (a late banner,
+  a wedged session, a key-exchange reset — the class behind SkyPilot's opaque `Failed to get
+  partitions for cluster …`) it rewrites `~/.<cloud>/config` to the next candidate before the
+  launch is retried, reusing the ordinary provision retry budget. Capacity failures and SSH
+  *auth* rejections do not trigger failover. There is **no** up-front reachability probe: the
+  earlier probe held a login-node SSH slot waiting on slow banners and starved the control
+  SSH SkyPilot opens next, failing healthy clusters, so it (and
+  `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` / the per-host `ssh_probe_timeout_s` key) has been
+  removed. A single-node cluster simply retries the same node, so a genuine outage still
+  surfaces the real error.
+- **SkyPilot HPC (SLURM/LSF) — the provision-retry cleanup VM is right-sized to 1 CPU.** The
+  bounded teardown that runs between provision retries now requests a single CPU (with a
+  cloud-only memory floor), matching the EFS/cleanup-VM right-sizing in #427/#430, and the
+  warning logged when that teardown does not finish in time was reworded to say the launch is
+  retried anyway rather than implying the cluster leaked permanently.
 - **SkyPilot environment — secrets are now injected least-privilege (declared-only).**
   SkyPilot previously dumped the entire resolved space/user secret bag into the launched
   task environment. It now injects **only** the secrets a step declares under

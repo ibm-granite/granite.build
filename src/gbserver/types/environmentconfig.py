@@ -48,23 +48,12 @@ class ClusterSshConfigs(Config):
     Multiple hosts per cloud are supported, so one environment can describe
     several clusters.
 
-    Two keys inside a host entry are **synthetic** — consumed by gbserver at launch
-    and never written into ``~/.<cloud>/config`` as OpenSSH directives:
-
-      * ``HostName`` may be a single value (the classic single login node) **or** a
-        list of candidate login hostnames for one cluster. gbserver picks one at
-        random and SSH-probes it for reachability at launch, falling through to the
-        next until one answers; if none do (including a lone unreachable node), the
-        launch fails. The chosen hostname is rendered as a normal scalar ``HostName``
-        directive, so all candidates share this entry's
-        ``User``/``Port``/``IdentityFile``/etc.
-      * ``ssh_probe_timeout_s`` (optional, per host) is the reachability-probe
-        timeout in seconds — the ssh ``ConnectTimeout`` and overall wait. Must be a
-        positive integer (validated below); defaults to
-        ``GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`` (30) when omitted. The probe always
-        runs — there is no value that disables it. Like ``IdentityKey`` it is
-        stripped before rendering, so it never appears in the materialized OpenSSH
-        file.
+    ``HostName`` may be a single value (the classic single login node) **or** a list
+    of interchangeable candidate login hostnames for one cluster. gbserver picks one
+    at random per launch (spreading load) and, if a transient SSH control-plane error
+    stalls provisioning, fails over to the next candidate on retry. The chosen
+    hostname is rendered as a normal scalar ``HostName`` directive, so all candidates
+    share this entry's ``User``/``Port``/``IdentityFile``/etc.
 
     Attributes:
         slurm: Host entries rendered into ``~/.slurm/config``.
@@ -73,32 +62,6 @@ class ClusterSshConfigs(Config):
 
     slurm: Optional[List[Dict[str, Any]]] = None
     lsf: Optional[List[Dict[str, Any]]] = None
-
-    @model_validator(mode="after")
-    def _validate_probe_timeouts(self) -> "ClusterSshConfigs":
-        """Reject a non-positive or non-integer per-host ``ssh_probe_timeout_s``.
-
-        The reachability probe is mandatory (it selects the login node the launch
-        uses), so a ``<= 0`` or non-integer timeout — which used to opt a host out —
-        is a configuration error rather than a silent disable.
-
-        :returns: ``self`` when every host's probe timeout is a positive integer.
-        :raises ValueError: If any host entry sets ``ssh_probe_timeout_s`` to a
-            non-integer or non-positive value.
-        """
-        directive = "ssh_probe_timeout_s"  # == skypilot_config.PROBE_TIMEOUT_DIRECTIVE
-        for cloud, hosts in (("slurm", self.slurm), ("lsf", self.lsf)):
-            for host in hosts or []:
-                if directive not in host:
-                    continue
-                value = host[directive]
-                # bool is an int subclass; reject it so True/False can't slip through.
-                if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                    raise ValueError(
-                        f"{cloud} host {host.get('Host')!r}: {directive} must be a "
-                        f"positive integer (got {value!r})."
-                    )
-        return self
 
 
 class AwsCredentialProfile(Config):

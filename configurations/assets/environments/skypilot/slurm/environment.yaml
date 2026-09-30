@@ -31,17 +31,14 @@ config:
   # clears those sockets before the launch and the changed config re-authenticates.
   #
   # MULTIPLE LOGIN NODES: `HostName` may be a single value (below) OR a list of
-  # candidate login hostnames sharing one `Host` block. gbserver picks one at
-  # random and SSH-probes it (an `echo` over ssh) at launch, falling through to the
-  # next until one answers; if none do (including a lone unreachable node), the
-  # launch fails. All candidates share this block's User/Port/IdentityFile/etc. The
-  # optional per-host `ssh_probe_timeout_s` (synthetic — stripped before
-  # ~/.slurm/config is written, like IdentityKey) sets the probe ConnectTimeout in
-  # seconds; it must be a positive integer (default 30 when omitted). The probe is
-  # mandatory and cannot be disabled — it selects the login node the launch uses.
-  # Example:
+  # interchangeable candidate login hostnames sharing one `Host` block. gbserver
+  # picks one at random at launch (spreading load); all candidates share this
+  # block's User/Port/IdentityFile/etc. The candidates are also a failover pool: on
+  # a transient SSH control-plane error during provisioning (late banner, wedged
+  # session, key-exchange reset) gbserver rewrites the config to the next candidate
+  # before the launch is retried. Capacity failures and SSH auth rejections do not
+  # fail over. Example:
   #     - Host: slurm-docker
-  #       ssh_probe_timeout_s: 15
   #       HostName:
   #         - login1.cluster.example.com
   #         - login2.cluster.example.com

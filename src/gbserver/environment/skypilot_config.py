@@ -51,7 +51,7 @@ import os
 import random
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from filelock import FileLock
@@ -60,10 +60,7 @@ from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
 )
-from gbserver.types.errors import (
-    NoReachableLoginNodeError,
-    SkypilotConfigCollisionError,
-)
+from gbserver.types.errors import SkypilotConfigCollisionError
 from gbserver.utils.logger import get_logger
 from gbserver.utils.ssh_keys import write_private_key_file
 
@@ -126,12 +123,6 @@ def _raise_collision(kind: str, key: str, env_a: str, env_b: str, dest: str) -> 
 # --------------------------------------------------------------------------- #
 # SSH config rendering
 # --------------------------------------------------------------------------- #
-# Synthetic per-host key: reachability-probe timeout in seconds, consumed at launch
-# (see the hostname-selection helpers below) and stripped before rendering so it
-# never appears in the materialized OpenSSH file. Not a real OpenSSH directive.
-PROBE_TIMEOUT_DIRECTIVE = "ssh_probe_timeout_s"
-
-
 def _render_value(value, secrets: Dict[str, str]) -> str:
     """Render one OpenSSH directive value (booleans -> ``yes``/``no``, else secret-resolved)."""
     if isinstance(value, bool):
@@ -173,9 +164,8 @@ def render_ssh_host(host: Dict[str, Any], secrets: Dict[str, str]) -> str:
     alias = host["Host"]
     lines = [f"Host {alias}"]
     for key, raw in host.items():
-        # Skip the alias itself, unset directives, and synthetic gbserver-only keys
-        # (PROBE_TIMEOUT_DIRECTIVE) that must never reach the OpenSSH file.
-        if key == "Host" or key == PROBE_TIMEOUT_DIRECTIVE or raw is None:
+        # Skip the alias itself and any unset directive.
+        if key == "Host" or raw is None:
             continue
         raw_str = str(raw)
         in_secrets = raw_str in secrets
@@ -204,37 +194,6 @@ def render_ssh_hosts(
 ) -> Dict[str, str]:
     """Render hosts to an ``{alias: block}`` map (keyed for per-alias merge)."""
     return {h["Host"]: render_ssh_host(h, secrets) for h in hosts}
-
-
-def render_probe_config(
-    chosen: Dict[str, Any],
-    context: List[Dict[str, Any]],
-    secrets: Dict[str, str],
-) -> str:
-    """Render the OpenSSH config a single login-node reachability probe should use.
-
-    Reproduces what the launch writes to ``~/.<cloud>/config`` faithfully enough that
-    the probe follows the same directives ``sky.launch`` will: the probed alias's
-    block first (``chosen`` — its ``HostName`` already collapsed to the one candidate
-    under test), then every *other* host block for the cloud. Those sibling blocks are
-    what let a ``ProxyJump``/``ProxyCommand`` that names another ``Host`` alias in the
-    same ``cluster_ssh_configs`` resolve while probing; a single-block config would
-    leave that jump alias undefined, so every candidate would look unreachable and the
-    launch would fail even though ``sky.launch`` (which reads the full config) connects.
-
-    :param chosen: The candidate host mapping (single scalar ``HostName``) to probe.
-    :param context: All hosts materialized for the cloud; the entry sharing
-        ``chosen``'s alias is superseded by ``chosen`` so the pinned candidate wins,
-        and the remaining blocks are emitted verbatim for alias resolution.
-    :param secrets: Secret name -> value mapping for directive resolution.
-    :returns: The multi-block OpenSSH config text (with a trailing newline).
-    """
-    alias = chosen.get("Host")
-    blocks = [render_ssh_host(chosen, secrets)]
-    blocks.extend(
-        render_ssh_host(h, secrets) for h in context if h.get("Host") != alias
-    )
-    return "\n\n".join(blocks) + "\n"
 
 
 # Directive that supplies the private key *contents* (secret-resolved) instead of
@@ -323,29 +282,20 @@ def _materialize_identity_keys(
 # --------------------------------------------------------------------------- #
 # HostName selection (multiple login nodes)
 # --------------------------------------------------------------------------- #
-# A reachability probe: given a fully-resolved host mapping (a single scalar
-# ``HostName`` candidate plus its connection directives), return True if the login
-# node answers. Injected so this module stays pure/I-O-free and unit-testable; the
-# real ssh-echo probe lives in ``gbserver.environment.skypilot``.
-HostnameProbe = Callable[[Dict[str, Any]], bool]
-
-
 def _expand_hostname_candidates(
     host: Dict[str, Any],
 ) -> Optional[List[Dict[str, Any]]]:
-    """Expand a host's scalar/list ``HostName`` into per-candidate host dicts.
+    """Expand a host's scalar/list ``HostName`` into shuffled per-candidate host dicts.
 
-    Pure and I/O-free: the shuffling half of login-node selection, split out so an
-    async caller can probe the candidates one at a time and reap a cancelled probe
-    (see :func:`gbserver.environment.skypilot._select_reachable_host_async`) instead
-    of driving the whole selection inside one un-interruptible thread.
+    Pure and I/O-free. A cluster's candidate ``HostName`` values are interchangeable
+    login nodes of the *same* scheduler, so the launch picks one at random to spread
+    load across them, and the launch path (see the ``_LoginNodeRotator`` in
+    ``gbserver.environment.skypilot``) can fail over to the next candidate in this
+    order when SkyPilot's own provisioning hits a transient SSH control-plane error.
 
-    A scalar ``HostName`` yields a one-element list, so it is probed exactly like a
-    list — reachability is load-bearing (it picks the login node the launch uses), so
-    an unreachable lone node fails fast rather than being accepted blind. Candidates
-    are returned in random order; each carries every other directive of ``host``
-    (including the synthetic ``ssh_probe_timeout_s``, so the probe can read the
-    per-host timeout) with ``HostName`` collapsed to that one scalar.
+    A scalar ``HostName`` yields a one-element list. Candidates are returned in random
+    order; each carries every other directive of ``host`` with ``HostName`` collapsed
+    to that one scalar, ready for :func:`render_ssh_host`.
 
     :param host: One host directive mapping (scalar or list ``HostName``).
     :returns: The shuffled per-candidate host dicts, or ``None`` when ``host`` has no
@@ -355,59 +305,25 @@ def _expand_hostname_candidates(
     if candidates is None:
         return None
     if not isinstance(candidates, list):
-        candidates = [candidates]  # scalar: a one-element list, probed the same way
+        candidates = [candidates]  # scalar: a one-element list
     shuffled = list(candidates)
     random.shuffle(shuffled)
     return [{**host, "HostName": candidate} for candidate in shuffled]
 
 
-def _no_reachable_login_node_error(host: Dict[str, Any]) -> NoReachableLoginNodeError:
-    """Build the error raised when no ``HostName`` candidate of ``host`` is reachable.
+def _collapse_to_random_hostname(host: Dict[str, Any]) -> Dict[str, Any]:
+    """Collapse a scalar/list ``HostName`` to a single randomly-chosen candidate.
 
-    Shared by the sync (:func:`_select_reachable_hostname`) and async selectors so
-    both raise the identical message.
+    Load-spreading, not reachability: the candidate login nodes reach the same
+    scheduler, so any one is a valid target and a random pick distributes launches
+    across them. A host without a ``HostName`` is returned unchanged.
 
-    :param host: The host whose ``HostName`` candidates were all unreachable.
-    :returns: A :class:`NoReachableLoginNodeError` naming the alias and tried nodes.
-    """
-    candidates = host.get("HostName")
-    if not isinstance(candidates, list):
-        candidates = [candidates]
-    tried = candidates[0] if len(candidates) == 1 else candidates
-    return NoReachableLoginNodeError(
-        f"SSH host {host.get('Host')!r}: login node(s) {tried!r} not reachable."
-    )
-
-
-def _select_reachable_hostname(
-    host: Dict[str, Any], *, probe: Optional[HostnameProbe]
-) -> Dict[str, Any]:
-    """Collapse ``HostName`` to a single reachable candidate, failing if none is.
-
-    The synchronous selector used by :func:`materialize_ssh_for_cloud` (the
-    env-setup path and unit tests). The launch path instead selects asynchronously
-    so a cancel can reap an in-flight probe; both share
-    :func:`_expand_hostname_candidates` and :func:`_no_reachable_login_node_error`.
-
-    A host without a ``HostName`` is returned unchanged. Otherwise candidates are
-    tried in random order and the first the ``probe`` accepts is returned with a
-    scalar ``HostName`` ready for rendering. When ``probe`` is ``None`` (e.g. unit
-    tests, no I/O) the first (random) candidate is accepted without probing.
-
-    :param host: One host directive mapping (may carry a scalar or list ``HostName``
-        and the synthetic ``ssh_probe_timeout_s`` key).
-    :param probe: Reachability probe, or ``None`` to skip probing.
-    :returns: A host mapping with a single scalar ``HostName``.
-    :raises NoReachableLoginNodeError: If no candidate ``HostName`` is reachable
-        (a ``RuntimeError`` subclass; the caller retries the sweep before failing).
+    :param host: One host directive mapping (scalar or list ``HostName``).
+    :returns: A host mapping with a single scalar ``HostName`` (or ``host`` unchanged
+        when it declares no ``HostName``).
     """
     candidates = _expand_hostname_candidates(host)
-    if candidates is None:
-        return host
-    for chosen in candidates:
-        if probe is None or probe(chosen):
-            return chosen
-    raise _no_reachable_login_node_error(host)
+    return host if candidates is None else candidates[0]
 
 
 def _normalize(block: str) -> str:
@@ -493,6 +409,40 @@ def _blocks_equivalent(a: str, b: str) -> bool:
     return sorted(_normalize(a).splitlines()) == sorted(_normalize(b).splitlines())
 
 
+def _without_hostname(block: str) -> List[str]:
+    """Return a block's normalized directive lines with any ``HostName`` line dropped.
+
+    Helper for :func:`_blocks_differ_only_in_hostname`. Matches ``HostName``
+    case-insensitively (OpenSSH keywords are case-insensitive) after normalization.
+
+    :param block: An SSH ``Host`` block.
+    :returns: Sorted normalized lines excluding the ``HostName`` directive.
+    """
+    return sorted(
+        ln
+        for ln in _normalize(block).splitlines()
+        if not ln.lower().startswith("hostname ")
+    )
+
+
+def _blocks_differ_only_in_hostname(a: str, b: str) -> bool:
+    """Return True if two blocks are identical except for their ``HostName`` value.
+
+    The candidate login nodes of one cluster are interchangeable entry points to the
+    *same* scheduler, differing only in ``HostName``; every credential/route directive
+    (``User``/``Port``/``IdentityFile``/``ProxyJump``/…) is shared. So two environments
+    that name the same ``Host`` alias but pick different login nodes are NOT a genuine
+    clash — one can safely win. A difference in any *other* directive is a real
+    conflict and is not covered here.
+
+    :param a: One SSH ``Host`` block.
+    :param b: The other SSH ``Host`` block.
+    :returns: True when the two blocks match once ``HostName`` is ignored AND they
+        actually differ (an exact match is handled by :func:`_blocks_equivalent`).
+    """
+    return not _blocks_equivalent(a, b) and _without_hostname(a) == _without_hostname(b)
+
+
 def _merge_ssh(
     existing: Dict[str, Tuple[str, str]],
     incoming: Dict[str, str],
@@ -512,6 +462,12 @@ def _merge_ssh(
     conflicting content are surfaced rather than silently clobbering each other. A
     managed block with no recorded owner (e.g. written before owner tracking) is
     treated as self-healable rather than raising an unattributable collision.
+
+    One cross-environment difference is *not* a conflict: a block differing from
+    another environment's only in its ``HostName`` value. A cluster's candidate login
+    nodes are interchangeable entry points to the same scheduler, so two environments
+    picking different login nodes for the same alias may safely last-writer-win rather
+    than raise (see :func:`_blocks_differ_only_in_hostname`).
 
     :param existing: Current ``{alias: (block, owner)}`` from the managed region.
     :param incoming: New ``{alias: block}`` to merge in.
@@ -541,10 +497,16 @@ def _merge_ssh(
                 # Identical managed block already present — no-op (avoids a
                 # rewrite and preserves the recorded owner).
                 continue
-            if prev_owner and prev_owner != env_name:
-                # A *different* environment already manages this alias with
-                # differing content: a cross-environment clash, not a re-key of
-                # our own entry. Refuse and name both owners.
+            if (
+                prev_owner
+                and prev_owner != env_name
+                and not _blocks_differ_only_in_hostname(prev_block, block)
+            ):
+                # A *different* environment already manages this alias with a
+                # genuine (non-HostName) difference: a cross-environment clash, not
+                # a re-key of our own entry. Refuse and name both owners. A
+                # HostName-only difference falls through to last-writer-wins below,
+                # since the candidate login nodes are interchangeable.
                 _raise_collision(
                     "SSH Host", alias, env_name, f"environment '{prev_owner}'", dest
                 )
@@ -750,33 +712,28 @@ def materialize_ssh_for_cloud(
     cloud: str,
     *,
     home: Optional[Path] = None,
-    hostname_probe: Optional[HostnameProbe] = None,
 ) -> None:
     """Merge one cloud's inline SSH ``Host`` blocks into ``~/.<cloud>/config``.
 
     Extracted from :func:`materialize` so a launch can (re-)merge just the cloud
-    it is provisioning. No-op when the config defines no hosts for ``cloud``.
+    it is provisioning. No-op when the config defines no hosts for ``cloud``. A
+    list-valued ``HostName`` is collapsed to one randomly-chosen candidate for load
+    spreading (the launch path additionally fails over between candidates on a
+    transient SSH error — see ``gbserver.environment.skypilot._LoginNodeRotator``).
 
     :param env_name: The environment name (used in messages).
     :param ssh: Inline cluster SSH configs.
     :param secrets: Secret name -> value mapping for field resolution.
     :param cloud: ``"slurm"`` or ``"lsf"`` — the cloud whose hosts to merge.
     :param home: Home dir override (tests).
-    :param hostname_probe: Optional reachability probe used to select a login node.
-        Every host's ``HostName`` (scalar or list) is probed and the first reachable
-        candidate is chosen. ``None`` (the default) picks a random candidate without
-        probing.
     :raises SkypilotConfigCollisionError: On a foreign clash (see
         :func:`merge_ssh_blocks`).
-    :raises NoReachableLoginNodeError: If a host has no reachable ``HostName``
-        candidate. Selection runs before any file write, so a raise leaves
-        ``~/.<cloud>/config`` untouched and the whole call is safe to retry.
     """
     hosts = _resolve_cloud_hosts(ssh, secrets, cloud, home=home)
     if not hosts:
         return
-    # Collapse any list-valued HostName to a single reachable login node.
-    hosts = [_select_reachable_hostname(h, probe=hostname_probe) for h in hosts]
+    # Collapse any list-valued HostName to a single (random) login node.
+    hosts = [_collapse_to_random_hostname(h) for h in hosts]
     _merge_selected_hosts(cloud, hosts, secrets, env_name, home=home)
 
 
@@ -789,12 +746,11 @@ def _resolve_cloud_hosts(
 ) -> List[Dict[str, Any]]:
     """Return one cloud's host dicts with ``IdentityKey`` resolved to ``IdentityFile``.
 
-    Phase 1 of the launch-time SSH materialization (see
-    :func:`materialize_ssh_for_cloud`), split out so the launch path can resolve
-    keys, then select a reachable login node *asynchronously*, then merge — reaping a
-    cancelled probe instead of grinding an un-interruptible thread through every
-    candidate. Writes managed key files but performs no network I/O, so it is safe to
-    run off the event loop via ``asyncio.to_thread``.
+    The first step of launch-time SSH materialization (see
+    :func:`materialize_ssh_for_cloud`), split out so the launch path can resolve keys
+    off the loop, then pick one login node per alias, then merge. Writes managed key
+    files but performs no network I/O, so it is safe to run off the event loop via
+    ``asyncio.to_thread``.
 
     :param ssh: Inline cluster SSH configs.
     :param secrets: Secret name -> value mapping for field resolution.
@@ -822,10 +778,10 @@ def _merge_selected_hosts(
 ) -> None:
     """Render already-selected scalar-``HostName`` hosts and merge them into config.
 
-    Phase 3 of launch-time SSH materialization: the tail of
-    :func:`materialize_ssh_for_cloud`, callable on its own once the launch path has
-    resolved keys (:func:`_resolve_cloud_hosts`) and selected a reachable login node
-    per host. Local file I/O only.
+    The tail of :func:`materialize_ssh_for_cloud`, callable on its own once the launch
+    path has resolved keys (:func:`_resolve_cloud_hosts`) and picked one login node per
+    host — the shared write step used both by that helper and by the launch-time
+    ``_LoginNodeRotator`` each time it fails over. Local file I/O only.
 
     :param cloud: ``"slurm"`` or ``"lsf"`` — the cloud whose config to merge into.
     :param hosts: Host dicts with a single scalar ``HostName`` each.

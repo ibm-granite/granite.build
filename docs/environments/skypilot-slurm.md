@@ -48,14 +48,13 @@ See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_conf
 
 #### Multiple login nodes (`HostName` list)
 
-`HostName` may be a single value (above) **or** a list of candidate login hostnames sharing one
-`Host` block — the fit for a cluster reached through several interchangeable login nodes:
+`HostName` may be a single value (above) **or** a list of interchangeable candidate login hostnames
+sharing one `Host` block — the fit for a cluster reached through several equivalent login nodes:
 
 ```yaml
   cluster_ssh_configs:
     slurm:
       - Host: slurm-docker
-        ssh_probe_timeout_s: 15       # Optional per-host probe timeout (seconds); see below.
         HostName:                     # Candidate login nodes for this one cluster.
           - login1.cluster.example.com
           - login2.cluster.example.com
@@ -63,23 +62,22 @@ See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_conf
         IdentityFile: ~/.ssh/slurm_docker_key
 ```
 
-At launch gbserver shuffles the candidates, SSH-probes them in order (a trivial `echo` over `ssh`,
-honouring the same `User`/`Port`/`IdentityFile`/`ProxyCommand` directives the launch will use), and
-writes the first reachable one as a normal scalar `HostName`. If **none** answers, the launch fails
-with a clear error naming the alias and the hostnames tried. The `Host` alias stays fixed (it must
-equal `cluster:`), so all candidates share this block's `User`/`Port`/`IdentityFile`/etc. A scalar
-`HostName` is treated as a one-element list — it is probed the same way, so an unreachable lone login
-node fails the launch fast (same clear error) rather than leaving you SkyPilot's opaque `ValueError:
-Failed to get partitions for cluster …`. A list of *different* clusters still uses separate `Host`
-blocks with distinct aliases.
+At launch gbserver picks one candidate at random (spreading load across the login nodes) and writes it
+as a normal scalar `HostName`. The `Host` alias stays fixed (it must equal `cluster:`), so all
+candidates share this block's `User`/`Port`/`IdentityFile`/etc. A list of *different* clusters still
+uses separate `Host` blocks with distinct aliases.
 
-`ssh_probe_timeout_s` (optional, per host) sets the probe's `ConnectTimeout` in seconds; it is a
-**synthetic** gbserver key — like `IdentityKey`, it is consumed at launch and stripped before
-`~/.slurm/config` is written, so it never becomes a bogus OpenSSH directive. It must be a **positive
-integer**; a non-positive or non-integer value is rejected at config load. When unset it falls back to
-`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` (default 30). The probe is mandatory — it selects the login
-node the launch uses — so there is no value that disables it; the deployment constant only sets the
-default timeout, and a non-positive value there falls back to a built-in 30s and still probes.
+The candidates are also a **failover pool**. There is no up-front reachability probe (an earlier probe
+held a login-node SSH slot waiting on slow banners and starved the control SSH SkyPilot opens next, so
+a healthy cluster failed the launch). Instead, if provisioning fails with a transient SSH
+control-plane error — a late banner, a wedged session, a key-exchange reset (`ValueError: Failed to
+get partitions for cluster …`, `Connection timed out during banner exchange`, and the like) — gbserver
+rewrites `~/.<cloud>/config` to the *next* candidate before the launch is retried, so a single wedged
+login node is skipped rather than failing the build. Capacity failures (`Failed to acquire resources
+in <partition>`) do **not** trigger failover — any login node would hit them alike — and neither do SSH
+*auth* rejections, which never succeed on retry. Failover reuses the ordinary provision retry budget
+(`GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS`); when the candidates are exhausted (or there is only one)
+the genuine error surfaces, so a true outage is never hidden.
 
 > **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.slurm/config` self-heals,
 > SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key
@@ -90,23 +88,6 @@ default timeout, and a non-positive value there falls back to a built-in 30s and
 > re-authentication with the current key. This is a **test-only** toggle (manually set, unconditional
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
-
-> **The reachability probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`).** Before an HPC launch gbserver
-> runs a trivial `echo` over SSH against each candidate login node to select a reachable one, naming a
-> wedged node up front rather than leaving you SkyPilot's opaque `ValueError: Failed to get partitions
-> for cluster …`. The probe is load-bearing (it picks the `HostName` the launch uses), so it always
-> runs and cannot be disabled. `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` only sets the default
-> `ConnectTimeout` (seconds); a per-host `ssh_probe_timeout_s` overrides it, and both must be positive.
-> Within one sweep the probe falls through to the next candidate, so a single wedged node is skipped
-> as long as another answers. If a whole sweep finds *no* reachable candidate, gbserver re-shuffles and
-> re-probes the full set a bounded number of times (3 attempts, ~5s apart) before failing the launch
-> with a clear error. This absorbs a momentary DNS/connect blip that leaves every candidate unreachable
-> at once (most acutely on a single-node cluster) while still failing fast on a sustained outage. The
-> gate runs *before* provisioning and its own retry is separate from the launch-time transient-retry
-> classifier, which covers failures from `sky.launch` *after* a node is selected (those genuine blips
-> are retried as transient and the API server's traceback is still surfaced). Listing several candidate
-> login nodes further buys resilience: the launch fails only when *all* of them stay down across every
-> probe attempt.
 
 ### `cluster` / `zone`
 

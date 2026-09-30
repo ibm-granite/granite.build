@@ -48,14 +48,13 @@ no manual `rm ~/.lsf/config`); a *foreign* (non-gbserver) entry for the same ali
 
 #### Multiple login nodes (`HostName` list)
 
-`HostName` may be a single value (above) **or** a list of candidate login hostnames under one `Host`
-block, for a cluster fronted by several interchangeable login nodes:
+`HostName` may be a single value (above) **or** a list of interchangeable candidate login hostnames
+under one `Host` block, for a cluster fronted by several equivalent login nodes:
 
 ```yaml
   cluster_ssh_configs:
     lsf:
       - Host: bluevela
-        ssh_probe_timeout_s: 30       # Optional per-host probe timeout (seconds); see below.
         HostName:                     # Candidate login nodes for this one cluster.
           - login1.bluevela.rmf.ibm.com
           - login2.bluevela.rmf.ibm.com
@@ -66,24 +65,18 @@ block, for a cluster fronted by several interchangeable login nodes:
         IdentitiesOnly: "yes"
 ```
 
-At launch gbserver shuffles the candidates, SSH-probes them in order (a trivial `echo` over `ssh`,
-using the same `User`/`IdentityFile`/… directives the launch will), and writes the first reachable
-one as a scalar `HostName`. If **none** answers, the launch fails with a clear error naming the alias
-and the hostnames tried. The `Host` alias stays fixed (LSF derives the cluster name from it), so all
-candidates share this block's credentials. A scalar `HostName` is treated as a one-element list — it
-is probed the same way, so an unreachable lone login node fails the launch fast (with the same clear
-error) instead of stalling in an opaque SkyPilot precheck.
+At launch gbserver picks one candidate at random (spreading load) and writes it as a scalar
+`HostName`. The `Host` alias stays fixed (LSF derives the cluster name from it), so all candidates
+share this block's credentials.
 
-`ssh_probe_timeout_s` (optional, per host) sets the probe's `ConnectTimeout` in seconds. It is a
-**synthetic** gbserver key — like `IdentityKey`, consumed at launch and stripped before `~/.lsf/config`
-is written, so it never becomes a bogus OpenSSH directive. It must be a **positive integer**; a
-non-positive or non-integer value is rejected at config load. The probe is mandatory (it selects the
-login node the launch uses), so there is no value that disables it.
-
-When a host does **not** pin its own `ssh_probe_timeout_s`, the timeout falls back to
-`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` (default 30). That deployment constant only sets the default
-timeout; it cannot disable probing, and if it is mis-set to a non-positive value the probe falls back
-to a built-in 30s timeout and still runs.
+The candidates also form a **failover pool**: if provisioning fails with a transient SSH
+control-plane error (a late banner, a wedged session, a key-exchange reset), gbserver rewrites
+`~/.lsf/config` to the next candidate before retrying the launch, so a single wedged login node is
+skipped rather than failing the build. Capacity failures and SSH *auth* rejections do not trigger
+failover. Failover reuses the ordinary provision retry budget
+(`GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS`); when the candidates are exhausted (or there is only one)
+the genuine error surfaces. This is identical to SLURM — see
+[Multiple login nodes on the SLURM page](skypilot-slurm.md#multiple-login-nodes-hostname-list).
 
 > **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.lsf/config` self-heals,
 > SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key
@@ -94,9 +87,6 @@ to a built-in 30s timeout and still runs.
 > re-authentication with the current key. This is a **test-only** toggle (manually set, unconditional
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
-
-The reachability probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`) covers LSF and SLURM identically. See
-[the probe note on the SLURM page](skypilot-slurm.md#cluster_ssh_configsslurm--reachability).
 
 ### `cloud_config.lsf` — behavioral tuning
 

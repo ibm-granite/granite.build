@@ -166,7 +166,6 @@ ENV_VAR_SKYPILOT_PROVISION_MAX_ATTEMPTS = (
 ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX = (
     ENV_VAR_PREFIX + "_SKYPILOT_PROVISION_BACKOFF_MAX"
 )
-ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S = ENV_VAR_PREFIX + "_SKYPILOT_SSH_PROBE_TIMEOUT_S"
 ENV_VAR_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S = (
     ENV_VAR_PREFIX + "_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S"
 )
@@ -631,16 +630,6 @@ GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS = int(
 )
 GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX = int(
     os.getenv(ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX, "30"), base=10
-)
-# Default ConnectTimeout (seconds) for the `ssh` reachability probe that selects
-# the login node an HPC (slurm/lsf) SkyPilot launch uses. Mirrors
-# GBSERVER_LSF_SSH_PROBE_TIMEOUT_S: SkyPilot's own SSH bounds only the TCP leg, not
-# the banner/login phase, so a wedged login node otherwise surfaces as an opaque
-# precheck ValueError. The probe always runs and cannot be disabled — it selects
-# which candidate the launch uses; a per-host `ssh_probe_timeout_s` overrides this,
-# and a non-positive value here falls back to the built-in DEFAULT_SSH_PROBE_TIMEOUT_S.
-GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S = int(
-    os.getenv(ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S, "30"), base=10
 )
 # Bounds the banner/login phase of the post-launch host SSH (sidecar tasks), which
 # ConnectTimeout (TCP leg only) leaves unbounded.
