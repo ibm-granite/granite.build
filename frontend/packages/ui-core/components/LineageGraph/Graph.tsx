@@ -168,10 +168,18 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   // WRAP_WIDTH_FACTOR viewports wide: then ELK wraps it into rows stacked
   // downward, shaped like the viewport, so a long chain fits the screen instead of
   // running off to the side. Small graphs keep their straight layout.
+  const wrapViewportRef = React.useRef<{ width: number; height: number } | null>(null)
   const layoutFitting = async (graph: ElkNode): Promise<ElkNode> => {
     const straight = await elk.layout(structuredClone(graph))
-    const viewport = svgRef.current?.parentElement?.getBoundingClientRect()
-    if (!viewport?.width || !viewport.height) return straight
+    // Measured once per graph and reused: the drawer narrows the pane by ~33rem,
+    // and a relayout while it is open (or after it closes) would otherwise wrap
+    // the same graph into a different shape.
+    if (!wrapViewportRef.current) {
+      const rect = svgRef.current?.parentElement?.getBoundingClientRect()
+      if (rect?.width && rect.height) wrapViewportRef.current = { width: rect.width, height: rect.height }
+    }
+    const viewport = wrapViewportRef.current
+    if (!viewport) return straight
     const widthOf = (g: ElkNode) => Math.max(0, ...(g.children ?? []).map((n) => (n.x ?? 0) + (n.width ?? 0)))
     if (widthOf(straight) <= WRAP_WIDTH_FACTOR * (viewport.width / BASE_SCALE)) return straight
     // A graph long enough to wrap is shown near the readable minimum, so size
@@ -366,6 +374,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   const graphIdentity = props.graphKey ?? ''
   React.useEffect(() => {
     transformRef.current = INITIAL_TRANSFORM
+    wrapViewportRef.current = null
   }, [graphIdentity])
 
   React.useEffect(() => {
@@ -480,10 +489,10 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   // many times per second) into one update per animation frame rather than
   // recomputing + applying a transform on every single firing.
   //
-  // Keep the scale and shift by half the width delta, so whatever was centered
-  // stays centered, then pull the selected node back inside the pane if the
-  // shift still left it outside. Opening the ~33rem drawer shrinks the SVG by
-  // ~528px; without this focused content slides out of view.
+  // Leave the graph where it is: the SVG is anchored on its left edge, so a
+  // narrower pane just shows less on the right. Opening the ~33rem drawer shrinks
+  // the SVG by ~528px, so the one exception is the selected node -- the one whose
+  // drawer caused the resize -- which is nudged back only if it would be hidden.
   React.useEffect(() => {
     const svg = svgRef.current
     if (!svg || typeof ResizeObserver === 'undefined') return
@@ -501,18 +510,12 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
         const previousWidth = lastWidth
         lastWidth = width
 
-        // Recentre on the user's own transform. `transformRef` is kept current by
+        // Start from the user's own transform. `transformRef` is kept current by
         // the zoom handler, so this composes with their latest pan/zoom rather
         // than a stale one.
         if (!previousWidth || !width || width === previousWidth) return
-        const current = transformRef.current
-        let shifted = current.translate((width - previousWidth) / 2 / current.k, 0)
+        let shifted = transformRef.current
 
-        // Half-the-delta keeps the *centre* fixed, which is the right default but
-        // not enough on its own: a selected node already near an edge can still
-        // land outside the narrowed pane. When there is a selection — the node
-        // whose drawer caused the resize, and the one thing the user is certainly
-        // looking at — pull it back inside the visible band instead.
         const selected = selectedNodeRef.current
         const pos = selected
           ? positionsRef.current?.children?.find((n) => n.id === selected.id)
@@ -532,6 +535,8 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
             overflowLeft > 0 ? overflowLeft : overflowRight > 0 ? -overflowRight : 0
           if (correction !== 0) shifted = shifted.translate(correction / shifted.k, 0)
         }
+        // Nothing needed moving: leave the transform alone.
+        if (shifted === transformRef.current) return
 
         d3.select(svg).call(zoomRef.current.transform, shifted)
       })

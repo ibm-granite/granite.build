@@ -116,7 +116,14 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Same toolbar as the build lineage panel. */}
-      <div className={styles.toolbar}>
+      {/* Any toolbar button closes the open drawer. Capture runs before the
+          button's own handler, which still sees this render's selection. */}
+      <div
+        className={styles.toolbar}
+        onClickCapture={(e) => {
+          if ((e.target as HTMLElement).closest('button')) setJobNodeId(null)
+        }}
+      >
         <div className={styles.toolbarLeft}>
           <Button size="sm" kind="ghost" renderIcon={ArrowLeft}
             disabled={busy || noLineage || up.exhausted}
@@ -228,7 +235,11 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
         )}
       </div>
 
-      {jobNode && <JobDrawer node={jobNode} onClose={() => setJobNodeId(null)} drawerRef={drawerRef} />}
+      {jobNode && (
+        <div className={styles.drawerSlot}>
+          <JobDrawer node={jobNode} onClose={() => setJobNodeId(null)} drawerRef={drawerRef} />
+        </div>
+      )}
       </div>
     </div>
   )

@@ -131,43 +131,42 @@
 
 /* ── Step details side panel ─────────────────────────────────────────────── */
 
-.stepSidePanel {
+.drawerSlot {
   /* A flex sibling of .graphArea (not an overlay) so it shrinks the graph when
-     it opens. 33rem ≈ 528px, inside the 480–560px target. */
+     it opens. 33rem ≈ 528px, inside the 480–560px target.
+     One slot holds whichever drawer is open, so switching the selected job
+     re-points the content without re-running the open animation (a remount would
+     collapse and regrow the pane, resizing the graph on every switch). */
   flex: 0 0 33rem;
   max-width: 90%;
   min-height: 0;
-  overflow: hidden;
-  background: var(--cds-layer-01);
-  border-left: 1px solid var(--cds-border-subtle-01);
-  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
   display: flex;
-  flex-direction: column;
-  /* Grow the panel's width rather than only sliding it: the graph shrinks with it
-     frame by frame (its ResizeObserver recentres each frame) instead of snapping
-     to the narrower width while the panel is still off-screen. */
-  animation: stepSidePanelOpen 280ms cubic-bezier(0.2, 0, 0.38, 0.9);
-
-  /* Content fades in behind the growing edge, so its reflow at the narrow
-     widths early in the animation is not seen. */
-  > * {
-    animation: stepSidePanelContentIn 280ms cubic-bezier(0.2, 0, 0.38, 0.9);
-  }
+  overflow: hidden;
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
+  /* Grows its width rather than only sliding in, so the graph pane narrows
+     smoothly instead of snapping while the drawer is still off-screen. */
+  animation: drawerSlotOpen 280ms cubic-bezier(0.2, 0, 0.38, 0.9);
 
   @media (prefers-reduced-motion: reduce) {
-    &, > * { animation: none; }
+    animation: none;
   }
 }
 
-@keyframes stepSidePanelOpen {
+@keyframes drawerSlotOpen {
   from { flex-basis: 0; box-shadow: none; }
   to { flex-basis: 33rem; }
 }
 
-@keyframes stepSidePanelContentIn {
-  from { opacity: 0; transform: translateX(1.5rem); }
-  60% { opacity: 0; }
-  to { opacity: 1; transform: translateX(0); }
+.stepSidePanel {
+  /* Full width from the first frame, clipped by the growing slot, so the content
+     slides into view instead of reflowing at every intermediate width. */
+  flex: 1 0 min(33rem, 90vw);
+  min-height: 0;
+  overflow: hidden;
+  background: var(--cds-layer-01);
+  border-left: 1px solid var(--cds-border-subtle-01);
+  display: flex;
+  flex-direction: column;
 }
 
 .stepSidePanelHeader {

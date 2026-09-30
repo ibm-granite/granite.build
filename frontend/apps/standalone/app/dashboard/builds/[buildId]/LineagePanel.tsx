@@ -294,7 +294,10 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       if (!wasOpen) {
         drawerReturnFocusRef.current = document.activeElement as HTMLElement | null
       }
-      drawerCloseButtonRef.current?.focus()
+      // preventScroll on every focus move here: focusing scrolls the nearest
+      // overflow container even when it is overflow:hidden, which slid the graph
+      // sideways each time the drawer opened, switched or closed.
+      drawerCloseButtonRef.current?.focus({ preventScroll: true })
       return
     }
 
@@ -307,9 +310,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     // focus lands somewhere sensible rather than the top of the document.
     const returnTo = drawerReturnFocusRef.current
     if (returnTo?.isConnected) {
-      returnTo.focus?.()
+      returnTo.focus?.({ preventScroll: true })
     } else {
-      graphContainerRef.current?.focus?.()
+      graphContainerRef.current?.focus?.({ preventScroll: true })
     }
     drawerReturnFocusRef.current = null
   }, [openDrawerKey])
@@ -593,7 +596,16 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   return (
     <div className={styles.container}>
       {/* Toolbar */}
-      <div className={styles.toolbar}>
+      {/* Any toolbar button closes the open drawer. Capture runs before the
+          button's own handler, which still sees this render's selection. */}
+      <div
+        className={styles.toolbar}
+        onClickCapture={(e) => {
+          if (!(e.target as HTMLElement).closest('button')) return
+          setStepDetailTarget(null)
+          setJobNodeId(null)
+        }}
+      >
         <div className={styles.toolbarLeft}>
           <Button
             size="sm"
@@ -776,6 +788,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         )}
       </div>
 
+      {(stepDetailTarget || jobNode) && (
+      <div className={styles.drawerSlot}>
       {stepDetailTarget && (
         <StepDrawer
           targetName={stepDetailTarget}
@@ -797,6 +811,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           drawerRef={drawerRef}
           closeButtonRef={drawerCloseButtonRef}
         />
+      )}
+      </div>
       )}
       </div>
 
