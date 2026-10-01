@@ -44,6 +44,10 @@
   .col1,
   .col2 {
     grid-column: 1;
+    // Each field sets its row with an inline style, which only an !important rule
+    // can override. Keeping it put a build field and the tuning field of the same
+    // row into one cell, drawn on top of each other; auto stacks them in DOM order.
+    grid-row: auto !important;
   }
 }
 

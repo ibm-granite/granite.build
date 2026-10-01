@@ -113,3 +113,31 @@ describe('the linked job, not build tags, gates the AutoTuneX panels', () => {
     )
   })
 })
+
+describe('the build and tuning fields stack at phone width', () => {
+  it('the single-column layout resets the inline grid-row', () => {
+    // Both panels place each field with an inline `style={{ gridRow: row }}`, and
+    // the <=640px block moved every field to column 1 without resetting the row,
+    // so the build and tuning fields with the same row landed in the same cell
+    // and drew over each other. An inline style beats a stylesheet rule unless
+    // the rule is !important.
+    const scss = read(BUILD_PAGE, 'DetailsPanel.module.scss')
+    assert.ok(scss, 'DetailsPanel.module.scss should exist')
+    const phone = scss.match(/@media \(max-width: 640px\) \{([\s\S]*?)\n\}/)
+    assert.ok(phone, 'the 640px media block should exist')
+    assert.match(phone[1], /grid-row:\s*auto\s*!important/, 'the phone layout should reset grid-row')
+  })
+})
+
+describe('the tuning detail page reads the build id', () => {
+  it('getJob asks for the full job shape', () => {
+    // The Details tab reads job.tasks[0].build_id, and only the full shape
+    // (JobRead) carries `tasks`; `?shape=lean` returned JobDetail, so the Build ID
+    // field was always blank.
+    const api = read(path.join(__dirname, '..', '..', '..', 'packages', 'ui-core', 'api'), 'autotunex.ts')
+    assert.ok(api, 'api/autotunex.ts should exist')
+    const getJob = stripComments(api).match(/export async function getJob\([\s\S]*?\n\}/)
+    assert.ok(getJob, 'getJob should exist')
+    assert.ok(!getJob[0].includes('shape=lean'), 'getJob should not request the lean shape')
+  })
+})
