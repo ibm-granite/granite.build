@@ -8,6 +8,7 @@ import { listSpaces } from '@granite-build/ui-core/api/gbserver'
 import type { JobRead } from '@granite-build/ui-core/types'
 import { TuningLogViewer } from '@granite-build/ui-core/components/autotunex/tunings/TuningLogViewer'
 import { TrialsTable } from '@granite-build/ui-core/components/autotunex/trials/TrialsTable'
+import { jobElapsedSeconds } from '@granite-build/ui-core/components/autotunex/trials/trialProgress'
 import { TuningResultsPanel } from '@granite-build/ui-core/components/autotunex/tunings/TuningResultsPanel'
 import { ConfigDisplay } from '@granite-build/ui-core/components/autotunex/shared/ConfigDisplay'
 import { modelSourceLabel } from '../modelSources'
@@ -51,11 +52,10 @@ function DetailsPanel({ job }: { job: JobRead }) {
     enabled: configOpen && !!job.config_id,
   })
 
-  // finished_at is when the run actually stopped; updated_at is only a fallback
-  // for a server that doesn't report it, because any later write to the job row
-  // (e.g. a reconcile) bumps updated_at and inflates the elapsed time.
-  const totalTimeSeconds = Math.floor(
-    ((job.status === 'running' ? Date.now() : new Date(job.finished_at ?? job.updated_at).getTime()) - new Date(job.created_at).getTime()) / 1000
+  // The same rule as the Hyperparameters tab's progress summary -- see jobElapsedSeconds.
+  const totalTimeSeconds = jobElapsedSeconds(
+    { status: job.status, createdAt: job.created_at, updatedAt: job.updated_at, finishedAt: job.finished_at },
+    Date.now()
   )
 
   const fields: { label: string; value: React.ReactNode }[] = [

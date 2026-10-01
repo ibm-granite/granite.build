@@ -103,6 +103,33 @@ function trialDuration(trial: ProgressTrial): number | null {
   return Number.isFinite(span) && span > 0 ? span : null
 }
 
+/** When the run stopped: `finished_at`, else `updated_at` (see jobElapsedSeconds). */
+function stoppedAtMs(finishedAt: string | undefined, updatedAt: string): number {
+  const finishedMs = finishedAt ? Date.parse(finishedAt) : NaN
+  return Number.isFinite(finishedMs) ? finishedMs : Date.parse(updatedAt)
+}
+
+/**
+ * Wall-clock seconds a job has run: to `now` while it is running or queued,
+ * otherwise to when it stopped.
+ *
+ * The one rule for the progress summary, the Details tab and the tunings table,
+ * which had each computed it themselves -- the latter two treated only `running`
+ * as live, so a queued job showed two different durations. `finished_at` is when
+ * the run actually stopped; `updated_at` only stands in for it, because any later
+ * write to the job row bumps `updated_at` and would inflate this permanently. A
+ * missing or unparseable timestamp gives 0 rather than NaN, which `Math.max`
+ * passes straight through and rendered as "NaNs elapsed".
+ */
+export function jobElapsedSeconds(
+  job: { status: TuningStatus; createdAt: string; updatedAt: string; finishedAt?: string },
+  now: number
+): number {
+  const endMs = ACTIVE_JOB_STATUSES.includes(job.status) ? now : stoppedAtMs(job.finishedAt, job.updatedAt)
+  const seconds = Math.floor((endMs - Date.parse(job.createdAt)) / 1000)
+  return Number.isFinite(seconds) ? Math.max(0, seconds) : 0
+}
+
 export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
   const { trials, numTrials, jobStatus, jobCreatedAt, jobUpdatedAt, jobFinishedAt, now } = input
 
@@ -117,15 +144,11 @@ export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
   // the job reports how many it plans to run long before it creates their rows.
   const notYetCreated = planned !== null ? Math.max(0, planned - trials.length) : 0
 
-  // `finished_at` is when the run actually stopped; `updated_at` only stands in
-  // for it, because any later write to the job row bumps `updated_at` and would
-  // inflate this figure permanently. TuningsTable and TuningDetailTabs already
-  // prefer it the same way, so all three agree on one job's duration. An absent
-  // or unparseable value falls back instead of poisoning the result with NaN.
-  const finishedMs = jobFinishedAt ? Date.parse(jobFinishedAt) : NaN
-  const stoppedMs = Number.isFinite(finishedMs) ? finishedMs : Date.parse(jobUpdatedAt)
-  const elapsedEndMs = ACTIVE_JOB_STATUSES.includes(jobStatus) ? now : stoppedMs
-  const elapsedSeconds = Math.max(0, Math.floor((elapsedEndMs - Date.parse(jobCreatedAt)) / 1000))
+  const elapsedSeconds = jobElapsedSeconds(
+    { status: jobStatus, createdAt: jobCreatedAt, updatedAt: jobUpdatedAt, finishedAt: jobFinishedAt },
+    now
+  )
+  const stoppedMs = stoppedAtMs(jobFinishedAt, jobUpdatedAt)
 
   // Phase split. Reported only for a cleanly completed job: while the run is live
   // the trailing phase has no end yet, and on an error/terminated job the trials
@@ -196,4 +219,17 @@ export function computeTrialProgress(input: TrialProgressInput): TrialProgress {
     searchSeconds,
     finalRunSeconds,
   }
+}
+
+/**
+ * The progress bar's caption. It counts resolved trials -- completed plus failed
+ * -- because that is what `percent` counts: captioning only the completed ones put
+ * "Trial 3 of 4 complete" under a full bar when the fourth trial had errored. The
+ * helper text still says how many failed.
+ */
+export function progressLabel(progress: Pick<TrialProgress, 'completed' | 'failed' | 'planned'>): string {
+  const finished = progress.completed + progress.failed
+  return progress.planned !== null
+    ? `${finished} of ${progress.planned} trials finished`
+    : `${finished} ${finished === 1 ? 'trial' : 'trials'} finished`
 }

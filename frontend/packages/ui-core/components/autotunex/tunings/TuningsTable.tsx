@@ -29,6 +29,7 @@ import { Compare, Launch, Rocket, TrashCan } from '@carbon/icons-react'
 import { Fragment } from 'react'
 import { TuningLogViewer } from './TuningLogViewer'
 import type { TuningJob } from '../../../types'
+import { jobElapsedSeconds } from '../trials/trialProgress'
 import { TuningStatusBadge } from './TuningStatusBadge'
 import Link from 'next/link'
 
@@ -74,14 +75,12 @@ function formatTime(seconds: number): string {
   return `${secs}s`
 }
 
+// The same rule as the tuning detail page -- see jobElapsedSeconds.
 function totalTimeSecondsFor(job: TuningJob): number {
-  const start = new Date(job.created_at).getTime()
-  // finished_at is when the run actually stopped; updated_at is only a fallback
-  // for a server that doesn't report it, because any later write to the job row
-  // (e.g. a reconcile) bumps updated_at and inflates the elapsed time.
-  const end =
-    job.status === 'running' ? Date.now() : new Date(job.finished_at ?? job.updated_at).getTime()
-  return Math.floor((end - start) / 1000)
+  return jobElapsedSeconds(
+    { status: job.status, createdAt: job.created_at, updatedAt: job.updated_at, finishedAt: job.finished_at },
+    Date.now()
+  )
 }
 
 function totalTimeFor(job: TuningJob): string {
