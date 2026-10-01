@@ -43,7 +43,7 @@ import { TrialMetricsPanel } from './TrialMetricsPanel'
 import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import styles from './TrialsTable.module.scss'
-import { bestTrialId, primaryMetric, toRadarData } from './trialsRadar'
+import { bestTrialId, isLowerBetter, jobMetric, primaryMetric, rankBestFirst, toRadarData } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
 
 const HEADERS = [
@@ -209,7 +209,8 @@ export function TrialsTable({ job }: Props) {
   // selection across a remount without contesting ownership of it afterwards.
   // That is what lets Back keep the selection: the compare view unmounts this
   // table, so returning mounts a fresh one that would come up unticked.
-  const rows = trials
+  // Best first on the job's metric -- the same ranking bestTrialId and Compare use.
+  const rows = rankBestFirst(trials)
     .map((t) => ({
       id: t.id,
       created_at: t.created_at,
@@ -220,12 +221,6 @@ export function TrialsTable({ job }: Props) {
       total_time: t.metrics?.total_time,
       isSelected: selectedIds.includes(t.id),
     }))
-    .sort((a, b) => {
-      if (a.loss === undefined && b.loss === undefined) return 0
-      if (a.loss === undefined) return 1
-      if (b.loss === undefined) return -1
-      return a.loss - b.loss
-    })
 
   // Only completed trials with metrics can be plotted — the radar needs a full
   // metric grid, and running/errored trials have no (or partial) metrics.
@@ -370,9 +365,9 @@ export function TrialsTable({ job }: Props) {
                     const headerProps = headers.map((h) => getHeaderProps({ header: h }))
                     // Carbon only marks a header as the active sort column once the user
                     // clicks it — it has no notion that `rows` already arrived pre-sorted
-                    // by loss. Until the user actually sorts something, show the Loss
-                    // header as the (ascending) active sort column so the arrow matches
-                    // the real row order.
+                    // best first. Until the user actually sorts something, show the Loss
+                    // header as the active sort column, ascending or descending by the
+                    // job metric's direction, so the arrow matches the real row order.
                     const userHasSorted = headerProps.some((hp) => hp.isSortHeader)
                     return headers.map((h, i) => {
                       const { key: _k, ...hProps } = headerProps[i]
@@ -382,7 +377,7 @@ export function TrialsTable({ job }: Props) {
                           key={h.key}
                           {...hProps}
                           isSortHeader={isDefaultLossSort ? true : hProps.isSortHeader}
-                          sortDirection={isDefaultLossSort ? 'ASC' : hProps.sortDirection}
+                          sortDirection={isDefaultLossSort ? (isLowerBetter(jobMetric(trials)) ? 'ASC' : 'DESC') : hProps.sortDirection}
                         >
                           {h.header}
                         </TableHeader>

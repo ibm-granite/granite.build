@@ -24,6 +24,8 @@ const {
   toFeatureLabel,
   primaryMetric,
   bestTrialId,
+  jobMetric,
+  rankBestFirst,
 } = require('../../../packages/ui-core/components/autotunex/trials/trialsRadar.ts')
 
 const trial = (id, metrics) => ({ id, status: 'completed', metrics })
@@ -210,3 +212,65 @@ describe('bestTrialId', () => {
     assert.equal(bestTrialId([]), undefined)
   })
 })
+
+describe('jobMetric', () => {
+  it('is the first metric any trial names', () => {
+    assert.equal(jobMetric([{ id: 'a', metrics: {} }, { id: 'b', metric: 'reward', metrics: {} }]), 'reward')
+  })
+
+  it('falls back to loss when no trial names one', () => {
+    assert.equal(jobMetric([{ id: 'a', metrics: { loss: 1 } }]), 'loss')
+    assert.equal(jobMetric([]), 'loss')
+  })
+})
+
+describe('rankBestFirst', () => {
+  const scored = (id, metric, value) => ({ id, status: 'completed', metric, metrics: { [metric]: value } })
+  const ids = (trials) => rankBestFirst(trials).map((t) => t.id)
+
+  it('puts the winning trial first on a higher-is-better metric', () => {
+    // The table and Compare sorted ascending unconditionally, so on a reward job
+    // the "Winning trial" sat last under an ascending arrow.
+    const trials = [scored('a', 'reward', 0.4), scored('b', 'reward', 0.9), scored('c', 'reward', 0.6)]
+    assert.deepEqual(ids(trials), ['b', 'c', 'a'])
+    assert.equal(rankBestFirst(trials)[0].id, bestTrialId(trials))
+  })
+
+  it('puts the lowest first on a lower-is-better metric', () => {
+    const trials = [scored('a', 'loss', 15.24), scored('b', 'loss', 15.16), scored('c', 'loss', 15.21)]
+    assert.deepEqual(ids(trials), ['b', 'c', 'a'])
+  })
+
+  it('sinks trials with no usable value, keeping their order', () => {
+    const none = { id: 'x', status: 'running', metrics: {} }
+    const nan = scored('y', 'loss', Number.NaN)
+    assert.deepEqual(ids([none, scored('a', 'loss', 2), nan, scored('b', 'loss', 1)]), ['b', 'a', 'x', 'y'])
+  })
+
+  it('does not mutate the input', () => {
+    const trials = [scored('a', 'loss', 2), scored('b', 'loss', 1)]
+    rankBestFirst(trials)
+    assert.deepEqual(trials.map((t) => t.id), ['a', 'b'])
+  })
+})
+
+describe('a trial reporting only the fallback metric', () => {
+  // A reward-scored job where one trial has `metric: 'reward'` but only a loss so
+  // far. primaryMetric falls back to its loss, and judging direction from that
+  // trial made the job lower-is-better -- crowning the WORST reward, and comparing
+  // a loss against rewards.
+  const trials = [
+    { id: 'a', status: 'completed', metric: 'reward', metrics: { loss: 0.9 } },
+    { id: 'b', status: 'completed', metric: 'reward', metrics: { reward: 0.4 } },
+    { id: 'c', status: 'completed', metric: 'reward', metrics: { reward: 0.8 } },
+  ]
+
+  it('is not the winner, and does not flip the direction', () => {
+    assert.equal(bestTrialId(trials), 'c')
+  })
+
+  it('ranks unscored, after the trials scored on the job metric', () => {
+    assert.deepEqual(rankBestFirst(trials).map((t) => t.id), ['c', 'b', 'a'])
+  })
+})
+
