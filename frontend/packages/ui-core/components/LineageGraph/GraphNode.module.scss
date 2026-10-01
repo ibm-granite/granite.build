@@ -85,3 +85,25 @@
   min-width: 0;
   overflow: hidden;
 }
+
+// Two outlined cards offset up and right behind a grouped run node, like a stack.
+.nodeWrapperStacked {
+  position: relative;
+  isolation: isolate;
+}
+
+.stackLayer {
+  position: absolute;
+  inset: 0;
+  transform: translate(5px, -5px);
+  z-index: -1;
+  border-top: 1px solid var(--cds-border-strong-01, #8d8d8d);
+  border-right: 1px solid var(--cds-border-strong-01, #8d8d8d);
+  background-color: var(--cds-layer-02, #e8e8e8);
+  pointer-events: none;
+}
+
+.stackLayerBack {
+  transform: translate(10px, -10px);
+  z-index: -2;
+}

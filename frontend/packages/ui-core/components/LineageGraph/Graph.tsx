@@ -28,6 +28,8 @@ export interface ElkNodeEx extends ElkNode {
   planned?: boolean
   // The Granite.build build a run node belongs to, shown when showBuildInfo is on.
   buildId?: string
+  // How many jobs a grouped run node stands for; above 1 it draws as a stack.
+  stackCount?: number
   children?: ElkNodeEx[]
 }
 

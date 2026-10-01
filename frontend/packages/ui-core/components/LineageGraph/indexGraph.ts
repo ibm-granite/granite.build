@@ -49,6 +49,8 @@ export function indexGraphToElk(
 ): ElkGraph {
   const nodes: IndexElkNode[] = result.nodes.map((n) => {
     const isRun = n.node_type === 'run'
+    const runCount = isRun && typeof n.metadata?.run_count === 'number' ? n.metadata.run_count : undefined
+    const stackCount = runCount !== undefined && runCount > 1 ? runCount : undefined
     const title = n.name || n.id
     const buildId = n.metadata?.gb_build_id
     return {
@@ -60,6 +62,7 @@ export function indexGraphToElk(
       labels: [{ text: title }],
       indexNode: n,
       buildId: typeof buildId === 'string' ? buildId : undefined,
+      stackCount,
     }
   })
   const links: ElkExtendedEdge[] = result.edges.map((e) => {

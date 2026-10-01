@@ -83,6 +83,7 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode, s
     isSelected ? styles.nodeWrapperSelected : '',
     isHighlighted ? styles.nodeWrapperHighlighted : '',
     node.planned ? styles.nodeWrapperPlanned : '',
+    node.stackCount ? styles.nodeWrapperStacked : '',
   ].filter(Boolean).join(' ')
 
   return (
@@ -99,6 +100,13 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode, s
           ? { '--node-selected-bg': isHighlighted ? bgColor.replace(/[\d.]+\)$/, '0.35)') : bgColor } as React.CSSProperties
           : undefined}
       >
+        {/* A grouped node: the cards of the other jobs peek out behind it. */}
+        {node.stackCount && (
+          <>
+            <div className={`${styles.stackLayer} ${styles.stackLayerBack}`} aria-hidden />
+            <div className={styles.stackLayer} aria-hidden />
+          </>
+        )}
         <CardNode
           color={color}
           onClick={() => onClick && onClick(node)}

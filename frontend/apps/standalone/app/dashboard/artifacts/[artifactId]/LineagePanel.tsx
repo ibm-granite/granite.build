@@ -25,20 +25,20 @@ function levelText(level: { depth: number; exhausted: boolean }) {
   return n
 }
 
-function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
+function ArtifactLineageGraph({ artifact, groupRuns }: { artifact: Artifact; groupRuns: boolean }) {
   const graphRef = React.useRef<GraphHandle>(null)
   const [rendered, setRendered] = React.useState(false)
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(null)
   const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['lineage-graph', artifact.uri],
-    queryFn: () => getLineageGraph({ uri: artifact.uri, direction: 'both', depth: INITIAL_DEPTH }),
+    queryKey: ['lineage-graph', artifact.uri, groupRuns],
+    queryFn: () => getLineageGraph({ uri: artifact.uri, direction: 'both', depth: INITIAL_DEPTH, group_runs: groupRuns }),
     retry: false,
     staleTime: 5 * 60 * 1000,
   })
 
-  const expansion = useLineageExpansion()
+  const expansion = useLineageExpansion(undefined, groupRuns)
 
   const base = React.useMemo(() => (data ? indexGraphToElk(data) : { nodes: [], links: [] }), [data])
   const merged = React.useMemo(() => mergeElkGraphs(base, expansion.extra), [base, expansion.extra])
@@ -293,7 +293,9 @@ function BuildLinkedLineage({ artifact, artifactLoading }: { artifact: Artifact;
 
 // ── Public component ──────────────────────────────────────────────────────────
 
-export function LineagePanel({ artifact, loading }: { artifact: Artifact | undefined; loading: boolean }) {
+// `groupRuns: false` draws the extended graph: one node per job instead of one per
+// distinct input/output pair.
+export function LineagePanel({ artifact, loading, groupRuns = true }: { artifact: Artifact | undefined; loading: boolean; groupRuns?: boolean }) {
   if (loading || !artifact) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
@@ -305,7 +307,7 @@ export function LineagePanel({ artifact, loading }: { artifact: Artifact | undef
   // Any artifact with a URI reads the lineage index, which covers build outputs
   // and external artifacts alike, whatever the configured provider.
   if (artifact.uri) {
-    return <ArtifactLineageGraph artifact={artifact} />
+    return <ArtifactLineageGraph artifact={artifact} groupRuns={groupRuns} />
   }
 
   if (artifact.build_id) {

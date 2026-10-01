@@ -9,7 +9,8 @@ const EMPTY: ElkGraph = { nodes: [], links: [] }
 // Grows a lineage graph through GET /lineage/graph, seeded from the selected node.
 // The caller says how deep to ask -- one level past what is already on screen for
 // that node (see visibleLevels) -- so the count follows the graph, not the clicks.
-export function useLineageExpansion(rename?: (id: string) => string) {
+// `groupRuns: false` asks for one node per job, matching an ungrouped base graph.
+export function useLineageExpansion(rename?: (id: string) => string, groupRuns = true) {
   const [extra, setExtra] = React.useState<ElkGraph>(EMPTY)
   const [loading, setLoading] = React.useState<ExpandDirection | null>(null)
   const [error, setError] = React.useState<unknown>(null)
@@ -30,7 +31,7 @@ export function useLineageExpansion(rename?: (id: string) => string) {
     setLoading(direction)
     setError(null)
     try {
-      const result = await getLineageGraph({ ...expansionSeed(seedId), direction, depth })
+      const result = await getLineageGraph({ ...expansionSeed(seedId), direction, depth, group_runs: groupRuns })
       const incoming = indexGraphToElk(result, rename)
       const onScreen = new Set(known.nodes.map((n) => n.id))
       if (incoming.nodes.every((n) => onScreen.has(n.id)) && !result.truncated) {
@@ -43,7 +44,7 @@ export function useLineageExpansion(rename?: (id: string) => string) {
     } finally {
       setLoading(null)
     }
-  }, [rename])
+  }, [rename, groupRuns])
 
   const reset = React.useCallback(() => {
     setExhausted(new Set())
