@@ -23,6 +23,7 @@ if (process.env.MONACO_VS_PATH) {
 }
 import type { ParsedDataRow, RewardFunctionValidationResult } from '@granite-build/ui-core/types'
 import { AUTOTUNEX_FEATURES, getDataset, generateTestSolutions, validateRewardFunction } from '@granite-build/ui-core/api/autotunex'
+import { rewardScore, rewardScoreError } from '@granite-build/ui-core/lib/autotunex/rewardScore'
 import styles from './StepRewardFunction.module.scss'
 
 const DEFAULT_REWARD_TEMPLATE = `# gsm8k_reward.py
@@ -535,10 +536,12 @@ export function StepRewardFunction({
   const validateCodeRef = useRef(validateCode)
   const rewardFunctionCodeRef = useRef(rewardFunctionCode)
   const isValidatingRef = useRef(isValidating)
+  const validationResultRef = useRef(validationResult)
   useEffect(() => {
     validateCodeRef.current = validateCode
     rewardFunctionCodeRef.current = rewardFunctionCode
     isValidatingRef.current = isValidating
+    validationResultRef.current = validationResult
   })
 
   // Track whether all test cases passed (drives the parent's Next-button gate)
@@ -547,7 +550,8 @@ export function StepRewardFunction({
       validationResult?.success === true &&
       validationResult?.test_result?.executed === true &&
       (validationResult?.test_result?.results?.length ?? 0) > 0 &&
-      (validationResult?.test_result?.results ?? []).every((r) => !r.error)
+      // A value verl cannot score is a failure too, not just a raised error.
+      (validationResult?.test_result?.results ?? []).every((r) => !r.error && rewardScore(r.return_value) !== null)
     setAllTestsPassed(passed)
   }, [validationResult, setAllTestsPassed])
 
@@ -562,10 +566,11 @@ export function StepRewardFunction({
     Array.isArray(validationResult?.test_result?.results)
       ? validationResult.test_result.results
           .map((r, i) => {
-            if (!r?.error) return null
+            const error = r?.error || (r && rewardScore(r.return_value) === null ? rewardScoreError(r.return_value) : null)
+            if (!error) return null
             const caseIndex = testCases.findIndex((tc) => tc.id === ranCaseIdsRef.current[i])
             if (caseIndex === -1) return null
-            return { index: caseIndex + 1, error: String(r.error) }
+            return { index: caseIndex + 1, error: String(error) }
           })
           .filter((x): x is { index: number; error: string } => x !== null)
       : []
@@ -600,8 +605,15 @@ export function StepRewardFunction({
       setTestCases((prev) => {
         const next = prev.map((tc) => {
           const result = resultByCaseId.get(tc.id)
+          // Only a value verl can score is a reward: anything else (a str, a list,
+          // a dict without a numeric "score") crashed the `.toFixed(3)` renders.
+          const score = result && !result.error ? rewardScore(result.return_value) : null
           const updated: TestCase = result
-            ? { ...tc, reward: result.error ? null : result.return_value ?? null, rewardError: result.error || null }
+            ? {
+                ...tc,
+                reward: score,
+                rewardError: result.error || (score === null ? rewardScoreError(result.return_value) : null),
+              }
             : { ...tc, reward: null, rewardError: null }
           return updated
         })
@@ -644,6 +656,12 @@ export function StepRewardFunction({
                 onChange={(value) => setRewardFunctionCode(value ?? '')}
                 onMount={(editorInstance) => {
                   editorInstance.onDidBlurEditorText(() => {
+                    // A result is reset to null whenever the code or function name
+                    // changes, so one still present means nothing changed since the
+                    // last validation. Re-validating then replaced a passing test run
+                    // with a static-only result and un-passed the tests on a mere
+                    // click in and out of the editor.
+                    if (validationResultRef.current != null) return
                     if (rewardFunctionCodeRef.current.trim().length > 0 && !isValidatingRef.current) {
                       validateCodeRef.current(false)
                     }
