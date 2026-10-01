@@ -200,7 +200,9 @@ class TestTier1EnvColocated:
         """When the env dir lacks the step, resolution falls through to the
         env-class-match tier (proving ordering, not just tier-1)."""
         base = tmp_path / "base"
-        class_match = _write_step(base / "k8s" / "digit", env_classes=["K8s"])
+        class_match = _write_step(
+            base / "k8s" / "steps" / "digit", env_classes=["K8s"]
+        )
         env_dir = tmp_path / "envs" / "k8s"  # exists, but has no steps/digit
         env_dir.mkdir(parents=True)
         _set_bases(base)
@@ -463,7 +465,7 @@ class TestSubtypeMatching:
         restricted candidate is excluded for an unlisted sub-type."""
         base = tmp_path / "base"
         _write_step(
-            base / "skypilot" / "digit",
+            base / "skypilot" / "steps" / "digit",
             env_classes=["Skypilot"],
             subtypes=["kubernetes", "slurm"],
         )
@@ -611,8 +613,12 @@ class TestTier2EnvClassMatch:
         """A single-env split file (fewer environment_configs keys) beats a
         multi-env catch-all that also lists the active class."""
         base = tmp_path / "base"
-        _write_step(base / "s3push", env_classes=["K8s", "Lsf", "Skypilot"])
-        specific = _write_step(base / "k8s" / "s3push", env_classes=["K8s"])
+        _write_step(
+            base / "steps" / "s3push", env_classes=["K8s", "Lsf", "Skypilot"]
+        )
+        specific = _write_step(
+            base / "k8s" / "steps" / "s3push", env_classes=["K8s"]
+        )
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
@@ -632,8 +638,10 @@ class TestTier2EnvClassMatch:
         This tier must decide (no env dir, so Tier 1 is inert and Tier 3 never runs).
         """
         base = tmp_path / "base"
-        _write_step(base / "foo", env_classes=["K8s", "Skypilot"])  # catch-all, 2 keys
-        specific = base / "k8s" / "foo"  # null-valued, single-env
+        _write_step(
+            base / "steps" / "foo", env_classes=["K8s", "Skypilot"]
+        )  # catch-all, 2 keys
+        specific = base / "k8s" / "steps" / "foo"  # null-valued, single-env
         specific.mkdir(parents=True, exist_ok=True)
         (specific / "step.yaml").write_text(
             yaml.safe_dump(
@@ -656,8 +664,8 @@ class TestTier2EnvClassMatch:
         """Among equally-specific matches, the lexicographically smaller path
         wins (deterministic tie-break)."""
         base = tmp_path / "base"
-        first = _write_step(base / "aaa" / "dup", env_classes=["K8s"])
-        _write_step(base / "bbb" / "dup", env_classes=["K8s"])
+        first = _write_step(base / "aaa" / "steps" / "dup", env_classes=["K8s"])
+        _write_step(base / "bbb" / "steps" / "dup", env_classes=["K8s"])
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
@@ -669,7 +677,7 @@ class TestTier2EnvClassMatch:
         """A candidate that does not list the active env class is ignored;
         with no other tier matching, resolution raises."""
         base = tmp_path / "base"
-        _write_step(base / "skypilot" / "only", env_classes=["Skypilot"])
+        _write_step(base / "skypilot" / "steps" / "only", env_classes=["Skypilot"])
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
@@ -678,10 +686,10 @@ class TestTier2EnvClassMatch:
 
     def test_class_match_is_case_insensitive(self, tmp_path):
         """Env class `K8s` matches an `environment_configs` key `k8s` — the
-        class-name comparison is case-insensitive.  Placed under `k8s/` (not the
-        root `steps/`) so only the env-class-match tier can find it."""
+        class-name comparison is case-insensitive.  Placed under `k8s/steps/`
+        (not the space-root `steps/`) so only the env-class-match tier finds it."""
         base = tmp_path / "base"
-        match = _write_step(base / "k8s" / "digit", env_classes=["k8s"])
+        match = _write_step(base / "k8s" / "steps" / "digit", env_classes=["k8s"])
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
@@ -693,7 +701,7 @@ class TestTier2EnvClassMatch:
         """`space://steps/<name>/<rest>` resolves against the matched step dir
         plus the `<rest>` suffix."""
         base = tmp_path / "base"
-        step_dir = _write_step(base / "k8s" / "digit", env_classes=["K8s"])
+        step_dir = _write_step(base / "k8s" / "steps" / "digit", env_classes=["K8s"])
         sub = step_dir / "helm-charts"
         sub.mkdir()
         _set_bases(base)
@@ -707,7 +715,7 @@ class TestTier2EnvClassMatch:
         """A `<rest>` that escapes the matched step dir is rejected by the
         env-class-match tier too (shares the containment guard)."""
         base = tmp_path / "base"
-        _write_step(base / "k8s" / "digit", env_classes=["K8s"])
+        _write_step(base / "k8s" / "steps" / "digit", env_classes=["K8s"])
         (base / "secret").write_text("password\n")  # real file, outside step dir
         _set_bases(base)
 
@@ -995,6 +1003,42 @@ class TestNestedStepIdentity:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/distill/foo")
 
+    def test_tier2_name_pin_ignores_stray_step_yaml_outside_steps(self, tmp_path):
+        """Tier-2 regression: a stray ``step.yaml`` *outside* any ``steps/`` dir
+        must not hijack an existing sub-asset URI.
+
+        The multi-segment name pin globs for ``steps/<name>/step.yaml`` anchored
+        to the enclosing ``steps/`` (the canonical-name invariant).  An
+        unanchored ``<name>/step.yaml`` glob would match a ``step.yaml`` anywhere
+        under a base — e.g. a test fixture at
+        ``test-data/fixtures/digit/helm-charts/step.yaml`` — and, because the
+        name can now be multi-segment, bind ``space://steps/digit/helm-charts``
+        to that stray instead of to the real step ``digit``'s ``helm-charts``
+        sub-asset.
+
+        Layout: the real step ``.../steps/digit`` (declares the active class so
+        Tier 2 is the deciding tier — it lives below ``base_uris[0]`` but not at
+        ``base_uris[0]/steps``, so Tier 1a misses) with a plain ``helm-charts``
+        sub-asset dir, plus an unrelated stray step under ``test-data/fixtures``.
+        Resolution must land on the real sub-asset, never the stray.
+        """
+        base = tmp_path / "base"
+        real = _write_step(
+            base / "assets" / "steps" / "digit", env_classes=["Skypilot"]
+        )
+        sub = real / "helm-charts"  # plain sub-asset dir, NO step.yaml
+        sub.mkdir()
+        _write_step(  # stray fixture outside any steps/ dir
+            base / "test-data" / "fixtures" / "digit" / "helm-charts",
+            env_classes=["Skypilot"],
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            resolved = _resolve("space://steps/digit/helm-charts")
+
+        assert _resolved_dir(resolved).samefile(sub)
+
     def test_universal_outer_nested_excluded_unresolvable(self, tmp_path):
         """Companion to :meth:`test_env_excluded_nested_not_demoted_to_outer`
         covering the *universal* outer step (Tier-3 rejection path).
@@ -1092,17 +1136,20 @@ class TestGitBaseUri:
         assert _resolved_dir(resolved).samefile(clone / "steps" / "digit")
 
     def test_git_tier2_class_match(self, tmp_path, monkeypatch):
-        """Env-class-match (Tier 2) globs the git clone: a class-keyed step not
-        at the root `steps/` still resolves for the matching env class."""
+        """Env-class-match (Tier 2) globs the git clone: a class-keyed step under
+        a nested `steps/` (not the clone-root `steps/`) still resolves for the
+        matching env class."""
         clone = tmp_path / "clone"
-        _write_step(clone / "k8s" / "digit", env_classes=["k8s"])  # class-match only
+        _write_step(
+            clone / "k8s" / "steps" / "digit", env_classes=["k8s"]
+        )  # class-match only, under a nested steps/
         _fake_git_clone(monkeypatch, clone)
         SpaceURI.set_baseuris([_GIT_BASE], {})
 
         with SpaceURI.with_current_env_class_name("K8s"):
             resolved = _resolve("space://steps/digit")
 
-        assert _resolved_dir(resolved).samefile(clone / "k8s" / "digit")
+        assert _resolved_dir(resolved).samefile(clone / "k8s" / "steps" / "digit")
 
 
 # --------------------------------------------------------------------------- #
