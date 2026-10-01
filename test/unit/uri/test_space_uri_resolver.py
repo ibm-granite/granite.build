@@ -200,9 +200,7 @@ class TestTier1EnvColocated:
         """When the env dir lacks the step, resolution falls through to the
         env-class-match tier (proving ordering, not just tier-1)."""
         base = tmp_path / "base"
-        class_match = _write_step(
-            base / "k8s" / "steps" / "digit", env_classes=["K8s"]
-        )
+        class_match = _write_step(base / "k8s" / "steps" / "digit", env_classes=["K8s"])
         env_dir = tmp_path / "envs" / "k8s"  # exists, but has no steps/digit
         env_dir.mkdir(parents=True)
         _set_bases(base)
@@ -613,12 +611,8 @@ class TestTier2EnvClassMatch:
         """A single-env split file (fewer environment_configs keys) beats a
         multi-env catch-all that also lists the active class."""
         base = tmp_path / "base"
-        _write_step(
-            base / "steps" / "s3push", env_classes=["K8s", "Lsf", "Skypilot"]
-        )
-        specific = _write_step(
-            base / "k8s" / "steps" / "s3push", env_classes=["K8s"]
-        )
+        _write_step(base / "steps" / "s3push", env_classes=["K8s", "Lsf", "Skypilot"])
+        specific = _write_step(base / "k8s" / "steps" / "s3push", env_classes=["K8s"])
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
