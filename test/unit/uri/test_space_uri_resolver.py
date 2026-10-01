@@ -962,16 +962,30 @@ class TestNestedStepIdentity:
 
     def test_env_excluded_nested_not_demoted_to_outer(self, tmp_path):
         """A nested step present but env-excluded must NOT silently demote to
-        'outer step + sub-asset'.
+        'outer step + sub-asset' — even when the outer step declares the active
+        env class.
 
-        Name selection is by ``step.yaml`` existence, not the env gate: with the
-        nested ``distill/foo`` scoped to another class (Bash) and a universal
-        outer ``distill``, ``space://steps/distill/foo`` is Unresolvable for
-        Skypilot — it does not fall back to resolving ``foo`` as a sub-asset of
-        the universal ``distill``.
+        This pins the Tier-2 demotion path: the outer ``distill`` explicitly
+        lists **Skypilot** (the active class) while the nested ``distill/foo``
+        lists only **Bash**.  Choosing the name by env-class match (the old
+        behavior) made ``distill/foo`` miss (Bash-only) and fall back to
+        ``distill`` (Skypilot), returning ``distill`` + sub-asset ``foo`` and
+        resolving to the nested dir as a mere asset.  Name selection is now
+        pinned by ``step.yaml`` existence first (``distill/foo``), then gated; the
+        gate misses and ``space://steps/distill/foo`` is Unresolvable for
+        Skypilot rather than demoted.
+
+        A *universal* outer (no ``environment_configs``) would NOT exercise this:
+        the env-class match rejects a universal step by key presence, so the
+        demotion never fires and the test would pass via Tier 3's rejection
+        instead — see :meth:`test_universal_outer_nested_excluded_unresolvable`
+        for that distinct (Tier-3) path.  No env dir is set here, so Tier 1a
+        misses and this reaches Tier 2 specifically.
         """
         base = tmp_path / "base"
-        _write_step(base / "steps" / "distill")  # universal outer step
+        _write_step(
+            base / "steps" / "distill", env_classes=["Skypilot"]
+        )  # outer DECLARES the active class (the realistic demotion trap)
         _write_step(
             base / "steps" / "distill" / "foo", env_classes=["Bash"]
         )  # nested, excludes Skypilot
@@ -981,34 +995,23 @@ class TestNestedStepIdentity:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/distill/foo")
 
-    def test_tier2_env_excluded_nested_not_demoted_when_outer_matches(
-        self, tmp_path
-    ):
-        """Tier-2 regression: an outer step that *declares the active class* must
-        not capture a nested URI whose own step is env-excluded.
+    def test_universal_outer_nested_excluded_unresolvable(self, tmp_path):
+        """Companion to :meth:`test_env_excluded_nested_not_demoted_to_outer`
+        covering the *universal* outer step (Tier-3 rejection path).
 
-        This is the Tier-2 demotion the earlier
-        :meth:`test_env_excluded_nested_not_demoted_to_outer` could not reach:
-        there the outer ``distill`` was universal (no ``environment_configs``),
-        which the env-class match already rejects, so the demotion path never
-        fired.  Here the outer ``distill`` explicitly lists **Skypilot** (the
-        active class) while the nested ``distill/foo`` lists only **Bash**.
-
-        The old Tier 2 chose the name by env-class match: ``distill/foo`` missed
-        (Bash-only), so it fell back to ``distill`` (Skypilot) and returned
-        ``distill`` + sub-asset ``foo`` — resolving to the nested dir as a mere
-        asset.  Name selection is now pinned by ``step.yaml`` existence first
-        (``distill/foo``), then gated; the gate misses and the URI is
-        Unresolvable rather than demoted.  No env dir is set, so Tier 1a misses
-        and this exercises Tier 2 specifically.
+        With a universal outer ``distill`` (no ``environment_configs``) and a
+        Bash-only nested ``distill/foo``, Tier 2 cannot match the outer (presence
+        is by declared key), so the name stays pinned to the excluded
+        ``distill/foo`` and resolution falls through to Tier 3, which pins the
+        same nested step by existence and rejects it on the env gate.  Either way
+        ``space://steps/distill/foo`` is Unresolvable for Skypilot — the universal
+        outer never captures ``foo`` as a sub-asset.
         """
         base = tmp_path / "base"
-        _write_step(
-            base / "steps" / "distill", env_classes=["Skypilot"]
-        )  # outer DECLARES the active class
+        _write_step(base / "steps" / "distill")  # universal outer step
         _write_step(
             base / "steps" / "distill" / "foo", env_classes=["Bash"]
-        )  # nested excludes Skypilot
+        )  # nested, excludes Skypilot
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("Skypilot"):
