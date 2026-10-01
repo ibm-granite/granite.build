@@ -34,6 +34,7 @@ import { Reset, Information } from '@carbon/icons-react'
 import type { ColumnMapping, ColumnMetadata, Dataset, DatasetForm, DatasetFormatType, ParsedDataRow, TuningGoal } from '@granite-build/ui-core/types'
 import { getAutotuneDatasetTypes, getDataset, getDatasets, suggestColumnMappingAI } from '@granite-build/ui-core/api/autotunex'
 import { countLinesInFileAsync, processUploadedFileAsync } from '@granite-build/ui-core/lib/autotunex/processUploadedFile'
+import { splitCounts } from '@granite-build/ui-core/lib/autotunex/splitCounts'
 import {
   applyColumnMapping,
   detectDatasetFormat,
@@ -248,17 +249,15 @@ export function Step1DatasetUpload({
     setPreviewRows(result.rows)
   }, [parsedData, columnMetadata])
 
-  // Build validation preview for split mode
+  // Split mode has no validation rows to preview: the server picks a random sample
+  // for validation, seeded by the id of a dataset that does not exist yet. Showing
+  // the tail of the 50-row preview sample as "Validation" labelled rows the server
+  // will mostly train on. Only the count is known in advance.
   useEffect(() => {
     if (!isSplitEnabled || parsedData.length === 0 || !uploadedFile) return
-    const splitIndex = Math.floor((parsedData.length * splitRatio) / 100)
-    const valSlice = parsedData.slice(splitIndex)
-    if (valSlice.length > 0) {
-      const result = buildPreviewData(valSlice)
-      setValPreviewHeaders(result.headers)
-      setValPreviewRows(result.rows)
-      setValidationRecordCount(totalRecords - Math.floor((totalRecords * splitRatio) / 100))
-    }
+    setValPreviewHeaders([])
+    setValPreviewRows([])
+    setValidationRecordCount(splitCounts(totalRecords, 100 - splitRatio).validation)
   }, [isSplitEnabled, parsedData, uploadedFile, splitRatio, totalRecords])
 
   // Build validation preview for a manually-uploaded validation file
@@ -309,7 +308,7 @@ export function Step1DatasetUpload({
   const trainRecordCount = existingDatasetId
     ? selectedExistingDataset?.train_records || totalRecords
     : isSplitEnabled && uploadedFile
-      ? Math.floor((totalRecords * splitRatio) / 100)
+      ? splitCounts(totalRecords, 100 - splitRatio).train
       : totalRecords
 
   /**
@@ -903,6 +902,11 @@ export function Step1DatasetUpload({
                       {previewRows.length} of {totalRecords.toLocaleString()} records
                     </span>
                   </div>
+                  {isSplitEnabled && uploadedFile && !existingDatasetId && (
+                    <p className={styles.helperTextInline} style={{ marginBottom: '0.75rem' }}>
+                      {`Split: ${trainRecordCount.toLocaleString()} train, ${validationRecordCount.toLocaleString()} validation. The validation records are picked at random when the dataset is created, so they can't be previewed here.`}
+                    </p>
+                  )}
                   <PreviewTable headers={previewHeaders} rows={previewRows} />
                 </>
               )}
