@@ -185,9 +185,7 @@ def test_runs_on_the_same_instant_are_all_indexed_across_a_crash():
 
     sink.write_job.reset_mock(side_effect=True)
     assert ix.scan_once(storage) == 1
-    assert [c.args[0]["run"]["runId"] for c in sink.write_job.call_args_list] == [
-        "r2"
-    ]
+    assert [c.args[0]["run"]["runId"] for c in sink.write_job.call_args_list] == ["r2"]
     assert _checkpoint(storage) == {
         "timestamp": D1,
         "item_ids": ["r1", "r2"],

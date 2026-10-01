@@ -735,6 +735,7 @@ def test_jobs_passes_every_filter_and_its_paging_through():
         "offset": 50,
         "self_loop": False,
         "output": None,
+        "terminal": None,
     }
     assert resp.limit == 10
     assert resp.offset == 50

@@ -57,7 +57,11 @@ from gbserver.lineage.walk import (
 )
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_job_tag_storage import ILineageJobTagStorage
-from gbserver.storage.lineage_row_storage import ILineageRowStorage
+from gbserver.storage.lineage_row_storage import (
+    TERMINAL_INPUT,
+    TERMINAL_OUTPUT,
+    ILineageRowStorage,
+)
 from gbserver.storage.stored_lineage_row import TERMINAL
 
 logger = logging.getLogger(__name__)
@@ -302,6 +306,7 @@ class DBLineageService(LineageService):
         offset: int = 0,
         self_loop: bool = False,
         output: Optional[str] = None,
+        terminal: Optional[str] = None,
     ) -> Dict:
         """List job executions matching every given filter, paged.
 
@@ -317,6 +322,9 @@ class DBLineageService(LineageService):
           both that artifact: exactly the runs behind its looped node in the graph.
         - ``output`` (with ``uri``) -- only the jobs with a ``uri -> output`` row:
           the runs behind a node grouping jobs with the same inputs and outputs.
+        - ``terminal`` (with ``uri``) -- ``"input"`` lists the jobs with a
+          ``(nothing) -> uri`` row, ``"output"`` those with ``uri -> (nothing)``: the
+          runs behind a grouped node with no recorded input or output.
         - ``job_id`` -- that one execution.
         - ``tags`` / ``required_tags`` -- W&B's run-tag filter: **any** of ``tags``
           and **all** of ``required_tags``, matched exactly.
@@ -360,16 +368,23 @@ class DBLineageService(LineageService):
                 target = normalize_uri(output) if output else None
                 if output and not target:
                     return empty
+                if terminal not in (None, TERMINAL_INPUT, TERMINAL_OUTPUT):
+                    return empty
                 if candidates is None:
                     total = self.storage.count_jobs_touching(
-                        normalized, self_loop, output=target
+                        normalized, self_loop, output=target, terminal=terminal
                     )
                     page = self.storage.get_job_ids_touching(
-                        normalized, limit, offset, self_loop, output=target
+                        normalized,
+                        limit,
+                        offset,
+                        self_loop,
+                        output=target,
+                        terminal=terminal,
                     )
                     return {**empty, "jobs": self._job_entries(page), "total": total}
                 candidates = self.storage.filter_jobs_touching(
-                    normalized, candidates, self_loop, output=target
+                    normalized, candidates, self_loop, output=target, terminal=terminal
                 )
 
             if candidates is None:

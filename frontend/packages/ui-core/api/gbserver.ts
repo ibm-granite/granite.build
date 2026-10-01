@@ -689,6 +689,9 @@ export async function getLineageJobs(params: {
   // With `uri`: only the jobs that read `uri` and wrote `output` -- the runs behind
   // a grouped node of GET /lineage/graph (metadata.jobs_query).
   output?: string
+  // With `uri`: the side of its row that is empty -- 'input' lists the jobs that wrote
+  // `uri` from nothing recorded, 'output' those that read it and recorded no output.
+  terminal?: 'input' | 'output'
   limit?: number
   offset?: number
 }): Promise<LineageJobsResult> {

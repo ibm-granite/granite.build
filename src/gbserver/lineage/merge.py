@@ -74,7 +74,9 @@ def _is_blank(value: Any) -> bool:
     return value is None or value == "" or value == {} or value == []
 
 
-def merge_attributes(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+def merge_attributes(
+    existing: Dict[str, Any], incoming: Dict[str, Any]
+) -> Dict[str, Any]:
     """Deep-merge two attributes blobs: fill blanks, keep what is already stored.
 
     Maps merge key by key; any other value is kept unless blank. ``origin.system``
@@ -222,7 +224,9 @@ def _superseded(row: StoredLineageRow, others: List[StoredLineageRow]) -> bool:
     return False
 
 
-def _find(storage: ILineageRowStorage, row: StoredLineageRow) -> Optional[StoredLineageRow]:
+def _find(
+    storage: ILineageRowStorage, row: StoredLineageRow
+) -> Optional[StoredLineageRow]:
     for stored in storage.get_rows_by_job(row.job_id):
         if stored.input == row.input and stored.output == row.output:
             return stored

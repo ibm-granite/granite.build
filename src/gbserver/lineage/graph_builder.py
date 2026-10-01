@@ -192,13 +192,17 @@ def build_graph_dict(
         for run_id in grouped_ids:
             del run_nodes[run_id]
         edges = [
-            e for e in edges if e["source"] not in grouped_ids and e["target"] not in grouped_ids
+            e
+            for e in edges
+            if e["source"] not in grouped_ids and e["target"] not in grouped_ids
         ]
         edge_keys = {(e["source"], e["target"]) for e in edges}
 
     # One node per (source, target) group, in place of one per job.
     for (source, target), rows in grouped_rows.items():
         for uri, side in ((source, INPUT), (target, OUTPUT)):
+            if uri == TERMINAL:
+                continue
             _ensure_artifact_node(
                 artifact_nodes,
                 uri=uri,
@@ -211,8 +215,10 @@ def build_graph_dict(
         run_nodes[run_id] = _grouped_node(rows, source, target, run_id)
         # For a self-loop both edges touch one artifact, so the rewrite reads as a
         # cycle on it rather than a dangling node.
-        add_edge(source, run_id)
-        add_edge(run_id, target)
+        if source != TERMINAL:
+            add_edge(source, run_id)
+        if target != TERMINAL:
+            add_edge(run_id, target)
 
     if root_is_artifact and root_uri:
         # The root may appear in no row -- an artifact with no lineage recorded yet.
@@ -347,10 +353,15 @@ def _repeated_single_edge_jobs(
     one row, both endpoints real, qualify: ``GET /lineage/jobs?uri=A&output=B`` is
     how the group is listed, and a job with more endpoints would also match the pair
     while belonging to a different group. A lone job keeps its own node.
+
+    One side may be :data:`TERMINAL`: N jobs writing B with no recorded input (or
+    reading A with no recorded output) are as identical as N ``A -> B`` jobs, and
+    stack the same way. They group under ``("", B)`` / ``(A, "")`` and are listed by
+    ``?uri=B&terminal=input`` / ``?uri=A&terminal=output``.
     """
     pairs: dict[tuple[str, str], list] = {}
     for run_id, rows in job_rows.items():
-        if len(rows) != 1 or TERMINAL in (rows[0].input, rows[0].output):
+        if len(rows) != 1 or rows[0].input == rows[0].output == TERMINAL:
             continue
         pairs.setdefault((rows[0].input, rows[0].output), []).append(run_id)
 
@@ -374,7 +385,7 @@ def _grouped_runs_node_id(source: str, target: str) -> str:
     """
     if source == target:
         return f"runs:{source}"
-    return f"runs:{source} → {target}"
+    return f"runs:{source or '∅'} → {target or '∅'}"
 
 
 def _mark_grouped(node: dict, source: str, target: str, count: int) -> None:
@@ -392,9 +403,22 @@ def _mark_grouped(node: dict, source: str, target: str, count: int) -> None:
             "representative_job_id": node["metadata"].get("job_id"),
             "source_uri": source,
             "target_uri": target,
-            "jobs_query": {"uri": source, "output": target},
+            "jobs_query": _jobs_query(source, target),
         }
     )
+
+
+def _jobs_query(source: str, target: str) -> dict:
+    """The ``GET /lineage/jobs`` filter listing exactly the ``source -> target`` jobs.
+
+    ``uri`` must be a real artifact, so a group with an empty side anchors on the
+    other one and names the empty side with ``terminal``.
+    """
+    if source == TERMINAL:
+        return {"uri": target, "terminal": "input"}
+    if target == TERMINAL:
+        return {"uri": source, "terminal": "output"}
+    return {"uri": source, "output": target}
 
 
 def _run_node_id(row: StoredLineageRow) -> str:

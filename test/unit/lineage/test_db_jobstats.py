@@ -733,11 +733,18 @@ class TestJobsTouchingInSQL:
         self._write(sink, "X", [artifact("t", LH_TABLE)], [artifact("o", LH_MODEL)])
         assert rows.count_jobs_touching(LH_TABLE) == 3
         assert rows.count_jobs_touching(LH_TABLE, self_loop=True) == 2
-        assert rows.get_job_ids_touching(LH_TABLE, 10, 0, self_loop=True) == ["S1", "S2"]
-        assert rows.filter_jobs_touching(LH_TABLE, ["S1", "X"], self_loop=True) == {"S1"}
+        assert rows.get_job_ids_touching(LH_TABLE, 10, 0, self_loop=True) == [
+            "S1",
+            "S2",
+        ]
+        assert rows.filter_jobs_touching(LH_TABLE, ["S1", "X"], self_loop=True) == {
+            "S1"
+        }
         assert rows.count_jobs_touching(LH_TABLE, output=LH_MODEL) == 1
         assert rows.get_job_ids_touching(LH_TABLE, 10, 0, output=LH_MODEL) == ["X"]
-        assert rows.filter_jobs_touching(LH_TABLE, ["S1", "X"], output=LH_MODEL) == {"X"}
+        assert rows.filter_jobs_touching(LH_TABLE, ["S1", "X"], output=LH_MODEL) == {
+            "X"
+        }
 
     def test_both_directions_are_counted_and_paged(self, sink, rows):
         for i in range(5):

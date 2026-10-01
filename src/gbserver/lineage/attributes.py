@@ -394,7 +394,11 @@ def endpoint_produced_by(
 ) -> Dict[str, str]:
     """The producing build / target run / artifact recorded for one endpoint, or ``{}``."""
     value = ((attributes or {}).get(side) or {}).get(PRODUCED_BY) or {}
-    return {str(k): str(v) for k, v in value.items() if v} if isinstance(value, dict) else {}
+    return (
+        {str(k): str(v) for k, v in value.items() if v}
+        if isinstance(value, dict)
+        else {}
+    )
 
 
 def endpoint_alt_uris(attributes: Optional[Dict[str, Any]], side: str) -> List[str]:

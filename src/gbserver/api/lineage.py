@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
@@ -586,6 +586,7 @@ def list_lineage_jobs(
     required_tags: List[str] = Query(default_factory=list),
     self_loop: bool = False,
     output: Optional[str] = None,
+    terminal: Optional[Literal["input", "output"]] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> LineageJobsResponse:
@@ -601,6 +602,9 @@ def list_lineage_jobs(
       place (same source and target): the runs behind its looped graph node.
     - ``output`` (with ``uri``) -- only the jobs that read ``uri`` and wrote
       ``output``: the runs behind a graph node grouping same-signature jobs.
+    - ``terminal`` (with ``uri``) -- ``input``: only the jobs that wrote ``uri`` with
+      no recorded input; ``output``: only those that read it with no recorded
+      output. The runs behind a grouped node with one empty side.
     - ``tags`` (match any) / ``required_tags`` (match all) -- e.g.
       ``?tags=build_id=<uuid>``. Tags are free-form and matched exactly.
     - none -- the most recently recorded jobs.
@@ -629,5 +633,6 @@ def list_lineage_jobs(
         offset=offset,
         self_loop=self_loop,
         output=output,
+        terminal=terminal,
     )
     return LineageJobsResponse(**result)

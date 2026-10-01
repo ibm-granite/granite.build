@@ -21,11 +21,39 @@ each direction, seeding by build, and a presence check for dedup. Each is a sing
 indexed query, so a graph walk costs one query per level rather than a scan.
 """
 
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Optional, Set, Tuple
 
 from gbserver.storage.storage import BaseItemStorage, IItemStorage
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 from gbserver.types.constants import GB_LINEAGE_TABLE_NAME
+
+TERMINAL_INPUT = "input"
+TERMINAL_OUTPUT = "output"
+
+
+def endpoint_pair(
+    uri: str,
+    self_loop: bool = False,
+    output: Optional[str] = None,
+    terminal: Optional[str] = None,
+) -> Optional[Tuple[str, str]]:
+    """The exact ``(input, output)`` row a job listing filters on, or ``None`` for "either side".
+
+    ``self_loop`` is ``uri -> uri``; ``output`` is ``uri -> output``; ``terminal`` names
+    the side of ``uri``'s row that is empty: ``"input"`` is ``TERMINAL -> uri`` (jobs
+    that wrote ``uri`` from nothing recorded), ``"output"`` is ``uri -> TERMINAL``
+    (jobs that read ``uri`` and recorded no output). These are the groups
+    ``build_graph_dict`` folds into one node.
+    """
+    if self_loop:
+        return uri, uri
+    if terminal == TERMINAL_INPUT:
+        return TERMINAL, uri
+    if terminal == TERMINAL_OUTPUT:
+        return uri, TERMINAL
+    if output:
+        return uri, output
+    return None
 
 
 class ILineageRowStorage(IItemStorage[StoredLineageRow]):
@@ -51,18 +79,35 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         """Whether any row is already recorded for a job."""
         raise NotImplementedError
 
-    def count_jobs_touching(self, uri: str, self_loop: bool = False, output: Optional[str] = None) -> int:
+    def count_jobs_touching(
+        self,
+        uri: str,
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
+    ) -> int:
         """Count the distinct jobs that consumed or produced ``uri``."""
         raise NotImplementedError
 
     def get_job_ids_touching(
-        self, uri: str, limit: int, offset: int, self_loop: bool = False, output: Optional[str] = None
+        self,
+        uri: str,
+        limit: int,
+        offset: int,
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
     ) -> List[str]:
         """Return one page of the distinct jobs touching ``uri``, by ``job_id``."""
         raise NotImplementedError
 
     def filter_jobs_touching(
-        self, uri: str, job_ids: Iterable[str], self_loop: bool = False, output: Optional[str] = None
+        self,
+        uri: str,
+        job_ids: Iterable[str],
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
     ) -> Set[str]:
         """Return which of ``job_ids`` consumed or produced ``uri``."""
         raise NotImplementedError
@@ -177,7 +222,13 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             return []
         return self.get_by_where({"job_id": wanted})
 
-    def count_jobs_touching(self, uri: str, self_loop: bool = False, output: Optional[str] = None) -> int:
+    def count_jobs_touching(
+        self,
+        uri: str,
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
+    ) -> int:
         """Count the distinct jobs that consumed or produced ``uri``.
 
         Jobs, not rows: a job can touch one artifact in several of its rows (an
@@ -185,20 +236,33 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         overstates it. This fallback walks the rows; the SQL backend
         overrides it with one ``COUNT(DISTINCT job_id)``.
         """
-        return len(self._jobs_touching(uri, self_loop, output))
+        return len(self._jobs_touching(uri, self_loop, output, terminal))
 
     def get_job_ids_touching(
-        self, uri: str, limit: int, offset: int, self_loop: bool = False, output: Optional[str] = None
+        self,
+        uri: str,
+        limit: int,
+        offset: int,
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
     ) -> List[str]:
         """Return one page of the distinct jobs touching ``uri``, ordered by ``job_id``.
 
         Ordered by ``job_id`` so paging is stable and matches the tag listing. See
         :meth:`count_jobs_touching` for this fallback's cost.
         """
-        return sorted(self._jobs_touching(uri, self_loop, output))[offset : offset + limit]
+        return sorted(self._jobs_touching(uri, self_loop, output, terminal))[
+            offset : offset + limit
+        ]
 
     def filter_jobs_touching(
-        self, uri: str, job_ids: Iterable[str], self_loop: bool = False, output: Optional[str] = None
+        self,
+        uri: str,
+        job_ids: Iterable[str],
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
     ) -> Set[str]:
         """Return which of ``job_ids`` consumed or produced ``uri``.
 
@@ -208,12 +272,12 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         wanted = self._batchable(list(job_ids))
         if not wanted or not uri or uri == TERMINAL:
             return set()
-        output = uri if self_loop else output
-        if output:
+        pair = endpoint_pair(uri, self_loop, output, terminal)
+        if pair:
             return {
                 row.job_id
                 for row in self.get_by_where(
-                    {"input": uri, "output": output, "job_id": wanted}
+                    {"input": pair[0], "output": pair[1], "job_id": wanted}
                 )
             }
         return {
@@ -222,19 +286,26 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             for row in self.get_by_where({column: uri, "job_id": wanted})
         }
 
-    def _jobs_touching(self, uri: str, self_loop: bool = False, output: Optional[str] = None) -> Set[str]:
+    def _jobs_touching(
+        self,
+        uri: str,
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
+    ) -> Set[str]:
         """Every job with ``uri`` as an input or an output, read row by row.
 
         With ``self_loop``, only the jobs with ``uri`` as both -- its in-place
-        rewrites. With ``output``, only the jobs with a ``uri -> output`` row.
+        rewrites. With ``output``, only the jobs with a ``uri -> output`` row. With
+        ``terminal``, see :func:`endpoint_pair`.
         """
         if not uri or uri == TERMINAL:
             return set()
-        output = uri if self_loop else output
-        if output:
+        pair = endpoint_pair(uri, self_loop, output, terminal)
+        if pair:
             return {
                 row.job_id
-                for page in self.get_paged({"input": uri, "output": output})
+                for page in self.get_paged({"input": pair[0], "output": pair[1]})
                 for row in page
             }
         return {

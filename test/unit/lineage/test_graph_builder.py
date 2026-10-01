@@ -333,7 +333,10 @@ class TestSelfLoopCollapse:
 
     def test_it_is_named_after_the_first_job(self):
         """Same as a repeated A -> B: the jobs share a step, so its name is theirs."""
-        rows = [row("J1", A, A, metadata={"job_name": "append"}), row("J2", A, A, metadata={"job_name": "other"})]
+        rows = [
+            row("J1", A, A, metadata={"job_name": "append"}),
+            row("J2", A, A, metadata={"job_name": "other"}),
+        ]
         run = nodes_by_type(build_graph_dict(graph_of(*rows), root_uri=A), "run")[0]
         assert run["name"] == "append"
         assert run["metadata"]["run_count"] == 2
@@ -409,7 +412,9 @@ class TestSameEndpointGrouping:
     """Jobs with the same single input and output share one node, like self-loops."""
 
     def test_parallel_jobs_become_one_node(self):
-        rows = [row(f"J{i}", A, B, metadata={"job_name": f"fdedup{i}"}) for i in range(12)]
+        rows = [
+            row(f"J{i}", A, B, metadata={"job_name": f"fdedup{i}"}) for i in range(12)
+        ]
         result = build_graph_dict(graph_of(*rows), root_uri=A)
         runs = nodes_by_type(result, "run")
         assert len(runs) == 1
@@ -446,3 +451,21 @@ class TestSameEndpointGrouping:
         rows = [row("J1", A, B), row("J2", A, B), row("J3", A, C), row("J4", A, C)]
         result = build_graph_dict(graph_of(*rows), root_uri=A)
         assert len(nodes_by_type(result, "run")) == 2
+
+    def test_jobs_with_no_input_become_one_node(self):
+        rows = [row(f"J{i}", TERMINAL, B) for i in range(5)]
+        result = build_graph_dict(graph_of(*rows), root_uri=B)
+        runs = nodes_by_type(result, "run")
+        assert len(runs) == 1
+        assert runs[0]["metadata"]["run_count"] == 5
+        assert runs[0]["metadata"]["jobs_query"] == {"uri": B, "terminal": "input"}
+        assert edge_pairs(result) == {(runs[0]["id"], B)}
+        assert {n["id"] for n in nodes_by_type(result, "artifact")} == {B}
+
+    def test_jobs_with_no_output_become_one_node(self):
+        rows = [row(f"J{i}", A, TERMINAL) for i in range(3)]
+        result = build_graph_dict(graph_of(*rows), root_uri=A)
+        runs = nodes_by_type(result, "run")
+        assert len(runs) == 1
+        assert runs[0]["metadata"]["jobs_query"] == {"uri": A, "terminal": "output"}
+        assert edge_pairs(result) == {(A, runs[0]["id"])}

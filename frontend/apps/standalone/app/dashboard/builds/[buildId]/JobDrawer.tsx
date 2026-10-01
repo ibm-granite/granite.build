@@ -103,17 +103,21 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) {
 const GROUPED_PAGE = 50
 
 // Every job with the node's source and target, paged from
-// GET /lineage/jobs?uri=<source>&output=<target>. One row per job; a row opens its details.
+// GET /lineage/jobs with the node's jobs_query. One row per job; a row opens its details.
 function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) {
   const meta = node.indexNode?.metadata ?? {}
-  const uri = str(meta.source_uri)
-  const output = str(meta.target_uri) ?? uri
+  // jobs_query is the exact filter the server says lists this node's jobs; a group
+  // with an empty side has no source (or target) to anchor on, so it uses `terminal`.
+  const query = (meta.jobs_query ?? {}) as { uri?: string; output?: string; terminal?: 'input' | 'output' }
+  const uri = query.uri ?? str(meta.source_uri)
+  const terminal = query.terminal
+  const output = terminal ? undefined : (query.output ?? str(meta.target_uri) ?? uri)
   const runCount = typeof meta.run_count === 'number' ? meta.run_count : undefined
   const [openJobId, setOpenJobId] = React.useState<string | null>(null)
 
   const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage, error } = useInfiniteQuery({
-    queryKey: ['lineage-grouped-jobs', uri, output],
-    queryFn: ({ pageParam }) => getLineageJobs({ uri: uri!, output, limit: GROUPED_PAGE, offset: pageParam }),
+    queryKey: ['lineage-grouped-jobs', uri, output, terminal],
+    queryFn: ({ pageParam }) => getLineageJobs({ uri: uri!, output, terminal, limit: GROUPED_PAGE, offset: pageParam }),
     initialPageParam: 0,
     getNextPageParam: (last) => (last.offset + last.jobs.length < last.total && last.jobs.length > 0 ? last.offset + last.jobs.length : undefined),
     enabled: Boolean(uri),
@@ -130,7 +134,7 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
         <div className={styles.stepSidePanelIdentity}>
           <h4 className={styles.stepSidePanelHeading}>{title}</h4>
           <div className={styles.stepSidePanelSubtitle}>
-            {total !== undefined ? `${total} ${total === 1 ? 'run' : 'runs'}` : 'Runs'} · {uri === output ? 'in-place rewrites' : 'same source and target'}
+            {total !== undefined ? `${total} ${total === 1 ? 'run' : 'runs'}` : 'Runs'} · {terminal === 'input' ? 'no recorded input' : terminal === 'output' ? 'no recorded output' : uri === output ? 'in-place rewrites' : 'same source and target'}
           </div>
         </div>
         <IconButton ref={closeButtonRef} kind="ghost" label="Close" align="bottom" onClick={onClose}>

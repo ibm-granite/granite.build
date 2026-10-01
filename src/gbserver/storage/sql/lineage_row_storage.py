@@ -24,6 +24,7 @@ from sqlalchemy import and_, distinct, func, or_
 from gbserver.storage.lineage_row_storage import (
     BaseLineageRowStorage,
     ILineageRowStorage,
+    endpoint_pair,
 )
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
@@ -94,22 +95,34 @@ class SQLLineageRowStorage(
         kwargs["default_pagination_sort_by_column"] = "recorded_at"
         super().__init__(**kwargs)
 
-    def count_jobs_touching(self, uri: str, self_loop: bool = False, output: Optional[str] = None) -> int:
+    def count_jobs_touching(
+        self,
+        uri: str,
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
+    ) -> int:
         """Count the distinct jobs touching ``uri`` in one ``COUNT(DISTINCT)``.
 
         The artifact this exists for has 68,905 runs; counting them by reading the
         rows cost seconds per request, whatever the page size.
         """
-        with self._touching(uri, self_loop, output) as query:
+        with self._touching(uri, self_loop, output, terminal) as query:
             if query is None:
                 return 0
             return int(query.with_entities(func.count(distinct(self._job_id))).scalar())
 
     def get_job_ids_touching(
-        self, uri: str, limit: int, offset: int, self_loop: bool = False, output: Optional[str] = None
+        self,
+        uri: str,
+        limit: int,
+        offset: int,
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
     ) -> List[str]:
         """Return one page of the distinct jobs touching ``uri``, in SQL."""
-        with self._touching(uri, self_loop, output) as query:
+        with self._touching(uri, self_loop, output, terminal) as query:
             if query is None:
                 return []
             page = (
@@ -126,7 +139,13 @@ class SQLLineageRowStorage(
         return self._sql_alchemy_model.job_id
 
     @contextmanager
-    def _touching(self, uri: str, self_loop: bool = False, output: Optional[str] = None):
+    def _touching(
+        self,
+        uri: str,
+        self_loop: bool = False,
+        output: Optional[str] = None,
+        terminal: Optional[str] = None,
+    ):
         """The rows with ``uri`` on either side, or ``None`` when none can exist.
 
         ``input = u OR output = u`` over two indexed columns, which every supported
@@ -139,9 +158,9 @@ class SQLLineageRowStorage(
         session = self._BaseSQLItemStorage__get_session_without_retry()
         try:
             model = self._sql_alchemy_model
-            output = uri if self_loop else output
-            if output:
-                condition = and_(model.input == uri, model.output == output)
+            pair = endpoint_pair(uri, self_loop, output, terminal)
+            if pair:
+                condition = and_(model.input == pair[0], model.output == pair[1])
             else:
                 condition = or_(model.input == uri, model.output == uri)
             yield session.query(model).filter(condition)
