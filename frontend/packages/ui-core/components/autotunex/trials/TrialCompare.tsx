@@ -15,7 +15,7 @@ import {
 import { ChevronDown, ChevronRight, Close } from '@carbon/icons-react'
 import type { Trial } from '../../../types'
 import { getOddOnesOut, groupCompareKeys, labelForCompareKey } from './trialCompareGrouping'
-import { primaryMetric } from './trialsRadar'
+import { rankBestFirst } from './trialsRadar'
 
 // ── Reference-parity helpers (ported from AutoTuneX Compare.svelte / Utils) ────
 
@@ -91,13 +91,6 @@ function CompareValue({
   }
   const display = value === null || value === undefined ? '' : String(value)
   return isOdd ? <strong>{display}</strong> : <>{display}</>
-}
-
-// The "loss" a trial is judged on — its primary metric, falling back to a literal
-// `loss`. Delegates to the shared accessor so this really does match the Loss column
-// in the trials table, which it previously only claimed to.
-function lossOf(trial: Trial): number | null {
-  return primaryMetric(trial)?.value ?? null
 }
 
 // ── Section headings ───────────────────────────────────────────────────────────
@@ -186,15 +179,9 @@ export function TrialCompare({ trials, onRemove, bestTrialId }: Props) {
   const [sharedExpanded, setSharedExpanded] = useState(false)
   const sharedListId = useId()
 
-  // Sort by loss ascending — lowest loss first; trials without a loss sink to the end.
-  const sortedTrials = [...trials].sort((a, b) => {
-    const la = lossOf(a)
-    const lb = lossOf(b)
-    if (la === null && lb === null) return 0
-    if (la === null) return 1
-    if (lb === null) return -1
-    return la - lb
-  })
+  // Best first on the job's metric, as the trials table orders them; trials without
+  // a value sink to the end.
+  const sortedTrials = rankBestFirst(trials)
 
   const rows = sortedTrials.map(toCompareRow)
   if (rows.length === 0) return null

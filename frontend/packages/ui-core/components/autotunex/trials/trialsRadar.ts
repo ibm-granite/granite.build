@@ -55,32 +55,55 @@ export function primaryMetric(trial: Trial): { name: string; value: number } | n
 }
 
 /**
- * The best run by its own reported metric.
+ * The metric a job's trials are ranked on: the first `metric` any trial names,
+ * else `loss`.
+ *
+ * Decided for the job, not per trial: `primaryMetric` falls back to `loss` for a
+ * trial whose own metric is absent, so judging direction from whichever trial
+ * reported first made a reward job lower-is-better when that trial had only a
+ * loss so far -- crowning the worst reward, compared against a loss.
+ */
+export function jobMetric(trials: Trial[]): string {
+  return trials.find((t) => t.metric)?.metric ?? 'loss'
+}
+
+/** A trial's value on `metric`, or null when it has none (or only a fallback). */
+function scoreOn(trial: Trial, metric: string): number | null {
+  const primary = primaryMetric(trial)
+  return primary && primary.name === metric ? primary.value : null
+}
+
+/**
+ * The trials, best first on the job's metric; trials with no value on it sink to
+ * the end in their original order. The trials table, Compare and `bestTrialId`
+ * all rank through this, so they cannot disagree on the order: both lists used to
+ * sort ascending unconditionally, which put the tagged winner of a reward or
+ * accuracy job last.
  *
  * Direction comes from `isLowerBetter`, the same predicate the radar scores its
- * axes with. This used to minimise unconditionally, which contradicted the radar on
- * the same screen: for a job reporting `reward` or `accuracy` it returned the
- * *worst* trial, and that trial then took palette slot 0, the checkbox tint, the
- * "Winning trial" tag and first place under the ascending sort -- while the radar
- * drew it collapsed at the centre and the real winner out at the rim.
- *
- * There is nothing to plumb an authoritative objective direction from: the tuning
- * template has no `tune_config.mode` and `Trial` carries no direction, so the metric
- * name is the only signal available. Judged once from the first trial that reports a
- * value, since every trial in a job is scored on the same metric.
+ * axes with. There is nothing to plumb an authoritative objective direction from:
+ * the tuning template has no `tune_config.mode` and `Trial` carries no direction,
+ * so the metric name is the only signal available.
  */
+export function rankBestFirst<T extends Trial>(trials: T[]): T[] {
+  const metric = jobMetric(trials)
+  const sign = isLowerBetter(metric) ? 1 : -1
+  return trials
+    .map((trial, index) => ({ trial, index, score: scoreOn(trial, metric) }))
+    .sort((a, b) => {
+      if (a.score === null || b.score === null) {
+        if (a.score === b.score) return a.index - b.index
+        return a.score === null ? 1 : -1
+      }
+      return sign * (a.score - b.score) || a.index - b.index
+    })
+    .map(({ trial }) => trial)
+}
+
+/** The best run by the job's metric -- first under `rankBestFirst`. */
 export function bestTrialId(trials: Trial[]): string | undefined {
-  let best: { id: string; value: number } | undefined
-  let lowerIsBetter: boolean | undefined
-  for (const trial of trials) {
-    const primary = primaryMetric(trial)
-    if (!primary) continue
-    if (lowerIsBetter === undefined) lowerIsBetter = isLowerBetter(primary.name)
-    if (!best || (lowerIsBetter ? primary.value < best.value : primary.value > best.value)) {
-      best = { id: trial.id, value: primary.value }
-    }
-  }
-  return best?.id
+  const [best] = rankBestFirst(trials)
+  return best && scoreOn(best, jobMetric(trials)) !== null ? best.id : undefined
 }
 
 // Carbon's RadarChart requires a complete grid: every group (trial) must carry a
