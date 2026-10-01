@@ -832,6 +832,39 @@ class TestTier3Fallback:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/digit/../x")
 
+    def test_fallback_no_step_yaml_at_any_prefix(self, tmp_path):
+        """A bare dir under ``steps/`` with no ``step.yaml`` at any prefix is
+        admitted, as before multi-segment names existed.
+
+        This pins the Tier-3 compat branch (``space.py`` ~490-491): when
+        ``_longest_step_in_root`` finds no ``step.yaml`` prefixing ``after``, the
+        first segment is treated as the step name and the remainder as the
+        sub-asset ``rest``, which the env gate admits on the missing
+        ``step.yaml``. Every other Tier-3 test writes a ``step.yaml`` and so
+        exercises only the ``found is not None`` branch."""
+        base = tmp_path / "base"
+        plain = base / "steps" / "plain"  # dir under steps/, no step.yaml
+        plain.mkdir(parents=True)
+        (plain / "asset.txt").write_text("x\n")
+        _set_bases(base)
+
+        resolved = _resolve("space://steps/plain/asset.txt")
+
+        assert _resolved_dir(resolved).samefile(plain / "asset.txt")
+
+    def test_fallback_no_step_yaml_rest_traversal_rejected(self, tmp_path):
+        """The containment guard still applies on the no-``step.yaml`` compat
+        branch: a ``<rest>`` escaping the (step.yaml-less) ``steps/<name>`` dir is
+        rejected even though the target file exists outside it."""
+        base = tmp_path / "base"
+        plain = base / "steps" / "plain"  # dir under steps/, no step.yaml
+        plain.mkdir(parents=True)
+        (base / "secret").write_text("password\n")  # real file, outside the step dir
+        _set_bases(base)
+
+        with pytest.raises(ValueError, match="Unresolvable space uri"):
+            _resolve("space://steps/plain/../../secret")
+
     def test_unresolvable_raises(self, tmp_path):
         base = tmp_path / "base"
         base.mkdir()
