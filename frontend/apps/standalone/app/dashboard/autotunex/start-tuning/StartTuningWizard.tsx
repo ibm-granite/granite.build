@@ -580,11 +580,15 @@ export function StartTuningWizard() {
   }
 
   /**
-   * The split ratio and a separate validation file change what gets uploaded but not
-   * which dataset the user picked, so this deliberately does less than
-   * `handleDatasetChanged`: it drops only the ids that would skip the re-upload, plus
-   * the now-stale estimate. It must not clear the chosen configuration or experiment
-   * name, which the split has no bearing on.
+   * The split ratio, a separate validation file and the column mapping change what
+   * gets uploaded but not which dataset the user picked, so this deliberately does
+   * less than `handleDatasetChanged`: it drops only the ids that would skip the
+   * re-upload, plus the now-stale estimate. It must not clear the chosen
+   * configuration or experiment name, which none of these has any bearing on.
+   *
+   * It keeps `createdDatasetIdRef`: the retry re-uploads into the record the failed
+   * attempt created (the server accepts that unless it is mid-upload). Dropping it
+   * re-POSTed a dataset with the same name, which the per-user unique name rejects.
    *
    * Without it, after a failed launch (`datasetId` already set) the user could go
    * back to step 1, turn the split off and add a validation file, see Review render
@@ -594,7 +598,6 @@ export function StartTuningWizard() {
    */
   function handleDatasetSplitChanged() {
     setDatasetId(null)
-    createdDatasetIdRef.current = null
     uploadedDatasetIdRef.current = null
     setResourceEstimation(null)
   }

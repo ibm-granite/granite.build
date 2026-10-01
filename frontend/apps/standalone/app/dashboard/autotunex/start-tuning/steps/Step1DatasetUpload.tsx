@@ -143,9 +143,9 @@ interface Step1DatasetUploadProps {
   setSelectedExistingDataset: (d: Dataset | null) => void
   onDatasetChanged: () => void
   /**
-   * The train/validation split changed. Narrower than `onDatasetChanged`: it
-   * invalidates the uploaded-dataset ids so the launch re-uploads, without
-   * discarding the chosen configuration.
+   * The train/validation split or the column mapping changed. Narrower than
+   * `onDatasetChanged`: it invalidates the uploaded-dataset ids so the launch
+   * re-uploads, without discarding the chosen configuration.
    */
   onDatasetSplitChanged: () => void
 }
@@ -590,6 +590,9 @@ export function Step1DatasetUpload({
 
   function updateColumnMapping(requiredCol: string, userCol: string) {
     setColumnMapping({ ...columnMapping, [requiredCol]: userCol })
+    // The mapping is part of the upload payload: without this, fixing it after a
+    // failed launch was silently ignored and the job trained on the old mapping.
+    onDatasetSplitChanged()
     setAiSuggestedFields((prev) => {
       const next = new Set(prev)
       next.delete(requiredCol)
