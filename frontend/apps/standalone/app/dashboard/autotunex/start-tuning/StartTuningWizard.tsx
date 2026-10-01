@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { ProgressIndicator, ProgressStep, Button, InlineLoading, InlineNotification, Breadcrumb, BreadcrumbItem } from '@carbon/react'
@@ -42,6 +42,7 @@ import { normalizeVerlRows } from '@granite-build/ui-core/lib/autotunex/verlNorm
 import { DATASET_READY_TIMEOUT_MS } from '@granite-build/ui-core/lib/autotunex/datasetReady'
 import { ALGORITHM_DETAILS, ALGORITHM_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import { clearDraft, loadDraft, resolveDraft, saveDraft } from './wizardDraft'
+import { firstIncompleteStep } from './launchReadiness'
 import { Step0GetStarted } from './steps/Step0GetStarted'
 import { Step1DatasetUpload } from './steps/Step1DatasetUpload'
 import { Step2Configure } from './steps/Step2Configure'
@@ -231,8 +232,10 @@ export function StartTuningWizard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAlgorithm, currentStep])
 
-  const canProceed = useMemo(() => {
-    switch (currentStep) {
+  // Each step's own Next gate. Launch also re-checks every earlier one -- see
+  // firstIncompleteStep.
+  const isStepValid = useCallback((step: number) => {
+    switch (step) {
       case 0:
         return selectedGoal !== null && selectedAlgorithm !== '' && isModelSelectionValid(modelSource, selectedModel)
       case 1: {
@@ -285,7 +288,6 @@ export function StartTuningWizard() {
         return false
     }
   }, [
-    currentStep,
     selectedGoal,
     selectedAlgorithm,
     selectedModel,
@@ -308,6 +310,8 @@ export function StartTuningWizard() {
     experimentName,
     isLaunching,
   ])
+  const canProceed = isStepValid(currentStep)
+  const stepLabels = ['Get Started', 'Upload Dataset', 'Configure', ...(hasRewardStep ? ['Reward Function'] : []), 'Review & Launch']
 
   const breadcrumbItems = useMemo(() => {
     const items: { label: string; step: number }[] = []
@@ -596,6 +600,14 @@ export function StartTuningWizard() {
   }
 
   async function handleLaunch() {
+    // Before any side effect: an invalid earlier step otherwise fails the launch
+    // server-side only after the dataset has been created and uploaded.
+    const incomplete = firstIncompleteStep(isStepValid, lastStepIndex)
+    if (incomplete !== null) {
+      setTransitionError(`"${stepLabels[incomplete]}" is incomplete. Go back to that step and finish it before launching.`)
+      return
+    }
+
     setIsLaunching(true)
     setTransitionError('')
     setUploadProgress(0)
