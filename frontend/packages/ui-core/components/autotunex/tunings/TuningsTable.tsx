@@ -30,6 +30,7 @@ import { Fragment } from 'react'
 import { TuningLogViewer } from './TuningLogViewer'
 import type { TuningJob } from '../../../types'
 import { jobElapsedSeconds } from '../trials/trialProgress'
+import { formatTime } from '../trials/trialsTableFormat'
 import { TuningStatusBadge } from './TuningStatusBadge'
 import Link from 'next/link'
 
@@ -62,18 +63,6 @@ const HEADERS = [
   { key: 'dataset', header: 'Data set' },
   { key: 'total_time', header: 'Total time' },
 ]
-
-function formatTime(seconds: number): string {
-  if (seconds <= 0) return '0 s'
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const mins = Math.floor((seconds % 3600) / 60)
-  const secs = Math.floor(seconds % 60)
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${mins}m`
-  if (mins > 0) return `${mins}m ${secs}s`
-  return `${secs}s`
-}
 
 // The same rule as the tuning detail page -- see jobElapsedSeconds.
 function totalTimeSecondsFor(job: TuningJob): number {

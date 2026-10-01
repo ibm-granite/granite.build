@@ -9,22 +9,11 @@ import type { JobRead } from '@granite-build/ui-core/types'
 import { TuningLogViewer } from '@granite-build/ui-core/components/autotunex/tunings/TuningLogViewer'
 import { TrialsTable } from '@granite-build/ui-core/components/autotunex/trials/TrialsTable'
 import { jobElapsedSeconds } from '@granite-build/ui-core/components/autotunex/trials/trialProgress'
+import { formatTime } from '@granite-build/ui-core/components/autotunex/trials/trialsTableFormat'
 import { TuningResultsPanel } from '@granite-build/ui-core/components/autotunex/tunings/TuningResultsPanel'
 import { ConfigDisplay } from '@granite-build/ui-core/components/autotunex/shared/ConfigDisplay'
 import { modelSourceLabel } from '../modelSources'
 import { SettingsDatasetView } from '@granite-build/ui-core/components/autotunex/settings/SettingsDatasetView'
-
-function formatTime(seconds: number): string {
-  if (seconds <= 0) return '0 s'
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const mins = Math.floor((seconds % 3600) / 60)
-  const secs = Math.floor(seconds % 60)
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${mins}m`
-  if (mins > 0) return `${mins}m ${secs}s`
-  return `${secs}s`
-}
 
 function DetailsPanel({ job }: { job: JobRead }) {
   const [configOpen, setConfigOpen] = useState(false)

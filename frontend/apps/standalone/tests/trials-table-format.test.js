@@ -37,6 +37,17 @@ describe('formatTime', () => {
     assert.equal(formatTime(0), '0 s')
     assert.equal(formatTime(-5), '0 s')
   })
+  // The trials table and Compare stopped at minutes while the tunings table and
+  // the Details tab carried hours, so one 7200 s total read "120m 0s" in one Total
+  // time column and "2h 0m" in the other.
+  it('carries hours past an hour, as the tunings table does', () => {
+    assert.equal(formatTime(7200), '2h 0m')
+    assert.equal(formatTime(3725), '1h 2m')
+  })
+
+  it('carries days past a day', () => {
+    assert.equal(formatTime(90061), '1d 1h')
+  })
 })
 
 describe('formatCell', () => {
