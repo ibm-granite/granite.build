@@ -47,7 +47,7 @@ Used when `GBSERVER_METADATA_STORAGE=sql`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `GBSERVER_SQL_SCHEME` | `postgresql` | DB scheme. |
+| `GBSERVER_SQL_SCHEME` | `postgresql` | DB scheme. Bare `postgresql` uses the psycopg 3 driver (`postgresql+psycopg`). |
 | `GBSERVER_SQL_HOST` / `GBSERVER_SQL_PORT` | (IBM Cloud) / `31842` | Host and port. |
 | `GBSERVER_SQL_DBNAME` | `ibmclouddb` | Database name. |
 | `GBSERVER_SQL_SCHEMA` | per-environment | Schema (e.g. `granite_dot_build_prod`). |

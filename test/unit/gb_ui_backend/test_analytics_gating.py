@@ -250,6 +250,17 @@ class TestDeriveAnalyticsDatabaseUrl:
         finally:
             self._reload_constants()
 
+    def test_sql_mode_driver_suffixed_scheme_derives_asyncpg_url(self, monkeypatch):
+        self._sql_env(monkeypatch, GBSERVER_SQL_SCHEME="postgresql+psycopg")
+        constants = self._reload_constants()
+        try:
+            assert (
+                constants.derive_analytics_database_url()
+                == "postgresql+asyncpg://gbui:s3cr3t@pg.example.com:5432/gbdb"
+            )
+        finally:
+            self._reload_constants()
+
     def test_sql_mode_url_quotes_special_characters(self, monkeypatch):
         self._sql_env(
             monkeypatch, GBSERVER_SQL_USER="gb ui", GBSERVER_SQL_PASSWD="p@ss/word"

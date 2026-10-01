@@ -244,7 +244,8 @@ def derive_analytics_database_url() -> Optional[str]:
     Distinct table prefixes mean this doesn't collide with the main store.
     """
     if GB_METADATA_STORAGE == "sql":
-        if GBSERVER_SQL_SCHEME != "postgresql":
+        # Accept a driver suffix (e.g. postgresql+psycopg); asyncpg replaces it.
+        if GBSERVER_SQL_SCHEME.split("+", 1)[0] != "postgresql":
             # Lazy import: gbserver.utils.logger imports this module at its own top
             # level, so importing it back at our module top would be circular.
             from gbserver.utils.logger import get_logger
@@ -275,7 +276,7 @@ def derive_analytics_sql_connect_args() -> dict:
     """JSON-serializable create_async_engine() connect_args for a derived
     postgresql+asyncpg analytics URL, translating the main SQL store's TLS cert.
 
-    The main store's sync psycopg2 driver takes sslrootcert/sslmode as URL query
+    The main store's sync psycopg driver takes sslrootcert/sslmode as URL query
     params (see sql_storage.py's _get_connection_specs()); asyncpg instead needs an
     ssl.SSLContext passed as a connect arg, which isn't JSON-serializable and can't
     cross the os.environ boundary to gb_ui_backend as-is. So this only ever returns
