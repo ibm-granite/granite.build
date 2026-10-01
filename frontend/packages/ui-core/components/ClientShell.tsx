@@ -14,13 +14,22 @@ const queryClient = new QueryClient({
   },
 });
 
-// Direct/bookmarked links to a build or artifact (e.g. from `gb build status <id>`)
-// hit gbserver's SPA-fallback 404 handler, which always serves the dashboard shell —
-// only the literal "_" path is statically generated for these dynamic routes. This
-// redirects client-side to the real pre-rendered detail route + id query param,
-// matching the convention BuildDetailPageClient/ArtifactDetailPageClient expect
+// Direct/bookmarked links to a build, artifact, or tuning (e.g. from
+// `gb build status <id>`, or a refresh of the cosmetic pretty URL these pages
+// push via history.replaceState) hit gbserver's SPA-fallback 404 handler, which
+// always serves the dashboard shell — only the literal "_" path is statically
+// generated for these dynamic routes. This redirects client-side to the real
+// pre-rendered detail route + id query param, matching the convention
+// BuildDetailPageClient/ArtifactDetailPageClient/TuningDetailPageClient expect
 // (a query param, not a hash, so useSearchParams() picks it up reactively even
 // when navigating between two instances of the same "_" route).
+//
+// Unlike builds/artifacts, /dashboard/autotunex has sibling static routes
+// (settings, start-tuning) sharing the prefix, so those are excluded from the
+// id match — otherwise a direct load of e.g. /dashboard/autotunex/settings would
+// be wrongly redirected to /dashboard/autotunex/_/?id=settings.
+const AUTOTUNEX_RESERVED = new Set(["_", "settings", "start-tuning"]);
+
 function useDeepLinkRedirect() {
   const router = useRouter();
   useEffect(() => {
@@ -33,6 +42,11 @@ function useDeepLinkRedirect() {
     const artifactMatch = path.match(/^\/dashboard\/artifacts\/([^/]+)\/?$/);
     if (artifactMatch && artifactMatch[1] !== "_") {
       router.replace(`/dashboard/artifacts/_/?id=${artifactMatch[1]}`);
+      return;
+    }
+    const tuningMatch = path.match(/^\/dashboard\/autotunex\/([^/]+)\/?$/);
+    if (tuningMatch && !AUTOTUNEX_RESERVED.has(tuningMatch[1])) {
+      router.replace(`/dashboard/autotunex/_/?id=${tuningMatch[1]}`);
     }
   }, [router]);
 }

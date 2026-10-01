@@ -68,6 +68,14 @@ _PUBLIC_EXACT_PATHS = frozenset(
 # /dashboard prefix below; a new *top-level* page outside /dashboard needs a
 # new prefix here. /api/v1/auth is the OIDC pre-auth login flow (see
 # auth_routes.py) — deliberately public.
+# The AutoTuneX reverse proxy (/api/autotunex) is deliberately NOT listed here,
+# so it authenticates exactly like every other API path. It must not inherit
+# this list's unconditional public status: the upstream provides no protection
+# of its own (AutoTuneX defaults to auth_providers=["disabled"], which
+# authenticates nothing), so an exemption here would be an unauthenticated
+# write surface — POST /api/autotunex/jobs launches a real build, DELETE
+# removes datasets and configurations. See the comment in dispatch() below for
+# why the shipped deployments still reach it without an exemption.
 _PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/dashboard", "/_next")
 
 # Every mounted sub-app owns its own Swagger/OpenAPI doc pages directly under
@@ -207,7 +215,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # OIDC redirects, static/SPA serving), so this also catches a future
         # mutating endpoint accidentally registered under an otherwise-public
         # prefix (e.g. POST /dashboard/something).
-        if request.method in ("GET", "HEAD") and _is_public_path(request.url.path):
+        path = request.url.path
+        # The AutoTuneX reverse proxy (api/autotunex_proxy.py) has NO exemption
+        # here, and needs none. In the deployment standalone ships — auth_mode
+        # apikey with no GBSERVER_API_KEY — _dispatch_apikey already admits any
+        # loopback caller on any method, which covers the all-in-one image too
+        # (its co-located Caddy dials 127.0.0.1, so the peer is loopback).
+        #
+        # A prefix-specific carve-out gated on loopback used to sit here. It could
+        # not work as a boundary: that same Caddy strips X-Forwarded-*, so every
+        # remote request arrives looking like loopback and the condition was always
+        # true. An operator who set GBSERVER_API_KEY therefore got 401s on
+        # /api/v1/* while POST /api/autotunex/jobs still launched real builds and
+        # DELETE still destroyed datasets — and because the check ran before the
+        # auth-mode branch, it bypassed the OIDC modes as well. Removing it makes
+        # this prefix authenticate exactly like every other, and costs the shipped
+        # deployments nothing.
+        if request.method in ("GET", "HEAD") and _is_public_path(path):
             response = await call_next(request)
             return response
 
