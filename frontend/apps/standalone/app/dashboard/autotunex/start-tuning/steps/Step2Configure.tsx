@@ -10,6 +10,7 @@ import { ALGORITHM_DETAILS } from '@granite-build/ui-core/config/autotunexAlgori
 import { ConfigDisplay } from '@granite-build/ui-core/components/autotunex/shared/ConfigDisplay'
 import { CreateConfigForm } from '@granite-build/ui-core/components/autotunex/settings/CreateConfigForm'
 import { findOutOfRangeFields } from '@granite-build/ui-core/lib/autotunex/hyperparamValues'
+import { configDataFromForm } from '@granite-build/ui-core/lib/autotunex/configSections'
 import styles from './Step2Configure.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
 
@@ -221,7 +222,12 @@ export function Step2Configure({
     setIsLoadingEditConfig(true)
 
     try {
-      const fullConfig = await getConfiguration(configId)
+      // A selected config that already carries config_data is the one to edit:
+      // a confirmed edit is only staged (PUT at launch) and lives in it, so
+      // refetching re-seeded the form from the server copy and silently dropped
+      // the staged change on the next Confirm. `selectConfig` fetches the detail
+      // when the summary lacks it, so this only refetches when that failed.
+      const fullConfig = selectedConfig.config_data ? selectedConfig : await getConfiguration(configId)
       if (resolvingConfigIdRef.current !== configId) return
       setSelectedConfig(fullConfig)
       setEditableConfig({
@@ -264,13 +270,7 @@ export function Step2Configure({
       editableConfig.rl_tuner_type !== undefined
         ? editableConfig.rl_tuner_type || null
         : selectedConfig.rl_tuner_type || null
-    const configData: ConfigData = {
-      tune_config: editableConfig.tune_config,
-      tuners_config: editableConfig.tuners_config,
-      training_config: editableConfig.training_config,
-      ...(editableConfig.training_rl_config ? { training_rl_config: editableConfig.training_rl_config } : {}),
-      ...(editableConfig.tuners_rl_config ? { tuners_rl_config: editableConfig.tuners_rl_config } : {}),
-    }
+    const configData = configDataFromForm(editableConfig)
 
     const rangeMessage = outOfRangeMessage(configData) ?? invalidValuesMessage(editConfigInvalidFields)
     if (rangeMessage) {

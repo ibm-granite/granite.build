@@ -14,7 +14,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 
-const { parseValuesInput, formatValues } = require('../../../packages/ui-core/lib/autotunex/hyperparamValues.ts')
+const { parseValuesInput, formatValues, reconcileDefault } = require('../../../packages/ui-core/lib/autotunex/hyperparamValues.ts')
 
 describe('parseValuesInput', () => {
   it('parses and sorts a valid comma-separated list', () => {
@@ -74,5 +74,18 @@ describe('formatValues', () => {
   it('handles null/undefined without throwing', () => {
     assert.equal(formatValues(null), '')
     assert.equal(formatValues(undefined), '')
+  })
+})
+
+describe('reconcileDefault', () => {
+  // The default search algorithm (lds/blds) looks the default up with
+  // values.index(default), so a default outside a newly committed numeric list
+  // raised ValueError when the job started. The string branch already did this.
+  it('keeps a default that is still a candidate', () => {
+    assert.equal(reconcileDefault([0.0001, 0.0002], 0.0002), 0.0002)
+  })
+
+  it('moves a default that is no longer a candidate to the first one', () => {
+    assert.equal(reconcileDefault([0.001, 0.002], 0.0001), 0.001)
   })
 })
