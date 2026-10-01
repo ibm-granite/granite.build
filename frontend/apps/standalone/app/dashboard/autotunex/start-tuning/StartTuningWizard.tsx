@@ -162,6 +162,9 @@ export function StartTuningWizard() {
 
   // Idempotent retry: resources already created on a failed launch attempt
   const createdDatasetIdRef = useRef<string | null>(null)
+  // The name that record was created under. Renaming the dataset after a failed
+  // launch must create a record under the new name, not upload into the old one.
+  const createdDatasetNameRef = useRef<string | null>(null)
   // The dataset the file has already been uploaded into. `createdDatasetIdRef`
   // only covers the metadata POST, so a retry after the upload succeeded but the
   // readiness wait failed re-POSTed the same file into a populated record.
@@ -632,10 +635,11 @@ export function StartTuningWizard() {
       if (!finalDatasetId && uploadedFile) {
         setLaunchPhase('creating_dataset')
 
-        if (!createdDatasetIdRef.current) {
+        if (!createdDatasetIdRef.current || createdDatasetNameRef.current !== datasetForm.name.trim()) {
           const resp = await createDataset({ name: datasetForm.name.trim(), description: datasetForm.description })
           if (!resp?.id) throw new Error('Failed to create dataset metadata.')
           createdDatasetIdRef.current = resp.id
+          createdDatasetNameRef.current = datasetForm.name.trim()
         }
         finalDatasetId = createdDatasetIdRef.current
 
