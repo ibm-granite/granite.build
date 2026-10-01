@@ -119,4 +119,25 @@ describe('findOutOfRangeFields', () => {
       assert.deepEqual(findOutOfRangeFields(withGpus(0, 4)), ['training_config.num_gpus_per_trial'])
     })
   })
+
+  describe('a choice default outside its candidate list', () => {
+    // lds/blds look the default up with values.index(default), so a default the
+    // Default input set outside the Values list failed the job at start.
+    const withChoice = (def, values, strategy = 'choice') => ({
+      tuners_config: { lora: { hyperparams: { lr: { default: def, values, strategy, min_val: 0, max_val: 1, type: 'float' } } } },
+    })
+
+    it('is reported', () => {
+      assert.deepEqual(findOutOfRangeFields(withChoice(0.0005, [0.0001, 0.0002])), ['tuners_config.lora.hyperparams.lr'])
+    })
+
+    it('is fine when the default is a candidate', () => {
+      assert.deepEqual(findOutOfRangeFields(withChoice(0.0002, [0.0001, 0.0002])), [])
+    })
+
+    it('does not apply to a uniform range, which has no list', () => {
+      assert.deepEqual(findOutOfRangeFields(withChoice(0.0005, [0.0001, 0.0002], 'uniform')), [])
+    })
+  })
 })
+
