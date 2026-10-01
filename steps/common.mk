@@ -388,8 +388,8 @@ endef
 # ---- Render Space ----------------------------------------------------------
 
 # Render a self-contained Space into $(SPACE_DIR)/:
-#   $(SPACE_DIR)/steps/$(STEP_NAME)/step.yaml   (+ bundled src/)
-#   $(SPACE_DIR)/steps/$(STEP_NAME)/.gbignore   (skip Jinja for **/*.md + src/)
+#   $(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml   (+ bundled src/)
+#   $(SPACE_DIR)/steps/$(STEP_PATH)/.gbignore   (skip Jinja for **/*.md + src/)
 #   $(SPACE_DIR)/space.yaml                       (base_uris -> $(SPACE_BASE_URI))
 # step-template.yaml is rendered substituting ONLY ${IMAGE_REF} so runtime Jinja
 # ({{ ... }}) and shell expansions (${VAR}, $(cmd)) in the run/setup blocks pass

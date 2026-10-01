@@ -162,7 +162,7 @@ Produced by `make`, not authored by hand:
 
 * **`space/`** — produced by `make space`; a self-contained Granite.build
   **Space** — a `space.yaml` (whose `base_uris` chain to `configurations/assets`)
-  plus `steps/<step-name>/step.yaml` and any bundled `src/`. The dir name defaults
+  plus `steps/<path>/step.yaml` and any bundled `src/`. The dir name defaults
   to `space` (overridable via `SPACE_DIR`). This directory is git-ignored.
 
 `make publish-step` generates further trees, but **outside** this directory (the
@@ -226,7 +226,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 * **`publish-image`** — push the image to `$(REGISTRY)` (no-op for non-image
   steps). Requires authentication — see [Registry credentials](#registry-credentials).
 * **`space`** — render a self-contained Space into `$(SPACE_DIR)/`: a generated
-  `space.yaml` plus `steps/<step-name>/step.yaml` (from `step-template.yaml`) and
+  `space.yaml` plus `steps/<path>/step.yaml` (from `step-template.yaml`) and
   bundled `src/`. Cheap and offline; it does *not* rebuild/push.
 * **`publish-step`** — promote the step into the repo's committed assets tree
   (`configurations/assets/environments/<env>/steps/<path>/`, rendered exactly as
@@ -345,7 +345,7 @@ dependency, just the POSIX `sed` every system already has:
 
 ```sh
 ref=$(printf '%s' '<full image ref>' | sed 's/[#&\]/\\&/g')   # escape sed's replacement metachars
-sed "s#\${IMAGE_REF}#$ref#g" step-template.yaml > $(SPACE_DIR)/steps/<step-name>/step.yaml
+sed "s#\${IMAGE_REF}#$ref#g" step-template.yaml > $(SPACE_DIR)/steps/<path>/step.yaml
 ```
 
 Because only the literal `${IMAGE_REF}` is replaced, everything else passes through
