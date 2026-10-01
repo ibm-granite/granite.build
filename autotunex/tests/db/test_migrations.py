@@ -169,7 +169,7 @@ def test_the_last_login_revision_leaves_a_never_touched_row_null(tmp_path: Path)
     _alembic(database, "upgrade", _LAST_LOGIN_REVISION)
 
     with engine.connect() as connection:
-        last_login = connection.execute(
+        last_login: object = connection.execute(
             text("SELECT last_login_at FROM users WHERE email = 'pipeline@example.com'")
         ).scalar_one()
     assert last_login is None

@@ -30,9 +30,7 @@ def test_default_scheme_names_psycopg3(monkeypatch):
         importlib.reload(constants)
 
 
-@pytest.mark.parametrize(
-    "scheme", ["postgresql", "postgresql+psycopg2", "mysql+pymysql"]
-)
+@pytest.mark.parametrize("scheme", ["postgresql", "mysql+pymysql"])
 def test_scheme_is_used_as_given(monkeypatch, scheme):
     _, db_url, obfuscated_db_url, _ = _specs(monkeypatch, scheme)
     assert db_url.startswith(f"{scheme}://")

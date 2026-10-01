@@ -151,7 +151,7 @@ class SqlAlchemyJobRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def _view_shaped(self) -> Select[tuple[JobTable]]:
+    def _view_shaped(self) -> Select[JobTable]:
         """Return a job select with everything the lean list needs loaded.
 
         ``innerjoin=True`` reproduces the view's ``INNER JOIN`` semantics: a job
@@ -168,7 +168,7 @@ class SqlAlchemyJobRepository:
             joinedload(JobTable.dataset, innerjoin=True),
         )
 
-    def _total_statement(self) -> Select[tuple[int]]:
+    def _total_statement(self) -> Select[int]:
         """Return the statement :meth:`list` uses to count ``total``.
 
         Counts through the same three inner joins as the page rather than a bare
