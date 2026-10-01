@@ -162,9 +162,16 @@ class SpaceURI(URI):
 
         This is a pure *existence* probe; the env gate is applied by the caller
         to the chosen step.  Keeping name selection orthogonal to the env gate
-        makes a URI's identity deterministic: a present-but-env-excluded nested
-        step is still selected here and its tier then misses, rather than being
-        silently demoted to ``outer-step + rest``.
+        makes a URI's identity deterministic *within one* ``steps/`` *root*: a
+        present-but-env-excluded nested step is still selected here and its tier
+        then misses, rather than being silently demoted to ``outer-step + rest``.
+        This guarantee is per root only.  Across the Tier-1 ancestor walk, which
+        probes each ancestor's own ``steps/`` root, nearest-wins still applies: if
+        a nearer ancestor ships only ``distill`` while a further one ships
+        ``distill/foo``, the nearer outer step is chosen and ``foo`` is treated as
+        its sub-asset (usually a miss, since :meth:`_step_uri_from_dir` returns
+        ``None`` when that sub-asset path does not exist).  That is the documented
+        nearest-wins rule, not a within-root demotion.
 
         Args:
             steps_root: The ``steps/`` directory to resolve names under (e.g.
