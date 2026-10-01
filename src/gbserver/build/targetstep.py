@@ -114,10 +114,24 @@ _ENV_TYPE_KEEP_DIR = {
 
 
 def _step_slug_from_uri(step_uri: Optional[str]) -> str:
-    """Return the step-type slug from a step URI.
+    """Return the step-TYPE slug from a step URI.
 
     The slug is the last non-empty path segment, e.g.
     ``space://steps/hfpull`` -> ``"hfpull"``. A bare slug is returned as-is.
+
+    The leaf is used *by design*, even for a nested (multi-segment) step:
+    ``space://steps/distill/foo`` -> ``"foo"``. This slug keys the
+    environment.yaml ``config.steps.<type>`` per-step-type override lookup (see
+    :func:`_env_step_config`), which supplies type-level defaults (``zone``,
+    ``launcher_config``, ...), not per-instance ones. The leaf is the step's
+    *type* identity: it is also what feeds ``STEP_NAME`` and hence
+    ``IMAGE_NAME``/``SPACE_NAME`` in ``steps/common.mk`` (both of which must be
+    slash-free). So a nested ``distill/foo`` and a flat ``steps/foo``
+    deliberately share the same ``config.steps.foo`` env defaults, as do
+    ``a/foo`` and ``b/foo`` — steps sharing a leaf share this type identity. The
+    full slash-preserving nesting is still preserved end-to-end for the step's
+    *identity* URI and publish path (``space://steps/distill/foo``); only this
+    env-level type-override key is intentionally the leaf.
 
     :param step_uri: the step URI (``self.step_uri``), or ``None``.
     :returns: the slug, or ``""`` when ``step_uri`` is empty/``None``.
