@@ -550,7 +550,9 @@ export interface RewardFunctionValidationFlags {
 }
 
 export interface RewardFunctionTestCaseResult {
-  return_value?: number
+  // Whatever the reward function returned (int, float, str, bool, list or dict);
+  // read it through lib/autotunex/rewardScore.
+  return_value?: unknown
   error?: string
 }
 
