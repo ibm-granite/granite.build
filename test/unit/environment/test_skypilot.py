@@ -1957,6 +1957,48 @@ class TestInlineConfigMaterialization:
         }
 
     @pytest.mark.asyncio
+    async def test_single_host_bare_infra_gets_failover_pool(self):
+        """A bare infra (``target_alias`` is None) with exactly one declared host
+        adopts that host as the rotation target, so its candidates still fail over."""
+        env = self._env(
+            {
+                "cluster_ssh_configs": {
+                    "slurm": [{"Host": "only", "HostName": ["h1", "h2"]}]
+                }
+            }
+        )
+        with patch("gbserver.environment.skypilot_config._merge_selected_hosts"):
+            rotator = await env._materialize_ssh_for_launch("slurm", None)
+        assert rotator is not None
+        assert {c["HostName"] for c in rotator._target_candidates} == {"h1", "h2"}
+
+    @pytest.mark.asyncio
+    async def test_sticky_hostname_leads_selection(self):
+        """A login node already written for the alias is kept as the launch pick, so a
+        prior failover is not undone by a fresh random choice."""
+        env = self._env(
+            {
+                "cluster_ssh_configs": {
+                    "slurm": [{"Host": "c", "HostName": ["h1", "h2", "h3"]}]
+                }
+            }
+        )
+        with (
+            patch("gbserver.environment.skypilot_config._merge_selected_hosts") as m,
+            patch(
+                "gbserver.environment.skypilot_config._read_managed_hostnames",
+                return_value={"c": "h3"},  # h3 is the node already on disk
+            ),
+        ):
+            rotator = await env._materialize_ssh_for_launch("slurm", "c")
+        assert (
+            m.call_args.args[1][0]["HostName"] == "h3"
+        )  # sticky node kept, not random
+        assert (
+            rotator._target_candidates[0]["HostName"] == "h3"
+        )  # rotation starts there
+
+    @pytest.mark.asyncio
     async def test_materialize_no_failover_pool_for_unmatched_alias(self):
         """When the launched alias matches no SSH host, the rotator has nothing to
         rotate through, so rotate() is a no-op (a true outage surfaces via reraise)."""

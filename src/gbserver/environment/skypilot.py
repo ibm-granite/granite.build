@@ -29,6 +29,7 @@ from typing import (
     List,
     Optional,
     Self,
+    Set,
     Tuple,
     Union,
 )
@@ -842,6 +843,7 @@ class _LoginNodeRotator:
         secrets: Dict[str, str],
         selected: Dict[str, Dict[str, Any]],
         target_candidates: List[Dict[str, Any]],
+        candidate_hostnames: Optional[Dict[str, Set[str]]] = None,
     ) -> None:
         """Initialize a rotator over pre-resolved per-alias selections.
 
@@ -852,12 +854,16 @@ class _LoginNodeRotator:
             per alias (mutated in place as the target rotates).
         :param target_candidates: The target alias's ordered candidate host dicts
             (each a single-``HostName`` copy); empty when there is no rotatable target.
+        :param candidate_hostnames: ``{alias: {candidate HostName, …}}`` for every alias,
+            forwarded to the merge so an interchangeable-login-node overwrite of another
+            environment's block is distinguished from a different-cluster alias reuse.
         """
         self._cloud = cloud
         self._env_name = env_name
         self._secrets = secrets
         self._selected = selected
         self._target_candidates = target_candidates
+        self._candidate_hostnames = candidate_hostnames or {}
         self._target_idx = 0
 
     @property
@@ -883,6 +889,7 @@ class _LoginNodeRotator:
             list(self._selected.values()),
             self._secrets,
             self._env_name,
+            candidate_hostnames=self._candidate_hostnames,
         )
 
     async def rotate(self: Self) -> bool:
@@ -902,6 +909,42 @@ class _LoginNodeRotator:
         self._selected[str(chosen.get("Host"))] = chosen
         await self.materialize()
         return True
+
+
+def _select_login_nodes(
+    hosts: List[Dict[str, Any]],
+    target_alias: Optional[str],
+    on_disk: Dict[str, str],
+) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]], Dict[str, Set[str]]]:
+    """Pick one login node per alias and collect the target's failover candidates.
+
+    Pure helper for :meth:`Skypilot._materialize_ssh_for_launch`. For each host it
+    expands the scalar/list ``HostName`` into candidate dicts, keeping a login node
+    already written for this build (``on_disk``) in front so a failover another launch
+    applied is **sticky** rather than re-randomized back onto the failed node.
+
+    :param hosts: Identity-resolved host dicts (``HostName`` still scalar-or-list).
+    :param target_alias: The cluster alias being launched, whose candidate order the
+        rotator will cycle; ``None`` / unmatched means no failover pool.
+    :param on_disk: ``{alias: HostName}`` currently in ``~/.<cloud>/config`` (sticky).
+    :returns: ``(selected, target_candidates, candidate_hostnames)`` — the per-alias
+        single pick, the target's ordered candidate dicts, and each alias's full
+        candidate ``HostName`` set (for the merge's cross-env relaxation).
+    """
+    from gbserver.environment.skypilot_config import _expand_hostname_candidates
+
+    selected: Dict[str, Dict[str, Any]] = {}
+    target_candidates: List[Dict[str, Any]] = []
+    candidate_hostnames: Dict[str, Set[str]] = {}
+    for host in hosts:
+        alias = str(host.get("Host"))
+        candidates = _expand_hostname_candidates(host, sticky=on_disk.get(alias))
+        selected[alias] = host if candidates is None else candidates[0]
+        if candidates is not None:
+            candidate_hostnames[alias] = {str(c["HostName"]) for c in candidates}
+            if alias == target_alias:
+                target_candidates = candidates
+    return selected, target_candidates, candidate_hostnames
 
 
 # Path fragment of SkyPilot's client module that drives interactive SSH auth.
@@ -1366,15 +1409,22 @@ class Skypilot(Environment):
         owned by this same environment self-heals a re-keyed entry. No-op (returns
         ``None``) when the env defines no inline SSH config for ``cloud``.
 
-        Resolves any ``IdentityKey`` to a key file, picks one login node per alias at
-        random (load spreading), writes the initial selection, and returns a
+        Resolves any ``IdentityKey`` to a key file, picks one login node per alias
+        (keeping a node already written for this build — see ``_select_login_nodes`` —
+        else at random for load spread), writes the selection, and returns a
         :class:`_LoginNodeRotator` primed on ``target_alias`` so the launch can fail
         over to another candidate login node on a transient SSH control-plane error.
+
+        When the infra names no cluster (a bare ``lsf``/``slurm`` infra, so
+        ``target_alias`` is ``None``) but the env declares exactly one host for this
+        cloud, that host is the unambiguous launch target and becomes the rotation
+        target, so its candidate login nodes can still fail over.
 
         :param cloud: The HPC cloud being provisioned (``"slurm"``/``"lsf"``).
         :param target_alias: The cluster alias being launched (the second infra
             segment), whose candidate login nodes the returned rotator cycles; may be
-            ``None`` (or unmatched), in which case the rotator cannot fail over.
+            ``None`` (or unmatched), in which case the rotator cannot fail over unless
+            the single-host fallback above applies.
         :returns: A rotator for the just-materialized config, or ``None`` when there
             is no inline SSH config for this cloud.
         :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash, or
@@ -1386,7 +1436,7 @@ class Skypilot(Environment):
         if not ssh_raw:
             return None
         from gbserver.environment.skypilot_config import (
-            _expand_hostname_candidates,
+            _read_managed_hostnames,
             _resolve_cloud_hosts,
         )
         from gbserver.types.environmentconfig import ClusterSshConfigs
@@ -1398,17 +1448,19 @@ class Skypilot(Environment):
         hosts = await asyncio.to_thread(_resolve_cloud_hosts, ssh, secrets, cloud)
         if not hosts:
             return None
-        # Pick one login node per alias (random, for load spread) and remember the
-        # target alias's full candidate order so a transient SSH failure can fail over.
-        selected: Dict[str, Dict[str, Any]] = {}
-        target_candidates: List[Dict[str, Any]] = []
-        for host in hosts:
-            alias = str(host.get("Host"))
-            candidates = _expand_hostname_candidates(host)
-            selected[alias] = host if candidates is None else candidates[0]
-            if candidates is not None and alias == target_alias:
-                target_candidates = candidates
-        rotator = _LoginNodeRotator(cloud, name, secrets, selected, target_candidates)
+        # Bare infra (no cluster segment) + exactly one declared host: that host is
+        # the unambiguous target, so its login nodes can still fail over (issue #439).
+        if target_alias is None and len(hosts) == 1:
+            target_alias = str(hosts[0].get("Host"))
+        # Stay on a login node already written for this build so a prior failover
+        # isn't undone by a fresh random pick (read off the loop; lock-free).
+        on_disk = await asyncio.to_thread(_read_managed_hostnames, cloud)
+        selected, target_candidates, candidate_hostnames = _select_login_nodes(
+            hosts, target_alias, on_disk
+        )
+        rotator = _LoginNodeRotator(
+            cloud, name, secrets, selected, target_candidates, candidate_hostnames
+        )
         await rotator.materialize()
         return rotator
 

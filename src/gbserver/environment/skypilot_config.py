@@ -51,7 +51,7 @@ import os
 import random
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 from filelock import FileLock
@@ -284,6 +284,7 @@ def _materialize_identity_keys(
 # --------------------------------------------------------------------------- #
 def _expand_hostname_candidates(
     host: Dict[str, Any],
+    sticky: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Expand a host's scalar/list ``HostName`` into shuffled per-candidate host dicts.
 
@@ -297,9 +298,16 @@ def _expand_hostname_candidates(
     order; each carries every other directive of ``host`` with ``HostName`` collapsed
     to that one scalar, ready for :func:`render_ssh_host`.
 
+    When ``sticky`` names a candidate already written for this alias (by an earlier
+    launch in the same build), it is moved to the front so the shuffled order starts
+    there: a failover another launch applied persists instead of being re-randomized
+    back onto the node that just failed. ``sticky`` that is not a candidate is ignored.
+
     :param host: One host directive mapping (scalar or list ``HostName``).
-    :returns: The shuffled per-candidate host dicts, or ``None`` when ``host`` has no
-        ``HostName`` at all (nothing to select — the caller uses ``host`` unchanged).
+    :param sticky: A previously-written ``HostName`` to keep first when it is still a
+        candidate; ``None`` (or a non-candidate) leaves the random order unchanged.
+    :returns: The per-candidate host dicts (sticky-first then shuffled), or ``None``
+        when ``host`` has no ``HostName`` at all (the caller uses ``host`` unchanged).
     """
     candidates = host.get("HostName")
     if candidates is None:
@@ -308,7 +316,12 @@ def _expand_hostname_candidates(
         candidates = [candidates]  # scalar: a one-element list
     shuffled = list(candidates)
     random.shuffle(shuffled)
-    return [{**host, "HostName": candidate} for candidate in shuffled]
+    expanded = [{**host, "HostName": candidate} for candidate in shuffled]
+    for i, cand in enumerate(expanded):
+        if cand["HostName"] == sticky:
+            expanded.insert(0, expanded.pop(i))  # keep the written node in front
+            break
+    return expanded
 
 
 def _collapse_to_random_hostname(host: Dict[str, Any]) -> Dict[str, Any]:
@@ -425,6 +438,50 @@ def _without_hostname(block: str) -> List[str]:
     )
 
 
+def _block_hostname(block: str) -> Optional[str]:
+    """Return a rendered block's ``HostName`` value, or ``None`` if it has none.
+
+    Matches ``HostName`` case-insensitively (OpenSSH keywords are case-insensitive)
+    after normalization. Used to check whether an existing on-disk login node is one
+    of an incoming environment's candidates (see :func:`_merge_ssh`) and to keep a
+    launch's pick sticky (see :func:`_read_managed_hostnames`).
+
+    :param block: An SSH ``Host`` block.
+    :returns: The ``HostName`` directive's value, or ``None`` when absent.
+    """
+    for ln in _normalize(block).splitlines():
+        if ln.lower().startswith("hostname "):
+            return ln.split(None, 1)[1].strip()
+    return None
+
+
+def _is_interchangeable_login_node(
+    existing: str, incoming: str, candidate_hostnames: Optional[Set[str]]
+) -> bool:
+    """Return True when ``existing`` is a sibling login node of ``incoming``'s cluster.
+
+    The last-writer-wins relaxation (see :func:`_merge_ssh`) applies only when two
+    environments genuinely reference the *same* cluster through interchangeable login
+    nodes: the blocks must differ **only** in ``HostName`` AND the already-written
+    ``HostName`` must be one of the incoming environment's own candidate login nodes.
+    Two environments that merely reuse an alias for *different* clusters (same user and
+    key, unrelated hostnames) fail the candidate check and stay a genuine collision —
+    the wrong-cluster case the owner check exists to catch.
+
+    :param existing: The block already written for the alias.
+    :param incoming: The block the current environment wants to write.
+    :param candidate_hostnames: The incoming env's candidate ``HostName`` values for
+        this alias; ``None`` or empty (candidates unknown) is treated as a clash.
+    :returns: True only when a HostName-only difference is safe to overwrite.
+    """
+    if not candidate_hostnames:
+        return False
+    return (
+        _blocks_differ_only_in_hostname(existing, incoming)
+        and _block_hostname(existing) in candidate_hostnames
+    )
+
+
 def _blocks_differ_only_in_hostname(a: str, b: str) -> bool:
     """Return True if two blocks are identical except for their ``HostName`` value.
 
@@ -449,6 +506,7 @@ def _merge_ssh(
     foreign_blocks: Dict[str, Tuple[str, str]],
     env_name: str,
     dest: str,
+    candidate_hostnames: Optional[Dict[str, Set[str]]] = None,
 ) -> Dict[str, Tuple[str, str]]:
     """Merge incoming alias blocks into existing; raise only on a real conflict.
 
@@ -463,21 +521,26 @@ def _merge_ssh(
     managed block with no recorded owner (e.g. written before owner tracking) is
     treated as self-healable rather than raising an unattributable collision.
 
-    One cross-environment difference is *not* a conflict: a block differing from
-    another environment's only in its ``HostName`` value. A cluster's candidate login
-    nodes are interchangeable entry points to the same scheduler, so two environments
-    picking different login nodes for the same alias may safely last-writer-win rather
-    than raise (see :func:`_blocks_differ_only_in_hostname`).
+    One narrow cross-environment difference is *not* a conflict: a block differing from
+    another environment's only in its ``HostName`` **when the already-written hostname
+    is one of this environment's own candidate login nodes** (see
+    :func:`_is_interchangeable_login_node`). That is the genuine same-cluster,
+    different-login-node case, so it may safely last-writer-win. Two environments that
+    merely reuse an alias for *different* clusters (unrelated hostnames) still raise.
 
     :param existing: Current ``{alias: (block, owner)}`` from the managed region.
     :param incoming: New ``{alias: block}`` to merge in.
     :param foreign_blocks: ``{alias: (block, owner)}`` parsed from non-managed content.
     :param env_name: The contributing environment name.
     :param dest: Destination file path (for messages).
+    :param candidate_hostnames: ``{alias: {candidate HostName, …}}`` for the incoming
+        environment, gating the HostName-only relaxation; ``None`` (unknown) keeps the
+        strict owner check (any cross-env difference raises).
     :returns: The merged ``{alias: (block, owner)}`` (foreign-equivalent aliases omitted).
     :raises SkypilotConfigCollisionError: On a foreign clash, or a differing block
         owned by another gbserver environment.
     """
+    candidate_hostnames = candidate_hostnames or {}
     merged = dict(existing)
     for alias, block in incoming.items():
         if alias in foreign_blocks:
@@ -500,13 +563,15 @@ def _merge_ssh(
             if (
                 prev_owner
                 and prev_owner != env_name
-                and not _blocks_differ_only_in_hostname(prev_block, block)
+                and not _is_interchangeable_login_node(
+                    prev_block, block, candidate_hostnames.get(alias)
+                )
             ):
-                # A *different* environment already manages this alias with a
-                # genuine (non-HostName) difference: a cross-environment clash, not
-                # a re-key of our own entry. Refuse and name both owners. A
-                # HostName-only difference falls through to last-writer-wins below,
-                # since the candidate login nodes are interchangeable.
+                # A *different* environment already manages this alias and this is
+                # not the same-cluster/different-login-node case: a cross-environment
+                # clash, not a re-key of our own entry. Refuse and name both owners.
+                # A HostName-only difference whose existing node is one of our
+                # candidates falls through to last-writer-wins below.
                 _raise_collision(
                     "SSH Host", alias, env_name, f"environment '{prev_owner}'", dest
                 )
@@ -539,24 +604,59 @@ def _write_atomic(path: Path, text: str, mode: Optional[int] = None) -> None:
 # --------------------------------------------------------------------------- #
 # Merge entry points (file I/O under locks)
 # --------------------------------------------------------------------------- #
+def _read_managed_hostnames(
+    cloud: str, *, home: Optional[Path] = None
+) -> Dict[str, str]:
+    """Return ``{alias: HostName}`` for the gbserver-managed blocks in a cloud's config.
+
+    Reads ``~/.<cloud>/config`` and extracts each managed block's ``HostName``. Used to
+    keep a build's login-node pick **sticky**: an earlier launch may have failed over
+    to a healthy candidate, and a later launch sharing this file should start from the
+    node already written rather than re-randomizing (see
+    :func:`_expand_hostname_candidates`). Lock-free best-effort — a concurrent write
+    only costs a fallback to the random pick, and the subsequent merge takes the lock.
+
+    :param cloud: ``"slurm"`` or ``"lsf"`` — whose ``~/.<cloud>/config`` to read.
+    :param home: Home dir override (tests).
+    :returns: ``{alias: HostName}`` for managed blocks that declare a ``HostName``
+        (empty when the file is absent or has no managed region).
+    """
+    dest = _home(home) / f".{cloud}" / "config"
+    if not dest.exists():
+        return {}
+    _foreign, managed = _parse_managed(dest.read_text(encoding="utf-8"))
+    out: Dict[str, str] = {}
+    for alias, (block, _owner) in managed.items():
+        hostname = _block_hostname(block)
+        if hostname is not None:
+            out[alias] = hostname
+    return out
+
+
 def merge_ssh_blocks(
     cloud: str,
     alias_blocks: Dict[str, str],
     env_name: str,
     home: Optional[Path] = None,
+    *,
+    candidate_hostnames: Optional[Dict[str, Set[str]]] = None,
 ) -> None:
     """Merge rendered SSH ``Host`` blocks into ``~/.<cloud>/config``.
 
     Idempotent, owner-aware last-writer-wins: an identical managed block is a
     no-op; a differing block owned by the *same* environment is overwritten
     (self-heals a re-keyed entry); a differing block owned by a *different*
-    environment, or a differing **foreign** (non-gbserver) entry, raises.
-    Serialized across threads and processes by the per-cloud file lock.
+    environment, or a differing **foreign** (non-gbserver) entry, raises — except
+    the narrow same-cluster/different-login-node case gated by ``candidate_hostnames``
+    (see :func:`_merge_ssh`). Serialized across threads and processes by the per-cloud
+    file lock.
 
     :param cloud: Cloud name (``slurm``/``lsf``) -> ``~/.<cloud>/config``.
     :param alias_blocks: ``{alias: block}`` to merge.
     :param env_name: The contributing environment name.
     :param home: Home dir override (tests).
+    :param candidate_hostnames: ``{alias: {candidate HostName, …}}`` for this env,
+        gating the HostName-only cross-env relaxation; ``None`` keeps it strict.
     :raises SkypilotConfigCollisionError: On a foreign clash, or a differing block
         for the same alias owned by another gbserver environment.
     """
@@ -573,6 +673,7 @@ def merge_ssh_blocks(
             _parse_host_blocks(foreign),
             env_name,
             str(dest),
+            candidate_hostnames,
         )
         if merged == existing:
             # Nothing new to manage (e.g. every incoming alias already exists as an
@@ -705,6 +806,27 @@ def merge_aws_credentials(
         _write_atomic(dest, buf.getvalue(), mode=0o600)
 
 
+def _candidate_hostnames(hosts: List[Dict[str, Any]]) -> Dict[str, Set[str]]:
+    """Map each host alias to the set of its candidate ``HostName`` values.
+
+    Captured *before* a scalar/list ``HostName`` is collapsed to one pick, so the
+    merge can tell a genuine same-cluster/different-login-node overwrite from a
+    different cluster reusing the alias (see :func:`_merge_ssh`).
+
+    :param hosts: Host dicts with scalar-or-list ``HostName`` (pre-collapse).
+    :returns: ``{alias: {candidate HostName, …}}``; aliases without a ``HostName``
+        are omitted.
+    """
+    out: Dict[str, Set[str]] = {}
+    for host in hosts:
+        hostname = host.get("HostName")
+        if hostname is None:
+            continue
+        values = hostname if isinstance(hostname, list) else [hostname]
+        out[str(host.get("Host"))] = {str(v) for v in values}
+    return out
+
+
 def materialize_ssh_for_cloud(
     env_name: str,
     ssh: ClusterSshConfigs,
@@ -732,9 +854,14 @@ def materialize_ssh_for_cloud(
     hosts = _resolve_cloud_hosts(ssh, secrets, cloud, home=home)
     if not hosts:
         return
+    # Capture candidate hostnames before collapsing, so the merge can gate its
+    # HostName-only cross-env relaxation on them (see _merge_ssh).
+    candidates = _candidate_hostnames(hosts)
     # Collapse any list-valued HostName to a single (random) login node.
     hosts = [_collapse_to_random_hostname(h) for h in hosts]
-    _merge_selected_hosts(cloud, hosts, secrets, env_name, home=home)
+    _merge_selected_hosts(
+        cloud, hosts, secrets, env_name, candidate_hostnames=candidates, home=home
+    )
 
 
 def _resolve_cloud_hosts(
@@ -774,6 +901,7 @@ def _merge_selected_hosts(
     secrets: Dict[str, str],
     env_name: str,
     *,
+    candidate_hostnames: Optional[Dict[str, Set[str]]] = None,
     home: Optional[Path] = None,
 ) -> None:
     """Render already-selected scalar-``HostName`` hosts and merge them into config.
@@ -787,6 +915,8 @@ def _merge_selected_hosts(
     :param hosts: Host dicts with a single scalar ``HostName`` each.
     :param secrets: Secret name -> value mapping for directive resolution.
     :param env_name: The environment name (used in messages).
+    :param candidate_hostnames: ``{alias: {candidate HostName, …}}`` for this env,
+        forwarded to gate the merge's HostName-only cross-env relaxation.
     :param home: Home dir override (tests).
     :raises SkypilotConfigCollisionError: On a foreign clash (see
         :func:`merge_ssh_blocks`).
@@ -796,6 +926,7 @@ def _merge_selected_hosts(
         render_ssh_hosts(hosts, secrets),
         env_name,
         home=home,
+        candidate_hostnames=candidate_hostnames,
     )
 
 

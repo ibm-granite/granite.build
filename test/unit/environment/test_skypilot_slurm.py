@@ -853,41 +853,45 @@ class TestProvisionRetry:
         assert "td-1" not in slurm_env._cluster_names
 
     @staticmethod
-    def _failover_env():
-        """A slurm env whose ``bluevela`` cluster lists two candidate login nodes."""
+    def _failover_env(cloud="slurm", alias="bluevela"):
+        """An env whose ``alias`` cluster lists two candidate login nodes for ``cloud``."""
         return Skypilot(
             event_q=asyncio.Queue(),
             environment_config=EnvironmentConfig(
                 name="test-failover",
                 type="Skypilot",
                 config={
-                    "default_cloud": "slurm",
+                    "default_cloud": cloud,
                     "idle_minutes_to_autostop": 0,
                     "cluster_ssh_configs": {
-                        "slurm": [
-                            {"Host": "bluevela", "HostName": ["h1", "h2"], "User": "gb"}
-                        ]
+                        cloud: [{"Host": alias, "HostName": ["h1", "h2"], "User": "gb"}]
                     },
                 },
             ),
         )
 
-    async def _run_failover_launch(self, first_error, launch_id):
-        """Launch bluevela with ``first_error`` on attempt 1 then success, recording
-        the login-node ``HostName`` written on each SSH materialize.
+    async def _run_failover_launch(self, first_error, launch_id, *, resources=None):
+        """Launch with ``first_error`` on attempt 1 then success, recording the
+        login-node ``HostName`` written on each SSH materialize.
 
         The random pick is pinned (no-op shuffle) so the initial selection is ``h1``
         and the writes are deterministic; ``_merge_selected_hosts`` is patched to
-        capture without touching the filesystem.
+        capture without touching the filesystem, and ``_read_managed_hostnames`` is
+        stubbed empty so the sticky read cannot pull a real ``~/.<cloud>/config``.
 
         :param first_error: Exception raised by ``stream_and_get`` on attempt 1.
         :param launch_id: The launch id to run under.
+        :param resources: ``resources`` block for the launcher; defaults to the
+            bluevela slurm cluster. Omit the ``cluster`` to exercise the bare-infra
+            single-host failover fallback.
         :returns: ``(mock_sky, merged_hostnames)`` for assertions.
         """
         env = self._failover_env()
         merged_hostnames = []
 
-        def _record(cloud, hosts, secrets, env_name, *, home=None):
+        def _record(
+            cloud, hosts, secrets, env_name, *, home=None, candidate_hostnames=None
+        ):
             merged_hostnames.append(hosts[0]["HostName"])
 
         mock_sky = _mock_sky()
@@ -902,6 +906,10 @@ class TestProvisionRetry:
                 "gbserver.environment.skypilot_config._merge_selected_hosts", _record
             ),
             patch(
+                "gbserver.environment.skypilot_config._read_managed_hostnames",
+                lambda cloud, *, home=None: {},
+            ),
+            patch(
                 "gbserver.environment.skypilot_config.random.shuffle", lambda seq: None
             ),
         ):
@@ -910,7 +918,11 @@ class TestProvisionRetry:
                 launch_id=launch_id,
                 launcher_config={
                     "run": "hostname",
-                    "resources": {"cloud": "slurm", "cluster": "bluevela"},
+                    "resources": (
+                        resources
+                        if resources is not None
+                        else {"cloud": "slurm", "cluster": "bluevela"}
+                    ),
                 },
                 config={},
             )
@@ -938,6 +950,19 @@ class TestProvisionRetry:
         )
         assert mock_sky.stream_and_get.call_count == 2  # retried
         assert merged == ["h1"]  # never rotated: only the initial materialize wrote
+
+    @pytest.mark.asyncio
+    async def test_bare_infra_single_host_still_fails_over(self):
+        """A bare ``slurm`` infra (no cluster segment, so no target alias from the
+        infra string) still fails over when the env declares exactly one host: that
+        host is the unambiguous launch target and its candidate login nodes rotate."""
+        mock_sky, merged = await self._run_failover_launch(
+            Exception("Connection timed out during banner exchange"),
+            "fo-bare",
+            resources={"cloud": "slurm"},  # no cluster => infra is bare "slurm"
+        )
+        assert mock_sky.stream_and_get.call_count == 2  # blip, then success
+        assert merged == ["h1", "h2"]  # single-host fallback adopted the target alias
 
 
 class TestMonitorRetryHandoff:

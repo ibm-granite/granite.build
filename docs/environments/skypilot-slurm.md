@@ -62,10 +62,13 @@ sharing one `Host` block — the fit for a cluster reached through several equiv
         IdentityFile: ~/.ssh/slurm_docker_key
 ```
 
-At launch gbserver picks one candidate at random (spreading load across the login nodes) and writes it
-as a normal scalar `HostName`. The `Host` alias stays fixed (it must equal `cluster:`), so all
-candidates share this block's `User`/`Port`/`IdentityFile`/etc. A list of *different* clusters still
-uses separate `Host` blocks with distinct aliases.
+At launch gbserver picks one candidate and writes it as a normal scalar `HostName`. The pick is
+**sticky**: a candidate already written for this cluster in `~/.<cloud>/config` (for example by a
+parallel launch that just failed over to a healthy node) is kept, so a failover is not undone by a
+fresh random choice; only when nothing is written yet — or the written node is no longer a candidate —
+is one chosen at random (spreading load across the login nodes). The `Host` alias stays fixed (it must
+equal `cluster:`), so all candidates share this block's `User`/`Port`/`IdentityFile`/etc. A list of
+*different* clusters still uses separate `Host` blocks with distinct aliases.
 
 The candidates are also a **failover pool**. There is no up-front reachability probe (an earlier probe
 held a login-node SSH slot waiting on slow banners and starved the control SSH SkyPilot opens next, so
@@ -78,6 +81,15 @@ in <partition>`) do **not** trigger failover — any login node would hit them a
 *auth* rejections, which never succeed on retry. Failover reuses the ordinary provision retry budget
 (`GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS`); when the candidates are exhausted (or there is only one)
 the genuine error surfaces, so a true outage is never hidden.
+
+> **Failover is launch-time only.** The rotation happens *while provisioning*. Once a cluster is up,
+> SkyPilot has pinned the chosen login node into the cluster handle, so its status polling, log
+> streaming, and teardown all stay on that node — unlike the native-LSF SSH tunnel (see
+> [lsf.md](lsf.md)), which re-selects a reachable node per operation. If the pinned node fails
+> *after* provisioning, that operation fails against it; the next *launch* re-selects (and, being
+> sticky, prefers the node already written unless it is rotated off). When the infra names no cluster
+> (a bare `slurm`/`lsf` infra) but the environment declares exactly one host for that cloud, that host
+> is the unambiguous launch target, so its candidates still fail over.
 
 > **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.slurm/config` self-heals,
 > SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key

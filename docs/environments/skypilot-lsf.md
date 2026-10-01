@@ -65,9 +65,11 @@ under one `Host` block, for a cluster fronted by several equivalent login nodes:
         IdentitiesOnly: "yes"
 ```
 
-At launch gbserver picks one candidate at random (spreading load) and writes it as a scalar
-`HostName`. The `Host` alias stays fixed (LSF derives the cluster name from it), so all candidates
-share this block's credentials.
+At launch gbserver picks one candidate and writes it as a scalar `HostName`. The pick is **sticky** —
+a candidate already written for this cluster (e.g. by a parallel launch that just failed over) is kept
+rather than re-randomized onto a wedged node; a random candidate is chosen only when nothing is written
+yet (spreading load). The `Host` alias stays fixed (LSF derives the cluster name from it), so all
+candidates share this block's credentials.
 
 The candidates also form a **failover pool**: if provisioning fails with a transient SSH
 control-plane error (a late banner, a wedged session, a key-exchange reset), gbserver rewrites
@@ -75,7 +77,12 @@ control-plane error (a late banner, a wedged session, a key-exchange reset), gbs
 skipped rather than failing the build. Capacity failures and SSH *auth* rejections do not trigger
 failover. Failover reuses the ordinary provision retry budget
 (`GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS`); when the candidates are exhausted (or there is only one)
-the genuine error surfaces. This is identical to SLURM — see
+the genuine error surfaces. Failover is **launch-time only** — once a cluster is provisioned SkyPilot
+pins the chosen login node, so status polling, log streaming, and teardown stay on it (unlike the
+native-LSF SSH tunnel in [lsf.md](lsf.md), which re-picks per operation). This bluevela example has no
+`cluster:` under `cloud_config` on the launcher; because the env declares exactly one host for `lsf`,
+that host is the unambiguous launch target, so its candidates still fail over even on a bare `lsf`
+infra. This is otherwise identical to SLURM — see
 [Multiple login nodes on the SLURM page](skypilot-slurm.md#multiple-login-nodes-hostname-list).
 
 > **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.lsf/config` self-heals,
