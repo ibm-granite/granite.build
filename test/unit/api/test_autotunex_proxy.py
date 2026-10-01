@@ -171,6 +171,28 @@ def test_content_encoding_dropped_and_body_decoded(monkeypatch):
     assert "content-encoding" not in resp.headers
 
 
+def test_browser_accept_encoding_not_forwarded(monkeypatch):
+    # The response's Content-Encoding is stripped on the assumption httpx decoded
+    # the body, but httpx has no br/zstd decoder unless brotli/zstandard are
+    # installed. Forwarding the browser's "br, zstd" would let upstream answer in
+    # an encoding the proxy then relabels as plain.
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["accept-encoding"] = request.headers.get("accept-encoding", "")
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(proxy_mod, "AUTOTUNEX_URL", "http://autotunex.test")
+    monkeypatch.setattr(proxy_mod, "_client", _client_with_handler(handler))
+
+    client = TestClient(_make_app())
+    resp = client.get("/api/autotunex/jobs", headers={"accept-encoding": "br, zstd"})
+
+    assert resp.status_code == 200
+    assert "br" not in seen["accept-encoding"]
+    assert "zstd" not in seen["accept-encoding"]
+
+
 def test_preserves_multiple_set_cookie_headers(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
