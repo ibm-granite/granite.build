@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { LogEntry } from '../types'
-import { gapReconciled, logGapCursor, mergeLogs } from '../lib/autotunex/logStream'
+import { gapReconciled, mergeLogs, nextPendingGap } from '../lib/autotunex/logStream'
 
 const DEFAULT_PAGE_SIZE = 200
 const DEFAULT_POLL_MS = 10_000
@@ -89,13 +89,9 @@ export function useScrollingLogs({
 
     // The poll only asks for the newest page, so a job that emitted more than one
     // page between ticks leaves a hole that `loadMore` can never reach — it walks
-    // back from the oldest held id, not into the middle. Close it here instead.
-    if (!pendingGapRef.current) {
-      const cursor = logGapCursor(held, data.logs)
-      if (cursor !== null) {
-        pendingGapRef.current = { beforeId: cursor, downTo: Math.max(...held.map((l) => l.id)) }
-      }
-    }
+    // back from the oldest held id, not into the middle. Close it here instead,
+    // checking every tick even while an earlier gap is still pending.
+    pendingGapRef.current = nextPendingGap(pendingGapRef.current, held, data.logs)
     if (pendingGapRef.current) void closeGap(subjectRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
@@ -117,6 +113,9 @@ export function useScrollingLogs({
         const next = await fetchLogs({ beforeId: gap.beforeId, limit: pageSize })
         if (subjectRef.current !== issuedFor) return
         if (next.logs.length > 0) setLogs((prev) => mergeLogs(prev, next.logs))
+        // A poll can widen the gap while this page is in flight; resolving or
+        // advancing the stale copy would drop the widening. Walk the new one.
+        if (pendingGapRef.current !== gap) continue
         if (gapReconciled(next.logs, gap.downTo) || !next.hasMore) {
           pendingGapRef.current = null
           return

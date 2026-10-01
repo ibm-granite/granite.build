@@ -17,6 +17,7 @@ const {
   mergeLogs,
   logGapCursor,
   gapReconciled,
+  nextPendingGap,
 } = require('../../../packages/ui-core/lib/autotunex/logStream.ts')
 
 const entry = (id) => ({ id, timestamp: '2026-09-03T12:00:00Z', level: 'INFO', filename: 'x.py', message: `line ${id}` })
@@ -91,3 +92,30 @@ describe('gapReconciled', () => {
     assert.equal(gapReconciled(range(300, 500), 300), true)
   })
 })
+
+describe('nextPendingGap', () => {
+  it('opens a gap from the polled page down to the newest held id', () => {
+    assert.deepEqual(nextPendingGap(null, range(101, 300), range(601, 800)), { beforeId: 601, downTo: 300 })
+  })
+
+  it('leaves no gap when the polled page connects', () => {
+    assert.equal(nextPendingGap(null, range(101, 300), range(201, 400)), null)
+  })
+
+  it('keeps a pending gap when the new poll connects', () => {
+    const pending = { beforeId: 450, downTo: 300 }
+    assert.deepEqual(nextPendingGap(pending, range(101, 800), range(701, 900)), pending)
+  })
+
+  it('widens a pending gap to cover a second hole', () => {
+    // Tick 1 found 301-600 missing and its walk ran out of budget at 450, so
+    // 301-449 is still missing. Tick 2's page (1001-1200) leaves 801-1000 missing
+    // too. Detection used to be skipped while a gap was pending, and once the first
+    // walk finished the second hole sat below the newest held id, where nothing
+    // could ever find it. The walk must now run from 1001 down to 300.
+    const pending = { beforeId: 450, downTo: 300 }
+    const held = [...range(601, 800), ...range(450, 600), ...range(101, 300)]
+    assert.deepEqual(nextPendingGap(pending, held, range(1001, 1200)), { beforeId: 1001, downTo: 300 })
+  })
+})
+
