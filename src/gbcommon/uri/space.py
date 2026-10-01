@@ -628,12 +628,16 @@ class SpaceURI(URI):
         The Tier-2 analogue of :meth:`_longest_step_in_root`: Tier 2 has no
         single fixed ``steps/`` root (it recursively globs each base_uri), so
         this walks the ``(name, rest)`` candidates of ``after`` longest→shortest
-        and returns the first whose ``steps/<name>/step.yaml`` exists under *some*
-        base_uri.  The glob is **anchored to the enclosing ``steps/``** — a
+        and returns the first whose ``steps/.../<name>/step.yaml`` exists under
+        *some* base_uri.  The glob is **anchored to the enclosing ``steps/``** — a
         canonical name is a path relative to a ``steps/`` ancestor, so an
         unanchored ``<name>/step.yaml`` (``name`` is now multi-segment) could
         reach into sub-asset territory and let a stray ``step.yaml`` outside any
         ``steps/`` dir (e.g. a test fixture) hijack an existing sub-asset URI.
+        The ``**`` between ``steps/`` and the name tolerates env-partition dirs
+        there, as builtin steps live at ``steps/<env-class>/<name>/`` (e.g.
+        ``src/gbserver/builtins/steps/skypilot/command/``); anchoring straight to
+        ``steps/<name>`` made every builtin ``space://steps/<name>`` unresolvable.
         This keeps the pin consistent with Tiers 1/3's explicit ``steps/`` root.
         Candidate names containing a ``..`` segment are skipped (``..`` is never
         part of a canonical name — it belongs to a crafted ``rest`` and is caught
@@ -663,9 +667,13 @@ class SpaceURI(URI):
                 # canonical name is relative to a ``steps/`` ancestor.  An
                 # unanchored ``<name>/step.yaml`` would reach into sub-asset
                 # territory and let a stray ``step.yaml`` outside any ``steps/``
-                # (e.g. a test fixture) hijack an existing sub-asset URI.
+                # (e.g. a test fixture) hijack an existing sub-asset URI.  The
+                # ``**`` tolerates env-partition dirs *between* ``steps/`` and the
+                # name, as builtin steps are laid out ``steps/<env-class>/<name>/``
+                # (``src/gbserver/builtins/steps/skypilot/command/``) — anchoring
+                # straight to ``steps/<name>`` made every builtin unresolvable.
                 for cand in base_path.rglob(
-                    f"{STEPS_PREFIX}{name}/{STEP_FILE_NAME}"
+                    f"{STEPS_PREFIX}**/{name}/{STEP_FILE_NAME}"
                 ):
                     if cand.is_file():
                         return name, rest
@@ -678,14 +686,17 @@ class SpaceURI(URI):
         """Collect env-class-matching ``step.yaml`` candidates for one name.
 
         Recursively globs every base_uri (``file://`` dirs and git bases via
-        their reused local clone) for ``steps/<name>/step.yaml`` and keeps those
-        whose ``environment_configs`` declare ``env_class`` (by key,
+        their reused local clone) for ``steps/.../<name>/step.yaml`` and keeps
+        those whose ``environment_configs`` declare ``env_class`` (by key,
         case-insensitively) and whose per-class ``subtypes`` restriction admits
         ``env_subtype``.  The glob is anchored to the enclosing ``steps/`` (the
         canonical-name invariant), matching the name pin in
         :meth:`_longest_step_in_bases` and Tiers 1/3's explicit ``steps/`` root;
         a bare ``<name>/step.yaml`` would admit a stray ``step.yaml`` outside any
-        ``steps/`` dir.
+        ``steps/`` dir.  The ``**`` tolerates env-partition dirs between
+        ``steps/`` and the name — builtin steps live at
+        ``steps/<env-class>/<name>/`` and this tier is precisely what resolves
+        them (it reads their per-class ``environment_configs``).
 
         Class-presence is by key, not value: a present-but-null entry
         (``{Skypilot:}``) is still declared for the active class and is kept,
@@ -707,7 +718,7 @@ class SpaceURI(URI):
             base_path = SpaceURI._uri_to_local_path(base_uri)
             if base_path is None or not base_path.exists():
                 continue
-            for cand in base_path.rglob(f"{STEPS_PREFIX}{name}/{STEP_FILE_NAME}"):
+            for cand in base_path.rglob(f"{STEPS_PREFIX}**/{name}/{STEP_FILE_NAME}"):
                 if not cand.is_file():
                     continue
                 try:

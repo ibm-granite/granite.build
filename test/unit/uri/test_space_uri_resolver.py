@@ -697,6 +697,43 @@ class TestTier2EnvClassMatch:
 
         assert _resolved_dir(resolved).samefile(match)
 
+    def test_builtin_env_class_dir_layout_resolves(self, tmp_path):
+        """A builtin step laid out ``steps/<env-class>/<name>/step.yaml`` (the
+        env-partition dir sits *between* ``steps/`` and the step name, as under
+        ``src/gbserver/builtins/steps/skypilot/command/``) resolves for its class.
+
+        Regression pin: the Tier-2 name pin and env-class glob must tolerate the
+        env-partition segment between ``steps/`` and ``<name>`` — anchoring the
+        glob to ``steps/<name>`` directly (name immediately under ``steps/``) made
+        every builtin ``space://steps/command`` unresolvable (issue: PR #437)."""
+        base = tmp_path / "builtins"
+        match = _write_step(
+            base / "steps" / "skypilot" / "command", env_classes=["Skypilot"]
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            resolved = _resolve("space://steps/command")
+
+        assert _resolved_dir(resolved).samefile(match)
+
+    def test_builtin_layout_picks_active_class_variant(self, tmp_path):
+        """With sibling env-class dirs under ``steps/`` (``steps/skypilot/command``
+        and ``steps/bash/command``, each scoped to its own class), the active
+        class selects its own variant — the ``**`` anchor matches both, the
+        env-class gate disambiguates (mirrors the real multi-env builtin tree)."""
+        base = tmp_path / "builtins"
+        sky = _write_step(
+            base / "steps" / "skypilot" / "command", env_classes=["Skypilot"]
+        )
+        bash = _write_step(base / "steps" / "bash" / "command", env_classes=["Bash"])
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            assert _resolved_dir(_resolve("space://steps/command")).samefile(sky)
+        with SpaceURI.with_current_env_class_name("Bash"):
+            assert _resolved_dir(_resolve("space://steps/command")).samefile(bash)
+
     def test_subasset_uri_appends_rest_to_matched_dir(self, tmp_path):
         """`space://steps/<name>/<rest>` resolves against the matched step dir
         plus the `<rest>` suffix."""
