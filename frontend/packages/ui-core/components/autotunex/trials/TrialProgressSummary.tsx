@@ -1,7 +1,7 @@
 'use client'
 
 import { ProgressBar } from '@carbon/react'
-import { computeTrialProgress } from './trialProgress'
+import { computeTrialProgress, progressLabel } from './trialProgress'
 import type { JobDetail, Trial } from '../../../types'
 
 function formatDuration(seconds: number): string {
@@ -62,10 +62,7 @@ export function TrialProgressSummary({ job, trials }: Props) {
     parts.push(`~${formatDuration(progress.etaSeconds)} remaining (rough estimate)`)
   }
 
-  const label =
-    progress.planned !== null
-      ? `Trial ${progress.completed} of ${progress.planned} complete`
-      : `${progress.completed} ${progress.completed === 1 ? 'trial' : 'trials'} complete`
+  const label = progressLabel(progress)
 
   return (
     <div style={{ maxWidth: '32rem', marginBottom: '1.5rem' }}>

@@ -20,6 +20,8 @@ const assert = require('node:assert/strict')
 const {
   computeTrialProgress,
   isSearchComplete,
+  jobElapsedSeconds,
+  progressLabel,
 } = require('../../../packages/ui-core/components/autotunex/trials/trialProgress.ts')
 
 const T0 = Date.parse('2026-08-26T10:00:00Z')
@@ -366,3 +368,64 @@ describe('isSearchComplete', () => {
     assert.equal(isSearchComplete([trial('completed', 60), trial('completed', 60)], 1), true)
   })
 })
+
+describe('jobElapsedSeconds', () => {
+  const job = (status, overrides = {}) => ({
+    status,
+    createdAt: new Date(T0).toISOString(),
+    updatedAt: new Date(T0 + 60_000).toISOString(),
+    finishedAt: undefined,
+    ...overrides,
+  })
+
+  it('measures a queued (pending) job against now, like a running one', () => {
+    // The Details tab and the tunings table treated only `running` as live, so a
+    // job queued for ten minutes read "1m 0s" there and "10m elapsed" in the
+    // progress summary for the same job.
+    assert.equal(jobElapsedSeconds(job('pending'), NOW), 600)
+    assert.equal(jobElapsedSeconds(job('running'), NOW), 600)
+  })
+
+  it('measures a stopped job to finished_at', () => {
+    const finishedAt = new Date(T0 + 5 * 60_000).toISOString()
+    assert.equal(jobElapsedSeconds(job('completed', { finishedAt }), NOW), 300)
+  })
+
+  it('is 0, not NaN, when a timestamp it needs is missing or unparseable', () => {
+    // Math.max(0, NaN) is NaN, so this reached the DOM as "NaNs elapsed".
+    for (const bad of [undefined, '', 'garbage']) {
+      assert.equal(jobElapsedSeconds(job('completed', { updatedAt: bad }), NOW), 0, `updatedAt ${JSON.stringify(bad)}`)
+      assert.equal(jobElapsedSeconds(job('running', { createdAt: bad }), NOW), 0, `createdAt ${JSON.stringify(bad)}`)
+    }
+  })
+
+  it('backs computeTrialProgress, so the progress summary agrees', () => {
+    const p = computeTrialProgress({
+      trials: [], numTrials: 4, jobStatus: 'completed',
+      jobCreatedAt: new Date(T0).toISOString(), jobUpdatedAt: undefined, jobFinishedAt: undefined, now: NOW,
+    })
+    assert.equal(p.elapsedSeconds, 0)
+  })
+})
+
+describe('progressLabel', () => {
+  it('counts what the bar counts, so a full bar never reads "3 of 4"', () => {
+    // percent counts failed trials as resolved; the caption counted only the
+    // completed ones, so 3 done + 1 errored of 4 was a full bar captioned
+    // "Trial 3 of 4 complete".
+    const p = run([trial('completed', 60), trial('completed', 60), trial('completed', 60), trial('error', null)], 4, 'completed')
+    assert.equal(p.percent, 100)
+    assert.equal(progressLabel(p), '4 of 4 trials finished')
+  })
+
+  it('counts only resolved trials while the run is going', () => {
+    const p = run([trial('completed', 60), trial('running', null)], 4)
+    assert.equal(progressLabel(p), '1 of 4 trials finished')
+  })
+
+  it('reads without a planned total', () => {
+    assert.equal(progressLabel(run([trial('completed', 60)], undefined)), '1 trial finished')
+    assert.equal(progressLabel(run([trial('completed', 60), trial('error', null)], undefined)), '2 trials finished')
+  })
+})
+
