@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { collectKeysetPages } from '../api/autotunexAdapters'
 import type { MetricPage, MetricPoint } from '../types'
@@ -28,7 +28,7 @@ export function useMetricStream(
   const held = useRef<{ key: string; rows: MetricPoint[] }>({ key: '', rows: [] })
   const key = JSON.stringify(queryKey)
 
-  return useQuery<MetricPoint[]>({
+  const query = useQuery<MetricPoint[]>({
     queryKey,
     enabled: opts.enabled ?? true,
     refetchInterval: opts.isActive ? POLL_MS : false,
@@ -47,4 +47,18 @@ export function useMetricStream(
       return held.current.rows
     },
   })
+
+  // One last read when the job stops. `isActive` going false only cancels the
+  // poll, so rows written between the last tick and the stop -- typically the
+  // end-of-training summary the Final run tiles read -- never arrived until the
+  // tab was refocused or reloaded.
+  const wasActive = useRef(opts.isActive)
+  const { refetch } = query
+  const enabled = opts.enabled ?? true
+  useEffect(() => {
+    if (wasActive.current && !opts.isActive && enabled) void refetch()
+    wasActive.current = opts.isActive
+  }, [opts.isActive, enabled, refetch])
+
+  return query
 }
