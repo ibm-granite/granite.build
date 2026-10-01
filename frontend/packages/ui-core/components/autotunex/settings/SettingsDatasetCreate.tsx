@@ -83,6 +83,17 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
     () => getRequiredColumnsFromTypes(algorithm, datasetTypes),
     [algorithm, datasetTypes]
   )
+  // Rendered too, after the required ones, as the wizard's Step 1 does: AI suggest
+  // matches against every column of the type, and an optional one it mapped had no
+  // control, so it could be neither seen nor cleared -- and, counted by the
+  // all-or-none rule below, it left Save disabled with no explanation.
+  const optionalColumns = useMemo(
+    () =>
+      getColumnsFromTypes(algorithm, datasetTypes)
+        .filter((column) => !column.required && !requiredColumns.includes(column.name))
+        .map((column) => column.name),
+    [algorithm, datasetTypes, requiredColumns]
+  )
 
   const userColumnNames = detectedColumns.map((c) => c.name)
 
@@ -330,6 +341,22 @@ export function SettingsDatasetCreate({ open, onClose, onCreated }: Props) {
                 onChange={(e) => updateMapping(reqCol, e.target.value)}
               >
                 <SelectItem value="" text="— select a column —" />
+                {userColumnNames.map((col) => (
+                  <SelectItem key={col} value={col} text={col} />
+                ))}
+              </Select>
+            </div>
+          ))}
+          {optionalColumns.map((optCol) => (
+            <div key={optCol} className={styles.mappingRow}>
+              <Select
+                id={`map-${optCol}`}
+                className={styles.mappingSelect}
+                labelText={`${optCol} (optional)`}
+                value={columnMapping[optCol] ?? ''}
+                onChange={(e) => updateMapping(optCol, e.target.value)}
+              >
+                <SelectItem value="" text="None" />
                 {userColumnNames.map((col) => (
                   <SelectItem key={col} value={col} text={col} />
                 ))}

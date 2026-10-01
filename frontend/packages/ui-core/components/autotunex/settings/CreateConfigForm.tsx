@@ -5,7 +5,7 @@ import { Checkbox, ContentSwitcher, Dropdown, FormLabel, MultiSelect, NumberInpu
 import type { Configuration, ConfigForm, TuningGoal } from '../../../types'
 import { getOption, parseCommaList, toUpperCase } from '../../../lib/autotunex/wizardUtils'
 import { computeSectionNames } from '../../../lib/autotunex/configSections'
-import { clampConcurrentTrials, formatValues, isNumericList, maxConcurrentTrialsCap, parseNumericCommaList, parseValuesInput, reconcileDefault } from '../../../lib/autotunex/hyperparamValues'
+import { clampConcurrentTrials, formatValues, isNumericList, liveInvalidFields, maxConcurrentTrialsCap, parseNumericCommaList, parseValuesInput, reconcileDefault } from '../../../lib/autotunex/hyperparamValues'
 import { GeneralConfigForm } from './GeneralConfigForm'
 import { TimeInput } from '../shared/TimeInput'
 import styles from './CreateConfigForm.module.scss'
@@ -72,6 +72,11 @@ interface CreateConfigFormProps {
    * paths can refuse them. Must be a stable callback (e.g. a setState function).
    */
   onInvalidFieldsChange?: (fieldIds: string[]) => void
+  /**
+   * The untouched template, when the parent remounts this form over an
+   * already-edited `config` (see `pristineConfig`). Defaults to `config`.
+   */
+  pristine?: ConfigForm
 }
 
 /**
@@ -86,7 +91,7 @@ interface CreateConfigFormProps {
  * Mode" radio group from the source is also dropped: this wizard always
  * supplies a `presetGoal` (from Step 0), so that branch is unreachable here.
  */
-export function CreateConfigForm({ config, setConfig, configurations, editMode = false, existingConfig, presetGoal, presetAlgorithm, hpoEnabled = true, onInvalidFieldsChange }: CreateConfigFormProps) {
+export function CreateConfigForm({ config, setConfig, configurations, editMode = false, existingConfig, presetGoal, presetAlgorithm, hpoEnabled = true, onInvalidFieldsChange, pristine }: CreateConfigFormProps) {
   const trainingMode: 'offline_tuning' | 'online_tuning' = presetGoal === 'online_rl' ? 'online_tuning' : 'offline_tuning'
   const [mode, setMode] = useState(false) // false = Basic, true = Advanced
 
@@ -175,12 +180,9 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
   // this: it inspects `default` against min_val/max_val and never a `values` array,
   // and a rejected list is never committed to the config at all. Report the
   // offending field ids so the submit paths can refuse them, the same way they
-  // already refuse out-of-range numeric columns.
-  const invalidValueKey = Object.entries(errorFields)
-    .filter(([, entry]) => entry.error)
-    .map(([fieldId]) => fieldId)
-    .sort()
-    .join(',')
+  // already refuse out-of-range numeric columns -- only the selected tuners'
+  // fields, since an entry outlives a field that a Tuner switch unmounted.
+  const invalidValueKey = liveInvalidFields(errorFields, selectedTuner, selectedRlTuner).join(',')
   useEffect(() => {
     onInvalidFieldsChange?.(invalidValueKey ? invalidValueKey.split(',') : [])
   }, [invalidValueKey, onInvalidFieldsChange])
@@ -189,8 +191,11 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
   // A hyperparameter's MultiSelect needs the *full* original option list for its
   // items: using the live (current) values would make a deselected option vanish
   // from the menu permanently, so it could never be re-added.
+  // Seeded from `pristine` when given: SettingsConfigCreate remounts this form on
+  // every Algorithm change while keeping the edited config, so cloning `config`
+  // there captured the edit and lost a deselected option for good.
   const pristineConfig = useRef<ConfigForm | null>(null)
-  if (pristineConfig.current === null) pristineConfig.current = structuredClone(config)
+  if (pristineConfig.current === null) pristineConfig.current = structuredClone(pristine ?? config)
 
   /**
    * Validate and commit a "Values" field, mirroring the source form's `on:change`
@@ -252,7 +257,21 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
       return (
         <div className={styles.hyperparamRow} key={paramName}>
           <div>
-            <Select id={`${fieldId}-strategy`} labelText="Strategy" value={paramConfig.strategy} disabled={!hpoEnabled} onChange={(e) => update({ strategy: e.target.value })}>
+            <Select
+              id={`${fieldId}-strategy`}
+              labelText="Strategy"
+              value={paramConfig.strategy}
+              disabled={!hpoEnabled}
+              onChange={(e) => {
+                update({ strategy: e.target.value })
+                // `uniform` swaps the Values input for Min/Max, so a Values error
+                // left behind would block submit with nothing on screen to fix.
+                if (e.target.value === 'uniform') {
+                  setErrorFields(({ [fieldId]: _err, ...rest }) => rest)
+                  setValueDrafts(({ [fieldId]: _draft, ...rest }) => rest)
+                }
+              }}
+            >
               {paramConfig.options.map((option: string) => (
                 <SelectItem key={option} value={option} text={getOption(option as any)} />
               ))}

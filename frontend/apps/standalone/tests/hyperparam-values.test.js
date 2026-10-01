@@ -14,7 +14,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 
-const { parseValuesInput, formatValues, reconcileDefault } = require('../../../packages/ui-core/lib/autotunex/hyperparamValues.ts')
+const { parseValuesInput, formatValues, reconcileDefault, liveInvalidFields } = require('../../../packages/ui-core/lib/autotunex/hyperparamValues.ts')
 
 describe('parseValuesInput', () => {
   it('parses and sorts a valid comma-separated list', () => {
@@ -89,3 +89,28 @@ describe('reconcileDefault', () => {
     assert.equal(reconcileDefault([0.001, 0.002], 0.0001), 0.001)
   })
 })
+
+describe('liveInvalidFields', () => {
+  // An entry was never removed when its field stopped being rendered, so after
+  // switching Tuner type the submit gate kept refusing a field that was not on
+  // screen, and only discarding every edit got the user out.
+  const errors = {
+    'tuners_config-lora-learning_rate': { error: true, message: 'x' },
+    'tuners_config-vera-rank': { error: true, message: 'x' },
+    'tuners_rl_config-grpo-beta': { error: true, message: 'x' },
+    'tuners_config-vera-alpha': { error: false, message: 'x' },
+  }
+
+  it('reports only the selected tuners\' fields', () => {
+    assert.deepEqual(liveInvalidFields(errors, 'vera', 'grpo'), ['tuners_config-vera-rank', 'tuners_rl_config-grpo-beta'])
+  })
+
+  it('drops a field whose tuner is no longer selected', () => {
+    assert.deepEqual(liveInvalidFields(errors, 'lora', 'none'), ['tuners_config-lora-learning_rate'])
+  })
+
+  it('does not match a tuner whose name only starts the same', () => {
+    assert.deepEqual(liveInvalidFields({ 'tuners_config-lora_plus-r': { error: true, message: 'x' } }, 'lora', 'none'), [])
+  })
+})
+
