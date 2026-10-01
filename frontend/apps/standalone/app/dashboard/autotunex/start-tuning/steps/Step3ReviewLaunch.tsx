@@ -2,7 +2,7 @@
 
 import { Tile, TextInput, Tag, Button, ProgressBar } from '@carbon/react'
 import { DataBase, Settings, ModelTuned, Checkmark, Edit } from '@carbon/icons-react'
-import type { ColumnMetadata, Configuration, Dataset, DatasetForm, LaunchPhase, ModelSource, Resources } from '@granite-build/ui-core/types'
+import type { ColumnMetadata, Configuration, Dataset, DatasetForm, LaunchPhase, LaunchPlan, ModelSource, Resources } from '@granite-build/ui-core/types'
 import { getConfigSummary } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { splitCounts } from '@granite-build/ui-core/lib/autotunex/splitCounts'
 import { MODEL_SOURCE_LABELS } from '../../modelSources'
@@ -39,6 +39,7 @@ interface Step3ReviewLaunchProps {
   isPendingDataset: boolean
   isPendingConfig: boolean
   launchPhase: LaunchPhase
+  launchPlan: LaunchPlan | null
   uploadProgress: number
   resourceEstimation: Resources | null
   estimationUnavailable: boolean
@@ -63,6 +64,7 @@ export function Step3ReviewLaunch({
   isPendingDataset,
   isPendingConfig,
   launchPhase,
+  launchPlan,
   uploadProgress,
   resourceEstimation,
   estimationUnavailable,
@@ -373,22 +375,22 @@ export function Step3ReviewLaunch({
             <Tile className={styles.reviewCard}>
               <h6 className={styles.cardHeading} style={{ marginBottom: '0.75rem' }}>Launching...</h6>
               <div className={styles.launchSteps}>
-                {isPendingDataset && (
+                {launchPlan?.uploadDataset && (
                   <>
                     <div
                       className={`${styles.launchStep} ${launchPhase === 'creating_dataset' ? styles.launchStepActive : ''} ${
-                        laterPhases('uploading_files', 'creating_config', 'launching_job') ? styles.launchStepDone : ''
+                        laterPhases('uploading_files', 'updating_config', 'creating_config', 'launching_job') ? styles.launchStepDone : ''
                       }`}
                     >
-                      {laterPhases('uploading_files', 'creating_config', 'launching_job') && <Checkmark size={16} />}
+                      {laterPhases('uploading_files', 'updating_config', 'creating_config', 'launching_job') && <Checkmark size={16} />}
                       <span>Create dataset</span>
                     </div>
                     <div
                       className={`${styles.launchStep} ${launchPhase === 'uploading_files' ? styles.launchStepActive : ''} ${
-                        laterPhases('creating_config', 'launching_job') ? styles.launchStepDone : ''
+                        laterPhases('updating_config', 'creating_config', 'launching_job') ? styles.launchStepDone : ''
                       }`}
                     >
-                      {laterPhases('creating_config', 'launching_job') && <Checkmark size={16} />}
+                      {laterPhases('updating_config', 'creating_config', 'launching_job') && <Checkmark size={16} />}
                       <span>Upload files</span>
                       {launchPhase === 'uploading_files' && uploadProgress > 0 && (
                         <>
@@ -401,7 +403,17 @@ export function Step3ReviewLaunch({
                     </div>
                   </>
                 )}
-                {isPendingConfig && (
+                {launchPlan?.updateConfig && (
+                  <div
+                    className={`${styles.launchStep} ${launchPhase === 'updating_config' ? styles.launchStepActive : ''} ${
+                      laterPhases('creating_config', 'launching_job') ? styles.launchStepDone : ''
+                    }`}
+                  >
+                    {laterPhases('creating_config', 'launching_job') && <Checkmark size={16} />}
+                    <span>Update configuration</span>
+                  </div>
+                )}
+                {launchPlan?.createConfig && (
                   <div className={`${styles.launchStep} ${launchPhase === 'creating_config' ? styles.launchStepActive : ''} ${launchPhase === 'launching_job' ? styles.launchStepDone : ''}`}>
                     {launchPhase === 'launching_job' && <Checkmark size={16} />}
                     <span>Create configuration</span>

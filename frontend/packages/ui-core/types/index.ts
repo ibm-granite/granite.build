@@ -737,6 +737,13 @@ export type LaunchPhase =
   | 'launching_job'
   | null
 
+/** What a launch will do, fixed when it starts (drives the launch progress rows). */
+export interface LaunchPlan {
+  uploadDataset: boolean
+  updateConfig: boolean
+  createConfig: boolean
+}
+
 export interface Resources {
   model_size_billion_params: number
   gpu_memory_gb: number
