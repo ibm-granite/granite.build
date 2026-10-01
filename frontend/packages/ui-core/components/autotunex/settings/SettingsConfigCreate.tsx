@@ -156,6 +156,7 @@ export function SettingsConfigCreate({ open, onClose, onCreated }: Props) {
             presetAlgorithm={selectedAlgorithm}
             hideNameField
             onInvalidFieldsChange={setInvalidValueFields}
+            pristine={template as ConfigForm | undefined}
           />
           {rangeError && (
             <InlineNotification

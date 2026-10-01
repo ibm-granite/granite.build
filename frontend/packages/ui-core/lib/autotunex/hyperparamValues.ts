@@ -187,3 +187,25 @@ export function findOutOfRangeFields(configData: unknown): string[] {
 export function reconcileDefault<T>(values: T[], current: T): T {
   return values.includes(current) ? current : values[0]
 }
+
+/**
+ * The flagged "Values" fields that still count, sorted: those of the currently
+ * selected tuner and RL tuner. Field ids are `${section}-${tuner}-${param}`.
+ *
+ * An error entry outlives its field -- switching Tuner type unmounts it -- and
+ * the submit gate used to keep refusing a field no longer on screen. A hidden
+ * tuner's rejected values were never written to the config, and only the
+ * selected tuner is read when the job runs, so its errors cannot matter.
+ */
+export function liveInvalidFields(
+  errorFields: Record<string, { error: boolean }>,
+  selectedTuner: string,
+  selectedRlTuner: string
+): string[] {
+  const live = [`tuners_config-${selectedTuner}-`, `tuners_rl_config-${selectedRlTuner}-`]
+  return Object.entries(errorFields)
+    .filter(([fieldId, entry]) => entry.error && live.some((prefix) => fieldId.startsWith(prefix)))
+    .map(([fieldId]) => fieldId)
+    .sort()
+}
+
