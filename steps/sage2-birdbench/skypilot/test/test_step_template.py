@@ -82,10 +82,20 @@ def test_image_is_chosen_at_runtime_not_built(step):
     assert _launcher(step)["resources"] == {}
 
 
-def test_single_required_output_matches_marker(step, run_script):
-    assert step["outputs"] == {"required": {"sage2_results": {"type": "dataset"}}}
-    assert set(re.findall(r"GB_ARTIFACT_ID:(\w+)", run_script)) == {"sage2_results"}
-    assert "GB_ARTIFACT_PATH:${RESULT_FILE}" in run_script
+def test_outputs_match_markers(step, run_script):
+    # results.json (phase all/score) and generation.json (phase generate); which one a
+    # run emits depends on the phase, so both are optional.
+    assert step["outputs"] == {
+        "optional": {"sage2_results": {"type": "dataset"}, "sage2_generation": {"type": "dataset"}}
+    }
+    assert set(re.findall(r"GB_ARTIFACT_ID:(\w+)", run_script)) == {"sage2_results", "sage2_generation"}
+    assert run_script.count("GB_ARTIFACT_PATH:${RESULT_FILE}") == 2
+    assert 'RESULT_FILE="$OUTPUT_DIR/generation.json"' in run_script
+
+
+def test_phase_defaults_to_one_job(step, run_script):
+    assert step["config"]["sage2_config"]["phase"] == "all"
+    assert '--phase "{{ config.sage2_config.phase }}"' in run_script
 
 
 def test_monitor_honours_recipe_poll_keys(step):
