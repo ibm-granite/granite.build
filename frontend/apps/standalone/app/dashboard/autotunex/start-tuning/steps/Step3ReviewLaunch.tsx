@@ -4,6 +4,7 @@ import { Tile, TextInput, Tag, Button, ProgressBar } from '@carbon/react'
 import { DataBase, Settings, ModelTuned, Checkmark, Edit } from '@carbon/icons-react'
 import type { ColumnMetadata, Configuration, Dataset, DatasetForm, LaunchPhase, ModelSource, Resources } from '@granite-build/ui-core/types'
 import { getConfigSummary } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
+import { splitCounts } from '@granite-build/ui-core/lib/autotunex/splitCounts'
 import { MODEL_SOURCE_LABELS } from '../../modelSources'
 import styles from './Step3ReviewLaunch.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
@@ -79,15 +80,17 @@ export function Step3ReviewLaunch({
   const valFileName = isExisting
     ? selectedExistingDataset!.validation_file
     : validationFile?.name ?? (isSplitEnabled ? 'Auto-split from train' : null)
+  // Same arithmetic as Step 1 and the server -- see splitCounts.
+  const split = splitCounts(totalRecords, 100 - splitRatio)
   const trainRecords = isExisting
     ? selectedExistingDataset!.train_records
     : isSplitEnabled
-      ? Math.round((totalRecords * splitRatio) / 100)
+      ? split.train
       : totalRecords
   const valRecords = isExisting
     ? selectedExistingDataset!.validation_records || 0
     : isSplitEnabled
-      ? Math.round((totalRecords * (100 - splitRatio)) / 100)
+      ? split.validation
       : null
   const trainFileSize = isExisting ? selectedExistingDataset!.train_file_size : uploadedFile?.size ?? 0
   const valFileSize = isExisting ? selectedExistingDataset!.validation_file_size : validationFile?.size ?? 0
