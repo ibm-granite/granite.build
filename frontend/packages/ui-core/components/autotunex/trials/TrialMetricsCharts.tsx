@@ -479,26 +479,34 @@ export function TrialMetricsCharts({ job, trials, trialsLoaded, colorScale, sele
         </section>
       )}
 
-      {/* Mirrors the search section's own gate exactly, so a selection with
-          nothing to draw says so instead of leaving the page blank — the final
-          run is off screen for as long as any trial is ticked.
+      {/* Mirrors the search section's own gate exactly, so a search phase with
+          nothing to draw says so instead of leaving the page blank — whether a
+          trial is ticked (the final run is then off screen) or the job has no
+          final run to show instead. Gating on the selection alone left a job with
+          no final run and nothing plottable blank apart from the axis switcher.
           Two different reasons the page would be blank, and they need different
           sentences: rows that have not arrived yet will, rows that carry no value
           on the current axis never will however long the reader waits. Telling
           the second reader to expect curves sends them to watch an axis that has
           nothing to say. */}
-      {hasSelection && !searchPlottable && (
+      {showSearch && !searchPlottable && (
         <InlineNotification
           kind="info"
           title={
             searchRows.length === 0
-              ? 'No step metrics for this selection yet'
+              ? hasSelection
+                ? 'No step metrics for this selection yet'
+                : 'No step metrics yet'
               : `Nothing to plot on the ${xTitle} axis`
           }
           subtitle={
-            searchRows.length === 0
-              ? 'Curves appear here as the selected trials report them. Clear the selection to see the final run.'
-              : `The selected trials logged steps, but none of them carry a ${xTitle.toLowerCase()} value. Try another x axis, or clear the selection to see the final run.`
+            hasSelection
+              ? searchRows.length === 0
+                ? 'Curves appear here as the selected trials report them. Clear the selection to see the final run.'
+                : `The selected trials logged steps, but none of them carry a ${xTitle.toLowerCase()} value. Try another x axis, or clear the selection to see the final run.`
+              : searchRows.length === 0
+                ? 'Curves appear here as the trials report them.'
+                : `The trials logged rows, but none of them plot on the ${xTitle.toLowerCase()} axis. Try another x axis.`
           }
           lowContrast
           hideCloseButton
