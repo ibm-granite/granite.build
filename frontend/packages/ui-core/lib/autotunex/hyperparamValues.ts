@@ -138,7 +138,7 @@ export function findOutOfRangeFields(configData: unknown): string[] {
   const walk = (node: unknown, path: string) => {
     if (node === null || typeof node !== 'object' || Array.isArray(node)) return
     const record = node as Record<string, unknown>
-    const { default: value, min_val: min, max_val: max } = record
+    const { default: value, min_val: min, max_val: max, values, strategy } = record
     if (
       typeof value === 'number' &&
       Number.isFinite(value) &&
@@ -146,6 +146,13 @@ export function findOutOfRangeFields(configData: unknown): string[] {
       typeof max === 'number' &&
       (value < min || value > max)
     ) {
+      offenders.push(path)
+      return
+    }
+    // A `choice` hyperparameter's default must be one of its candidates: lds/blds
+    // look it up with values.index(default), so one outside the list failed the job
+    // at start. The Default input writes any in-range number through.
+    if (strategy === 'choice' && Array.isArray(values) && values.length > 0 && value != null && !values.includes(value)) {
       offenders.push(path)
       return
     }
