@@ -45,3 +45,29 @@ export function gapReconciled(page: LogEntry[], heldNewestAtDetection: number): 
   if (page.length === 0) return true
   return Math.min(...page.map((l) => l.id)) <= heldNewestAtDetection
 }
+
+/** A hole still to backfill: walk older pages from `beforeId` until one reaches `downTo`. */
+export interface LogGap {
+  beforeId: number
+  downTo: number
+}
+
+/**
+ * The gap to backfill after a poll, given the one still pending (if any).
+ *
+ * Detection must run on every poll, pending gap or not. It used to be skipped
+ * while a walk was unfinished, so a second hole opened by the next tick went
+ * unregistered -- and once the first walk finished it sat below the newest held
+ * id, where `logGapCursor` (which only looks above it) and `loadMore` (which only
+ * walks below the oldest) could never reach it. A second hole widens the pending
+ * one instead: the walk restarts at the new leading edge and keeps the older lower
+ * bound, so one walk covers both holes. The pages it re-fetches between them are
+ * already held and `mergeLogs` dedups them.
+ */
+export function nextPendingGap(pending: LogGap | null, held: LogEntry[], polled: LogEntry[]): LogGap | null {
+  const cursor = logGapCursor(held, polled)
+  if (cursor === null) return pending
+  if (pending) return { beforeId: cursor, downTo: pending.downTo }
+  return { beforeId: cursor, downTo: Math.max(...held.map((l) => l.id)) }
+}
+
