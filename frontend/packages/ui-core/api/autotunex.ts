@@ -357,8 +357,11 @@ export async function startJob(tuning: TuningForm): Promise<{ id: string }> {
   return { id: data.id as string }
 }
 
+// The full shape (the default): only JobRead carries `tasks`, which the Details tab
+// reads the Build ID from -- `?shape=lean` returns JobDetail and left it blank. The
+// server eager-loads tasks for both shapes, so the extra is payload, not queries.
 export async function getJob(id: string, scope: Scope = 'own'): Promise<JobRead> {
-  const { data } = await client.get<Record<string, unknown>>(`/jobs/${id}?shape=lean`, { params: { scope } })
+  const { data } = await client.get<Record<string, unknown>>(`/jobs/${id}`, { params: { scope } })
   return adaptJobRead(data)
 }
 
