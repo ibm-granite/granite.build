@@ -249,7 +249,7 @@ class LineageJobEntry(BaseModel):
     # The job record's other large payloads: execution_stats, job_output_stats and
     # source_code_details, whichever the source reported.
     payload: Dict[str, Any] = Field(default_factory=dict)
-    # Run id, release, facet tags and event envelope from the source event.
+    # Run id, release, facet tags, event type and time from the source event.
     run: Dict[str, Any] = Field(default_factory=dict)
     # Which system recorded the job and its own ids for it.
     origin: Dict[str, Any] = Field(default_factory=dict)

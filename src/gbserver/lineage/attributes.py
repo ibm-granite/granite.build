@@ -86,8 +86,8 @@ ORIGIN = "origin"
 PAYLOAD = "payload"
 
 # Sixth group, also on a JOB blob only: what the source event says about the run
-# itself and has no home elsewhere -- its id, release, facet tags and event
-# envelope. Kept so a job read back loses as little as possible of what was emitted.
+# itself and has no home elsewhere -- its id, release, facet tags, event type
+# and time. Kept so a job read back loses as little as possible of what was emitted.
 RUN = "run"
 
 # Endpoint detail keys, inside INPUT / OUTPUT.

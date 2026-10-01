@@ -21,6 +21,12 @@ interface Props {
 }
 
 const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
+// Lineage producers write times either as ISO strings or as epoch milliseconds
+// (the lakehouse does the latter); both come out as ISO.
+const time = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? new Date(v).toISOString() : str(v))
+// Other producers' spellings of the build statuses.
+const STATUS_ALIASES: Record<string, string> = { successful: 'success', succeeded: 'success', completed: 'success', failure: 'failed', error: 'failed', canceled: 'cancelled' }
+const jobStatus = (s: string) => adaptStatus(STATUS_ALIASES[s.toLowerCase()] ?? s)
 
 // The details of a job (run) node that came from the lineage index, shared by the
 // build and artifact lineage panels. The job is read from GET /lineage/jobs; one
@@ -158,9 +164,9 @@ function targetFromJob(job: LineageJobEntry, title: string): BuildTargetRun {
   return {
     uuid: job.job_id,
     target_name: title,
-    status: adaptStatus(job.status || str(job.job.status) || ''),
-    started_at: job.started_at || str(job.job.started_at),
-    finished_at: str(job.job.completed_at),
+    status: jobStatus(job.status || str(job.job.status) || ''),
+    started_at: job.started_at || time(job.job.started_at),
+    finished_at: time(job.job.completed_at),
     steps: stepsOf(job.job_input_params).map((step) => ({
       step_name: str(step.uri)?.split('/').pop() || NA,
       status: adaptStatus('unknown'),
