@@ -669,6 +669,11 @@ export interface LineageJobEntry {
   inputs: string[]
   outputs: string[]
   job: Record<string, unknown>
+  // Whether gb_lineage_job has a record of this execution; without one the
+  // top-level fields above are empty.
+  job_recorded: boolean
+  // Redacted step params from that record ({steps: [{uri, config}]} for granite.build).
+  job_input_params: Record<string, unknown>
 }
 
 export interface LineageJobsResult {

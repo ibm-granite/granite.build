@@ -493,6 +493,9 @@ def wandb_run_to_job(run: Any) -> Optional[dict]:
     facets: Dict[str, Any] = {
         k: config[k] for k in _PASSTHROUGH_FACET_KEYS if config.get(k) is not None
     }
+    tags = _tags_of(run)
+    if tags:
+        facets["tags"] = tags
     if config.get("source_code_url"):
         facets["source_code"] = {
             "url": config["source_code_url"],
@@ -510,6 +513,8 @@ def wandb_run_to_job(run: Any) -> Optional[dict]:
         "job_details": job_details,
         "job": {"namespace": config.get("job_namespace", ""), "name": run.name},
         "run": {"runId": run.id, "facets": facets},
+        "eventType": config.get("event_type", ""),
+        "description": config.get("description", ""),
         "sources": sources,
         "targets": targets,
     }

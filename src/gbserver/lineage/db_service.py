@@ -42,9 +42,13 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 from gbserver.lineage.attributes import (
     INPUT,
     OUTPUT,
+    PAYLOAD_INPUT_PARAMS,
     endpoint_kind,
     job_detail,
+    origin_detail,
     origin_system,
+    payload_detail,
+    run_detail,
 )
 from gbserver.lineage.graph_builder import build_graph_dict
 from gbserver.lineage.openlineage_service import LineageService
@@ -63,6 +67,7 @@ from gbserver.storage.lineage_row_storage import (
     ILineageRowStorage,
 )
 from gbserver.storage.stored_lineage_row import TERMINAL
+from gbserver.utils.redaction import redact_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -541,6 +546,11 @@ def _job_entry(job_id: str, job, rows: List, tags: List[str]) -> Dict:
     left out, so a self-rewrite shows its artifact on both sides.
     """
     attributes = rows[0].attributes if rows else {}
+    record = job.attributes if job else {}
+    payload = dict(payload_detail(record))
+    # The step configs. Redacted unconditionally: this listing is readable by any
+    # space member (see payload_detail).
+    input_params = redact_sensitive(payload.pop(PAYLOAD_INPUT_PARAMS, None) or {})
     return {
         "job_id": job_id,
         "job_namespace": job.job_namespace if job else "",
@@ -555,5 +565,15 @@ def _job_entry(job_id: str, job, rows: List, tags: List[str]) -> Dict:
         "outputs": sorted(
             {r.output for r in rows if r.output and r.output != TERMINAL}
         ),
-        "job": job_detail(attributes),
+        # The record's own job group first: it is the one written per execution,
+        # and rows imported without a record still have theirs.
+        "job": job_detail(record) or job_detail(attributes),
+        # Whether the execution has its own record in the job table. Rows can be
+        # imported without one, and then everything above that reads ``job`` is empty.
+        "job_recorded": job is not None,
+        "job_input_params": input_params,
+        # The rest of the record, so nothing it holds is lost on the way out.
+        "payload": payload,
+        "run": run_detail(record),
+        "origin": origin_detail(record) or origin_detail(attributes),
     }

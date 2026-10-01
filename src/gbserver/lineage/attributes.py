@@ -85,6 +85,11 @@ ORIGIN = "origin"
 # (and to exclude, should one of them ever need excluding again).
 PAYLOAD = "payload"
 
+# Sixth group, also on a JOB blob only: what the source event says about the run
+# itself and has no home elsewhere -- its id, release, facet tags and event
+# envelope. Kept so a job read back loses as little as possible of what was emitted.
+RUN = "run"
+
 # Endpoint detail keys, inside INPUT / OUTPUT.
 KIND = "kind"
 NAME = "name"
@@ -138,6 +143,16 @@ PAYLOAD_INPUT_PARAMS = "job_input_params"
 PAYLOAD_EXECUTION_STATS = "execution_stats"
 PAYLOAD_OUTPUT_STATS = "job_output_stats"
 PAYLOAD_SOURCE_CODE = "source_code_details"
+
+# Run keys, inside RUN on a job blob, read from the flat job dict under these names.
+_RUN_KEYS = (
+    "run_id",
+    "release_id",
+    "run_tags",
+    "event_type",
+    "event_time",
+    "description",
+)
 
 # The flat keys that make up the PAYLOAD group.
 _PAYLOAD_KEY_FROM_FLAT = {
@@ -331,6 +346,8 @@ def build_job_attributes(
       one row per job they are stored once rather than N*M times.
     - It has no :data:`INPUT` / :data:`OUTPUT` groups. Those describe one endpoint
       pair, which is a property of a row; a job has many.
+    - It carries the :data:`RUN` group: the event's run id, release, facet tags and
+      envelope, which nothing else keeps.
 
     The ``job`` group here carries the same keys a row's group does, including the
     three that are also columns on the job table. A reader of the group therefore does
@@ -359,6 +376,10 @@ def build_job_attributes(
             payload[key] = value
     if payload:
         attributes[PAYLOAD] = payload
+
+    run = {key: metadata[key] for key in _RUN_KEYS if metadata.get(key)}
+    if run:
+        attributes[RUN] = run
 
     origin: Dict[str, Any] = {ORIGIN_SYSTEM: source_system}
     carried_ids = {key: value for key, value in (ids or {}).items() if value}
@@ -421,6 +442,16 @@ def payload_detail(attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     raw.
     """
     return (attributes or {}).get(PAYLOAD) or {}
+
+
+def run_detail(attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The ``run`` group of a JOB blob, or an empty map."""
+    return (attributes or {}).get(RUN) or {}
+
+
+def origin_detail(attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The ``origin`` group, or an empty map."""
+    return (attributes or {}).get(ORIGIN) or {}
 
 
 def origin_system(attributes: Optional[Dict[str, Any]]) -> str:

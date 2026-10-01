@@ -1,12 +1,16 @@
 'use client'
 
 import * as React from 'react'
-import { Button, IconButton, InlineLoading } from '@carbon/react'
+import { Button, IconButton, InlineLoading, InlineNotification } from '@carbon/react'
 import { Close } from '@carbon/icons-react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { getBuild, getBuildStatus, getLineageJobs, type LineageJobEntry } from '@granite-build/ui-core/api/gbserver'
+import { adaptStatus, getBuild, getBuildStatus, getLineageJobs, type LineageJobEntry } from '@granite-build/ui-core/api/gbserver'
+import type { BuildTargetRun } from '@granite-build/ui-core/types'
 import type { IndexElkNode } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import StepDrawer from './StepDrawer'
+import StepDetailsPanel, { ExecutionSummary, Field, Section } from './StepDetailsPanel'
+import { stepDrawerSummary } from './stepDrawerSummary'
+import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
 import styles from './LineagePanel.module.scss'
 
 interface Props {
@@ -44,7 +48,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) {
   const job = jobs?.jobs[0]
 
   const buildId = str(meta.gb_build_id)
-    ?? job?.tags.find((t) => t.startsWith('build_id='))?.slice('build_id='.length)
+    ?? (job ? buildIdOf(job) : undefined)
   const runId = str(meta.gb_target_run_uuid) ?? jobId
   const { data: build } = useQuery({
     queryKey: ['build', buildId],
@@ -52,52 +56,148 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) {
     enabled: Boolean(buildId),
     staleTime: 5 * 60 * 1000,
   })
-  const { data: buildStatus } = useQuery({
+  const { data: buildStatus, isLoading: statusLoading } = useQuery({
     queryKey: ['build-status', buildId],
     queryFn: () => getBuildStatus(buildId!),
     enabled: Boolean(buildId),
     staleTime: 5 * 60 * 1000,
     retry: false,
   })
-  const target = React.useMemo(
+  const statusTarget = React.useMemo(
     () => Object.values(buildStatus?.targets ?? {}).find((t) => t.uuid === runId),
     [buildStatus, runId]
   )
 
-  if (buildId) {
-    return (
-      <StepDrawer
-        targetName={target?.target_name ?? node.title ?? node.id}
-        target={target}
-        build={build}
-        onClose={onClose}
-        drawerRef={drawerRef}
-        closeButtonRef={closeButtonRef}
-      />
-    )
-  }
-
   const title = node.title || node.id
-  const status = job?.status || str(meta.job_status)
+  // The build's own target run when this server has it; otherwise one rebuilt from
+  // what the lineage index captured, so both render through the same drawer.
+  const target = statusTarget ?? (job ? targetFromJob(job, title) : undefined)
+  const fromIndex = !statusTarget && !(buildId && statusLoading)
+
   return (
-    <div ref={drawerRef} className={styles.stepSidePanel} role="dialog" aria-label={`Job details — ${title}`}>
-      <div className={styles.stepSidePanelHeader}>
-        <div className={styles.stepSidePanelIdentity}>
-          <h4 className={styles.stepSidePanelHeading}>{title}</h4>
-          <div className={styles.stepSidePanelSubtitle}>Job{status ? ` · ${status}` : ''}</div>
-        </div>
-        <IconButton ref={closeButtonRef} kind="ghost" label="Close" align="bottom" onClick={onClose}>
-          <Close />
-        </IconButton>
-      </div>
-      <div className={styles.stepSidePanelBody}>
-        {jobLoading && <InlineLoading description="Loading job…" />}
-        {Boolean(jobError) && <p>Failed to load job: {String(jobError)}</p>}
-        {/* The index has no record of it: fall back to what the graph node carried. */}
-        <DetailList rows={job ? jobRows(job) : Object.entries(meta)} />
-      </div>
-    </div>
+    <StepDrawer
+      targetName={statusTarget?.target_name ?? title}
+      target={target}
+      build={statusTarget ? build : undefined}
+      buildId={buildId}
+      onClose={onClose}
+      drawerRef={drawerRef}
+      closeButtonRef={closeButtonRef}
+      // Carbon's inline notification: persistent, in context, and not something
+      // to act on, so info, low contrast and no close button.
+      notice={fromIndex && (
+        <InlineNotification
+          kind="info"
+          lowContrast
+          hideCloseButton
+          title="From the lineage index"
+          // A plain-string subtitle, so it takes the notification's own compact
+          // type; the full build id is in the Build ID field below.
+          subtitle={[
+            buildId
+              ? `Build ${buildId.slice(0, 8)} is not on this server, so its target and step runs are unknown.`
+              : 'Not a granite.build run.',
+            'Showing what the lineage index recorded',
+          ].join(' ') + (job && !job.job_recorded ? '; it has no job record, only lineage rows.' : '.')}
+        />
+      )}
+    >
+      {fromIndex && (
+        <>
+          {jobLoading && <InlineLoading description="Loading job…" />}
+          {Boolean(jobError) && <p className={styles.stepMessage}>Failed to load job: {String(jobError)}</p>}
+          <JobIndexSections job={job} target={target} meta={meta} jobId={jobId} />
+        </>
+      )}
+    </StepDrawer>
   )
+}
+
+const NA = 'N/A'
+
+/**
+ * What the lineage index knows about one job beyond its steps: its span, through
+ * the step cards' Execution block (the index records one start and finish per
+ * execution, so it shows even with no steps), and its identity and endpoints.
+ * Shared by the single-job fallback and each row of a grouped node.
+ */
+function JobIndexSections({ job, target, meta = {}, jobId }: {
+  job: LineageJobEntry | undefined
+  target: BuildTargetRun | undefined
+  meta?: Record<string, unknown>
+  jobId?: string
+}) {
+  return (
+    <>
+      {target && (
+        <Section title="Execution">
+          <ExecutionSummary step={{ step_name: target.target_name, status: target.status, started_at: target.started_at, finished_at: target.finished_at }} />
+        </Section>
+      )}
+      <Section title="Lineage">
+        <CodeField label="Target run" value={str(meta.gb_target_run_uuid)} />
+        <CodeField label="Job ID" value={job?.job_id ?? jobId} />
+        <Field label="Namespace">{orNA(job?.job_namespace || str(job?.job.namespace) || str(meta.job_namespace))}</Field>
+        <Field label="Owner">{orNA(job?.owner || str(job?.job.owner) || str(meta.owner))}</Field>
+        <Field label="Source system">{orNA(job?.source_system || str(meta.source_system))}</Field>
+        {job && <UriField label="Inputs" uris={job.inputs} />}
+        {job && <UriField label="Outputs" uris={job.outputs} />}
+        {job && <UriField label="Tags" uris={job.tags} />}
+      </Section>
+    </>
+  )
+}
+
+/**
+ * A target run rebuilt from a lineage job, for a build this server does not have.
+ * The index records one status and span per execution and, for granite.build,
+ * each step's definition URI and redacted config -- not a step's own status or
+ * timing, which are left unknown rather than borrowed from the job.
+ */
+function targetFromJob(job: LineageJobEntry, title: string): BuildTargetRun {
+  return {
+    uuid: job.job_id,
+    target_name: title,
+    status: adaptStatus(job.status || str(job.job.status) || ''),
+    started_at: job.started_at || str(job.job.started_at),
+    finished_at: str(job.job.completed_at),
+    steps: stepsOf(job.job_input_params).map((step) => ({
+      step_name: str(step.uri)?.split('/').pop() || NA,
+      status: adaptStatus('unknown'),
+      uri: str(step.uri),
+      config: isNonEmptyObject(step.config) ? step.config : undefined,
+    })),
+  }
+}
+
+function orNA(value: string | undefined): React.ReactNode {
+  return value ? value : <span className={styles.stepMuted}>{NA}</span>
+}
+
+function CodeField({ label, value }: { label: string; value: string | undefined }) {
+  return (
+    <Field label={label}>
+      {value ? <code className={styles.stepCode}>{value}</code> : <span className={styles.stepMuted}>{NA}</span>}
+    </Field>
+  )
+}
+
+function UriField({ label, uris }: { label: string; uris: string[] }) {
+  if (uris.length === 0) return null
+  return (
+    <Field label={label}>
+      <ul className={styles.stepUriList}>
+        {uris.map((u) => <li key={u}><code className={styles.stepCode}>{u}</code></li>)}
+      </ul>
+    </Field>
+  )
+}
+
+// granite.build records job_input_params as {steps: [{uri, config, config_dir}]};
+// another producer's shape yields no steps.
+function stepsOf(params: Record<string, unknown> | undefined): Record<string, unknown>[] {
+  const steps = params?.steps
+  return Array.isArray(steps) ? steps.filter((s): s is Record<string, unknown> => Boolean(s) && typeof s === 'object') : []
 }
 
 const GROUPED_PAGE = 50
@@ -147,26 +247,36 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
         <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
           {jobs.map((job) => {
             const open = openJobId === job.job_id
-            const name = str(job.job.name) ?? job.job_id
+            const target = targetFromJob(job, str(job.job.name) ?? job.job_id)
+            const { subtitle, summary } = stepDrawerSummary(target)
             return (
               <li key={job.job_id} style={{ borderBottom: '1px solid var(--cds-border-subtle)' }}>
+                {/* The row reads like the step drawer header: name, steps, status
+                    badge and span, from the same stepDrawerSummary. */}
                 <button
                   type="button"
                   aria-expanded={open}
                   onClick={() => setOpenJobId(open ? null : job.job_id)}
                   style={{
                     all: 'unset', cursor: 'pointer', display: 'grid', width: '100%',
-                    gridTemplateColumns: '1fr auto', gap: '0.25rem 1rem', padding: '0.5rem 0',
-                    fontSize: '0.875rem', boxSizing: 'border-box',
+                    gridTemplateColumns: '1fr auto', gap: '0.25rem 1rem', padding: '0.75rem 0',
+                    boxSizing: 'border-box',
                   }}
                 >
-                  <span style={{ wordBreak: 'break-all' }}>{name}</span>
-                  <span style={{ color: 'var(--cds-text-secondary)' }}>{job.status}</span>
-                  <span style={{ color: 'var(--cds-text-secondary)', gridColumn: '1 / -1' }}>
-                    {[job.owner, str(job.job.started_at) ?? job.started_at].filter(Boolean).join(' · ')}
+                  <span className={styles.stepCardName} style={{ wordBreak: 'break-all' }}>{target.target_name}</span>
+                  {target.status ? <BuildStatusBadge status={target.status} /> : <span className={styles.stepMuted}>{NA}</span>}
+                  <span className={styles.stepMuted} style={{ gridColumn: '1 / -1', fontSize: '0.75rem' }}>
+                    {[target.steps.length > 0 ? subtitle : undefined, summary].filter(Boolean).join(' · ') || NA}
                   </span>
                 </button>
-                {open && <div style={{ paddingBottom: '0.75rem' }}><DetailList rows={jobRows(job)} /></div>}
+                {open && (
+                  <div style={{ paddingBottom: '1.5rem' }}>
+                    <StepDetailsPanel targetName={target.target_name} target={target} buildId={buildIdOf(job)} />
+                    <div className={styles.stepExtraSections}>
+                      <JobIndexSections job={job} target={target} />
+                    </div>
+                  </div>
+                )}
               </li>
             )
           })}
@@ -181,32 +291,10 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
   )
 }
 
-function jobRows(job: LineageJobEntry): [string, unknown][] {
-  return [
-    ['job_id', job.job_id],
-    ['namespace', job.job_namespace],
-    ['space', job.space_name],
-    ['owner', job.owner],
-    ['source', job.source_system],
-    ['status', job.status],
-    ['started_at', job.started_at],
-    ['tags', job.tags.join(', ')],
-    ['inputs', job.inputs.join('\n')],
-    ['outputs', job.outputs.join('\n')],
-    ...Object.entries(job.job),
-  ]
+function buildIdOf(job: LineageJobEntry): string | undefined {
+  return job.tags.find((t) => t.startsWith('build_id='))?.slice('build_id='.length)
 }
 
-function DetailList({ rows }: { rows: [string, unknown][] }) {
-  const shown = rows.filter(([, v]) => v !== null && v !== undefined && v !== '')
-  return (
-    <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.5rem 1rem', fontSize: '0.875rem' }}>
-      {shown.map(([k, v], i) => (
-        <React.Fragment key={`${k}-${i}`}>
-          <dt style={{ color: 'var(--cds-text-secondary)' }}>{k}</dt>
-          <dd style={{ wordBreak: 'break-all', whiteSpace: 'pre-line' }}>{typeof v === 'string' ? v : JSON.stringify(v)}</dd>
-        </React.Fragment>
-      ))}
-    </dl>
-  )
+function isNonEmptyObject(v: unknown): v is Record<string, unknown> {
+  return Boolean(v) && typeof v === 'object' && Object.keys(v as object).length > 0
 }

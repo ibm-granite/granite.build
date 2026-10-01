@@ -355,7 +355,7 @@ function metadataRows(
 }
 
 /** Row of a definition list; renders `—` for absent values rather than collapsing. */
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className={styles.stepField}>
       <span className={styles.stepFieldLabel}>{label}</span>
@@ -365,7 +365,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 /** A titled block within the drawer — the drawer's only structural divider. */
-function Section({
+export function Section({
   title,
   children,
   action,
@@ -390,7 +390,7 @@ function Section({
  * the drawer header already reads "Completed in 6s", so repeating it here would
  * be the third copy of the same number.
  */
-function ExecutionSummary({ step }: { step: BuildStepRun }) {
+export function ExecutionSummary({ step }: { step: BuildStepRun }) {
   const started = step.started_at
   const finished = finishedAt(step)
   return (

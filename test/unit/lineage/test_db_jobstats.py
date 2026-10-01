@@ -766,3 +766,37 @@ class TestJobsTouchingInSQL:
         assert rows.count_jobs_touching("") == 0
         assert rows.count_jobs_touching("", self_loop=True) == 0
         assert rows.get_job_ids_touching("", limit=10, offset=0) == []
+
+
+class TestJobRecordBackfill:
+    """Rows written while the job record failed are not "recorded": the next scan
+    must write the record rather than skip on rows alone."""
+
+    @staticmethod
+    def _sink(rows, jobs: dict):
+        from unittest.mock import MagicMock
+
+        job_storage = MagicMock()
+        job_storage.get_jobs_by_id.side_effect = lambda ids: {
+            i: jobs[i] for i in ids if i in jobs
+        }
+        return DBLineageStore(storage=rows, job_storage=job_storage)
+
+    def test_a_job_with_no_record_is_not_recorded_by_self(self, rows):
+        assert self._sink(rows, {}).recorded_by_self(["J"]) == set()
+
+    def test_a_job_this_system_recorded_is_recorded_by_self(self, rows):
+        from types import SimpleNamespace
+
+        from gbserver.lineage.db_jobstats import SOURCE_SYSTEM
+
+        sink = self._sink(rows, {"J": SimpleNamespace(source_system=SOURCE_SYSTEM)})
+        assert sink.recorded_by_self(["J"]) == {"J"}
+
+    def test_has_job_record_reads_the_job_table(self, rows):
+        sink = self._sink(rows, {"J": object()})
+        assert sink._has_job_record("J")
+        assert not sink._has_job_record("OTHER")
+
+    def test_with_no_job_storage_rows_decide(self, sink):
+        assert sink._has_job_record("anything")

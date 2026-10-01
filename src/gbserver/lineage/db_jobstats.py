@@ -135,7 +135,9 @@ class DBLineageStore(ILineageStore):
             try:
                 self._job_storage = get_admin_storage().lineage_job_storage
             except Exception as exc:
-                logger.debug("No lineage job storage available: %s", exc)
+                # A warning, not debug: rows are still written without it, and a
+                # row with no job record has no status, owner or step params.
+                logger.warning("No lineage job storage available: %s", exc)
                 return None
         return self._job_storage
 
@@ -237,7 +239,9 @@ class DBLineageStore(ILineageStore):
         if not isinstance(target, StoredTargetRun):
             return
 
-        if self.row_storage.has_rows_for_job(target.uuid):
+        if self.row_storage.has_rows_for_job(target.uuid) and self._has_job_record(
+            target.uuid
+        ):
             # Already recorded. Presence, not count: see the module docstring for
             # why a count comparison would re-record forever.
             #
@@ -245,6 +249,10 @@ class DBLineageStore(ILineageStore):
             # the event builder sets ``job_details.job_id = targetrun.uuid``
             # (``wandb_jobstats.py:274``), so per-job dedup is per-target dedup here
             # without the index needing a column for a target run.
+            #
+            # Rows alone are not enough: a job upsert that failed left rows with no
+            # job record, and skipping on rows would never write it. The rewrite is
+            # idempotent, so the rows merge and only the record is added.
             logger.debug("Target run %s already has lineage rows", target.uuid)
             return
 
@@ -365,7 +373,10 @@ class DBLineageStore(ILineageStore):
         try:
             upsert_job(storage, job)
         except Exception:
-            logger.debug(
+            # A warning: the rows are written anyway, so this is the only trace of
+            # a job left without its record (the next scan backfills it, see
+            # _has_job_record).
+            logger.warning(
                 "Lineage job could not be added or merged (job=%s)",
                 job.job_id,
                 exc_info=True,
@@ -593,11 +604,24 @@ class DBLineageStore(ILineageStore):
         if storage is None or not job_ids:
             return job_ids
         jobs = storage.get_jobs_by_id(list(job_ids))
+        # A job with rows but no record is NOT recorded: its record write failed,
+        # and reporting it recorded would leave it without one for good.
         return {
             job_id
             for job_id in job_ids
-            if job_id not in jobs or jobs[job_id].source_system == SOURCE_SYSTEM
+            if job_id in jobs and jobs[job_id].source_system == SOURCE_SYSTEM
         }
+
+    def _has_job_record(self, job_id: str) -> bool:
+        """Whether the job table holds ``job_id``; ``True`` with no job storage.
+
+        With no job storage there is nothing to backfill, so presence of rows
+        decides, as in :meth:`recorded_by_self`.
+        """
+        storage = self.job_storage
+        if storage is None:
+            return True
+        return job_id in storage.get_jobs_by_id([job_id])
 
     # -- Helpers -------------------------------------------------------------
 
@@ -664,6 +688,8 @@ def _normalized_job(job: dict) -> dict:
     namespace = job_block.get("namespace")
     if namespace and not normalized.get("job_namespace"):
         normalized["job_namespace"] = namespace
+    if job_block.get("name") and not normalized.get("job_name"):
+        normalized["job_name"] = job_block["name"]
 
     # The large payloads sit under run.facets, a fourth nesting: the mirror lifts
     # only job_details (and job_output_stats lives inside THAT), so
@@ -681,6 +707,18 @@ def _normalized_job(job: dict) -> dict:
         ("source_code", "source_code_details"),
     ):
         value = facets.get(facet_key)
+        if value and not normalized.get(flat_key):
+            normalized[flat_key] = value
+
+    # The run's own identity and the event envelope, for the job record's RUN
+    # group: kept so the record is as close as possible to what was emitted.
+    run_block = job.get("run") or {}
+    for flat_key, value in (
+        ("run_id", run_block.get("runId")),
+        ("run_tags", facets.get("tags")),
+        ("event_type", job.get("eventType")),
+        ("event_time", job.get("eventTime")),
+    ):
         if value and not normalized.get(flat_key):
             normalized[flat_key] = value
     return normalized

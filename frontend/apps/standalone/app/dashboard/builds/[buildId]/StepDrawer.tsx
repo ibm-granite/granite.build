@@ -15,12 +15,20 @@ interface Props {
   onClose: () => void
   drawerRef?: React.Ref<HTMLDivElement>
   closeButtonRef?: React.Ref<HTMLButtonElement>
+  /** Shown in the step metadata when there is no `build` to read it from. */
+  buildId?: string
+  /** Shown above the steps, e.g. an InlineNotification saying where they come from. */
+  notice?: React.ReactNode
+  /** Extra sections after the steps. */
+  children?: React.ReactNode
 }
 
 // A target's step details, shared by the build and artifact lineage panels. A
 // drawer, not a modal: no overlay, so the graph behind stays visible and
 // clickable and picking another target just re-points the drawer.
-export default function StepDrawer({ targetName, target, build, onClose, drawerRef, closeButtonRef }: Props) {
+export default function StepDrawer({
+  targetName, target, build, onClose, drawerRef, closeButtonRef, buildId, notice, children,
+}: Props) {
   const { status, subtitle, summary } = stepDrawerSummary(target, build)
   return (
     <div
@@ -47,12 +55,14 @@ export default function StepDrawer({ targetName, target, build, onClose, drawerR
         </IconButton>
       </div>
       <div className={styles.stepSidePanelBody}>
+        {notice && <div className={styles.stepNotice}>{notice}</div>}
         <StepDetailsPanel
           targetName={targetName}
           target={target}
           sourceUri={build?.source_uri}
-          buildId={build?.uuid}
+          buildId={build?.uuid ?? buildId}
         />
+        {children && <div className={styles.stepExtraSections}>{children}</div>}
       </div>
     </div>
   )
