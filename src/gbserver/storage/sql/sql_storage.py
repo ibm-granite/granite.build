@@ -194,10 +194,6 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 connection args - a dictionary of arguments used when creating the db engine.
         """
         sql_scheme = GBSERVER_SQL_SCHEME
-        # Pin the driver: bare "postgresql" means psycopg2 on SQLAlchemy 2.0 but
-        # psycopg 3 on 2.1+, and we only ship psycopg 3.
-        if sql_scheme == "postgresql":
-            sql_scheme = "postgresql+psycopg"
         host = GBSERVER_SQL_HOST
         port = GBSERVER_SQL_PORT
         user = GBSERVER_SQL_USER

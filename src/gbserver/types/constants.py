@@ -244,7 +244,7 @@ def derive_analytics_database_url() -> Optional[str]:
     Distinct table prefixes mean this doesn't collide with the main store.
     """
     if GB_METADATA_STORAGE == "sql":
-        # Accept a driver suffix (e.g. postgresql+psycopg); asyncpg replaces it.
+        # Any driver suffix (e.g. +psycopg) is swapped for +asyncpg.
         if GBSERVER_SQL_SCHEME.split("+", 1)[0] != "postgresql":
             # Lazy import: gbserver.utils.logger imports this module at its own top
             # level, so importing it back at our module top would be circular.
@@ -1003,7 +1003,8 @@ GBSERVER_WANDB_BASE_URL = os.getenv(
 GBSERVER_WANDB_QUIET = getenv_boolean(ENV_VAR_PREFIX + "_WANDB_QUIET", True)
 GBSERVER_WANDB_LOG_LEVEL = os.getenv(ENV_VAR_PREFIX + "_WANDB_LOG_LEVEL", "warning")
 
-GBSERVER_SQL_SCHEME = os.getenv(ENV_VAR_GBSERVER_SQL_SCHEME, "postgresql")
+# Explicit driver, not SQLAlchemy's default for bare postgresql.
+GBSERVER_SQL_SCHEME = os.getenv(ENV_VAR_GBSERVER_SQL_SCHEME, "postgresql+psycopg")
 GBSERVER_SQL_HOST = os.getenv(
     ENV_VAR_GBSERVER_SQL_HOST,
     "05ed7d0c-3027-412e-bc75-23351a34b8fa.blrrvkdw0thh68l98t20.databases.appdomain.cloud",
