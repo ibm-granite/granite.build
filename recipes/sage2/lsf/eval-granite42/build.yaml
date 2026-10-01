@@ -159,6 +159,8 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
+              envs:
+                SAGE2_MAVEN_MIRROR: "$${MAVEN_MIRROR}"
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
@@ -192,6 +194,8 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
             launcher_config:
+              envs:
+                SAGE2_MAVEN_MIRROR: "$${MAVEN_MIRROR}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -312,7 +316,14 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_USER_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
@@ -345,7 +356,14 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_JUDGE_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -375,7 +393,14 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_USER_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
@@ -408,7 +433,14 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_JUDGE_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -438,7 +470,14 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_USER_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
@@ -471,7 +510,14 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_JUDGE_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -501,7 +547,14 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_USER_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
@@ -534,7 +587,14 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_JUDGE_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -564,7 +624,14 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_USER_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
@@ -597,7 +664,14 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_JUDGE_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -719,7 +793,14 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_JUDGE_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -782,7 +863,14 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_JUDGE_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -933,6 +1021,10 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: HF_TOKEN
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -965,6 +1057,10 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: HF_TOKEN
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
@@ -1238,7 +1334,14 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: SAGE2_JUDGE_API_KEY
             launcher_config:
+              envs:
+                SAGE2_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                SAGE2_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"

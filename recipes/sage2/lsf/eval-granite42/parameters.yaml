@@ -46,6 +46,9 @@ SWEBENCH_ML_WORKERS: 8
 # Empty = SWE-bench/SWE-bench_Multilingual at the commit pinned in sage2-evals.
 SWEBENCH_ML_DATASET: ""
 SWEBENCH_ML_OPTIONS: ""
+# Maven Central mirror for the Java instances (SAGE2_MAVEN_MIRROR); empty = Maven Central,
+# which answers the node's egress IP with 429 on test-time resolves.
+MAVEN_MIRROR: ""
 
 # ─── Terminal-Bench 2.1 ───────────────────────────────────────────────
 TBENCH_WORKERS: 8
@@ -135,6 +138,14 @@ MMLU_PROX_LITE_WORKERS: 128
 MMLU_PROX_LITE_OPTIONS: ""
 IFBENCH_WORKERS: 64
 IFBENCH_OPTIONS: ""
+
+# ─── Paid API spend ───────────────────────────────────────────────────
+# Every judge / user-simulator call is metered into this JSONL ledger (costs and
+# tokens only). One ledger shared by every job makes SPEND_BUDGET_USD a cap on all
+# of them together: at the cap new calls get a 402 and the run fails.
+# Empty SPEND_LEDGER = no ledger; empty SPEND_BUDGET_USD = no cap.
+SPEND_LEDGER: "/proj/granite-build/g4os/sage2/spend/ledger.jsonl"
+SPEND_BUDGET_USD: ""
 
 # ─── Infrastructure ───────────────────────────────────────────────────
 CLUSTER: "bluevela"
