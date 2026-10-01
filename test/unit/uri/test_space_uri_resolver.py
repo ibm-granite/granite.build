@@ -981,6 +981,40 @@ class TestNestedStepIdentity:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/distill/foo")
 
+    def test_tier2_env_excluded_nested_not_demoted_when_outer_matches(
+        self, tmp_path
+    ):
+        """Tier-2 regression: an outer step that *declares the active class* must
+        not capture a nested URI whose own step is env-excluded.
+
+        This is the Tier-2 demotion the earlier
+        :meth:`test_env_excluded_nested_not_demoted_to_outer` could not reach:
+        there the outer ``distill`` was universal (no ``environment_configs``),
+        which the env-class match already rejects, so the demotion path never
+        fired.  Here the outer ``distill`` explicitly lists **Skypilot** (the
+        active class) while the nested ``distill/foo`` lists only **Bash**.
+
+        The old Tier 2 chose the name by env-class match: ``distill/foo`` missed
+        (Bash-only), so it fell back to ``distill`` (Skypilot) and returned
+        ``distill`` + sub-asset ``foo`` — resolving to the nested dir as a mere
+        asset.  Name selection is now pinned by ``step.yaml`` existence first
+        (``distill/foo``), then gated; the gate misses and the URI is
+        Unresolvable rather than demoted.  No env dir is set, so Tier 1a misses
+        and this exercises Tier 2 specifically.
+        """
+        base = tmp_path / "base"
+        _write_step(
+            base / "steps" / "distill", env_classes=["Skypilot"]
+        )  # outer DECLARES the active class
+        _write_step(
+            base / "steps" / "distill" / "foo", env_classes=["Bash"]
+        )  # nested excludes Skypilot
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/distill/foo")
+
 
 # --------------------------------------------------------------------------- #
 # Git base_uris — resolution off the reused local clone (no re-clone)

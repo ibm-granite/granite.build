@@ -615,6 +615,44 @@ class SpaceURI(URI):
             cur = cur.parent
 
     @staticmethod
+    def _longest_step_in_bases(after: str) -> Optional[Tuple[str, str]]:
+        """Pin the step name by ``step.yaml`` existence across all base_uris.
+
+        The Tier-2 analogue of :meth:`_longest_step_in_root`: Tier 2 has no
+        single fixed ``steps/`` root (it recursively globs each base_uri), so
+        this walks the ``(name, rest)`` candidates of ``after`` longest→shortest
+        and returns the first whose ``<name>/step.yaml`` exists under *some*
+        base_uri.  Candidate names containing a ``..`` segment are skipped
+        (``..`` is never part of a canonical name — it belongs to a crafted
+        ``rest`` and is caught by the containment guard, and this also keeps
+        ``..`` out of the glob pattern).
+
+        Like ``_longest_step_in_root`` this is a pure *existence* probe: the
+        env/class gate is applied by the caller to the fixed name only.  Keeping
+        name selection orthogonal to the env gate is what stops a
+        present-but-env-excluded nested step from being demoted to
+        ``outer-step + rest`` — Tier 2 now matches Tiers 1 and 3 on this.
+
+        Args:
+            after: The URI suffix with the leading ``steps/`` stripped.
+
+        Returns:
+            ``(name, rest)`` for the longest prefix of ``after`` that names a
+            step (``step.yaml`` present) under any base_uri, else ``None``.
+        """
+        for name, rest in SpaceURI._iter_name_rest_candidates(after):
+            if ".." in name.split("/"):
+                continue
+            for base_uri in SpaceURI._thread_local.base_uris:
+                base_path = SpaceURI._uri_to_local_path(base_uri)
+                if base_path is None or not base_path.exists():
+                    continue
+                for cand in base_path.rglob(f"{name}/{STEP_FILE_NAME}"):
+                    if cand.is_file():
+                        return name, rest
+        return None
+
+    @staticmethod
     def _env_class_matches(
         name: str, env_class: str, env_subtype: Optional[str]
     ) -> List:
@@ -666,26 +704,32 @@ class SpaceURI(URI):
     def _try_env_class_match(uri_suffix: str) -> Optional[URI]:
         """Resolve `space://steps/<after>` by env-class metadata match.
 
-        For each ``(name, rest)`` candidate of ``after`` (longest name first, so
-        a nested ``distill/foo`` outranks ``distill`` + sub-asset ``foo``), scans
-        every base_uri for ``<name>/step.yaml`` files whose ``environment_configs``
-        keys contain the active env's class name (case-insensitively; set via
-        :meth:`with_current_env`) and whose per-class ``subtypes`` restriction (if
-        any) admits the active env's sub-type.  The **longest candidate name
-        yielding at least one match fixes the step name**; among that name's
-        matches the most env-specific (fewest ``environment_configs`` keys) wins,
-        ties broken lexicographically by path.  The matched step.yaml's directory
-        is the result; for sub-asset URIs the ``<rest>`` portion is appended to
-        it (via :meth:`_step_uri_from_dir`, so its containment guard applies).
+        Name selection is **pinned first, orthogonally to the env gate**, exactly
+        as Tiers 1 and 3 do via :meth:`_longest_step_in_root`: the step name is
+        the longest prefix of ``after`` whose ``<name>/step.yaml`` exists under
+        some base_uri (:meth:`_longest_step_in_bases`).  The env/class gate is
+        then applied to **that fixed name only** — never used to choose the name.
+        This matters for the both-exist nested case: given a universal outer
+        ``distill`` and an env-scoped nested ``distill/foo``, resolving
+        ``space://steps/distill/foo`` pins ``distill/foo``; if the active env
+        class is excluded there, this tier *misses* (and resolution falls through
+        to the fallback tier → Unresolvable) rather than demoting the URI to
+        ``distill`` + sub-asset ``foo``.
 
-        Candidate names containing a ``..`` segment are skipped — ``..`` is never
-        part of a canonical name (it belongs to a crafted ``rest`` and is caught
-        by the containment guard); this also keeps ``..`` out of the glob pattern.
+        Among the fixed name's matches, scans every base_uri for
+        ``<name>/step.yaml`` files whose ``environment_configs`` keys contain the
+        active env's class name (case-insensitively; set via
+        :meth:`with_current_env`) and whose per-class ``subtypes`` restriction (if
+        any) admits the active env's sub-type.  The most env-specific match
+        (fewest ``environment_configs`` keys) wins, ties broken lexicographically
+        by path.  Its directory is the result; for sub-asset URIs the ``<rest>``
+        portion is appended via :meth:`_step_uri_from_dir` (containment guard).
 
         Returns ``None`` when:
           * the URI is not a `space://steps/...` lookup;
           * no active env class is set on the thread-local;
-          * no candidate name lists the active env's class (and satisfies its
+          * no prefix of ``after`` names a step under any base_uri;
+          * the pinned step does not list the active env's class (and satisfy its
             sub-type restriction), or the selected match's ``<rest>`` escapes the
             step dir.
         Callers fall through to the legacy resolver tiers in that case.
@@ -701,17 +745,20 @@ class SpaceURI(URI):
         env_subtype: Optional[str] = getattr(
             SpaceURI._thread_local, "current_env_subtype", None
         )
-        for name, rest in SpaceURI._iter_name_rest_candidates(after):
-            if ".." in name.split("/"):
-                continue
-            matches = SpaceURI._env_class_matches(name, env_class, env_subtype)
-            if not matches:
-                continue
-            # Specificity first (fewer env_configs entries = more specific), then
-            # lexicographic path for a deterministic tie-break.
-            matches.sort(key=lambda m: (m[0], m[1]))
-            return SpaceURI._step_uri_from_dir(matches[0][2].parent, rest)
-        return None
+        # Pin the step name by step.yaml existence (longest-prefix-wins), then
+        # gate — do NOT let env matching pick the name (that would demote an
+        # env-excluded nested step to outer-step + rest).
+        pinned = SpaceURI._longest_step_in_bases(after)
+        if pinned is None:
+            return None
+        name, rest = pinned
+        matches = SpaceURI._env_class_matches(name, env_class, env_subtype)
+        if not matches:
+            return None
+        # Specificity first (fewer env_configs entries = more specific), then
+        # lexicographic path for a deterministic tie-break.
+        matches.sort(key=lambda m: (m[0], m[1]))
+        return SpaceURI._step_uri_from_dir(matches[0][2].parent, rest)
 
     @staticmethod
     def _file_uri_to_path(base_uri: str) -> Optional[Path]:
