@@ -545,7 +545,15 @@ export function StepRewardFunction({
   })
 
   // Track whether all test cases passed (drives the parent's Next-button gate)
+  //
+  // Only when the result changes. This step remounts with no result whenever it is
+  // revisited from Review, which says nothing about the code -- reporting `false`
+  // then un-passed a run the user had not touched, and Launch (which re-checks this
+  // step) refused it. A code or name change resets the gate itself, below.
+  const gatedResultRef = useRef(validationResult)
   useEffect(() => {
+    if (validationResult === gatedResultRef.current) return
+    gatedResultRef.current = validationResult
     const passed =
       validationResult?.success === true &&
       validationResult?.test_result?.executed === true &&
@@ -583,10 +591,13 @@ export function StepRewardFunction({
   useEffect(() => {
     if (rewardFunctionCode !== prevCodeRef.current || rewardFunctionName !== prevNameRef.current) {
       setValidationResult(null)
+      // Directly, not via the gate effect: the result may already be null (e.g.
+      // just remounted), and then setting it again is no change for that to see.
+      setAllTestsPassed(false)
       prevCodeRef.current = rewardFunctionCode
       prevNameRef.current = rewardFunctionName
     }
-  }, [rewardFunctionCode, rewardFunctionName])
+  }, [rewardFunctionCode, rewardFunctionName, setAllTestsPassed])
 
   // Distribute validation results into individual test cases (and clear
   // rewards once validation is reset).
