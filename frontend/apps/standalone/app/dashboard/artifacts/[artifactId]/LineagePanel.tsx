@@ -13,6 +13,7 @@ import JobDrawer from '../../builds/[buildId]/JobDrawer'
 import Graph, { type GraphHandle } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { depthForNextLevel, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
+import { artifactUriSpellings, lineageUri } from '@granite-build/ui-core/lib/artifactUri'
 
 // ── URI-based artifact lineage panel (lineage index) ──────────────────────────
 
@@ -31,9 +32,11 @@ function ArtifactLineageGraph({ artifact, groupRuns }: { artifact: Artifact; gro
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(null)
   const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
+  // The index keys HF repos by their https web URL, not the registry's hf://.
+  const uri = lineageUri(artifact.uri!)
   const { data, isLoading, error } = useQuery({
-    queryKey: ['lineage-graph', artifact.uri, groupRuns],
-    queryFn: () => getLineageGraph({ uri: artifact.uri, direction: 'both', depth: INITIAL_DEPTH, group_runs: groupRuns }),
+    queryKey: ['lineage-graph', uri, groupRuns],
+    queryFn: () => getLineageGraph({ uri, direction: 'both', depth: INITIAL_DEPTH, group_runs: groupRuns }),
     retry: false,
     staleTime: 5 * 60 * 1000,
   })
@@ -44,7 +47,7 @@ function ArtifactLineageGraph({ artifact, groupRuns }: { artifact: Artifact; gro
   const merged = React.useMemo(() => mergeElkGraphs(base, expansion.extra), [base, expansion.extra])
 
   // The index keys artifacts by normalized URI, so the root is root_id, not the UUID.
-  const rootId = data?.root_id || artifact.uri!
+  const rootId = data?.root_id || uri
   // The artifact the graph is about keeps an outline even once another node is selected.
   const nodes = React.useMemo(
     () => merged.nodes.map((n) => (n.id === rootId ? { ...n, highlight: true } : n)),
@@ -108,8 +111,13 @@ function ArtifactLineageGraph({ artifact, groupRuns }: { artifact: Artifact; gro
     setOpening(true)
     setOpenError(null)
     try {
-      const { items } = await listArtifacts({ uri })
-      const match = items[0]
+      // The registry filters on the exact URI, and may hold the hf:// spelling of
+      // an https index node (or the reverse), so every spelling is tried.
+      let match
+      for (const spelling of artifactUriSpellings(uri)) {
+        match = (await listArtifacts({ uri: spelling })).items[0]
+        if (match) break
+      }
       if (match) router.push(`/dashboard/artifacts/_/?id=${match.uuid}`)
       else setOpenError(`${activeName} is not in the artifact registry.`)
     } catch (e) {

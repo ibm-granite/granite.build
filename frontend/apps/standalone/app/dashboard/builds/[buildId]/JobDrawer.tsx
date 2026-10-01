@@ -112,7 +112,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) {
         <>
           {jobLoading && <InlineLoading description="Loading job…" />}
           {Boolean(jobError) && <p className={styles.stepMessage}>Failed to load job: {String(jobError)}</p>}
-          <JobIndexSections job={job} target={target} meta={meta} jobId={jobId} />
+          <JobIndexSections job={job} target={target} meta={meta} jobId={jobId} buildId={buildId} />
         </>
       )}
     </StepDrawer>
@@ -127,11 +127,12 @@ const NA = 'N/A'
  * execution, so it shows even with no steps), and its identity and endpoints.
  * Shared by the single-job fallback and each row of a grouped node.
  */
-function JobIndexSections({ job, target, meta = {}, jobId }: {
+function JobIndexSections({ job, target, meta = {}, jobId, buildId }: {
   job: LineageJobEntry | undefined
   target: BuildTargetRun | undefined
   meta?: Record<string, unknown>
   jobId?: string
+  buildId?: string
 }) {
   return (
     <>
@@ -141,6 +142,7 @@ function JobIndexSections({ job, target, meta = {}, jobId }: {
         </Section>
       )}
       <Section title="Lineage">
+        <CodeField label="Build ID" value={buildId} />
         <CodeField label="Target run" value={str(meta.gb_target_run_uuid)} />
         <CodeField label="Job ID" value={job?.job_id ?? jobId} />
         <Field label="Namespace">{orNA(job?.job_namespace || str(job?.job.namespace) || str(meta.job_namespace))}</Field>
@@ -279,7 +281,7 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
                   <div style={{ paddingBottom: '1.5rem' }}>
                     <StepDetailsPanel targetName={target.target_name} target={target} buildId={buildIdOf(job)} />
                     <div className={styles.stepExtraSections}>
-                      <JobIndexSections job={job} target={target} />
+                      <JobIndexSections job={job} target={target} buildId={buildIdOf(job)} />
                     </div>
                   </div>
                 )}
