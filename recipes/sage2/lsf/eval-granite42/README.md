@@ -177,7 +177,7 @@ model itself, and the score job serves nothing, so it refuses them.
 | Space secret `SAGE2_USER_API_KEY` | `tau3-*-generate` (user simulator) | same gateway; declared on those targets |
 | `SPEND_LEDGER`, `SPEND_BUDGET_USD` params | every paid call is metered into the ledger; at the budget the meter answers 402 and the run fails | passed as `SAGE2_SPEND_LEDGER` / `SAGE2_SPEND_BUDGET_USD` to the paid targets. One ledger for every job makes the budget global. Empty = no ledger / no cap |
 | `MAVEN_MIRROR` param (optional) | `swebench-multilingual` Java instances, where Maven Central answers the node's egress IP with 429 | passed as `SAGE2_MAVEN_MIRROR` to both swebench-multilingual targets |
-| ICR pull access to `icr.io/tir-hew-sage2-evals` | every target | SkyPilot's LSF provider imports each image tag once into `/proj/granite-build/g4os/enroot/` with the **job account's default** enroot credentials (`~/.config/enroot/.credentials`); they must cover this namespace. Without it the job exits within seconds: `icr.io/oauth/token returned error code: 401` in `sky_logs/<job>.err`, and SkyPilot retries |
+| Pull access to `us.icr.io/cil15-shared-registry` | every target | SkyPilot's LSF provider imports each image tag once into `/proj/granite-build/g4os/enroot/` with the **job account's default** enroot credentials (`~/.config/enroot/.credentials`). The `granitebuild` account's cover `us.icr.io` (cil15 tenant), not `icr.io`: an image elsewhere fails within seconds with `oauth/token returned error code: 401` in `sky_logs/<job>.err`, and SkyPilot retries |
 
 Only declared secrets reach a job; nothing else in the space does. Results record
 the spend (`details.api_spend`), including earlier attempts on the same output dir

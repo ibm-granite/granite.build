@@ -12,15 +12,15 @@ OUTPUT_ROOT: "/proj/granite-build/g4os/sage2/runs"
 HF_HOME: "/proj/granite-build/g4os/sage2/hf-home"
 
 # ─── Images (sage2-evals, `make publish-image EXTRA=<family>`) ────────
-SAGE2_IMAGE_BFCL: "icr.io/tir-hew-sage2-evals/sage2-evals-bfcl:50c7b69"
-SAGE2_IMAGE_BIRD: "icr.io/tir-hew-sage2-evals/sage2-evals-bird:50c7b69"
-SAGE2_IMAGE_IFBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-ifbench:50c7b69"
-SAGE2_IMAGE_JUDGED: "icr.io/tir-hew-sage2-evals/sage2-evals-judged:50c7b69"
-SAGE2_IMAGE_LMEVAL: "icr.io/tir-hew-sage2-evals/sage2-evals-lmeval:949fcb0"
-SAGE2_IMAGE_NEMOSKILLS: "icr.io/tir-hew-sage2-evals/sage2-evals-nemoskills:50c7b69"
-SAGE2_IMAGE_SWEBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-swebench:50c7b69"
-SAGE2_IMAGE_TAU: "icr.io/tir-hew-sage2-evals/sage2-evals-tau:50c7b69"
-SAGE2_IMAGE_TBENCH: "icr.io/tir-hew-sage2-evals/sage2-evals-tbench:9ad9571"
+SAGE2_IMAGE_BFCL: "us.icr.io/cil15-shared-registry/sage2-evals-bfcl:50c7b69"
+SAGE2_IMAGE_BIRD: "us.icr.io/cil15-shared-registry/sage2-evals-bird:50c7b69"
+SAGE2_IMAGE_IFBENCH: "us.icr.io/cil15-shared-registry/sage2-evals-ifbench:50c7b69"
+SAGE2_IMAGE_JUDGED: "us.icr.io/cil15-shared-registry/sage2-evals-judged:50c7b69"
+SAGE2_IMAGE_LMEVAL: "us.icr.io/cil15-shared-registry/sage2-evals-lmeval:949fcb0"
+SAGE2_IMAGE_NEMOSKILLS: "us.icr.io/cil15-shared-registry/sage2-evals-nemoskills:50c7b69"
+SAGE2_IMAGE_SWEBENCH: "us.icr.io/cil15-shared-registry/sage2-evals-swebench:50c7b69"
+SAGE2_IMAGE_TAU: "us.icr.io/cil15-shared-registry/sage2-evals-tau:50c7b69"
+SAGE2_IMAGE_TBENCH: "us.icr.io/cil15-shared-registry/sage2-evals-tbench:9ad9571"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 # Empty = full dataset and each benchmark's own repeat count.
