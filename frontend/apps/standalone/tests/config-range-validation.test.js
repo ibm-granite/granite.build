@@ -89,4 +89,34 @@ describe('findOutOfRangeFields', () => {
     assert.deepEqual(findOutOfRangeFields(null), [])
     assert.deepEqual(findOutOfRangeFields(undefined), [])
   })
+
+  describe('derived "Max concurrent trials" ceiling', () => {
+    // The field renders max = floor(num_gpus_per_trial.max_val / default), but the
+    // gate only compared against max_concurrent_trials' own static max_val, so 8
+    // concurrent trials at 3 GPUs each passed and requested 24 GPUs.
+    const withGpus = (gpusPerTrial, concurrent) => {
+      const config = clone()
+      config.training_config.num_gpus_per_trial = { default: gpusPerTrial, min_val: 1, max_val: 8, type: 'int' }
+      config.tune_config.max_concurrent_trials = { default: concurrent, min_val: 1, max_val: 8, type: 'int' }
+      return config
+    }
+
+    it('reports concurrency above the GPU budget', () => {
+      assert.deepEqual(findOutOfRangeFields(withGpus(3, 8)), ['tune_config.max_concurrent_trials'])
+    })
+
+    it('accepts concurrency at the GPU budget', () => {
+      assert.deepEqual(findOutOfRangeFields(withGpus(3, 2)), [])
+    })
+
+    it('does not report the field twice when it is also above its own max', () => {
+      assert.deepEqual(findOutOfRangeFields(withGpus(1, 9)), ['tune_config.max_concurrent_trials'])
+    })
+
+    it('leaves a mid-edit GPU value of 0 to the GPU field', () => {
+      // maxConcurrentTrialsCap(8, 0) is 1, but 0 GPUs is a cleared field, not a
+      // choice -- the GPU field's own range error covers it.
+      assert.deepEqual(findOutOfRangeFields(withGpus(0, 4)), ['training_config.num_gpus_per_trial'])
+    })
+  })
 })

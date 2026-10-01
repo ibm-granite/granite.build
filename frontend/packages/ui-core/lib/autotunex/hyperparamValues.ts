@@ -155,5 +155,35 @@ export function findOutOfRangeFields(configData: unknown): string[] {
   }
 
   walk(configData, '')
+
+  // "Max concurrent trials" also has a ceiling derived from the GPU budget, which
+  // the form renders as the field's `max` but which is not its own `max_val`:
+  // without this, 8 concurrent trials at 3 GPUs each passed and requested 24.
+  // A non-positive trial size is a cleared GPU field, reported by its own range.
+  const sections = configData as Record<string, any> | null | undefined
+  const concurrent = sections?.tune_config?.max_concurrent_trials
+  const gpus = sections?.training_config?.num_gpus_per_trial
+  const path = 'tune_config.max_concurrent_trials'
+  if (
+    typeof concurrent?.default === 'number' &&
+    typeof gpus?.default === 'number' &&
+    gpus.default > 0 &&
+    typeof gpus.max_val === 'number' &&
+    concurrent.default > maxConcurrentTrialsCap(gpus.max_val, gpus.default) &&
+    !offenders.includes(path)
+  ) {
+    offenders.push(path)
+  }
+
   return offenders
+}
+
+/**
+ * The default to keep when a hyperparameter's candidate list is replaced: the
+ * old one if it is still a candidate, otherwise the first candidate. The search
+ * algorithms locate the default with `values.index(default)`, so one outside the
+ * list fails the job at start.
+ */
+export function reconcileDefault<T>(values: T[], current: T): T {
+  return values.includes(current) ? current : values[0]
 }

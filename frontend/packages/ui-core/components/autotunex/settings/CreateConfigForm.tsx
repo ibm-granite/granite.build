@@ -5,7 +5,7 @@ import { Checkbox, ContentSwitcher, Dropdown, FormLabel, MultiSelect, NumberInpu
 import type { Configuration, ConfigForm, TuningGoal } from '../../../types'
 import { getOption, parseCommaList, toUpperCase } from '../../../lib/autotunex/wizardUtils'
 import { computeSectionNames } from '../../../lib/autotunex/configSections'
-import { clampConcurrentTrials, formatValues, isNumericList, maxConcurrentTrialsCap, parseNumericCommaList, parseValuesInput } from '../../../lib/autotunex/hyperparamValues'
+import { clampConcurrentTrials, formatValues, isNumericList, maxConcurrentTrialsCap, parseNumericCommaList, parseValuesInput, reconcileDefault } from '../../../lib/autotunex/hyperparamValues'
 import { GeneralConfigForm } from './GeneralConfigForm'
 import { TimeInput } from '../shared/TimeInput'
 import styles from './CreateConfigForm.module.scss'
@@ -204,7 +204,7 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
     setErrorFields((prev) => ({ ...prev, [fieldId]: { error, message: `Value must be between ${paramConfig.min_val} and ${paramConfig.max_val}` } }))
     if (error || !values) return
 
-    update({ values })
+    update({ values, default: reconcileDefault(values, paramConfig.default) })
     setValueDrafts((prev) => {
       const next = { ...prev }
       delete next[fieldId]

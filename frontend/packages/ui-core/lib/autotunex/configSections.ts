@@ -1,4 +1,4 @@
-import type { TuningGoal } from '../../types'
+import type { ConfigData, ConfigForm, TuningGoal } from '../../types'
 
 // Canonical tab order for advanced mode (ensures consistent ordering regardless of Object.keys order).
 export const SECTION_ORDER = [
@@ -57,4 +57,21 @@ export function computeSectionNames({ mode, trainingMode, presetGoal, allSection
     const bi = SECTION_ORDER.indexOf(b)
     return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi)
   })
+}
+
+/**
+ * The `config_data` an edited configuration is saved with.
+ *
+ * `PUT /configurations/{id}` is a full replacement, so this keeps every section
+ * the form holds -- the form is seeded from the stored `config_data`, so a
+ * section is never dropped just because no list here names it. Rebuilding the
+ * payload from five hard-named sections deleted the stored `tokenizer_config`
+ * on every edit. Only the form's own name/tuner fields are removed, plus an RL
+ * section the form left empty, which the edit path has always omitted.
+ */
+export function configDataFromForm(form: ConfigForm): ConfigData {
+  const { name: _name, tuner_type: _tunerType, rl_tuner_type: _rlTunerType, ...sections } = form
+  if (!sections.training_rl_config) delete sections.training_rl_config
+  if (!sections.tuners_rl_config) delete sections.tuners_rl_config
+  return sections
 }
