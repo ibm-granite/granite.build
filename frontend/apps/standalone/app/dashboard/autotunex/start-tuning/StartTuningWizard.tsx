@@ -13,6 +13,7 @@ import type {
   DatasetForm,
   DatasetFormatType,
   LaunchPhase,
+  LaunchPlan,
   ModelSource,
   ParsedDataRow,
   PendingConfigData,
@@ -154,6 +155,10 @@ export function StartTuningWizard() {
   const [transitionError, setTransitionError] = useState('')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [launchPhase, setLaunchPhase] = useState<LaunchPhase>(null)
+  // What the current launch will do, fixed when it starts. The progress rows used
+  // to read live state that the launch itself changes: setting `datasetId` after
+  // the upload unmounted the dataset rows for every later phase.
+  const [launchPlan, setLaunchPlan] = useState<LaunchPlan | null>(null)
 
   // Idempotent retry: resources already created on a failed launch attempt
   const createdDatasetIdRef = useRef<string | null>(null)
@@ -614,6 +619,12 @@ export function StartTuningWizard() {
     setIsLaunching(true)
     setTransitionError('')
     setUploadProgress(0)
+    // The same conditions as the branches below.
+    setLaunchPlan({
+      uploadDataset: !(datasetId || existingDatasetId) && !!uploadedFile,
+      updateConfig: !!pendingConfigUpdate && selectedConfigId !== '__pending__',
+      createConfig: !!pendingNewConfig && selectedConfigId === '__pending__',
+    })
 
     try {
       let finalDatasetId = datasetId || existingDatasetId
@@ -709,6 +720,7 @@ export function StartTuningWizard() {
     } finally {
       setIsLaunching(false)
       setLaunchPhase(null)
+      setLaunchPlan(null)
       setUploadProgress(0)
     }
   }
@@ -904,6 +916,7 @@ export function StartTuningWizard() {
             isPendingDataset={!existingDatasetId && !datasetId && !!uploadedFile}
             isPendingConfig={selectedConfigId === '__pending__'}
             launchPhase={launchPhase}
+            launchPlan={launchPlan}
             uploadProgress={uploadProgress}
             onEditStep={goToStep}
           />
