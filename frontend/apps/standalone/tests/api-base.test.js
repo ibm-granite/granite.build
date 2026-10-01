@@ -29,9 +29,10 @@ describe('same-origin API base in standalone', () => {
   })
 
   it('autotunexApiBase is relative in production when unset', () => {
-    save('NODE_ENV'); save('AUTOTUNEX_API_URL')
+    save('NODE_ENV'); save('AUTOTUNEX_API_URL'); save('GBSERVER_API_URL')
     process.env.NODE_ENV = 'production'
     delete process.env.AUTOTUNEX_API_URL
+    delete process.env.GBSERVER_API_URL
     assert.equal(autotunexApiBase('/job/x'), '/api/autotunex/job/x')
   })
 
@@ -43,10 +44,22 @@ describe('same-origin API base in standalone', () => {
     // the client bundle, so `AUTOTUNEX_API_URL=... make build-frontend` shipped a
     // silently broken app. The gbserver proxy exists precisely to avoid this, so
     // the browser always goes same-origin through it.
-    save('NODE_ENV'); save('AUTOTUNEX_API_URL')
+    save('NODE_ENV'); save('AUTOTUNEX_API_URL'); save('GBSERVER_API_URL')
     process.env.NODE_ENV = 'production'
     process.env.AUTOTUNEX_API_URL = 'http://example:8000'
+    delete process.env.GBSERVER_API_URL
     assert.equal(autotunexApiBase('/job/x'), '/api/autotunex/job/x')
+  })
+
+  it('autotunexApiBase follows GBSERVER_API_URL in a split-origin build', () => {
+    // The proxy is mounted on gbserver, so when the static export is served from
+    // another host the AutoTuneX calls must target gbserver's origin, exactly as
+    // apiBase's do -- relative paths would 404 on the static host.
+    save('NODE_ENV'); save('AUTOTUNEX_API_URL'); save('GBSERVER_API_URL')
+    process.env.NODE_ENV = 'production'
+    delete process.env.AUTOTUNEX_API_URL
+    process.env.GBSERVER_API_URL = 'https://gb.example.com'
+    assert.equal(autotunexApiBase('/job/x'), 'https://gb.example.com/api/autotunex/job/x')
   })
 
   it('apiBase is relative in production when GBSERVER_API_URL unset', () => {

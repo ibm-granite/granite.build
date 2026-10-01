@@ -56,7 +56,11 @@ _PUBLIC_PREFIX = "/api/autotunex"
 # Headers we must not forward verbatim: httpx sets Host from the URL; the
 # StreamingResponse sets its own framing on the way back. Content-Length is
 # deliberately NOT dropped -- see the body handling in proxy_autotunex.
-_DROP_REQUEST_HEADERS = {"host"}
+# Accept-Encoding is dropped so httpx sends its own (gzip, deflate): the
+# response's Content-Encoding is stripped below on the assumption httpx decoded
+# the body, which only holds for encodings httpx can decode -- br/zstd need the
+# optional brotli/zstandard packages, which are not dependencies.
+_DROP_REQUEST_HEADERS = {"host", "accept-encoding"}
 _DROP_RESPONSE_HEADERS = {
     "content-length",
     "transfer-encoding",
