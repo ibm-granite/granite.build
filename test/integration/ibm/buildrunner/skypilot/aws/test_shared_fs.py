@@ -359,3 +359,32 @@ class TestSkypilotAwsMultiEphemeralEfs(AbstractYamlBuildRunnerTest):
     def test_runner(self):
         """Run the two-mount producer->consumer build and assert no leak afterward."""
         _assert_ephemeral_no_leak(_MULTI_EPHEMERAL_ENV_YAML, super().test_runner)
+
+
+@_skip_no_hf_token
+class TestSkypilotAwsEphemeralEfsHfIO(AbstractYamlBuildRunnerTest):
+    """Full E2E (#391/#422): the realistic hfpull -> EFS -> command -> hfpush data
+    path on an AUTO-PROVISIONED ephemeral EFS -- the production use of the feature,
+    vs the probe-file smokes above.
+
+    The ``aws-ephemeral`` environment auto-provisions the EFS at setup. A real
+    hf:// input is pulled onto it on its own EC2 instance; the ``command`` step --
+    on a SEPARATE instance -- verifies the pulled input is present over the mount
+    (``test -e`` under ``set -eu``) and writes a file; an hf:// output is pushed
+    from a THIRD instance; teardown deprovisions the filesystem. SUCCESS proves the
+    auto-provisioned EFS carried a real assetstore pull/push across instances.
+
+    Unlike the BYO ``shared-fs`` hf tests this references no ``file_system_id`` (so
+    no placeholder-EFS skip), but it DOES need an HF token for the pull/push
+    (``@_skip_no_hf_token``). No-leak is asserted like the sibling ephemeral tests
+    (same ``aws-ephemeral`` env -> ``_EPHEMERAL_ENV_YAML``). Gated ``extended`` +
+    AWS credentials; run with ``AWS_PROFILE=gb-skypilot`` and ``PYTEST_ADDOPTS=-s``.
+    """
+
+    def _get_yaml_spec_dir(self) -> Path:
+        """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
+        return get_test_data_dir_for(__file__) / "ephemeral-efs" / "hf"
+
+    def test_runner(self):
+        """Run the hfpull->EFS->command->hfpush build and assert no leak afterward."""
+        _assert_ephemeral_no_leak(_EPHEMERAL_ENV_YAML, super().test_runner)

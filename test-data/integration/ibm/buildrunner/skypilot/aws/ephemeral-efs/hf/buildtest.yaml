@@ -1,0 +1,32 @@
+# YAML spec for the full-E2E ephemeral-EFS hf:// data-path test (#391/#422).
+# gbserver auto-provisions an EFS at setup; buildrunner queues a hidden hfpull
+# step (its own EC2 instance under shared_filesystem) that caches the real hf://
+# input onto the ephemeral-EFS-backed workdir; the command step, on a SEPARATE
+# instance, verifies the input arrived (test -e {{ bindings.hf_input... }} under
+# set -eu) and writes a file that the hfpush step uploads from a THIRD instance;
+# teardown deprovisions the EFS. Reaching SUCCESS proves the auto-provisioned EFS
+# carried a real assetstore pull/push across instances (the realistic data path,
+# not just the probe-file smoke).
+targets:
+  - ephemeral-efs-hf
+target_expectations:
+  - target_name: ephemeral-efs-hf
+    # hfpull (hidden, for the hf:// input) + command + hfpush (for the hf:// output).
+    step_count: 3
+    input_artifact_count: 1 # hf input
+    output_artifact_count: 1 # hf output
+    jobstats_count: 1
+# The committed Space (../space) carries environments/skypilot/aws-ephemeral and
+# chains base_uris to configurations/assets, from which space://steps/command
+# resolves (shared with the sibling ephemeral-efs/bare test).
+space_uri: ../space
+# Only the basic build; skip the cancellation variant.
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: a missing input (test -e)
+# or a failed pull/push fails the build, so SUCCESS proves the real hfpull ->
+# ephemeral-EFS -> command -> hfpush path worked across instances.
+simulate_step_failure: false
+# EC2 cold-start + SkyPilot setup for three sequential instances (hfpull, command,
+# hfpush) plus the ephemeral EFS create/mount/destroy and the hf pull/push.
+timeout_minutes: 40
