@@ -38,7 +38,7 @@ environment_configs:
         monitors:
           - docker_log
         config:
-          image: python:3.11-slim
+          image: public.ecr.aws/docker/library/python:3.11-slim
           command: python /gb-workspace/bash_scripts/inference/run.py
     monitors:
       docker_log:
