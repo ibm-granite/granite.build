@@ -38,3 +38,10 @@ drop-pycache:
 # are env://. REPO_ROOT is provided by common.mk (repo root relative to here).
 test-setup:
 	$(MAKE) -C $(REPO_ROOT) slurm-setup
+
+# The same for the kubernetes build tests: a local kind cluster via `sky local up`.
+# Separate from test-setup so neither cluster is brought up unless asked for. Note
+# it makes kind-skypilot the current kube context (see scripts/kube/setup-kind.sh).
+.PHONY: test-setup-kube
+test-setup-kube:
+	$(MAKE) -C $(REPO_ROOT) kube-setup
