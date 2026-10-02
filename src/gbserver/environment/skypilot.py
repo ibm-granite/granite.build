@@ -1,8 +1,9 @@
 """SkyPilot environment backend (unmanaged mode).
 
 Manages build step execution on SkyPilot-provisioned pods/VMs using
-sky.launch(). Each step gets its own cluster; pods auto-stop after
-idle timeout. The sky SDK is lazy-imported so gbserver does not
+sky.launch(). Each step gets its own cluster, torn down after the step; an
+idle timeout backstops a crash (autostop on VMs, autodown on Kubernetes pods,
+none on slurm/lsf). The sky SDK is lazy-imported so gbserver does not
 require it unless a Skypilot environment is actually configured.
 """
 
@@ -422,6 +423,16 @@ _SSH_HPC_CLOUDS = ("slurm", "lsf")
 # _SSH_HPC_CLOUDS: this tracks one capability, not HPC-ness. Observed on SLURM
 # (BlueVela); LSF included because it also has autostop forced off.
 _CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
+
+# Clouds where SkyPilot supports auto-DOWN but not auto-STOP. A pod cannot be
+# stopped, only deleted, so SkyPilot rejects any idle_minutes_to_autostop without
+# down=True on Kubernetes ("Auto-stop is not supported on Kubernetes", upstream
+# since #5010) — every launch fails provisioning. Passing down=True turns the idle
+# window into autodown instead, keeping it as the backstop that reaps a pod
+# orphaned by a crashed gbserver (per-step cleanup still `sky down`s normally).
+# Both spellings: `k8s` is a documented default_cloud alias and _get_cloud()'s own
+# fallback.
+_CLOUDS_AUTODOWN_ONLY = ("kubernetes", "k8s")
 
 
 def _cpus_floor(cloud: str, n: int) -> Union[int, str]:
@@ -2988,7 +2999,8 @@ class Skypilot(Environment):
         Args:
             task: The ``sky.Task`` to launch.
             cluster_name: Deterministic cluster name for this launch.
-            autostop: idle_minutes_to_autostop (None on slurm/lsf).
+            autostop: idle_minutes_to_autostop (None on slurm/lsf). On
+                kubernetes it is applied as autodown (see _CLOUDS_AUTODOWN_ONLY).
             cloud_group: Normalized target cloud, as resolved from the launch
                 infra by the caller — NOT the env's ``default_cloud``, which a
                 step can override via ``infra:``/``resources.cloud``. Decides
@@ -3034,6 +3046,10 @@ class Skypilot(Environment):
             reraise=True,
         ):
             with attempt:
+                # Autodown rather than autostop where only autodown exists (see
+                # _CLOUDS_AUTODOWN_ONLY). None means "no idle action" and needs no
+                # flag; elsewhere down stays False so the idle window still stops.
+                down = cloud_group in _CLOUDS_AUTODOWN_ONLY and autostop is not None
                 try:
                     # Both sky.launch (submit) and sky.stream_and_get (wait)
                     # block in an OS thread, so a CancelledError delivered to
@@ -3050,6 +3066,7 @@ class Skypilot(Environment):
                             task,
                             cluster_name=cluster_name,
                             idle_minutes_to_autostop=autostop,
+                            down=down,
                         )
                     )
                     try:

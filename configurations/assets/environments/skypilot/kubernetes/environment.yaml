@@ -3,7 +3,10 @@ type: Skypilot
 subtype: kubernetes
 config:
   default_cloud: kubernetes
-  idle_minutes_to_autostop: 0
+  # Applied as AUTODOWN on Kubernetes (a pod cannot be stopped; SkyPilot rejects
+  # autostop there). Per-step cleanup already `sky down`s each pod, so this only
+  # reaps one orphaned by a crashed gbserver. Not 0: that deletes as soon as idle.
+  idle_minutes_to_autostop: 5
 assetstores:
   - store_uri: space://assetstores/hf
     pull:
