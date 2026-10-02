@@ -11,7 +11,7 @@ venv without boto3 and unit tests drive it with a fake session.
 
 import hashlib
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from gbserver.environment.shared_fs.base import ProvisionedResources
 from gbserver.utils.logger import get_logger
@@ -74,29 +74,33 @@ def _is_dependency_violation(exc) -> bool:
     return code == "DependencyViolation" or "DependencyViolation" in str(exc)
 
 
-def _ensure_nfs_ingress(ec2, sg_id: str, vpc_cidr: str) -> None:
-    """Open NFS 2049 ingress from ``vpc_cidr`` on ``sg_id`` (idempotent).
+def _ensure_nfs_ingress(ec2, sg_id: str, vpc_cidrs: List[str]) -> None:
+    """Open NFS 2049 ingress from every CIDR in ``vpc_cidrs`` on ``sg_id``
+    (idempotent).
 
     Run on both the freshly-created and the adopted-duplicate SG path. A prior
     run that crashed between ``create_security_group`` and this authorize leaves
     an SG with no ingress; re-authorizing on adopt lets the next run self-heal
-    instead of every mount timing out opaquely. ``InvalidPermission.Duplicate``
-    (the rule already exists) is swallowed."""
-    try:
-        ec2.authorize_security_group_ingress(
-            GroupId=sg_id,
-            IpPermissions=[
-                {
-                    "IpProtocol": "tcp",
-                    "FromPort": 2049,
-                    "ToPort": 2049,
-                    "IpRanges": [{"CidrIp": vpc_cidr}],
-                }
-            ],
-        )
-    except Exception as e:  # noqa: BLE001 - duplicate rule is fine; re-raise others
-        if not _is_duplicate_permission(e):
-            raise
+    instead of every mount timing out opaquely. ALL of the VPC's CIDRs are opened
+    (not just the primary) because an auto-discovered subnet can live in a
+    secondary CIDR, whose mount target would otherwise have NFS 2049 denied.
+    ``InvalidPermission.Duplicate`` (that rule already exists) is swallowed."""
+    for cidr in vpc_cidrs:
+        try:
+            ec2.authorize_security_group_ingress(
+                GroupId=sg_id,
+                IpPermissions=[
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 2049,
+                        "ToPort": 2049,
+                        "IpRanges": [{"CidrIp": cidr}],
+                    }
+                ],
+            )
+        except Exception as e:  # noqa: BLE001 - duplicate rule is fine; re-raise
+            if not _is_duplicate_permission(e):
+                raise
 
 
 def _delete_sg_with_retry(ec2, sg_id: str) -> Optional[str]:
@@ -136,6 +140,97 @@ def _find_sg_id(ec2, group_name: str, vpc_id: str) -> str:
             f"in VPC {vpc_id}"
         )
     return sgs[0]["GroupId"]
+
+
+def _vpc_cidrs(vpc: dict) -> List[str]:
+    """Every associated IPv4 CIDR of ``vpc`` (primary + secondary).
+
+    A mount target can be auto-discovered in a secondary-CIDR subnet, so the SG
+    must open NFS 2049 from each associated CIDR, not just the primary
+    ``CidrBlock`` (a mount target in an unlisted CIDR would have NFS denied).
+    Falls back to the primary ``CidrBlock`` when the association set is absent."""
+    cidrs: List[str] = []
+    for assoc in vpc.get("CidrBlockAssociationSet") or []:
+        state = (assoc.get("CidrBlockState") or {}).get("State")
+        cidr = assoc.get("CidrBlock")
+        if cidr and state in (None, "associated"):
+            cidrs.append(cidr)
+    if not cidrs and vpc.get("CidrBlock"):
+        cidrs.append(vpc["CidrBlock"])
+    return cidrs
+
+
+def _resolve_network(ec2, region, vpc_id, subnets) -> Tuple[str, List[str], List[str]]:
+    """Resolve ``(vpc_id, vpc_cidrs, subnets)`` for the mount targets.
+
+    ``vpc_id`` is taken from config when set; else derived from an explicit
+    ``subnets`` list (so ``efs.subnets`` without ``efs.vpc_id`` does not create
+    the SG in the default VPC while the subnets live in another VPC, which fails
+    ``create_mount_target``); else the region's default VPC. Subnets are left
+    as-authored when given, else auto-discovered and deduped to one per AZ (EFS
+    allows a single mount target per AZ per filesystem). Returns every associated
+    VPC CIDR for the ingress rule."""
+    if vpc_id:
+        vpc = ec2.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0]
+    elif subnets:
+        sn = ec2.describe_subnets(SubnetIds=list(subnets))["Subnets"]
+        if not sn:
+            raise RuntimeError(f"none of the subnets {list(subnets)} were found")
+        vpc_id = sn[0]["VpcId"]
+        vpc = ec2.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0]
+    else:
+        vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])[
+            "Vpcs"
+        ]
+        if not vpcs:
+            raise RuntimeError(f"no default VPC in {region}; set efs.vpc_id")
+        vpc = vpcs[0]
+        vpc_id = vpc["VpcId"]
+
+    cidrs = _vpc_cidrs(vpc)
+
+    if not subnets:
+        seen_azs: set = set()
+        subnets = []
+        for s in ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])[
+            "Subnets"
+        ]:
+            az = s.get("AvailabilityZone")
+            if az in seen_azs:
+                continue
+            seen_azs.add(az)
+            subnets.append(s["SubnetId"])
+    if not subnets:
+        raise RuntimeError(f"no subnets found in VPC {vpc_id}")
+    return vpc_id, cidrs, list(subnets)
+
+
+def _create_or_adopt_sg(ec2, tags, vpc_id, mount_point) -> Tuple[str, bool]:
+    """Create (or adopt a prior run's leaked) NFS security group for this mount.
+
+    The name folds a short ``mount_point`` hash into the target-run id so sibling
+    ephemeral mounts (which share ``tags``) get distinct groups; it is stable
+    across retries of the same mount, so on ``InvalidGroup.Duplicate`` the
+    existing group is adopted instead of wedging the retry. Returns
+    ``(sg_id, created_sg)``; ``created_sg`` is True whenever teardown should reap
+    it (created or adopted). The caller opens NFS ingress separately (idempotent
+    on both paths)."""
+    mp_hash = hashlib.sha1(mount_point.encode()).hexdigest()[:8]
+    group_name = f"gb-efs-{tags.get('gb-targetrun-id', 'x')[:12]}-{mp_hash}"
+    try:
+        sg_id = ec2.create_security_group(
+            GroupName=group_name,
+            Description="granite.build ephemeral EFS (NFS 2049)",
+            VpcId=vpc_id,
+            TagSpecifications=[
+                {"ResourceType": "security-group", "Tags": _aws_tags(tags)}
+            ],
+        )["GroupId"]
+    except Exception as e:  # noqa: BLE001 - adopt a leaked duplicate; re-raise else
+        if not _is_duplicate_sg(e):
+            raise
+        return _find_sg_id(ec2, group_name, vpc_id), True
+    return sg_id, True
 
 
 def _wait_fs_available(efs, file_system_id: str) -> None:
@@ -199,10 +294,11 @@ def provision_efs(
     :param region: AWS region to create the filesystem in.
     :param tags: tags applied to every created resource (includes the
         ``gb-targetrun-id``/``gb-build-id`` used for tag-based reclamation).
-    :param vpc_id: VPC to place the filesystem in; the default VPC is discovered
-        when unset.
-    :param subnets: explicit subnet ids for the mount targets, left as-authored;
-        when unset, subnets are auto-discovered and deduped to one per AZ.
+    :param vpc_id: VPC to place the filesystem in; derived from ``subnets`` when
+        unset, else the region's default VPC.
+    :param subnets: explicit subnet ids for the mount targets, left as-authored
+        (and used to derive ``vpc_id`` when it is unset); when unset, subnets are
+        auto-discovered and deduped to one per AZ.
     :param security_group_id: a BYO security group to reuse; when unset one is
         created (and adopted if a prior run left an identically-named one behind).
     :param mount_point: this mount's mount_point, folded into the created SG name
@@ -213,34 +309,7 @@ def provision_efs(
     efs = session.client("efs", region_name=region)
     ec2 = session.client("ec2", region_name=region)
 
-    if not vpc_id:
-        vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])[
-            "Vpcs"
-        ]
-        if not vpcs:
-            raise RuntimeError(f"no default VPC in {region}; set efs.vpc_id")
-        vpc_id, vpc_cidr = vpcs[0]["VpcId"], vpcs[0]["CidrBlock"]
-    else:
-        vpc = ec2.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0]
-        vpc_cidr = vpc["CidrBlock"]
-
-    if not subnets:
-        # EFS allows one mount target per AZ per filesystem, but a VPC commonly
-        # has >1 subnet in an AZ; keep the first subnet seen per AZ so we don't
-        # hit MountTargetConflict on a second same-AZ subnet. An explicit
-        # efs.subnets list is left as-authored (the operator owns that choice).
-        seen_azs: set = set()
-        subnets = []
-        for s in ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])[
-            "Subnets"
-        ]:
-            az = s.get("AvailabilityZone")
-            if az in seen_azs:
-                continue
-            seen_azs.add(az)
-            subnets.append(s["SubnetId"])
-    if not subnets:
-        raise RuntimeError(f"no subnets found in VPC {vpc_id}")
+    vpc_id, vpc_cidrs, subnets = _resolve_network(ec2, region, vpc_id, subnets)
 
     created_sg = False
     sg_id = security_group_id
@@ -251,35 +320,12 @@ def provision_efs(
     # created (reusing deprovision_efs) before re-raising the original error.
     try:
         if not sg_id:
-            # Every ephemeral mount in one setup gets the same tags (same
-            # gb-targetrun-id), so fold a short stable hash of the mount_point in
-            # to keep each mount's SG name distinct (else the 2nd create raises
-            # InvalidGroup.Duplicate). Stable across retries of the same mount.
-            mp_hash = hashlib.sha1(mount_point.encode()).hexdigest()[:8]
-            group_name = f"gb-efs-{tags.get('gb-targetrun-id', 'x')[:12]}-{mp_hash}"
-            try:
-                sg_id = ec2.create_security_group(
-                    GroupName=group_name,
-                    Description="granite.build ephemeral EFS (NFS 2049)",
-                    VpcId=vpc_id,
-                    TagSpecifications=[
-                        {"ResourceType": "security-group", "Tags": _aws_tags(tags)}
-                    ],
-                )["GroupId"]
-            except Exception as e:
-                if not _is_duplicate_sg(e):
-                    raise
-                # A prior retry of this exact mount leaked its SG (the name is
-                # stable). Adopt it and mark it ours so teardown reaps it, instead
-                # of wedging every retry on the duplicate.
-                sg_id = _find_sg_id(ec2, group_name, vpc_id)
-                created_sg = True
-            else:
-                created_sg = True
-            # Open NFS ingress on both the created and the adopted SG (idempotent):
-            # a leaked SG from a run that crashed before authorize has no ingress,
-            # so re-authorizing on adopt lets the next run self-heal.
-            _ensure_nfs_ingress(ec2, sg_id, vpc_cidr)
+            sg_id, created_sg = _create_or_adopt_sg(ec2, tags, vpc_id, mount_point)
+            # Open NFS ingress on both the created and the adopted SG (idempotent;
+            # all VPC CIDRs): a leaked SG from a run that crashed before authorize
+            # has no ingress, so re-authorizing on adopt lets the next run
+            # self-heal. A BYO security_group_id is the operator's to configure.
+            _ensure_nfs_ingress(ec2, sg_id, vpc_cidrs)
 
         fsid = efs.create_file_system(
             PerformanceMode="generalPurpose",

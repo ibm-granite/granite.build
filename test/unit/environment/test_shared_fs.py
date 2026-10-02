@@ -154,6 +154,14 @@ def test_local_scratch_absolute_ok_and_default_none():
     assert sf2.local_scratch is None
 
 
+def test_efs_cleanup_zone_rejected_for_ephemeral():
+    """Ephemeral teardown deletes via boto3 and never launches the cleanup VM
+    that consumes cleanup_zone, so accepting it would be a silent no-op; reject
+    it at validation instead (PR #422 review)."""
+    with pytest.raises(ValueError, match="cleanup_zone"):
+        EfsConfig(provision="ephemeral", region="us-east-1", cleanup_zone="us-east-1a")
+
+
 def test_efs_cleanup_zone_in_region_ok():
     sf = SharedFilesystemConfig.model_validate(
         {

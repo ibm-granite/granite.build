@@ -13,11 +13,12 @@ class EfsConfig(Config):
 
     Exactly one of ``file_system_id`` or ``dns_name`` is required. When only
     ``file_system_id`` is given, ``region`` is required so the container-safe
-    ``nfs4`` fallback DNS name can be derived. ``cleanup_zone`` optionally pins
-    the teardown VM to an AZ that has a mount target; if unset, the teardown VM
-    lands in the cloud's default AZ, which may lack a mount target and fail the
-    cleanup (surfaced as an orphan WARNING) -- provision a mount target in every
-    worker AZ, or set ``cleanup_zone``.
+    ``nfs4`` fallback DNS name can be derived. ``cleanup_zone`` (BYO only)
+    optionally pins the teardown VM to an AZ that has a mount target; if unset,
+    the teardown VM lands in the cloud's default AZ, which may lack a mount target
+    and fail the cleanup (surfaced as an orphan WARNING) -- provision a mount
+    target in every worker AZ, or set ``cleanup_zone``. It is rejected for
+    ``provision: ephemeral`` (that teardown deletes via boto3, no cleanup VM).
     """
 
     provision: Literal["byo", "ephemeral"] = "byo"
@@ -40,6 +41,15 @@ class EfsConfig(Config):
                 )
             if not self.region:
                 raise ValueError("efs: provision 'ephemeral' requires 'region'")
+            if self.cleanup_zone:
+                # Ephemeral teardown deletes the filesystem via boto3 and never
+                # launches the throwaway cleanup VM that consumes cleanup_zone, so
+                # it would be a silent no-op. Reject it rather than mislead.
+                raise ValueError(
+                    "efs: cleanup_zone is not used for provision 'ephemeral' "
+                    "(teardown deletes via boto3, no cleanup VM is launched); "
+                    "remove it"
+                )
         else:  # byo
             if not self.file_system_id and not self.dns_name:
                 raise ValueError("efs: one of file_system_id or dns_name is required")

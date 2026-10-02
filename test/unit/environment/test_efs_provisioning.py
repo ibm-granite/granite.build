@@ -145,6 +145,112 @@ def test_provision_dedupes_discovered_subnets_to_one_per_az(monkeypatch):
     assert len(pr.mount_target_ids) == 2
 
 
+def test_provision_authorizes_all_vpc_cidrs(monkeypatch):
+    """A VPC can have secondary CIDRs; auto-discovered subnets (one per AZ) can
+    land in one. The SG must open NFS 2049 from EVERY associated CIDR, else a
+    mount target in a secondary-CIDR subnet has NFS denied and that AZ's step VM
+    can't mount though provisioning 'succeeded' (PR #422 review)."""
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_fs_available",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_available",
+        lambda *a, **k: None,
+    )
+
+    class MultiCidrClient(FakeClient):
+        def describe_vpcs(self, **kw):
+            self._rec("describe_vpcs", **kw)
+            return {
+                "Vpcs": [
+                    {
+                        "VpcId": "vpc-def",
+                        "CidrBlock": "172.31.0.0/16",
+                        "CidrBlockAssociationSet": [
+                            {
+                                "CidrBlock": "172.31.0.0/16",
+                                "CidrBlockState": {"State": "associated"},
+                            },
+                            {
+                                "CidrBlock": "10.1.0.0/16",
+                                "CidrBlockState": {"State": "associated"},
+                            },
+                            {  # must be skipped (not associated)
+                                "CidrBlock": "10.9.0.0/16",
+                                "CidrBlockState": {"State": "disassociating"},
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    class MultiCidrSession(FakeSession):
+        def client(self, kind, region_name=None):
+            return MultiCidrClient(kind, self.calls)
+
+    s = MultiCidrSession()
+    provision_efs(s, "us-east-1", TAGS)
+    cidrs = [
+        c[2]["IpPermissions"][0]["IpRanges"][0]["CidrIp"]
+        for c in _names(s, "authorize")
+    ]
+    assert cidrs == ["172.31.0.0/16", "10.1.0.0/16"]  # both associated, not the third
+
+
+def test_provision_derives_vpc_from_subnets_when_vpc_id_unset(monkeypatch):
+    """If efs.subnets is set but efs.vpc_id is not, the SG must be created in the
+    subnets' VPC -- not the default VPC -- else create_mount_target fails because
+    the SG and subnets are in different VPCs (PR #422 review)."""
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_fs_available",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_available",
+        lambda *a, **k: None,
+    )
+
+    class SubnetVpcClient(FakeClient):
+        def describe_subnets(self, **kw):
+            self._rec("describe_subnets", **kw)
+            # Looked up by SubnetIds -> returns the owning (non-default) VPC.
+            return {
+                "Subnets": [
+                    {"SubnetId": "subnet-x", "VpcId": "vpc-custom"},
+                    {"SubnetId": "subnet-y", "VpcId": "vpc-custom"},
+                ]
+            }
+
+        def describe_vpcs(self, **kw):
+            self._rec("describe_vpcs", **kw)
+            return {"Vpcs": [{"VpcId": "vpc-custom", "CidrBlock": "10.5.0.0/16"}]}
+
+    class SubnetVpcSession(FakeSession):
+        def client(self, kind, region_name=None):
+            return SubnetVpcClient(kind, self.calls)
+
+    s = SubnetVpcSession()
+    pr = provision_efs(s, "us-east-1", TAGS, subnets=["subnet-x", "subnet-y"])
+    # SG created in the subnets' VPC, not the default one
+    sg_call = _names(s, "create_security_group")[0][2]
+    assert sg_call["VpcId"] == "vpc-custom"
+    # ingress uses that VPC's CIDR; mount targets land in the authored subnets
+    ing = _names(s, "authorize")[0][2]
+    assert ing["IpPermissions"][0]["IpRanges"][0]["CidrIp"] == "10.5.0.0/16"
+    assert sorted(c[2]["SubnetId"] for c in _names(s, "create_mount_target")) == [
+        "subnet-x",
+        "subnet-y",
+    ]
+    # never consulted the default VPC
+    assert not any(
+        "Filters" in c[2]
+        and {"Name": "isDefault", "Values": ["true"]} in c[2]["Filters"]
+        for c in _names(s, "describe_vpcs")
+    )
+    assert pr.subnet_ids == ["subnet-x", "subnet-y"]
+
+
 def test_two_ephemeral_mounts_get_distinct_sg_names(monkeypatch):
     """setup_skypilot passes the same tags (same gb-targetrun-id) to every
     provider, so the SG name must also fold in the mount_point -- otherwise two

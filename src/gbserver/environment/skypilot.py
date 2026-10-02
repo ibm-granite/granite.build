@@ -1415,9 +1415,16 @@ class Skypilot(Environment):
         prof = (ws.get("aws") or {}).get("profile")
         if prof:
             return prof
-        creds = cfg.get("aws_credentials") or []
-        if isinstance(creds, list) and creds and isinstance(creds[0], dict):
-            return creds[0].get("profile")
+        # Scan ALL aws_credentials for the first entry carrying a profile -- not
+        # just [0]: if the profile isn't the first entry (or [0] has none), the
+        # old [0]-only check silently returned None, falling back to the default
+        # boto3 chain, so ephemeral EFS would be created/torn down in the WRONG
+        # account (mount fails; teardown leaks the real filesystem).
+        creds = cfg.get("aws_credentials")
+        if isinstance(creds, list):
+            for c in creds:
+                if isinstance(c, dict) and c.get("profile"):
+                    return c["profile"]
         return None
 
     def _shared_fs_providers(self: Self):
@@ -1699,13 +1706,20 @@ class Skypilot(Environment):
             runmetadata.targetrun_id or "",
         )
         self._setup_workdirs[setup_id] = workdir
+        # Fall back to the (unique) setup_id when targetrun_id is empty. A real
+        # target run always carries a UUID targetrun_id, but the field defaults to
+        # "" -- and the per-mount SG name folds this in, so an empty value would
+        # let two concurrent same-mount_point runs compute an identical SG name
+        # and tear each other's SG down. setup_id is unique per setup, keeping the
+        # tag non-empty and the resources reclaimable (issue #391 / PR #422).
+        targetrun_tag = runmetadata.targetrun_id or setup_id
         self._setup_run_meta[setup_id] = {
             "target_name": runmetadata.target_name or "",
             "build_id": runmetadata.build_id or "",
             "build_config_name": runmetadata.build_config_name or "",
             # Stashed for teardown, which gets no runmetadata: the ephemeral EFS is
             # tagged with this id, so the orphan WARNING must name it (reclaim by tag).
-            "targetrun_id": runmetadata.targetrun_id or "",
+            "targetrun_id": targetrun_tag,
         }
         providers = self._shared_fs_providers()
         profile = self._aws_profile()
@@ -1713,14 +1727,38 @@ class Skypilot(Environment):
             "app": "granite.build",
             "gb-ephemeral": "true",
             "gb-build-id": runmetadata.build_id or "",
-            "gb-targetrun-id": runmetadata.targetrun_id or "",
+            "gb-targetrun-id": targetrun_tag,
             "gb-created-at": datetime.now(timezone.utc).isoformat(),
         }
         provisioned: list = []
         shared_fs_mounts: list = []
+        # Register the (shared, mutated-in-place) list BEFORE provisioning so a
+        # teardown can reap anything already created even if setup is aborted or
+        # cancelled before it finishes -- the boto3 provision runs in a thread that
+        # can't be stopped once started (issue #391 no-leak-on-cancel).
+        self._setup_provisioned[setup_id] = provisioned
         try:
             for p in providers:
-                pr = await p.provision(tags, profile)
+                # Shield each provision: its boto3 work runs in an uncancellable
+                # thread, so if THIS coroutine is cancelled mid-provision we drain
+                # the shielded task to capture the resources it created (and roll
+                # them back below) rather than orphaning billable infra.
+                task = asyncio.ensure_future(p.provision(tags, profile))
+                try:
+                    pr = await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    try:
+                        await asyncio.shield(task)
+                    except BaseException:  # noqa: BLE001 - captured via task below
+                        pass
+                    if (
+                        task.done()
+                        and not task.cancelled()
+                        and task.exception() is None
+                        and task.result() is not None
+                    ):
+                        provisioned.append((p, task.result()))
+                    raise
                 provisioned.append((p, pr))
                 shared_fs_mounts.append(
                     {
@@ -1728,25 +1766,33 @@ class Skypilot(Environment):
                         "dns_name": pr.dns_name if pr is not None else None,
                     }
                 )
-        except Exception:
-            # Best-effort roll back mounts already created before re-raising, so a
-            # partial provision does not leak. Rollback failures are logged as
-            # orphans (reclaim by tag) but do not mask the original error.
+        except BaseException:
+            # Best-effort roll back everything already created (incl. a drained
+            # in-flight mount) before re-raising, so a partial OR cancelled setup
+            # does not leak. BaseException (not Exception) so CancelledError also
+            # triggers rollback; each deprovision is shielded so it still runs under
+            # cancellation. Mounts that fail to deprovision are kept so teardown can
+            # retry them (and are logged as reclaimable orphans).
+            remaining: list = []
             for p, pr in provisioned:
-                if pr is not None:
-                    try:
-                        await p.deprovision(pr, profile)
-                    except Exception:  # noqa: BLE001 - best-effort during rollback
-                        logger.warning(
-                            "setup_skypilot: rollback deprovision failed; ORPHAN "
-                            "fsid=%s sg=%s tags(build=%s,targetrun=%s)",
-                            pr.file_system_id,
-                            pr.security_group_id,
-                            runmetadata.build_id,
-                            runmetadata.targetrun_id,
-                        )
+                if pr is None:
+                    continue
+                try:
+                    await asyncio.shield(
+                        asyncio.ensure_future(p.deprovision(pr, profile))
+                    )
+                except BaseException:  # noqa: BLE001 - best-effort during rollback
+                    logger.warning(
+                        "setup_skypilot: rollback deprovision failed; ORPHAN "
+                        "fsid=%s sg=%s tags(build=%s,targetrun=%s)",
+                        pr.file_system_id,
+                        pr.security_group_id,
+                        runmetadata.build_id,
+                        targetrun_tag,
+                    )
+                    remaining.append((p, pr))
+            provisioned[:] = remaining  # reaped ones gone; teardown retries the rest
             raise
-        self._setup_provisioned[setup_id] = provisioned
         logger.info(
             "setup_skypilot: per-run workdir for setup_id=%s -> %s (mounts=%d)",
             setup_id,
