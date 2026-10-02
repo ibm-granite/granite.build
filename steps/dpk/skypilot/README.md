@@ -288,7 +288,8 @@ on **different nodes**. What works depends on the endpoint:
 | Endpoint | Output URI | Why |
 |---|---|---|
 | `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` + an **explicit** matching `output_path` | `/shared` is the environment's `shared_workdir`, mounted on every node — cross-node safe. The `./output` default will not do here: it lives in the per-target workdir, which is deleted at target teardown. |
-| `skypilot/aws`, `skypilot/kubernetes` | `s3://bucket/…`, `output_path` may be **left default** | Each target gets its own instance with no shared filesystem. The S3 assetstore pushes the staged dir and the consumer pulls it, so a node-local `./output` is fine. |
+| `skypilot/aws` | `s3://bucket/…`, `output_path` may be **left default** | Each target gets its own instance with no shared filesystem. The S3 assetstore pushes the staged dir and the consumer pulls it, so a node-local `./output` is fine. |
+| `skypilot/kubernetes` | **None out of the box** — terminal outputs only | Each step is its own pod, and the shipped environment declares neither an `s3` assetstore nor a `shared_workdir`, so nothing survives to a second target. To hand off, use an environment that adds one: an `s3` assetstore (then as `skypilot/aws`), or a ReadWriteMany PVC as `shared_workdir` (then as `skypilot/slurm`, with its mount path). See `docs/environments/skypilot-kubernetes.md`. |
 
 A node-local `env:///tmp/…` is **not** safe for a cross-target handoff: if the two targets
 land on different nodes the consumer reads an absent directory.

@@ -10,6 +10,13 @@ assetstores:
       - mode: default
         config:
           cache_path: /tmp/hf_cache
+          # Download in the consuming step's own setup rather than as a separate
+          # hfpull step. Each step runs in its own pod and this env has no
+          # shared_workdir, so a separate hfpull pod would cache to its own /tmp and
+          # be torn down, leaving the consumer an empty directory. Same reason as
+          # skypilot/aws. If you add a ReadWriteMany PVC as shared_workdir, drop both
+          # keys here so hfpull runs once and caches to ${shared_workdir}/hf_cache.
+          inline: true
     push:
       - mode: default
         config: {}

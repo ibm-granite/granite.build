@@ -70,10 +70,22 @@ assetstores:
       - mode: default
         config:
           cache_path: /tmp/hf_cache
+          inline: true
     push:
       - mode: default
         config: {}
 ```
+
+**`inline: true` is required without a `shared_workdir`.** Every step runs in its own pod, which
+is torn down when the step finishes. Without `inline`, an `hf://` input is downloaded by a separate
+`hfpull` step into *its* pod's `/tmp`, and the consuming step's fresh pod finds an empty directory.
+`inline: true` injects the `hf download` into the consuming step's own `setup` instead — the same
+arrangement as `skypilot/aws`. If you mount a ReadWriteMany PVC as `shared_workdir`, drop both
+`cache_path` and `inline` so `hfpull` runs as its own step and caches to `${shared_workdir}/hf_cache`.
+
+For the same reason this example has no cross-target handoff: `env://` outputs stay in the
+producing pod. Add an `s3` assetstore or a `shared_workdir` PVC if one target must read another's
+output.
 
 Steps may set `image_id` freely (Kubernetes runs containers natively — no Pyxis/enroot caveat), and
 `resources.accelerators` / `resources.memory` map onto the pod's resource requests.
