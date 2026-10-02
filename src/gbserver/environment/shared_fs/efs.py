@@ -41,8 +41,25 @@ class EfsProvider(SharedFilesystemProvider):
         # and it wins. Ephemeral: config has no DNS, so the runtime dns_override
         # (the just-created filesystem's DNS) is used.
         dns = self.cfg.derived_dns_name() or dns_override
+        if dns is None:
+            # Only ephemeral reaches here (BYO validation guarantees a DNS): a
+            # missing override means setup_config lost the provisioned filesystem's
+            # dns_name (stale/replayed config or a broken retry). Fail with a clear
+            # message rather than letting shlex.quote(None + ':/') raise TypeError.
+            raise ValueError(
+                f"shared_filesystem: ephemeral EFS mount at {self.mount_point} has "
+                "no runtime DNS (setup_config is missing the provisioned "
+                "filesystem's dns_name)"
+            )
         tls = " -o tls" if self.cfg.tls else ""
+        # BYO carries the fsid in config; ephemeral forbids it, but its runtime DNS
+        # is the AWS-generated "<fsid>.efs.<region>.amazonaws.com", so recover the
+        # fsid from it. Without this, ephemeral never takes the mount.efs path and
+        # silently mounts cleartext nfs4 even where amazon-efs-utils is present,
+        # defeating tls=true. (BYO with only dns_name keeps nfs4 -- no fsid known.)
         fsid = self.cfg.file_system_id
+        if fsid is None and self.cfg.provision == "ephemeral":
+            fsid = dns.split(".", 1)[0]
         efs_cmd = (
             f"$SUDO mount -t efs{tls} {shlex.quote(fsid + ':/')} {mp_quoted}"
             if fsid

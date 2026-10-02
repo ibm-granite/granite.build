@@ -448,6 +448,43 @@ def test_efs_mount_prologue_no_tls_and_no_warning_when_tls_false():
     _bash_ok(shell)
 
 
+def test_ephemeral_prologue_honors_tls_via_runtime_fsid():
+    """Regression (PR #422 review, security): ephemeral forbids a config
+    file_system_id, so the mount.efs (`-o tls`) branch was never built and the
+    mount silently fell back to cleartext nfs4 even where amazon-efs-utils is
+    present -- defeating the tls=true default. The runtime DNS embeds the fsid
+    (`<fsid>.efs.<region>...`), so the mount.efs branch must honor -o tls using
+    the recovered fsid."""
+    p = EfsProvider("/mnt/e", EfsConfig(provision="ephemeral", region="us-east-1"))
+    sh = p.mount_prologue(dns_override="fs-x.efs.us-east-1.amazonaws.com")
+    # mount.efs branch honors tls using the fsid recovered from the runtime DNS
+    assert "mount -t efs -o tls fs-x:/" in sh
+    # nfs4 fallback still present (stock images) with its unencrypted warning
+    assert "mount -t nfs4" in sh
+    assert "WITHOUT encryption" in sh
+    _bash_ok(sh)
+
+
+def test_ephemeral_prologue_no_tls_branch_uses_fsid_without_tls_flag():
+    p = EfsProvider(
+        "/mnt/e", EfsConfig(provision="ephemeral", region="us-east-1", tls=False)
+    )
+    sh = p.mount_prologue(dns_override="fs-x.efs.us-east-1.amazonaws.com")
+    assert "mount -t efs fs-x:/" in sh  # efs path, no -o tls
+    assert "-o tls" not in sh
+    _bash_ok(sh)
+
+
+def test_ephemeral_prologue_missing_runtime_dns_raises_clear_error():
+    """Regression (PR #422 review): a stale/replayed setup_config (or a broken
+    retry path) can leave an ephemeral mount with no runtime dns_override.
+    Rather than let `shlex.quote(None + ':/')` raise an opaque TypeError, fail
+    with a clear message naming the mount."""
+    p = EfsProvider("/mnt/e", EfsConfig(provision="ephemeral", region="us-east-1"))
+    with pytest.raises(ValueError, match="no runtime DNS"):
+        p.mount_prologue(dns_override=None)
+
+
 def test_efs_cleanup_run_script_mounts_then_reaps():
     p = EfsProvider(
         "/mnt/gb-shared", EfsConfig(dns_name="fs-0abc.efs.eu-west-1.amazonaws.com")

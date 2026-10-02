@@ -346,3 +346,35 @@ def test_hf_cache_path_under_mount_point_no_warn(caplog):
             }
         )
     assert "will not cache to the shared filesystem" not in caplog.text
+
+
+def test_hf_cache_path_sibling_prefix_still_warns(caplog):
+    """Boundary-safe under-mount check (PR #422 review): a cache_path that merely
+    shares a string prefix with the mount (e.g. /mnt/gb-shared-data vs mount
+    /mnt/gb-shared) is NOT on the shared filesystem, so the local-cache warning
+    must still fire -- a bare startswith would wrongly suppress it."""
+    with caplog.at_level(logging.WARNING):
+        EnvironmentConfig.model_validate(
+            {
+                "name": "e",
+                "type": "Skypilot",
+                "subtype": "aws",
+                "config": {
+                    "default_cloud": "aws",
+                    "shared_workdir": "/mnt/gb-shared/gbroot",
+                    "shared_filesystem": _sf(),
+                },
+                "assetstores": [
+                    {
+                        "store_uri": "space://assetstores/hf",
+                        "pull": [
+                            {
+                                "mode": "default",
+                                "config": {"cache_path": "/mnt/gb-shared-data/hf"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    assert "will not cache to the shared filesystem" in caplog.text

@@ -207,8 +207,14 @@ class EnvironmentConfig(Config):
             for pull in store.pull:
                 pcfg = pull.config or {}
                 cache_path = pcfg.get("cache_path")
+                cp = str(cache_path) if cache_path else ""
+                # Boundary-safe "under a mount" test: a bare startswith would
+                # treat /mnt/efs-data as under mount /mnt/efs. Match the mount
+                # itself or a path strictly below it (mirrors the mount_point
+                # nesting check in parse_shared_filesystems).
                 local_cache = cache_path and not any(
-                    str(cache_path).startswith(mp) for mp in mount_points
+                    cp == mp or cp.startswith(mp.rstrip("/") + "/")
+                    for mp in mount_points
                 )
                 if pcfg.get("inline") or local_cache:
                     logger.warning(

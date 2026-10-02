@@ -179,8 +179,8 @@ class FakeClientError(Exception):
 def test_provision_adopts_leaked_sg_on_duplicate(monkeypatch):
     """If a prior retry leaked this mount's SG (stable targetrun-id + mount_point
     -> stable name), create_security_group raises InvalidGroup.Duplicate. Rather
-    than wedge the retry, provision adopts the existing SG (which already carries
-    the NFS ingress) and marks it ours so teardown reaps it (issue #391)."""
+    than wedge the retry, provision adopts the existing SG and marks it ours so
+    teardown reaps it (issue #391)."""
     monkeypatch.setattr(
         "gbserver.environment.shared_fs.efs_provisioning._wait_fs_available",
         lambda *a, **k: None,
@@ -210,8 +210,46 @@ def test_provision_adopts_leaked_sg_on_duplicate(monkeypatch):
     # looked up by the exact name we tried to create, scoped to the VPC
     dsg = _names(s, "describe_security_groups")[0][2]
     assert {"Name": "vpc-id", "Values": ["vpc-def"]} in dsg["Filters"]
-    # the leaked SG already has the NFS ingress; don't re-authorize
-    assert _names(s, "authorize") == []
+    # Re-run NFS ingress on the adopted SG (idempotent): a prior run that crashed
+    # between create_security_group and authorize leaves an SG with no ingress, so
+    # the mount would otherwise time out opaquely (PR #422 review). Target it.
+    auth = _names(s, "authorize")
+    assert len(auth) == 1
+    assert auth[0][2]["GroupId"] == "sg-existing"
+    assert auth[0][2]["IpPermissions"][0]["FromPort"] == 2049
+
+
+def test_provision_adopt_swallows_duplicate_ingress(monkeypatch):
+    """Ensuring ingress on an adopted SG that already has the 2049 rule must not
+    fail: InvalidPermission.Duplicate is swallowed (PR #422 review)."""
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_fs_available",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "gbserver.environment.shared_fs.efs_provisioning._wait_mts_available",
+        lambda *a, **k: None,
+    )
+
+    class DupSgDupIngressClient(FakeClient):
+        def create_security_group(self, **kw):
+            self._rec("create_security_group", **kw)
+            raise FakeClientError("InvalidGroup.Duplicate")
+
+        def describe_security_groups(self, **kw):
+            return {"SecurityGroups": [{"GroupId": "sg-existing"}]}
+
+        def authorize_security_group_ingress(self, **kw):
+            self._rec("authorize", **kw)
+            raise FakeClientError("InvalidPermission.Duplicate")
+
+    class DupSgDupIngressSession(FakeSession):
+        def client(self, kind, region_name=None):
+            return DupSgDupIngressClient(kind, self.calls)
+
+    s = DupSgDupIngressSession()
+    pr = provision_efs(s, "us-east-1", TAGS, mount_point="/mnt/a")
+    assert pr.security_group_id == "sg-existing"  # duplicate ingress tolerated
 
 
 def test_provision_reuses_byo_sg(monkeypatch):
@@ -366,3 +404,145 @@ def test_deprovision_raises_helper_error_wraps_failures():
     assert err.provisioned is pr
     assert err.failures == ["delete_file_system fs-x: boom"]
     assert "fs-x" in str(err)
+
+
+def test_wait_mts_available_requires_full_count(monkeypatch):
+    """describe_mount_targets is eventually consistent and can list a subset of
+    just-created mount targets. The waiter must not return until ALL expected
+    mount targets exist and are available, else a step VM in a lagging AZ fails
+    to mount (PR #422 review)."""
+    from gbserver.environment.shared_fs import efs_provisioning as ep
+
+    sleeps = []
+    monkeypatch.setattr(ep.time, "sleep", lambda s: sleeps.append(s))
+    seq = [
+        {"MountTargets": [{"LifeCycleState": "available"}]},  # only 1 of 2 listed
+        {  # 2 listed but one still creating
+            "MountTargets": [
+                {"LifeCycleState": "available"},
+                {"LifeCycleState": "creating"},
+            ]
+        },
+        {  # both available
+            "MountTargets": [
+                {"LifeCycleState": "available"},
+                {"LifeCycleState": "available"},
+            ]
+        },
+    ]
+
+    class Efs:
+        def __init__(self):
+            self.i = 0
+
+        def describe_mount_targets(self, **kw):
+            r = seq[min(self.i, len(seq) - 1)]
+            self.i += 1
+            return r
+
+    efs = Efs()
+    ep._wait_mts_available(efs, "fs-1", expected=2)
+    assert efs.i == 3  # waited through the subset + still-creating snapshots
+    assert len(sleeps) == 2
+
+
+def test_deprovision_retries_sg_delete_on_dependency_violation(monkeypatch):
+    """Mount-target ENIs can linger after the FS reports deleted; deleting the SG
+    immediately then raises DependencyViolation. deprovision retries rather than
+    recording a spurious orphan on an otherwise-clean teardown (PR #422 review)."""
+    from gbserver.environment.shared_fs import efs_provisioning as ep
+
+    monkeypatch.setattr(ep, "_wait_mts_gone", lambda *a, **k: None)
+    sleeps = []
+    monkeypatch.setattr(ep.time, "sleep", lambda s: sleeps.append(s))
+
+    class DepViolClient(FakeClient):
+        def delete_security_group(self, **kw):
+            self._rec("delete_security_group", **kw)
+            n = sum(1 for c in self.calls if c[1] == "delete_security_group")
+            if n < 3:
+                raise FakeClientError("DependencyViolation")
+            return {}
+
+    class DepViolSession(FakeSession):
+        def client(self, kind, region_name=None):
+            return DepViolClient(kind, self.calls)
+
+    pr = ProvisionedResources(
+        region="us-east-1",
+        file_system_id="fs-1",
+        dns_name="d",
+        mount_target_ids=["mt-1"],
+        subnet_ids=["subnet-a"],
+        security_group_id="sg-1",
+        created_sg=True,
+    )
+    s = DepViolSession()
+    assert deprovision_efs(s, pr) == []  # succeeded after retries
+    assert len(_names(s, "delete_security_group")) == 3
+    assert len(sleeps) == 2
+
+
+def test_deprovision_sg_delete_gives_up_after_persistent_dependency_violation(
+    monkeypatch,
+):
+    """A SG that never frees (persistent DependencyViolation) is recorded as a
+    failure after a bounded number of attempts rather than retried forever."""
+    from gbserver.environment.shared_fs import efs_provisioning as ep
+
+    monkeypatch.setattr(ep, "_wait_mts_gone", lambda *a, **k: None)
+    monkeypatch.setattr(ep.time, "sleep", lambda s: None)
+
+    class AlwaysDepViolClient(FakeClient):
+        def delete_security_group(self, **kw):
+            self._rec("delete_security_group", **kw)
+            raise FakeClientError("DependencyViolation")
+
+    class AlwaysDepViolSession(FakeSession):
+        def client(self, kind, region_name=None):
+            return AlwaysDepViolClient(kind, self.calls)
+
+    pr = ProvisionedResources(
+        region="us-east-1",
+        file_system_id="fs-1",
+        dns_name="d",
+        mount_target_ids=["mt-1"],
+        subnet_ids=["subnet-a"],
+        security_group_id="sg-1",
+        created_sg=True,
+    )
+    s = AlwaysDepViolSession()
+    failures = deprovision_efs(s, pr)
+    assert any("DependencyViolation" in f and "sg-1" in f for f in failures)
+    assert len(_names(s, "delete_security_group")) == ep._SG_DELETE_ATTEMPTS
+
+
+def test_deprovision_non_dependency_sg_error_not_retried(monkeypatch):
+    """A non-DependencyViolation SG delete error is terminal (one attempt)."""
+    from gbserver.environment.shared_fs import efs_provisioning as ep
+
+    monkeypatch.setattr(ep, "_wait_mts_gone", lambda *a, **k: None)
+    monkeypatch.setattr(ep.time, "sleep", lambda s: None)
+
+    class BoomSgClient(FakeClient):
+        def delete_security_group(self, **kw):
+            self._rec("delete_security_group", **kw)
+            raise FakeClientError("UnauthorizedOperation")
+
+    class BoomSgSession(FakeSession):
+        def client(self, kind, region_name=None):
+            return BoomSgClient(kind, self.calls)
+
+    pr = ProvisionedResources(
+        region="us-east-1",
+        file_system_id="fs-1",
+        dns_name="d",
+        mount_target_ids=["mt-1"],
+        subnet_ids=["subnet-a"],
+        security_group_id="sg-1",
+        created_sg=True,
+    )
+    s = BoomSgSession()
+    failures = deprovision_efs(s, pr)
+    assert any("UnauthorizedOperation" in f for f in failures)
+    assert len(_names(s, "delete_security_group")) == 1

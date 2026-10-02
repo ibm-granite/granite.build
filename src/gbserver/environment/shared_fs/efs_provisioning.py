@@ -20,6 +20,9 @@ logger = get_logger(__name__)
 
 _WAIT_TIMEOUT_S = 600
 _WAIT_INTERVAL_S = 5
+# Bounded retries for delete_security_group when the mount-target ENIs are still
+# detaching (DependencyViolation); ~_SG_DELETE_ATTEMPTS * _WAIT_INTERVAL_S window.
+_SG_DELETE_ATTEMPTS = 6
 
 
 class EfsDeprovisionError(RuntimeError):
@@ -52,6 +55,72 @@ def _is_duplicate_sg(exc) -> bool:
     return code == "InvalidGroup.Duplicate" or "InvalidGroup.Duplicate" in str(exc)
 
 
+def _is_duplicate_permission(exc) -> bool:
+    """True if ``exc`` is ``InvalidPermission.Duplicate`` (the ingress rule
+    already exists), so :func:`_ensure_nfs_ingress` is idempotent."""
+    resp = getattr(exc, "response", None)
+    code = resp.get("Error", {}).get("Code", "") if isinstance(resp, dict) else ""
+    return (
+        code == "InvalidPermission.Duplicate"
+        or "InvalidPermission.Duplicate" in str(exc)
+    )
+
+
+def _is_dependency_violation(exc) -> bool:
+    """True if ``exc`` is a ``DependencyViolation`` -- e.g. deleting a security
+    group whose mount-target ENIs are still detaching."""
+    resp = getattr(exc, "response", None)
+    code = resp.get("Error", {}).get("Code", "") if isinstance(resp, dict) else ""
+    return code == "DependencyViolation" or "DependencyViolation" in str(exc)
+
+
+def _ensure_nfs_ingress(ec2, sg_id: str, vpc_cidr: str) -> None:
+    """Open NFS 2049 ingress from ``vpc_cidr`` on ``sg_id`` (idempotent).
+
+    Run on both the freshly-created and the adopted-duplicate SG path. A prior
+    run that crashed between ``create_security_group`` and this authorize leaves
+    an SG with no ingress; re-authorizing on adopt lets the next run self-heal
+    instead of every mount timing out opaquely. ``InvalidPermission.Duplicate``
+    (the rule already exists) is swallowed."""
+    try:
+        ec2.authorize_security_group_ingress(
+            GroupId=sg_id,
+            IpPermissions=[
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 2049,
+                    "ToPort": 2049,
+                    "IpRanges": [{"CidrIp": vpc_cidr}],
+                }
+            ],
+        )
+    except Exception as e:  # noqa: BLE001 - duplicate rule is fine; re-raise others
+        if not _is_duplicate_permission(e):
+            raise
+
+
+def _delete_sg_with_retry(ec2, sg_id: str) -> Optional[str]:
+    """Delete ``sg_id``, retrying on ``DependencyViolation``.
+
+    Mount-target ENIs can linger briefly after the filesystem/mount targets
+    report deleted, so deleting the SG immediately raises ``DependencyViolation``
+    on an otherwise-clean teardown. Retry a bounded number of times before giving
+    up. Returns ``None`` on success, else a failure string; any non-dependency
+    error returns immediately (it will not self-resolve)."""
+    last = ""
+    for attempt in range(_SG_DELETE_ATTEMPTS):
+        try:
+            ec2.delete_security_group(GroupId=sg_id)
+            return None
+        except Exception as e:  # noqa: BLE001 - best-effort reap
+            if not _is_dependency_violation(e):
+                return f"delete_security_group {sg_id}: {e}"
+            last = str(e)
+            if attempt < _SG_DELETE_ATTEMPTS - 1:
+                time.sleep(_WAIT_INTERVAL_S)
+    return f"delete_security_group {sg_id}: {last}"
+
+
 def _find_sg_id(ec2, group_name: str, vpc_id: str) -> str:
     """Look up the id of the SG named ``group_name`` in ``vpc_id`` (the one a
     prior run left behind, since the name is stable per mount)."""
@@ -79,11 +148,19 @@ def _wait_fs_available(efs, file_system_id: str) -> None:
     raise TimeoutError(f"EFS {file_system_id} not available within {_WAIT_TIMEOUT_S}s")
 
 
-def _wait_mts_available(efs, file_system_id: str) -> None:
+def _wait_mts_available(efs, file_system_id: str, expected: int) -> None:
+    """Wait until all ``expected`` mount targets exist and are ``available``.
+
+    Requiring the full count (not merely a non-empty available subset) guards
+    against ``describe_mount_targets`` eventual consistency reporting success
+    before every AZ's mount target is listed, which would let a step VM in a
+    lagging AZ fail to mount."""
     deadline = time.monotonic() + _WAIT_TIMEOUT_S
     while time.monotonic() < deadline:
         mts = efs.describe_mount_targets(FileSystemId=file_system_id)["MountTargets"]
-        if mts and all(m["LifeCycleState"] == "available" for m in mts):
+        if len(mts) == expected and all(
+            m["LifeCycleState"] == "available" for m in mts
+        ):
             return
         time.sleep(_WAIT_INTERVAL_S)
     raise TimeoutError(f"EFS {file_system_id} mount targets not available")
@@ -193,24 +270,16 @@ def provision_efs(
                 if not _is_duplicate_sg(e):
                     raise
                 # A prior retry of this exact mount leaked its SG (the name is
-                # stable). Adopt it -- a fully-provisioned SG already carries the
-                # NFS ingress -- and mark it ours so teardown reaps it, instead of
-                # wedging every retry on the duplicate.
+                # stable). Adopt it and mark it ours so teardown reaps it, instead
+                # of wedging every retry on the duplicate.
                 sg_id = _find_sg_id(ec2, group_name, vpc_id)
                 created_sg = True
             else:
                 created_sg = True
-                ec2.authorize_security_group_ingress(
-                    GroupId=sg_id,
-                    IpPermissions=[
-                        {
-                            "IpProtocol": "tcp",
-                            "FromPort": 2049,
-                            "ToPort": 2049,
-                            "IpRanges": [{"CidrIp": vpc_cidr}],
-                        }
-                    ],
-                )
+            # Open NFS ingress on both the created and the adopted SG (idempotent):
+            # a leaked SG from a run that crashed before authorize has no ingress,
+            # so re-authorizing on adopt lets the next run self-heal.
+            _ensure_nfs_ingress(ec2, sg_id, vpc_cidr)
 
         fsid = efs.create_file_system(
             PerformanceMode="generalPurpose",
@@ -226,7 +295,7 @@ def provision_efs(
                     FileSystemId=fsid, SubnetId=sn, SecurityGroups=[sg_id]
                 )["MountTargetId"]
             )
-        _wait_mts_available(efs, fsid)
+        _wait_mts_available(efs, fsid, len(mt_ids))
     except Exception:
         partial = ProvisionedResources(
             region=region,
@@ -302,10 +371,9 @@ def deprovision_efs(session, provisioned: ProvisionedResources) -> List[str]:
         except Exception as e:  # noqa: BLE001
             failures.append(f"delete_file_system {provisioned.file_system_id}: {e}")
     if provisioned.created_sg and provisioned.security_group_id:
-        try:
-            ec2.delete_security_group(GroupId=provisioned.security_group_id)
-        except Exception as e:  # noqa: BLE001
-            failures.append(
-                f"delete_security_group {provisioned.security_group_id}: {e}"
-            )
+        # Retry DependencyViolation: the mount-target ENIs can still be detaching
+        # right after the FS delete, which would otherwise log a spurious orphan.
+        sg_failure = _delete_sg_with_retry(ec2, provisioned.security_group_id)
+        if sg_failure:
+            failures.append(sg_failure)
     return failures
