@@ -107,6 +107,19 @@ class TestSkyKubeEnvironmentYaml:
         uris = {s["store_uri"] for s in (data.get("assetstores") or [])}
         assert "space://assetstores/env-local" not in uris
 
+    def test_hf_pull_is_inline(self):
+        """Each step is its own pod and there is no shared_workdir, so a separate
+        hfpull step would download into a pod that is then torn down. The pull must
+        be injected into the consuming step's setup instead (as on skypilot/aws)."""
+        with open(self.ENV_PATH) as f:
+            data = yaml.safe_load(f)
+        assert (
+            "shared_workdir" not in data["config"]
+        ), "with a shared_workdir, inline is no longer required — revisit this test"
+        hf = [s for s in data["assetstores"] if s["store_uri"].endswith("/hf")]
+        assert len(hf) == 1
+        assert all(p["config"].get("inline") is True for p in hf[0]["pull"])
+
 
 class TestSkypilotManagedEnvironmentYaml:
     """Validate configurations/assets/environments/skypilot-managed/kubernetes/environment.yaml."""
