@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 from unittest.mock import MagicMock, patch
 
@@ -793,6 +794,47 @@ class TestSkypilotComputeConfigResources:
         assert env._resources_from_compute_config(
             {"num_cpus_per_node": 3}, cloud="lsf"
         ) == {"cpus": 3}
+
+    @pytest.mark.parametrize(
+        "step,cpus,memory",
+        [
+            ("hfpull", 1, "10+"),
+            ("hfpush", 1, "10+"),
+            ("s3pull", 2, "4+"),
+            ("s3push", 2, "4+"),
+        ],
+    )
+    def test_transfer_steps_keep_a_floor_on_every_cloud(self, step, cpus, memory):
+        """The builtin transfer steps carry their floor in compute_config.
+
+        A literal ``cpus: "1+"`` under the launcher's ``resources`` is passed to
+        sky.Resources verbatim and crashes the LSF cloud; dropping it instead
+        left AWS on SkyPilot's large default VM. Routed through compute_config,
+        the floor is a minimum on cloud catalogs and a bare int on LSF.
+        """
+        from pathlib import Path
+
+        import yaml
+
+        from gbserver.environment.skypilot import Skypilot
+
+        step_yaml = (
+            Path(__file__).resolve().parents[3]
+            / f"src/gbserver/builtins/steps/skypilot/{step}/step.yaml"
+        )
+        doc = yaml.safe_load(step_yaml.read_text())
+        launcher = doc["environment_configs"]["Skypilot"]["launchers"][step]
+        assert not launcher["config"]["resources"]
+        compute_config = doc["config"]["compute_config"]
+
+        env = Skypilot(event_q=asyncio.Queue())
+        assert env._resources_from_compute_config(compute_config, cloud="aws") == {
+            "cpus": f"{cpus}+",
+            "memory": memory,
+        }
+        assert env._resources_from_compute_config(compute_config, cloud="lsf") == {
+            "cpus": cpus
+        }
 
     def test_memory_floor_is_minimum_not_exact(self):
         """The cloud memory floor must be a SkyPilot minimum ("{n}+"), not an
@@ -2041,6 +2083,235 @@ class TestInlineConfigMaterialization:
             with pytest.raises(RuntimeError):
                 await env._launch_skypilot_inner(launch_id="L1", launcher_config={})
         assert calls[:2] == ["materialize", "api"]
+
+
+class TestNumNodesResolution:
+    """Resolution of the node count handed to ``sky.Task``.
+
+    ``num_nodes`` is a ``sky.Task`` field, not a ``sky.Resources`` one, so it is
+    resolved on its own rather than merged into the resource layers — and a
+    ``num_nodes`` placed under ``resources`` is discarded by SkyPilot without an
+    error, which is why that case warns rather than being silently ignored.
+    """
+
+    @staticmethod
+    def _resolve(compute_config=None, launcher_config=None, config=None, cloud=""):
+        from gbserver.environment.skypilot import _num_nodes_from_configs
+
+        return _num_nodes_from_configs(
+            compute_config or {},
+            launcher_config or {},
+            config or {},
+            cloud=cloud,
+        )
+
+    def test_defaults_to_one(self):
+        assert self._resolve() == 1
+
+    def test_reads_compute_config(self):
+        """The portable surface: k8s/lsf/runpod already read this key, so one
+        build.yaml expresses a multi-node request across environments."""
+        assert self._resolve(compute_config={"num_nodes": 4}) == 4
+
+    def test_launcher_config_overrides_compute_config(self):
+        assert (
+            self._resolve(
+                compute_config={"num_nodes": 2}, launcher_config={"num_nodes": 3}
+            )
+            == 3
+        )
+
+    def test_build_yaml_launcher_config_wins(self):
+        """Mirrors the cpus/memory precedence: last layer wins."""
+        assert (
+            self._resolve(
+                compute_config={"num_nodes": 2},
+                launcher_config={"num_nodes": 3},
+                config={"launcher_config": {"num_nodes": 4}},
+            )
+            == 4
+        )
+
+    @pytest.mark.parametrize("value", ["2", 2, 2.0])
+    def test_accepts_the_forms_yaml_produces(self, value):
+        assert self._resolve(compute_config={"num_nodes": value}) == 2
+
+    def test_null_value_is_unset(self):
+        """A bare ``num_nodes:`` key is YAML null, i.e. not set."""
+        assert self._resolve(compute_config={"num_nodes": None}) == 1
+
+    @pytest.mark.parametrize("value", ["many", "$${NUM_NODES}", [], 0, -1])
+    def test_invalid_values_raise(self, value):
+        """Fail fast: falling back to one node would run single-node and look
+        successful, e.g. on an unsubstituted parameter."""
+        with pytest.raises(ValueError, match="num_nodes"):
+            self._resolve(compute_config={"num_nodes": value})
+
+    @pytest.mark.parametrize(
+        "launcher_config,config",
+        [
+            ({"resources": None}, {}),
+            ({}, {"launcher_config": {"resources": None}}),
+            ({}, {"launcher_config": None}),
+        ],
+    )
+    def test_null_resources_does_not_crash(self, launcher_config, config):
+        """A present-but-null ``resources:`` key returns None from .get()."""
+        assert self._resolve(launcher_config=launcher_config, config=config) == 1
+
+    def test_misplaced_under_resources_is_ignored_with_a_warning(self, caplog):
+        """The trap this guards.
+
+        ``sky.Resources`` drops an unknown key without complaint, so before this
+        warning a 4-node request written under ``resources`` produced a
+        single-node run that looked entirely successful.
+        """
+        with caplog.at_level(logging.WARNING):
+            assert self._resolve(launcher_config={"resources": {"num_nodes": 4}}) == 1
+        assert "resources.num_nodes" in caplog.text
+        assert "compute_config.num_nodes" in caplog.text
+
+    def test_misplaced_in_build_yaml_resources_also_warns(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            self._resolve(
+                config={"launcher_config": {"resources": {"num_nodes": 8}}},
+            )
+        assert "resources.num_nodes" in caplog.text
+
+    def test_correctly_placed_num_nodes_does_not_warn(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            assert self._resolve(compute_config={"num_nodes": 2}) == 2
+        assert "resources.num_nodes" not in caplog.text
+
+
+class TestMultinodeSupportPreflight:
+    """LSF multi-node requires the driver-side task executor.
+
+    An older SkyPilot accepts ``num_nodes``, allocates every node, then runs the
+    task once with ``SKYPILOT_NUM_NODES=1`` and reports success — a build that
+    trained on a fraction of its allocation while looking healthy. The guard
+    converts that into a launch-time error.
+    """
+
+    @staticmethod
+    def _check(cloud, num_nodes=2, spec=object()):
+        from gbserver.environment.skypilot import _check_multinode_supported
+
+        with patch(
+            "gbserver.environment.skypilot.importlib.util.find_spec",
+            return_value=spec,
+        ):
+            _check_multinode_supported(cloud, num_nodes)
+
+    def test_passes_when_the_executor_is_present(self):
+        self._check("lsf")
+
+    def test_raises_on_lsf_without_the_executor(self):
+        from gbserver.environment.skypilot import _check_multinode_supported
+
+        with patch(
+            "gbserver.environment.skypilot.importlib.util.find_spec",
+            return_value=None,
+        ):
+            with pytest.raises(RuntimeError, match="gb-sky-v2-multinode"):
+                _check_multinode_supported("lsf", 2)
+
+    def test_raises_when_the_executor_package_is_missing(self):
+        """find_spec raises, rather than returning None, when the parent
+        package sky.skylet.executor does not exist -- the oldest SkyPilot."""
+        from gbserver.environment.skypilot import _check_multinode_supported
+
+        with patch(
+            "gbserver.environment.skypilot.importlib.util.find_spec",
+            side_effect=ModuleNotFoundError("No module named 'sky.skylet.executor'"),
+        ):
+            with pytest.raises(RuntimeError, match="gb-sky-v2-multinode"):
+                _check_multinode_supported("lsf", 2)
+
+    @pytest.mark.parametrize("cloud", ["k8s", "aws", "slurm", ""])
+    def test_other_clouds_are_not_gated(self, cloud):
+        """Only the LSF cloud has this requirement."""
+        self._check(cloud, spec=None)
+
+    def test_single_node_lsf_never_reaches_the_check(self):
+        """num_nodes == 1 works on any SkyPilot build, so it must not be gated."""
+        from gbserver.environment.skypilot import _num_nodes_from_configs
+
+        with patch(
+            "gbserver.environment.skypilot.importlib.util.find_spec",
+            return_value=None,
+        ):
+            assert _num_nodes_from_configs({}, {}, {}, cloud="lsf") == 1
+
+    def test_multinode_lsf_is_gated_through_the_resolver(self):
+        from gbserver.environment.skypilot import _num_nodes_from_configs
+
+        with patch(
+            "gbserver.environment.skypilot.importlib.util.find_spec",
+            return_value=None,
+        ):
+            with pytest.raises(RuntimeError, match="predates LSF multi-node"):
+                _num_nodes_from_configs({"num_nodes": 2}, {}, {}, cloud="lsf")
+
+
+class TestNumNodesReachesSkyTask:
+    """The end of the chain: whatever was resolved must reach ``sky.Task``."""
+
+    @pytest.fixture
+    def skypilot_env(self):
+        from gbserver.environment.skypilot import Skypilot
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        event_q = asyncio.Queue()
+        config = EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": "k8s"},
+        )
+        return Skypilot(event_q=event_q, environment_config=config)
+
+    async def _launch(self, env, launcher_config, config):
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-1")
+        mock_sky.stream_and_get = MagicMock(return_value=(1, MagicMock()))
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            launch_id = "nn-launch"
+            env._get_launch_ready_event(launch_id)
+            await env.launch_skypilot(
+                launch_id=launch_id,
+                launcher_config=launcher_config,
+                config=config,
+            )
+        return mock_sky.Task.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_default_is_single_node(self, skypilot_env):
+        kwargs = await self._launch(skypilot_env, {"run": "echo hi"}, {})
+        assert kwargs["num_nodes"] == 1
+
+    @pytest.mark.asyncio
+    async def test_compute_config_reaches_sky_task(self, skypilot_env):
+        """Before this, sky.Task was constructed without num_nodes at all, so
+        every SkyPilot build was single-node whatever the build.yaml said."""
+        kwargs = await self._launch(
+            skypilot_env, {"run": "echo hi"}, {"compute_config": {"num_nodes": 2}}
+        )
+        assert kwargs["num_nodes"] == 2
+
+    @pytest.mark.asyncio
+    async def test_launcher_override_reaches_sky_task(self, skypilot_env):
+        kwargs = await self._launch(
+            skypilot_env,
+            {"run": "echo hi", "num_nodes": 3},
+            {"compute_config": {"num_nodes": 2}},
+        )
+        assert kwargs["num_nodes"] == 3
 
 
 from gbserver.environment import skypilot as skymod

@@ -10,6 +10,7 @@ import asyncio
 import concurrent.futures
 import functools
 import glob
+import importlib.util
 import json
 import os
 import re
@@ -1283,6 +1284,112 @@ def aws_credentials_present() -> bool:
     return has_key_pair or bool(os.environ.get("AWS_PROFILE"))
 
 
+def _num_nodes_from_configs(
+    compute_config: Dict,
+    launcher_config: Dict,
+    config: Dict,
+    cloud: str = "",
+) -> int:
+    """Resolve the node count for a ``sky.Task``.
+
+    ``num_nodes`` is a ``sky.Task`` field, not a ``sky.Resources`` one, so it
+    is resolved separately from the resource layers and is NOT read from
+    ``resources``. Precedence mirrors the cpus/memory layering (last wins):
+
+    1. ``config.compute_config.num_nodes`` — the portable surface. This key
+       already exists for k8s/lsf/runpod, so one build.yaml expresses a
+       multi-node request across environments.
+    2. ``launcher_config.num_nodes``
+    3. ``config.launcher_config.num_nodes`` (from build.yaml)
+
+    A ``num_nodes`` placed under ``resources`` is dropped by
+    ``sky.Resources``, silently, so it is warned about here rather than left
+    to fail as a single-node run that looks successful.
+
+    :param compute_config: The step's raw ``compute_config`` dict.
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config (its ``launcher_config`` wins).
+    :param cloud: Normalized target cloud, used only for the preflight check.
+    :returns: Node count, at least 1.
+    :raises ValueError: If a ``num_nodes`` is not an integer >= 1.
+    """
+    num_nodes = 1
+    for source in (
+        compute_config,
+        launcher_config,
+        config.get("launcher_config", {}) or {},
+    ):
+        value = (source or {}).get("num_nodes")
+        if value is None:
+            continue
+        # Fail fast rather than fall back to one node: a bad value (an
+        # unsubstituted parameter, say) would otherwise run single-node and
+        # report success, the outcome this resolver exists to prevent.
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"num_nodes={value!r} is not an integer; set compute_config."
+                "num_nodes to a whole number of nodes >= 1."
+            ) from None
+        if parsed < 1:
+            raise ValueError(f"num_nodes={parsed} is invalid; it must be >= 1.")
+        num_nodes = parsed
+
+    # `or {}` on every layer: a present-but-null `resources:` key returns None
+    # from .get(), not the default.
+    misplaced = (launcher_config.get("resources") or {}).get("num_nodes") or (
+        (config.get("launcher_config") or {}).get("resources") or {}
+    ).get("num_nodes")
+    if misplaced is not None:
+        logger.warning(
+            "launcher_config.resources.num_nodes=%r is ignored: num_nodes is a "
+            "sky.Task field, not a sky.Resources one, and SkyPilot drops it "
+            "without error. Set compute_config.num_nodes instead. "
+            "Using num_nodes=%d.",
+            misplaced,
+            num_nodes,
+        )
+
+    if num_nodes > 1:
+        _check_multinode_supported(cloud, num_nodes)
+    return num_nodes
+
+
+def _check_multinode_supported(cloud: str, num_nodes: int) -> None:
+    """Fail fast when the installed SkyPilot cannot run multi-node on LSF.
+
+    LSF multi-node needs the driver-side task executor
+    (``sky.skylet.executor.lsf``). An older SkyPilot accepts ``num_nodes``,
+    allocates every node, then runs the task exactly once with
+    ``SKYPILOT_NUM_NODES=1`` — a build that reports success while having
+    trained on a fraction of the data it was given. Raising here turns the
+    worst available failure mode into a startup error.
+
+    :param cloud: Normalized target cloud.
+    :param num_nodes: Requested node count.
+    :raises RuntimeError: If the LSF multi-node executor is missing.
+    """
+    if cloud != "lsf":
+        return
+    # find_spec imports the parent package, so on a SkyPilot without
+    # sky.skylet.executor at all it raises instead of returning None. That is
+    # the oldest build this check exists for, so treat it as missing.
+    try:
+        spec = importlib.util.find_spec("sky.skylet.executor.lsf")
+    except ModuleNotFoundError:
+        spec = None
+    if spec is not None:
+        return
+    raise RuntimeError(
+        f"num_nodes={num_nodes} requested on the lsf cloud, but the installed "
+        "SkyPilot predates LSF multi-node support (sky.skylet.executor.lsf is "
+        "missing). Such a run would allocate every node and then execute the "
+        "task once, on one node, reporting success. Pin a SkyPilot build with "
+        "LSF multi-node support (>= gb-sky-v2-multinode)."
+    )
+
+
 # Sentinel distinguishing "shared_filesystem providers not yet computed" from a
 # computed empty list (no providers). See Skypilot._shared_fs_providers.
 _PROVIDER_UNSET = object()
@@ -2477,6 +2584,13 @@ class Skypilot(Environment):
                 **override_res,
             }
 
+            # num_nodes is a sky.Task field, not a sky.Resources one, so it is
+            # resolved separately from res_config above (a num_nodes key placed
+            # under resources: is silently dropped by sky.Resources).
+            num_nodes = _num_nodes_from_configs(
+                compute_config, launcher_config, config, cloud=cloud_group
+            )
+
             # Build cluster config overrides (docker run_options, etc.)
             # SkyPilot's top-level `config:` section maps to
             # _cluster_config_overrides on sky.Resources.
@@ -2549,6 +2663,15 @@ class Skypilot(Environment):
             # them, pin the needed dup-tolerant ones (not --net=host) here.
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
+
+            logger.info(
+                "SkyPilot resources: accelerators=%s, num_nodes=%d, image_id=%s, "
+                "cluster_config_overrides=%s",
+                res_config.get("accelerators"),
+                num_nodes,
+                image_id,
+                cluster_config_overrides or None,
+            )
 
             resources = sky.Resources(
                 infra=infra,
@@ -2699,6 +2822,7 @@ class Skypilot(Environment):
                 run=run_script,
                 envs=env_vars if env_vars else None,
                 resources=resources,
+                num_nodes=num_nodes,
             )
 
             # Attach the file/storage mounts computed above (may originate in the
@@ -2709,11 +2833,13 @@ class Skypilot(Environment):
                 task.set_storage_mounts(storage_mounts)
 
             logger.info(
-                "Launching SkyPilot cluster: name=%s target=%s step=%s cloud=%s resources=%s",
+                "Launching SkyPilot cluster: name=%s target=%s step=%s cloud=%s "
+                "num_nodes=%d resources=%s",
                 cluster_name,
                 run_metadata.get("target_name", "") if run_metadata else "",
                 run_metadata.get("targetstep_uri", "") if run_metadata else "",
                 cloud,
+                num_nodes,
                 res_config,
             )
 

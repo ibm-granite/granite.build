@@ -1,0 +1,325 @@
+######
+# distill-probe — the two cheap questions that gate the whole distillation family.
+#
+# Both are answered inside the distillation image, on one H100, in about two
+# minutes each, and neither trains anything. Run this BEFORE distill-smoke, and
+# distill-smoke before stage 1.
+#
+#   load-student   Does granite-4.0-350m load at all in this image?
+#                  It is granitemoehybrid, which makes transformers lazily fetch
+#                  kernels-community/mamba-ssm, whose CACHED build imports
+#                  GreedySearchDecoderOnlyOutput and therefore cannot import under
+#                  transformers 5.8.0 (measured, build 96868683). Every model the
+#                  reference distillation runs use is dense, which is why they never
+#                  hit this. If it fails, the fix is a prefetched HF_HOME — the steps
+#                  expose workload.hf_home — not a different student.
+#
+#   tokenizer      Does the SFT checkpoint's declared tokenizer_class actually change
+#                  how text segments? Both granite 4.x models declare GPT2Tokenizer
+#                  over a trained Sequence[Split(regex), ByteLevel] pre_tokenizer, and
+#                  align's premise is that AutoTokenizer honours the class and
+#                  discards the Split (26.1 vs 3.29 PPL/token, measured upstream).
+#                  There is counter-evidence — GPT2TokenizerFast normally loads the
+#                  backend verbatim from tokenizer.json, which is why public granite
+#                  4.x numbers look sane — so this is verify-then-decide.
+#
+#                  It decides ONE thing: whether the comparison against the recorded
+#                  after-SFT eval row needs a tokenizer-control column. Our export
+#                  pins PreTrainedTokenizerFast; the recorded row was produced from a
+#                  directory declaring GPT2Tokenizer. If the ids differ, part of any
+#                  measured delta is a tokenizer fix rather than distillation, and one
+#                  extra full-eval on the SAME weights with only tokenizer_class
+#                  rewritten separates the two.
+#
+# Neither target declares an output. Nothing is produced; the answer is in the log.
+#
+# Run:
+#   gb build start -f recipes/granite4-350m/lsf/distill-probe/build.yaml --space <space>
+#
+# Then read both logs:
+#   gb build log <build-id>
+######
+granite.build:
+  name: distill-probe
+  # No retries. A probe that needed a retry has already told you something, and a
+  # silently-retried transient would hide exactly the flakiness worth seeing.
+  retries:
+    max_retries: 0
+  targets:
+
+    # ─── load-student ───────────────────────────────────────────────────────
+    load-student:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                accelerators: "H100:1"
+                memory: 256
+            command_config:
+              # /stage/.venv is not on PATH in this image.
+              #
+              # flash_attention_2 is stated because render_sft_config.py selects it
+              # for granitemoehybrid and sft.py's verify_optimization_stack aborts
+              # every rank on a mismatch — so the SFT-control arm depends on this
+              # kernel resolving even though distill-gold never asks for it. Probing
+              # it here is what makes that asymmetry visible before it costs a run.
+              #
+              # The eager fallback runs on failure rather than instead: knowing the
+              # model loads but the FA2 kernel does not is a different diagnosis from
+              # the model not loading, and the two have different fixes.
+              # LITERAL block scalar (|), not folded (>-). A folded scalar joins
+              # lines with SPACES, which collapses a heredoc onto one line and turns
+              # this script into a syntax error before it prints anything. That is
+              # what build 77aef958 did: both targets reached RUNNING and died with
+              # no PROBE output at all. The recipe test asserts the newlines survive.
+              command: |
+                set -uo pipefail
+                /stage/.venv/bin/python - <<'PY'
+                import traceback
+                import torch, transformers
+                print("PROBE transformers", transformers.__version__, "torch", torch.__version__, flush=True)
+                from transformers import AutoConfig, AutoModelForCausalLM
+                path = "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+                cfg = AutoConfig.from_pretrained(path)
+                print("PROBE model_type", cfg.model_type,
+                      "logits_scaling", getattr(cfg, "logits_scaling", None),
+                      "tie_word_embeddings", getattr(cfg, "tie_word_embeddings", None), flush=True)
+                # The eager fallback runs after a failure rather than instead of the
+                # first attempt: "loads but FA2 does not resolve" is a different
+                # diagnosis from "does not load", and they have different fixes.
+                # FA2 is probed because render_sft_config.py selects it for
+                # granitemoehybrid and sft.py aborts every rank on a mismatch, so the
+                # SFT-control arm depends on a kernel distill-gold never asks for.
+                ok = []
+                for attn in ("flash_attention_2", "eager"):
+                    try:
+                        m = AutoModelForCausalLM.from_pretrained(
+                            path, attn_implementation=attn, dtype=torch.bfloat16)
+                        n = sum(p.numel() for p in m.parameters())
+                        print(f"PROBE LOAD_OK attn={attn} params={n}", flush=True)
+                        ok.append(attn)
+                        del m
+                    except Exception:
+                        print(f"PROBE LOAD_FAIL attn={attn}", flush=True)
+                        traceback.print_exc()
+                print(f"PROBE VERDICT loaded={','.join(ok) or 'NONE'}", flush=True)
+                print("PROBE DONE load-student", flush=True)
+                PY
+
+    # ─── tokenizer ──────────────────────────────────────────────────────────
+    tokenizer:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: 2
+            launcher_config:
+              image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                memory: 32
+            command_config:
+              # The checkpoint is copied to a scratch dir and tokenizer_class is
+              # rewritten there, so the real checkpoint is never touched. Only the
+              # small files are copied; the weights are irrelevant to tokenization.
+              #
+              # The probe strings are chosen to hit the Split regex the override would
+              # discard: contractions, a leading space, digits and a newline are where
+              # a plain ByteLevel and Sequence[Split,ByteLevel] disagree.
+              command: |
+                set -euo pipefail
+                SRC=/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2
+                WORK=$(mktemp -d)
+                echo "PROBE scratch $WORK"
+                # Only the small files. The weights are irrelevant to tokenization,
+                # and the real checkpoint is never written to.
+                mkdir -p "$WORK/asis" "$WORK/pinned"
+                for f in tokenizer.json tokenizer_config.json special_tokens_map.json \
+                         config.json vocab.json merges.txt chat_template.jinja; do
+                  if [ -f "$SRC/$f" ]; then
+                    cp "$SRC/$f" "$WORK/asis/"
+                    cp "$SRC/$f" "$WORK/pinned/"
+                  else
+                    echo "PROBE absent $f"
+                  fi
+                done
+                /stage/.venv/bin/python - "$WORK" <<'PY'
+                import json, pathlib, sys
+                work = pathlib.Path(sys.argv[1])
+                p = work / "pinned" / "tokenizer_config.json"
+                d = json.loads(p.read_text())
+                print("PROBE declared_class", d.get("tokenizer_class"), flush=True)
+                d["tokenizer_class"] = "PreTrainedTokenizerFast"
+                p.write_text(json.dumps(d, indent=2))
+                print("PROBE rewrote tokenizer_class -> PreTrainedTokenizerFast", flush=True)
+                PY
+                /stage/.venv/bin/python - "$WORK" <<'PY'
+                import pathlib, sys
+                from transformers import AutoTokenizer
+                work = pathlib.Path(sys.argv[1])
+                asis = AutoTokenizer.from_pretrained(str(work / "asis"))
+                pinned = AutoTokenizer.from_pretrained(str(work / "pinned"))
+                for name, tk in (("as-is", asis), ("pinned", pinned)):
+                    print(f"PROBE {name} class={type(tk).__name__} "
+                          f"pre_tokenizer={tk.backend_tokenizer.pre_tokenizer}", flush=True)
+                # Chosen to hit the Split regex the override would discard:
+                # contractions, a leading space, digits, a newline, and the granite
+                # role marker, which must stay a single token either way.
+                probes = [
+                    "It's 42 degrees.",
+                    " leading space",
+                    "a\nb",
+                    "don't 1234 tokenize",
+                    "<|start_of_role|>assistant<|end_of_role|>",
+                ]
+                differing = 0
+                for s in probes:
+                    a = asis(s)["input_ids"]
+                    b = pinned(s)["input_ids"]
+                    same = a == b
+                    differing += not same
+                    print(f"PROBE {'SAME' if same else 'DIFF'} {s!r}", flush=True)
+                    print(f"      as-is  {a}", flush=True)
+                    print(f"      pinned {b}", flush=True)
+                print(f"PROBE VERDICT differing={differing}/{len(probes)}", flush=True)
+                print("PROBE DONE tokenizer -- differing>0 means the recorded eval row was "
+                      "produced with a mis-segmenting tokenizer, and the comparison needs a "
+                      "tokenizer-control column", flush=True)
+                PY
+
+    # ─── tokenizer-fit ──────────────────────────────────────────────────────
+    # Which segmentation does THIS CHECKPOINT's weights actually prefer?
+    #
+    # The `tokenizer` target shows the two paths disagree. It cannot say which one
+    # the model wants, and that is the question that decides whether pinning
+    # tokenizer_class is a FIX or a REGRESSION:
+    #
+    #   * granite 4.x PRETRAINING used tokenizer.json, i.e. the trained
+    #     Sequence[Split,ByteLevel]. So the base model's embeddings correspond to the
+    #     PINNED segmentation.
+    #   * the SFT stage trained on a PRE-TOKENIZED dataset, and whatever produced it
+    #     most likely went through AutoTokenizer — i.e. the AS-IS segmentation.
+    #
+    # If both are true the SFT stage introduced a mismatch, pinning restores
+    # consistency with pretraining, and the math benchmarks should IMPROVE. If the SFT
+    # stage baked the as-is segmentation deep enough, pinning is a regression. Either
+    # way it is one number, and it costs two GPU-minutes instead of 27 eval jobs.
+    #
+    # NLL PER BYTE, not per token. Two tokenizations of the same text produce
+    # different token counts, so perplexity-per-token is not comparable between them —
+    # the coarser segmentation wins by construction. Bytes are the invariant.
+    tokenizer-fit:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                accelerators: "H100:1"
+                memory: 256
+            command_config:
+              command: |
+                set -euo pipefail
+                SRC=/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2
+                WORK=$(mktemp -d)
+                mkdir -p "$WORK/asis" "$WORK/pinned"
+                for f in tokenizer.json tokenizer_config.json special_tokens_map.json \
+                         config.json vocab.json merges.txt chat_template.jinja; do
+                  if [ -f "$SRC/$f" ]; then
+                    cp "$SRC/$f" "$WORK/asis/"
+                    cp "$SRC/$f" "$WORK/pinned/"
+                  fi
+                done
+                /stage/.venv/bin/python - "$WORK" <<'PY'
+                import json, pathlib, sys
+                p = pathlib.Path(sys.argv[1]) / "pinned" / "tokenizer_config.json"
+                d = json.loads(p.read_text())
+                d["tokenizer_class"] = "PreTrainedTokenizerFast"
+                p.write_text(json.dumps(d, indent=2))
+                PY
+                /stage/.venv/bin/python - "$SRC" "$WORK" <<'PY'
+                import json, pathlib, sys
+                import torch
+                from transformers import AutoTokenizer, AutoModelForCausalLM
+
+                src, work = sys.argv[1], pathlib.Path(sys.argv[2])
+                corpus = "/proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+                N = 200
+
+                rows = []
+                with open(corpus) as fh:
+                    for line in fh:
+                        if len(rows) >= N:
+                            break
+                        r = json.loads(line)
+                        if r.get("messages"):
+                            rows.append(r["messages"])
+                print(f"PROBE fit rows={len(rows)} from {corpus}", flush=True)
+
+                model = AutoModelForCausalLM.from_pretrained(
+                    src, dtype=torch.bfloat16, attn_implementation="flash_attention_2"
+                ).cuda().eval()
+
+                def render(tk, msgs):
+                    try:
+                        return tk.apply_chat_template(msgs, tokenize=False)
+                    except Exception:
+                        return "\n".join(m.get("content", "") for m in msgs if isinstance(m.get("content"), str))
+
+                results = {}
+                for name in ("asis", "pinned"):
+                    tk = AutoTokenizer.from_pretrained(str(work / name))
+                    tot_nll, tot_bytes, tot_tokens, skipped = 0.0, 0, 0, 0
+                    for msgs in rows:
+                        text = render(tk, msgs)
+                        nbytes = len(text.encode("utf-8"))
+                        ids = tk(text, return_tensors="pt", truncation=True, max_length=4096)["input_ids"].cuda()
+                        if ids.shape[1] < 2:
+                            skipped += 1
+                            continue
+                        with torch.no_grad():
+                            out = model(ids, labels=ids)
+                        # HF returns MEAN nll over the (n-1) predicted positions.
+                        n_pred = ids.shape[1] - 1
+                        tot_nll += out.loss.float().item() * n_pred
+                        tot_bytes += nbytes
+                        tot_tokens += ids.shape[1]
+                    results[name] = (tot_nll, tot_bytes, tot_tokens, skipped)
+                    print(f"PROBE fit {name}: class={type(tk).__name__} tokens={tot_tokens} "
+                          f"bytes={tot_bytes} skipped={skipped} "
+                          f"nll_per_byte={tot_nll/max(tot_bytes,1):.5f} "
+                          f"nll_per_token={tot_nll/max(tot_tokens-len(rows),1):.5f}", flush=True)
+
+                a = results["asis"][0] / max(results["asis"][1], 1)
+                b = results["pinned"][0] / max(results["pinned"][1], 1)
+                better = "pinned" if b < a else "asis"
+                print(f"PROBE VERDICT nll_per_byte asis={a:.5f} pinned={b:.5f} "
+                      f"prefers={better} ratio={max(a,b)/max(min(a,b),1e-9):.3f}", flush=True)
+                print("PROBE DONE tokenizer-fit -- prefers=pinned means the SFT stage "
+                      "introduced the mismatch and pinning restores consistency with "
+                      "pretraining; prefers=asis means pinning is a regression and the "
+                      "export must NOT pin for the comparison to hold", flush=True)
+                PY

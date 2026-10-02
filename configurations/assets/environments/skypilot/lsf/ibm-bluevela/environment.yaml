@@ -70,9 +70,49 @@ config:
           enroot_mounts:
             - "/dev/shm /dev/shm"
             - "/dev/infiniband /dev/infiniband"
+            # GPFS's own tools, read-only, for the weight-residency preflight
+            # (steps/distill-*/src/check_weight_residency.py). Without them the
+            # container has no mmlsattr and the preflight falls back to block-count
+            # arithmetic, which can condemn a file but never clear one and misses a
+            # partial recall. The script puts the lib/ beside the tool on
+            # LD_LIBRARY_PATH itself; this mount alone fails to load libgpfs.so.
+            # Measured on p3-r20-n3, 2026-09-25 (LSF job 1918919).
+            - "/usr/lpp/mmfs /usr/lpp/mmfs none x-create=dir,rbind,ro"
           bsub_options:
             G: grp_granite_dot_build
             M: 64G
+            # EXCLUDE BROKEN HOSTS. p2-r03-n1 accepts a GPU allocation and then
+            # fails inside torch at cuda_init with "CUDA unknown error": 3 runs,
+            # 3 failures (builds 7853d33b and b5f030cd), against 0 failures on
+            # every other host across several hundred runs. In b5f030cd the same
+            # distill-eval step succeeded on p3-r27-n2 and failed here two
+            # minutes later. p5-r03-n1, p4-r31-n2 and p6-r06-n2 are excluded on
+            # the same grounds. p5-r02-n1 is a CPU-only node with no /opt/nvme, so
+            # the provisioner's `mkdir -p /opt/nvme/$USER` (tmpdir and
+            # use_local_nvme above) exits 1 before the job starts: 8 of 8 attempts
+            # there failed on builds f856247d and feeaaa3f, 2026-09-29, while the
+            # same corpus-pin-check succeeded on p6-r12-n3. Each host is listed
+            # TWICE, short name and FQDN (see below). DROP A HOST FROM THE LIST
+            # once the node is repaired.
+            #
+            # -R is the one accumulating bsub flag (provision/lsf/instance.py:150),
+            # so this is ANDed with the derived span[] requirement rather than
+            # replacing it.
+            #
+            # Both spellings per host, because which one LSF matches on could
+            # not be checked from here (no LSF client on the API server host) and
+            # a name that matches no host makes the exclusion a silent no-op. If
+            # a job still lands on an excluded host, the name form is what to
+            # look at.
+            # NO surrounding double quotes and NO spaces, both load-bearing.
+            # sky/templates/lsf-ray.yml.j2:75 emits each bsub_options entry as
+            # `{{key}}: "{{val}}"`, so a value carrying its own double quotes
+            # produces `R: ""select[...]""` and the generated cluster YAML fails to
+            # parse (ParserError; builds 8d5000fd and 1884d108 died there before any
+            # job was submitted). And instance.py emits the directive UNQUOTED as
+            # `#BSUB -R <val>`, so a space would end the argument early — hence `&&`
+            # with no spaces around it, which LSF's select grammar accepts.
+            R: "select[hname!='p2-r03-n1'&&hname!='p2-r03-n1.bluevela.rmf.ibm.com'&&hname!='p5-r03-n1'&&hname!='p5-r03-n1.bluevela.rmf.ibm.com'&&hname!='p4-r31-n2'&&hname!='p4-r31-n2.bluevela.rmf.ibm.com'&&hname!='p6-r06-n2'&&hname!='p6-r06-n2.bluevela.rmf.ibm.com'&&hname!='p5-r02-n1'&&hname!='p5-r02-n1.bluevela.rmf.ibm.com']"
           queue_configs:
             preemptable:
               bsub_options:
@@ -83,6 +123,20 @@ assetstores:
       - mode: default
         config:
           cache_path: /tmp/hf_cache
+    push:
+      - mode: default
+        config: {}
+  # s3:// / cos:// — lets a recipe source a teacher/student model, dataset or
+  # chat template from S3-compatible object storage instead of only /proj or
+  # the Hub, via cosrclone (same mechanism the AWS and RunPod environments
+  # already use). Credentials are the store's own defaults
+  # (COS_ACCESS_KEY_ID / COS_SECRET_ACCESS_KEY, see
+  # configurations/assets/assetstores/s3/store.yaml) resolved from the space's
+  # secret manager, so nothing IBM-internal is required to use it.
+  - store_uri: space://assetstores/s3/
+    pull:
+      - mode: default
+        config: {}
     push:
       - mode: default
         config: {}

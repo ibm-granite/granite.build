@@ -24,6 +24,7 @@ config:
       type: ''
       resource_group_id: null
   compute_config:
+    num_cpus_per_node: 1
     total_memory_per_node: 10Gi
 environment_configs:
   Skypilot:
@@ -34,8 +35,12 @@ environment_configs:
         monitors:
         - skypilot_monitor
         config:
-          resources:
-            cpus: 1+
+          # The cpus floor lives in compute_config.num_cpus_per_node, not here.
+          # The engine turns it into the form each cloud accepts (_cpus_floor):
+          # a "{n}+" minimum on cloud catalogs, a bare int on slurm/lsf, whose
+          # SkyPilot cloud crashes on float("{n}+"). A literal "{n}+" in
+          # resources is passed through verbatim and broke this step on LSF.
+          resources: {}
           setup: |
             # Pin <2.0: hf 2.x pulls httpx2, whose BrotliDecoder calls
             # brotli.Decompressor.process(output_buffer_limit=...), a kwarg only

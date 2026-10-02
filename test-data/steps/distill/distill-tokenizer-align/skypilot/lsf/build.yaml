@@ -1,0 +1,53 @@
+granite.build:
+  name: distill-tokenizer-align-smoke
+  # Smoke build for the distill-tokenizer-align step on BlueVela (SkyPilot / LSF).
+  #
+  # Exercises the PLUMBING this port introduces — source delivery from the /proj
+  # checkout, PYTHONPATH onto the shared package, path absolutisation, the flag
+  # surface, and the two overlay stages — not the science.
+  #
+  # A small teacher on purpose: an overlay is TOKENIZER FILES ONLY, so the teacher's
+  # size buys nothing here, and granite-4.2-3b carries the same ChatML surface the
+  # 30b reference teacher does.
+  targets:
+    align:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      # All three declared. An undeclared output makes the resolver drop the
+      # NEWARTIFACT event and the target completes with no output AND no error.
+      outputs:
+        retagged_student:
+          uri: "env://{{ binding.path }}"
+          type: model
+        teacher_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+        student_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/distill-tokenizer-align
+          config:
+            poll_interval_seconds: 20
+            log_retrieval_interval_seconds: 20
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: 1
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                memory: 32
+            align_config:
+              teacher_model: "/proj/granite-build/g4os/models/granite-4.2-3b-nothink"
+              # A RAW, un-retagged base student, which is what this step is for: its
+              # tokenizer_config.json declares tokenizer_class GPT2Tokenizer and it
+              # carries no chat template, so the retag has real work to do. The
+              # student_overlays/* dirs are the hand-built PRODUCTS of this step and
+              # would make the retag a no-op.
+              student_model: "/proj/granite-build/g4os/granite-4.0-1b-base-prerelease-castlerock-final"
+              out_dir: "align-smoke"
+              # For real: writes the three artifacts and registers them. Set true to
+              # resolve-and-report instead, which still builds the two (cheap,
+              # tokenizer-only) overlays but skips the weights copy, the resume marker
+              # and the artifact lines — the right first run against new paths.
+              dry_run: false

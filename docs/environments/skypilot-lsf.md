@@ -5,6 +5,19 @@
 > page covers only what is LSF-specific. For the *native* LSF backend (gbserver submits `bsub`
 > itself), see [lsf.md](lsf.md) instead.
 
+## SkyPilot fork
+
+gbserver installs SkyPilot from the granite-build fork
+([cmadam/skypilot](https://github.com/cmadam/skypilot)), pinned in `pyproject.toml` to the tag
+`gb-sky-v1-stable`. Upstream SkyPilot has no LSF cloud. The fork adds the LSF cloud driver and
+LSF multi-node support, which includes the `sky.skylet.executor.lsf` task executor. gbserver
+refuses a multi-node LSF launch when that executor is missing. The fork's own history lists
+everything else it carries.
+
+`gb-sky-v1-stable` is a moving tag: it is re-pointed to the recommended v1-line commit as the
+fork advances, and a breaking change gets a new tag. Fresh installs pick up the current target.
+An existing clone keeps the old one until you run `git fetch --tags --force`.
+
 ## Compute environment
 
 With `default_cloud: lsf`, SkyPilot provisions onto an existing **LSF** cluster. It reaches the
@@ -157,6 +170,49 @@ The `env://` store is registered implicitly for **every** environment, so no `as
 needed for it — `env://` inputs/outputs work out of the box. Add an `assetstores` block only to
 configure other schemes (e.g. `hf`) or to pin a specific `env://` `load`/`push` `mode`. See
 [Asset stores](../asset-stores/README.md#store-types-and-uri-schemes).
+
+## Multi-node
+
+Set the node count in the step's `compute_config`; `launcher_config.num_nodes` (in the step or in
+build.yaml) overrides it:
+
+```yaml
+compute_config:
+  num_nodes: 2
+launcher_config:
+  resources:
+    accelerators: "H100:8"   # PER NODE -> 16 GPUs across 2 nodes
+```
+
+`num_nodes` must not go under `resources`: it is a `sky.Task` field, not a `sky.Resources` one, so
+SkyPilot drops it there silently. gbserver logs a warning and the run proceeds single-node.
+
+**How it maps to LSF.** One `bsub` requests `num_nodes * num_cpus_per_node` slots with
+`-R "span[ptile=<cpus per node>]"` so the slots are distributed one group per host — `-n` alone counts
+slots, not hosts, and without the span term LSF may satisfy the count from fewer machines. Multi-node
+jobs also get `-hl` (host-level limits), and the GPU request becomes per host rather than per task
+once there is more than one slot per host.
+
+**What the job sees.** The provisioner exports these into each node's container, derived from
+`$LSB_HOSTS`:
+
+| Variable | Meaning |
+|---|---|
+| `RANK` / `TOTAL_NODES` | This node's index, and the node count. Rank 0 is the first host LSF listed. |
+| `MASTER_ADDR` / `MASTER_PORT` | Rendezvous address; the port is derived from the LSF job id so concurrent jobs do not collide. |
+| `NUM_GPUS_PER_NODE` | GPUs detected on the node. |
+| `LSB_HOSTS` / `LSB_JOBID` | Passed through from LSF. |
+
+SkyPilot's own `SKYPILOT_NODE_RANK`, `SKYPILOT_NUM_NODES` and `SKYPILOT_NODE_IPS` are also set per
+node. A step that drives `torchrun`/`accelerate` should read `RANK`/`TOTAL_NODES`/`MASTER_ADDR` and
+pass them as CLI flags, then `unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT` before
+launching, since those launchers set their own per-process values.
+
+**Version requirement.** LSF multi-node needs a SkyPilot build with the driver-side LSF task executor
+(`sky.skylet.executor.lsf`). An older build accepts `num_nodes`, allocates every node, and then runs
+the task once with `SKYPILOT_NUM_NODES=1` — reporting success. gbserver checks for the executor and
+fails at launch rather than letting that happen, so a `num_nodes > 1` LSF build requires the pinned
+SkyPilot to be at least `gb-sky-v2-multinode`.
 
 ## Example `environment.yaml` (LSF)
 

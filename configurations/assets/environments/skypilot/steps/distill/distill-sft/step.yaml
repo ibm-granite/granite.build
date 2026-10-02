@@ -1,0 +1,503 @@
+name: distill-sft
+version: 1.0.0
+# Plain SFT on the distillation corpus, with NO teacher.
+#
+# PRIMARY ROLE: the chat-template WARM-UP stage that runs before distillation. A raw base
+# student has never seen the teacher's chat template or turn markers; this step's checkpoint
+# is what distill-gold-train actually distills from. Skipping straight to distillation on a
+# base model conflates "did not learn the template" with "did not learn from the teacher" in
+# every metric the later steps report.
+#
+# SECONDARY USE, and this one is not a control by default. With precomputed_logits_dir EMPTY
+# this step can also serve as the baseline the distillation arms are measured against: every
+# number an arm reports is a comparison, and without this baseline the honest statement about
+# a distillation run is "it got better at something, possibly just from more training on this
+# data". SET precomputed_logits_dir and the same step becomes forward-KL distillation against
+# a frozen teacher — a different arm wearing this step's name. A recipe that uses it as a
+# control, or sets precomputed_logits_dir, should say so in its own README.
+type: training
+config:
+  # ─── Source delivery ──────────────────────────────────────────────────────────
+  # IDENTICAL IN EVERY PORTED DISTILLATION STEP. The block and the delimited region
+  # of `run` below are asserted byte-identical across the ported steps by
+  # test/test_source_contract.py — one contract, learned once. Change it here and
+  # the other steps' tests fail until they are changed to match.
+  code_config:
+    # THE DEFAULT: an unauthenticated HTTPS clone of the public source repo at run time.
+    # No /proj checkout, no BlueVela-specific path — this resolves identically on any
+    # environment class that can reach github.com, which is the point: the six ported
+    # distillation steps used to depend on a pre-staged /proj clone that only existed on
+    # BlueVela, so this step (and every other one pinned to it) could not run anywhere
+    # else. It also used to point at a personal-namespace private repo, which meant an
+    # outside reader of this pin could not even inspect the code, let alone run it.
+    #
+    # THE SOURCE OF TRUTH IS github.com/laminair/gb-steps-distillation, a small public
+    # repo holding exactly the vendored entrypoints and shared package these six steps
+    # import — see its README for what it is and is not. It is NOT the shared,
+    # continuously-advancing tree this pin used to track: that one broke every ported
+    # step's expect_ref out from under it whenever its upstream author moved it, and the
+    # failure looked like a recipe bug rather than a moved dependency. This repo only
+    # advances when this pin is deliberately bumped.
+    code_dir: ""
+    # The commit code_dir is EXPECTED to be at. Recorded either way, but when this is
+    # set and the checkout is at a different commit the step says so loudly rather
+    # than training against whatever happens to be checked out. Empty => no check.
+    expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    # code_dir is empty, so this is the path actually taken: an unauthenticated HTTPS
+    # clone. Public repos only — see token_secret below for why no credential is wired
+    # up here on purpose.
+    repo: "https://github.com/laminair/gb-steps-distillation.git"
+    # Branch, tag or commit checked out after that clone. Pinned to the same commit as
+    # expect_ref rather than a branch head, so two runs a week apart are the same run
+    # rather than silently drifting — bump both together.
+    ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    # Clone destination, RELATIVE to the step's working directory.
+    workdir: "distill-code"
+    # The NAME of a space secret holding a read-scoped credential — never a value.
+    # Only consulted on the clone path. Left EMPTY on purpose: gb-steps-distillation is
+    # public, so the clone needs no credential at all.
+    token_secret: ""
+    # The interpreter. NOT a bare `python`: this image's venv is not on PATH, and a
+    # bare python resolves to the system interpreter, which has no transformers.
+    python: "/stage/.venv/bin/python"
+    # Optional bash run after the source resolves and before the workload, from the
+    # step's working directory. Empty => skipped. Not needed on this image: it
+    # already carries torch 2.8.0, transformers 5.8.0, tokenizers 0.22.1 and
+    # safetensors 0.7.0, confirmed by direct measurement on a real GPU node.
+    setup_command: ""
+
+  # ─── Allocation ───────────────────────────────────────────────────────────────
+  workload:
+    # Overrides HF_HOME for this step only. Empty leaves the launcher's value.
+    hf_home: ""
+    # ASSERTED against the GPUs actually visible in the container, not trusted: a
+    # mismatch between what the recipe asked for and what LSF granted is a run that
+    # trains at a different effective batch size than the config says.
+    gpus_per_node: 8
+    # 1, unlike distill-gold's 2. There is no vLLM server here and no student rollout, so
+    # there is no split-role allocation to size. run-sft.sh REFUSES nodes > 1, because it
+    # gets no host list and a multi-node accelerate launch would have no main_process_ip,
+    # port or machine_rank per node. Lifting that needs the provisioner's RANK/TOTAL_NODES/
+    # MASTER_ADDR fed in exactly as distill-gold does — a deliberate follow-up, not a
+    # default.
+    nodes: 1
+
+  sft_config:
+    # The RETAGGED student, for the same reason the distillation arms use it: a control has
+    # to differ from the treatment in the OBJECTIVE only. A control trained on the base
+    # student would also differ in its embedding rows for the control tokens, and the
+    # comparison would be measuring two things at once.
+    student_model_path: ""
+    # Refuse to start when the student's weights have been migrated to tape by GPFS. See
+    # src/check_weight_residency.py: metadata only (mmlsattr, else st_blocks arithmetic),
+    # never reads contents, refuses on OFFLINE or on a path it cannot stat, warns and
+    # proceeds when it cannot measure, and treats a hub id as not-a-path rather than as a
+    # finding. precomputed_logits_dir is deliberately NOT checked -- it holds no weight
+    # shards, and the trainer streams it.
+    check_weight_residency: true
+    # Proceed anyway, loudly. For when you know the recall is already under way.
+    allow_offline_weights: false
+    # distill-corpus-prep's `corpus`. Text, not tokens — sft.py tokenizes at train time —
+    # but tokenizer-specific anyway, because prep measured its length filter and its
+    # assistant-mask check in tokens.
+    corpus_path: ""
+
+    # Relative values resolve against $GB_BUILD_WORKDIR.
+    output_dir: "sft"
+
+    # ── The completion boundary, the one place this step is easy to get silently wrong.
+    #
+    # sft.py builds assistant_masks from apply_chat_template's {% generation %} markers and
+    # raises if the resulting mask is all zeros. This is its FALLBACK: a literal string
+    # searched for in the rendered token ids. With distill-tokenizer-align in the pipeline
+    # the markers are present, so the fallback should never be reached — it is here for a
+    # student that arrives without them.
+    #
+    # THE TRAILING NEWLINE IS DATA, AND IT IS CARRIED AS A TWO-CHARACTER ESCAPE. gbserver
+    # fills every config string through Jinja, and its SandboxedEnvironments are built
+    # without keep_trailing_newline, so Jinja strips exactly one trailing newline from each
+    # VALUE. A real newline here would therefore never reach the container:
+    #
+    #     '<|im_start|>assistant\n'  ->  '<|im_start|>assistant'
+    #
+    # which masks a span one token off, trains, and reports success — measured on
+    # distill-gold (build d8470f14) and fixed there the same way. So this is SINGLE-quoted
+    # YAML holding a literal backslash-n, which has no trailing whitespace for anything to
+    # strip, and the launcher decodes it once inside the container.
+    response_template: '<|im_start|>assistant\n'
+
+    max_length: 4096
+
+    # ── Optimization. Same keys and same defaults as distill-gold, deliberately: a control
+    # that trains at a different batch size or learning rate than the treatment is not a
+    # control.
+    per_device_train_batch_size: 1
+    gradient_accumulation_steps: 8
+    learning_rate: "1e-6"
+    num_train_epochs: 1
+    save_steps: 100
+    seed: 42
+    # auto | never | require. The trainer resumes on the mere PRESENCE of a checkpoint
+    # directory, so this is enforced as preflight validation instead of trusted.
+    resume: auto
+    # Relative resolves against the delivered checkout, where upstream keeps it —
+    # gb-steps-distillation ships exactly one deepspeed config, under
+    # distill-gold-train's own directory (steps/distill-gold-train/configs/
+    # deepspeed/) rather than a shared top-level configs/ -- distill-sft has
+    # no config of its own and reuses that one. configs/distillation/deepspeed/
+    # was the pre-port path (an in-image /opt copy that does not exist in this
+    # image), and stayed here as a stale default through the port -- confirmed
+    # missing on a real run (build 30e46247: "deepspeed config not found").
+    #
+    # It is an ACCELERATE config, not a bare DeepSpeed one, and it is load-bearing: its own
+    # header records a predecessor whose `offload_param  offload_param_device: none` parsed
+    # as ONE key, so the setting was silently dead. A typo in this file does not fail loudly.
+    deepspeed_config: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+
+    # ── Memory. Off by default because both are model-specific and the second is narrower
+    # than its name suggests.
+    #   use_liger_memory_opt  fused linear+CE loss, no model-internal patching.
+    #   use_liger_swiglu_mlp  monkey-patches GraniteSWAMLP.forward. Needed only for
+    #                         long-context (>=64K) GraniteSWA training, costs ~2-3x MLP
+    #                         forward, and applies to no model this collection trains.
+    # Rendered as --flag/--no-flag PAIRS. This step is where that house rule was learned:
+    # jinja renders a YAML boolean with PYTHON casing, so `--use-liger-memory-opt {{ ... }}`
+    # reached the script as the literal string `False`. Nothing errors, and a shell test
+    # against "true" is then false forever — silently, in both directions.
+    use_liger_memory_opt: false
+    use_liger_swiglu_mlp: false
+
+    # ── Off-policy KD from precomputed logits. SETTING THIS STOPS THIS BEING A CONTROL.
+    # It becomes forward-KL distillation against a frozen teacher — the
+    # distill-logit-precompute arm. Empty on purpose.
+    precomputed_logits_dir: ""
+    kd_top_k: 256
+    kd_weight: 1.0
+    ce_weight: 0.0
+    kd_temperature: 1.0
+
+    # Debug knob: -1 means the whole corpus.
+    max_dataset_size: -1
+
+    # Escape hatch for the long tail of CustomSFTConfig. Merged UNDER the keys above, so a
+    # collision with an explicit contract key is an error rather than a silent winner.
+    extra_config_yaml: ""
+
+  # ─── Experiment tracking ──────────────────────────────────────────────────────
+  # ALL FIVE DEFAULT TO EMPTY, which means tracking off. A step that invented a project
+  # name would log every recipe's runs into one bucket named by whoever wrote this file.
+  #
+  # A PARTIAL config aborts the run rather than being completed with a guess: neither
+  # backend fails on an incomplete config — they log to their own defaults — which is how a
+  # multi-day run ends up somewhere nobody looks.
+  #
+  # MEASURED CAVEAT for this image: clearml and wandb are BOTH ABSENT from
+  # kd-sandbox-distill:0.1.0-uv. tracking.py imports them lazily and only when a project is
+  # configured, so empty is safe — but setting any of these five here would fail at import.
+  tracking:
+    clearml_project: ""
+    clearml_run_name: ""
+    wandb_entity: ""
+    wandb_project: ""
+    wandb_run_name: ""
+
+outputs:
+  required:
+    checkpoint:
+      type: model
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+    default_launcher: train
+    launchers:
+      train:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          resources: {}
+          file_mounts:
+            src: src
+          envs:
+            # NO HF_HUB_OFFLINE: this step LOADS A MODEL, and the `kernels` package resolves
+            # kernels-community/causal-conv1d through the Hub API at load time, which offline
+            # mode turns into OfflineModeIsEnabled after the load has begun (measured on
+            # distill-eval, build 15267e81). distill-gold, which trains on this same image,
+            # sets HF_HOME and leaves the Hub reachable.
+            HF_HOME: /opt/hf-cache
+            # Fetch any required hub kernel that is not already in the image's cache,
+            # inside the job. run-sft.sh PREFLIGHTS the kernel list and refuses without
+            # this, which is the right design: the Mamba2 pair and the FA2 fallback are
+            # resolved at import time, so a cold cache otherwise raises AFTER the
+            # allocation is up. Measured here (build 0e60920a): the image caches
+            # kernels-community/{mamba-ssm,causal-conv1d} but NOT
+            # kernels-community/flash-attn2, which is transformers' FA2 fallback for an
+            # environment with no flash_attn package — and the renderer selects
+            # attn_implementation: flash_attention_2 for a granite student.
+            #
+            # This costs a hub fetch per run, because /opt/hf-cache lives in the container
+            # and does not persist. The better answer for repeated production runs is a
+            # WARM SHARED CACHE, which upstream ships a script for:
+            #   KERNEL_REPOS=kernels-community/flash-attn2 \
+            #     bash scripts/bluevela/prefetch-kernels.sh
+            # run once out of band against a persistent HF_HOME (workload.hf_home). Doing
+            # that and dropping this variable is a strict improvement; it is not the
+            # default here because it needs a writable shared cache this step cannot
+            # assume.
+            GOLD_PREFETCH_KERNELS: "1"
+            PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+            DS_SKIP_CUDA_CHECK: "1"
+            OMP_NUM_THREADS: "8"
+          run: |
+            echo "=== distill-sft on $(hostname) ==="
+
+            # --- distill source delivery: BEGIN (identical in all ported steps) ---
+            # `set -eu` is already in effect: the launcher prefixes it.
+            CODE_DIR="{{ config.code_config.code_dir }}"
+            REPO="{{ config.code_config.repo }}"
+            REF="{{ config.code_config.ref }}"
+            PYBIN="{{ config.code_config.python }}"
+            WORK="${GB_BUILD_WORKDIR:-$PWD}"
+
+            if [ -n "$CODE_DIR" ] && [ -d "$CODE_DIR/src/gb_steps_post_training" ]; then
+              echo "distill: source = filesystem checkout $CODE_DIR"
+              CODE_SOURCE="filesystem"
+              # A shared checkout is mutable state, so say what is actually there.
+              # Uncommitted edits are not fatal — someone may be deliberately testing
+              # a fix — but a run whose code came from a dirty tree must not report a
+              # bare commit as its provenance.
+              DIRTY="$(git -C "$CODE_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+              if [ "${DIRTY:-0}" != "0" ]; then
+                echo "distill: WARNING: $CODE_DIR has $DIRTY uncommitted change(s)." >&2
+                echo "         This run's code is NOT the commit recorded below." >&2
+              fi
+              echo "GB_STEP_METADATA_KEY:distill_code_dirty GB_STEP_METADATA_VALUE:${DIRTY:-0}"
+              # And fail loudly if the checkout is not where the recipe expects. A
+              # silently-moved shared checkout is how two runs that report the same
+              # pin end up having trained on different code.
+              EXPECT_REF="{{ config.code_config.expect_ref }}"
+              if [ -n "$EXPECT_REF" ]; then
+                AT="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
+                if [ -n "$AT" ] && [ "$AT" != "$EXPECT_REF" ]; then
+                  echo "distill: FATAL: $CODE_DIR is at $AT but code_config.expect_ref" >&2
+                  echo "         is $EXPECT_REF. Either check that checkout out to the" >&2
+                  echo "         expected commit, or change expect_ref deliberately:" >&2
+                  echo "           git -C $CODE_DIR fetch --all" >&2
+                  echo "           git -C $CODE_DIR checkout $EXPECT_REF" >&2
+                  exit 1
+                fi
+              fi
+            elif [ -n "$REPO" ]; then
+              CODE_DIR="$WORK/{{ config.code_config.workdir }}"
+              CODE_SOURCE="git"
+              TOKEN_VAR="{{ config.code_config.token_secret }}"
+              # Indirect expansion, with :- so `set -u` does not abort when the space
+              # has no such secret. The dispatcher runs this with `bash <file>`, so
+              # bash-isms are available. Guarded on TOKEN_VAR itself: a public repo
+              # leaves token_secret empty, and "${!:-}" is a bash syntax error
+              # ("invalid variable name"), not an empty expansion.
+              TOKEN=""
+              if [ -n "$TOKEN_VAR" ]; then
+                TOKEN="${!TOKEN_VAR:-}"
+              fi
+              echo "distill: source = git clone $REPO (ref=${REF:-<default>}) -> $CODE_DIR"
+              rm -rf "$CODE_DIR"
+              if [ -n "$TOKEN" ]; then
+                # GIT_ASKPASS, not a token in the URL: the URL form puts the secret in
+                # argv (readable via /proc on a shared node) and persists it into
+                # .git/config on the SHARED filesystem. The helper is written 0700 into
+                # the node's own tmp and deleted immediately after use.
+                ASKPASS="$(mktemp)"
+                cat > "$ASKPASS" <<'ASKPASS_EOF'
+            #!/bin/sh
+            case "$1" in
+              Username*) printf '%s' "x-access-token" ;;
+              *)         printf '%s' "$GB_DISTILL_TOKEN" ;;
+            esac
+            ASKPASS_EOF
+                chmod 700 "$ASKPASS"
+                CLONE_RC=0
+                GB_DISTILL_TOKEN="$TOKEN" GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+                  git clone --quiet "$REPO" "$CODE_DIR" || CLONE_RC=$?
+                rm -f "$ASKPASS"
+                if [ "$CLONE_RC" != "0" ]; then
+                  echo "distill: FATAL: clone of $REPO failed (rc=$CLONE_RC) using the token in" >&2
+                  echo "         \$$TOKEN_VAR. Check that secret's scope, not this step." >&2
+                  exit 1
+                fi
+              elif [ -n "$TOKEN_VAR" ]; then
+                echo "distill: FATAL: code_config.token_secret names '$TOKEN_VAR' but this" >&2
+                echo "         space has no secret by that name. Either create that secret," >&2
+                echo "         or leave code_config.token_secret empty if $REPO is public." >&2
+                exit 1
+              else
+                # No token_secret configured at all: REPO is a public clone, same as an
+                # anonymous `git clone` from a terminal.
+                CLONE_RC=0
+                git clone --quiet "$REPO" "$CODE_DIR" || CLONE_RC=$?
+                if [ "$CLONE_RC" != "0" ]; then
+                  echo "distill: FATAL: unauthenticated clone of $REPO failed (rc=$CLONE_RC)." >&2
+                  echo "         If this repo is private, set code_config.token_secret." >&2
+                  exit 1
+                fi
+              fi
+              if [ -n "$REF" ]; then
+                git -C "$CODE_DIR" checkout --quiet "$REF"
+              fi
+              if [ ! -d "$CODE_DIR/src/gb_steps_post_training" ]; then
+                echo "distill: FATAL: $REPO@${REF:-default} has no src/gb_steps_post_training." >&2
+                exit 1
+              fi
+            else
+              echo "distill: FATAL: no source. code_config.code_dir ('$CODE_DIR') does not" >&2
+              echo "         contain src/gb_steps_post_training, and code_config.repo is empty." >&2
+              exit 1
+            fi
+
+            # The package ROOT, not the distillation/ directory: every module is
+            # imported by its full dotted path, so a flat path does not resolve. The
+            # absence of this export is what killed two upstream jobs at import time.
+            export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
+            # Lineage. A filesystem checkout is mutable and a clone may name a branch,
+            # so record the resolved commit either way. NEVER fail the build for
+            # metadata — and written as a full if/fi rather than `[ -n "$X" ] && echo`,
+            # which under `set -e` aborts the run when X is empty.
+            CODE_SHA="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
+            if [ -n "$CODE_SHA" ]; then
+              echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:$CODE_SHA"
+            else
+              echo "distill: WARNING: $CODE_DIR is not a git checkout, so this run has no" >&2
+              echo "         record of which code ran." >&2
+            fi
+            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:$CODE_SOURCE"
+            {% if config.code_config.setup_command %}
+            echo "distill: running setup_command in $(pwd)"
+            {{ config.code_config.setup_command }}
+            {% endif %}
+            # --- distill source delivery: END
+
+            # Absolutise before the marker: the monitor hands this path to the env:// store,
+            # possibly from another host, and a relative env: URI is rejected at config load.
+            OUT_DIR="{{ config.sft_config.output_dir }}"
+            case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
+
+            # A relative deepspeed config resolves against the delivered checkout.
+            DS_CONFIG="{{ config.sft_config.deepspeed_config }}"
+            case "$DS_CONFIG" in /*) ;; *) DS_CONFIG="$CODE_DIR/$DS_CONFIG" ;; esac
+            if [ ! -f "$DS_CONFIG" ]; then
+              echo "distill: FATAL: deepspeed config not found at $DS_CONFIG" >&2
+              echo "         sft_config.deepspeed_config is resolved against the delivered" >&2
+              echo "         checkout when relative. gb-steps-distillation keeps its one" >&2
+              echo "         deepspeed config under steps/distill-gold-train/configs/deepspeed/." >&2
+              exit 1
+            fi
+
+            # Decode the response template's escape into the real character it stands for.
+            # The trailing newline IS the data — it is where loss masking begins — and it
+            # cannot cross gbserver's config fill as a real newline (Jinja strips one). The
+            # sentinel is not decoration: `$(...)` strips trailing newlines too, so printf's
+            # output is terminated with a character that is then removed.
+            RT_RAW='{{ config.sft_config.response_template }}'
+            RESPONSE_TEMPLATE="$(printf '%b.' "$RT_RAW")"
+            RESPONSE_TEMPLATE="${RESPONSE_TEMPLATE%.}"
+
+            # The image's venv is NOT on PATH by default, and run-sft.sh launches the
+            # trainer through a BARE `accelerate` (ACCELERATE="${ACCELERATE:-accelerate}").
+            # Without this the run reaches the launch and dies with
+            # `accelerate: command not found`, rc=127, after the model has been resolved
+            # and the kernels fetched (build 75fa47d2). distill-gold exports the same line
+            # for the same reason; the dispatcher runs this with `bash <file>` (non-login),
+            # so the export sticks — a login shell would re-run /etc/profile and drop it.
+            export PATH=/stage/.venv/bin:$PATH
+            # And name it explicitly too, via the script's own guarded knob, so the launch
+            # does not depend on PATH order alone.
+            export ACCELERATE="$(dirname "$PYBIN")/accelerate"
+
+            # Tell run-sft.sh where the shared package and the shell lib are.
+            #
+            # It resolves each from EITHER the image layout ($STEP_HOME/vendor/...) or
+            # $CHECKOUT_ROOT/..., and a non-image step has no vendor/ tree — so the first
+            # run died with `cd: .../src/vendor/gb_steps_post_training/distillation: No such
+            # file or directory` and `pkg root : <unresolved>` (build 739898ab).
+            #
+            # Exporting CHECKOUT_ROOT does NOT work and was tried (build 07b9e09a): the
+            # script guards STEP_HOME, SFT_SRC and LIB_DIR against the environment
+            # (`${VAR:-...}`), but computes CHECKOUT_ROOT UNCONDITIONALLY as three levels
+            # above STEP_HOME — which assumes the step directory sits inside the checkout,
+            # as it does when upstream executes the rendered command in place. Here
+            # STEP_HOME is $GB_BUILD_WORKDIR/src, so that lands on a build directory.
+            #
+            # SFT_SRC and LIB_DIR are the guarded knobs, and the script's own comment says
+            # SFT_SRC is meant to be set from outside ("a step that reads another step's env
+            # var is a step you can misconfigure"). Setting them also fixes PYTHONPATH,
+            # which the script derives as $SFT_SRC/../.. — the package ROOT, whose absence
+            # killed two upstream jobs at import time.
+            export SFT_SRC="$CODE_DIR/src/gb_steps_post_training/distillation"
+            export LIB_DIR="$CODE_DIR/steps/distill-sft/src/lib"
+
+            # Weights on tape read back at recall speed, inside the allocation. Metadata
+            # only; refuses only on an authoritative OFFLINE. Every node runs it, because a
+            # rank-0-only refusal would leave the other ranks on a dead rendezvous.
+            {% if config.sft_config.check_weight_residency %}
+            "$PYBIN" ./src/check_weight_residency.py \
+              {% if config.sft_config.allow_offline_weights %}--allow-offline{% endif %} \
+              "student={{ config.sft_config.student_model_path }}"
+            {% endif %}
+
+            PYBIN="$PYBIN" bash ./src/run-sft.sh \
+              --student-model-path "{{ config.sft_config.student_model_path }}" \
+              --corpus-path "{{ config.sft_config.corpus_path }}" \
+              --output-dir "$OUT_DIR" \
+              --response-template "$RESPONSE_TEMPLATE" \
+              --max-length {{ config.sft_config.max_length }} \
+              --per-device-train-batch-size {{ config.sft_config.per_device_train_batch_size }} \
+              --gradient-accumulation-steps {{ config.sft_config.gradient_accumulation_steps }} \
+              --learning-rate "{{ config.sft_config.learning_rate }}" \
+              --num-train-epochs {{ config.sft_config.num_train_epochs }} \
+              --save-steps {{ config.sft_config.save_steps }} \
+              --seed {{ config.sft_config.seed }} \
+              --resume {{ config.sft_config.resume }} \
+              --deepspeed-config "$DS_CONFIG" \
+              {% if config.sft_config.use_liger_memory_opt %}--use-liger-memory-opt{% else %}--no-use-liger-memory-opt{% endif %} \
+              {% if config.sft_config.use_liger_swiglu_mlp %}--use-liger-swiglu-mlp{% else %}--no-use-liger-swiglu-mlp{% endif %} \
+              --precomputed-logits-dir "{{ config.sft_config.precomputed_logits_dir }}" \
+              --kd-top-k {{ config.sft_config.kd_top_k }} \
+              --kd-weight {{ config.sft_config.kd_weight }} \
+              --ce-weight {{ config.sft_config.ce_weight }} \
+              --kd-temperature {{ config.sft_config.kd_temperature }} \
+              --max-dataset-size {{ config.sft_config.max_dataset_size }} \
+              --extra-config-yaml "{{ config.sft_config.extra_config_yaml }}" \
+              --gpus-per-node {{ config.workload.gpus_per_node }} \
+              --nodes {{ config.workload.nodes }} \
+              --hf-home "{{ config.workload.hf_home }}" \
+              --clearml-project "{{ config.tracking.clearml_project }}" \
+              --clearml-run-name "{{ config.tracking.clearml_run_name }}" \
+              --wandb-entity "{{ config.tracking.wandb_entity }}" \
+              --wandb-project "{{ config.tracking.wandb_project }}" \
+              --wandb-run-name "{{ config.tracking.wandb_run_name }}"
+
+            echo "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:${OUT_DIR}"
+    monitors:
+      skypilot_monitor:
+        # `periodic` retrieval, like distill-gold: a training run lasts far longer than the
+        # library default on_completion mode surfaces anything for, so a stalled run would
+        # look identical to a slow one.
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
+          extra_event_configs:
+          # TRL logs a metrics dict, the same shape distill-gold pins against.
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "'loss':"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: "\\{'loss'.+"

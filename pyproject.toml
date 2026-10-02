@@ -91,7 +91,7 @@ thirdparty = [
     "asyncssh",	# SSH tunnel util (also in [ibm]); here so non-ibm CI can test it
     "docker>=7.0.0",
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
-    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override + LsfCommandRunner rsync timeout fix. gb-sky-v1-stable is a moving alias for the recommended v1-line commit (re-pointed as the fork advances, like a docker minor tag); a breaking jump gets a new tag. Fresh installs re-resolve it; cached clones need `git fetch --tags --force`.
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # granite-build fork, moving tag: see docs/environments/skypilot-lsf.md#skypilot-fork
     "wandb",
 ]
 # Tier 3: IBM-specific — requires IBM infrastructure (cloud, cluster, Artifactory)
@@ -107,7 +107,7 @@ ibm = [
     "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg[binary]>=3.2",
-    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override + LsfCommandRunner rsync timeout fix. gb-sky-v1-stable is a moving alias for the recommended v1-line commit (re-pointed as the fork advances, like a docker minor tag); a breaking jump gets a new tag. Fresh installs re-resolve it; cached clones need `git fetch --tags --force`.
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # granite-build fork, moving tag: see docs/environments/skypilot-lsf.md#skypilot-fork
 ]
 # gbmcp: the FastMCP server bundled at src/gbmcp. Pulled in by `standalone`, so
 # it's installed by default there; also available on its own as `[mcp]`.

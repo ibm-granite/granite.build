@@ -1,0 +1,44 @@
+# YAML-driven spec for test_skypilot_lsf_distill_gold.py (located by the test/ <->
+# test-data/ helper, so the pairing holds in both test modes; see steps/README.md).
+#
+# Runs the distill-gold step (space://steps/distill/distill-gold) on the SkyPilot
+# LSF/BlueVela environment with a small model pair, proving the multi-node path
+# end to end: two allocated nodes, per-node rank, the config rendered inside the
+# container, and a checkpoint registered by rank 0.
+targets:
+  - gold-smoke
+target_expectations:
+  - target_name: gold-smoke
+    # One workload. The env:// input pulls and the env:// output push are shared-FS
+    # no-ops, so the three inputs and one output register off their URI strings with
+    # no extra pull/push step.
+    step_count: 1
+    input_artifact_count: 3
+    output_artifact_count: 1
+    jobstats_count: 1
+    expected_steps:
+      # The trainer comes from a mutable /proj checkout, so the step records which
+      # commit ran. Asserting it here is what keeps that lineage hook honest.
+      - metadata_matches:
+          kd_sandbox_commit: "^[0-9a-f]{40}$"
+        config:
+          gold_config:
+            run_name: "gold-smoke"
+            # The reference pair: the only two overlays sharing a tokenizer whose
+            # vocabulary carries <|im_start|>, which response_template needs.
+            model_name_or_path: "/proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
+            # Pin the two settings whose wrong value corrupts a run silently
+            # rather than failing it.
+            use_liger_fused_jsd: false
+            vllm_num_servers: 0
+space_uri: ../../space
+# Only the basic run: a distillation step has no stable short RUNNING window to
+# exercise the cancellation variant against.
+tests:
+  - runner
+# No injected failure — a failed render, launch, or trainer exit fails the build,
+# so reaching SUCCESS is itself the proof the step ran end to end.
+simulate_step_failure: false
+# Budget for LSF queue time on a shared cluster plus a cold enroot import of the
+# multi-GB image (the first run on a node imports and flattens the sqsh).
+timeout_minutes: 90

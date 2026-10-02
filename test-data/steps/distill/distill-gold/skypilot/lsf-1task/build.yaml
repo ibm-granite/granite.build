@@ -1,0 +1,120 @@
+granite.build:
+  name: distill-gold-smoke-1task
+  # 2-node variant pinned to ONE LSF TASK PER HOST, matching the reference
+  # launcher's topology. This is an experiment, not a second smoke test.
+  #
+  # The plain 2-node build hangs on the first large cross-node collective. NCCL
+  # gets all the way to "Connected all rings, use ring PXN 0 GDR 1" over 8 IB
+  # HCAs (mlx5_1/mlx5_6 correctly excluded), the master resolves to an IP, and
+  # then the ZeRO-3 init broadcast never completes. A single-node control with the
+  # identical config trains fine, so the fault is specific to cross-node RDMA.
+  #
+  # One difference from the validated path remains. The reference launcher submits
+  #   -gpu "num=8/task:j_exclusive=yes:mode=shared" -n <nodes>
+  # i.e. ONE task per node. Ours defaults to cpus=4, which the provisioner turns
+  # into `-n 8 -R span[ptile=4]` — four task slots per host, with the dispatcher
+  # (and therefore the container) running inside one of them and inheriting its
+  # cgroup/NUMA scoping. HCA affinity restricted that way is a plausible reason a
+  # cross-node GDR transfer stalls while ring setup succeeds.
+  #
+  # Setting num_cpus_per_node: 1 gives `-n 2 -R span[ptile=1]` — one task per
+  # host, as the reference does. If this trains, the tasks-per-host scoping was
+  # the cause. If it still hangs, the next levers are mode=shared, then
+  # NCCL_NET_GDR_LEVEL=0, then NCCL_IB_DISABLE=1 with TCP over the ibp* NICs.
+  #
+  # Smoke build for the distill-gold step on BlueVela (SkyPilot / LSF).
+  #
+  # Exercises the plumbing — 2-node allocation, per-node rank, config rendering
+  # inside the container against the /proj checkout, checkpoint publication — not
+  # the science. Everything expensive is scaled down; the model pair is not.
+  #
+  # Why the REFERENCE pair rather than something small. GOLD compares student and
+  # teacher distributions position-by-position, so the two must share a tokenizer.
+  # Grouping the /proj overlays by tokenizer.json hash, the reference pair
+  # (granite-4.1-3b-base-hub + granite-4.2-30b) is the only pair in its family,
+  # and it is the only family whose tokenizer carries <|im_start|> — the token the
+  # step's response_template needs to locate the completion span for loss masking.
+  # A smaller pair (e.g. granite-4.0-1b-instruct-clean + granite-4.1-3b_r260401a,
+  # which do share a tokenizer with each other) uses granite-4's own chat markup
+  # instead, so the default response_template would match nothing and the loss
+  # would be computed over the wrong span — silently. Shrinking context and data
+  # is safe; shrinking the pair is not.
+  targets:
+    gold-smoke:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      # Same three lineage inputs as the lsf/ fixture and the gold-smoke recipe.
+      # Launched by hand (no buildtest.yaml), so nothing asserts these — but a
+      # diagnostic run that records nothing about what it trained from is a
+      # diagnostic you cannot compare against anything later.
+      inputs:
+        teacher_model:
+          uri: "env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.2-30b"
+          type: model
+        student_model:
+          uri: "env:///proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
+          type: model
+        training_dataset:
+          uri: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+          type: dataset
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/distill-gold
+          config:
+            # The reference run polls every 15 min; a smoke run needs completion
+            # noticed promptly.
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 2
+              num_gpus_per_node: 8
+              # The variable under test. 1 CPU/node => `-n 2 -R span[ptile=1]`,
+              # one LSF task per host, matching the reference launcher. The
+              # trainer itself needs few CPUs here (dataset_num_proc: 8 does the
+              # data work), so this costs nothing but the scoping change.
+              num_cpus_per_node: 1
+            launcher_config:
+              resources:
+                # PER NODE -> 16 GPUs across the two nodes.
+                accelerators: "H100:8"
+            gold_config:
+              run_name: gold-smoke-1task
+              model_name_or_path: "/proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
+              teacher_model_name_or_path: "/proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.2-30b"
+              # A 2000-row head slice of the reference dataset
+              # (en_sft_4.1/subsampled_0.2_shuffled_nothink.jsonl, already
+              # shuffled, so the slice is unbiased). Same schema, same tokenizer
+              # family, real multi-hundred-token completions — unlike the
+              # conveniently small rl_multidomain *_nothink files, whose assistant
+              # turns are single-character answer keys (median 1 char) rather than
+              # completions, which would both measure nothing and exercise the
+              # empty-completion path the trainer had to be patched to survive.
+              dataset_name: "/proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+              # 4x smaller than the reference 16384/4096. Sized against the actual
+              # data: completions are ~451 tokens at the median, ~936 at p90, so
+              # this truncates little while cutting activation memory sharply.
+              max_length: 4096
+              max_completion_length: 1024
+              # Checkpoint early and keep few: this proves publication works, and
+              # a 3B checkpoint is large enough not to want twenty of them.
+              save_steps: 10
+              save_total_limit: 2
+              logging_steps: 1
+              dataset_num_proc: 8
+              # Effective batch is not meaningful at this scale, so keep the step
+              # count low rather than preserving the reference 192.
+              gradient_accumulation_steps: 1
+              # Off-policy: every node trains, no vLLM server to coordinate.
+              lmbda: 0.0
+              vllm_num_servers: 0
+              # Diagnostics on, because the first 2-node attempt stalled on step 0
+              # and produced nothing: the reference launcher's
+              # TORCH_NCCL_ENABLE_MONITORING=0 disables the thread that aborts a
+              # stalled collective, so the run hung for an hour holding two H100
+              # nodes and yielded no error to read.
+              nccl_enable_monitoring: true
+              nccl_timeout_ms: 600000
+              nccl_debug: "INFO"
+              nccl_debug_subsys: "INIT,NET"

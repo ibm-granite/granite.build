@@ -1,0 +1,84 @@
+######
+# gen-smoke — does the model still write text?
+#
+# Greedy-decodes eight raw prompts from each exported checkpoint and reports, per rung,
+# the fraction of generated lines inside a run of >= 3 identical lines. Was an inline
+# `command` target in four granite4-350m recipes. The detector and the measurements
+# behind its threshold live in src/gen_smoke.py; this file only passes the configuration
+# through.
+#
+# Needs torch + transformers (present in the kd-sandbox image's venv) and one GPU, but
+# no trainer source, which is why it carries none of the distill-* steps' code_config /
+# source-delivery contract.
+######
+name: gen-smoke
+version: 1.0.0
+type: custom
+config:
+  gen_smoke_config:
+    # One "<step>:<hf_model_dir>" entry per rung, in ladder order. The LAST entry is the
+    # one gate_final_rung judges.
+    rungs: []
+    # A rung is degenerate when its mean looped fraction exceeds this.
+    max_repetition: 0.15
+    new_tokens: 256
+    # true: fail the target when the final rung is degenerate. false: report only, for
+    # a recipe whose job is to measure a whole ladder without acting on any of it.
+    gate_final_rung: true
+    # Where repetition.json is written. A relative path lands under GB_BUILD_WORKDIR.
+    output_dir: "gen-smoke"
+    python: "/stage/.venv/bin/python"
+
+outputs:
+  required:
+    repetition_report:
+      type: fileset
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+    default_launcher: gen_smoke
+    launchers:
+      gen_smoke:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          # Cloud-agnostic: the build supplies the GPU, cpus and memory via
+          # config.compute_config and config.launcher_config.resources.
+          resources: {}
+          file_mounts:
+            src: src
+          envs:
+            HF_HUB_OFFLINE: "1"
+            HF_HOME: /opt/hf-cache
+          # The rungs go into an array, one append per entry, and NOT into a
+          # backslash-continued argument list. Jinja block tags are not trimmed here, so
+          # every one of them leaves a blank line where it stood, and a blank line after
+          # a `\` ends the command -- bash then runs the next rung as a program name.
+          # That is build bb779f1f: `line 26: 500:/proj/.../export-500: No such file or
+          # directory`, python reached with no rungs, and `bash -n` green throughout,
+          # because `500:/path` is a valid command. Blank lines BETWEEN array appends
+          # are inert, which is the whole point.
+          run: |
+            set -euo pipefail
+            echo "=== gen-smoke on $(hostname) ==="
+            WORK="${GB_BUILD_WORKDIR:-$PWD}"
+            OUT_DIR="{{ config.gen_smoke_config.output_dir }}"
+            case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
+            mkdir -p "$OUT_DIR"
+            RUNGS=()
+            {% for rung in config.gen_smoke_config.rungs %}
+            RUNGS+=("{{ rung }}")
+            {% endfor %}
+            "{{ config.gen_smoke_config.python }}" ./src/gen_smoke.py \
+              "$OUT_DIR/repetition.json" \
+              "{{ config.gen_smoke_config.max_repetition }}" \
+              "{{ config.gen_smoke_config.new_tokens }}" \
+              "{{ 'true' if config.gen_smoke_config.gate_final_rung else 'false' }}" \
+              "${RUNGS[@]}"
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot
