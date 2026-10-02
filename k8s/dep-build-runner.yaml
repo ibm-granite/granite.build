@@ -38,6 +38,17 @@ spec:
         '{{ k }}': '{{ v }}'
         {%- endfor %}
     spec:
+      # Stay off subnets that can't reach BlueVela SSH: a sentinel pod labelled
+      # llmbuild/bluevela-ssh=broken marks its whole subnet (no-op without one).
+      # Pod anti-affinity, since cluster admission overwrites required node affinity.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                llmbuild/bluevela-ssh: broken
+            namespaceSelector: {}
+            topologyKey: ibm-cloud.kubernetes.io/subnet-id
       containers:
       - name: gbserver-build-runner
         image: '{{ build_runner_image }}'

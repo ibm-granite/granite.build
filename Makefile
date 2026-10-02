@@ -810,18 +810,6 @@ openshift-login:
 		echo "We assume that you are already logged in"; \
 	fi
 
-.PHONY: update-deployment
-update-deployment: openshift-login
-	@cat k8s/${GB_ENVIRONMENT_LOWER}/dep-gbserver-rest-server.yaml | sed "s/gbserver:latest/gbserver:commit-${GIT_COMMIT}/"
-	@echo
-	@echo '-------------------'
-	$(eval RIS3_K8S_NAMESPACE := granite-build-${GB_ENVIRONMENT_LOWER})
-	@echo "Deploying to ${RIS3_K8S_NAMESPACE}!"
-	@echo 'We will replace the current deployments with yamls similar to the one above. Please check and confirm:'
-	@$(MAKE) ask-user-to-confirm
-	oc project ${RIS3_K8S_NAMESPACE}
-	cat k8s/${GB_ENVIRONMENT_LOWER}/dep-gbserver-rest-server.yaml | sed "s/gbserver:latest/gbserver:commit-${GIT_COMMIT}/" | oc replace -f -
-
 .PHONY: update-deployment-vpc
 update-deployment-vpc:
 	@cat k8s/chart/values-${GB_ENVIRONMENT_LOWER}.yaml | sed "s/gbserver:latest/gbserver:commit-${GIT_COMMIT}/"
