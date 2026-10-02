@@ -451,7 +451,7 @@ test-g4os:
 .PHONY: cicd-skypilot-pr
 cicd-skypilot-pr: test-g4os
 
-# --- Local infrastructure (SLURM + S3) ---
+# --- Local infrastructure (SLURM + Kubernetes + S3) ---
 
 .PHONY: slurm-setup
 slurm-setup:
@@ -462,6 +462,18 @@ slurm-setup:
 slurm-teardown:
 	source .venv/bin/activate;\
 	bash scripts/slurm/teardown-slurm.sh
+
+# Local kind Kubernetes cluster (via `sky local up`) for the skypilot/kubernetes
+# build tests. Switches the current kube context to kind-skypilot; see the script.
+.PHONY: kube-setup
+kube-setup:
+	source .venv/bin/activate;\
+	bash scripts/kube/setup-kind.sh
+
+.PHONY: kube-teardown
+kube-teardown:
+	source .venv/bin/activate;\
+	bash scripts/kube/teardown-kind.sh
 
 # Local S3-compatible store (SeaweedFS) for the SLURM demo's artifact push.
 # Demo-only — keep out of CI setup targets (Docker Hub anonymous rate limit).
