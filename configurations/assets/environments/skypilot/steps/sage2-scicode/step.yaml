@@ -1,6 +1,6 @@
 name: sage2-scicode
 version: 0.1.0
-# Sage2 benchmark: SciCode, pass@1[avg-of-2] subtask accuracy.
+# Sage2 benchmark: SciCode, pass@1 subtask accuracy.
 #
 # ONE STEP PER SAGE2 BENCHMARK. Every steps/sage2-*/ template has the same shape and
 # differs only in `name`, the BENCHMARK id passed to sage2-evals, and its defaults;
@@ -41,7 +41,7 @@ config:
     # SMOKE KNOB: score only the first N problems (the dataset's order, so two smoke
     # runs are comparable). Empty = all 65 (288 evaluated subtasks).
     limit: ""
-    # pass@1[avg-of-k]: independent generations per problem. Empty = benchmark default (2).
+    # pass@1[avg-of-k]: independent generations per problem. Empty = benchmark default (1).
     repeats: ""
     # Concurrent requests to vLLM.
     workers: "64"

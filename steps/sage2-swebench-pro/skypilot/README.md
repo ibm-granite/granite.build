@@ -1,7 +1,7 @@
 # sage2-swebench-pro (SkyPilot)
 
 Scores a checkpoint on **SWE Bench Pro** (the V2 public set, 642 tasks; Sage2 metric:
-pass@1[avg-of-3] resolve rate). The job serves the model with vLLM and follows Scale's V2
+pass@1 resolve rate). The job serves the model with vLLM and follows Scale's V2
 locked protocol ([SWE-bench_Pro-os](https://github.com/scaleapi/SWE-bench_Pro-os) v2.0.0):
 mini-swe-agent with the protocol's tool-calling config works each task's `instruction.md`
 in one enroot sandbox of the task image, with a 50-minute budget. Its staged `git diff`
@@ -25,7 +25,7 @@ steps:
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
 | `limit` | `""` (all 642) | **Smoke knob:** first N instances by `instance_id`. |
-| `repeats` | `""` (3) | Independent agent runs per instance (avg-of-k). |
+| `repeats` | `""` (1) | Independent agent runs per instance (avg-of-k). |
 | `workers` | `8` | Concurrent instances. |
 | `dataset` / `dataset_revision` | `""` | Override the dataset pinned in sage2-evals (upstream `ScaleAI/SWE-bench_Pro` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `subset=hard` (HARD-51), `agent_timeout` (s, default 2940), `step_limit`, `temperature`, `top_p`, `max_tokens`, `eval_timeout` (s, default 3000), `instances` (regex), `patch=gold`, `check=data`. |

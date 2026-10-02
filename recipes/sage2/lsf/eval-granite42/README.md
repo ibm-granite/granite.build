@@ -194,8 +194,10 @@ R=recipes/sage2/lsf/eval-granite42/build.yaml
 gb build start -f $R --param MODEL_PATH=<hf dir or hub id> --param RUN_NAME=<name>
 # Some targets only (positional; a score target brings its generate target):
 gb build start -f $R aime25 gpqa --param MODEL_PATH=...
-# Smoke: the first N examples by id, one repeat (results say smoke: true):
-gb build start -f $R --param SAGE2_LIMIT=5 --param SAGE2_REPEATS=1 ...
+# Smoke: the first N examples by id (results say smoke: true):
+gb build start -f $R --param SAGE2_LIMIT=5 ...
+# pass@k: k repeats per example (pass@1[avg-of-k] + details.pass_at_k):
+gb build start -f $R aime25 --param SAGE2_REPEATS=8 ...
 ```
 
 Generate targets take 1x H100 (`TENSOR_PARALLEL_SIZE`) and `GPU_MEMORY`=256 GB; score
@@ -258,31 +260,32 @@ mode but the target still requests one):
 ## Targets and favored configs
 
 Unless noted, the favored config is the benchmark's protocol: the model's
-`generation_config` sampling, thinking on (vLLM `--reasoning-parser auto`), the metric's
-repeat count, and the suite's upstream harness at a pinned commit.
+`generation_config` sampling, thinking on (vLLM `--reasoning-parser auto`), one repeat
+(pass@1; `SAGE2_REPEATS=k` reports pass@1[avg-of-k] plus `details.pass_at_k`), and the
+suite's upstream harness at a pinned commit.
 
 | Target | Metric | Image | Favored config / notes |
 |---|---|---|---|
-| `swebench-verified` | pass@1[avg-of-3] resolve rate | `swebench` | mini-swe-agent in enroot sandboxes, 8 workers |
-| `swebench-pro` | pass@1[avg-of-3] resolve rate | `swebench` | V2 (642 tasks); `subset=hard` = HARD-51. Deviates from Scale's harness: agent sandbox has network, verifier runs in enroot, an empty patch is scored unresolved without running the verifier. Sandboxes share the node's network and resolve `localhost` to 127.0.0.1 only: NodeBB's test server listens on IPv4, and the node's `/etc/hosts` also maps `localhost` to `::1` |
-| `swebench-multilingual` | pass@1[avg-of-3] resolve rate | `swebench` | 300 tasks. Java tests that resolve artifacts at test time fail on the environment without `SAGE2_MAVEN_MIRROR` (mirror URL still open) |
-| `terminal-bench-2.1` | pass@1[avg-of-8] resolve rate | `tbench` | Scored out of 87 of 89: `configure-git-webserver`, `git-multibranch` excluded (they ssh to localhost:22, which on the shared host network is the node's own sshd; `exclude=none` runs them). Oracle also fails `build-pov-ray` (upstream download 403) and `build-cython-ext` (unpinned `planarity` 1.0) |
+| `swebench-verified` | pass@1 resolve rate | `swebench` | mini-swe-agent in enroot sandboxes, 8 workers |
+| `swebench-pro` | pass@1 resolve rate | `swebench` | V2 (642 tasks); `subset=hard` = HARD-51. Deviates from Scale's harness: agent sandbox has network, verifier runs in enroot, an empty patch is scored unresolved without running the verifier. Sandboxes share the node's network and resolve `localhost` to 127.0.0.1 only: NodeBB's test server listens on IPv4, and the node's `/etc/hosts` also maps `localhost` to `::1` |
+| `swebench-multilingual` | pass@1 resolve rate | `swebench` | 300 tasks. Java tests that resolve artifacts at test time fail on the environment without `SAGE2_MAVEN_MIRROR` (mirror URL still open) |
+| `terminal-bench-2.1` | pass@1 resolve rate | `tbench` | Scored out of 87 of 89: `configure-git-webserver`, `git-multibranch` excluded (they ssh to localhost:22, which on the shared host network is the node's own sshd; `exclude=none` runs them). Oracle also fails `build-pov-ray` (upstream download 403) and `build-cython-ext` (unpinned `planarity` 1.0) |
 | `birdbench` | pass@1 execution match | `bird` | NeMo-Skills protocol, no evidence |
 | `tau3-bench` | pass@1 (avg of 3): mean pass^1 of airline, retail, telecom | `tau` | user simulator `aws/claude-sonnet-5` (paid). Runs the three domains itself: running it with `tau3-airline`/`-retail`/`-telecom` pays twice |
-| `tau3-airline` / `-retail` / `-telecom` / `-banking-knowledge` | pass@1 (pass^1, 4 trials) | `tau` | as above; banking uses BM25 + grep retrieval. `user_model=self judge_model=self` = no key, not comparable |
+| `tau3-airline` / `-retail` / `-telecom` / `-banking-knowledge` | pass@1 (pass^1; `SAGE2_REPEATS=k` adds pass^k) | `tau` | as above; banking uses BM25 + grep retrieval. `user_model=self judge_model=self` = no key, not comparable |
 | `bfcl-v4` | overall_accuracy | `bfcl` | web search through the IBM search MCP, not SerpAPI; one run (`SAGE2_REPEATS` ignored) |
 | `gdpval` | Elo (**approximation**) | `judged` | Elo-style score from the judged win rate vs the expert deliverables (expert = 1000), not GDPval-AA's Elo; judge `aws/claude-sonnet-5` (paid) |
 | `profbench` | overall (ProfBench-lite, judged rubrics) | `judged` | judge `aws/claude-sonnet-5` at max effort: `PROFBENCH_OPTIONS` defaults to `judge_reasoning_effort=max judge_thinking=adaptive judge_effort=max` (paid; results record the judge request) |
-| `aime25`, `hmmt-feb25` | pass@1[avg-of-4] symbolic correct | `nemoskills` | NeMo-Skills |
-| `gpqa` (Diamond) | pass@1[avg-of-2] symbolic correct | `nemoskills` | needs `HF_TOKEN` |
-| `livecodebench-v6` | pass@1[avg-of-2] accuracy | `nemoskills` | |
-| `scicode` | pass@1[avg-of-2] subtask accuracy | `nemoskills` | `prefill_fixes` (default on): the harness-supplied steps 13.6/62.1 get their full class from SciCode's `eval/data` instead of ns's bare `__init__`, which NameErrors every later step |
-| `mmlu-pro` | symbolic correct | `nemoskills` | |
+| `aime25`, `hmmt-feb25` | pass@1 symbolic correct | `nemoskills` | NeMo-Skills |
+| `gpqa` (Diamond) | pass@1 symbolic correct | `nemoskills` | needs `HF_TOKEN` |
+| `livecodebench-v6` | pass@1 accuracy | `nemoskills` | |
+| `scicode` | pass@1 subtask accuracy | `nemoskills` | `prefill_fixes` (default on): the harness-supplied steps 13.6/62.1 get their full class from SciCode's `eval/data` instead of ns's bare `__init__`, which NameErrors every later step |
+| `mmlu-pro` | 5-shot CoT symbolic correct | `nemoskills` | ns per-category validation examples, `\boxed{}` answers; `shots=0` = zero-shot |
 | `mmlu-prox-lite` | exact match (custom-extract) | `lmeval` | lm-eval 5-shot CoT, chat mode, the 11 Granite languages MMLU-ProX has (`languages=` changes it); keep the default stop strings |
 | `arena-hard-v2` | win rate | `nemoskills` | judge `aws/claude-sonnet-5`, not the official GPT-4.1, no style control (paid; a full run costs about $40-50) |
-| `ifbench` | pass@1[avg-of-2] loose accuracy | `ifbench` | NeMo-Skills + IFBench verifiers |
-| `ruler-64k` | accuracy | `nemoskills` | data generated in the job for `MODEL_PATH`'s tokenizer; thinking on (a thinking budget on top of ns's answer budgets, scored after the reasoning parser), served at 131072 |
-| `ruler-128k` | accuracy | `nemoskills` | **placeholder**: `RULER_128K_OPTIONS=enable_thinking=false` (NeMo-Skills' RULER exactly), because a 128k sample plus the thinking budget does not fit 131072. The alternative is `sample_length=<131072 - budget>` with thinking on. `""` stops the run and names both. The experiment config is still open |
+| `ifbench` | pass@1 prompt loose / strict accuracy | `ifbench` | NeMo-Skills + IFBench verifiers |
+| `ruler-64k` | accuracy | `nemoskills` | data generated in the job for `MODEL_PATH`'s tokenizer; served at 131072, thinking on up to the context cap (`max_tokens` = 131072 - prompt tokens), scored after the reasoning parser. Samples that do not fit score 0 and are logged to `ruler-64k/failures.jsonl` |
+| `ruler-128k` | accuracy | `nemoskills` | as `ruler-64k`, but thinking gets only the slack a 128k sample leaves in 131072: expect `length_before_answer` failures (score 0, logged to `ruler-128k/failures.jsonl`, counted in `results.json`). `RULER_128K_OPTIONS=enable_thinking=false` = NeMo-Skills' RULER exactly |
 
 `results.json` records the options, dataset revision, image versions, the thinking mode
 and scoring source (RULER), exclusions (Terminal-Bench) and the paid spend

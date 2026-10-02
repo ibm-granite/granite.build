@@ -1,7 +1,7 @@
 # sage2-swebench-multilingual (SkyPilot)
 
 Scores a checkpoint on **SWE Bench Multilingual** (300 instances in 9 languages: C/C++,
-Go, Java, JavaScript/TypeScript, PHP, Ruby, Rust; Sage2 metric: pass@1[avg-of-3] resolve
+Go, Java, JavaScript/TypeScript, PHP, Ruby, Rust; Sage2 metric: pass@1 resolve
 rate). Same pipeline as `sage2-swebench-verified`: the job serves the model with vLLM,
 runs mini-swe-agent (its `swebench.yaml` config) against it in one enroot sandbox per
 instance, grades each patch in a fresh sandbox with the upstream `swebench` harness and
@@ -24,7 +24,7 @@ steps:
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
 | `limit` | `""` (all 300) | **Smoke knob:** first N instances by `instance_id`. |
-| `repeats` | `""` (3) | Independent agent runs per instance (avg-of-k). |
+| `repeats` | `""` (1) | Independent agent runs per instance (avg-of-k). |
 | `workers` | `8` | Concurrent instances. |
 | `dataset` / `dataset_revision` | `""` | Override the dataset pinned in sage2-evals (upstream `SWE-bench/SWE-bench_Multilingual` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `step_limit`, `temperature`, `top_p`, `max_tokens`, `eval_timeout`, `instances` (regex), `patch=gold`, `check=data`. |

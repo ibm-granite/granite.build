@@ -1,7 +1,7 @@
 # Sage2 Granite 4.2 suite on BlueVela. Override with: gb build start --param KEY=VALUE
 #
-# Smoke run (a few instances, one repeat):
-#   --param SAGE2_LIMIT=5 --param SAGE2_REPEATS=1
+# Smoke run (a few instances):
+#   --param SAGE2_LIMIT=5
 
 # ─── Model ────────────────────────────────────────────────────────────
 # A local HF checkpoint dir, or a hub id vLLM downloads into HF_HOME.
@@ -23,7 +23,8 @@ SAGE2_IMAGE_TAU: "us.icr.io/cil15-shared-registry/sage2-evals-tau:50c7b69"
 SAGE2_IMAGE_TBENCH: "us.icr.io/cil15-shared-registry/sage2-evals-tbench:9ad9571"
 
 # ─── Scale ────────────────────────────────────────────────────────────
-# Empty = full dataset and each benchmark's own repeat count.
+# Empty = full dataset, one repeat (pass@1). SAGE2_REPEATS=k reports pass@1[avg-of-k]
+# plus details.pass_at_k.
 SAGE2_LIMIT: ""
 SAGE2_REPEATS: ""
 TENSOR_PARALLEL_SIZE: 1
@@ -119,17 +120,18 @@ SCICODE_WORKERS: 64
 SCICODE_OPTIONS: ""
 
 # ─── RULER 128k / 64k (NeMo-Skills) ───────────────────────────────────
-# Data are generated in the job for MODEL_PATH's tokenizer. Thinking is on by default
-# (a thinking budget on top of ns's answer budgets; scored after the reasoning parser),
-# and both targets serve at 131072.
+# Data are generated in the job for MODEL_PATH's tokenizer; both targets serve at
+# 131072. Thinking is on by default: each sample may generate up to the context cap
+# (max_tokens = 131072 - prompt tokens), scored after the reasoning parser. A sample
+# that does not fit (prompt over the cap, a context-length error, or the cap reached
+# before any answer) scores 0, does not stop the run, and is logged as it happens to
+# OUTPUT_ROOT/RUN_NAME/ruler-<len>/failures.jsonl. "enable_thinking=false" = ns's
+# RULER exactly; "context_cap=N" lowers the cap.
 RULER_WORKERS: 32
 RULER_OPTIONS: ""
-# ruler-128k only. A 128k sample plus the thinking budget exceeds granite-4.2-3b's
-# 131072 context, so the thinking run cannot score full-length samples. PLACEHOLDER so
-# the target runs end to end: thinking off (ns's RULER exactly). The experiment config
-# is still open; the alternative is "sample_length=N" (N = 131072 - thinking budget;
-# shorter samples with thinking on, a departure). "" makes the run stop and name both.
-RULER_128K_OPTIONS: "enable_thinking=false"
+# ruler-128k only. At 131072 thinking gets only the slack RULER leaves around a 128k
+# sample, so expect length_before_answer failures (counted in results.json).
+RULER_128K_OPTIONS: ""
 
 # ─── Chat & IF: MMLU-ProX lite (lm-eval), IFBench (NeMo-Skills) ───────
 # WORKERS = concurrent requests to vLLM. OPTIONS as in each step's README, e.g.

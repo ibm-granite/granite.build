@@ -1,6 +1,6 @@
 # sage2-terminal-bench-2.1 (SkyPilot)
 
-Scores a checkpoint on **Terminal-Bench 2.1** (Sage2 metric: pass@1[avg-of-8] resolve
+Scores a checkpoint on **Terminal-Bench 2.1** (Sage2 metric: pass@1 resolve
 rate). The job serves the model with vLLM and runs each task as a
 [harbor](https://github.com/harbor-framework/harbor) trial: the reference Terminus 2
 agent drives the model inside an enroot sandbox started from the task's prebuilt image,
@@ -23,7 +23,7 @@ steps:
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
 | `limit` | `""` (all runnable tasks) | **Smoke knob:** first N tasks by name. |
-| `repeats` | `""` (8) | Independent agent runs per task (avg-of-k). |
+| `repeats` | `""` (1) | Independent agent runs per task (avg-of-k). |
 | `workers` | `8` | Concurrent tasks. Tasks that serve on fixed ports run one at a time. |
 | `dataset` / `dataset_revision` | `""` | Override the tasks pinned in sage2-evals (upstream `harborframework/terminal-bench-2.1` at a fixed commit, checked against the published task digests). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `max_tokens`, `max_turns`, `timeout_multiplier`, `max_retries`, `tasks` (regex), `exclude` (comma list, or `none`), `agent=oracle`. |

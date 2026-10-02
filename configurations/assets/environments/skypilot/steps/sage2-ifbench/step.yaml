@@ -1,6 +1,6 @@
 name: sage2-ifbench
 version: 0.1.0
-# Sage2 benchmark: IFBench (prompt), pass@1[avg-of-2] loose accuracy.
+# Sage2 benchmark: IFBench (prompt), pass@1 loose / strict accuracy.
 #
 # ONE STEP PER SAGE2 BENCHMARK. Every steps/sage2-*/ template has the same shape and
 # differs only in `name`, the BENCHMARK id passed to sage2-evals, and its defaults;
@@ -18,7 +18,8 @@ version: 0.1.0
 # no NeMo-Run): its data preparation (allenai/IFBench test file, pinned by commit and
 # sha256), prompt, generation, IFBench's own strict/loose verifiers (at the IFBench
 # commit ns pins, baked into the image) and ns's `if` metrics. The value is the
-# prompt-level loose accuracy. Writes one results.json (schema: sage2_evals/results.py).
+# prompt-level loose accuracy; details.metrics adds prompt-level strict and the
+# instruction-level loose and strict accuracies. Writes one results.json (schema: sage2_evals/results.py).
 #
 # PHASES. So that no job holds an idle GPU, recipes run this step twice on one
 # output_dir: phase generate on a GPU (vLLM + the model's work only) and phase score
@@ -42,7 +43,7 @@ config:
     # SMOKE KNOB: score only the first N examples (in the order of the pinned prepared
     # data, so two smoke runs are comparable). Empty = all 300 prompts.
     limit: ""
-    # Independent generations per example (avg-of-k). Empty = benchmark default (2).
+    # Independent generations per example (avg-of-k). Empty = benchmark default (1).
     repeats: ""
     # Concurrent requests to vLLM (NeMo-Skills max_concurrent_requests).
     workers: "64"

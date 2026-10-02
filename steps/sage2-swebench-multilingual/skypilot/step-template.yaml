@@ -1,6 +1,6 @@
 name: sage2-swebench-multilingual
 version: 0.1.0
-# Sage2 benchmark: SWE Bench Multilingual, pass@1[avg-of-3] resolve rate.
+# Sage2 benchmark: SWE Bench Multilingual, pass@1 resolve rate.
 #
 # ONE STEP PER SAGE2 BENCHMARK. Every steps/sage2-*/ template has the same shape and
 # differs only in `name`, the BENCHMARK id passed to sage2-evals, and its defaults;
@@ -40,7 +40,7 @@ config:
     # SMOKE KNOB: score only the first N instances (sorted by instance_id, so two smoke
     # runs are comparable). Empty = all 300.
     limit: ""
-    # pass@1[avg-of-k]: independent agent runs per instance. Empty = benchmark default (3).
+    # pass@1[avg-of-k]: independent agent runs per instance. Empty = benchmark default (1).
     repeats: ""
     # Instances worked on concurrently (agent sandboxes + requests to vLLM).
     workers: "8"

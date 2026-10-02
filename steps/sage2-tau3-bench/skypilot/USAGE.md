@@ -23,7 +23,7 @@ steps:
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
 | `limit` | `""` (all 278) | **Smoke knob:** first N tasks per domain, in harness order. |
-| `repeats` | `""` (4) | Trials per task; pass^1 is averaged over them. |
+| `repeats` | `""` (1) | Trials per task; k > 1 averages pass^1 over k trials and adds pass^k (`details.pass_at_k`). |
 | `workers` | `16` | Concurrent simulations. |
 | `dataset` / `dataset_revision` | `""` | Override the task data (default: `data/tau2` of the pinned tau2-bench commit, baked into the image). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `user_model`, `user_base_url`, `user_api_key_env`, `user_reasoning_effort`, `judge_*` (same), `temperature`, `top_p`, `max_tokens`, `enable_thinking`, `max_steps`, `max_errors`, `tasks` (regex), `task_split`, `retrieval_config`, `agent=gold`. |

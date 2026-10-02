@@ -1,6 +1,6 @@
 # sage2-ifbench (SkyPilot)
 
-Scores a checkpoint on **IFBench** (prompt level; Sage2 metric: pass@1[avg-of-2] loose
+Scores a checkpoint on **IFBench** (prompt level; Sage2 metric: pass@1 loose / strict
 accuracy). The job serves the model with vLLM and runs NVIDIA NeMo-Skills' own ifbench
 pipeline against it, locally. That covers data preparation (the allenai/IFBench test file,
 pinned by commit and sha256), the generic/default prompt, generation, and IFBench's own
@@ -26,7 +26,7 @@ steps:
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
 | `limit` | `""` (all 300 prompts) | **Smoke knob:** first N examples of the pinned data. |
-| `repeats` | `""` (2) | Independent generations per example (avg-of-k). |
+| `repeats` | `""` (1) | Independent generations per example (avg-of-k). |
 | `workers` | `64` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | Override the data pinned in sage2-evals (allenai/IFBench `data/IFBench_test.jsonl` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>` (any NeMo-Skills generation override). |

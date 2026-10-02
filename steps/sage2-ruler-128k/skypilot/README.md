@@ -9,13 +9,17 @@ each task through NeMo-Skills' generation and RULER match, and writes one
 `results.json`.
 
 Thinking is on by default, a departure from NeMo-Skills' RULER, which budgets
-30-128 answer tokens with the answer prefix prefilled. Each task gets a thinking
-budget on top of its answer budget, the chat data format (no prefill), and only the
-content after vLLM's reasoning parser is scored. results.json records the mode,
-budgets and scoring source. The 128k samples plus the budget need more than 131072 tokens, more
-than granite-4.2-3b supports (no rope scaling). The run then stops and names the
-options: `sample_length=<131072 - budget>` (shorter samples, a departure) or
-`enable_thinking=false` (NeMo-Skills' RULER exactly).
+30-128 answer tokens with the answer prefix prefilled. Each sample uses the chat data
+format (no prefill) and may generate up to the context cap (`max_tokens = cap - prompt
+tokens`; the cap is the served `max_model_len` unless `context_cap=N` lowers it), and
+only the content after vLLM's reasoning parser is scored. A sample that does not fit
+(its prompt exceeds the cap, the server returns a context-length error, or generation
+hits the cap before any answer) scores 0 without stopping the run and is appended, as
+it happens, to `<output_dir>/failures.jsonl`. results.json records the cap, thinking
+mode, prompt and max-token percentiles, the failure counts by reason and task, and any
+departures. `enable_thinking=false` runs NeMo-Skills' RULER exactly.
+At `max_model_len` 131072 (granite-4.2-3b's maximum, no rope scaling) thinking gets
+only the slack RULER leaves, so expect `length_before_answer` failures.
 
 The code is the external [sage2-evals](https://github.com/laminair/sage2-evals) runtime,
 shipped as a prebuilt image (the `nemoskills` family). Nothing is built from this step.
@@ -37,9 +41,9 @@ steps:
 | `repeats` | `""` (1) | Independent generations per sample. |
 | `workers` | `32` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | A prepared RULER setup dir overrides the in-job generation. |
-| `options` | `""` | Space-separated `key=value` benchmark options: `tasks` (comma-separated subset, for debugging), `tokenizer`, `enable_thinking`, `thinking_budget`, `sample_length`, `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>`, `answers=gold`. |
+| `options` | `""` | Space-separated `key=value` benchmark options: `tasks` (comma-separated subset, for debugging), `tokenizer`, `enable_thinking`, `context_cap`, `sample_length`, `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>`, `answers=gold`. |
 | `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`sage2_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
-| `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `131072` | vLLM. The run stops if the served context is shorter than a sample plus the thinking budget. |
+| `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `131072` | vLLM. Samples that do not fit score 0 and go to `failures.jsonl`; the run stops only if the served context is shorter than the samples. |
 | `sandbox_cache` | `/proj/granite-build/g4os/sage2/enroot-cache` | Unused here (shared config contract). |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
 
@@ -72,7 +76,7 @@ the generate target's output, so it runs after it:
       uri: "env://{{ binding.path }}"
 ```
 
-Generations are kept next to it under `output/ruler/<task>/output-rs<k>.jsonl`.
+`failures.jsonl` (one line per sample scored 0 for not fitting) sits next to it. Generations are kept under `output/ruler/<task>/output-rs<k>.jsonl`.
 
 ## Developing
 

@@ -1,6 +1,6 @@
 name: sage2-mmlu-pro
 version: 0.1.0
-# Sage2 benchmark: MMLU-Pro, symbolic correct.
+# Sage2 benchmark: MMLU-Pro, 5-shot CoT symbolic correct.
 #
 # ONE STEP PER SAGE2 BENCHMARK. Every steps/sage2-*/ template has the same shape and
 # differs only in `name`, the BENCHMARK id passed to sage2-evals, and its defaults;
@@ -16,7 +16,9 @@ version: 0.1.0
 # WHAT RUNS. `sage2-evals run mmlu-pro` serves model_path with vLLM inside the
 # job and runs NVIDIA NeMo-Skills' own mmlu-pro pipeline against it, locally (no Slurm,
 # no NeMo-Run): its data preparation (upstream reads pinned), prompt, generation,
-# answer extraction and metrics. Writes one results.json
+# answer extraction and metrics. 5-shot CoT by default: ns's per-category examples
+# from MMLU-Pro's validation split, answer in \boxed{}; "shots=0" is ns's default
+# 0-shot prompt. Writes one results.json
 # (schema: sage2_evals/results.py).
 #
 # PHASES. So that no job holds an idle GPU, recipes run this step twice on one
@@ -51,7 +53,7 @@ config:
     dataset_revision: ""
     # Space-separated key=value benchmark options passed as --option, e.g.
     # "temperature=0.6 max_tokens=32768" (unset sampling = the checkpoint's generation_config),
-    # "answers=gold" (reference answers through the same grading; model_path may be "none"),
+    # "shots=0" (ns's 0-shot prompt instead of 5-shot CoT), "answers=gold" (reference answers through the same grading; model_path may be "none"),
     # "ns.<key>=<value>" (any NeMo-Skills generation override).
     options: ""
     # all | generate | score. "generate" serves the model and saves its outputs

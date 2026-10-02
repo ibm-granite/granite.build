@@ -1,6 +1,6 @@
 # sage2-livecodebench-v6 (SkyPilot)
 
-Scores a checkpoint on **LiveCodeBench v6** (Sage2 metric: pass@1[avg-of-2] accuracy):
+Scores a checkpoint on **LiveCodeBench v6** (Sage2 metric: pass@1 accuracy):
 454 problems from release v6, contests 2024-08 to 2025-05 (NeMo-Skills'
 `test_v6_2408_2505` split). The job serves the model with vLLM and runs NVIDIA
 NeMo-Skills (pinned commit) against it: its LiveCodeBench prompt and generation, then
@@ -24,7 +24,7 @@ steps:
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
 | `limit` | `""` (all 454) | **Smoke knob:** the first N problems of the split. |
-| `repeats` | `""` (2) | Independent generations per problem (avg-of-k). |
+| `repeats` | `""` (1) | Independent generations per problem (avg-of-k). |
 | `workers` | `64` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | Override the dataset pinned in sage2-evals (`livecodebench/code_generation_lite` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>` (raw NeMo-Skills overrides), `answers=gold`. |

@@ -1,6 +1,6 @@
 name: sage2-livecodebench-v6
 version: 0.1.0
-# Sage2 benchmark: LiveCodeBench v6, pass@1[avg-of-2] accuracy.
+# Sage2 benchmark: LiveCodeBench v6, pass@1 accuracy.
 #
 # ONE STEP PER SAGE2 BENCHMARK. Every steps/sage2-*/ template has the same shape and
 # differs only in `name`, the BENCHMARK id passed to sage2-evals, and its defaults;
@@ -41,7 +41,7 @@ config:
     # SMOKE KNOB: score only the first N problems (in the split's order, so two smoke
     # runs are comparable). Empty = all 454 (release v6, contests 2024-08..2025-05).
     limit: ""
-    # pass@1[avg-of-k]: independent generations per problem. Empty = benchmark default (2).
+    # pass@1[avg-of-k]: independent generations per problem. Empty = benchmark default (1).
     repeats: ""
     # Concurrent requests to vLLM.
     workers: "64"

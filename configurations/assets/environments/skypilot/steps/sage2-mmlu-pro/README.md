@@ -1,9 +1,11 @@
 # sage2-mmlu-pro (SkyPilot)
 
-Scores a checkpoint on **MMLU-Pro** (Sage2 metric: symbolic correct).
+Scores a checkpoint on **MMLU-Pro** (Sage2 metric: 5-shot CoT symbolic correct).
 The job serves the model with vLLM and runs NVIDIA NeMo-Skills' own mmlu-pro pipeline
 against it, locally: data preparation (every upstream read pinned), prompt, generation,
-answer extraction and metrics. It writes one `results.json`.
+answer extraction and metrics. It writes one `results.json`. The prompt is 5-shot CoT
+by default: NeMo-Skills' per-category examples from MMLU-Pro's validation split, with
+the answer in `\boxed{}`. `shots=0` is NeMo-Skills' default 0-shot prompt.
 
 The code is the external [sage2-evals](https://github.com/laminair/sage2-evals) runtime,
 shipped as a prebuilt image. Nothing is built from this step.
@@ -25,7 +27,7 @@ steps:
 | `repeats` | `""` (1) | Independent generations per example (avg-of-k). |
 | `workers` | `128` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | Override the data pinned in sage2-evals (upstream `TIGER-Lab/MMLU-Pro` at a fixed commit). |
-| `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>` (any NeMo-Skills generation override), `answers=gold`. |
+| `options` | `""` | Space-separated `key=value` benchmark options: `shots` (`5` or `0`), `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>` (any NeMo-Skills generation override), `answers=gold`. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `sandbox_cache` | `""` | Unused: this benchmark runs no sandbox. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |

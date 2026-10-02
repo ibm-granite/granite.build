@@ -1,6 +1,6 @@
 # sage2-swebench-verified (SkyPilot)
 
-Scores a checkpoint on **SWE Bench Verified** (Sage2 metric: pass@1[avg-of-3] resolve
+Scores a checkpoint on **SWE Bench Verified** (Sage2 metric: pass@1 resolve
 rate). The job serves the model with vLLM, runs mini-swe-agent against it in one enroot
 sandbox per SWE-bench instance, grades each patch in a fresh sandbox with the upstream
 `swebench` harness, and writes one `results.json`.
@@ -22,7 +22,7 @@ steps:
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
 | `limit` | `""` (all 500) | **Smoke knob:** first N instances by `instance_id`. |
-| `repeats` | `""` (3) | Independent agent runs per instance (avg-of-k). |
+| `repeats` | `""` (1) | Independent agent runs per instance (avg-of-k). |
 | `workers` | `8` | Concurrent instances. |
 | `dataset` / `dataset_revision` | `""` | Override the dataset pinned in sage2-evals (upstream `SWE-bench/SWE-bench_Verified` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `step_limit`, `temperature`, `top_p`, `max_tokens`, `eval_timeout`, `instances` (regex), `patch=gold`. |

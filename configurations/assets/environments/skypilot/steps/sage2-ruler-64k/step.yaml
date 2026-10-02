@@ -22,10 +22,15 @@ version: 0.1.0
 # THINKING (default on; a departure from ns/RULER, recorded in results.json). ns's RULER
 # budgets are for non-reasoning output (tokens_to_generate 30-128, answer prefix
 # prefilled). With thinking on, sage2-evals uses ns's chat data format (no prefill),
-# gives each task a thinking budget on top of its answer budget, and scores only the
-# content after vLLM's reasoning parser. A 64k sample plus that budget needs more than
-# 65536 tokens of context, so this step serves at 131072 (granite-4.2-3b's native
-# maximum). "enable_thinking=false" restores ns's RULER exactly (65536 suffices).
+# lets each sample generate up to the context cap (max_tokens = cap - prompt tokens,
+# per sample; the cap is the served max_model_len unless "context_cap=N" lowers it)
+# and scores only the content after vLLM's reasoning parser. The run does not stop on
+# a sample that does not fit: one whose prompt exceeds the cap, a context-length error
+# from the server, or a generation that hits the cap before any answer scores 0 and is
+# appended, as it happens, to <output_dir>/failures.jsonl (results.json "failures"
+# counts them by reason and task). "enable_thinking=false" runs ns's RULER exactly.
+# This step serves at 131072 (granite-4.2-3b's native maximum), so thinking
+# has about 64k tokens of headroom over a 64k sample.
 #
 # PHASES. So that no job holds an idle GPU, recipes run this step twice on one
 # output_dir: phase generate on a GPU (vLLM + the model's work only) and phase score
@@ -59,7 +64,8 @@ config:
     dataset_revision: ""
     # Space-separated key=value benchmark options passed as --option, e.g.
     # "tasks=vt,cwe" (a subset, for debugging), "tokenizer=<path>", "enable_thinking=false"
-    # (ns's RULER exactly), "thinking_budget=<tokens>", "sample_length=<tokens>" (shorter
+    # (ns's RULER exactly), "context_cap=<tokens>" (lower the per-sample cap),
+    # "max_tokens=<tokens>" (bound the generation further), "sample_length=<tokens>" (shorter
     # samples: a departure, recorded), "ns.<key>=<value>" (raw ns overrides) or
     # "answers=gold" (serves the expected answers: checks data and scoring without a GPU;
     # model_path must still name the tokenizer).
@@ -69,8 +75,9 @@ config:
     # grades them on CPU in the same output_dir (results.json). Recipes run
     # generate on a GPU target and score on a CPU-only target bound to it.
     phase: "all"
-    # vLLM. A full-length sample needs the whole context, plus the thinking budget
-    # when thinking is on; the run stops if the served context is shorter.
+    # vLLM. Samples are built to fill max_model_len; a sample that does not fit is
+    # scored 0 and logged to failures.jsonl, not fatal. The run stops only if the
+    # served context is shorter than the samples.
     tensor_parallel_size: "1"
     gpu_memory_utilization: "0.9"
     max_model_len: "131072"

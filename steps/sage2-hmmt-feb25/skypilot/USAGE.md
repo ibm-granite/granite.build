@@ -1,6 +1,6 @@
 # sage2-hmmt-feb25 (SkyPilot)
 
-Scores a checkpoint on **HMMT Feb25** (Sage2 metric: pass@1[avg-of-4] symbolic correct).
+Scores a checkpoint on **HMMT Feb25** (Sage2 metric: pass@1 symbolic correct).
 The job serves the model with vLLM and runs NVIDIA NeMo-Skills' own hmmt-feb25 pipeline
 against it, locally: data preparation (every upstream read pinned), prompt, generation,
 answer extraction and metrics. It writes one `results.json`.
@@ -22,7 +22,7 @@ steps:
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
 | `limit` | `""` (all 30 problems) | **Smoke knob:** first N examples of the pinned data. |
-| `repeats` | `""` (4) | Independent generations per example (avg-of-k). |
+| `repeats` | `""` (1) | Independent generations per example (avg-of-k). |
 | `workers` | `32` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | Override the data pinned in sage2-evals (upstream `MathArena/hmmt_feb_2025` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>` (any NeMo-Skills generation override), `answers=gold`. |

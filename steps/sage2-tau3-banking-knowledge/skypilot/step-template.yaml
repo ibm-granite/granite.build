@@ -48,8 +48,8 @@ config:
     # SMOKE KNOB: score only the first N tasks of each domain (in the harness's task
     # order, so two smoke runs are comparable). Empty = all 97.
     limit: ""
-    # Trials per task (pass^1 is averaged over them). Empty = benchmark default (4,
-    # the published protocol).
+    # Trials per task. Empty = benchmark default (1, pass^1). k > 1 reports pass^1
+    # averaged over k trials plus pass^k in details.pass_at_k.
     repeats: ""
     # Simulations run concurrently (each one agent + one user-simulator conversation).
     workers: "16"

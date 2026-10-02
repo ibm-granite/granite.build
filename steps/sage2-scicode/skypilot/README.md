@@ -1,6 +1,6 @@
 # sage2-scicode (SkyPilot)
 
-Scores a checkpoint on **SciCode** (Sage2 metric: pass@1[avg-of-2] subtask accuracy):
+Scores a checkpoint on **SciCode** (Sage2 metric: pass@1 subtask accuracy):
 the 65 test problems, 288 evaluated subtasks, with background. The job serves the
 model with vLLM and runs NVIDIA NeMo-Skills (pinned commit) against it: its multi-step
 SciCode generation, then its evaluator in NeMo-Skills' local sandbox server. The
@@ -25,7 +25,7 @@ steps:
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
 | `limit` | `""` (all 65) | **Smoke knob:** the first N problems. |
-| `repeats` | `""` (2) | Independent generations per problem (avg-of-k). |
+| `repeats` | `""` (1) | Independent generations per problem (avg-of-k). |
 | `workers` | `64` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | Override the dataset pinned in sage2-evals (`SciCode1/SciCode` at a fixed commit). |
 | `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>` (raw NeMo-Skills overrides), `answers=gold`. |

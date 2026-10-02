@@ -1,6 +1,6 @@
 name: sage2-terminal-bench-2.1
 version: 0.1.0
-# Sage2 benchmark: Terminal-Bench 2.1, pass@1[avg-of-8] resolve rate.
+# Sage2 benchmark: Terminal-Bench 2.1, pass@1 resolve rate.
 #
 # ONE STEP PER SAGE2 BENCHMARK. Every steps/sage2-*/ template has the same shape and
 # differs only in `name`, the BENCHMARK id passed to sage2-evals, and its defaults;
@@ -39,7 +39,7 @@ config:
     # SMOKE KNOB: score only the first N tasks (sorted by name, so two smoke runs are
     # comparable). Empty = every runnable task (results.json lists the excluded ones).
     limit: ""
-    # pass@1[avg-of-k]: independent agent runs per task. Empty = benchmark default (8).
+    # pass@1[avg-of-k]: independent agent runs per task. Empty = benchmark default (1).
     repeats: ""
     # Tasks worked on concurrently (task sandboxes + requests to vLLM). Tasks that serve
     # on fixed host ports run one at a time regardless.
