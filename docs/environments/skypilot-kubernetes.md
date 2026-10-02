@@ -31,11 +31,16 @@ The Kubernetes backend uses neither inline block. If you need to tune SkyPilot's
 use a `cloud_config` with a `kubernetes:` block (deep-merged into `~/.sky/config.yaml`); otherwise the
 `config:` block is minimal.
 
-### Autostop
+### Idle timeout (autodown, not autostop)
 
-Kubernetes supports autostop, but per-step `cleanup_skypilot()` already runs `sky down` after each step.
-`idle_minutes_to_autostop` (default 10) is a safety net for crashed processes; set `0` for near-immediate
-autostop or `null` to disable.
+A pod cannot be stopped, only deleted, so SkyPilot supports **autodown** on Kubernetes but not autostop —
+a plain autostop request fails every launch with "Auto-stop is not supported on Kubernetes". gbserver
+therefore applies `idle_minutes_to_autostop` on Kubernetes as autodown (`down=True`): after that many idle
+minutes the pod is deleted.
+
+Per-step `cleanup_skypilot()` already runs `sky down` after each step, so the idle timeout (default 10) is
+only a safety net that reaps a pod orphaned by a crashed gbserver. Keep it small but not `0` — `0` means
+"delete as soon as idle", which SkyPilot rounds up to 1 minute. Set `null` to disable it entirely.
 
 > **`sbatch_options` is a no-op on Kubernetes.** The per-step `sbatch_options`
 > field ([skypilot.md](skypilot.md#config-overrides-docker-sbatch_options)) is a
@@ -63,7 +68,7 @@ name: sky-kube
 type: Skypilot
 config:
   default_cloud: kubernetes
-  idle_minutes_to_autostop: 0
+  idle_minutes_to_autostop: 5   # applied as autodown on Kubernetes
 assetstores:
   - store_uri: space://assetstores/hf
     pull:
