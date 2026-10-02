@@ -131,6 +131,12 @@ class LineageNodeRef(BaseModel):
     url: Optional[str] = None
     run_id: Optional[str] = None
     job_name: Optional[str] = None
+    # Only set when node_type == "artifact". ``GraphNode`` has carried this all
+    # along and the wandb service populates it, but ``get_artifact_graph``
+    # dropped it when flattening nodes into refs -- leaving clients no way to
+    # tell a model from a dataset, so the dashboard drew every lineage input and
+    # output as a generic fileset.
+    artifact_type: Optional[str] = None
 
 
 class ArtifactRunEntry(BaseModel):

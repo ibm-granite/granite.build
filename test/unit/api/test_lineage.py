@@ -316,3 +316,94 @@ def test_get_artifact_graph_excludes_run_with_no_owner_or_namespace():
             ArtifactGraphRequest(artifact_name="dataset-x", direction="both"),
         )
     assert resp.runs == []
+
+
+def _artifact_node(node_id: str, name: str, artifact_type=None, uri=None):
+    """A graph artifact node as the wandb service emits one.
+
+    ``artifact_type`` is omitted entirely when None, which is how a payload from
+    a provider that never set it looks -- the case the tolerance test covers.
+    """
+    node = {
+        "id": node_id,
+        "node_type": "artifact",
+        "name": name,
+        "metadata": {"uri": uri} if uri else {},
+    }
+    if artifact_type is not None:
+        node["artifact_type"] = artifact_type
+    return node
+
+
+def test_get_artifact_graph_propagates_artifact_type():
+    """``artifact_type`` reaches the flattened input/output refs.
+
+    It was dropped when nodes were flattened into ``LineageNodeRef``, so clients
+    could not distinguish a model from a dataset and drew every lineage node as a
+    generic fileset. Asserts both directions: an edge into the run is an input,
+    an edge out of it is an output.
+    """
+    run = _graph_node("run-mine", MY_SPACE, "someone_else@example.com")
+    nodes = [
+        run,
+        _artifact_node("art-in", "base-model", "model", "hf:///models/org/base"),
+        _artifact_node("art-out", "eval-set", "dataset", "hf:///datasets/org/ev"),
+    ]
+    edges = [
+        {"source": "art-in", "target": "run-mine"},
+        {"source": "run-mine", "target": "art-out"},
+    ]
+    fake_service = SimpleNamespace(
+        get_artifact_graph=lambda **kw: _fake_graph_result(nodes, edges)
+    )
+    is_admin, is_member = _member_of(MY_SPACE)
+    with (
+        is_admin,
+        is_member,
+        patch.object(
+            lineage_mod, "_get_openlineage_service", return_value=fake_service
+        ),
+    ):
+        resp = lineage_mod.get_artifact_graph(
+            _fake_request("member", "member@example.com"),
+            ArtifactGraphRequest(artifact_name="base-model", direction="both"),
+        )
+
+    assert len(resp.runs) == 1
+    entry = resp.runs[0]
+    assert [(r.name, r.artifact_type) for r in entry.inputs] == [
+        ("base-model", "model")
+    ]
+    assert [(r.name, r.artifact_type) for r in entry.outputs] == [
+        ("eval-set", "dataset")
+    ]
+
+
+def test_get_artifact_graph_tolerates_missing_artifact_type():
+    """A node without ``artifact_type`` yields None rather than raising.
+
+    The field is additive: providers that never wrote it, and rows persisted
+    before it existed, must still flatten. Clients fall back to inferring the
+    type from the URI, so None has to be a supported value rather than an error.
+    """
+    run = _graph_node("run-mine", MY_SPACE, "someone_else@example.com")
+    nodes = [run, _artifact_node("art-in", "mystery", None, "s3://bucket/key")]
+    edges = [{"source": "art-in", "target": "run-mine"}]
+    fake_service = SimpleNamespace(
+        get_artifact_graph=lambda **kw: _fake_graph_result(nodes, edges)
+    )
+    is_admin, is_member = _member_of(MY_SPACE)
+    with (
+        is_admin,
+        is_member,
+        patch.object(
+            lineage_mod, "_get_openlineage_service", return_value=fake_service
+        ),
+    ):
+        resp = lineage_mod.get_artifact_graph(
+            _fake_request("member", "member@example.com"),
+            ArtifactGraphRequest(artifact_name="mystery", direction="both"),
+        )
+
+    assert len(resp.runs) == 1
+    assert resp.runs[0].inputs[0].artifact_type is None
