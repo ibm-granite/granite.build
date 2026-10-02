@@ -355,7 +355,10 @@ class TestMonitorTreatsTeardownAsSuccess:
             patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
             pytest.raises(WorkloadFailedException),
         ):
-            await lsf_env._poll_skypilot_job(launch_id=launch_id, poll_interval=0)
+            # No grace: a genuinely lost cluster fails after the minimum polls.
+            await lsf_env._poll_skypilot_job(
+                launch_id=launch_id, poll_interval=0, poll_failure_grace_seconds=0
+            )
 
 
 def make_skypilot_env(config):

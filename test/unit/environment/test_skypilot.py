@@ -1900,7 +1900,10 @@ class TestInlineConfigMaterialization:
                 "aws_credentials": [{"profile": "default", "aws_access_key_id": "K"}],
             }
         )
-        with patch("gbserver.environment.skypilot_config.materialize") as m:
+        with (
+            patch("gbserver.environment.skypilot_config.materialize") as m,
+            patch("gbserver.environment.skypilot._reload_skypilot_client_config"),
+        ):
             env._ensure_inline_configs_materialized()
             env._ensure_inline_configs_materialized()  # idempotent
             m.assert_called_once()
@@ -1909,6 +1912,82 @@ class TestInlineConfigMaterialization:
             # SSH is NOT materialized here (merged per-launch); only cloud_config
             # and aws are forwarded.
             assert args[1] is None and args[2] == {"lsf": {"q": 1}} and args[3]
+
+    def test_client_config_reloaded_after_cloud_config_is_written(self):
+        """The fix for an edited bsub_options exclusion needing a restart."""
+        env = self._env({"cloud_config": {"lsf": {"q": 1}}})
+        calls = []
+        with (
+            patch(
+                "gbserver.environment.skypilot_config.materialize",
+                side_effect=lambda *a, **k: calls.append("write"),
+            ),
+            patch(
+                "gbserver.environment.skypilot._reload_skypilot_client_config",
+                side_effect=lambda: calls.append("reload"),
+            ),
+        ):
+            env._ensure_inline_configs_materialized()
+            env._ensure_inline_configs_materialized()  # once per instance
+        assert calls == ["write", "reload"]
+
+    def test_no_reload_when_only_aws_credentials_are_written(self):
+        """~/.aws/credentials is read by boto on use; nothing to reload."""
+        env = self._env(
+            {"aws_credentials": [{"profile": "default", "aws_access_key_id": "K"}]}
+        )
+        with (
+            patch("gbserver.environment.skypilot_config.materialize"),
+            patch(
+                "gbserver.environment.skypilot._reload_skypilot_client_config"
+            ) as reload,
+        ):
+            env._ensure_inline_configs_materialized()
+        reload.assert_not_called()
+
+    def test_reload_makes_an_edited_file_reach_requests(self, tmp_path):
+        """Against real SkyPilot: an edited file is invisible until reloaded.
+
+        ``to_dict()`` is what every request carries to the API server as
+        ``override_skypilot_config``. Isolated from the real ~/.sky/config.yaml
+        via SKYPILOT_GLOBAL_CONFIG, and the process's config is restored after.
+        """
+        pytest.importorskip("sky")
+        from sky import skypilot_config
+
+        from gbserver.environment.skypilot import _reload_skypilot_client_config
+
+        cfg = tmp_path / "config.yaml"
+
+        def write(select):
+            cfg.write_text(
+                "lsf:\n  cluster_configs:\n    bluevela:\n      bsub_options:\n"
+                f'        R: "{select}"\n'
+            )
+
+        def sent():
+            return skypilot_config.to_dict().get_nested(
+                ("lsf", "cluster_configs", "bluevela", "bsub_options", "R"), None
+            )
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("SKYPILOT_GLOBAL_CONFIG", str(cfg))
+            mp.delenv("SKYPILOT_CONFIG", raising=False)
+            mp.delenv("IS_SKYPILOT_SERVER", raising=False)
+            mp.chdir(tmp_path)  # no stray project-level .sky.yaml
+            try:
+                write("select[hname!='old-host']")
+                _reload_skypilot_client_config()
+                assert sent() == "select[hname!='old-host']"
+
+                write("select[hname!='old-host'&&hname!='new-host']")
+                assert sent() == "select[hname!='old-host']", "the stale copy"
+
+                _reload_skypilot_client_config()
+                assert sent() == "select[hname!='old-host'&&hname!='new-host']"
+            finally:
+                mp.undo()
+                skypilot_config.reload_config()
 
     @pytest.mark.asyncio
     async def test_ssh_materialized_per_launch(self):
