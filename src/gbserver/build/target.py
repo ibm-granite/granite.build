@@ -267,6 +267,17 @@ class Target(BuildEntity):
             tasks.append(task)
         return tasks
 
+    def push_assets(self: Self) -> Dict[str, dict]:
+        """Deprecated no-op: push destinations resolve at push time (spec §4.3).
+
+        The former setup-time inline-push resolution (and its two restriction
+        errors on ``{{ binding.* }}``-dependent destination URIs and glob output
+        keys) is gone; SkyPilot/AWS artifact push is now a dispatched step over a
+        shared filesystem whose destination resolves at push time. Kept as a
+        no-op so ``targetrun`` need not special-case its absence.
+        """
+        return {}
+
     async def setup(self: Self, tg: TaskGroup, **kwargs) -> None:
         """Do some setup before launching the steps that are part of the target."""
         async with self.setup_lock:

@@ -1,0 +1,69 @@
+# skypilot/aws environment for the gated inline-hfpush single-instance build test (#390).
+#
+# The aws-inline environment carried by the co-located test Space and referenced
+# by the inline-hfpush/build.yaml fixture as space://environments/skypilot/aws-inline.
+# It is modeled on the committed configurations/assets/environments/skypilot/aws/
+# environment.yaml: the hf assetstore's PUSH is a dispatched separate step that
+# reads the produced artifact from the shared_filesystem (EFS) and uploads it,
+# while inline hf PULL is retained (its removal is tracked in #389) so the hf
+# download still folds into the consuming step's setup. The shipped default is a
+# BYO pre-provisioned EFS; `provision: ephemeral` (no-admin auto-provisioned EFS)
+# arrives via #391.
+name: skypilot-aws-inline-e2e
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  idle_minutes_to_autostop: 5
+  # AWS credentials materialized from the space secret manager into a NON-default
+  # profile in ~/.aws/credentials. The values are secret NAMES resolved by the
+  # space's secret_manager — never literals (mirrors the shipped aws environment).
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  # Issue #390: hf push now runs as a dispatched step that REQUIRES a
+  # shared_filesystem to read the produced artifact, so this fixture ships a
+  # BYO pre-provisioned EFS (form per #378). shared_workdir is the explicit
+  # workdir under mount_point (decoupled per #404). Inline pull is kept below
+  # (#389, out of scope) so hfpull still folds into the consuming step.
+  # #391 will add `provision: ephemeral` (no-admin auto-provisioned EFS).
+  shared_workdir: /mnt/gb-shared/gbroot
+  shared_filesystem:
+    provider: efs
+    mount_point: /mnt/gb-shared
+    efs:
+      # Stand-in id: replace with the ibm-research shared-fs EFS (IBM), or your own
+      # pre-provisioned EFS, to run the gated test. See the header comment + #391.
+      file_system_id: fs-0abc123
+      region: us-east-1
+      tls: true
+assetstores:
+  - store_uri: space://assetstores/s3/
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}
+  # Inline PULL, dispatched PUSH (#390). The hf pull is inline so the download
+  # folds into the consuming step's setup (no separate hfpull step); cache_path
+  # pins the instance-local hf cache used by that inline download. The hf push is
+  # NOT inline (config: {}): with a shared_filesystem set, hfpush now runs as its
+  # OWN dispatched step on a separate instance that reads the produced artifact
+  # back over the EFS-backed shared workdir and uploads it. The inline-push fold
+  # is gone (§4.1/§4.3).
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config:
+          cache_path: /tmp/hf_cache
+          inline: true
+    push:
+      - mode: default
+        config: {}

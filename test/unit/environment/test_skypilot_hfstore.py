@@ -23,7 +23,11 @@ def skypilot_env():
         type="Skypilot",
         config={"default_cloud": "k8s", "idle_minutes_to_autostop": 0},
     )
-    return Skypilot(event_q=event_q, environment_config=config)
+    env = Skypilot(event_q=event_q, environment_config=config)
+    # Prime a resolved shared_filesystem provider so the hfstore push preflight
+    # guard is satisfied (pull tests ignore it; push tests require it).
+    env._shared_fs_provider_cache = MagicMock(name="shared_filesystem_provider")
+    return env
 
 
 @pytest.fixture
@@ -272,6 +276,37 @@ class TestPullassetHfstore:
             Path("/explicit/override/myorg/myrepo/main")
         )
 
+    @pytest.mark.asyncio
+    async def test_inline_mode_stashes_typed_input_descriptor(
+        self, skypilot_env, mock_hfuri
+    ):
+        """Inline mode emits a typed HfInputIO under the store-agnostic
+        ``_inline_input`` key (built here in the per-store dispatch, not
+        reconstructed at launch) and queues no separate pull step."""
+        from gbserver.environment.io.descriptors import HfInputIO
+
+        assetstore = _hfstore_mock(token="pull-tok")
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {"cache_path": "/data/cache", "inline": True}
+
+        binding_config, step_config = await skypilot_env.pullasset_hfstore(
+            uri=mock_hfuri,
+            assetstore=assetstore,
+            storeload_config=storeload_config,
+        )
+
+        assert step_config is None
+        expected_path = str(Path("/data/cache/myorg/myrepo/main"))
+        assert binding_config["binding"]["path"] == expected_path
+        io = binding_config["_inline_input"]
+        assert isinstance(io, HfInputIO)
+        assert io.repo == "myorg/myrepo"
+        assert io.revision == "main"
+        assert io.type == "model"
+        assert io.dest == expected_path
+        assert io.token == "pull-tok"
+
 
 class TestGetHfCacheDir:
     """Unit tests for the three-rung cache-path resolution chain."""
@@ -447,3 +482,99 @@ class TestPushassetHfstore:
         )
 
         assert step_config.step_uri == "space://steps/hfpush"
+
+
+@pytest.fixture
+def hf_env():
+    """A Skypilot env with a shared_filesystem provider already resolved.
+
+    Priming ``_shared_fs_provider_cache`` with a truthy object keeps the
+    fixture forward-compatible: a later task adds a guard requiring a
+    shared_filesystem provider on hfstore push, and this ensures that guard
+    is satisfied without touching real provider construction here.
+    """
+    from gbserver.environment.skypilot import Skypilot
+    from gbserver.types.environmentconfig import EnvironmentConfig
+
+    env = Skypilot(
+        event_q=asyncio.Queue(),
+        environment_config=EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": "k8s", "idle_minutes_to_autostop": 0},
+        ),
+    )
+    env._shared_fs_provider_cache = MagicMock(name="shared_filesystem_provider")
+    return env
+
+
+@pytest.fixture
+def hf_env_no_fs():
+    """A Skypilot env with NO shared_filesystem provider resolved.
+
+    Mirrors ``hf_env`` but primes ``_shared_fs_provider_cache`` with ``None``
+    (a resolved-but-absent provider) so the hfstore push preflight guard,
+    which requires a shared_filesystem, trips.
+    """
+    from gbserver.environment.skypilot import Skypilot
+    from gbserver.types.environmentconfig import EnvironmentConfig
+
+    env = Skypilot(
+        event_q=asyncio.Queue(),
+        environment_config=EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": "k8s", "idle_minutes_to_autostop": 0},
+        ),
+    )
+    env._shared_fs_provider_cache = None
+    return env
+
+
+@pytest.fixture
+def hf_binding():
+    """A produced-artifact binding dict as pushasset_hfstore expects it."""
+    return {"path": "/workspace/output/model"}
+
+
+def _hf_assetstore(token: str = "tok-abc"):
+    """Return an Hfstore mock (Enterprise org so a resource group applies)."""
+    return _hfstore_mock(token=token)
+
+
+def _storepush(config):
+    """A minimal storepush_config carrying the given ``config`` dict."""
+    cfg = MagicMock()
+    cfg.mode = "default"
+    cfg.config = config
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_pushasset_hfstore_returns_step_config_even_with_legacy_inline(
+    hf_env, hf_binding, mock_hfuri, mock_resolve_rg
+):
+    # a legacy inline:true on the push config must NOT short-circuit to a sentinel
+    cfg = await hf_env.pushasset_hfstore(
+        binding=hf_binding,
+        binding_id="model",
+        storepush_config=_storepush(config={"inline": True}),
+        uri=mock_hfuri,
+        assetstore=_hf_assetstore(),
+        output_config=None,
+    )
+    assert isinstance(cfg, BuildTargetStepConfig)
+    assert cfg.step_uri == "space://steps/hfpush"
+
+
+@pytest.mark.asyncio
+async def test_pushasset_hfstore_requires_shared_filesystem(hf_env_no_fs, hf_binding):
+    with pytest.raises(ValueError, match="shared_filesystem"):
+        await hf_env_no_fs.pushasset_hfstore(
+            binding=hf_binding,
+            binding_id="model",
+            storepush_config=None,
+            uri="hf://owner/repo",
+            assetstore=_hf_assetstore(),
+            output_config=None,
+        )

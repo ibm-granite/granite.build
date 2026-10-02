@@ -1,0 +1,71 @@
+granite.build:
+  name: skypilot-aws-inline-hfpush-containerized
+  # Containerized counterpart of ../bare/build.yaml (#390): the same single
+  # `command` step with an inline hf:// input + hf:// output over a
+  # shared_filesystem (BYO EFS), but the step sets an image so byoc renders
+  # SkyPilot image_id: docker:<image> and the command's setup+run execute INSIDE
+  # the container. This exercises the container-boundary path the bare variant
+  # never touches:
+  #   * inline PULL's `hf download` (in the step's setup) must land in a cache the
+  #     containerized run can read (setup+run share the container fs); hence the
+  #     python image (the inline-pull prologue pip-installs huggingface_hub[cli]).
+  #   * PUSH is a DISPATCHED step (the inline-push fold is gone, #390): it runs on
+  #     its OWN EC2 instance and reads the produced artifact back over the
+  #     EFS-backed shared workdir, so the containerized command must land the
+  #     artifact on that shared workdir.
+  # Reaching SUCCESS proves inline pull (in-container) -> compute -> dispatched
+  # push over shared FS. Runs as TWO steps (command + dispatched hfpush).
+  targets:
+    inline-hfpush-command:
+      # The aws-inline environment (hf assetstore inline PULL, dispatched PUSH,
+      # shared_filesystem EFS block) carried by the committed Space at ../space.
+      environment_uri: space://environments/skypilot/aws-inline
+      inputs:
+        # Real hf:// input — pull is inline, so the download is folded into THIS
+        # command step's setup (inside the container). A tiny public model, no read
+        # token.
+        hf_input:
+          uri: hf:///hf-internal-testing/tiny-random-gpt2
+      outputs:
+        # Real hf:// output — the dispatched hfpush step uploads the fileset the
+        # command registers via the GB_ARTIFACT marker below. Pushes to the test
+        # account's OWN user namespace (granite-build-test), which skips HF
+        # Enterprise resource groups; needs the granite-build-test write token the
+        # extended suite runs with. Distinct from the bare variant's repo so the two
+        # never collide. create_repo is exist_ok=True, so re-runs overwrite it.
+        hf_output:
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-inline-hfpush-e2e-output-container
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # A python image so the in-container inline pull (pip install
+              # huggingface_hub[cli] + hf download) has python3 + pip available.
+              # byoc renders image_id: docker:python:3.12-slim.
+              image: "python:3.12-slim"
+              # set -eu: a missing inline-pulled input (test -e) fails the step.
+              # The inline pull folded the download into this step's setup inside
+              # the container, so the input is present in the container fs here.
+              # Output goes to a RELATIVE out/ under the step's cwd: the dispatched
+              # hfpush step runs on a SEPARATE instance and shared_filesystem cd's
+              # every step into the same per-run $GB_BUILD_WORKDIR on EFS, so
+              # `$pwd/out` resolves to the same EFS path the push instance reads.
+              command: >-
+                set -eu;
+                pwd=$(pwd);
+                mkdir -p out;
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                test -e "{{ bindings.hf_input.binding.path }}";
+                echo "verified inline-pulled hf input present from inside the container";
+                echo '{"artifact": "hf_output", "produced_by": "inline-hfpush-command-containerized"}' > out/result.json;
+                echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$pwd/out"
+            launcher_config:
+              resources:
+                # Pin the region to match the sibling aws tests / hf availability.
+                infra: "aws/us-east-1"
+                # t3.small = 2 vCPU / 2 GiB (~$0.02/hr): cheapest reliable size.
+                instance_type: t3.small
+                disk_size: 40

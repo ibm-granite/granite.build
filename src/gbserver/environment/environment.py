@@ -1623,11 +1623,14 @@ class Environment(ABC):
                 ), "additional_targetsteps_queue is None"
                 await additional_targetsteps_queue.put(result)
             else:
+                # Synchronous inline push (memstore/envstore): available now.
                 Environment._thread_local.asset_events[uristr].set()
             await self.event_q.put(event)
             self.asset_bindings[uristr] = {BINDING_KEY: binding}
-            # For inline pushes (no separate push step), emit ARTIFACT_PUSHED_EVENT
-            # so the artifact transitions from pending to success.
+            # Immediate server-side ARTIFACT_PUSHED_EVENT only for synchronous
+            # inline pushes, so the artifact transitions from pending to success.
+            # A dispatched push step defers PUSHED to that step's monitor
+            # ("Pushed HF URI:"), so it is not emitted here.
             if not isinstance(result, BuildTargetStepConfig):
                 pushed_event = BuildEvent(
                     run_metadata=run_metadata,

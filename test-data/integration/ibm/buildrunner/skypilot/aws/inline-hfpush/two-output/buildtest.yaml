@@ -1,0 +1,32 @@
+# YAML spec for the TWO-OUTPUT inline-hfpush build test (test_inline_hfpush.py).
+# Issue #390 §4.5 (multi-output push). One command step with an inline hf:// input
+# and TWO hf:// outputs on the aws-inline environment (hf inline PULL, dispatched
+# PUSH, shared_filesystem EFS block). The command emits TWO GB_ARTIFACT markers,
+# so buildrunner queues TWO dispatched hfpush steps (one per output), each running
+# on its own instance and reading its artifact back over the EFS-backed shared
+# workdir. Reaching SUCCESS with output_artifact_count 2 proves BOTH artifacts push
+# — the multi-output regression the plan guards against.
+targets:
+  - inline-hfpush-command
+target_expectations:
+  - target_name: inline-hfpush-command
+    # command (inline pull folded into its setup, no separate hfpull step) + TWO
+    # dispatched hfpush steps (one per output-artifact marker) = 3.
+    step_count: 3
+    input_artifact_count: 1 # single hf input (inline-pulled in the command's setup)
+    output_artifact_count: 2 # two hf outputs, each uploaded by its own hfpush step
+    jobstats_count: 1
+# The committed Space (../space) carries environments/skypilot/aws-inline and
+# chains base_uris to configurations/assets, shared with the bare/containerized
+# variants.
+space_uri: ../space
+# Only the basic build; skip the cancellation variant.
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: a missing input (test -e)
+# or a failed inline pull / dispatched push of EITHER output fails the build, so
+# SUCCESS proves both dispatched pushes landed.
+simulate_step_failure: false
+# EC2 cold-start + SkyPilot setup for the command instance PLUS the two separate
+# dispatched push instances, the EFS mount, and the inline hf pull + two hf pushes.
+timeout_minutes: 45

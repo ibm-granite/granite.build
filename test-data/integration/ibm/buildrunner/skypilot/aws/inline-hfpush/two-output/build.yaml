@@ -1,0 +1,67 @@
+granite.build:
+  name: skypilot-aws-inline-hfpush-two-output
+  # Two-output variant of ../bare/build.yaml (#390 §4.5 multi-output). One `command`
+  # step with an inline hf:// input and TWO hf:// outputs on the aws-inline
+  # environment (hf inline PULL, dispatched PUSH, shared_filesystem EFS block).
+  # The command emits TWO GB_ARTIFACT markers, so buildrunner queues TWO dispatched
+  # hfpush steps — one per output — each running on its own instance and reading
+  # its artifact back over the EFS-backed shared workdir. Proves both outputs land
+  # (the multi-output push path #390 §4.5 guards against). Runs as THREE steps:
+  # command + hfpush(model) + hfpush(adapter).
+  #
+  # Runs BARE (command_config.image empty): the command runs on the EC2 VM.
+  targets:
+    inline-hfpush-command:
+      # The aws-inline environment (hf assetstore inline PULL, dispatched PUSH,
+      # shared_filesystem EFS block) carried by the committed Space at ../space.
+      environment_uri: space://environments/skypilot/aws-inline
+      inputs:
+        # Real hf:// input — pull is inline, so the download folds into the command
+        # step's setup (no separate hfpull step). A tiny public model, no read token.
+        hf_input:
+          uri: hf:///hf-internal-testing/tiny-random-gpt2
+      outputs:
+        # TWO real hf:// outputs, each uploaded by its OWN dispatched hfpush step.
+        # Distinct repos in the test account's OWN user namespace (granite-build-test)
+        # so they never collide and skip HF Enterprise resource groups.
+        # create_repo is exist_ok=True, so re-runs overwrite them.
+        model:
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-inline-hfpush-e2e-two-output-model
+          type: fileset
+        adapter:
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-inline-hfpush-e2e-two-output-adapter
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Empty image => run BARE on the EC2 VM.
+              image: ""
+              # set -eu: a missing hf input (test -e) fails the step — and thus the
+              # build. The inline pull folded the download into this step's setup.
+              # Each output goes into its OWN RELATIVE out/ dir under the step's cwd:
+              # the dispatched hfpush steps run on SEPARATE instances and
+              # shared_filesystem cd's every step into the same per-run
+              # $GB_BUILD_WORKDIR on EFS, so `$pwd/model` and `$pwd/adapter` resolve
+              # to the EFS paths the push instances read. Two GB_ARTIFACT markers =>
+              # two dispatched hfpush steps (one per output).
+              command: >-
+                set -eu;
+                pwd=$(pwd);
+                mkdir -p model adapter;
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                test -e "{{ bindings.hf_input.binding.path }}";
+                echo "verified inline-pulled hf input present (folded into setup)";
+                echo '{"artifact": "model", "produced_by": "inline-hfpush-command"}' > model/result.json;
+                echo '{"artifact": "adapter", "produced_by": "inline-hfpush-command"}' > adapter/result.json;
+                echo "GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:$pwd/model";
+                echo "GB_ARTIFACT_ID:adapter GB_ARTIFACT_PATH:$pwd/adapter"
+            launcher_config:
+              resources:
+                # Pin the region to match the sibling aws tests / hf availability.
+                infra: "aws/us-east-1"
+                # t3.small = 2 vCPU / 2 GiB (~$0.02/hr): cheapest reliable size.
+                instance_type: t3.small
+                disk_size: 40

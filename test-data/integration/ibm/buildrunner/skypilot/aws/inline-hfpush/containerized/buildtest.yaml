@@ -1,0 +1,34 @@
+# YAML spec for the CONTAINERIZED inline-hfpush build test (test_inline_hfpush.py).
+# Same inline-pull -> command -> dispatched-push flow as ../bare/buildtest.yaml,
+# but the command step sets an image (image_id: docker:python:3.12-slim), so its
+# setup+run (including the inline hf pull) execute INSIDE the container. Issue #390:
+# hf push is a dispatched real step that reads the produced artifact from the
+# shared_filesystem (BYO EFS) and runs on its OWN EC2 instance — the inline PUSH
+# fold is gone. So this still runs as TWO steps (command + dispatched hfpush).
+# Reaching SUCCESS proves inline-pull (in-container) -> compute -> dispatched push
+# over shared FS.
+targets:
+  - inline-hfpush-command
+target_expectations:
+  - target_name: inline-hfpush-command
+    # command (inline pull folded into the container's setup, no separate hfpull
+    # step) + the dispatched hfpush step = 2. The key change from #408's single
+    # folded instance (was step_count 1): the push is now a real separate step.
+    step_count: 2
+    input_artifact_count: 1 # hf input (inline-pulled into the container in setup)
+    output_artifact_count: 1 # hf output (uploaded by the dispatched hfpush step)
+    jobstats_count: 1
+# The committed Space (../space) carries environments/skypilot/aws-inline and
+# chains base_uris to configurations/assets, shared with the bare variant.
+space_uri: ../space
+# Only the basic build; skip the cancellation variant.
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: a missing input (test -e)
+# or a failed inline pull / dispatched push fails the build, so SUCCESS proves the
+# inline pull -> compute -> dispatched push path ran end to end from a container.
+simulate_step_failure: false
+# EC2 cold-start + SkyPilot setup for the command instance (plus container image
+# pull) AND the separate dispatched push instance, the EFS mount, and the inline
+# hf pull + hf push. A shade higher than bare to allow for the image pull.
+timeout_minutes: 40

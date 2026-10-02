@@ -1,0 +1,78 @@
+granite.build:
+  name: skypilot-aws-inline-hfpush
+  # A single `command` step with a real hf:// input and hf:// output on an
+  # environment whose hf assetstore is `inline: true` for PULL only and has a
+  # shared_filesystem (BYO EFS) block (#390). buildrunner handles the two sides
+  # asymmetrically:
+  #   * inline PULL folds the hf download into the command step's setup (no
+  #     separate hfpull step);
+  #   * PUSH is now a DISPATCHED real step (the inline-push fold is gone, #390):
+  #     buildrunner queues an hfpush step that SkyPilot places on its OWN EC2
+  #     instance, which reads the produced artifact back over the EFS-backed
+  #     shared workdir and uploads it to HF.
+  # So the target runs as TWO steps (command + dispatched hfpush) across two EC2
+  # instances (=> step_count 2). `test -e` under `set -eu` fails the build if the
+  # inline-pulled input did not arrive, so reaching SUCCESS proves the
+  # inline-pull -> compute -> dispatched-push (over shared FS) path.
+  #
+  # Runs BARE (command_config.image empty): the command runs on the EC2 VM.
+  targets:
+    inline-hfpush-command:
+      # The aws-inline environment (hf assetstore inline PULL, dispatched PUSH,
+      # shared_filesystem EFS block) carried by the committed Space at ../space.
+      environment_uri: space://environments/skypilot/aws-inline
+      inputs:
+        # Real hf:// input — because the hf assetstore's pull is inline, the
+        # download is folded into THIS command step's setup rather than queued as a
+        # separate hfpull step. A tiny public model keeps it fast and needs no read
+        # token.
+        hf_input:
+          uri: hf:///hf-internal-testing/tiny-random-gpt2
+      outputs:
+        # Real hf:// output — the dispatched hfpush step uploads the fileset the
+        # command registers via the GB_ARTIFACT marker below. hfpush refuses an
+        # empty/missing source, so the command writes a real file. Pushes to the
+        # test account's OWN user namespace (granite-build-test), not an Enterprise
+        # org: per the hf store.yaml, a push to an individual user namespace skips
+        # HF Enterprise resource groups, so this stays self-contained (no
+        # admin-provisioned resource group). Requires the granite-build-test HF
+        # token (write) the extended suite runs with. NOTE: the explicit
+        # huggingface.co host makes this a valid 3-part hf URI; a 2-slash
+        # `hf://ns/repo` is Malformed. create_repo is exist_ok=True, so re-running
+        # the test just overwrites this repo.
+        hf_output:
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-inline-hfpush-e2e-output
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Empty image => run BARE on the EC2 VM.
+              image: ""
+              # set -eu: a missing hf input (test -e) fails the step — and thus the
+              # build. The inline pull folded the download into this step's setup,
+              # so the input is present instance-locally here. The output goes into
+              # a RELATIVE out/ dir under the step's cwd: the dispatched hfpush step
+              # runs on a SEPARATE instance, and shared_filesystem cd's every step
+              # into the same per-run $GB_BUILD_WORKDIR on EFS, so `$pwd/out` here
+              # resolves to the same EFS path the push instance reads (matches the
+              # sibling shared-fs fixture). An absolute path OUTSIDE $GB_BUILD_WORKDIR
+              # would not be cross-instance-visible.
+              command: >-
+                set -eu;
+                pwd=$(pwd);
+                mkdir -p out;
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                test -e "{{ bindings.hf_input.binding.path }}";
+                echo "verified inline-pulled hf input present (folded into setup)";
+                echo '{"artifact": "hf_output", "produced_by": "inline-hfpush-command"}' > out/result.json;
+                echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$pwd/out"
+            launcher_config:
+              resources:
+                # Pin the region to match the sibling aws tests / hf availability.
+                infra: "aws/us-east-1"
+                # t3.small = 2 vCPU / 2 GiB (~$0.02/hr): cheapest reliable size.
+                instance_type: t3.small
+                disk_size: 40

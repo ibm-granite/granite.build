@@ -17,11 +17,14 @@
 import asyncio
 from pathlib import Path
 from typing import List, Self, Tuple
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
 from libgbtest.buildrunner.buildtest import get_test_data_dir_for
 
+from gbcommon.uri.uri import URI
+from gbserver.environment.bash import Bash
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.types.buildevent import (
     ArtifactPushedEventPayload,
@@ -130,3 +133,65 @@ class TestEnvironment:
         )
         expected_event.timestamp = event.timestamp
         assert event == expected_event
+
+
+@pytest.fixture
+def pushasset_test_env():
+    """A real Bash environment with a stubbed hf:// store resolution.
+
+    ``Environment.pushasset`` resolves the URI to a declared assetstore via
+    ``_get_storeconfig``; a bare Bash env has none, so we stub the resolution to
+    a MagicMock store of type ``hfstore``. The event queue, ``asset_bindings``
+    and ``Environment._thread_local.asset_events`` are the environment's real
+    objects so the test asserts on genuinely emitted events.
+    """
+    env = Bash(event_q=asyncio.Queue())
+    # asset_events is lazily created in get_or_create_environment; this test
+    # constructs the env directly, so seed the per-thread map pushasset writes to.
+    if not hasattr(Environment._thread_local, "asset_events"):
+        Environment._thread_local.asset_events = {}
+    assetstore = MagicMock()
+    assetstore.type = "Hfstore"
+    assetstore.get_secrets.return_value = {}
+    assetstoreenv_config = MagicMock()
+    assetstoreenv_config.push = None
+    env._get_storeconfig = MagicMock(  # type: ignore[method-assign]
+        return_value=(assetstore, assetstoreenv_config)
+    )
+    return env
+
+
+def drain_event_queue(event_q: asyncio.Queue) -> List[BuildEvent]:
+    """Pop every currently-queued BuildEvent without blocking."""
+    events: List[BuildEvent] = []
+    while not event_q.empty():
+        events.append(event_q.get_nowait())
+    return events
+
+
+@pytest.mark.asyncio
+async def test_pushasset_inline_emits_created_and_pushed(pushasset_test_env):
+    """A non-sentinel inline push (memstore/envstore-style) keeps today's
+    behavior: CREATED + immediate PUSHED and asset_events signalled."""
+    env = pushasset_test_env
+    input_uri = "hf:///ns/out"
+    uristr = URI.get_uristr(URI.get_uri(input_uri))
+    with patch.dict(
+        env.pushasset_types,
+        {"hfstore": AsyncMock(return_value=None)},
+    ):
+        task = env.pushasset(
+            task_group=None,
+            binding={"path": "/out"},
+            uristr=input_uri,
+            binding_id="out",
+            run_metadata=EntityRunMetadata(build_id="build-inline"),
+            output_config=None,
+        )
+        await task
+
+    events = drain_event_queue(env.event_q)
+    types = [e.type for e in events]
+    assert BuildEventType.ARTIFACT_EVENT in types
+    assert BuildEventType.ARTIFACT_PUSHED_EVENT in types
+    assert Environment._thread_local.asset_events[uristr].is_set()

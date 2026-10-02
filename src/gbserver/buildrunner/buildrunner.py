@@ -968,9 +968,7 @@ Build ID    : {build_id}
             _art_result = art_store.get_by_uri(
                 uri=normalized_uri, space_name=stored_build.space_name
             )
-            assert isinstance(
-                _art_result, ArtifactRegistration
-            ), f"failed to find an artifact registered for uri: {normalized_uri}"
+            assert isinstance(_art_result, ArtifactRegistration)
             artifact = _art_result
             artifact.status = ArtifactRegistrationStatus.SUCCESS
             logger.info("updating the artifact as success: %s", artifact)
