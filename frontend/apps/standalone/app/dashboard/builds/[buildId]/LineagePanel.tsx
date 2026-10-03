@@ -1,12 +1,11 @@
 'use client'
 
 import * as React from 'react'
-import { Button, ComposedModal, IconButton, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { Button, ComposedModal, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import {
   ArrowLeft,
   ArrowRight,
   CenterSquare,
-  Close,
   Launch,
   ZoomFit,
   ZoomIn,
@@ -23,6 +22,7 @@ import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
 import StepDetailsPanel, { stepDrawerSummary } from './StepDetailsPanel'
+import { NodeDetailsDrawer } from '@granite-build/ui-core/components/LineageGraph/NodeDetailsDrawer'
 import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
@@ -252,69 +252,28 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // getBuildStatus, so this costs no extra request.
   const [stepDetailTarget, setStepDetailTarget] = React.useState<string | null>(null)
 
-  // Where focus was before the drawer opened, so we can hand it back on close —
-  // otherwise a keyboard user is dropped at the top of the document.
-  const drawerReturnFocusRef = React.useRef<HTMLElement | null>(null)
-  const drawerCloseButtonRef = React.useRef<HTMLButtonElement | null>(null)
-  const drawerRef = React.useRef<HTMLDivElement | null>(null)
-  // Focus fallback when the drawer's trigger node has been detached by a re-render.
+  // Escape handling and focus capture/restore now live in NodeDetailsDrawer; this
+  // is only the fallback the drawer focuses when the graph node that opened it has
+  // been detached by a re-render, since focus() on a detached node silently drops
+  // focus to <body>.
   const graphContainerRef = React.useRef<HTMLDivElement | null>(null)
 
-  React.useEffect(() => {
-    if (!stepDetailTarget) return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      // This is a non-modal drawer — the graph behind it stays interactive — so
-      // only swallow Escape when focus is actually inside the drawer. Otherwise
-      // a user mid-interaction with the graph would have the drawer yanked shut.
-      if (drawerRef.current?.contains(document.activeElement)) {
-        setStepDetailTarget(null)
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [stepDetailTarget])
+  // Own-property lookup: a bare index would return Object.prototype.toString (a
+  // function) for a target named `toString`. Resolved once here because both the
+  // drawer's summary and its body need the same target.
+  const drawerTarget = React.useMemo(() => {
+    const targets = buildStatus?.targets
+    if (!stepDetailTarget || !targets) return undefined
+    return Object.prototype.hasOwnProperty.call(targets, stepDetailTarget)
+      ? targets[stepDetailTarget]
+      : undefined
+  }, [stepDetailTarget, buildStatus])
 
-  // Focus management for the drawer (role="dialog"): on open, remember the
-  // trigger and move focus to the close button; on close, restore focus. This is
-  // a non-modal drawer by design (the graph stays interactive), so no focus trap
-  // — just entry and restore, which is what keyboard/SR users expect.
-  //
-  // Capture the trigger only when opening from a *closed* drawer, and restore
-  // only when closing to a closed drawer. Switching directly A→B must neither
-  // recapture (B's trigger, not A's return element) nor restore (nothing closed
-  // yet) — doing either would leave the eventual restore pointing at the wrong
-  // element, a real regression for keyboard/SR users.
-  const drawerWasOpenRef = React.useRef(false)
-  React.useEffect(() => {
-    const wasOpen = drawerWasOpenRef.current
-    drawerWasOpenRef.current = Boolean(stepDetailTarget)
+  const drawerSummary = React.useMemo(
+    () => stepDrawerSummary(drawerTarget, build),
+    [drawerTarget, build],
+  )
 
-    if (stepDetailTarget) {
-      // Opening from closed — record where focus was so we can hand it back.
-      // A→B switches (wasOpen already true) keep the original return element.
-      if (!wasOpen) {
-        drawerReturnFocusRef.current = document.activeElement as HTMLElement | null
-      }
-      drawerCloseButtonRef.current?.focus()
-      return
-    }
-
-    // stepDetailTarget is null. Only restore if a drawer was actually open.
-    if (!wasOpen) return
-    // The trigger is often a graph node inside an SVG that re-renders on the
-    // status poll; by close it may be detached, and focus() on a detached node
-    // is a silent no-op that drops focus to <body>. Restore only when the node
-    // is still connected, else fall back to the graph container so keyboard
-    // focus lands somewhere sensible rather than the top of the document.
-    const returnTo = drawerReturnFocusRef.current
-    if (returnTo?.isConnected) {
-      returnTo.focus?.()
-    } else {
-      graphContainerRef.current?.focus?.()
-    }
-    drawerReturnFocusRef.current = null
-  }, [stepDetailTarget])
 
   const { nodes: allNodes, links: allLinks, artifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
@@ -640,62 +599,45 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         )}
       </div>
 
-      {/* A drawer, not a modal: no overlay, so the graph behind stays visible
-          and clickable and picking another target just re-points the drawer. */}
-      {stepDetailTarget && (
-        <div
-          ref={drawerRef}
-          className={styles.stepSidePanel}
-          role="dialog"
-          aria-label={`Step details — ${stepDetailTarget}`}
-        >
-          {(() => {
-            // Own-property lookup: a bare-object index would return
-            // Object.prototype.toString (a function) for a target named `toString`.
-            const targets = buildStatus?.targets
-            const target =
-              targets && Object.prototype.hasOwnProperty.call(targets, stepDetailTarget)
-                ? targets[stepDetailTarget]
-                : undefined
-            const { status, subtitle, summary } = stepDrawerSummary(target, build)
-            return (
-              <>
-                <div className={styles.stepSidePanelHeader}>
-                  <div className={styles.stepSidePanelIdentity}>
-                    <h4 className={styles.stepSidePanelHeading}>{stepDetailTarget}</h4>
-                    <div className={styles.stepSidePanelSubtitle}>{subtitle}</div>
-                    {status && (
-                      <div className={styles.stepSidePanelStatus}>
-                        <BuildStatusBadge status={status} />
-                      </div>
-                    )}
-                    {summary && (
-                      <div className={styles.stepSidePanelSummary}>{summary}</div>
-                    )}
-                  </div>
-                  <IconButton
-                    ref={drawerCloseButtonRef}
-                    kind="ghost"
-                    label="Close"
-                    align="bottom"
-                    onClick={() => setStepDetailTarget(null)}
-                  >
-                    <Close />
-                  </IconButton>
-                </div>
-                <div className={styles.stepSidePanelBody}>
-                  <StepDetailsPanel
-                    targetName={stepDetailTarget}
-                    target={target}
-                    sourceUri={build?.source_uri}
-                    buildId={build?.uuid}
-                  />
-                </div>
-              </>
-            )
-          })()}
-        </div>
-      )}
+      <NodeDetailsDrawer
+        openFor={stepDetailTarget}
+        onClose={() => setStepDetailTarget(null)}
+        returnFocusTo={graphContainerRef}
+        title={stepDetailTarget ?? ''}
+        subtitle={drawerSummary.subtitle}
+        meta={
+          <>
+            {drawerSummary.status && (
+              <div className={styles.stepSidePanelStatus}>
+                <BuildStatusBadge status={drawerSummary.status} />
+              </div>
+            )}
+            {drawerSummary.summary && (
+              <div className={styles.stepSidePanelSummary}>{drawerSummary.summary}</div>
+            )}
+          </>
+        }
+      >
+        {stepDetailTarget && (
+          <StepDetailsPanel
+            targetName={stepDetailTarget}
+            target={drawerTarget}
+            sourceUri={build?.source_uri}
+            buildId={build?.uuid}
+          />
+        )}
+      </NodeDetailsDrawer>
+
+      {/* TODO(ux0910): the artifact tab has the same need — clicking an artifact
+          node there should open this drawer rather than a modal. Blocked on
+          nothing technical; wire it in
+          app/dashboard/artifacts/[artifactId]/LineagePanel.tsx alongside the
+          onClick added there, and pass ui-core's <ArtifactSummary> as children.
+
+          TODO(ux0910): once that lands, delete the artifact-nav <Modal> in this
+          file (search `artifactNavNode`) and open this drawer for artifact nodes
+          too, so one panel serves both node kinds. Keep the modal until then —
+          it is currently the only thing that shows artifact detail at all. */}
       </div>
 
       {artifactNavNode?.hfUrl ? (
