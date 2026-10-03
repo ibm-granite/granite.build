@@ -27,7 +27,7 @@ from gb_ui_backend.services.chat_agents.tool_registry import (
 logger = logging.getLogger(__name__)
 
 try:
-    from anthropic import AsyncAnthropic
+    from anthropic import AsyncAnthropic  # type: ignore[import-not-found]
 
     _ANTHROPIC_AVAILABLE = True
 except ImportError:  # base install has no chat extra — that's fine

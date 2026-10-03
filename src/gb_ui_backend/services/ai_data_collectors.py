@@ -18,7 +18,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import selectinload
 
 from gb_ui_backend.services.ai_prompts import BuildContext, KnowledgeBaseEntry
@@ -194,8 +199,8 @@ class GbserverClient:
     def __init__(self, db_url: str, schema: str = "public"):
         self.db_url = db_url
         self.schema = schema
-        self._engine = None
-        self._session_factory = None
+        self._engine: Optional[AsyncEngine] = None
+        self._session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 
     async def initialize(self) -> None:
         self._engine = create_async_engine(
@@ -217,7 +222,7 @@ class GbserverClient:
                 text(f"""
                     SELECT 'event' as source_table, e.uuid as row_id, NULL as name,
                            e.type as type_or_status, e.json as json_data, e.created_time,
-                           e.index, e.source, e.target_id, e.step_id
+                           e.index as event_index, e.source, e.target_id, e.step_id
                     FROM {self.schema}.gb_events e WHERE e.build_id = :build_id
                     UNION ALL
                     SELECT 'target', t.uuid, t.name, t.status, t.json, NULL, NULL, NULL, NULL, NULL
@@ -239,7 +244,7 @@ class GbserverClient:
                     ev = payload.get("build_event", payload)
                     ep = ev.get("payload", {})
                     event: Dict[str, Any] = {
-                        "index": row.index or 0,
+                        "index": row.event_index or 0,
                         "type": row.type_or_status,
                         "source": row.source,
                         "created_time": (
@@ -341,6 +346,8 @@ class GbserverDataCollector(DataCollector):
                 finally:
                     await source.close()
             else:
+                # Non-sqlite path: _ensure_initialized set up the client.
+                assert self._client is not None
                 events, status_msgs = await self._client.get_build_data(build_id)
             context.gbserver_events = events
             context.gbserver_status_msgs = status_msgs
@@ -462,10 +469,11 @@ class CompositeDataCollector:
         gbserver_db_schema: str = "public",
         collectors: Optional[List[DataCollector]] = None,
     ):
+        self.collectors: List[DataCollector]
         if collectors is not None:
             self.collectors = collectors
         else:
-            self.collectors: List[DataCollector] = [
+            self.collectors = [
                 BuildMetadataCollector(),
                 K8sResourceCollector(),
                 EventCollector(max_events=20),
@@ -526,7 +534,7 @@ async def query_knowledge_base(
     max_entries: int = 20,
     exclude_build_id: Optional[uuid.UUID] = None,
 ) -> List[KnowledgeBaseEntry]:
-    from sqlalchemy import and_, case, desc, nullslast, or_
+    from sqlalchemy import and_, case, desc, literal, or_
 
     stmt = select(GbdMeta).where(
         or_(
@@ -551,13 +559,16 @@ async def query_knowledge_base(
         )
     if error_category_1:
         case_conditions.append((GbdMeta.error_category_1 == error_category_1, 50))
-    score = case(*case_conditions, else_=0) if case_conditions else 0
+    score = case(*case_conditions, else_=0) if case_conditions else literal(0)
 
     stmt = stmt.order_by(
         desc(case((GbdMeta.human_solution.isnot(None), 1), else_=0)),
         desc(score),
         desc(GbdMeta.upvotes),
-        nullslast(desc(GbdMeta.feedback_rating)),
+        # Column-bound .desc().nullslast() (matching EventCollector above) keeps
+        # a precise ColumnElement type; the nullslast(desc(...)) function form
+        # types as a broad union mypy won't accept as an order_by argument.
+        GbdMeta.feedback_rating.desc().nullslast(),
         desc(GbdMeta.created_at),
     ).limit(max_entries)
 

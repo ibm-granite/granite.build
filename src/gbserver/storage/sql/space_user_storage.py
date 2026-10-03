@@ -59,7 +59,7 @@ class SQLSpaceUserStorage(
         """Case-insensitive username query using LOWER() on both the column and the input value."""
         self._ensure_initialized()
 
-        session = self._BaseSQLItemStorage__get_session_without_retry()
+        session = self._get_session_without_retry()
         try:
             model = self._sql_alchemy_model
             query = session.query(model).filter(
@@ -69,6 +69,7 @@ class SQLSpaceUserStorage(
                 query = query.filter(model.space_name == space_name)
             rows = query.all()
             results = []
+            assert self._column_types is not None
             for row in rows:
                 row_dict = {k: getattr(row, k) for k in self._column_types}
                 results.append(self._convert_row_dict_to_item(row_dict))

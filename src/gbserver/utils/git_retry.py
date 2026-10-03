@@ -247,10 +247,10 @@ def _is_github_rate_limit_error(
         except Exception:
             pass
     # Check Retry-After header (can appear on various status codes)
-    retry_after = response.headers.get("retry-after")
-    if retry_after:
+    retry_after_header = response.headers.get("retry-after")
+    if retry_after_header:
         try:
-            return True, float(retry_after)
+            return True, float(retry_after_header)
         except ValueError:
             return True, None
     return False, None

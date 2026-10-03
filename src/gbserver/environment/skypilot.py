@@ -2480,7 +2480,7 @@ class Skypilot(Environment):
             # Build cluster config overrides (docker run_options, etc.)
             # SkyPilot's top-level `config:` section maps to
             # _cluster_config_overrides on sky.Resources.
-            cluster_config_overrides = {}
+            cluster_config_overrides: dict[str, Any] = {}
             # `or {}` per layer so a bare (present-but-null) `docker:` /
             # `launcher_config:` YAML key resolves to an empty map rather than
             # crashing the merge with a None operand.
@@ -3324,6 +3324,8 @@ class Skypilot(Environment):
             if log_retrieval_active and is_running and log_mode == LOG_RETRIEVAL_STREAM:
                 # Real-time follow stream: start once on RUNNING, then supervise.
                 if log_stream_task is None:
+                    # log_retrieval_active guarantees these are set.
+                    assert job_id is not None and event_q is not None
                     log_stream_task, logfile_monitor = self._start_log_stream_task(
                         cluster_name=cluster_name,
                         job_id=job_id,
@@ -3356,6 +3358,8 @@ class Skypilot(Environment):
                 if in_window and due:
                     last_pull_at = now
                     resume = self._log_lines_parsed.get(launch_id, 0)
+                    # log_retrieval_active guarantees these are set.
+                    assert job_id is not None and event_q is not None
                     new_last = await self._download_and_parse_logs(
                         cluster_name=cluster_name,
                         job_id=job_id,
@@ -3387,6 +3391,8 @@ class Skypilot(Environment):
                         exc,
                     )
                     log_stream_stop = asyncio.Event()
+                    # A live stream task only exists when these are set.
+                    assert job_id is not None and event_q is not None
                     log_stream_task, logfile_monitor = self._start_log_stream_task(
                         cluster_name=cluster_name,
                         job_id=job_id,
@@ -3613,11 +3619,11 @@ class Skypilot(Environment):
             # Save a copy to /tmp for easy debugging access
             tmp_log_dir = f"/tmp/sky-logs/{cluster_name}/job-{job_id}"
             os.makedirs(tmp_log_dir, exist_ok=True)
-            for f in glob.glob(f"{log_dir}/*"):
+            for src_path in glob.glob(f"{log_dir}/*"):
                 try:
                     import shutil
 
-                    shutil.copy2(f, tmp_log_dir)
+                    shutil.copy2(src_path, tmp_log_dir)
                 except OSError:
                     pass
             logger.info(

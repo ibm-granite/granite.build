@@ -32,4 +32,11 @@ def build_providers(
     if config is None:
         return []
     mounts = parse_shared_filesystems((config.config or {}).get("shared_filesystem"))
-    return [EfsProvider(m.mount_point, m.efs) for m in mounts]
+    providers: List[SharedFilesystemProvider] = []
+    for m in mounts:
+        # SharedFilesystemConfig._check guarantees a non-None efs block for the
+        # (only) "efs" provider — it raises during parsing otherwise — so m.efs
+        # is never None here; assert narrows Optional[EfsConfig] for the ctor.
+        assert m.efs is not None
+        providers.append(EfsProvider(m.mount_point, m.efs))
+    return providers

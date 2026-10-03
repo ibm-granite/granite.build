@@ -236,7 +236,7 @@ class BuildRunnerJob(AbstractBuildRunner):
         ), f"invalid deployment_yaml: {deployment_yaml}"
         return deployment_yaml
 
-    def __get_batchv1job_body(self: Self) -> Tuple[str, client.V1Job]:
+    def __get_batchv1job_body(self: Self) -> Tuple[str, Dict]:
         command = self.__get_command_to_run()
         logger.info("command: %s", command)
         # Create some dynamic metadata
@@ -377,22 +377,30 @@ class BuildRunnerJob(AbstractBuildRunner):
         )  # type: ignore
         return resp
 
-    def __delete_pods_by_label_with_retry(self: Self, label_selector: str) -> None:
-        v1 = client.CoreV1Api()
-        pods = v1.list_namespaced_pod(
-            namespace=self.namespace, label_selector=label_selector
-        )
-        for pod in pods.items:
-            logger.info(
-                "Deleting pod %s (label: %s)", pod.metadata.name, label_selector
+    async def __delete_pods_by_label_with_retry(
+        self: Self, label_selector: str
+    ) -> None:
+        # kubernetes_asyncio's CoreV1Api methods are coroutines and need an
+        # ApiClient; list/delete must be awaited (previously called inline,
+        # which left the coroutines un-awaited and raised on `.items`).
+        async with await AtomicApiClient.create_api_client(
+            kube_config_string=None, kube_context=None
+        ) as api:
+            v1 = client.CoreV1Api(api)
+            pods = await v1.list_namespaced_pod(
+                namespace=self.namespace, label_selector=label_selector
             )
-            v1.delete_namespaced_pod(
-                name=pod.metadata.name,
-                namespace=self.namespace,
-                body=client.V1DeleteOptions(
-                    propagation_policy="Foreground", grace_period_seconds=5
-                ),
-            )
+            for pod in pods.items:
+                logger.info(
+                    "Deleting pod %s (label: %s)", pod.metadata.name, label_selector
+                )
+                await v1.delete_namespaced_pod(
+                    name=pod.metadata.name,
+                    namespace=self.namespace,
+                    body=client.V1DeleteOptions(
+                        propagation_policy="Foreground", grace_period_seconds=5
+                    ),
+                )
 
     async def __delete_job_and_pod_with_retry(
         self: Self, batchv1: client.BatchV1Api, kube_job_name: str
@@ -413,7 +421,7 @@ class BuildRunnerJob(AbstractBuildRunner):
         label_selector = f"granite-dot-build/build-id={build_id}"
         try:
             logger.info("Deleting pods with label %s", label_selector)
-            self.__delete_pods_by_label_with_retry(label_selector)
+            await self.__delete_pods_by_label_with_retry(label_selector)
             logger.info("Done deleting pods for %s", build_id)
         except BaseException as e:  # Often a 404, not found
             logger.info(

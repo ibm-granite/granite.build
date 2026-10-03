@@ -22,7 +22,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -257,7 +257,10 @@ class GbserverSource:
             LIMIT :limit
         """)
         has_archive_column = True
-        rows = []
+        # result.fetchall() returns a Sequence[Row], not a list, so annotate the
+        # accumulator accordingly (the empty-default and both fetch assignments
+        # below must share one type).
+        rows: Sequence[Any] = []
         async with self._sessions() as session:
             try:
                 result = await session.execute(sql_with_archive, params)

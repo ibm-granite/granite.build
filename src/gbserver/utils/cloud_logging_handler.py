@@ -23,12 +23,12 @@ import os
 
 # import Alexei's secret manager API
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 
 sys.path.append("../secretsmanager")
-from sm import SecretManager
+from sm import SecretManager  # type: ignore[import-not-found]
 
 from gbserver.utils.logger import get_logger
 
@@ -104,7 +104,7 @@ class IBMCloudLogger(logging.StreamHandler):
             "granite-dot-build/build-step-id": self.buildstepid,
             "granite-dot-build/build-step-name": self.buildstepname,
         }
-        cloud_log_json = {
+        cloud_log_json: dict[str, Any] = {
             "applicationName": "granite-build",
             "text": log_msg_body,
             "severity": severity[record.levelno],
