@@ -61,6 +61,14 @@ class EfsProvider(SharedFilesystemProvider):
         if fsid is None and self.cfg.provision == "ephemeral":
             fsid = dns.split(".", 1)[0]
         if self.cfg.access_point_id:
+            if fsid is None:
+                # Validation guarantees file_system_id for a BYO access-point
+                # mount; guard here so mypy can narrow and to fail clearly if a
+                # future caller bypasses validation.
+                raise ValueError(
+                    "shared_filesystem: access_point_id at "
+                    f"{self.mount_point} requires file_system_id"
+                )
             # Access-point mount: options combine accesspoint with optional tls.
             # The AP binds a specific filesystem, so validation guarantees fsid.
             opts = f"accesspoint={self.cfg.access_point_id}" + (

@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-aws-shared-fs-hfpull
+  name: skypilot-aws-shared-fs-ap-hfpull
   # AWS/EFS analog of test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/
   # 1step (which uses a SLURM shared_workdir). A single `command` step with a real
   # hf:// input: buildrunner auto-queues a hidden hfpull step for the non-env
@@ -15,7 +15,7 @@ granite.build:
   # reads the EFS mount directly (no container indirection).
   targets:
     efs-hfpull-command:
-      # The shared-fs aws environment (shared_filesystem efs block) carried by the
+      # The shared-fs-ap aws environment (shared_filesystem efs block) carried by the
       # committed Space at ../space; PRODUCES the per-target-run shared_workdir on EFS.
       environment_uri: space://environments/skypilot/aws-shared-fs-ap
       inputs:
