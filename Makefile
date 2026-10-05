@@ -302,6 +302,7 @@ quick-tests:
 extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 	$(MAKE) slurm-setup
+	$(MAKE) kube-setup	# local kind cluster for the skypilot/kubernetes tests; makes kind-skypilot the current kube context
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 # GBTEST_STANDALONE_ENVIRONMENT (which HF resource group a STANDALONE push targets)
