@@ -1,0 +1,59 @@
+granite.build:
+  name: skypilot-kube-dpk-tokenize
+  # DPK tokenize WITH VALIDATION in a pod on SkyPilot/kubernetes — the kube
+  # counterpart of test-data/aws-tok/build.yaml. Same single target and the same
+  # transform config; only environment_uri differs. Reaching SUCCESS proves the
+  # same things as aws-tok (module + pip-extra derivation from `transform`, the
+  # validate_<transform>.py hook running before the artifact marker,
+  # validation.json landing in the registered output) but in a Kubernetes pod.
+  #
+  # Kube-specific points it also covers:
+  #   * the inline hf pull: kube has no shared filesystem, so the download runs in
+  #     THIS step's setup (=> step_count 1 in buildtest.yaml, as on aws);
+  #   * file_mounts {src: src}: the bundled scripts are rsynced into the pod;
+  #   * the pure-python pool inside a pod: runtime_num_processors matches
+  #     num_cpus_per_node, because os.cpu_count() in a pod reports the HOST (see
+  #     the parallelism note in step-template.yaml), so the step never sizes it.
+  targets:
+
+    tokenize:
+      environment_uri: space://environments/skypilot/kubernetes
+      inputs:
+        docs:
+          # Public dataset (DPK's own tokenization fixture) — stages with no creds.
+          uri: hf:///datasets/shalisha-witherspoon/dpk-tokenization-sample
+      outputs:
+        tokens:
+          # Terminal env:// output, registered inline from the step's marker.
+          # Nothing downstream reads it, so the default output_path (./output in
+          # the pod's per-run workdir) is fine — a cross-target handoff would not
+          # be on this env (no shared filesystem, no s3 assetstore).
+          uri: "env:///tokens"
+          type: dataset
+      steps:
+        - step_uri: space://steps/dpk
+          config:
+            poll_interval_seconds: 5
+            dpk_config:
+              transform: tokenization2arrow
+              dpk_version: "1.1.8"
+              input_path: "{{ bindings.docs.binding.path }}"
+              output: tokens
+              validate: true
+              module: dpk_tokenization2arrow.runtime
+              pip_index_url: "https://pypi.org/simple"
+              args:
+                tkn_tokenizer: hf-internal-testing/llama-tokenizer
+                tkn_doc_id_column: document_id
+                tkn_doc_content_column: contents
+                tkn_text_lang: en
+                tkn_chunk_size: 0
+                # Parallel branch, mirroring slurm-tok/aws-tok. Matches
+                # num_cpus_per_node below so the pod's CPU request covers it.
+                runtime_num_processors: 2
+            compute_config:
+              # On kube these become SkyPilot "{n}+" minimums on the pod's
+              # requests; the local kind node advertises 6 CPUs / ~22 GiB.
+              num_cpus_per_node: 2
+              num_gpus_per_node: 0
+              total_memory_per_node: 4Gi
