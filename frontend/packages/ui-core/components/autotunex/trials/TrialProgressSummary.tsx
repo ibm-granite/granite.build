@@ -2,18 +2,8 @@
 
 import { ProgressBar } from '@carbon/react'
 import { computeTrialProgress, progressLabel } from './trialProgress'
+import { formatTime } from './trialsTableFormat'
 import type { JobDetail, Trial } from '../../../types'
-
-function formatDuration(seconds: number): string {
-  if (seconds <= 0) return '0s'
-  const total = Math.floor(seconds)
-  const hours = Math.floor(total / 3600)
-  const mins = Math.floor((total % 3600) / 60)
-  const secs = total % 60
-  if (hours > 0) return `${hours}h ${mins}m`
-  if (mins > 0) return `${mins}m ${secs}s`
-  return `${secs}s`
-}
 
 interface Props {
   job: JobDetail
@@ -50,16 +40,16 @@ export function TrialProgressSummary({ job, trials }: Props) {
   // "elapsed" figure sat under "Trial N of N complete" next to rows that summed to
   // half of it, reading as if the trials had taken the whole time.
   if (progress.searchSeconds !== null && progress.finalRunSeconds !== null) {
-    parts.push(`Search ${formatDuration(progress.searchSeconds)}`)
-    parts.push(`Final run ${formatDuration(progress.finalRunSeconds)}`)
-    parts.push(`${formatDuration(progress.elapsedSeconds)} total`)
+    parts.push(`Search ${formatTime(progress.searchSeconds)}`)
+    parts.push(`Final run ${formatTime(progress.finalRunSeconds)}`)
+    parts.push(`${formatTime(progress.elapsedSeconds)} total`)
   } else {
-    parts.push(`${formatDuration(progress.elapsedSeconds)} elapsed`)
+    parts.push(`${formatTime(progress.elapsedSeconds)} elapsed`)
   }
   // Labelled as an estimate because trials differ in batch size and epoch count,
   // so a median-based projection can be well off.
   if (progress.etaSeconds !== null) {
-    parts.push(`~${formatDuration(progress.etaSeconds)} remaining (rough estimate)`)
+    parts.push(`~${formatTime(progress.etaSeconds)} remaining (rough estimate)`)
   }
 
   const label = progressLabel(progress)

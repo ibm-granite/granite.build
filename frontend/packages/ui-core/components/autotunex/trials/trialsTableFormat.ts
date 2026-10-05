@@ -10,9 +10,13 @@
  * AutoTuneX "Total time": the trials table and Compare used to stop at minutes
  * while the tunings table and the Details tab carried hours, so the same 7200 s
  * read "120m 0s" in one column and "2h 0m" in the other.
+ *
+ * Deliberately not ui-core's lib/duration.ts, which formats gbserver build
+ * durations: AutoTuneX runs need a days tier, and their timings arrive as
+ * fractional seconds, which formatDurationSeconds would print unfloored.
  */
 export function formatTime(seconds: number): string {
-  if (seconds <= 0) return '0 s'
+  if (seconds <= 0) return '0s'
   const days = Math.floor(seconds / 86400)
   const hours = Math.floor((seconds % 86400) / 3600)
   const mins = Math.floor((seconds % 3600) / 60)

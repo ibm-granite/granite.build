@@ -34,8 +34,8 @@ describe('formatTime', () => {
   })
 
   it('treats zero and negatives as zero', () => {
-    assert.equal(formatTime(0), '0 s')
-    assert.equal(formatTime(-5), '0 s')
+    assert.equal(formatTime(0), '0s')
+    assert.equal(formatTime(-5), '0s')
   })
   // The trials table and Compare stopped at minutes while the tunings table and
   // the Details tab carried hours, so one 7200 s total read "120m 0s" in one Total
@@ -95,5 +95,20 @@ describe('formatCell', () => {
     assert.notEqual(formatCell('created_at', null), '—')
     assert.equal(formatCell('created_at', undefined), new Date(undefined).toLocaleString())
     assert.equal(formatCell('created_at', null), new Date(null).toLocaleString())
+  })
+})
+
+describe('the progress summary shares formatTime', () => {
+  it('has no duration formatter of its own', () => {
+    // It carried a private copy without the days tier, so a two-day run read
+    // "49h 3m" in the caption beside "2d 1h" in Total time.
+    const fs = require('node:fs')
+    const path = require('node:path')
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'packages', 'ui-core', 'components', 'autotunex', 'trials', 'TrialProgressSummary.tsx'),
+      'utf8'
+    )
+    assert.match(src, /import \{ formatTime \} from '\.\/trialsTableFormat'/)
+    assert.doesNotMatch(src, /function format\w*\(/)
   })
 })
