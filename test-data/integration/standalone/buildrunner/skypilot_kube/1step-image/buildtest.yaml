@@ -1,0 +1,21 @@
+# YAML-driven spec for test/integration/standalone/buildrunner/skypilot_kube/test_skypilot_kube_1step_image.py.
+# Kube sibling of test-data/integration/standalone/buildrunner/skypilot_slurm/1step-image/buildtest.yaml.
+targets:
+  - image-run
+target_expectations:
+  - target_name: image-run
+    # step_count = 1: the command step only — the hf input is pulled inline (in
+    # the step's setup, inside its image), not as a separate hfpull step. env://
+    # outputs only, so no hf push steps (the slurm spec's 5 includes 3 hfpushes).
+    step_count: 1
+    input_artifact_count: 1    # input_model
+    output_artifact_count: 1   # env_output
+    # Not asserted under standalone's NoopLineageStore; CALIBRATE on a lineage run.
+    jobstats_count: 1
+space_uri: ../../../../../../configurations/spaces/local
+# Same knobs as the slurm image spec: happy path only.
+simulate_step_failure: false
+tests:
+  - runner
+# Image pull + SkyPilot's apt-get bootstrap + the uv bootstrap and download.
+timeout_minutes: 20

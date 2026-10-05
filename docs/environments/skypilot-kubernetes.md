@@ -92,8 +92,26 @@ For the same reason this example has no cross-target handoff: `env://` outputs s
 producing pod. Add an `s3` assetstore or a `shared_workdir` PVC if one target must read another's
 output.
 
-Steps may set `image_id` freely (Kubernetes runs containers natively — no Pyxis/enroot caveat), and
+Steps may set `image_id` (Kubernetes runs containers natively — no Pyxis/enroot caveat), and
 `resources.accelerators` / `resources.memory` map onto the pod's resource requests.
+
+### Custom images
+
+Two requirements, both checked on a local kind cluster:
+
+- **The image must be Debian/Ubuntu-based, or already contain SkyPilot's bootstrap packages.** Before a
+  step runs, SkyPilot's pod startup (`sky/templates/kubernetes-ray.yml.j2`) needs `rsync curl wget netcat
+  gcc patch pciutils openssh-server`; it installs any that are missing with **`apt-get`**, and the pod
+  exits if it cannot. Debian/Ubuntu images (including the `python:*-slim` family) work as-is; a Fedora,
+  RHEL or Alpine image works only if all of those are preinstalled. `quay.io/fedora/fedora-minimal`, for
+  example, fails at startup. To avoid Docker Hub pull-rate limits, `public.ecr.aws/docker/library/<image>`
+  mirrors the Docker official images.
+- **An `hf://` input is downloaded inside the image.** With `inline: true` the download runs in the
+  consuming step's own setup — in its image when it sets one. gbserver obtains the `hf` client itself:
+  it uses `pip` when the image has one (unchanged from before), else a preinstalled `hf`, else it
+  bootstraps one with `uv` via `curl` (which SkyPilot's startup guarantees). So images without pip work,
+  but that last route needs outbound access to `astral.sh` and PyPI; on an air-gapped cluster use an image
+  with `pip` or `hf` installed.
 
 ## See also
 
