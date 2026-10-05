@@ -657,6 +657,8 @@ _ROOT = pathlib.Path(__file__).resolve().parents[3]  # repo root
         "environments/skypilot/aws-multi/environment.yaml",
         "test-data/integration/ibm/buildrunner/skypilot/aws/multi-ephemeral-efs/"
         "space/environments/skypilot/aws-multi-ephemeral/environment.yaml",
+        "test-data/integration/ibm/buildrunner/skypilot/aws/shared-fs-ap/space/"
+        "environments/skypilot/aws-shared-fs-ap/environment.yaml",
     ],
 )
 def test_example_env_fixtures_validate(rel):
