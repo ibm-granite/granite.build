@@ -28,7 +28,6 @@ route it took:
 * nothing usable -> fail naming what is missing, before any download.
 """
 
-import os
 import pathlib
 import shutil
 import subprocess
@@ -116,11 +115,11 @@ def _add_curl(bin_dir, trace, tmp_path, layout="flat", works=True):
     )
 
 
-def _run(bin_dir, tmp_path, pulls=_PULLS):
-    script = "set -eu\n" + _inline_hfpull_setup_block(pulls)
+def _run(bin_dir, tmp_path, pulls=None):
+    script = "set -eu\n" + _inline_hfpull_setup_block(pulls or _PULLS)
     env = {"PATH": str(bin_dir), "TMPDIR": str(tmp_path), "HOME": str(tmp_path)}
     return subprocess.run(
-        [_BASH, "-c", script], capture_output=True, text=True, env=env
+        [_BASH, "-c", script], capture_output=True, text=True, env=env, check=False
     )
 
 
@@ -140,13 +139,21 @@ def _expected_download_args():
 class TestBlockIsValidShell:
     def test_parses_under_set_eu(self):
         script = "set -eu\n" + _inline_hfpull_setup_block(_PULLS)
-        assert subprocess.run([_BASH, "-n"], input=script, text=True).returncode == 0
+        assert (
+            subprocess.run(
+                [_BASH, "-n"], input=script, text=True, check=False
+            ).returncode
+            == 0
+        )
 
     @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="no shellcheck")
     def test_shellcheck_is_clean(self, tmp_path):
         f = tmp_path / "block.sh"
         f.write_text("set -eu\n" + _inline_hfpull_setup_block(_PULLS))
-        assert subprocess.run(["shellcheck", "-s", "bash", str(f)]).returncode == 0
+        assert (
+            subprocess.run(["shellcheck", "-s", "bash", str(f)], check=False).returncode
+            == 0
+        )
 
     def test_keeps_the_pinned_client_spec(self):
         assert f"gb_hf_spec='{_INLINE_HF_CLI_SPEC}'" in _inline_hfpull_setup_block(
@@ -225,7 +232,7 @@ class TestNothingUsable:
 
 class TestDownloadFailure:
     def test_a_failed_download_fails_setup(self, sandbox):
-        bin_dir, trace, tmp = sandbox
+        bin_dir, _, tmp = sandbox
         _stub(bin_dir, "hf", "exit 3")
         proc = _run(bin_dir, tmp)
         assert proc.returncode == 3
