@@ -43,7 +43,7 @@ import type {
   TuningJob,
 } from '../types'
 import axios from 'axios'
-import { autotunexApiBase } from './client'
+import { autotunexApiBase, createApiClient } from './client'
 import { normalizeVerlRows } from '../lib/autotunex/verlNormalize'
 import {
   adaptAsset,
@@ -63,7 +63,12 @@ import {
 // non-type-only imports (see its header comment for why that matters).
 export { adaptAsset, adaptConfiguration, adaptJob, adaptSuggestion, adaptTrial, collectKeysetPages, collectPages, pageQuery, toListResult }
 
-const client = axios.create({ baseURL: autotunexApiBase('') })
+// Built through createApiClient so a host's auth headers and 401 hook reach it:
+// gbserver gates the /api/autotunex proxy like every other API path, so a bare axios
+// client 401s every call in a deployment that authenticates. No
+// allowHostBaseUrl -- the host's base URL points at gbserver's /api/v1 and would
+// 404 the proxy path.
+const client = createApiClient(autotunexApiBase(''))
 
 type Scope = 'own' | 'all'
 

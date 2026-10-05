@@ -69,3 +69,16 @@ describe('same-origin API base in standalone', () => {
     assert.equal(apiBase('/v1/builds'), '/v1/builds')
   })
 })
+
+describe('the AutoTuneX client is wired to the host seam', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'packages', 'ui-core', 'api', 'autotunex.ts'), 'utf8')
+
+  it('is built with createApiClient, without the gbserver-only base-URL opt-in', () => {
+    // gbserver authenticates /api/autotunex/*, so a client the host's headers
+    // cannot reach 401s every call. allowHostBaseUrl would point it at /api/v1.
+    assert.match(src, /^const client = createApiClient\(autotunexApiBase\(''\)\)$/m)
+    assert.doesNotMatch(src, /axios\.create\(/)
+  })
+})
