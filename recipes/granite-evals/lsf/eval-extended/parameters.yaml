@@ -1,0 +1,214 @@
+# the extended benchmark suite on BlueVela. Override with: gb build start --param KEY=VALUE
+#
+# Smoke run (a few instances):
+#   --param GRANITE_EVALS_LIMIT=5
+
+# ─── Model ────────────────────────────────────────────────────────────
+# A local HF checkpoint dir, or a hub id vLLM downloads into HF_HOME. PLACEHOLDER until a
+# checkpoint with enough context is chosen: granite-4.2-3b serves 131072, so aa-lcr and ruler-256k+
+# need a longer-context model (vLLM refuses a max_model_len over the model's).
+MODEL_PATH: "ibm-granite/granite-4.2-3b"
+SERVED_MODEL_NAME: ""
+RUN_NAME: "granite-4.2-3b"
+OUTPUT_ROOT: "/proj/granite-build/g4os/granite/runs"
+HF_HOME: "/proj/granite-build/g4os/granite/hf-home"
+
+# ─── Images (granite-evals, `make publish-image EXTRA=<family>`) ────────
+GRANITE_EVALS_IMAGE_BFCL: "us.icr.io/cil15-shared-registry/granite-evals-bfcl:ae58961"
+GRANITE_EVALS_IMAGE_IFBENCH: "us.icr.io/cil15-shared-registry/granite-evals-ifbench:ae58961"
+GRANITE_EVALS_IMAGE_JUDGED: "us.icr.io/cil15-shared-registry/granite-evals-judged:ae58961"
+GRANITE_EVALS_IMAGE_LMEVAL: "us.icr.io/cil15-shared-registry/granite-evals-lmeval:ae58961"
+GRANITE_EVALS_IMAGE_NEMOSKILLS: "us.icr.io/cil15-shared-registry/granite-evals-nemoskills:d3e4f99"
+GRANITE_EVALS_IMAGE_SWEBENCH: "us.icr.io/cil15-shared-registry/granite-evals-swebench:ae58961"
+GRANITE_EVALS_IMAGE_TAU: "us.icr.io/cil15-shared-registry/granite-evals-tau:ae58961"
+GRANITE_EVALS_IMAGE_TBENCH: "us.icr.io/cil15-shared-registry/granite-evals-tbench:ae58961"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+# Empty = full dataset, one repeat (pass@1). GRANITE_EVALS_REPEATS=k reports pass@1[avg-of-k]
+# plus details.pass_at_k.
+GRANITE_EVALS_LIMIT: ""
+GRANITE_EVALS_REPEATS: ""
+TENSOR_PARALLEL_SIZE: 1
+
+# ─── SWE Bench Verified ───────────────────────────────────────────────
+SWEBENCH_WORKERS: 8
+# Empty = SWE-bench/SWE-bench_Verified at the commit pinned in granite-evals.
+SWEBENCH_DATASET: ""
+SWEBENCH_OPTIONS: ""
+
+# ─── SWE Bench Pro ────────────────────────────────────────────────────
+SWEBENCH_PRO_WORKERS: 8
+# Empty = ScaleAI/SWE-bench_Pro (V2, 642 tasks) at the commit pinned in granite-evals.
+SWEBENCH_PRO_DATASET: ""
+# e.g. "subset=hard" (HARD-51) or "patch=gold".
+SWEBENCH_PRO_OPTIONS: ""
+
+# ─── SWE Bench Multilingual ───────────────────────────────────────────
+SWEBENCH_ML_WORKERS: 8
+# Empty = SWE-bench/SWE-bench_Multilingual at the commit pinned in granite-evals.
+SWEBENCH_ML_DATASET: ""
+SWEBENCH_ML_OPTIONS: ""
+# Maven Central mirror for the Java instances (GRANITE_EVALS_MAVEN_MIRROR); empty = Maven Central,
+# which answers the node's egress IP with 429 on test-time resolves.
+MAVEN_MIRROR: ""
+
+# ─── Terminal-Bench 2.1 ───────────────────────────────────────────────
+TBENCH_WORKERS: 8
+# Empty = harborframework/terminal-bench-2.1 at the commit pinned in granite-evals.
+TBENCH_DATASET: ""
+# e.g. "agent=oracle" (reference solutions, no model) or "temperature=0.6".
+TBENCH_OPTIONS: ""
+
+# ─── BFCL v4 ──────────────────────────────────────────────────────────
+# Single run: GRANITE_EVALS_REPEATS does not apply.
+BFCL_WORKERS: 8
+# e.g. "categories=simple_python,web_search".
+BFCL_OPTIONS: ""
+
+# ─── tau3-bench (tau3-airline, tau3-retail, tau3-telecom, tau3-banking-knowledge) ─
+TAU_WORKERS: 16
+# Empty = data/tau2 of the tau2-bench commit pinned in granite-evals (baked into the image).
+TAU_DATASET: ""
+# The user simulator (and retail's NL judge) default to aws/claude-sonnet-5 on the IBM
+# LiteLLM gateway: PAID, needs GRANITE_EVALS_USER_API_KEY / GRANITE_EVALS_JUDGE_API_KEY in the job env and
+# is metered against GRANITE_EVALS_SPEND_LEDGER. "user_model=self judge_model=self" = no paid API.
+TAU_OPTIONS: ""
+
+# ─── LLM-judged benchmarks (judged image) ─────────────────────────────
+# The judge (default aws/claude-sonnet-5 on IBM LiteLLM) is paid and needs its key in
+# the job as GRANITE_EVALS_JUDGE_API_KEY. "judge_model=self" in the options judges with the
+# served model instead (key-less smoke runs only).
+
+# ─── GDPval (Elo is an APPROXIMATION: win rate vs expert, not GDPval-AA) ─
+GDPVAL_WORKERS: 4
+# Empty = openai/gdpval at the commit pinned in granite-evals.
+GDPVAL_DATASET: ""
+GDPVAL_OPTIONS: ""
+
+# ─── ProfBench ────────────────────────────────────────────────────────
+PROFBENCH_WORKERS: 16
+# Empty = nvidia/ProfBench at the commit pinned in granite-evals.
+PROFBENCH_DATASET: ""
+# Favored: the judge at max effort (results.json records the request it sent).
+PROFBENCH_OPTIONS: "judge_reasoning_effort=max judge_thinking=adaptive judge_effort=max"
+
+# ─── NeMo-Skills: AIME25, HMMT Feb25, GPQA, MMLU-Pro, Arena-Hard-V2 ───
+# WORKERS = concurrent requests to vLLM. OPTIONS as in each step's README, e.g.
+# "max_tokens=32768" or "answers=gold" (reference answers; not arena-hard-v2).
+# GPQA's dataset (Idavidrein/gpqa) is gated: the job env needs HF_TOKEN.
+# ARENA_HARD_V2 is judged by aws/claude-sonnet-5 (IBM LiteLLM): the job env needs
+# GRANITE_EVALS_JUDGE_API_KEY; "judge_model=self" judges with the served model instead.
+AIME25_WORKERS: 32
+AIME25_OPTIONS: ""
+HMMT_FEB25_WORKERS: 32
+HMMT_FEB25_OPTIONS: ""
+GPQA_WORKERS: 64
+GPQA_OPTIONS: ""
+MMLU_PRO_WORKERS: 128
+MMLU_PRO_OPTIONS: ""
+ARENA_HARD_V2_WORKERS: 32
+ARENA_HARD_V2_OPTIONS: ""
+
+# ─── LiveCodeBench v6 / SciCode (NeMo-Skills) ─────────────────────────
+LIVECODEBENCH_WORKERS: 64
+LIVECODEBENCH_OPTIONS: ""
+SCICODE_WORKERS: 64
+SCICODE_OPTIONS: ""
+
+# ─── RULER 1M / 512k / 256k / 128k / 64k (NeMo-Skills) ────────────────
+# Data are generated in the job for MODEL_PATH's tokenizer; both targets serve at
+# 131072 (ruler-256k/512k/1m at 262144/524288/1048576). Thinking is on by default: each
+# sample may generate up to the context cap (max_tokens = served length - prompt tokens), scored after the reasoning parser. A sample
+# that does not fit (prompt over the cap, a context-length error, or the cap reached
+# before any answer) scores 0, does not stop the run, and is logged as it happens to
+# OUTPUT_ROOT/RUN_NAME/ruler-<len>/failures.jsonl. "enable_thinking=false" = ns's
+# RULER exactly; "context_cap=N" lowers the cap.
+RULER_WORKERS: 32
+RULER_OPTIONS: ""
+# Per length. ruler-128k: at 131072 thinking gets only the slack RULER leaves around a 128k
+# sample, so expect length_before_answer failures (counted in results.json).
+RULER_128K_OPTIONS: ""
+RULER_256K_OPTIONS: ""
+RULER_512K_OPTIONS: ""
+RULER_1M_OPTIONS: ""
+
+# ─── Chat & IF: MMLU-ProX lite (lm-eval), IFBench (NeMo-Skills) ───────
+# WORKERS = concurrent requests to vLLM. OPTIONS as in each step's README, e.g.
+# "languages=all", "max_tokens=8192" or "answers=gold" (mmlu-prox-lite only).
+MMLU_PROX_LITE_WORKERS: 128
+MMLU_PROX_LITE_OPTIONS: ""
+IFBENCH_WORKERS: 64
+IFBENCH_OPTIONS: ""
+
+# ─── Agentic tools: BrowseComp, HLE / CritPt with tools (NeMo-Skills) ──
+# Tool calls run in enroot sandboxes (sandbox_cache in each step); web search goes through
+# the IBM Google PSE MCP server, so the generate jobs need outbound HTTPS. BrowseComp and
+# HLE are judged at score time (paid, metered into SPEND_LEDGER).
+BROWSECOMP_WORKERS: 32
+BROWSECOMP_OPTIONS: ""
+HLE_TOOLS_WORKERS: 32
+HLE_TOOLS_OPTIONS: ""
+CRITPT_TOOLS_WORKERS: 32
+CRITPT_TOOLS_OPTIONS: ""
+
+# ─── MCPAtlas (judged image) ──────────────────────────────────────────
+# The key-less MCP servers run in an enroot sandbox (outbound HTTPS, port 1984). e.g.
+# "agent=gold" (scripted reference calls, no model) or "agent=replay".
+MCPATLAS_WORKERS: 5
+MCPATLAS_OPTIONS: ""
+
+# ─── HLE, Omniscience, CritPt (NeMo-Skills) ───────────────────────────
+# HLE needs HF_TOKEN with access to cais/hle. HLE and Omniscience (also
+# omniscience-hallucination) are judged by aws/claude-sonnet-5 at score time. CritPt is
+# graded by Artificial Analysis' API (ARTIFICIAL_ANALYSIS_API_KEY at score; no gold mode).
+# e.g. "answers=gold" (HLE, Omniscience).
+HLE_WORKERS: 32
+HLE_OPTIONS: ""
+OMNISCIENCE_WORKERS: 32
+OMNISCIENCE_OPTIONS: ""
+CRITPT_WORKERS: 32
+CRITPT_OPTIONS: ""
+
+# ─── Multi-Challenge (judged image) ───────────────────────────────────
+# pass@1 by default; GRANITE_EVALS_REPEATS=8 = Scale AI's pass@1[avg-of-8].
+MULTI_CHALLENGE_WORKERS: 16
+MULTI_CHALLENGE_OPTIONS: ""
+
+# ─── Safety: Fortress adversity / benign, StrongREJECT (judged image) ─
+# FORTRESS_* apply to both Fortress targets. e.g. "responses=refusal" (fixed refusals:
+# adversity and StrongREJECT score 1.0, benign 0.0).
+FORTRESS_WORKERS: 16
+FORTRESS_OPTIONS: ""
+STRONGREJECT_WORKERS: 16
+STRONGREJECT_OPTIONS: ""
+
+# ─── WMT24++ (NeMo-Skills) ────────────────────────────────────────────
+# COMET with XCOMET-XXL (gated: HF_TOKEN), so the score target takes a GPU.
+# "score_metric=bleu" reports BLEU instead.
+WMT24PP_WORKERS: 32
+WMT24PP_OPTIONS: ""
+
+# ─── AA-LCR (NeMo-Skills) ─────────────────────────────────────────────
+# Documents run to about 100k tokens plus thinking; judged at score time.
+AA_LCR_WORKERS: 32
+AA_LCR_OPTIONS: ""
+AA_LCR_MAX_MODEL_LEN: 163840
+
+# ─── Paid API spend ───────────────────────────────────────────────────
+# Every judge / user-simulator call is metered into this JSONL ledger (costs and
+# tokens only). One ledger shared by every job makes SPEND_BUDGET_USD a cap on all
+# of them together: at the cap new calls get a 402 and the run fails.
+# Empty SPEND_LEDGER = no ledger; empty SPEND_BUDGET_USD = no cap.
+SPEND_LEDGER: "/proj/granite-build/g4os/granite/spend/ledger.jsonl"
+SPEND_BUDGET_USD: ""
+
+# ─── Infrastructure ───────────────────────────────────────────────────
+CLUSTER: "bluevela"
+QUEUE: "normal"
+GPU_MEMORY: 256
+# The CPU-only score targets (`<bench>`, after `<bench>-generate`). SWE-bench graders
+# run SWEBENCH_*_WORKERS enroot sandboxes at once.
+SCORE_CPUS: 16
+SCORE_MEMORY: 64
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

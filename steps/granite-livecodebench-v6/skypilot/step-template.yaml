@@ -1,0 +1,162 @@
+name: granite-livecodebench-v6
+version: 0.1.0
+# Granite benchmark: LiveCodeBench v6, pass@1 accuracy.
+#
+# ONE STEP PER GRANITE_EVALS BENCHMARK. Every steps/granite-*/ template has the same shape and
+# differs only in `name`, the BENCHMARK id passed to granite-evals, and its defaults;
+# skypilot/test/test_step_template.py holds them to that. Recipes (recipes/granite-evals/...) choose
+# which benchmarks a model family is scored on.
+#
+# THE CODE LIVES OUTSIDE THIS REPO. The benchmark runtime is the granite-evals project
+# (github.com/laminair/granite-evals), shipped as a prebuilt image per benchmark family
+# and pinned below by tag. Nothing is built from this directory, so there is no
+# Dockerfile and common.mk treats it as a non-image step; the image is chosen at run
+# time from granite_config.image, the byoc way.
+#
+# WHAT RUNS. `granite-evals run livecodebench-v6` serves model_path with vLLM inside the
+# job and runs NVIDIA NeMo-Skills (pinned commit) against it: ns's LiveCodeBench v6
+# prompt and generation, then its evaluator (the pinned livecodebench package) on each
+# problem's test cases in the job container, and writes one results.json (schema:
+# granite_evals/results.py).
+#
+# PHASES. So that no job holds an idle GPU, recipes run this step twice on one
+# output_dir: phase generate on a GPU (vLLM + the model's work only) and phase score
+# on CPU (grading, no vLLM; it refuses to generate). phase all does both in one job.
+#
+# CUSTOM, not EVAL: gbcommon's StepType has no EVAL member.
+type: custom
+config:
+  granite_config:
+    # The granite-evals image for this benchmark family (`make image EXTRA=nemoskills` in
+    # granite-evals), pinned by its commit tag; results.json records the versions inside.
+    # Recipes set it once, as the GRANITE_EVALS_IMAGE_NEMOSKILLS parameter.
+    image: ""
+    # The checkpoint to score, as a LOCAL PATH (normally a distill-hf-export `hf_model`
+    # or an hfpull binding). Required.
+    model_path: ""
+    # Name the model is served under; empty = basename of model_path.
+    served_model_name: ""
+    # Relative values resolve against $GB_BUILD_WORKDIR.
+    output_dir: "output"
+    # SMOKE KNOB: score only the first N problems (in the split's order, so two smoke
+    # runs are comparable). Empty = all 454 (release v6, contests 2024-08..2025-05).
+    limit: ""
+    # pass@1[avg-of-k]: independent generations per problem. Empty = benchmark default (1).
+    repeats: ""
+    # Concurrent requests to vLLM.
+    workers: "64"
+    # Dataset: empty = livecodebench/code_generation_lite at the commit pinned in
+    # granite-evals (ns's test_v6_2408_2505 split). A prepared jsonl overrides it.
+    dataset: ""
+    dataset_revision: ""
+    # Space-separated key=value benchmark options passed as --option, e.g.
+    # "temperature=0.6 max_tokens=32768", "ns.<key>=<value>" (raw ns overrides) or
+    # "answers=gold" (five hand-checked solutions through prompt, generation and grading:
+    # checks the evaluator without a model; model_path may be "none").
+    options: ""
+    # all | generate | score. "generate" serves the model and saves its outputs
+    # (generation.json, the granite_generation artifact); "score" serves nothing and
+    # grades them on CPU in the same output_dir (results.json). Recipes run
+    # generate on a GPU target and score on a CPU-only target bound to it.
+    phase: "all"
+    # vLLM.
+    tensor_parallel_size: "1"
+    gpu_memory_utilization: "0.9"
+    max_model_len: ""
+    # Unused by this benchmark (no enroot sandboxes); kept for the shared contract.
+    sandbox_cache: "/proj/granite-build/g4os/granite/enroot-cache"
+    # Empty leaves the image's HF cache default alone.
+    hf_home: ""
+outputs:
+  optional:
+    # phase all | score: the scored results.json.
+    granite_results:
+      type: dataset
+    # phase generate: generation.json, which the score target binds to.
+    granite_generation:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    default_launcher: granite
+    launchers:
+      granite:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: '{{ ("docker:" ~ config.granite_config.image) if config.granite_config.image else "" }}'
+          resources: {}
+          run: |
+            set -e
+            set -o pipefail
+            BENCHMARK=livecodebench-v6
+            echo "=== granite $BENCHMARK on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+            # vLLM refuses to start inside an initialised torch.distributed env.
+            unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
+            # The image's ENV PATH can be lost on BlueVela: the LSF provider flattens
+            # enroot's layers in reverse order, so enroot's layer 0 (/etc/environment)
+            # ends up under the base image's. The venv path is fixed by the image.
+            export PATH="/opt/granite-evals/.venv/bin:$PATH"
+            command -v granite-evals >/dev/null || { echo "granite: granite-evals not on PATH; is granite_config.image set to a granite-evals image?"; exit 1; }
+            test -n "{{ config.granite_config.model_path }}" || { echo "granite: granite_config.model_path is required"; exit 1; }
+
+            {% if config.granite_config.hf_home %}export HF_HOME="{{ config.granite_config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
+
+            # Sandboxes: enroot inside this job's container. Image squashfs files go to
+            # the shared cache; the per-sandbox rootfs goes to node-local scratch.
+            export GRANITE_EVALS_SANDBOX=enroot
+            export GRANITE_EVALS_ENROOT_CACHE="{{ config.granite_config.sandbox_cache }}"
+            SCRATCH="${TMPDIR:-/tmp}/granite-$$"
+            export ENROOT_DATA_PATH="$SCRATCH/enroot-data" ENROOT_CACHE_PATH="$SCRATCH/enroot-cache" ENROOT_RUNTIME_PATH="$SCRATCH/enroot-run" ENROOT_TEMP_PATH="$SCRATCH/enroot-tmp"
+            mkdir -p "$GRANITE_EVALS_ENROOT_CACHE" "$ENROOT_DATA_PATH" "$ENROOT_CACHE_PATH" "$ENROOT_RUNTIME_PATH" "$ENROOT_TEMP_PATH"
+            trap 'rm -rf "$SCRATCH"' EXIT
+
+            OUTPUT_DIR="{{ config.granite_config.output_dir }}"
+            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
+            mkdir -p "$OUTPUT_DIR"
+
+            OPTS=()
+            for kv in {{ config.granite_config.options }}; do OPTS+=(--option "$kv"); done
+
+            granite-evals run "$BENCHMARK" \
+              --model "{{ config.granite_config.model_path }}" \
+              --output-dir "$OUTPUT_DIR" \
+              {% if config.granite_config.served_model_name %}--served-model-name "{{ config.granite_config.served_model_name }}"{% endif %} \
+              {% if config.granite_config.limit %}--limit {{ config.granite_config.limit }}{% endif %} \
+              {% if config.granite_config.repeats %}--repeats {{ config.granite_config.repeats }}{% endif %} \
+              --workers {{ config.granite_config.workers }} \
+              {% if config.granite_config.dataset %}--dataset "{{ config.granite_config.dataset }}"{% endif %} \
+              {% if config.granite_config.dataset_revision %}--dataset-revision "{{ config.granite_config.dataset_revision }}"{% endif %} \
+              --tensor-parallel-size {{ config.granite_config.tensor_parallel_size }} \
+              --gpu-memory-utilization "{{ config.granite_config.gpu_memory_utilization }}" \
+              --phase "{{ config.granite_config.phase }}" \
+              {% if config.granite_config.max_model_len %}--max-model-len {{ config.granite_config.max_model_len }}{% endif %} \
+              "${OPTS[@]}" \
+              2>&1 | tee "$OUTPUT_DIR/granite.log"
+            if [ "{{ config.granite_config.phase }}" = generate ]; then
+              RESULT_FILE="$OUTPUT_DIR/generation.json"
+              test -s "$RESULT_FILE" || { echo "granite: no $RESULT_FILE"; exit 1; }
+              echo "GB_ARTIFACT_ID:granite_generation GB_ARTIFACT_PATH:${RESULT_FILE}"
+            else
+              RESULT_FILE="$OUTPUT_DIR/results.json"
+              test -s "$RESULT_FILE" || { echo "granite: no $RESULT_FILE"; exit 1; }
+              echo "GB_ARTIFACT_ID:granite_results GB_ARTIFACT_PATH:${RESULT_FILE}"
+            fi
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
+          extra_event_configs:
+            - event_type: WORKLOAD_STATUS_EVENT
+              line_regex: "(vLLM ready at|livecodebench-v6: \\d+ examples|livecodebench-v6 repeat \\d+: |granite-evals: livecodebench-v6 =|granite-evals: \\S+ generated)"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"
+                - field_name: message
+                  field_regex: ".+"
