@@ -302,6 +302,7 @@ quick-tests:
 extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 	$(MAKE) slurm-setup
+	$(MAKE) kube-setup	# local kind cluster for the skypilot/kubernetes tests; makes kind-skypilot the current kube context
 	@# Best-effort: without a container runtime/openssl or a free port, the
 	@# local-PostgreSQL storage tests skip instead of blocking every extended test.
 	$(MAKE) postgres-setup || echo "WARNING: postgres-setup failed; the local-PostgreSQL storage tests will skip."
