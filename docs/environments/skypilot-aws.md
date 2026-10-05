@@ -216,6 +216,64 @@ cross-deletion. Two steps that *rewrite the same file* as different uids still n
 > cross-*deletion*, not cross-read/write. That is a shared-scratch model appropriate for a single trusted
 > team/space. For stronger isolation, provision the EFS with **access points** (`PosixUser` +
 > `RootDirectory` per space), which also removes the `chmod` bootstrap entirely.
+>
+> This `1777` shared-scratch model applies only to mounts without an
+> `access_point_id`. Configure a per-space EFS access point (see
+> "Per-space isolation with EFS access points" below) to give each space an
+> isolated, uid/gid-pinned root with no cross-build read/write.
+
+### Per-space isolation with EFS access points (recommended for multi-tenant BYO)
+
+By default a BYO EFS mount uses a world-writable, sticky (`1777`) per-run tree so
+cross-uid, cross-instance steps can create their workdirs. On a filesystem shared
+by many builds that is a shared-scratch trust model: every build can read and
+write every other build's per-run tree (the sticky bit only blocks cross-deletion).
+
+To isolate each space, provision one **EFS access point** per space and name it in
+that space's `environment.yaml`:
+
+1. Create an access point on the shared filesystem with a fixed `PosixUser`
+   (a uid/gid dedicated to the space), a per-space `RootDirectory` (e.g.
+   `/spaces/<space>`), and `CreationInfo` (owner uid/gid + `0700`/`0770`
+   permissions) so EFS auto-creates the root owned by that uid/gid:
+
+   ```
+   aws efs create-access-point \
+     --file-system-id fs-0abc123 \
+     --posix-user Uid=<uid>,Gid=<gid> \
+     --root-directory 'Path=/spaces/<space>,CreationInfo={OwnerUid=<uid>,OwnerGid=<gid>,Permissions=0770}' \
+     --tags Key=space,Value=<space>
+   ```
+
+2. Put the returned `AccessPointId` in the space's `environment.yaml`:
+
+   ```yaml
+   shared_filesystem:
+     provider: efs
+     mount_point: /mnt/gb-shared
+     efs:
+       file_system_id: fs-0abc123
+       region: us-east-1
+       access_point_id: fsap-0123456789abcdef0
+       tls: true
+   ```
+
+**Requirements and behavior**
+
+- The worker host/image MUST ship `amazon-efs-utils` (`mount.efs`): access points
+  are mounted with `mount -t efs -o accesspoint=<id>,tls`, and plain `nfs4` cannot
+  select an access point. If `mount.efs` is absent the step fails fast with a clear
+  message (there is no `nfs4`/cleartext fallback). Containerized steps therefore
+  need an image that bundles `amazon-efs-utils`.
+- The access point's fixed `PosixUser` pins a stable uid/gid across steps and
+  instances, so gbserver no longer applies the `chmod 1777` bootstrap or per-run
+  chmod walk for that mount.
+- IAM: creating/managing access points is an operator action
+  (`elasticfilesystem:CreateAccessPoint`/`DeleteAccessPoint`/`DescribeAccessPoints`);
+  gbserver needs no AWS permissions for BYO access points — it only mounts through
+  the configured id.
+- `access_point_id` is BYO-only; it is rejected for `provision: ephemeral`
+  (ephemeral EFS is single-tenant and needs no access point).
 
 ### Containerized steps
 
