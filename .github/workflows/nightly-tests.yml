@@ -75,6 +75,13 @@ jobs:
       - name: Load Docker images (pull with retry on cache miss)
         run: scripts/ci-docker-images.sh load
 
+      # Its own step rather than part of extended-tests-setup, which stays free of
+      # the kind prerequisites for local use (see the Makefile). Steps share this
+      # runner, so the cluster is still up for "Run extended tests" below; a failure
+      # here fails the job rather than letting the kube tests silently self-skip.
+      - name: Start local kind cluster (skypilot/kubernetes tests)
+        run: make kube-setup
+
       - name: Run extended tests
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

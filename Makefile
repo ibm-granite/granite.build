@@ -299,10 +299,14 @@ quick-tests:
 		.test
 
 .PHONY: extended-tests-setup
+# The skypilot/kubernetes tests' kind cluster is deliberately NOT set up here: it
+# needs extra host tools (kind, kubectl, socat, GNU netcat) and switches the current
+# kube context to kind-skypilot. The nightly workflow runs `make kube-setup` as its
+# own step after this target; locally, run it yourself to opt in — without it those
+# tests self-skip.
 extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 	$(MAKE) slurm-setup
-	$(MAKE) kube-setup	# local kind cluster for the skypilot/kubernetes tests; makes kind-skypilot the current kube context
 	@# Best-effort: without a container runtime/openssl or a free port, the
 	@# local-PostgreSQL storage tests skip instead of blocking every extended test.
 	$(MAKE) postgres-setup || echo "WARNING: postgres-setup failed; the local-PostgreSQL storage tests will skip."
