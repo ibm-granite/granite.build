@@ -744,7 +744,8 @@ export function StartTuningWizard() {
     setUploadProgress(0)
     // The same conditions as the branches below.
     setLaunchPlan({
-      uploadDataset: !(datasetId || existingDatasetId) && !!uploadedFile,
+      importHfDataset: !(datasetId || existingDatasetId) && !!pendingHfImport,
+      uploadDataset: !(datasetId || existingDatasetId) && !pendingHfImport && !!uploadedFile,
       updateConfig: !!pendingConfigUpdate && selectedConfigId !== '__pending__',
       createConfig: !!pendingNewConfig && selectedConfigId === '__pending__',
     })

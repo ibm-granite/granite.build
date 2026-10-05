@@ -846,6 +846,7 @@ export type LaunchPhase =
 
 /** What a launch will do, fixed when it starts (drives the launch progress rows). */
 export interface LaunchPlan {
+  importHfDataset: boolean
   uploadDataset: boolean
   updateConfig: boolean
   createConfig: boolean
