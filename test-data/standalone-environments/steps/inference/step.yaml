@@ -38,6 +38,7 @@ environment_configs:
         monitors:
           - docker_log
         config:
+          # Must match PYTHON_IMAGE in test-data/ci-docker-images.env, which CI preloads.
           image: public.ecr.aws/docker/library/python:3.11-slim
           command: python /gb-workspace/bash_scripts/inference/run.py
     monitors:
