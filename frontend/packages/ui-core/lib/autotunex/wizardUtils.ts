@@ -112,12 +112,29 @@ export function getRequiredColumns(algorithmId: string): string[] {
   return algo?.requiredColumns || ['input', 'output']
 }
 
+// Algorithms already warned about, so a component re-rendering cannot flood the console.
+const warnedMissingTypes = new Set<string>()
+
 export function getColumnsFromTypes(
   algorithmId: string,
   types: Record<string, any>
 ): { name: string; desc: string; required: boolean }[] {
   const typeKey = ALGORITHM_TO_DATASET_TYPE[algorithmId]
-  if (!typeKey || !types[typeKey]) return []
+  if (!typeKey || !types[typeKey]) {
+    // A loaded response with no entry for this algorithm degrades silently
+    // otherwise: required columns fall back to the hardcoded table, while optional
+    // columns have no fallback and vanish. An empty `types` is the still-loading
+    // case, not a mismatch.
+    if (Object.keys(types).length > 0 && !warnedMissingTypes.has(algorithmId)) {
+      warnedMissingTypes.add(algorithmId)
+      console.warn(
+        `AutoTuneX dataset types have no entry ${JSON.stringify(typeKey)} for algorithm ${JSON.stringify(algorithmId)} ` +
+          `(response keys: ${Object.keys(types).join(', ')}). Falling back to hardcoded required columns; ` +
+          'optional columns will not be shown. See ALGORITHM_TO_DATASET_TYPE.'
+      )
+    }
+    return []
+  }
   const columns = types[typeKey].columns || {}
   return Object.values(columns).map((col: any) => ({
     name: col.name as string,

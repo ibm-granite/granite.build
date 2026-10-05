@@ -150,7 +150,10 @@ export const ALGORITHM_OPTIONS: AlgorithmOption[] = [
 ]
 
 // Maps an algorithm id to the dataset-type key the backend's
-// /autotune_dataset_types response groups columns under.
+// /autotune_dataset_types response groups columns under. The keys are defined by
+// `AutotuneDatasetTypes` in autotunex/src/fm-tune/autotune/catalog.py; a key that
+// drifts from it drops that algorithm's optional columns (getColumnsFromTypes
+// warns when it does).
 export const ALGORITHM_TO_DATASET_TYPE: Record<string, string> = {
   sft: 'dataset_type_a',
   lora: 'dataset_type_a',
