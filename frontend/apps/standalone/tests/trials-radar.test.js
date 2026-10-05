@@ -26,6 +26,7 @@ const {
   bestTrialId,
   jobMetric,
   rankBestFirst,
+  scoreOn,
 } = require('../../../packages/ui-core/components/autotunex/trials/trialsRadar.ts')
 
 const trial = (id, metrics) => ({ id, status: 'completed', metrics })
@@ -271,6 +272,31 @@ describe('a trial reporting only the fallback metric', () => {
 
   it('ranks unscored, after the trials scored on the job metric', () => {
     assert.deepEqual(rankBestFirst(trials).map((t) => t.id), ['c', 'b', 'a'])
+  })
+
+  it('has no score on the job metric -- the table cell shows none, not its loss', () => {
+    // The trials table fills its metric column with scoreOn, so the cell and the
+    // order above agree: 'a' sinks unscored rather than showing 0.9 under "Reward".
+    assert.equal(scoreOn(trials[0], jobMetric(trials)), null)
+    assert.equal(scoreOn(trials[2], jobMetric(trials)), 0.8)
+  })
+})
+
+describe('the trials table metric column', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'packages', 'ui-core', 'components', 'autotunex', 'trials', 'TrialsTable.tsx'),
+    'utf8'
+  )
+
+  it('is labelled with the job metric, not a fixed "Loss"', () => {
+    assert.match(src, /h\.key === 'loss' \? \{ \.\.\.h, header: toFeatureLabel\(metric\) \}/)
+    assert.match(src, /headers=\{headers\}/)
+  })
+
+  it('shows the value the ranking used', () => {
+    assert.match(src, /loss: scoreOn\(t, metric\) \?\? undefined,/)
   })
 })
 

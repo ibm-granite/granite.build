@@ -43,7 +43,7 @@ import { TrialMetricsPanel } from './TrialMetricsPanel'
 import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import styles from './TrialsTable.module.scss'
-import { bestTrialId, isLowerBetter, jobMetric, primaryMetric, rankBestFirst, toRadarData } from './trialsRadar'
+import { bestTrialId, isLowerBetter, jobMetric, rankBestFirst, scoreOn, toFeatureLabel, toRadarData } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
 
 const HEADERS = [
@@ -201,6 +201,12 @@ export function TrialsTable({ job }: Props) {
     )
   }
 
+  // The column is keyed `loss` for formatCell and the default sort, but holds the
+  // job's metric, so it is labelled with it: a reward job's 0.91 under "Loss"
+  // read as a bad loss.
+  const metric = jobMetric(trials)
+  const headers = HEADERS.map((h) => (h.key === 'loss' ? { ...h, header: toFeatureLabel(metric) } : h))
+
   // Default order: lowest loss first — trials without a loss sink to the end.
   //
   // `isSelected` seeds Carbon's own checkbox state. Carbon reads it off the row
@@ -215,9 +221,10 @@ export function TrialsTable({ job }: Props) {
       id: t.id,
       created_at: t.created_at,
       status: t.status,
-      // Shared with Compare and bestTrialId so the same trials cannot be ordered two
-      // different ways -- see primaryMetric.
-      loss: primaryMetric(t)?.value,
+      // The value the ranking used, so the cell and the order agree: a trial with
+      // no value on the job's metric shows none, rather than the loss it fell back
+      // to under the job's metric heading -- see scoreOn.
+      loss: scoreOn(t, metric) ?? undefined,
       total_time: t.metrics?.total_time,
       isSelected: selectedIds.includes(t.id),
     }))
@@ -250,7 +257,7 @@ export function TrialsTable({ job }: Props) {
       <div style={{ overflowX: 'auto' }}>
       <DataTable
         rows={rows}
-        headers={HEADERS}
+        headers={headers}
         isSortable
         // Carbon's default filter matches String(cell.value), but these cells
         // render formatted text — so "5m 20" would miss the row showing
@@ -377,7 +384,7 @@ export function TrialsTable({ job }: Props) {
                           key={h.key}
                           {...hProps}
                           isSortHeader={isDefaultLossSort ? true : hProps.isSortHeader}
-                          sortDirection={isDefaultLossSort ? (isLowerBetter(jobMetric(trials)) ? 'ASC' : 'DESC') : hProps.sortDirection}
+                          sortDirection={isDefaultLossSort ? (isLowerBetter(metric) ? 'ASC' : 'DESC') : hProps.sortDirection}
                         >
                           {h.header}
                         </TableHeader>

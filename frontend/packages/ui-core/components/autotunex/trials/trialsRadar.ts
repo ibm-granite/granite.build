@@ -68,7 +68,7 @@ export function jobMetric(trials: Trial[]): string {
 }
 
 /** A trial's value on `metric`, or null when it has none (or only a fallback). */
-function scoreOn(trial: Trial, metric: string): number | null {
+export function scoreOn(trial: Trial, metric: string): number | null {
   const primary = primaryMetric(trial)
   return primary && primary.name === metric ? primary.value : null
 }
