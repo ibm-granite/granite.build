@@ -58,11 +58,13 @@ from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_
 
 from gbserver.api import artifacts as artifacts_module
 from gbserver.api.artifacts import (
+    HFModelRegistrationRequest,
     decode_uri,
     list_artifact_tags,
     list_artifacts,
     read_artifact,
     register_artifact,
+    register_hf_model,
 )
 from gbserver.api.utils import (
     confirm_space_write_access as _real_confirm_space_write_access,
@@ -314,6 +316,49 @@ def test_register_artifact_allows_admin_impersonation():
             _new_artifact(VICTIM_OWNER),
         )
     assert resp.registered.username == VICTIM_OWNER
+
+
+# ------------------------------------------------------------------ typed register routes
+#
+# /artifacts/hf/* and /artifacts/lh/* go through _create_and_register_artifact,
+# which looks up origin artifacts in the requested space and writes a lineage
+# record before handing off to register_artifact. The add-to-space check must
+# run before either, or a non-member can probe another space's registry and
+# leave lineage records in it even though the registration itself is refused.
+
+
+def _hf_model_req(username: str) -> HFModelRegistrationRequest:
+    return HFModelRegistrationRequest(
+        space_name=VICTIM_SPACE,
+        username=username,
+        organization="team-b",
+        model_id="new-model",
+        origin_uris=["hf://huggingface.co/models/team-b/base-model"],
+    )
+
+
+@pytest.mark.parametrize(
+    "username, is_member",
+    [(ATTACKER, False), (VICTIM_OWNER, True)],
+    ids=["non-member-self", "member-forged-username"],
+)
+def test_typed_register_rejects_before_touching_space(username, is_member):
+    with (
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=is_member),
+        patch.object(artifacts_module, "get_admin_storage") as admin_storage,
+        patch.object(artifacts_module, "get_lineage_store") as lineage_store,
+    ):
+        with pytest.raises(HTTPException) as exc:
+            register_hf_model(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _hf_model_req(username),
+            )
+    assert exc.value.status_code == 401
+    admin_storage.assert_not_called()
+    lineage_store.assert_not_called()
 
 
 # ------------------------------------------------------------------ list_artifacts / list_artifact_tags

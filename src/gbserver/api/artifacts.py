@@ -164,6 +164,15 @@ def _create_and_register_artifact(
     type: ArtifactType,
 ) -> RegisterArtifactResponse:
     _validate_lh_uri(uri)
+    # Authorize before anything below touches the requested space: the
+    # origin-uri lookup would otherwise let a non-member probe that space's
+    # registry, and the jobstats write would leave a lineage record in it even
+    # though register_artifact's own (repeated) check then refuses the artifact.
+    confirm_can_add_to_space(
+        request,
+        username_on_target=artifact_request.username,
+        space_name=artifact_request.space_name,
+    )
     if artifact_request.name == "":
         artifact_request.name = getattr(artifact_request, "table_name", "")
 
