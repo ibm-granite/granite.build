@@ -40,29 +40,117 @@ logger = get_logger(__name__)
 # used to sit here were self-assignments that did nothing.
 
 
+def check_tar_safe(
+    tar: tarfile.TarFile,
+    max_entries: int = MAX_ZIP_ENTRIES,
+    max_uncompressed_bytes: int = MAX_ZIP_UNCOMPRESSED_BYTES,
+) -> None:
+    """Guard against tar-bomb archives before extracting any member.
+
+    The tar counterpart of ``check_zip_safe``, using the same default caps.
+
+    Args:
+        tar: An open, seekable (non-stream mode) tar archive.
+        max_entries: Maximum number of members allowed.
+        max_uncompressed_bytes: Maximum total declared size of all members.
+
+    Raises:
+        ValueError: If the archive has more members, or more total
+            uncompressed size, than the given caps.
+    """
+    members = tar.getmembers()
+    if len(members) > max_entries:
+        raise ValueError(
+            f"archive has too many entries ({len(members)} > {max_entries})"
+        )
+    total_size = sum(m.size for m in members)
+    if total_size > max_uncompressed_bytes:
+        raise ValueError(
+            f"archive uncompressed size too large "
+            f"({total_size} > {max_uncompressed_bytes} bytes)"
+        )
+
+
+def _extract_zip(
+    archive_binary: bytes, output_dir: Path, max_entries: int, max_bytes: int
+) -> None:
+    """Size-check and extract a zip archive into ``output_dir``.
+
+    ``ZipFile.extractall`` already strips absolute paths and ``..`` components
+    and never creates symlinks, so only the size caps need adding here.
+
+    Raises:
+        zipfile.BadZipFile, zipfile.LargeZipFile: If the bytes are not a zip.
+        ValueError: If the archive exceeds the entry or size caps.
+    """
+    with zipfile.ZipFile(io.BytesIO(archive_binary), "r") as zip_file:
+        check_zip_safe(zip_file, max_entries, max_bytes)
+        zip_file.extractall(output_dir)
+
+
+def _extract_tar(
+    archive_binary: bytes, output_dir: Path, max_entries: int, max_bytes: int
+) -> None:
+    """Size-check and extract a tar archive into ``output_dir``.
+
+    Extraction uses the ``"data"`` filter (PEP 706), which rejects absolute
+    paths, ``..`` traversal, links pointing outside ``output_dir`` and device
+    files, and clears setuid/setgid bits. Python 3.11-3.13 apply no filter by
+    default, so it must be passed explicitly.
+
+    Raises:
+        tarfile.ReadError: If the bytes are not a tar archive.
+        ValueError: If the archive exceeds the caps, contains a member the
+            data filter rejects, or the interpreter predates PEP 706.
+    """
+    if not hasattr(tarfile, "data_filter"):
+        # Python < 3.11.4 has no extraction filters; refuse rather than unpack
+        # an untrusted archive unfiltered.
+        raise ValueError("tar extraction requires Python >= 3.11.4")
+    # Seekable "r:*" (not stream "r|*") so members can be size-checked first.
+    with tarfile.open(fileobj=io.BytesIO(archive_binary), mode="r:*") as tar:
+        check_tar_safe(tar, max_entries, max_bytes)
+        try:
+            tar.extractall(output_dir, filter="data")
+        except tarfile.FilterError as e:
+            raise ValueError(f"unsafe tar member rejected: {e}") from e
+
+
 def extract_archive(
-    archive_binary: bytes, output_dir: Path, archive_format: str = ""
+    archive_binary: bytes,
+    output_dir: Path,
+    archive_format: str = "",
+    max_entries: int = MAX_ZIP_ENTRIES,
+    max_uncompressed_bytes: int = MAX_ZIP_UNCOMPRESSED_BYTES,
 ) -> bool:
-    """Extracts an archive to the filesystem, attempting auto-detection.
+    """Extracts an untrusted archive to the filesystem, attempting auto-detection.
+
+    Archives arrive from API clients (e.g. ``POST /builds/validate``), so
+    extraction is confined to ``output_dir`` and capped in size.
 
     Args:
         archive_binary: The archive as a bytes object.
         output_dir: The directory to extract the archive to.
-        archive_format: Optional. If provided, forces the format.
+        archive_format: Optional. If provided ("zip" or "tar"), forces the format.
+        max_entries: Maximum number of entries the archive may contain.
+        max_uncompressed_bytes: Maximum total uncompressed size of all entries.
 
     Returns:
-        True on success, False on failure.
-    """
+        True on success, False if the bytes are not a readable archive.
 
+    Raises:
+        ValueError: If the archive is readable but unsafe (too large, too many
+            entries, or a tar member escaping ``output_dir``). There is no
+            fallback to another format in that case.
+    """
     output_dir.mkdir(mode=DEFAULT_DIR_PERMS, parents=True, exist_ok=True)
 
     if archive_format == "zip" or archive_format == "":
         try:
-            # alternative https://docs.python.org/3/library/shutil.html#shutil.unpack_archive
-            zip_buffer = io.BytesIO(archive_binary)
-            with zipfile.ZipFile(zip_buffer, "r") as zip_file:
-                zip_file.extractall(output_dir)
-                return True
+            _extract_zip(
+                archive_binary, output_dir, max_entries, max_uncompressed_bytes
+            )
+            return True
         except (zipfile.BadZipFile, zipfile.LargeZipFile) as e:
             logger.error("failed to extract as zip, error: %s", e)
             if archive_format == "zip":
@@ -70,10 +158,10 @@ def extract_archive(
 
     if archive_format == "tar" or archive_format == "":
         try:
-            tar_buffer = io.BytesIO(archive_binary)
-            with tarfile.open(fileobj=tar_buffer, mode="r|*") as tar:
-                tar.extractall(output_dir)
-                return True
+            _extract_tar(
+                archive_binary, output_dir, max_entries, max_uncompressed_bytes
+            )
+            return True
         except tarfile.ReadError as e:
             logger.error("failed to extract as tar, error: %s", e)
             if archive_format == "tar":
