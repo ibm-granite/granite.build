@@ -326,6 +326,13 @@ Common rejections from `BuildConfig.my_validate()`:
 - A `binding` references a target or output that doesn't exist.
 - A target has zero steps.
 - A `k8s.env` value is an unquoted integer.
+- On a non-standalone server (`GB_ENVIRONMENT` is not `STANDALONE`), a `file:`
+  URI in a target's `environment_uri`, a step's `step_uri`, or an input/output
+  `uri`. A `file:` URI names a path on the build host itself, so only a
+  standalone server (running on your own machine) accepts it. A `step_uri` or
+  `environment_uri` with no scheme counts as `file:`. On a shared server use
+  `space://`, a git URI, or `env://` (a path on the worker) instead. An empty or
+  missing `step_uri` still defaults to the bundled `gbstep` runner.
 
 Run `gb build start -f build.yaml` and read the error — it'll point at the
 field.
