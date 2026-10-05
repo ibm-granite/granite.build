@@ -328,11 +328,14 @@ export function TrialsTable({ job }: Props) {
   const axisCount = new Set(radarData.map((d) => d.feature)).size
   const canShowRadar = SHOW_RADAR && comparableTrials.length >= 1 && axisCount >= 2
   // The parallel plot draws the ticked trials and nothing else — with no selection
-  // the section is absent, the same gate the radar used. `boundsFrom` below is still
-  // the whole run, so each axis keeps the run's full scale and ticking a trial on or
-  // off never reshapes the axes under the reader; one selected trial is drawn where
-  // it sits within the run rather than pinned to the top of every axis.
+  // the section is absent, the same gate the radar used. With two or more ticked,
+  // the axes span only those trials: one outlier elsewhere in the run would otherwise
+  // stretch an axis — Loss above all — until every drawn line bunched at one end and
+  // the winner could not be told apart. The cost is that ticking a trial on or off
+  // rescales the axes. One ticked trial keeps the run's scale, since its own scale
+  // has zero width and would pin it to the top of every axis.
   const parallelTrials = comparableTrials
+  const parallelBounds = parallelTrials.length >= 2 ? parallelTrials : plottableTrials
 
   // The diff-table only needs 2+ completed trials with a score — no axis constraint.
   const canOpenCompare = comparableTrials.length >= 2
@@ -630,7 +633,7 @@ export function TrialsTable({ job }: Props) {
         <div style={{ marginTop: '2rem' }}>
           <TrialSearchSpace
             trials={parallelTrials}
-            boundsFrom={plottableTrials}
+            boundsFrom={parallelBounds}
             hyperparamKeys={hyperparamKeys}
             metric={plotMetric}
             colorScale={colorScale}

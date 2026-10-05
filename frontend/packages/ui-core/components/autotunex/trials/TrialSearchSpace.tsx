@@ -41,7 +41,7 @@ const PLOT_BOTTOM = 242
 interface Props {
   /** Trials to draw — the reader's ticked selection. */
   trials: Trial[]
-  /** Trials that set the axis scales, normally every plottable trial in the job. */
+  /** Trials that set the axis scales, normally the ticked trials themselves. */
   boundsFrom: Trial[]
   /** From `hyperparamColumns`, so the plot and the table's columns cannot disagree. */
   hyperparamKeys: string[]
