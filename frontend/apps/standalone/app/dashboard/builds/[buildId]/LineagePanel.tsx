@@ -604,6 +604,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         onClose={() => setStepDetailTarget(null)}
         returnFocusTo={graphContainerRef}
         title={stepDetailTarget ?? ''}
+        // Keeps the announcement this had before the drawer was extracted; the
+        // drawer's own default cannot name the node kind.
+        ariaLabel={`Step details — ${stepDetailTarget ?? ''}`}
         subtitle={drawerSummary.subtitle}
         meta={
           <>

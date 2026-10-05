@@ -9,9 +9,20 @@ interface Props {
   /** Which node the drawer describes; null closes it. Changing it re-points. */
   openFor: string | null
   onClose: () => void
-  /** Focused when the drawer opens, and where focus returns from. */
+  /**
+   * Fallback focus target on close, used when the element that opened the drawer
+   * is no longer in the DOM. Not focused on open — the close button is — and not
+   * the usual return target either: that is captured internally from whatever had
+   * focus when the drawer opened.
+   */
   returnFocusTo?: React.RefObject<HTMLElement | null>
   title: string
+  /**
+   * Accessible name for the dialog. Defaults to `Details — {title}`; pass a more
+   * specific one where the node kind is known, since this is what a screen reader
+   * announces.
+   */
+  ariaLabel?: string
   subtitle?: React.ReactNode
   /** Rendered under the heading, above the scrolling body — status, badges. */
   meta?: React.ReactNode
@@ -34,6 +45,7 @@ export function NodeDetailsDrawer({
   openFor,
   onClose,
   returnFocusTo,
+  ariaLabel,
   title,
   subtitle,
   meta,
@@ -95,7 +107,7 @@ export function NodeDetailsDrawer({
       ref={drawerRef}
       className={styles.drawer}
       role="dialog"
-      aria-label={`Details — ${title}`}
+      aria-label={ariaLabel ?? `Details — ${title}`}
     >
       <div className={styles.header}>
         <div className={styles.identity}>

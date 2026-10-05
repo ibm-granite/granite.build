@@ -58,4 +58,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* The drawer owns the inset so children don't each have to. Carried over from
+     the panel this replaced; without it `children` sits against both edges. */
+  padding: 1.5rem;
 }
