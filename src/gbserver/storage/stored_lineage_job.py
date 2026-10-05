@@ -57,9 +57,8 @@ row table's URIs) and why 256 is treated as the ceiling. ``job_namespace`` is
 ``gb_targets`` spells it. It is never rewritten to UTC here, and nothing in this
 module touches ``gb_targets``.
 
-There is deliberately no ``tags`` column: a job's tags live one per row in
-``gb_lineage_job_tag`` (:mod:`gbserver.storage.stored_lineage_job_tag`), where they
-are indexed and not bounded by this table's 256-char width. There is no
+There is deliberately no ``tags`` column: a job's tags live on its index rows, in
+``attributes.job.tags`` (see :mod:`gbserver.storage.lineage_row_storage`). There is no
 authorization logic anywhere in this module.
 """
 

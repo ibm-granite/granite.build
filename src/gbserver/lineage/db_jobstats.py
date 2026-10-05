@@ -55,19 +55,23 @@ from gbserver.lineage.jobstats import ILineageStore
 from gbserver.lineage.merge import upsert_job, upsert_row
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
-from gbserver.storage.lineage_job_tag_storage import ILineageJobTagStorage
-from gbserver.storage.lineage_row_storage import ILineageRowStorage
+from gbserver.storage.lineage_row_storage import ILineageRowStorage, tags_to_map
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_lineage_job import StoredLineageJob
-from gbserver.storage.stored_lineage_job_tag import (
-    StoredLineageJobTag,
-    is_storable_tag,
-)
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 from gbserver.storage.stored_target_run import StoredTargetRun
 
 logger = logging.getLogger(__name__)
+
+# Longest tag kept. Tags now live in the row blob, so this is no column's width; it
+# only keeps a runaway value out of every row of a job.
+MAX_TAG_LENGTH = 256
+
+
+def is_storable_tag(tag: object) -> bool:
+    """Whether ``tag`` is kept: a non-empty string no longer than the limit."""
+    return isinstance(tag, str) and 0 < len(tag) <= MAX_TAG_LENGTH
 
 # Names the system that produced a row, so rows this sink derived stay
 # distinguishable from rows an importer supplied. Surfaced on a run node as
@@ -90,19 +94,15 @@ class DBLineageStore(ILineageStore):
         job_storage: the lineage job storage to write. Resolved the same way, but
             only when ``storage`` was not given -- see :attr:`job_storage`. Without
             it the rows are still written; only the job record is skipped.
-        tag_storage: the lineage job tag storage to write. Resolved exactly like
-            ``job_storage``; without it the job's tags are skipped.
     """
 
     def __init__(
         self,
         storage: Optional[ILineageRowStorage] = None,
         job_storage: Optional[ILineageJobStorage] = None,
-        tag_storage: Optional[ILineageJobTagStorage] = None,
     ) -> None:
         self._row_storage = storage
         self._job_storage = job_storage
-        self._tag_storage = tag_storage
 
     @property
     def row_storage(self) -> ILineageRowStorage:
@@ -140,26 +140,6 @@ class DBLineageStore(ILineageStore):
                 logger.warning("No lineage job storage available: %s", exc)
                 return None
         return self._job_storage
-
-    @property
-    def tag_storage(self) -> Optional[ILineageJobTagStorage]:
-        """The lineage job tag storage, resolved on first use, or ``None``.
-
-        Same resolution rule as :attr:`job_storage`, for the same reason: a caller
-        that supplied its own row storage never has the singleton consulted.
-        """
-        if self._tag_storage is None:
-            if self._row_storage is not None:
-                return None
-
-            from gbserver.storage.singleton_storage import get_admin_storage
-
-            try:
-                self._tag_storage = get_admin_storage().lineage_job_tag_storage
-            except Exception as exc:
-                logger.debug("No lineage job tag storage available: %s", exc)
-                return None
-        return self._tag_storage
 
     # -- Recording -----------------------------------------------------------
 
@@ -326,14 +306,12 @@ class DBLineageStore(ILineageStore):
             build_id=build_id,
             target_run_uuid=target_run_uuid,
         )
-        self._add_tags(
-            str(_normalized_job(job).get("job_id") or ""),
-            job_tags(
-                job,
-                build_id=build_id,
-                target_run_uuid=target_run_uuid,
-                extra_tags=extra_tags,
-            ),
+        # Tags ride on every row of the job, in ``attributes.job.tags``.
+        tags = job_tags(
+            job,
+            build_id=build_id,
+            target_run_uuid=target_run_uuid,
+            extra_tags=extra_tags,
         )
 
         for draft in drafts:
@@ -345,6 +323,7 @@ class DBLineageStore(ILineageStore):
                 draft,
                 build_id=build_id,
                 target_run_uuid=target_run_uuid,
+                tags=tags,
             )
 
     def _add_job(
@@ -382,32 +361,12 @@ class DBLineageStore(ILineageStore):
                 exc_info=True,
             )
 
-    def _add_tags(self, job_id: str, tags: List[str]) -> None:
-        """Store a job's tags, one row each, tolerating duplicates.
-
-        The unique on ``(job_id, tag)`` makes re-recording a no-op. Tags are added
-        one at a time so a duplicate -- expected: every event of a target carries
-        the same base tags -- does not reject the new tags batched with it.
-        """
-        storage = self.tag_storage
-        if storage is None or not job_id:
-            return
-        for tag in tags:
-            try:
-                storage.add(StoredLineageJobTag(job_id=job_id, tag=tag))
-            except Exception:
-                logger.debug(
-                    "Lineage job tag already present or could not be added "
-                    "(job=%s, tag=%r)",
-                    job_id,
-                    tag,
-                )
-
     def _add_row(
         self,
         draft,
         build_id: str,
         target_run_uuid: str,
+        tags: Optional[List[str]] = None,
     ) -> None:
         """Store one decomposed row, merging into the same edge already stored.
 
@@ -420,6 +379,8 @@ class DBLineageStore(ILineageStore):
             build_id=build_id,
             target_run_uuid=target_run_uuid,
         )
+        if tags:
+            row.attributes.setdefault("job", {})["tags"] = tags_to_map(tags)
         try:
             upsert_row(self.row_storage, row)
         except Exception:
@@ -522,12 +483,9 @@ class DBLineageStore(ILineageStore):
         The tags are the ones :func:`job_tags` derives from the same ``ids`` the
         scan compares, so both answer the same question.
         """
-        storage = self.tag_storage
-        if storage is None:
-            return set()
         required = [f"target_run_uuid={target_id}"] if target_id else None
         try:
-            return storage.get_job_ids_by_tags(
+            return self.row_storage.get_job_ids_by_tags(
                 [f"build_id={release_id}"], all_of=required
             )
         except Exception as exc:

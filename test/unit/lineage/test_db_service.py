@@ -555,8 +555,8 @@ class TestListJobs:
         ]
         assert svc.list_jobs(uri=A, job_id="J2")["total"] == 0
 
-    def test_a_tag_filter_with_no_tag_storage_is_empty(self):
-        """Without the tag table a tag filter cannot be answered; it must not match all."""
+    def test_a_tag_no_row_carries_is_empty(self):
+        """A tag filter must not match every job when no row carries the tag."""
         assert service(row("J1", A, B)).list_jobs(tags=["build_id=X"])["total"] == 0
 
     def test_an_unresolvable_uri_is_empty_not_an_error(self):

@@ -21,7 +21,8 @@ each direction, seeding by build, and a presence check for dedup. Each is a sing
 indexed query, so a graph walk costs one query per level rather than a scan.
 """
 
-from typing import Iterable, List, Optional, Set, Tuple
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from gbserver.storage.storage import BaseItemStorage, IItemStorage
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
@@ -29,6 +30,24 @@ from gbserver.types.constants import GB_LINEAGE_TABLE_NAME
 
 TERMINAL_INPUT = "input"
 TERMINAL_OUTPUT = "output"
+
+DOWNSTREAM = "downstream"
+UPSTREAM = "upstream"
+
+
+@dataclass(frozen=True)
+class GroupedEdge:
+    """Every job between one ``input`` and one ``output``, folded into a single edge.
+
+    This is what the graph draws as a stacked edge; the jobs behind it are listed
+    on demand from the rows themselves.
+    """
+
+    input: str
+    output: str
+    job_count: int
+    last_recorded_at: str
+    sample_job_id: str
 
 
 def endpoint_pair(
@@ -116,6 +135,27 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         """Return which of ``job_ids`` already have rows."""
         raise NotImplementedError
 
+    def get_job_ids_by_tags(
+        self, any_of: List[str], all_of: Optional[List[str]] = None
+    ) -> Set[str]:
+        """Return the jobs carrying any of ``any_of`` and all of ``all_of``."""
+        raise NotImplementedError
+
+    def get_tags(self, job_ids: List[str]) -> Dict[str, List[str]]:
+        """Return each job's tags as sorted ``k=v`` strings, keyed by ``job_id``."""
+        raise NotImplementedError
+
+    def grouped_edges(
+        self, frontier: List[str], direction: str, limit: Optional[int] = None
+    ) -> List[GroupedEdge]:
+        """Return one level of the graph walk, one :class:`GroupedEdge` per edge.
+
+        ``direction`` is :data:`DOWNSTREAM` (rows whose ``input`` is in
+        ``frontier``) or :data:`UPSTREAM` (rows whose ``output`` is). ``limit``
+        caps the number of edges, ordered most recent first.
+        """
+        raise NotImplementedError
+
 
 class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorage):
     """Base storage implementation for lineage rows.
@@ -148,9 +188,11 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             "job_id",
             "input",
             "output",
+            "origin",
             "recorded_at",
         }
-        return item.model_dump(include=fields_to_include)
+        # mode="json" turns the LineageOrigin enum into its plain string value.
+        return item.model_dump(include=fields_to_include, mode="json")
 
     @classmethod
     def _get_sample_item(cls) -> StoredLineageRow:
@@ -315,6 +357,73 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             for row in page
         }
 
+    def get_job_ids_by_tags(
+        self, any_of: List[str], all_of: Optional[List[str]] = None
+    ) -> Set[str]:
+        """Return the jobs matching a tag filter, W&B's ``$in`` + required shape.
+
+        Tags live in each row's ``attributes.job.tags`` and every row of a job
+        carries the same map, so a row-level match is a job-level match. This
+        fallback reads every row; the SQL backend filters on the JSON in the query.
+
+        Args:
+            any_of: a job must carry at least one of these. Empty means no ``$in``
+                constraint, in which case ``all_of`` alone decides.
+            all_of: a job must carry every one of these.
+
+        Returns:
+            The matching job ids. Empty when both lists are empty: an unfiltered
+            request is not a tag query, and answering it would list every job.
+        """
+        wanted_any, wanted_all = _tag_pairs(any_of), _tag_pairs(all_of or [])
+        if not wanted_any and not wanted_all:
+            return set()
+        return {
+            row.job_id
+            for page in self.get_paged()
+            for row in page
+            if _tags_match(row_tags(row), wanted_any, wanted_all)
+        }
+
+    def get_tags(self, job_ids: List[str]) -> Dict[str, List[str]]:
+        """Return each job's tags, sorted ``k=v``, in one query over its rows.
+
+        A job with no tags is absent from the result rather than mapped to ``[]``.
+        """
+        tags_by_job: Dict[str, Set[str]] = {}
+        for row in self.get_rows_by_jobs(job_ids):
+            tags = row_tags(row)
+            if tags:
+                tags_by_job.setdefault(row.job_id, set()).update(tag_strings(tags))
+        return {job_id: sorted(tags) for job_id, tags in tags_by_job.items()}
+
+    def grouped_edges(
+        self, frontier: List[str], direction: str, limit: Optional[int] = None
+    ) -> List[GroupedEdge]:
+        """Group one hop's rows by edge, in Python.
+
+        The fallback for backends without SQL; the SQL backend overrides it with a
+        single ``GROUP BY`` answered from the composite indexes.
+        """
+        if direction == DOWNSTREAM:
+            rows = self.get_rows_by_input(frontier)
+        elif direction == UPSTREAM:
+            rows = self.get_rows_by_output(frontier)
+        else:
+            raise ValueError(f"Unknown direction: {direction!r}")
+        groups: dict = {}
+        for row in rows:
+            key = (row.input, row.output)
+            jobs, last, sample = groups.get(key, (set(), "", row.job_id))
+            jobs.add(row.job_id)
+            groups[key] = (jobs, max(last, row.recorded_at), min(sample, row.job_id))
+        edges = [
+            GroupedEdge(i, o, len(jobs), last, sample)
+            for (i, o), (jobs, last, sample) in groups.items()
+        ]
+        edges.sort(key=lambda edge: (edge.last_recorded_at, edge.input, edge.output), reverse=True)
+        return edges[:limit] if limit is not None else edges
+
     def has_rows_for_job(self, job_id: str) -> bool:
         """Whether any row is already recorded for a job."""
         if not job_id:
@@ -346,3 +455,41 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             return set()
         rows = self.get_by_where({"job_id": wanted})
         return {row.job_id for row in rows if row.job_id}
+
+
+def row_tags(row: StoredLineageRow) -> Dict[str, str]:
+    """A row's ``attributes.job.tags`` map, or ``{}``."""
+    job = (row.attributes or {}).get("job") or {}
+    tags = job.get("tags") or {}
+    return tags if isinstance(tags, dict) else {}
+
+
+def _tag_pair(tag: str) -> Tuple[str, str]:
+    """``k=v`` as ``(k, v)``; a bare tag (a user's ``nightly``) is ``(tag, "")``."""
+    key, _, value = tag.partition("=")
+    return key, value
+
+
+def _tag_pairs(tags: Iterable[str]) -> List[Tuple[str, str]]:
+    """Tag strings as sorted, deduped ``(k, v)`` pairs; empty ones dropped."""
+    return sorted({_tag_pair(tag) for tag in tags if tag})
+
+
+def tags_to_map(tags: Iterable[str]) -> Dict[str, str]:
+    """Tag strings as the ``attributes.job.tags`` map a row stores."""
+    return dict(_tag_pairs(tags))
+
+
+def tag_strings(tags: Dict[str, str]) -> List[str]:
+    """A stored tag map back as sorted strings: ``k=v``, or ``k`` for a bare tag."""
+    return sorted(f"{key}={value}" if value else key for key, value in tags.items())
+
+
+def _tags_match(
+    tags: Dict[str, str],
+    any_of: List[Tuple[str, str]],
+    all_of: List[Tuple[str, str]],
+) -> bool:
+    if any(tags.get(key) != value for key, value in all_of):
+        return False
+    return not any_of or any(tags.get(key) == value for key, value in any_of)

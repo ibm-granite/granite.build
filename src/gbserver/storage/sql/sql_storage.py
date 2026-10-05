@@ -138,6 +138,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     indexed_columns: list[str] = []
     """ A list of columns names (returned in _get_column_values()) that should be indexed."""
 
+    composite_indexes: list[tuple[str, ...]] = []
+    """Non-unique multi-column indexes, e.g. ``[("input", "output")]``. Created with the
+    table and, idempotently, on every schema adjust, so an existing table gains them too."""
+
     exact_liked_list_columns: dict[str, str] = {}
     """Enables exact matching of a list of strings against a named column during get_by_where(dict) calls.
     The key is the column name in the query, and the value is name of the attribute on the item (containing a list value) 
@@ -362,6 +366,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     f"Table '{self._sql_alchemy_model.__tablename__}' created successfully."
                 )
                 self.__create_unique_indexes()
+                self.__create_composite_indexes()
             except SQLAlchemyError as e:
                 self.logger.error(f"Error creating table: {e}")
                 raise e
@@ -381,6 +386,43 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 connection.commit()
         except Exception as e:
             self.logger.warning(f"Error creating unique indexes: {e}")
+
+    def __create_composite_indexes(self):
+        """Create the ``composite_indexes`` that do not exist yet.
+
+        Idempotent: existing indexes are read from the inspector first, so this is safe
+        to run on every schema adjust. Like the unique indexes, a failure only warns.
+        """
+        if not self.composite_indexes:
+            return
+        try:
+            self._inspector.clear_cache()
+            existing = {
+                index["name"]
+                for index in self._inspector.get_indexes(
+                    self.table_name, schema=self._db_schema or None
+                )
+            }
+            with self._engine.connect() as connection:
+                for columns in self.composite_indexes:
+                    for col in columns:
+                        _validate_sql_identifier(col, "column name")
+                    col_suffix = "_".join(columns)
+                    full_name = f"ix_{self.table_name}_{col_suffix}"
+                    if len(full_name) > 63:
+                        name_hash = hashlib.sha1(full_name.encode()).hexdigest()[:7]
+                        full_name = f"ix_{name_hash}_{col_suffix}"[:63]
+                    if full_name in existing:
+                        continue
+                    connection.execute(
+                        text(
+                            f"CREATE INDEX {full_name} ON "
+                            f"{self.__get_sql_table_name_reference()} ({', '.join(columns)});"
+                        )
+                    )
+                connection.commit()
+        except Exception as e:
+            self.logger.warning(f"Error creating composite indexes: {e}")
 
     def __get_unique_index_statement(
         self, column_key: Union[str, tuple[str, ...]], exception_value: Optional[Any]
@@ -512,6 +554,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 self.__add_column(
                     col_name, col_type, is_indexed, is_unique, uniqueness_exception
                 )
+
+        if len(existing_columns) > 0:
+            # An existing table only gets new indexes here; creation covers new tables.
+            self.__create_composite_indexes()
 
     def __get_sql_table_name_reference(self) -> str:
         """Get the name of the schema, if any, concatenated with the table name for using in SQL statements.

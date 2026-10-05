@@ -45,6 +45,7 @@ the sink's dedup asks about.
 """
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Dict
 
 from pydantic import Field
@@ -87,6 +88,19 @@ TERMINAL = ""
 MAX_LINEAGE_URI_LENGTH = 512
 
 
+class LineageOrigin(str, Enum):
+    """Where a row's full job content lives; the index itself only carries labels.
+
+    A ``str`` enum so the column stays text (see ``_get_column_values``) and a row
+    serializes to the plain value.
+    """
+
+    GRANITE_BUILD = "granite.build"  # standalone admin DB: gb_targets / builds
+    DB = "db"  # gb_lineage_job
+    WANDB = "wandb"  # a W&B run
+    OTHER = "other"  # an external system; the reference is opaque
+
+
 def utc_now_iso() -> str:
     """Return the current UTC time as ISO-8601, the ``recorded_at`` form.
 
@@ -116,6 +130,9 @@ class StoredLineageRow(BaseStoredItem):
             pipeline). Lives in the JSON blob,
             so nothing here is queryable; anything that needs filtering has to
             become a column first, and that is a deliberate bar to clear.
+        origin: where the job's full content lives (:class:`LineageOrigin`). The
+            read path dispatches on it to fetch a job's detail; the row's
+            ``attributes`` only carry what is needed to draw and label the graph.
         recorded_at: when this index wrote the row, UTC ISO-8601, stamped at write
             time. Distinct from the job's ``started_at``, which keeps the source's
             own form: this is *our* clock, not the producer's, and is the basis for
@@ -131,6 +148,11 @@ class StoredLineageRow(BaseStoredItem):
     output: str = Field(
         default=TERMINAL,
         description="Normalized URI of the output artifact; TERMINAL if none",
+    )
+
+    origin: LineageOrigin = Field(
+        default=LineageOrigin.OTHER,
+        description="Where the full job content lives",
     )
 
     recorded_at: str = Field(

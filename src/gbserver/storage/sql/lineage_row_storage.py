@@ -17,13 +17,18 @@
 """SQL storage implementation for lineage rows."""
 
 from contextlib import contextmanager
-from typing import List, Optional
+from typing import List, Optional, Set
 
-from sqlalchemy import and_, distinct, func, or_
+from sqlalchemy import and_, cast, distinct, func, or_
+from sqlalchemy.dialects.postgresql import JSONB
 
 from gbserver.storage.lineage_row_storage import (
+    DOWNSTREAM,
+    UPSTREAM,
     BaseLineageRowStorage,
+    GroupedEdge,
     ILineageRowStorage,
+    _tag_pairs,
     endpoint_pair,
 )
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
@@ -41,7 +46,10 @@ class SQLLineageRowStorage(
 
     - ``input`` / ``output`` carry the graph traversal. Every hop is
       ``WHERE input IN (frontier)`` or ``WHERE output IN (frontier)``, so without
-      these two indexes a walk degrades to a full scan per level. They hold
+      these indexes a walk degrades to a full scan per level. They are the
+      composite ``(input, output)`` and ``(output, input)``, so the leading column
+      serves the hop and the pair serves an edge lookup and the graph's per-edge
+      ``GROUP BY`` without reading the blob. They hold
       normalized URIs, which is also what makes the *root* lookup an index seek:
       a request names an artifact by URI, so there is finally something indexed to
       match it against.
@@ -49,6 +57,8 @@ class SQLLineageRowStorage(
       decomposition regroupable, and it also backs the sink's presence-based dedup,
       run on every scan. The prototype joins and groups on it but leaves it
       unindexed -- a gap corrected here.
+    - ``origin`` says where the job's full content lives (granite.build, db,
+      wandb, other); indexed so a migration or re-import can select by source.
     - ``recorded_at`` is this index's own write time, UTC ISO-8601, and the default
       pagination order. Indexed because it is what a future high-water-mark
       incremental import will range over. Deliberately not in the unique key: it
@@ -73,11 +83,14 @@ class SQLLineageRowStorage(
 
     def __init__(self, **kwargs) -> None:
         kwargs["indexed_columns"] = [
-            "input",
-            "output",
             "job_id",
+            "origin",
             "recorded_at",
         ]
+        # (input, output) serves downstream hops and edge drill-in, (output, input)
+        # upstream hops; both also answer the per-edge GROUP BY of the graph from
+        # the index alone. They replace the single-column input/output indexes.
+        kwargs["composite_indexes"] = [("input", "output"), ("output", "input")]
         # One row per (job, input, output). A second source reporting the same
         # relation is a no-op, which is what makes re-ingest idempotent -- a
         # property the prototype lacks entirely (it has no key at all and
@@ -133,6 +146,80 @@ class SQLLineageRowStorage(
                 .offset(offset)
             )
             return [job_id for (job_id,) in page.all()]
+
+    def grouped_edges(
+        self, frontier: List[str], direction: str, limit: Optional[int] = None
+    ) -> List[GroupedEdge]:
+        """Return one level of the walk as stacked edges, in one ``GROUP BY``.
+
+        ``COUNT(DISTINCT job_id)`` rather than ``COUNT(*)`` for parity with the
+        fallback; the ``(job_id, input, output)`` unique key makes them equal.
+        """
+        if direction not in (DOWNSTREAM, UPSTREAM):
+            raise ValueError(f"Unknown direction: {direction!r}")
+        wanted = self._batchable(frontier)
+        if not wanted or not self._ensure_table():
+            return []
+        session = self._BaseSQLItemStorage__get_session_without_retry()
+        try:
+            model = self._sql_alchemy_model
+            side = model.input if direction == DOWNSTREAM else model.output
+            last = func.max(model.recorded_at)
+            query = (
+                session.query(
+                    model.input,
+                    model.output,
+                    func.count(distinct(model.job_id)),
+                    last,
+                    func.min(model.job_id),
+                )
+                .filter(side.in_(wanted))
+                .group_by(model.input, model.output)
+                .order_by(last.desc(), model.input.desc(), model.output.desc())
+            )
+            if limit is not None:
+                query = query.limit(limit)
+            return [
+                GroupedEdge(i, o, int(count), recorded or "", sample or "")
+                for i, o, count, recorded, sample in query.all()
+            ]
+        finally:
+            session.close()
+
+    def get_job_ids_by_tags(
+        self, any_of: List[str], all_of: Optional[List[str]] = None
+    ) -> Set[str]:
+        """Match the tags on the JSON blob in SQL, one ``SELECT DISTINCT job_id``.
+
+        Reads ``attributes.job.tags.<key>`` from the ``json`` text column with the
+        dialect's JSON operator. A dialect without one falls back to the base scan.
+        """
+        wanted_any, wanted_all = _tag_pairs(any_of), _tag_pairs(all_of or [])
+        if not wanted_any and not wanted_all:
+            return set()
+        if not self._ensure_table():
+            return set()
+        dialect = self._engine.dialect.name
+        if dialect not in ("sqlite", "postgresql"):
+            return super().get_job_ids_by_tags(any_of, all_of)
+        model = self._sql_alchemy_model
+
+        def tag(key: str):
+            if dialect == "postgresql":
+                return cast(model.json, JSONB)["attributes"]["job"]["tags"][key].astext
+            # The key is quoted so a dot or space in it stays one path segment.
+            escaped = key.replace("\\", "\\\\").replace('"', '\\"')
+            return func.json_extract(model.json, f'$.attributes.job.tags."{escaped}"')
+
+        conditions = [tag(key) == value for key, value in wanted_all]
+        if wanted_any:
+            conditions.append(or_(*(tag(key) == value for key, value in wanted_any)))
+        session = self._BaseSQLItemStorage__get_session_without_retry()
+        try:
+            query = session.query(model.job_id).filter(and_(*conditions)).distinct()
+            return {job_id for (job_id,) in query.all() if job_id}
+        finally:
+            session.close()
 
     @property
     def _job_id(self):

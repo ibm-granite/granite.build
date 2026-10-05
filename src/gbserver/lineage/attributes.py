@@ -255,6 +255,73 @@ def build_attributes(
     return attributes
 
 
+# Slim index-row blob (``LineageRowAttributes`` in the plan): only what is needed to
+# draw and label the graph, plus how to fetch the job's full content from the
+# system the row's ``origin`` column names. Everything else lives at that origin.
+RETRIEVE = "retrieve"
+NODE_TYPE = "type"
+NODE_NAME = "name"
+NODE_ID = "id"
+JOB_ID = "id"
+JOB_TAGS = "tags"
+
+
+def build_index_attributes(
+    job_id: str,
+    job_name: str = "",
+    job_type: str = "",
+    job_namespace: str = "",
+    tags: Optional[Dict[str, str]] = None,
+    input_uri: str = "",
+    input_artifact: Optional[Dict[str, Any]] = None,
+    output_uri: str = "",
+    output_artifact: Optional[Dict[str, Any]] = None,
+    retrieve: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assemble a slim index row's ``attributes`` blob.
+
+    ``input``/``output`` are ``{type, name, id, alt_uris, produced_by}`` with ``id``
+    the row's normalized URI, omitted for a terminal side. ``job`` is ``{name, type, id, namespace,
+    tags}``; ``namespace`` is display only. ``retrieve`` is whatever the row's
+    origin needs to fetch the full job (``{job_id}`` for ``db``). Blank values are
+    omitted, as in :func:`build_attributes`.
+    """
+    attributes: Dict[str, Any] = {}
+    for group, uri, artifact in (
+        (INPUT, input_uri, input_artifact),
+        (OUTPUT, output_uri, output_artifact),
+    ):
+        if not uri:
+            continue
+        artifact = artifact or {}
+        node: Dict[str, Any] = {
+            NODE_TYPE: str(artifact.get("artifact_type") or artifact.get("type") or ""),
+            NODE_NAME: str(artifact.get("name") or ""),
+            NODE_ID: uri,
+            # Other spellings of the URI, so the artifact stays findable by them.
+            ALT_URIS: _alt_uris(artifact),
+            # The build/target that produced it; the UI links the node to that build.
+            PRODUCED_BY: _produced_by(artifact),
+        }
+        attributes[group] = {key: value for key, value in node.items() if value}
+
+    job = {
+        JOB_NAME: job_name,
+        JOB_TYPE: job_type,
+        JOB_ID: job_id,
+        JOB_NAMESPACE: job_namespace,
+    }
+    job = {key: str(value) for key, value in job.items() if value}
+    if tags:
+        job[JOB_TAGS] = dict(sorted(tags.items()))
+    attributes[JOB] = job
+
+    carried = {key: value for key, value in (retrieve or {}).items() if value}
+    if carried:
+        attributes[RETRIEVE] = carried
+    return attributes
+
+
 def _endpoint_detail(artifact: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """What an endpoint *is*, from the artifact dict the producer supplied.
 

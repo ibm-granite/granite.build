@@ -60,11 +60,12 @@ from gbserver.lineage.walk import (
     walk_lineage,
 )
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
-from gbserver.storage.lineage_job_tag_storage import ILineageJobTagStorage
 from gbserver.storage.lineage_row_storage import (
     TERMINAL_INPUT,
     TERMINAL_OUTPUT,
     ILineageRowStorage,
+    row_tags,
+    tag_strings,
 )
 from gbserver.storage.stored_lineage_row import TERMINAL
 from gbserver.utils.redaction import redact_sensitive
@@ -98,18 +99,15 @@ class DBLineageService(LineageService):
             admin storage, resolved lazily so importing this module does not
             require a configured database.
         job_storage: the lineage job storage, resolved the same way.
-        tag_storage: the lineage job tag storage, resolved the same way.
     """
 
     def __init__(
         self,
         storage: Optional[ILineageRowStorage] = None,
         job_storage: Optional[ILineageJobStorage] = None,
-        tag_storage: Optional[ILineageJobTagStorage] = None,
     ) -> None:
         self._storage = storage
         self._job_storage = job_storage
-        self._tag_storage = tag_storage
 
     @property
     def storage(self) -> ILineageRowStorage:
@@ -358,10 +356,8 @@ class DBLineageService(LineageService):
             if job_id:
                 candidates = {job_id} if self.storage.get_rows_by_job(job_id) else set()
             if tags or required_tags:
-                tag_storage = self._resolved("_tag_storage", "lineage_job_tag_storage")
-                if tag_storage is None:
-                    return empty
-                tagged = tag_storage.get_job_ids_by_tags(
+                # Tags live on the rows' ``attributes.job.tags``.
+                tagged = self.storage.get_job_ids_by_tags(
                     tags or [], all_of=required_tags
                 )
                 candidates = tagged if candidates is None else candidates & tagged
@@ -432,18 +428,18 @@ class DBLineageService(LineageService):
         if not job_ids:
             return []
         job_storage = self._resolved("_job_storage", "lineage_job_storage")
-        tag_storage = self._resolved("_tag_storage", "lineage_job_tag_storage")
         jobs = job_storage.get_jobs_by_id(job_ids) if job_storage else {}
-        tags_by_job = tag_storage.get_tags(job_ids) if tag_storage else {}
         rows_by_job: Dict[str, List] = {}
+        tags_by_job: Dict[str, set] = {}
         for row in self.storage.get_rows_by_jobs(job_ids):
             rows_by_job.setdefault(row.job_id, []).append(row)
+            tags_by_job.setdefault(row.job_id, set()).update(tag_strings(row_tags(row)))
         return [
             _job_entry(
                 job_id,
                 jobs.get(job_id),
                 rows_by_job.get(job_id, []),
-                tags_by_job.get(job_id, []),
+                sorted(tags_by_job.get(job_id, ())),
             )
             for job_id in job_ids
         ]
@@ -451,10 +447,9 @@ class DBLineageService(LineageService):
     def _resolved(self, attr: str, admin_attr: str):
         """A storage given at construction, else the admin one, else ``None``.
 
-        Only the row storage is required by this service; the job and tag
-        storages serve the job listing alone, so a missing one degrades that
-        listing -- empty for a tag filter, detail-less entries otherwise --
-        rather than failing construction.
+        Only the row storage is required by this service; the job storage
+        serves the job listing alone, so a missing one degrades that
+        listing to detail-less entries rather than failing construction.
         """
         if getattr(self, attr) is None:
             if self._storage is not None:

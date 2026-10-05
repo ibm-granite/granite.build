@@ -30,7 +30,12 @@ import pytest
 
 from gbserver.lineage.attributes import build_attributes
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
-from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
+from gbserver.storage.lineage_row_storage import DOWNSTREAM, UPSTREAM, GroupedEdge
+from gbserver.storage.stored_lineage_row import (
+    TERMINAL,
+    LineageOrigin,
+    StoredLineageRow,
+)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
@@ -245,12 +250,31 @@ class TestSchema:
 
     @pytest.mark.parametrize(
         "column",
-        ["input", "output", "job_id"],
+        ["job_id", "origin", "recorded_at"],
     )
     def test_column_is_indexed(self, storage, column):
         storage.add(row())
         statements = " ".join(sql or "" for _, sql in self._index_statements(storage))
         assert f"({column})" in statements, f"{column} is not indexed: {statements}"
+
+    @pytest.mark.parametrize("columns", ["(input, output)", "(output, input)"])
+    def test_edge_composite_index_exists(self, storage, columns):
+        """Both directions of the walk, and the per-edge GROUP BY, are index-only."""
+        storage.add(row())
+        statements = [sql or "" for _, sql in self._index_statements(storage)]
+        assert any(
+            columns in s and "UNIQUE" not in s for s in statements
+        ), statements
+
+    def test_composite_indexes_are_idempotent(self, storage):
+        """A schema adjust on an existing table re-runs creation without error."""
+        storage.add(row())
+        before = sorted(name for name, _ in self._index_statements(storage))
+        storage._create_or_adjust_schema_item_dict(
+            storage._convert_item_to_row_dict(storage._get_sample_item())
+        )
+        after = sorted(name for name, _ in self._index_statements(storage))
+        assert before == after
 
     def test_composite_unique_exists(self, storage):
         """It can only be created with the table, never added later."""
@@ -281,7 +305,7 @@ class TestSchema:
         assert "build_id" not in columns
         assert "target_run_uuid" not in columns
 
-        for column in ("input", "output", "job_id"):
+        for column in ("input", "output", "job_id", "origin"):
             assert columns[column].startswith("VARCHAR"), (column, columns[column])
 
         non_text = {
@@ -474,3 +498,72 @@ class TestUriIsTheIdentity:
         storage.add(row(attributes={"job_name": "one"}))
         with pytest.raises(Exception):
             storage.add(row(attributes={"job_name": "two"}))
+
+
+class TestOrigin:
+    """Where a job's full content lives is a column, so the read path can dispatch on it."""
+
+    def test_default_is_other(self, storage):
+        storage.add(row())
+        assert storage.get_rows_by_job("J")[0].origin == LineageOrigin.OTHER
+
+    @pytest.mark.parametrize("origin", list(LineageOrigin))
+    def test_round_trip(self, storage, origin):
+        stored = row()
+        stored.origin = origin
+        storage.add(stored)
+        assert storage.get_rows_by_job("J")[0].origin == origin
+
+    def test_is_queryable(self, storage):
+        first, second = row(job_id="A"), row(job_id="B")
+        first.origin = LineageOrigin.WANDB
+        second.origin = LineageOrigin.DB
+        storage.add(first)
+        storage.add(second)
+        found = storage.get_by_where({"origin": LineageOrigin.WANDB.value})
+        assert [r.job_id for r in found] == ["A"]
+
+
+class TestGroupedEdges:
+    """One level of the graph walk: every job between two nodes is one edge."""
+
+    def _add(self, storage, job_id, input, output, recorded_at):
+        stored = row(job_id=job_id, input=input, output=output)
+        stored.recorded_at = recorded_at
+        storage.add(stored)
+
+    def test_jobs_between_two_nodes_stack_into_one_edge(self, storage):
+        for i, job_id in enumerate(["J3", "J1", "J2"]):
+            self._add(storage, job_id, "x", "y", f"2026-01-0{i + 1}")
+        self._add(storage, "K", "x", "z", "2026-01-01")
+        edges = storage.grouped_edges(["x"], DOWNSTREAM)
+        assert edges == [
+            GroupedEdge("x", "y", 3, "2026-01-03", "J1"),
+            GroupedEdge("x", "z", 1, "2026-01-01", "K"),
+        ]
+
+    def test_upstream_groups_by_output(self, storage):
+        self._add(storage, "A", "x", "y", "2026-01-01")
+        self._add(storage, "B", "w", "y", "2026-01-02")
+        edges = storage.grouped_edges(["y"], UPSTREAM)
+        assert [(e.input, e.output) for e in edges] == [("w", "y"), ("x", "y")]
+
+    def test_self_loops_collapse(self, storage):
+        for job_id in ("A", "B", "C"):
+            self._add(storage, job_id, "t", "t", "2026-01-01")
+        assert [e.job_count for e in storage.grouped_edges(["t"], DOWNSTREAM)] == [3]
+
+    def test_limit_keeps_most_recent(self, storage):
+        self._add(storage, "A", "x", "old", "2026-01-01")
+        self._add(storage, "B", "x", "new", "2026-02-01")
+        edges = storage.grouped_edges(["x"], DOWNSTREAM, limit=1)
+        assert [e.output for e in edges] == ["new"]
+
+    def test_empty_and_terminal_frontier_queries_nothing(self, storage):
+        self._add(storage, "A", TERMINAL, "y", "2026-01-01")
+        assert storage.grouped_edges([], DOWNSTREAM) == []
+        assert storage.grouped_edges([TERMINAL], DOWNSTREAM) == []
+
+    def test_unknown_direction_is_rejected(self, storage):
+        with pytest.raises(ValueError):
+            storage.grouped_edges(["x"], "sideways")

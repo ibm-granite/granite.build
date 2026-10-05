@@ -189,13 +189,22 @@ def check_and_init_for_standalone(space_dir: Optional[str] = None) -> None:
 
     importlib.reload(gbserver.types.constants)
 
-    # 3. Force SQLite storage — standalone always uses SQLite.
-    from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+    # 3. Default to SQLite; honor an explicit GBSERVER_METADATA_STORAGE=sql so
+    #    standalone can run against Postgres (configured via GBSERVER_SQL_*).
+    from gbserver.types.constants import GB_METADATA_STORAGE
 
-    # Migrate any legacy ~/.llmb db into GB_HOME_DIR before the factory opens it.
-    _migrate_legacy_sqlite_db()
+    if GB_METADATA_STORAGE == "sql":
+        from gbserver.storage.sql.storage_factory import SQLStorageFactory
 
-    singleton_storage.set_storage_factory(SqliteStorageFactory())
+        logger.info("Standalone using SQL storage (GBSERVER_METADATA_STORAGE=sql)")
+        singleton_storage.set_storage_factory(SQLStorageFactory())
+    else:
+        from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+
+        # Migrate any legacy ~/.llmb db into GB_HOME_DIR before the factory opens it.
+        _migrate_legacy_sqlite_db()
+
+        singleton_storage.set_storage_factory(SqliteStorageFactory())
 
     # 4. Use standalone space access manager — bypasses Lakehouse authorization.
     from gbserver.spaces.space_access_manager import set_space_access_manager

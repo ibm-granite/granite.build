@@ -34,8 +34,8 @@ So every writer goes through these upserts instead:
   on it, so a granite.build write takes ``source_system`` over an imported copy's
   (see :data:`_SYSTEM_PRECEDENCE`), and the ids each source knew are unioned under
   ``origin.ids``.
-- **tags** (``gb_lineage_job_tag``, unique ``(job_id, tag)``) are a set already;
-  adding a present one is the no-op the unique makes it.
+- **tags** live in a row's ``attributes.job.tags`` map, so they merge like any
+  other map: tags both sources know are kept once, new ones are added.
 
 A terminal row -- ``TERMINAL -> X`` or ``X -> TERMINAL`` -- means "no recorded input"
 (or output). It is superseded, and dropped, once the same job records a real edge on

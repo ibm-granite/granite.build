@@ -576,19 +576,19 @@ class TestNamespacePropagation:
 
 
 class TestJobTags:
-    """Every recorded job is tagged, and a release count uses the tag index."""
+    """Every recorded job is tagged on its rows, and a release count queries them."""
 
     @pytest.fixture(name="tagged_sink")
     def tagged_sink_fixture(self, rows):
         suffix = uuid_module.uuid4().hex[:8]
         factory = SqliteStorageFactory()
-        self.tags = factory.create_lineage_job_tag_storage(table_name=f"t_tag_{suffix}")
+        # Tags live on the rows' ``attributes.job.tags``; the row storage answers them.
+        self.tags = rows
         return DBLineageStore(
             storage=rows,
             job_storage=factory.create_lineage_job_storage(
                 table_name=f"t_job_{suffix}"
             ),
-            tag_storage=self.tags,
         )
 
     def _write(self, sink, job_id, target_run, extra_tags=None, facet_tags=None):
@@ -639,7 +639,7 @@ class TestJobTags:
     def test_release_count_matches_the_scan(self, tagged_sink, rows):
         self._write(tagged_sink, "J1", "t1")
         self._write(tagged_sink, "J2", "t2")
-        untagged = DBLineageStore(storage=rows)  # no tag storage: scans
+        untagged = DBLineageStore(storage=rows)
         for target in (None, "t1", "t2", "t3"):
             assert tagged_sink.count_release_ids(
                 "BLD", target_id=target
@@ -655,7 +655,6 @@ class TestJobTags:
         service = DBLineageService(
             storage=rows,
             job_storage=tagged_sink.job_storage,
-            tag_storage=self.tags,
         )
         result = service.list_jobs(tags=["build_id=BLD"], required_tags=["team=nlp"])
         assert result["total"] == 1
@@ -677,7 +676,6 @@ class TestJobTags:
         service = DBLineageService(
             storage=rows,
             job_storage=tagged_sink.job_storage,
-            tag_storage=self.tags,
         )
         both = service.list_jobs(uri=LH_TABLE)
         assert [job["job_id"] for job in both["jobs"]] == ["J1", "J2"]
@@ -697,7 +695,6 @@ class TestJobTags:
         service = DBLineageService(
             storage=rows,
             job_storage=tagged_sink.job_storage,
-            tag_storage=self.tags,
         )
         result = service.list_jobs()
         assert result["total"] == 2
