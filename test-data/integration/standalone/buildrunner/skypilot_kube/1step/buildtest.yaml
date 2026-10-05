@@ -17,12 +17,13 @@ target_expectations:
 # configurations/assets/environments/skypilot/kubernetes/environment.yaml is the
 # env under test.
 space_uri: ../../../../../../configurations/spaces/local
-# First-pass scope: happy path only, no injected failure, so a red run points at
-# kube plumbing. TODO: once green, match the slurm spec (simulate_step_failure:
-# true and the default runner + runner_cancellation tests).
-tests:
-  - runner
-simulate_step_failure: false
+# Same coverage as the slurm spec. `tests` is left at its default, so both
+# `runner` and `runner_cancellation` run: the cancel lands once the build is
+# RUNNING — typically mid-provision on kube — so it exercises gbserver's
+# abort-provision path. `simulate_step_failure: true` injects one synthetic
+# failure event, and AnyFailureRetryStrategy tears the pod down and relaunches it
+# under the same cluster name, exercising the kube teardown -> relaunch path.
+simulate_step_failure: true
 # Pod scheduling + SkyPilot runtime setup on first launch (image pull) + the
 # inline hf download. Generous for a laptop kind cluster.
 timeout_minutes: 20

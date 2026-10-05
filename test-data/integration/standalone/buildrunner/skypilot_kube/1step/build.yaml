@@ -15,6 +15,13 @@ granite.build:
           type: fileset
       steps:
         - step_uri: space://steps/command
+          # The command step defaults to retry_enabled_default: false, and the
+          # buildtest's simulate_step_failure only injects its synthetic failure
+          # when step retry is enabled — without this the "retry" coverage passes
+          # without ever retrying (the harness merely logs a warning). With it, the
+          # injected failure makes AnyFailureRetryStrategy tear the pod down and
+          # relaunch it under the same cluster name.
+          retry_enabled: true
           config:
             poll_interval_seconds: 5
             command_config:
