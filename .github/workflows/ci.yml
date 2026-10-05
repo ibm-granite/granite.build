@@ -91,8 +91,7 @@ jobs:
     if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest
     strategy:
-      # Let the other interpreter finish: whether a failure reproduces on both is
-      # the cheapest way to tell a flake from a real break.
+      # Let both interpreters finish: a failure on only one points to a flake.
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
@@ -108,9 +107,8 @@ jobs:
           python -m pip install --upgrade pip
           make quick-tests-setup
 
-      # Preload the images the Docker tests use from the Actions cache, so PR runs
-      # don't pull from a rate-limited registry. Only pushes to main save the
-      # cache; PR runs (forks included) restore from main's scope.
+      # Preload Docker test images from the Actions cache, not a rate-limited
+      # registry. Only pushes to main save; PRs, forks included, restore main's.
       - name: Restore cached Docker images
         id: docker-images-cache
         uses: actions/cache/restore@v6
@@ -121,7 +119,7 @@ jobs:
       - name: Load Docker images (pull with retry on cache miss)
         run: scripts/ci-docker-images.sh load
 
-      # One matrix leg saves, so the two don't race to reserve the same key.
+      # One matrix leg saves, so the two don't race for the same key.
       - name: Save Docker images to cache
         if: matrix.python-version == '3.12' && github.event_name == 'push' && steps.docker-images-cache.outputs.cache-hit != 'true'
         run: scripts/ci-docker-images.sh save
@@ -151,7 +149,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[standalone,docker,dev]"
 
-      # Same preload as the test job, for the Dockerfile's FROM image.
+      # Same preload as the test job; covers the Dockerfile's FROM image.
       - name: Restore cached Docker images
         id: docker-images-cache
         uses: actions/cache/restore@v6
