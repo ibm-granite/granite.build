@@ -169,6 +169,14 @@ backend is reachable:
   `AWS_PROFILE` or the key pair is exported.) **First-time setup walkthrough** (and the full
   runbook, identical to the byoc/eval steps):
   [docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md#quickstart-run-the-aws-step-tests-for-the-first-time).
+- **kube-tok** — the aws-tok fixture in a pod on `skypilot/kubernetes`: `transform:
+  tokenization2arrow` with `validate: true`, parallel (`runtime_num_processors: 2`). Runs on a
+  local kind cluster; bring it up once with `make test-setup-kube` (delegates to the repo-root
+  `kube-setup`, which wraps `sky local up` and, on podman, lifts the node's process cap). It
+  **self-skips unless the current kube context is that kind cluster**, so it never schedules
+  pods on a shared cluster just because one is reachable. Like aws, kube has no shared
+  filesystem: the hf pull is inline (`step_count` 1) and the bundled `src/` reaches the pod via
+  `file_mounts`. Note that `make test-setup-kube` makes `kind-skypilot` the current context.
 
 > **No cluster coverage of the cross-node `env:///shared` handoff.** It was covered by the
 > two-target form of the `slurm` fixture, which `validate: true` replaced (see that fixture's
@@ -177,7 +185,11 @@ backend is reachable:
 
 > **Image mode is covered only on BlueVela**, not by `make test`: the local Docker SLURM
 > cluster has no Pyxis SPANK plugin and so cannot run container images at all, and the
-> current aws fixtures are bare-node. The IBM-infra build test
+> current aws and kube fixtures are bare-node. Kube runs images natively, so a kube image
+> fixture is the natural local home for this coverage; it needs a public-DPK image built
+> for the kind node's architecture (arm64 on Apple Silicon) and Debian/Ubuntu-based or
+> carrying SkyPilot's bootstrap packages (see docs/environments/skypilot-kubernetes.md,
+> "Custom images"). The IBM-infra build test
 > `test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_dpk_tok_image.py` runs
 > `tokenization2arrow` with `validate: true` from a prebaked image on BlueVela SLURM; the
 > Dockerfile for that image sits beside its build.yaml. An image for this step must

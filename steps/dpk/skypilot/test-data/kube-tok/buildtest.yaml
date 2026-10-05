@@ -1,0 +1,35 @@
+# YAML-driven spec for test_skypilot_kube_dpk_tok.py (located by the test/ <-> test-data/
+# helper, so this pairing holds in both test modes; see steps/README.md).
+#
+# ONE target in a kube pod: tokenization with `validate: true`, so the transform
+# and its validator run in the same step. Reaching SUCCESS means the transform ran
+# AND src/validate_tokenization2arrow.py accepted its output.
+targets:
+  - tokenize
+target_expectations:
+  - target_name: tokenize
+    # step_count is 1 (NOT 2): skypilot/kubernetes pulls hf inline (injected into
+    # the dpk step's setup), as skypilot/aws does; slurm queues a separate hfpull
+    # step, hence 2 there. The env:// output moves no bytes, so no push step.
+    #
+    # jobstats_count is not asserted under standalone's NoopLineageStore but is
+    # kept accurate. CALIBRATE all four against a lineage run.
+    step_count: 1
+    input_artifact_count: 1     # docs
+    output_artifact_count: 1    # tokens (env://, registered inline from the marker)
+    jobstats_count: 1
+    expected_steps:
+      - step_uri: space://steps/dpk
+        config:
+          dpk_config:
+            transform: tokenization2arrow
+            validate: true
+space_uri: ../../space
+# Happy path only, as the other dpk fixtures: the job is short, so there is no
+# stable RUNNING window to cancel in.
+tests:
+  - runner
+simulate_step_failure: false
+# Pod start + SkyPilot runtime setup, a runtime uv install of the
+# [tokenization2arrow] extra and a tokenizer download, then the validator.
+timeout_minutes: 40
