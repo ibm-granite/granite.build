@@ -1277,6 +1277,92 @@ def _build_skypilot_mounts(
     return file_mounts, storage_mounts
 
 
+# Pin <2.0: huggingface_hub 2.x pulls httpx2, whose BrotliDecoder calls
+# brotli.Decompressor.process(output_buffer_limit=...) -- a kwarg added only in
+# brotli>=1.2.0. The bare worker's ambient conda brotli (1.0.9) rejects it
+# (TypeError), failing hf download. NOT a Python-version issue (reproduces on
+# py3.12 w/ brotli<1.2). Stop-gap until the worker ships brotli>=1.2.0 (or
+# httpx2[brotli]) so hf 2.x works; see follow-up issue.
+_INLINE_HF_CLI_SPEC = "huggingface_hub[cli]<2.0"
+
+# Standalone uv installer, used only when the image has neither a working `pip` nor
+# an `hf` on PATH. Needs nothing but curl + sh, which SkyPilot's own pod/VM
+# bootstrap guarantees (it installs curl on every node), and uv brings its own
+# Python when the image has none.
+_INLINE_HF_UV_INSTALLER_URL = "https://astral.sh/uv/install.sh"
+
+
+def _inline_hfpull_setup_block(pending_hfpulls: dict[str, dict]) -> str:
+    """Shell prepended to a step's ``setup`` to download its inline ``hf://`` inputs.
+
+    Inline pulls (``inline: true`` on the hf assetstore, for envs without a
+    shared filesystem — skypilot/aws and skypilot/kubernetes) run the download in
+    the CONSUMING step's own setup, so when the step sets an image the download
+    runs INSIDE that image. The block therefore cannot assume what the image
+    ships, and obtains an ``hf`` client in this order:
+
+    1. ``pip`` on PATH: install the pinned client (the original behaviour, kept
+       first so every image that worked before takes the same path).
+    2. ``hf`` on PATH afterwards (from step 1, or preinstalled): use it.
+    3. Otherwise bootstrap ``uv`` with ``curl`` and run the pinned client via
+       ``uvx`` — covers images with no pip (e.g. plain Ubuntu), a PEP 668
+       "externally managed" pip, or a ``--user`` install whose bin dir is not on
+       PATH.
+    4. None available: fail naming what is missing, rather than the bare
+       ``hf: command not found`` the old ``pip ... 2>/dev/null || true`` left.
+
+    Runs under the step prologue's ``set -eu``, so a failed download fails setup.
+
+    :param pending_hfpulls: binding id -> ``_hfpull`` metadata (``repo``,
+        ``path``, optional ``revision`` / ``type``).
+    :returns: the shell block, newline-terminated.
+    """
+    lines = [
+        "# -- gbserver: inline hfpull for inputs --",
+        f"gb_hf_spec='{_INLINE_HF_CLI_SPEC}'",
+        "if command -v pip >/dev/null 2>&1; then",
+        '  pip install --no-cache-dir "$gb_hf_spec" >/tmp/gb-hfpull-pip.log 2>&1 \\',
+        '    || echo "gbserver: pip install of $gb_hf_spec failed'
+        ' (see /tmp/gb-hfpull-pip.log); trying another way to get hf" >&2',
+        "fi",
+        "if command -v hf >/dev/null 2>&1; then",
+        '  gb_hf() { hf "$@"; }',
+        "elif command -v curl >/dev/null 2>&1; then",
+        '  echo "gbserver: no usable hf client in this image; bootstrapping one'
+        ' with uv" >&2',
+        '  gb_uv_dir="${TMPDIR:-/tmp}/gb-hfpull-uv"',
+        f"  curl -LsSf {_INLINE_HF_UV_INSTALLER_URL}"
+        ' | env UV_INSTALL_DIR="$gb_uv_dir" UV_NO_MODIFY_PATH=1 sh >/dev/null',
+        # The installer has put binaries both directly in UV_INSTALL_DIR and in
+        # its bin/ across versions; accept either.
+        '  gb_uvx="$gb_uv_dir/uvx"; [ -x "$gb_uvx" ] || gb_uvx="$gb_uv_dir/bin/uvx"',
+        # Without pipefail a failed download (no network) still "succeeds": sh just
+        # runs an empty script. Check the result instead of failing later on uvx.
+        '  if [ ! -x "$gb_uvx" ]; then',
+        '    echo "gbserver: ERROR could not bootstrap uv from'
+        f" {_INLINE_HF_UV_INSTALLER_URL} to download inline hf:// inputs;"
+        ' use an image with python+pip or hf installed" >&2',
+        "    exit 1",
+        "  fi",
+        '  gb_hf() { "$gb_uvx" --from "$gb_hf_spec" hf "$@"; }',
+        "else",
+        '  echo "gbserver: ERROR cannot download inline hf:// inputs: this image has'
+        " no 'hf', no working 'pip' and no 'curl' to bootstrap one."
+        ' Use an image with python+pip or hf installed" >&2',
+        "  exit 1",
+        "fi",
+    ]
+    for pull_info in pending_hfpulls.values():
+        cmd = f'gb_hf download "{pull_info["repo"]}" --local-dir "{pull_info["path"]}"'
+        if pull_info.get("revision"):
+            cmd += f' --revision "{pull_info["revision"]}"'
+        if pull_info.get("type"):
+            cmd += f' --repo-type {pull_info["type"]}'
+        lines.append(cmd)
+    lines.append("# -- end inline hfpull --")
+    return "\n".join(lines) + "\n"
+
+
 def aws_credentials_present() -> bool:
     """Return True when boto3 would resolve AWS credentials from the environment.
 
@@ -2760,28 +2846,11 @@ class Skypilot(Environment):
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
-                # Pin <2.0: huggingface_hub 2.x pulls httpx2, whose BrotliDecoder
-                # calls brotli.Decompressor.process(output_buffer_limit=...) -- a
-                # kwarg added only in brotli>=1.2.0. The bare worker's ambient
-                # conda brotli (1.0.9) rejects it (TypeError), failing hf download.
-                # NOT a Python-version issue (reproduces on py3.12 w/ brotli<1.2).
-                # Stop-gap until the worker ships brotli>=1.2.0 (or httpx2[brotli])
-                # so hf 2.x works; see follow-up issue.
-                hfpull_lines = [
-                    "# -- gbserver: inline hfpull for inputs --",
-                    "pip install --no-cache-dir 'huggingface_hub[cli]<2.0' "
-                    "2>/dev/null || true",
-                ]
-                for bid, pull_info in pending_hfpulls.items():
-                    cmd = f'hf download "{pull_info["repo"]}" --local-dir "{pull_info["path"]}"'
-                    if pull_info.get("revision"):
-                        cmd += f' --revision "{pull_info["revision"]}"'
-                    if pull_info.get("type"):
-                        cmd += f' --repo-type {pull_info["type"]}'
-                    hfpull_lines.append(cmd)
-                hfpull_lines.append("# -- end inline hfpull --")
-                hfpull_block = "\n".join(hfpull_lines) + "\n"
-                setup_script = hfpull_block + setup_script
+                # Runs inside the step's image when it sets one, so the block
+                # obtains its own hf client — see _inline_hfpull_setup_block.
+                setup_script = (
+                    _inline_hfpull_setup_block(pending_hfpulls) + setup_script
+                )
                 logger.info(
                     "Injected %d inline hfpull download(s) into setup script",
                     len(pending_hfpulls),
