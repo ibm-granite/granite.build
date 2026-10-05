@@ -20,7 +20,7 @@ GET /builds/, /artifacts/, /spaces/ and their /count and /tags variants build
 their row_filter straight from query params and call storage.get_by_where()
 with no per-row authorization check at all -- unlike the single-object GET
 routes, which load the row and then call confirm_space_member_access /
-confirm_space_write_access on it. scope_space_name_filter() is what closes
+confirm_existing_item_write_access on it. scope_space_name_filter() is what closes
 that gap: its return value is used as the space_name filter passed into
 get_row_filter() by every one of those list routes, except when it returns
 NO_ACCESSIBLE_SPACE -- callers check for that with `is` and return an empty

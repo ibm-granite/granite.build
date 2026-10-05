@@ -28,7 +28,7 @@ from gbserver.api.utils import (
     apply_tag_update,
     confirm_can_add_to_space,
     confirm_space_member_access,
-    confirm_space_write_access,
+    confirm_existing_item_write_access,
     get_row_filter,
     is_super_admin,
     scope_space_name_filter,
@@ -404,7 +404,7 @@ def set_archive_bit(
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
-    confirm_space_write_access(
+    confirm_existing_item_write_access(
         request=request,
         username_on_target=item.username,
         space_name=item.space_name,
@@ -546,7 +546,7 @@ def decode_uri(
         # resource_group_id for hf:// URIs (see __get_hf_decoded_uri_response)
         # -- so member-level access here would leak more than the read paths
         # already do, not just duplicate what they show.
-        confirm_space_write_access(
+        confirm_existing_item_write_access(
             request=request,
             username_on_target=artifact.username,
             space_name=artifact.space_name,
@@ -692,7 +692,7 @@ def update_artifact(
     assert isinstance(artifact, ArtifactRegistration)
 
     # Make sure the user (owner or admin) has access to the artifact
-    confirm_space_write_access(
+    confirm_existing_item_write_access(
         request=request,
         username_on_target=artifact.username,
         space_name=artifact.space_name,

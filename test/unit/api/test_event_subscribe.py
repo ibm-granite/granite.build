@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.testclient import TestClient
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
@@ -246,8 +246,8 @@ class TestEventSubscribeEndpoint:
         assert "timed out" in response.json()["detail"]
 
     @patch(
-        "gbserver.api.event_subscribe.has_space_write_access",
-        return_value=(False, "testuser"),
+        "gbserver.api.event_subscribe.confirm_existing_item_write_access",
+        side_effect=HTTPException(status_code=401, detail="denied"),
     )
     @patch("gbserver.api.event_subscribe.get_admin_storage")
     def test_subscribe_to_other_users_build_returns_403(

@@ -22,14 +22,15 @@ unfixed in validate_build during a follow-up audit — validate_build had no
 Request param at all, so it couldn't check identity, and its space_uri path
 bypasses space storage entirely). Both must reject a caller acting under a
 DIFFERENT username unless the caller is a space/super admin explicitly
-impersonating that user — the same confirm_space_write_access gate
+impersonating that user — the same confirm_existing_item_write_access gate
 PUT /builds/{id}/update already applies.
 
 test/conftest.py's autouse `_mock_space_access` fixture stubs both
-confirm_space_write_access (in this module) and has_space_write_access (in
-utils) to an unconditional no-op/pass in mock mode, which would make every
-test here trivially pass regardless of the fix under test. `_real_authz`
-restores both real functions for the duration of each test below.
+confirm_existing_item_write_access (in this module) and
+_has_existing_item_write_access (in utils) to an unconditional no-op/pass in
+mock mode, which would make every test here trivially pass regardless of the
+fix under test. `_real_authz` restores both real functions for the duration
+of each test below.
 """
 
 from contextlib import contextmanager
@@ -65,9 +66,11 @@ from gbserver.api.builds import (
     validate_build,
 )
 from gbserver.api.utils import (
-    confirm_space_write_access as _real_confirm_space_write_access,
+    confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
 )
-from gbserver.api.utils import has_space_write_access as _real_has_space_write_access
+from gbserver.api.utils import (
+    _has_existing_item_write_access as _real_has_existing_item_write_access,
+)
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.status import Status
@@ -79,16 +82,17 @@ ATTACKER = "attacker_a"
 
 @contextmanager
 def _real_authz():
-    """Restore the real confirm_space_write_access AND has_space_write_access,
-    undoing the autouse `_mock_space_access` fixture's unconditional bypass."""
+    """Restore the real confirm_existing_item_write_access AND
+    _has_existing_item_write_access, undoing the autouse `_mock_space_access`
+    fixture's unconditional bypass."""
     with (
         patch(
-            "gbserver.api.builds.confirm_space_write_access",
-            side_effect=_real_confirm_space_write_access,
+            "gbserver.api.builds.confirm_existing_item_write_access",
+            side_effect=_real_confirm_existing_item_write_access,
         ),
         patch(
-            "gbserver.api.utils.has_space_write_access",
-            side_effect=_real_has_space_write_access,
+            "gbserver.api.utils._has_existing_item_write_access",
+            side_effect=_real_has_existing_item_write_access,
         ),
     ):
         yield
@@ -290,7 +294,7 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
 #
 # Regression coverage for the asymmetry fixed here: read_build and
 # get_build_archive used to call the owner/admin-only authorize_build_access
-# (via #201's confirm_space_write_access), while get_build_status/
+# (via #201's confirm_existing_item_write_access), while get_build_status/
 # get_buildevents from that same PR correctly used the broader
 # authorize_build_read_access (any space member). A build's owner is VICTIM
 # throughout; MEMBER is a different user who is a member of SPACE but not its
@@ -298,8 +302,8 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
 #
 # Both endpoints' current (fixed) path is authorize_build_read_access ->
 # confirm_space_member_access -> has_space_member_access, which only consults
-# is_super_admin and space_access_check — not confirm_space_write_access,
-# has_space_write_access, or is_space_admin. _real_authz() and the
+# is_super_admin and space_access_check — not confirm_existing_item_write_access,
+# _has_existing_item_write_access, or is_space_admin. _real_authz() and the
 # is_space_admin patch below don't affect that path today; they're kept as a
 # tripwire so that if either endpoint ever regresses back onto the
 # owner/admin-only authorize_build_access, the non_owner_space_member case

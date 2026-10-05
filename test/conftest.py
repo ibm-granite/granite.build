@@ -778,7 +778,7 @@ def _mock_space_access(request):
 
     with (
         patch(
-            "gbserver.api.utils.has_space_write_access",
+            "gbserver.api.utils._has_existing_item_write_access",
             return_value=(True, "standalone"),
         ),
         patch(
@@ -786,7 +786,7 @@ def _mock_space_access(request):
             return_value=True,
         ),
         patch(
-            "gbserver.api.artifacts.confirm_space_write_access",
+            "gbserver.api.artifacts.confirm_existing_item_write_access",
             return_value=None,
         ),
         patch(
@@ -794,7 +794,7 @@ def _mock_space_access(request):
             return_value=True,
         ),
         patch(
-            "gbserver.api.builds.confirm_space_write_access",
+            "gbserver.api.builds.confirm_existing_item_write_access",
             return_value=None,
         ),
     ):

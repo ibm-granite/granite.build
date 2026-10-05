@@ -20,7 +20,7 @@ authorization.
 decode_uri(id=...) is an alternate read path to the same artifact
 read_artifact protects (both load by uuid via get_admin_storage, which
 bypasses row-level security) -- but the two are deliberately NOT at the same
-access level. decode_uri(id=) stays at write access (confirm_space_write_access)
+access level. decode_uri(id=) stays at write access (confirm_existing_item_write_access)
 because it resolves additional metadata (e.g. resource_group_id for hf://
 URIs) not present on the stored object; read_artifact was loosened to member
 access (confirm_space_member_access) because list_artifacts() already returns
@@ -31,11 +31,11 @@ lookups — no DB required. decode_uri's uri= mode never touches storage and
 must stay open to anyone.
 
 test/conftest.py's autouse `_mock_space_access` fixture stubs
-gbserver.api.artifacts.confirm_space_write_access to an unconditional no-op,
+gbserver.api.artifacts.confirm_existing_item_write_access to an unconditional no-op,
 and gbserver.api.utils.is_super_admin to an unconditional True, in mock mode
 (so unrelated tests don't need real space setup) — either of which would make
 every test here trivially pass regardless of the fix under test. `_real_authz`
-restores confirm_space_write_access/has_space_write_access for the
+restores confirm_existing_item_write_access/_has_existing_item_write_access for the
 decode_uri(id=)/register_artifact tests; the read_artifact tests patch
 is_super_admin and space_access_check directly instead, since
 confirm_space_member_access is never stubbed by conftest.
@@ -67,9 +67,11 @@ from gbserver.api.artifacts import (
     register_hf_model,
 )
 from gbserver.api.utils import (
-    confirm_space_write_access as _real_confirm_space_write_access,
+    confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
 )
-from gbserver.api.utils import has_space_write_access as _real_has_space_write_access
+from gbserver.api.utils import (
+    _has_existing_item_write_access as _real_has_existing_item_write_access,
+)
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.types.artifact import ArtifactType
 
@@ -80,21 +82,23 @@ ATTACKER = "attacker_a"
 
 @contextmanager
 def _real_authz():
-    """Restore the real confirm_space_write_access AND has_space_write_access.
+    """Restore the real confirm_existing_item_write_access AND
+    _has_existing_item_write_access.
 
     test/conftest.py's autouse `_mock_space_access` fixture stubs both out
-    (confirm_space_write_access to an unconditional no-op, has_space_write_access
-    to an unconditional (True, "standalone")) in mock mode. Restoring only one
+    (confirm_existing_item_write_access to an unconditional no-op,
+    _has_existing_item_write_access to an unconditional (True, "standalone"))
+    in mock mode. Restoring only one
     still leaves the other short-circuiting the real owner/admin decision.
     """
     with (
         patch(
-            "gbserver.api.artifacts.confirm_space_write_access",
-            side_effect=_real_confirm_space_write_access,
+            "gbserver.api.artifacts.confirm_existing_item_write_access",
+            side_effect=_real_confirm_existing_item_write_access,
         ),
         patch(
-            "gbserver.api.utils.has_space_write_access",
-            side_effect=_real_has_space_write_access,
+            "gbserver.api.utils._has_existing_item_write_access",
+            side_effect=_real_has_existing_item_write_access,
         ),
     ):
         yield

@@ -102,22 +102,31 @@ def is_super_admin(request: Request) -> bool:
     return is_space_admin(request, PUBLIC_SPACE_NAME)
 
 
-def has_space_write_access(
-    request: Request, username_on_target: str, space_name
+def _has_existing_item_write_access(
+    request: Request, username_on_target: str, space_name: str
 ) -> tuple[bool, str]:
-    """See if the requesting user has write access to an asset owned/created by the given username in the given space.
-    Throws an HTTPException if the requesting user is not found in the request
+    """Decide whether the requester may modify an existing item in a space.
+
+    Private: callers use confirm_existing_item_write_access (or catch its
+    HTTPException to answer with a different status). It stays a separate
+    function because test/conftest.py stubs it as the mock-mode bypass seam.
+
+    Access is granted to the item's owner, a super admin, or an admin of the
+    space. The owner shortcut is only sound when username_on_target and
+    space_name come from the stored item; for a new item, where the caller
+    supplies both, use confirm_can_add_to_space instead.
 
     Args:
-        request (Request): _description_
-        username_on_target (str): _description_
-        space_name (_type_): _description_
+        request (Request): The incoming request carrying the authenticated user.
+        username_on_target (str): The stored owner of the existing item.
+        space_name (str): The space the existing item belongs to.
 
     Raises:
-        HTTPException: if user id is not found in the request.
+        HTTPException: (400) if the user id is not found in the request.
 
     Returns:
-        tuple[bool,str]: first element indicates if the requester has write access and the 2nd is the user_id found in the request.
+        tuple[bool,str]: whether the requester has write access, and the
+        requester's user id.
     """
     user_id = request.state.data["user"].login
     if user_id is None:
@@ -132,22 +141,25 @@ def has_space_write_access(
     return has_access, user_id
 
 
-def confirm_space_write_access(
+def confirm_existing_item_write_access(
     request: Request, username_on_target: str, space_name: str
 ) -> None:
-    """See if the requesting user has write access to an asset owned/created by the given username in the given space and raise
-    and HTTP exception if not.
+    """Raise an HTTP exception unless the requester may modify an existing item.
+
+    Grants the item's owner, a super admin, or an admin of the space. Use only
+    for items already stored in the space (update, archive, delete, cancel,
+    ...); for adding a new item use confirm_can_add_to_space.
 
     Args:
-        request (Request): _description_
-        username_on_target (str): _description_
-        space_name (_type_): _description_
+        request (Request): The incoming request carrying the authenticated user.
+        username_on_target (str): The stored owner of the existing item.
+        space_name (str): The space the existing item belongs to.
 
     Raises:
-        HTTPException: if user id is not found in the request.
-        HTTPException: if user name on the target does not have write access to the target.
+        HTTPException: (400) if the user id is not found in the request.
+        HTTPException: (401) if the requester is neither the owner nor an admin.
     """
-    has_access, user_id = has_space_write_access(
+    has_access, user_id = _has_existing_item_write_access(
         request, username_on_target=username_on_target, space_name=space_name
     )
     if not has_access:
@@ -166,7 +178,7 @@ def confirm_can_add_to_space(
     Allowed: super admins (any space, any username), admins of the space (any
     username), and members of the space acting as themselves.
 
-    Stricter than confirm_space_write_access, whose owner shortcut is only sound
+    Stricter than confirm_existing_item_write_access, whose owner shortcut is only sound
     for an item that already exists in the space. For a new item the "owner" is
     the caller-supplied username, so the owner shortcut alone would let any
     user add builds/artifacts to a space they do not belong to and consume that
@@ -183,7 +195,7 @@ def confirm_can_add_to_space(
         HTTPException: (401) if the requester is impersonating another user without
             being an admin, or is not a member of the space.
     """
-    confirm_space_write_access(
+    confirm_existing_item_write_access(
         request, username_on_target=username_on_target, space_name=space_name
     )
     username_email = request.state.data["user"].email
@@ -200,7 +212,7 @@ def has_space_member_access(
 ) -> tuple[bool, str]:
     """See if the requesting user has at least read/member access to an asset
     owned/created by the given username in the given space. Broader than
-    has_space_write_access: grants access to any member of the space, not
+    confirm_existing_item_write_access: grants access to any member of the space, not
     just the owner or a space/super admin.
 
     Raises:
@@ -282,7 +294,7 @@ def scope_space_name_filter(
     build their row_filter straight from query params and call
     storage.get_by_where() with no per-row authorization check — unlike the
     single-object GET routes, which load the row first and then call
-    confirm_space_member_access/confirm_space_write_access on it. Passing this
+    confirm_space_member_access/confirm_existing_item_write_access on it. Passing this
     function's return value as the space_name filter is what scopes those list
     routes to the caller's real space membership.
 

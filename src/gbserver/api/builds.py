@@ -30,7 +30,7 @@ from gbserver.api.utils import (
     ListAppendOrSet,
     apply_tag_update,
     confirm_can_add_to_space,
-    confirm_space_write_access,
+    confirm_existing_item_write_access,
     get_query_control,
     get_row_filter,
     is_space_admin,
@@ -762,7 +762,7 @@ def update_build(
     assert isinstance(build, StoredBuild)
 
     # Make sure the user (owner or admin) has access to the build
-    confirm_space_write_access(
+    confirm_existing_item_write_access(
         request=request, username_on_target=build.username, space_name=build.space_name
     )
 
