@@ -26,6 +26,7 @@ from gbserver.api.utils import (
     NO_ACCESSIBLE_SPACE,
     ListAppendOrSet,
     apply_tag_update,
+    confirm_can_add_to_space,
     confirm_space_member_access,
     confirm_space_write_access,
     get_row_filter,
@@ -338,8 +339,9 @@ def register_artifact(
     # attributed owner (including compliance flags like
     # certified_no_restrictions) — bind it to the caller unless a space/super
     # admin is explicitly registering on another user's behalf, the same gate
-    # update_artifact/archive_artifact already apply to the stored owner.
-    confirm_space_write_access(
+    # update_artifact/archive_artifact already apply to the stored owner. The
+    # caller must also be a member of the target space.
+    confirm_can_add_to_space(
         request,
         username_on_target=new_artifact.username,
         space_name=new_artifact.space_name,

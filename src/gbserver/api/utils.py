@@ -157,6 +157,44 @@ def confirm_space_write_access(
         )
 
 
+def confirm_can_add_to_space(
+    request: Request, username_on_target: str, space_name: str
+) -> None:
+    """Raise an HTTP exception unless the requesting user may add a new item
+    (build, artifact, ...) attributed to the given username to an existing space.
+
+    Allowed: super admins (any space, any username), admins of the space (any
+    username), and members of the space acting as themselves.
+
+    Stricter than confirm_space_write_access, whose owner shortcut is only sound
+    for an item that already exists in the space. For a new item the "owner" is
+    the caller-supplied username, so the owner shortcut alone would let any
+    user add builds/artifacts to a space they do not belong to and consume that
+    space's compute and secrets. This additionally requires the requester to be
+    a super admin or a member of the space (space_access_check).
+
+    Args:
+        request (Request): The incoming request carrying the authenticated user.
+        username_on_target (str): The username the new item will be attributed to.
+        space_name (str): Name of the existing space the item will be added to.
+
+    Raises:
+        HTTPException: if user id is not found in the request.
+        HTTPException: (401) if the requester is impersonating another user without
+            being an admin, or is not a member of the space.
+    """
+    confirm_space_write_access(
+        request, username_on_target=username_on_target, space_name=space_name
+    )
+    username_email = request.state.data["user"].email
+    if not (is_super_admin(request) or space_access_check(username_email, space_name)):
+        user_id = request.state.data["user"].login
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"User {user_id} is not a member of space {space_name}",
+        )
+
+
 def has_space_member_access(
     request: Request, username_on_target: str, space_name: str
 ) -> tuple[bool, str]:

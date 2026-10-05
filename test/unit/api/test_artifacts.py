@@ -98,6 +98,19 @@ def _real_authz():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _space_member():
+    """Make the caller a member of every space by default.
+
+    Adding a new item to a space (confirm_can_add_to_space) requires space
+    membership on top of identity binding. Tests that exercise identity and
+    ownership rules start from a member caller; the non-member tests override
+    this with a nested patch.
+    """
+    with patch("gbserver.api.utils.space_access_check", return_value=True):
+        yield
+
+
 def _victim_artifact() -> ArtifactRegistration:
     art = ArtifactRegistration(
         type=ArtifactType.MODEL,
@@ -268,6 +281,25 @@ def test_register_artifact_allows_self_registration():
             _new_artifact(ATTACKER),
         )
     assert resp.registered.username == ATTACKER
+
+
+def test_register_artifact_rejects_non_member_self_registration():
+    """Registering under your own username is not enough: the caller must also
+    belong to the target space (otherwise any user could register artifacts
+    into any space)."""
+    with (
+        _registry_storage(),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            register_artifact(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _new_artifact(ATTACKER),
+            )
+        assert exc.value.status_code == 401
 
 
 def test_register_artifact_allows_admin_impersonation():

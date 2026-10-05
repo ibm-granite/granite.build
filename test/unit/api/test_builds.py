@@ -94,6 +94,19 @@ def _real_authz():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _space_member():
+    """Make the caller a member of every space by default.
+
+    Adding a new item to a space (confirm_can_add_to_space) requires space
+    membership on top of identity binding. Tests that exercise identity and
+    ownership rules start from a member caller; the non-member tests override
+    this with a nested patch.
+    """
+    with patch("gbserver.api.utils.space_access_check", return_value=True):
+        yield
+
+
 def _submit_req(username: str) -> BuildSubmitRequest:
     return BuildSubmitRequest(
         name="poc",
@@ -142,6 +155,24 @@ def test_submit_build_allows_self_submission():
             _submit_req(ATTACKER),
         )
     assert resp.build_id
+
+
+def test_submit_build_rejects_non_member_self_submission():
+    """Submitting under your own username is not enough: the caller must also
+    belong to the space whose compute and secrets the build will use."""
+    with (
+        _patched_storage(),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            submit_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _submit_req(ATTACKER),
+            )
+        assert exc.value.status_code == 401
 
 
 def test_submit_build_allows_admin_impersonation():
@@ -221,6 +252,23 @@ def test_validate_build_allows_self_validation_via_space_uri():
             _validate_req(ATTACKER, space_uri="git://example/space.git"),
         )
     assert resp.status_code == 200
+
+
+def test_validate_build_rejects_non_member_via_space_name():
+    with (
+        _patched_storage(),
+        _real_authz(),
+        _NO_OP_VALIDATION,
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            validate_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _validate_req(ATTACKER, space_name=SPACE),
+            )
+        assert exc.value.status_code == 401
 
 
 def test_validate_build_allows_admin_impersonation_via_space_name():
@@ -491,6 +539,28 @@ def test_restart_build_reopens_same_build_in_place():
     # Definition/targets are untouched (already on the build).
     assert reopened.build_archive == prior.build_archive
     assert reopened.targets == prior.targets
+
+
+def test_restart_build_rejects_owner_no_longer_in_space_404():
+    """Owning the build is not enough to restart it: the re-run uses the
+    space's compute and secrets, so an owner who has left the space gets the
+    same not-found as any other unauthorized caller, and the build is untouched."""
+    prior = _prior_build(ATTACKER, status=Status.FAILED)
+    builds = {prior.uuid: prior}
+    with (
+        _patched_restart_storage(builds),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            restart_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildRestartRequest(build_id=prior.uuid),
+            )
+    assert exc.value.status_code == 404
+    assert builds[prior.uuid].status == Status.FAILED
 
 
 def test_restart_build_rejects_succeeded_build_409():

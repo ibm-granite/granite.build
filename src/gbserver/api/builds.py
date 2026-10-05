@@ -29,10 +29,10 @@ from gbserver.api.utils import (
     NO_ACCESSIBLE_SPACE,
     ListAppendOrSet,
     apply_tag_update,
+    confirm_can_add_to_space,
     confirm_space_write_access,
     get_query_control,
     get_row_filter,
-    has_space_write_access,
     is_space_admin,
     is_super_admin,
     scope_space_name_filter,
@@ -297,8 +297,10 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     # req.username is the identity the build will run under and whose per-user
     # secrets get injected into it — bind it to the caller unless the caller
     # is a space/super admin explicitly impersonating another user, the same
-    # gate PUT /builds/{id}/update already applies to build.username.
-    confirm_space_write_access(
+    # gate PUT /builds/{id}/update already applies to build.username. The
+    # caller must also be a member of the space: the build consumes the space's
+    # compute and secrets.
+    confirm_can_add_to_space(
         request, username_on_target=req.username, space_name=stored_space.name
     )
 
@@ -353,10 +355,13 @@ def restart_build(request: Request, req: BuildRestartRequest) -> BuildRestartRes
     stored_space = space_storage.get_by_name(build.space_name)
     if stored_space is None:
         raise not_found
-    has_access, _ = has_space_write_access(
-        request, username_on_target=build.username, space_name=stored_space.name
-    )
-    if not has_access:
+    # Membership, not just write access: a restart re-runs on the space's
+    # compute and secrets, so an owner who has since left the space may not.
+    try:
+        confirm_can_add_to_space(
+            request, username_on_target=build.username, space_name=stored_space.name
+        )
+    except HTTPException:
         raise not_found
 
     # Only a finished build can be restarted: re-opening a build with a live runner
@@ -413,7 +418,9 @@ def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Space {req.space_name} not found in space storage",
             )
-        confirm_space_write_access(
+        # Dynamic validation dry-runs the build in the space, so membership is
+        # required here exactly as for submit_build.
+        confirm_can_add_to_space(
             request, username_on_target=req.username, space_name=stored_space.name
         )
     else:
