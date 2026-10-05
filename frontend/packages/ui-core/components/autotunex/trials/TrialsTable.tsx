@@ -46,7 +46,7 @@ import { EMPHASIS_THRESHOLD, emphasisColorScale, selectionSlots, trialColorScale
 import { formatCell } from './trialsTableFormat'
 import { formatHyperparamValue, hyperparamColumnLabel, hyperparamColumns } from './trialHyperparams'
 import styles from './TrialsTable.module.scss'
-import { bestTrialId, isLowerBetter, jobMetric, rankBestFirst, scoreOn, toFeatureLabel, toRadarData } from './trialsRadar'
+import { bestTrialId, isLowerBetter, jobMetric, primaryMetric, rankBestFirst, scoreOn, toFeatureLabel, toRadarData } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
 
 // The radar chart is superseded by TrialSearchSpace but kept behind this flag,

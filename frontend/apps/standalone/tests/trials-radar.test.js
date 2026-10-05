@@ -292,7 +292,7 @@ describe('the trials table metric column', () => {
 
   it('is labelled with the job metric, not a fixed "Loss"', () => {
     assert.match(src, /h\.key === 'loss' \? \{ \.\.\.h, header: toFeatureLabel\(metric\) \}/)
-    assert.match(src, /headers=\{headers\}/)
+    assert.match(src, /headers=\{tableHeaders\}/)
   })
 
   it('shows the value the ranking used', () => {
