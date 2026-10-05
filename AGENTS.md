@@ -176,8 +176,8 @@ A floating chat widget (rendered globally by `ClientShell`) backed by a hand-rol
 |------|-------------|
 | `frontend/packages/ui-core/` | Shared, generic dashboard library — no app router, no build step. Consumed both by `apps/standalone` here and, as an external git dependency, by the internal deployment repo |
 | `frontend/packages/ui-core/components/` | Shared React components (Carbon Design System) |
-| `frontend/packages/ui-core/api/` | API clients — `gbserver.ts`, `analytics.ts`, `dataProcessing.ts` |
-| `frontend/packages/ui-core/api/client.ts` | `apiBase()` helper — handles `GBSERVER_API_URL` override |
+| `frontend/packages/ui-core/api/` | API clients — `gbserver.ts`, `analytics.ts`, `chat.ts`, `dataProcessing.ts`; all built through `client.ts`'s `createApiClient()` |
+| `frontend/packages/ui-core/api/client.ts` | `apiBase()` helper — handles `GBSERVER_API_URL` override — plus `createApiClient()`, the factory every client above is created with, and the host overrides it applies |
 | `frontend/apps/standalone/app/` | Next.js App Router pages |
 | `frontend/apps/standalone/next.config.ts` | Build config — static export in standalone mode, rewrite proxy in dev, `transpilePackages: ['@granite-build/ui-core']` |
 | `frontend/apps/standalone/.env.local.example` | Dev environment template — copy to `.env.local` |

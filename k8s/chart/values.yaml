@@ -121,6 +121,15 @@ deployments:
     # enable: false
     replicas: 1
     port: 8080
+    # LSF file API SSHes to BlueVela; same sentinel rule as k8s/dep-build-runner.yaml.
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              llmbuild/bluevela-ssh: broken
+          namespaceSelector: {}
+          topologyKey: ibm-cloud.kubernetes.io/subnet-id
     resources:
       limits:
         cpu: "4"

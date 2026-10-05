@@ -11,8 +11,7 @@
  *   GET  /artifacts/{id}    → ArtifactRegistration
  *   GET  /spaces/           → { spaces: StoredSpace[] }
  */
-import axios from 'axios'
-import { apiBase, gbserverClientOverrides } from './client'
+import { apiBase, createApiClient } from './client'
 import { isLaterAttempt } from './targetAttempts'
 import type {
   Build,
@@ -25,61 +24,13 @@ import type {
   Space,
 } from '../types'
 
-const DEFAULT_BASE_URL = apiBase('/api/v1')
-
-const client = axios.create({ baseURL: DEFAULT_BASE_URL })
-
-// Consult the host's overrides on every request rather than at module load, so a
-// changing token or a switched environment is picked up without a reload. With
-// no overrides installed this leaves the request exactly as it was.
+// The scoping, the host overrides and the 401 hook all live in createApiClient —
+// see client.ts. getBuildStepLog below is the call site that depends on the
+// scoping: it passes `baseURL: ''` so gbserver's log_path is used verbatim.
 //
-// Only requests still pointing at the client's default base are reshaped. A
-// request that sets its own `baseURL` is not addressing the gbserver API at all:
-// `getBuildStepLog` passes `''` so that `log_path` is used exactly as gbserver
-// gave it. Rewriting that would prepend the host's prefix to an already-complete
-// path (`/api/v1/…` becoming `/env-x/api/v1/api/v1/…`, which 404s), and the
-// headers are worse than cosmetic — an absolute `log_path` can point at another
-// origin, so attaching the host's bearer token would both disclose it there and
-// can make a presigned object-store URL reject the request for carrying a second
-// auth mechanism.
-
-// Marks a request as having been recognised as a gbserver API call. The response
-// side cannot re-derive this from `baseURL`, because by then the request
-// interceptor has already replaced it with the host's own prefix — testing
-// against the default there would treat every real gbserver 401 as foreign and
-// never call `onUnauthorized`. axios carries custom config fields through to
-// `error.config`, so the decision is recorded once and read back.
-const GBSERVER_API_REQUEST = '__gbserverApiRequest'
-
-type TaggedConfig = { [GBSERVER_API_REQUEST]?: boolean }
-
-client.interceptors.request.use((config) => {
-  if (config.baseURL !== DEFAULT_BASE_URL) return config
-  ;(config as typeof config & TaggedConfig)[GBSERVER_API_REQUEST] = true
-  const { resolveBaseUrl, resolveHeaders } = gbserverClientOverrides()
-  if (resolveBaseUrl) config.baseURL = resolveBaseUrl()
-  const extra = resolveHeaders?.()
-  if (extra) Object.assign(config.headers, extra)
-  return config
-})
-
-client.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    // Same scoping as the request side, for the same reason: a 401 from a
-    // presigned log URL says nothing about the host's gbserver session, and
-    // handing it to `onUnauthorized` would clear a working token and restart the
-    // login flow.
-    const err = error as {
-      response?: { status?: number }
-      config?: TaggedConfig
-    }
-    if (err?.response?.status === 401 && err?.config?.[GBSERVER_API_REQUEST]) {
-      gbserverClientOverrides().onUnauthorized?.(error)
-    }
-    return Promise.reject(error)
-  },
-)
+// This is the only client that opts into `resolveBaseUrl` — see
+// `allowHostBaseUrl` in client.ts for why that is per-client rather than shared.
+const client = createApiClient(apiBase('/api/v1'), { allowHostBaseUrl: true })
 
 // ── Response adapters ─────────────────────────────────────────────────────────
 // gbserver returns StoredBuild which uses uppercase Status enums and slightly

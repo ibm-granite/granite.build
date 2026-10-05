@@ -10,6 +10,9 @@ import pytest
 
 pytestmark = pytest.mark.docker_required
 
+# Docker Hub mirror: Docker Hub pulls flake in CI.
+_IMAGE = "public.ecr.aws/docker/library/alpine:latest"
+
 
 def _docker_available():
     """Check if Docker/Podman daemon is accessible.
@@ -53,7 +56,7 @@ class TestDockerIntegration:
         config = EnvironmentConfig(
             name="integration-docker",
             type="Docker",
-            config={"defaults": {"image": "alpine:latest"}},
+            config={"defaults": {"image": _IMAGE}},
         )
         env = Docker(event_q=event_q, environment_config=config)
 
@@ -62,7 +65,7 @@ class TestDockerIntegration:
         await env.launch_docker(
             launch_id=launch_id,
             launcher_config={
-                "image": "alpine:latest",
+                "image": _IMAGE,
                 "command": "echo hello-gbserver",
             },
             config={},
@@ -109,7 +112,7 @@ class TestDockerIntegration:
                 launch_id=launch_id,
                 targetsteprun_asset_dir=tmpdir,
                 launcher_config={
-                    "image": "alpine:latest",
+                    "image": _IMAGE,
                     "command": "sh -c 'echo test-output > /gb-workspace/result.txt'",
                 },
                 config={},
