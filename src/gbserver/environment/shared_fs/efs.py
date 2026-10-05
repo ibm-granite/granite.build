@@ -60,6 +60,25 @@ class EfsProvider(SharedFilesystemProvider):
         fsid = self.cfg.file_system_id
         if fsid is None and self.cfg.provision == "ephemeral":
             fsid = dns.split(".", 1)[0]
+        if self.cfg.access_point_id:
+            # Access-point mount: options combine accesspoint with optional tls.
+            # The AP binds a specific filesystem, so validation guarantees fsid.
+            opts = f"accesspoint={self.cfg.access_point_id}" + (
+                ",tls" if self.cfg.tls else ""
+            )
+            ap_cmd = (
+                f"$SUDO mount -t efs -o {opts} {shlex.quote(fsid + ':/')} {mp_quoted}"
+            )
+            ap_fail = (
+                f'echo "shared_filesystem: access_point_id set at '
+                f"{self.mount_point} but amazon-efs-utils (mount.efs) is absent; "
+                'cannot mount via an access point" >&2; exit 1'
+            )
+            # No nfs4 fallback: nfs4 cannot select an access point.
+            return (
+                f"if command -v mount.efs >/dev/null 2>&1; then {ap_cmd}; "
+                f"else {ap_fail}; fi"
+            )
         efs_cmd = (
             f"$SUDO mount -t efs{tls} {shlex.quote(fsid + ':/')} {mp_quoted}"
             if fsid
@@ -155,6 +174,10 @@ class EfsProvider(SharedFilesystemProvider):
         return self.cfg.cleanup_zone
 
     def transit_encryption_note(self) -> Optional[str]:
+        if self.cfg.access_point_id:
+            # No cleartext fallback under access-point mode (mount fails fast if
+            # amazon-efs-utils is missing), so there is nothing to warn about.
+            return None
         if not self.cfg.tls:
             return None
         return (

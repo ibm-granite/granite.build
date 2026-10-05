@@ -693,3 +693,54 @@ def test_access_point_requires_file_system_id():
 def test_access_point_rejected_for_ephemeral():
     with pytest.raises(ValueError, match="access_point_id.*ephemeral"):
         EfsConfig(provision="ephemeral", region="us-east-1", access_point_id="fsap-abc")
+
+
+def test_access_point_mount_uses_accesspoint_and_fails_fast_without_efs_utils():
+    p = EfsProvider(
+        "/mnt/gb-shared",
+        EfsConfig(
+            file_system_id="fs-0abc",
+            region="us-east-1",
+            access_point_id="fsap-123",
+            tls=True,
+        ),
+    )
+    sh = p.mount_prologue()
+    assert "mount -t efs -o accesspoint=fsap-123,tls fs-0abc:/" in sh
+    assert "command -v mount.efs" in sh
+    # No nfs4 fallback and no cleartext under access-point mode: fail fast.
+    assert "mount -t nfs4" not in sh
+    assert "WITHOUT encryption" not in sh
+    assert "exit 1" in sh
+    _bash_ok(sh)
+
+
+def test_access_point_mount_without_tls_omits_tls_option():
+    p = EfsProvider(
+        "/mnt/x",
+        EfsConfig(
+            file_system_id="fs-0abc",
+            region="us-east-1",
+            access_point_id="fsap-9",
+            tls=False,
+        ),
+    )
+    sh = p.mount_prologue()
+    assert "mount -t efs -o accesspoint=fsap-9 fs-0abc:/" in sh
+    assert ",tls" not in sh
+    _bash_ok(sh)
+
+
+def test_access_point_transit_note_is_none():
+    # Access-point mode has no cleartext fallback (it fails fast instead), so the
+    # "may be unencrypted nfs4" note does not apply.
+    p = EfsProvider(
+        "/mnt/x",
+        EfsConfig(
+            file_system_id="fs-1",
+            region="us-east-1",
+            access_point_id="fsap-1",
+            tls=True,
+        ),
+    )
+    assert p.transit_encryption_note() is None
