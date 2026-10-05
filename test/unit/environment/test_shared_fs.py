@@ -664,3 +664,32 @@ def test_example_env_fixtures_validate(rel):
 
     data = yaml.safe_load((_ROOT / rel).read_text())
     EnvironmentConfig.model_validate(data)  # must not raise
+
+
+# --- #396: BYO EFS access_point_id ---
+
+
+def test_access_point_valid_byo():
+    cfg = EfsConfig(
+        file_system_id="fs-1", region="us-east-1", access_point_id="fsap-abc"
+    )
+    assert cfg.access_point_id == "fsap-abc"
+    assert cfg.provision == "byo"
+
+
+def test_access_point_defaults_none():
+    cfg = EfsConfig(file_system_id="fs-1", region="us-east-1")
+    assert cfg.access_point_id is None
+
+
+def test_access_point_requires_file_system_id():
+    # A dns_name-only mount cannot select an access point.
+    with pytest.raises(ValueError, match="access_point_id requires file_system_id"):
+        EfsConfig(
+            dns_name="fs-1.efs.us-east-1.amazonaws.com", access_point_id="fsap-abc"
+        )
+
+
+def test_access_point_rejected_for_ephemeral():
+    with pytest.raises(ValueError, match="access_point_id.*ephemeral"):
+        EfsConfig(provision="ephemeral", region="us-east-1", access_point_id="fsap-abc")

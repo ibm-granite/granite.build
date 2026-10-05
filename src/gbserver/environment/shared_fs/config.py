@@ -30,6 +30,7 @@ class EfsConfig(Config):
     vpc_id: Optional[str] = None
     subnets: Optional[List[str]] = None
     security_group_id: Optional[str] = None
+    access_point_id: Optional[str] = None
 
     @model_validator(mode="after")
     def _require_target(self) -> "EfsConfig":
@@ -57,6 +58,19 @@ class EfsConfig(Config):
                 raise ValueError(
                     "efs: 'region' is required with 'file_system_id' (to derive the "
                     "nfs4-fallback DNS name); or set 'dns_name' explicitly"
+                )
+        if self.access_point_id:
+            if self.provision == "ephemeral":
+                raise ValueError(
+                    "efs: access_point_id is not supported for provision "
+                    "'ephemeral' (ephemeral EFS is single-tenant and needs no "
+                    "access point); see #396"
+                )
+            if not self.file_system_id:
+                raise ValueError(
+                    "efs: access_point_id requires file_system_id (an access "
+                    "point names a specific filesystem; a dns_name-only mount "
+                    "cannot select one)"
                 )
         if (
             self.cleanup_zone
