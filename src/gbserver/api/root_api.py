@@ -30,7 +30,6 @@ from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
 from gbserver.api.autotunex_proxy import AUTOTUNEX_URL
-from gbserver.api.autotunex_proxy import aclose_client as _autotunex_aclose_client
 from gbserver.api.autotunex_proxy import router as autotunex_router
 from gbserver.api.builds import builds_api
 from gbserver.api.environment_files import files_api
@@ -254,9 +253,3 @@ async def _start_background_tasks():
             logger.info(
                 "Event publishing enabled (NATS mode) — no credential cleanup needed"
             )
-
-
-@root_api.on_event("shutdown")
-async def _close_autotunex_client():
-    """Close the AutoTuneX proxy's shared httpx client."""
-    await _autotunex_aclose_client()

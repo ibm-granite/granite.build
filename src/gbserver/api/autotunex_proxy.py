@@ -95,14 +95,6 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def aclose_client() -> None:
-    """Close the shared AsyncClient (called from root_api shutdown)."""
-    global _client
-    if _client is not None:
-        await _client.aclose()
-        _client = None
-
-
 def _rewrite_location(value: str) -> str:
     """Map an upstream Location back into the public ``/api/autotunex/*`` space.
 
