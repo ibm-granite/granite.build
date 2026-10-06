@@ -776,6 +776,10 @@ def test_access_point_cleanup_script_installs_efs_utils_before_mount():
     assert sh.startswith("set -eu\n")
     assert sh.index(clone) < sh.index("accesspoint=fsap-0abc123,tls")
     assert sh.index(clone) < sh.index("rm -rf ")
+    # Every efs-utils apt-get call waits for the dpkg lock instead of aborting.
+    apt_lines = [ln for ln in sh.splitlines() if "noninteractive apt-get" in ln]
+    assert len(apt_lines) == 3
+    assert all("-o DPkg::Lock::Timeout=120" in ln for ln in apt_lines)
     _bash_ok(sh)
 
 

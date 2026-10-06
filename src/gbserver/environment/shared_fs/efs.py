@@ -40,18 +40,21 @@ _EFS_UTILS_VERSION = "v1.35.2"
 # auto-install -- their access-point mount fails fast when mount.efs is missing.
 # apt hosts build the .deb from github.com/aws/efs-utils (Ubuntu ships no
 # amazon-efs-utils package); yum hosts (Amazon Linux) install the distro package.
+# The installs wait up to 120s for the dpkg lock rather than abort the reap if
+# something else on a freshly booted VM still holds it.
+_APT_GET = "$SUDO env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120"
 _INSTALL_EFS_UTILS = (
     "if ! command -v mount.efs >/dev/null 2>&1; then\n"
     "  if command -v apt-get >/dev/null 2>&1; then\n"
-    "    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq\n"
-    "    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git "
+    f"    {_APT_GET} update -qq\n"
+    f"    {_APT_GET} install -y -qq git "
     "ca-certificates binutils build-essential debhelper dh-make nfs-common "
     "stunnel4 python3\n"
     '    __gb_efs="$(mktemp -d)"\n'
     f"    git clone --depth 1 --branch {_EFS_UTILS_VERSION} "
     'https://github.com/aws/efs-utils "$__gb_efs"\n'
     '    (cd "$__gb_efs" && $SUDO ./build-deb.sh)\n'
-    "    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+    f"    {_APT_GET} install -y -qq "
     '"$__gb_efs"/build/amazon-efs-utils*.deb\n'
     "  else\n"
     "    $SUDO yum install -y -q amazon-efs-utils\n"
