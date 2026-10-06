@@ -61,7 +61,12 @@ from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
-pytestmark = pytest.mark.standalone
+# These run the Bash environment in-process, which refuses to start outside
+# STANDALONE; the test suite runs as GB_ENVIRONMENT=DEV.
+pytestmark = [
+    pytest.mark.standalone,
+    pytest.mark.usefixtures("allow_bash_environment"),
+]
 
 logger = get_logger(__name__)
 

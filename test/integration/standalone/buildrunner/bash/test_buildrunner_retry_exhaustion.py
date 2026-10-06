@@ -48,7 +48,12 @@ from gbserver.buildwatcher.buildwatcher import BuildWatcher
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.status import Status
 
-pytestmark = pytest.mark.standalone
+# These run the Bash environment in-process, which refuses to start outside
+# STANDALONE; the test suite runs as GB_ENVIRONMENT=DEV.
+pytestmark = [
+    pytest.mark.standalone,
+    pytest.mark.usefixtures("allow_bash_environment"),
+]
 
 # Statuses that mean the build is still in flight; it has "settled" only once it
 # is in none of these. A retry re-runs the same build in place as RUNNING, so
