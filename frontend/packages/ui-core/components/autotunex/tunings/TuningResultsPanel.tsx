@@ -11,13 +11,15 @@ import {
   Button,
   Link as CarbonLink,
 } from '@carbon/react'
-import { Download } from '@carbon/icons-react'
+import { Download, Launch } from '@carbon/icons-react'
 import { useQuery } from '@tanstack/react-query'
 import axios from 'axios'
-import { getJobAssets, resultArchiveUrl, resultFileUrl } from '../../../api/autotunex'
+import { getJob, getJobAssets, resultArchiveUrl, resultFileUrl } from '../../../api/autotunex'
 import { useAutotunexIsAdmin } from '../../../hooks/useAutotunexIsAdmin'
 import type { TuningStatus } from '../../../types'
 import { formatBytes } from '../../../lib/autotunex/formatBytes'
+import { tuningHfArtifactUri } from '../../../lib/autotunex/hfFilesUrl'
+import { getHuggingFaceUrl } from '../../LineageGraph/diagramUtilities'
 
 function formatModified(modified: string | null): string {
   if (!modified) return '—'
@@ -48,6 +50,20 @@ export function TuningResultsPanel({ jobId, jobStatus }: Props) {
     queryFn: () => getJobAssets(jobId, scope),
     enabled,
   })
+
+  // The full job, for its tuning task's artifact_uri -- the repo the assets above
+  // are listed from. The build page only holds the build-id lookup's JobDetail,
+  // which carries no `tasks`. Same key and scope as the tuning detail page's own
+  // job query, so there React Query serves it from cache.
+  const { data: fullJob } = useQuery({
+    queryKey: ['autotunex-job', jobId, isAdmin],
+    queryFn: () => getJob(jobId, scope),
+    enabled,
+  })
+  const hfUri = tuningHfArtifactUri(fullJob?.tasks)
+  const hfRepoUrl = hfUri ? getHuggingFaceUrl(hfUri) : null
+  // "Files and versions". The URI names no revision; `main` is where gbserver pushes.
+  const hfFilesUrl = hfRepoUrl ? `${hfRepoUrl}/tree/main` : null
 
   if (!enabled) {
     return (
@@ -103,9 +119,16 @@ export function TuningResultsPanel({ jobId, jobStatus }: Props) {
         }}
       >
         <h5 style={{ margin: 0 }}>Output assets</h5>
-        <Button kind="tertiary" size="sm" renderIcon={Download} href={resultArchiveUrl(jobId, scope)}>
-          Download all
-        </Button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {hfFilesUrl && (
+            <Button kind="tertiary" size="sm" renderIcon={Launch} href={hfFilesUrl} target="_blank" rel="noopener noreferrer">
+              View in HuggingFace
+            </Button>
+          )}
+          <Button kind="tertiary" size="sm" renderIcon={Download} href={resultArchiveUrl(jobId, scope)}>
+            Download all
+          </Button>
+        </div>
       </div>
       <StructuredListWrapper>
         <StructuredListHead>
