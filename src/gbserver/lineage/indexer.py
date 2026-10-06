@@ -54,6 +54,7 @@ from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.jobstats import (
     LINEAGE_PROVIDER_DB,
     LINEAGE_PROVIDER_NONE,
+    LINEAGE_PROVIDER_WANDB,
     _resolve_lineage_provider,
 )
 from gbserver.lineage.lineage_reconciler import (
@@ -75,10 +76,28 @@ logger = get_logger(__name__)
 INDEXER_SOURCE_ADMIN_DB = "admin_db"
 INDEXER_SOURCE_LINEAGE_STORE = "lineage_store"
 
-# One key for both sources: the source is fixed by the startup mode, and the
-# value has the same shape either way. Separate from every lineage-watch key.
-INDEXER_CHECKPOINT_KEY = "lineage_index_checkpoint"
+# Checkpoint keys are per-source to avoid mixing their different sync semantics.
+# The key is determined by which provider/source is being indexed from.
+# These are separate from every lineage-watch key.
+INDEXER_CHECKPOINT_PREFIX = "lineage_index_checkpoint"
 INDEXER_CHECKPOINT_VERSION = 1
+
+
+def _checkpoint_key_for_provider(provider: str) -> str:
+    """Build the checkpoint key for a lineage provider.
+
+    The provider determines which source data we're reading from, and thus
+    which checkpoint key to use. For lineage_store source, the provider is
+    either wandb or db (db is a no-op, but we track it anyway).
+    """
+    if provider == LINEAGE_PROVIDER_NONE:
+        # admin_db source (standalone)
+        return f"{INDEXER_CHECKPOINT_PREFIX}:none"
+    if provider == LINEAGE_PROVIDER_DB:
+        return f"{INDEXER_CHECKPOINT_PREFIX}:db"
+    if provider == LINEAGE_PROVIDER_WANDB:
+        return f"{INDEXER_CHECKPOINT_PREFIX}:wandb"
+    return INDEXER_CHECKPOINT_PREFIX  # fallback
 
 # Attempts at one job before it is skipped. The scan stops at a failing job
 # rather than stepping past it, so without a bound one unreadable job would pin
@@ -221,21 +240,27 @@ class JobLineageIndexer:
 
     # -- Checkpoint ----------------------------------------------------------
 
-    @staticmethod
-    def read_checkpoint(storage: SingletonAdminStorage) -> Optional[dict]:
-        value = storage.kv_pair_storage.get_value(INDEXER_CHECKPOINT_KEY)
+    def _get_checkpoint_key(self) -> str:
+        """Get the checkpoint key for this indexer's provider."""
+        provider = _resolve_lineage_provider()
+        return _checkpoint_key_for_provider(provider)
+
+    def read_checkpoint(self, storage: SingletonAdminStorage) -> Optional[dict]:
+        key = self._get_checkpoint_key()
+        value = storage.kv_pair_storage.get_value(key)
         if not value or not value.get("timestamp"):
             return None
         return value
 
-    @staticmethod
     def _write_timestamp(
+        self,
         storage: SingletonAdminStorage,
         timestamp: str,
         item_ids: Optional[List[str]] = None,
     ) -> None:
+        key = self._get_checkpoint_key()
         storage.kv_pair_storage.set_value(
-            INDEXER_CHECKPOINT_KEY,
+            key,
             {
                 "timestamp": timestamp,
                 "item_ids": list(item_ids or []),
@@ -261,10 +286,11 @@ class JobLineageIndexer:
         """
         existing = self.read_checkpoint(storage)
         if existing is not None:
+            key = self._get_checkpoint_key()
             logger.info(
                 "Lineage index checkpoint %s already exists (%s); ignoring the "
                 "requested seed (%s).",
-                INDEXER_CHECKPOINT_KEY,
+                key,
                 existing,
                 spec,
             )
@@ -289,9 +315,10 @@ class JobLineageIndexer:
                 ) from exc
             timestamp = self._format_timestamp(instant)
         self._write_timestamp(storage, timestamp)
+        key = self._get_checkpoint_key()
         logger.info(
             "Seeded lineage index checkpoint %s at %s.",
-            INDEXER_CHECKPOINT_KEY,
+            key,
             timestamp,
         )
         return True

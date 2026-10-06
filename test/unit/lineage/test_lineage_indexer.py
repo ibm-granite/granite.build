@@ -69,8 +69,10 @@ def _indexer(runs):
     return ix, api, sink
 
 
-def _checkpoint(storage):
-    return storage.kv_pair_storage.values.get(idx.INDEXER_CHECKPOINT_KEY)
+def _checkpoint(storage, provider="wandb"):
+    """Get the checkpoint for a provider. Defaults to wandb for W&B tests."""
+    key = idx._checkpoint_key_for_provider(provider)
+    return storage.kv_pair_storage.values.get(key)
 
 
 @pytest.fixture(autouse=True)
@@ -269,7 +271,8 @@ def test_seed_never_overwrites_and_all_writes_nothing():
     storage = _storage()
     assert ix.seed_if_absent(storage, "all") is False
     assert storage.kv_pair_storage.values == {}
-    storage.kv_pair_storage.set_value(idx.INDEXER_CHECKPOINT_KEY, {"timestamp": D1})
+    key = idx._checkpoint_key_for_provider("wandb")
+    storage.kv_pair_storage.set_value(key, {"timestamp": D1})
     assert ix.seed_if_absent(storage, D2) is False
     assert _checkpoint(storage)["timestamp"] == D1
     api.runs.assert_not_called()
@@ -330,36 +333,40 @@ def test_targets_are_indexed_oldest_first_across_builds():
         [_target("t2", 2, build_id="b2"), _target("t1", 1, build_id="b1")]
     )
     with page:
-        assert ix.scan_once(storage) == 2
+        with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+            assert ix.scan_once(storage) == 2
     assert [
         c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
     ] == ["t1", "t2"]
-    assert _checkpoint(storage)["timestamp"] == _ts(2)
+    assert _checkpoint(storage, provider="none")["timestamp"] == _ts(2)
 
 
 def test_targets_behind_the_checkpoint_are_not_read():
     storage = _storage()
     mark = {"timestamp": _ts(60), "item_ids": ["at"], "version": 1}
-    storage.kv_pair_storage.set_value(idx.INDEXER_CHECKPOINT_KEY, dict(mark))
+    key = idx._checkpoint_key_for_provider("none")
+    storage.kv_pair_storage.set_value(key, dict(mark))
     ix, sink, page = _target_indexer(
         [_target("old", 58), _target("at", 60), _target("tie", 60), _target("new", 61)]
     )
     with page:
-        assert ix.scan_once(storage) == 2
+        with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+            assert ix.scan_once(storage) == 2
     ids = [
         c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
     ]
     # "at" is listed as done on the mark; "tie" shares its instant and is not.
     assert ids == ["tie", "new"]
-    assert _checkpoint(storage)["timestamp"] == _ts(61)
-    assert _checkpoint(storage)["item_ids"] == ["new"]
+    assert _checkpoint(storage, provider="none")["timestamp"] == _ts(61)
+    assert _checkpoint(storage, provider="none")["item_ids"] == ["new"]
 
 
 def test_target_scan_reads_past_a_page_that_reaches_the_checkpoint():
     """A newer row on a later page (SQLite text order) must still be read."""
     storage = _storage()
+    key = idx._checkpoint_key_for_provider("none")
     storage.kv_pair_storage.set_value(
-        idx.INDEXER_CHECKPOINT_KEY, {"timestamp": _ts(60), "item_ids": []}
+        key, {"timestamp": _ts(60), "item_ids": []}
     )
     ix = idx.TargetLineageIndexer(sink=MagicMock())
     ix._sink.row_storage.has_rows_for_job.return_value = False
@@ -370,8 +377,9 @@ def test_target_scan_reads_past_a_page_that_reaches_the_checkpoint():
         "_successful_targets_page",
         side_effect=lambda storage, i: pages[i] if i < len(pages) else [],
     ):
-        assert ix.scan_once(storage) == 1
-    assert _checkpoint(storage)["item_ids"] == ["missorted"]
+        with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+            assert ix.scan_once(storage) == 1
+    assert _checkpoint(storage, provider="none")["item_ids"] == ["missorted"]
 
 
 def test_already_indexed_and_artifactless_targets_are_not_rewritten():
@@ -381,9 +389,10 @@ def test_already_indexed_and_artifactless_targets_are_not_rewritten():
         indexed={"done"},
     )
     with page:
-        assert ix.scan_once(storage) == 1
+        with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+            assert ix.scan_once(storage) == 1
     sink.add_jobstats_for_build_target.assert_called_once()
-    assert _checkpoint(storage)["timestamp"] == _ts(3)
+    assert _checkpoint(storage, provider="none")["timestamp"] == _ts(3)
 
 
 # -- gb_targets seeding -----------------------------------------------------
@@ -393,16 +402,19 @@ def test_target_seed_by_timestamp_keeps_its_offset():
     """gb_targets' form: the aware isoformat, never rewritten to UTC."""
     storage = _storage()
     ix, _, _ = _target_indexer([])
-    assert ix.seed_if_absent(storage, "2026-01-01T02:05:00+02:00") is True
-    assert _checkpoint(storage)["timestamp"] == "2026-01-01T02:05:00+02:00"
+    with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+        assert ix.seed_if_absent(storage, "2026-01-01T02:05:00+02:00") is True
+    assert _checkpoint(storage, provider="none")["timestamp"] == "2026-01-01T02:05:00+02:00"
 
 
 def test_target_seed_indexes_from_that_instant_inclusive():
     storage = _storage()
     ix, sink, page = _target_indexer([_target("t1", 1), _target("t2", 5)])
-    ix.seed_if_absent(storage, _ts(5))
+    with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+        ix.seed_if_absent(storage, _ts(5))
     with page:
-        ix.scan_once(storage)
+        with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+            ix.scan_once(storage)
     indexed = [
         c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
     ]
@@ -413,15 +425,17 @@ def test_target_seed_from_latest_takes_newest_finished():
     storage = _storage()
     ix, _, page = _target_indexer([_target("t1", 1), _target("t2", 2)])
     with page:
-        assert ix.seed_if_absent(storage, "from-latest") is True
-    assert _checkpoint(storage)["timestamp"] == _ts(2)
+        with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+            assert ix.seed_if_absent(storage, "from-latest") is True
+    assert _checkpoint(storage, provider="none")["timestamp"] == _ts(2)
 
 
 def test_target_seed_naive_timestamp_is_read_as_local():
     storage = _storage()
     ix, _, _ = _target_indexer([])
-    ix.seed_if_absent(storage, "2026-01-01T00:00:00")
-    stored = datetime.fromisoformat(_checkpoint(storage)["timestamp"])
+    with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+        ix.seed_if_absent(storage, "2026-01-01T00:00:00")
+    stored = datetime.fromisoformat(_checkpoint(storage, provider="none")["timestamp"])
     assert stored.tzinfo is not None
     assert stored.replace(tzinfo=None) == datetime(2026, 1, 1)
 
