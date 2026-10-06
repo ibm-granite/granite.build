@@ -373,6 +373,122 @@ def make_skypilot_env(config):
     return Skypilot(event_q=event_q, environment_config=ec)
 
 
+class _StubJobStatus:
+    """Minimal stand-in for sky.JobStatus whose str() matches the production
+    comparison ``str(status) != "JobStatus.SUCCEEDED"``."""
+
+    def __init__(self, name):
+        self._name = name
+
+    def __str__(self):
+        return f"JobStatus.{self._name}"
+
+
+def _provider_teardown_sky(
+    monkeypatch, launch_result, get_return=None, get_side_effect=None
+):
+    """Build a provider-backed Skypilot env and a mocked ``sky`` whose cleanup
+    VM launch returns ``launch_result`` (the (job_id, handle) tuple) and whose
+    ``sky.get`` of the job status returns ``get_return`` (or raises)."""
+
+    class _Prov:
+        mount_point = "/mnt/gb-shared"
+
+        def cleanup_run_script(self, workdir):
+            return f"rm -rf {workdir}"
+
+        def cleanup_zone(self):
+            return "us-east-1a"
+
+    monkeypatch.setattr(
+        "gbserver.environment.skypilot.build_providers", lambda cfg: [_Prov()]
+    )
+    env = make_skypilot_env(
+        {
+            "shared_filesystem": {
+                "provider": "efs",
+                "mount_point": "/mnt/gb-shared",
+                "efs": {
+                    "file_system_id": "fs-1",
+                    "region": "us-east-1",
+                    "cleanup_zone": "us-east-1a",
+                },
+            },
+            "shared_workdir": "/mnt/gb-shared/gbroot",
+        }
+    )
+    env._setup_workdirs["sid"] = "/mnt/gb-shared/gbroot/builds/b1/runs/r1"
+    env._setup_run_meta["sid"] = {
+        "target_name": "t",
+        "build_id": "b1",
+        "build_config_name": "c",
+    }
+    mock_sky = MagicMock()
+    mock_sky.Resources = MagicMock(return_value=MagicMock())
+    mock_sky.Task = MagicMock(return_value=MagicMock())
+    mock_sky.launch = MagicMock(return_value="req-launch")
+    mock_sky.stream_and_get = MagicMock(return_value=launch_result)
+    mock_sky.job_status = MagicMock(return_value="req-status")
+    mock_sky.get = MagicMock(return_value=get_return, side_effect=get_side_effect)
+    return env, mock_sky
+
+
+class TestCleanupJobStatusChecked:
+    """The reap VM's run script failing exits the job non-zero, which
+    ``sky.stream_and_get`` does NOT raise on (it returns (job_id, handle)).
+    Teardown must poll the job's final status so a reap that mounted but failed
+    (e.g. a failed rm) is surfaced as an ORPHANED tree, not silently dropped."""
+
+    @pytest.mark.asyncio
+    async def test_failed_cleanup_job_surfaces_orphan(self, monkeypatch, caplog):
+        env, mock_sky = _provider_teardown_sky(
+            monkeypatch,
+            launch_result=(7, object()),
+            get_return={7: _StubJobStatus("FAILED")},
+        )
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            caplog.at_level("WARNING"),
+        ):
+            await env.teardown_skypilot("sid")
+        mock_sky.job_status.assert_called_once()
+        assert "/mnt/gb-shared/gbroot/builds/b1/runs/r1" in caplog.text
+        assert "ORPHAN" in caplog.text.upper()
+
+    @pytest.mark.asyncio
+    async def test_succeeded_cleanup_job_raises_no_orphan(self, monkeypatch, caplog):
+        env, mock_sky = _provider_teardown_sky(
+            monkeypatch,
+            launch_result=(7, object()),
+            get_return={7: _StubJobStatus("SUCCEEDED")},
+        )
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            caplog.at_level("WARNING"),
+        ):
+            await env.teardown_skypilot("sid")
+        assert "ORPHAN" not in caplog.text.upper()
+
+    @pytest.mark.asyncio
+    async def test_unconfirmable_status_is_tolerated(self, monkeypatch, caplog):
+        # down=True autodowns the cleanup VM right after the job; a status poll
+        # that finds the cluster already gone must NOT be read as a failed reap.
+        env, mock_sky = _provider_teardown_sky(
+            monkeypatch,
+            launch_result=(7, object()),
+            get_side_effect=RuntimeError("Cluster 'gb-td-sid' does not exist"),
+        )
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            caplog.at_level("WARNING"),
+        ):
+            await env.teardown_skypilot("sid")
+        assert "ORPHAN" not in caplog.text.upper()
+
+
 class TestTeardownWithProvider:
     @pytest.mark.asyncio
     async def test_teardown_runs_cleanup_script_and_warns_on_failure(

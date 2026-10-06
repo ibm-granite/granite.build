@@ -2061,7 +2061,36 @@ class Skypilot(Environment):
                 idle_minutes_to_autostop=0,
                 down=True,
             )
-            await asyncio.to_thread(sky.stream_and_get, request_id)
+            launch_result = await asyncio.to_thread(sky.stream_and_get, request_id)
+            # stream_and_get returns (job_id, handle) and does NOT raise when the
+            # reap script exits non-zero -- that only shows up as a non-SUCCEEDED
+            # job status. Poll it once so a reap that mounted but failed (e.g. a
+            # failed rm, or mount.efs missing in AP mode) is surfaced below as an
+            # ORPHANED tree rather than dropped silently. down=True autodowns the
+            # VM right after, so a status poll that finds the cluster already gone
+            # is not an error: the job ran to completion, just unconfirmably.
+            job_id = launch_result[0] if isinstance(launch_result, tuple) else None
+            if job_id is not None:
+                try:
+                    status_req = await asyncio.to_thread(
+                        lambda: sky.job_status(cluster_name, job_ids=[job_id])
+                    )
+                    statuses = await asyncio.to_thread(sky.get, status_req)
+                except Exception as status_err:
+                    logger.debug(
+                        "teardown_skypilot: could not confirm cleanup job %s on "
+                        "%s (likely already autodowned): %s",
+                        job_id,
+                        cluster_name,
+                        status_err,
+                    )
+                else:
+                    status = statuses.get(job_id) if statuses else None
+                    if status is not None and str(status) != "JobStatus.SUCCEEDED":
+                        raise RuntimeError(
+                            f"cleanup job {job_id} ended {status} (reap script "
+                            "exited non-zero); per-run tree may be partly removed"
+                        )
         except Exception as e:  # don't fail a finished build for cleanup
             # Make an orphaned per-run tree visible so it can be reaped (see the
             # teardown notes in docs/environments/skypilot-aws.md). For OSError,
