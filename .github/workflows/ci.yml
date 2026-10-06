@@ -65,10 +65,7 @@ jobs:
 
       # No Node version is pinned anywhere in the repo (no .nvmrc/.node-version, no
       # engines field), so this is a fresh choice: 22 is the active LTS, and 20 went
-      # end-of-life in April 2026. The floor is hard rather than stylistic: the
-      # standalone tests `require()` the workspace's .ts sources and rely on Node's
-      # built-in type stripping, which is only on by default from 22.18. "22"
-      # resolves to the latest 22.x and so satisfies that — do not pin below 22.18.
+      # end-of-life in April 2026.
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
