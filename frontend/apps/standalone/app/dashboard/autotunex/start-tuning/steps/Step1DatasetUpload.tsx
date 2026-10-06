@@ -731,7 +731,8 @@ export function Step1DatasetUpload({
   const showColumnMapping = uploadedFile && parsedData.length > 0 && userColumns.length > 0 && !existingDatasetId
   const sortedColumns = [...allColumns].sort((a, b) => Number(b.required) - Number(a.required))
 
-  const previewCrop = previewCropProps(cropMode)
+  // An existing dataset is already in its final shape -- there is no mapping to show.
+  const previewTableProps = { ...previewCropProps(cropMode), columnMapping: existingDatasetId ? undefined : columnMapping }
   const cropSwitcher = <PreviewCropSwitcher value={cropMode} onChange={setCropMode} />
 
   return (
@@ -1008,6 +1009,7 @@ export function Step1DatasetUpload({
               {/* A frozen import shows the samples it was approved against, with no new request. */}
               <HfImportPreview
                 preview={pendingHfImport ? pendingHfImport.preview : hf.preview}
+                mapping={pendingHfImport ? pendingHfImport.payload.column_mapping : hf.mapping}
               />
             </Tile>
           ) : previewRows.length > 0 && previewHeaders.length > 0 ? (
@@ -1023,10 +1025,10 @@ export function Step1DatasetUpload({
                   </div>
                   <TabPanels>
                     <TabPanel style={{ padding: '0.5rem 0' }}>
-                      <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} {...previewCrop} />
+                      <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} {...previewTableProps} />
                     </TabPanel>
                     <TabPanel style={{ padding: '0.5rem 0' }}>
-                      <PreviewTable headers={valPreviewHeaders} rows={valPreviewRows} maxRows={15} {...previewCrop} />
+                      <PreviewTable headers={valPreviewHeaders} rows={valPreviewRows} maxRows={15} {...previewTableProps} />
                     </TabPanel>
                   </TabPanels>
                 </Tabs>
@@ -1046,7 +1048,7 @@ export function Step1DatasetUpload({
                       {`Split: ${trainRecordCount.toLocaleString()} train, ${validationRecordCount.toLocaleString()} validation. The validation records are picked at random when the dataset is created, so they can't be previewed here.`}
                     </p>
                   )}
-                  <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} {...previewCrop} />
+                  <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} {...previewTableProps} />
                 </>
               )}
             </Tile>

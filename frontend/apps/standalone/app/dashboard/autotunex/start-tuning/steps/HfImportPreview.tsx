@@ -9,9 +9,11 @@ const PREVIEW_ROWS = 10
 
 interface HfImportPreviewProps {
   preview: HfPreview | null
+  /** Target -> source; shown under each mapped column's header. */
+  mapping: Record<string, string>
 }
 
-export function HfImportPreview({ preview }: HfImportPreviewProps) {
+export function HfImportPreview({ preview, mapping }: HfImportPreviewProps) {
   const [cropMode, setCropMode] = useState<CropMode>('start')
 
   if (!preview) return null
@@ -41,6 +43,7 @@ export function HfImportPreview({ preview }: HfImportPreviewProps) {
         rows={preview.raw_rows}
         maxRows={PREVIEW_ROWS}
         {...previewCropProps(cropMode)}
+        columnMapping={mapping}
         emptyMessage="This split returned no rows."
       />
     </>

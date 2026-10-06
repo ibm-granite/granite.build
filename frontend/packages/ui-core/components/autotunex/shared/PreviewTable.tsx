@@ -20,6 +20,11 @@ interface PreviewTableProps {
   maxCellChars?: number
   /** Which end of the cell text maxCellChars keeps. Default 'start'. */
   cropFrom?: 'start' | 'end'
+  /**
+   * Target -> source column. A source column's header gets a second line naming
+   * the target(s) it maps to. Blank sources are ignored.
+   */
+  columnMapping?: Record<string, string>
   /** Rendered in place of the table when there is nothing to show. */
   emptyMessage?: string
 }
@@ -30,12 +35,21 @@ export function PreviewTable({
   maxRows,
   maxCellChars,
   cropFrom,
+  columnMapping,
   emptyMessage,
 }: PreviewTableProps) {
   const resolvedHeaders = useMemo<PreviewTableHeader[]>(() => {
     if (headers) return headers
     return derivePreviewHeaders(rows)
   }, [headers, rows])
+
+  const targetsBySource = useMemo(() => {
+    const out: Record<string, string[]> = {}
+    for (const [target, source] of Object.entries(columnMapping ?? {})) {
+      if (source) (out[source] ??= []).push(target)
+    }
+    return out
+  }, [columnMapping])
 
   if (rows.length === 0 || resolvedHeaders.length === 0) {
     return emptyMessage ? (
@@ -51,7 +65,14 @@ export function PreviewTable({
         <TableHead>
           <TableRow>
             {resolvedHeaders.map((header) => (
-              <TableHeader key={header.key}>{header.header}</TableHeader>
+              <TableHeader key={header.key}>
+                {header.header}
+                {targetsBySource[header.key] && (
+                  <div style={{ fontWeight: 400, color: 'var(--cds-text-secondary, #525252)' }}>
+                    → {targetsBySource[header.key].join(', ')}
+                  </div>
+                )}
+              </TableHeader>
             ))}
           </TableRow>
         </TableHead>
