@@ -520,7 +520,7 @@ export function Step2Configure({
                   <div className={styles.leftPanelActions}>
                     <Button size="sm" kind="ghost" onClick={cancelEditMode}>Cancel</Button>
                     <Button size="sm" kind="primary" disabled={isLoadingEditConfig || (needsSaveAs && !editConfigName.trim())} onClick={confirmConfigEdit}>
-                      {needsSaveAs ? 'Confirm as New' : 'Confirm'}
+                      {needsSaveAs ? 'Save as New' : 'Save'}
                     </Button>
                   </div>
                 </>
