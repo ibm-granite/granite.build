@@ -219,8 +219,11 @@ cross-deletion. Two steps that *rewrite the same file* as different uids still n
 >
 > This `1777` shared-scratch model applies only to mounts without an
 > `access_point_id`. Configure a per-space EFS access point (see
-> "Per-space isolation with EFS access points" below) to give each space an
-> isolated, uid/gid-pinned root with no cross-build read/write.
+> "Per-space isolation with EFS access points" below) to give each space its own
+> uid/gid-pinned root with no world-writable bootstrap. An access point alone does
+> not *enforce* the boundary: a client that can reach a mount target can still
+> mount the filesystem root over NFS or name another space's access point. See the
+> enforcement note in that section.
 
 ### Per-space isolation with EFS access points (recommended for multi-tenant BYO)
 
@@ -254,7 +257,7 @@ that space's `environment.yaml`:
      efs:
        file_system_id: fs-0abc123
        region: us-east-1
-       access_point_id: fsap-0123456789abcdef0
+       access_point_id: fsap-0abc123
        tls: true
    ```
 
@@ -273,7 +276,37 @@ that space's `environment.yaml`:
   gbserver needs no AWS permissions for BYO access points — it only mounts through
   the configured id.
 - `access_point_id` is BYO-only; it is rejected for `provision: ephemeral`
-  (ephemeral EFS is single-tenant and needs no access point).
+  (ephemeral EFS is single-tenant and needs no access point). It must also match
+  the AWS `fsap-<hex>` format (lowercase hex), or validation rejects it.
+- `tls` must stay `true` (the default). amazon-efs-utils refuses `accesspoint`
+  without `tls`, so validation rejects `tls: false` together with
+  `access_point_id`.
+- Teardown: the throwaway cleanup VM that reaps the per-run tree runs SkyPilot's
+  default image, which has no `mount.efs`. For an access-point mount gbserver
+  therefore installs amazon-efs-utils v1.35.2 on that VM before reaping: built
+  from `github.com/aws/efs-utils` on apt hosts, or via `yum install
+  amazon-efs-utils` otherwise. That VM needs outbound access to the distro
+  mirrors and `github.com`. This applies to the gbserver-owned cleanup VM only;
+  worker steps never auto-install.
+- **Not yet supported: hidden pull/push steps.** buildrunner auto-queues hidden
+  steps for non-environment inputs/outputs (e.g. `hf://` → hfpull/hfpush,
+  `s3://` → s3pull/s3push). These run on images without `mount.efs` (the bare
+  default image, or `amazon/aws-cli`), so with an access point on the workdir
+  mount they fail fast. Until that is addressed (follow-up), use access points
+  only for builds whose steps all run in an image that bundles amazon-efs-utils.
+- **Enforcing the boundary.** An access point pins the uid/gid and the root
+  directory for clients that mount *through it*. By itself it does not stop a
+  client that can reach a mount target from mounting the filesystem root over
+  NFS, or from naming another space's access point. To enforce it:
+  - attach an EFS file-system policy that allows
+    `elasticfilesystem:ClientMount`/`ClientWrite` only through access points
+    (a condition on `elasticfilesystem:AccessPointArn`);
+  - keep each space's `environment.yaml` operator-controlled, so a space cannot
+    point itself at another space's access point.
+
+  Binding a space to *its own* access point by IAM identity needs IAM mount
+  authorization (`-o iam`) with per-space roles, which gbserver does not emit
+  today.
 
 ### Containerized steps
 
