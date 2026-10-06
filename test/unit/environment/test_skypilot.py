@@ -2062,6 +2062,8 @@ class _FakeProvider:
 class _WorkdirMount:
     def __init__(self, mp):
         self.mount_point = mp
+        # Mirrors SharedFilesystemConfig.efs; None => non-access-point mount.
+        self.efs = None
 
 
 def test_prologue_orders_mount_before_cd_and_chmods_1777():

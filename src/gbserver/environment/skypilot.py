@@ -1197,8 +1197,7 @@ def _compose_step_prologue(providers, resolved, workdir_mount, build_workdir):
     for p in providers:
         prologue += p.mount_prologue(dns_override=(resolved or {}).get(p.mount_point))
     if build_workdir and workdir_mount is not None:
-        efs = getattr(workdir_mount, "efs", None)
-        if getattr(efs, "access_point_id", None):
+        if workdir_mount.efs is not None and workdir_mount.efs.access_point_id:
             # Access-point mount: the AP pins a fixed PosixUser (uid/gid) and owns
             # the (operator-provisioned) RootDirectory, so every step runs as the
             # same uid and a plain mkdir -p suffices — no 1777 bootstrap / chmod
@@ -1212,6 +1211,11 @@ def _compose_step_prologue(providers, resolved, workdir_mount, build_workdir):
             mount_root = shlex.quote(workdir_mount.mount_point)
             prologue += (
                 'mkdir -p "$GB_LOCAL_SCRATCH"\n'
+                # Create the per-run tree world-writable ATOMICALLY (umask 000 in a
+                # subshell, so mkdir -p makes every new level 0777 with no 0755 gap) —
+                # a concurrent different-uid step in the same build can then create its
+                # own per-run dir immediately. The guarded chmod walk below adds the
+                # sticky bit (1777) and fixes any pre-existing level.
                 '(umask 000 && mkdir -p "$GB_BUILD_WORKDIR")\n'
                 '__gb_d="$GB_BUILD_WORKDIR"\n'
                 f'while [ "$__gb_d" != {mount_root} ] && [ "$__gb_d" != "/" ]; do\n'
