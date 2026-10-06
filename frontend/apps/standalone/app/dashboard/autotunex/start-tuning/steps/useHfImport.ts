@@ -26,7 +26,7 @@ import {
   type HfImportSnapshot,
   isDatasetNameValid,
   isMappingComplete,
-  mappedPreviewKey,
+  hfMappedPreview,
   NO_VALIDATION,
   probeMapping,
   problemDetail,
@@ -110,9 +110,7 @@ export interface UseHfImportResult {
   preview: HfImportPreview | null
   freshMappedPreview: HfImportPreview | null
   probeLoading: boolean
-  mappedLoading: boolean
   previewError: string
-  mappedPreviewError: string
 
   mapping: ColumnMapping
   setMapping: (next: ColumnMapping) => void
@@ -163,19 +161,13 @@ export function useHfImport({
   const [searching, setSearching] = useState(false)
 
   const [preview, setPreview] = useState<HfImportPreview | null>(null)
-  // Two independent booleans, each set and cleared by exactly one effect below --
-  // sharing one meant whichever request resolved first cleared the spinner while
-  // the other was still in flight. Both feed the same loading indicator in the
-  // JSX (`probeLoading || mappedLoading`); there is still only one render site.
+  // The repo/config/split the probe in `preview` was fetched for, so a result
+  // from a since-changed selection is never mapped as if it were the current
+  // one -- see `freshMappedPreview` below.
+  const [previewKey, setPreviewKey] = useState('')
   const [probeLoading, setProbeLoading] = useState(false)
-  const [mappedLoading, setMappedLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [mapping, setMapping] = useState<ColumnMapping>({})
-  // Tagged with the key it was fetched for (repo/config/split/mapping), so a
-  // stale result from a since-changed selection is never mistaken for a fresh
-  // one -- see `freshMappedPreview` below.
-  const [mappedPreview, setMappedPreview] = useState<{ key: string; preview: HfImportPreview } | null>(null)
-  const [mappedPreviewError, setMappedPreviewError] = useState('')
 
   const [aiSuggestion, setAiSuggestion] = useState<
     { confidence: number; reasoning: string } | null
@@ -185,14 +177,7 @@ export function useHfImport({
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const suggestTokenRef = useRef(0)
-  // Exclusive to the probe. The mapped-preview effect has always fired in the
-  // same commit as the probe on a repo/config/split change (it just went from
-  // incomplete to complete, or vice versa), so a shared counter let the mapped
-  // effect's token bump win and made the probe's own response fail its own
-  // staleness check -- see mappedTokenRef.
   const previewTokenRef = useRef(0)
-  // Exclusive to the mapped-preview effect, for the same reason in reverse.
-  const mappedTokenRef = useRef(0)
 
   const mappingComplete = isMappingComplete(mapping, requiredColumns)
   const mappingKey = JSON.stringify(mapping)
@@ -278,13 +263,10 @@ export function useHfImport({
     /**
      * The heuristic guess, applied only when the AI cannot supply a mapping.
      *
-     * Not applied eagerly, unlike the Upload path's heuristic effect, for two
-     * reasons: the form hides its mapping rows while `isAiSuggesting`, so an eager
-     * guess would never be seen; and here a complete mapping immediately triggers a
-     * mapped-preview request to the backend, so an eager guess would cost a second
-     * round trip that the AI's own answer then invalidates. Observable behaviour
-     * matches Upload either way -- the mapping is never left empty when the
-     * heuristic could fill it.
+     * Not applied eagerly, unlike the Upload path's heuristic effect: the form
+     * hides its mapping rows while `isAiSuggesting`, so an eager guess would never
+     * be seen. Observable behaviour matches Upload either way -- the mapping is
+     * never left empty when the heuristic could fill it.
      */
     const applyHeuristic = () => {
       if (isCurrent()) setMapping(suggestColumnMappingHeuristic(probe.columns, mappable))
@@ -374,6 +356,7 @@ export function useHfImport({
     // and flash its error before the real config arrives.
     if (!splits.configs[config]?.includes(trainSplit)) return
     const token = ++previewTokenRef.current
+    const key = [repoId, config, trainSplit].join('|')
     setProbeLoading(true)
     setPreviewError('')
     setPreview(null)
@@ -393,6 +376,7 @@ export function useHfImport({
       .then((result) => {
         if (previewTokenRef.current !== token) return
         setPreview(result)
+        setPreviewKey(key)
         // Fire-and-forget: it owns its own staleness check against the same token,
         // and awaiting it here would hold the probe's loading flag for the LLM's
         // full round trip.
@@ -423,52 +407,8 @@ export function useHfImport({
     setMapping((current) => pruneMapping(current, mappableColumnsRef.current))
   }, [mappableKey])
 
-  // The second preview: the real one. Fires only once every required column has a
-  // source, because the server counts survivors over the mapping's own keys -- a
-  // partial mapping would return a high number describing only the columns chosen
-  // so far. validation_split is null here for the same reason as in the probe.
-  useEffect(() => {
-    if (!active || !repoId || !config || !trainSplit || !mappingComplete) {
-      setMappedPreview(null)
-      setMappedPreviewError('')
-      return
-    }
-    // Same guard as the probe, and for the same reason: on switching datasets
-    // `splits` briefly holds the new repo's data while `config`/`trainSplit` still
-    // hold the previous repo's, which would fire a mapped request for a config the
-    // new repo does not have.
-    if (!splits || !splits.configs[config]?.includes(trainSplit)) {
-      setMappedPreviewError('')
-      return
-    }
-    const key = mappedPreviewKey({ repoId, config, trainSplit, mappingKey })
-    const token = ++mappedTokenRef.current
-    setMappedLoading(true)
-    setMappedPreviewError('')
-    previewHfDataset({
-      repo_id: repoId,
-      revision: splits.revision,
-      config,
-      train_split: trainSplit,
-      validation_split: null,
-      column_mapping: mapping,
-    })
-      .then((result) => {
-        if (mappedTokenRef.current !== token) return
-        setMappedPreview({ key, preview: result })
-      })
-      .catch((err) => {
-        if (mappedTokenRef.current !== token) return
-        setMappedPreviewError(problemDetail(err, 'Could not preview this mapping.'))
-      })
-      .finally(() => {
-        if (mappedTokenRef.current === token) setMappedLoading(false)
-      })
-  }, [active, repoId, splits, config, trainSplit, mappingComplete, mappingKey])
-
   function resetState() {
     previewTokenRef.current += 1
-    mappedTokenRef.current += 1
     suggestTokenRef.current += 1
     if (debounceRef.current) clearTimeout(debounceRef.current)
     setSuggestions([])
@@ -478,12 +418,10 @@ export function useHfImport({
     setTrainSplit('')
     setValidationSplit(NO_VALIDATION)
     setPreview(null)
+    setPreviewKey('')
     setProbeLoading(false)
-    setMappedLoading(false)
     setPreviewError('')
     setMapping({})
-    setMappedPreview(null)
-    setMappedPreviewError('')
     setValidationPercentage(HF_VALIDATION_PERCENTAGE)
     setName('')
     setAiSuggestion(null)
@@ -545,20 +483,28 @@ export function useHfImport({
 
   const splitsErrorStatus = hfErrorStatus(splitsError)
 
-  // `mappedPreview` is tagged with the key it was fetched for; a mismatch means
-  // the selection has since moved on (repo, config, split, or mapping) and the
-  // stored result describes a mapping that is no longer the current one. Reading
-  // through this rather than the raw state makes a stale survival count or a
-  // stale mapped-rows table structurally impossible, not merely cleared on one
-  // particular transition.
-  const currentMappedKey = mappedPreviewKey({ repoId: repoId ?? '', config, trainSplit, mappingKey })
-  const freshMappedPreview = mappedPreview?.key === currentMappedKey ? mappedPreview.preview : null
+  // The probe's sample seen through the current mapping -- computed here rather
+  // than by a second `/hf/preview` request, which would re-fetch the same rows
+  // (see `hfMappedPreview`). Built only once every required column has a source:
+  // survivors are counted over the mapping's own keys, so a partial mapping would
+  // report a high number describing only the columns chosen so far. `previewKey`
+  // must match the current selection: on a repo/config/split change, `preview`
+  // and `mapping` still hold the previous selection's values until the probe
+  // effect clears them, and mapping those would describe the wrong dataset.
+  const currentPreviewKey = [repoId ?? '', config, trainSplit].join('|')
+  const freshMappedPreview = useMemo(
+    () =>
+      preview && previewKey === currentPreviewKey && mappingComplete ? hfMappedPreview(preview, mapping) : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [preview, previewKey, currentPreviewKey, mappingComplete, mappingKey]
+  )
 
   const survival = survivalSummary({
     sampled: freshMappedPreview?.sampled ?? 0,
     survived: freshMappedPreview?.survived ?? 0,
-    // Not just mappingComplete: until the mapped preview has come back there is no
-    // count to describe, and the probe's own numbers must never be shown.
+    // Not just mappingComplete: until the probe has come back there is no count to
+    // describe, and the probe's own `survived` (over a blank mapping) must never
+    // be shown.
     mappingComplete: mappingComplete && freshMappedPreview !== null,
   })
 
@@ -624,9 +570,7 @@ export function useHfImport({
     preview,
     freshMappedPreview,
     probeLoading,
-    mappedLoading,
     previewError,
-    mappedPreviewError,
 
     mapping,
     setMapping,

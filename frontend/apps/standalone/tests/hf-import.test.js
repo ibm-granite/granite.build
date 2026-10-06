@@ -32,7 +32,7 @@ const {
   problemDetail,
   hfErrorStatus,
   pollStep,
-  mappedPreviewKey,
+  hfMappedPreview,
   canImport,
   pruneMapping,
   NO_VALIDATION,
@@ -404,29 +404,70 @@ describe('pollStep', () => {
   })
 })
 
-describe('mappedPreviewKey', () => {
-  const base = { repoId: 'vicgalle/alpaca-gpt4', config: 'default', trainSplit: 'train', mappingKey: '{"input":"instruction"}' }
-
-  it('is identical for identical inputs', () => {
-    assert.equal(mappedPreviewKey(base), mappedPreviewKey({ ...base }))
+// Mirrors AutoTuneX's hf_import.apply_mapping / survival_count and the preview
+// endpoint's "required = targets with a source" rule; these cases are the
+// backend's own tests (tests/services/test_hf_import.py,
+// tests/api/routers/test_hf_import.py). The import is what these numbers predict,
+// so a case that passes here and not there is a wrong Import gate.
+describe('hfMappedPreview', () => {
+  const probe = (raw_rows) => ({
+    revision: 'r',
+    columns: [],
+    raw_rows,
+    mapped_rows: [],
+    sampled: raw_rows.length,
+    survived: 0,
   })
 
-  it('differs when the mapping differs', () => {
-    assert.notEqual(mappedPreviewKey(base), mappedPreviewKey({ ...base, mappingKey: '{"input":"text"}' }))
+  it('projects and renames, dropping unmapped columns', () => {
+    const rows = [{ instruction: 'hi', response: 'yo', extra: 1 }]
+    const mapped = hfMappedPreview(probe(rows), { input: 'instruction', output: 'response' })
+    assert.deepEqual(mapped.mapped_rows, [{ input: 'hi', output: 'yo' }])
   })
 
-  it('differs when the config differs', () => {
-    assert.notEqual(mappedPreviewKey(base), mappedPreviewKey({ ...base, config: 'other' }))
+  it('skips a target whose source is absent from the row', () => {
+    const mapped = hfMappedPreview(probe([{ instruction: 'hi' }]), { input: 'instruction', output: 'nope' })
+    assert.deepEqual(mapped.mapped_rows, [{ input: 'hi' }])
   })
 
-  it('differs when the repoId differs', () => {
-    // Dropping repoId from the key is exactly the stale-read bug this key exists
-    // to prevent: two repos sharing a config/split/mapping would otherwise collide.
-    assert.notEqual(mappedPreviewKey(base), mappedPreviewKey({ ...base, repoId: 'other/repo' }))
+  it('counts only rows with a value for every mapped target', () => {
+    const rows = [{ instruction: 'a', response: 'b' }, { instruction: 'c' }, { instruction: 'd', response: '' }]
+    const mapped = hfMappedPreview(probe(rows), { input: 'instruction', output: 'response' })
+    assert.equal(mapped.survived, 1)
+    assert.equal(mapped.sampled, 3)
   })
 
-  it('differs when the trainSplit differs', () => {
-    assert.notEqual(mappedPreviewKey(base), mappedPreviewKey({ ...base, trainSplit: 'test' }))
+  it('counts null as missing', () => {
+    const rows = [{ instruction: 'a', response: null }]
+    assert.equal(hfMappedPreview(probe(rows), { input: 'instruction', output: 'response' }).survived, 0)
+  })
+
+  it('is zero when the source column is absent', () => {
+    assert.equal(hfMappedPreview(probe([{ a: 1 }, { a: 2 }]), { input: 'missing' }).survived, 0)
+  })
+
+  it('keeps legitimate falsy values', () => {
+    const rows = [{ instruction: 'x', response: 0 }, { instruction: 'y', response: false }, { instruction: 'z' }]
+    assert.equal(hfMappedPreview(probe(rows), { input: 'instruction', output: 'response' }).survived, 2)
+  })
+
+  it('does not require a target that has no source yet', () => {
+    const rows = [{ instruction: 'a' }, { instruction: 'b' }]
+    const mapped = hfMappedPreview(probe(rows), { input: 'instruction', output: '' })
+    assert.equal(mapped.survived, 2)
+    assert.deepEqual(Object.keys(mapped.mapped_rows[0]), ['input'])
+  })
+
+  it('is zero for an all-blank mapping, which the import refuses', () => {
+    assert.equal(hfMappedPreview(probe([{ a: 1 }]), { input: '', output: '' }).survived, 0)
+  })
+
+  it('keeps the probe\'s revision, columns and raw rows', () => {
+    const p = { ...probe([{ a: 1 }]), revision: 'abc', columns: ['a'] }
+    const mapped = hfMappedPreview(p, { input: 'a' })
+    assert.equal(mapped.revision, 'abc')
+    assert.deepEqual(mapped.columns, ['a'])
+    assert.equal(mapped.raw_rows, p.raw_rows)
   })
 })
 

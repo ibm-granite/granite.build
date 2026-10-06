@@ -328,14 +328,33 @@ export function pollStep(input: { status: string | undefined; expired: boolean }
   return 'wait'
 }
 
-/** Identity of a mapped preview: which repo, config, split and mapping produced it. */
-export function mappedPreviewKey(input: {
-  repoId: string
-  config: string
-  trainSplit: string
-  mappingKey: string
-}): string {
-  return [input.repoId, input.config, input.trainSplit, input.mappingKey].join('|')
+/**
+ * The probe's sample seen through `mapping`: what a second `/hf/preview` call
+ * with this mapping would return, without the round trip. The server re-fetches
+ * the same rows for that call and does nothing else with them, so it is computed
+ * here instead.
+ *
+ * Mirrors AutoTuneX's `hf_import.apply_mapping` and `survival_count` and must
+ * stay in step with them -- `survived` is the Import gate, and the import itself
+ * applies the server's rule. A target with a blank or absent source is skipped;
+ * only targets with a source are required; an all-blank mapping survives nothing.
+ */
+export function hfMappedPreview(probe: HfImportPreview, mapping: Record<string, string>): HfImportPreview {
+  const mapped_rows = probe.raw_rows.map((row) => {
+    const out: Record<string, unknown> = {}
+    for (const [target, source] of Object.entries(mapping)) {
+      if (source && Object.prototype.hasOwnProperty.call(row, source)) out[target] = row[source]
+    }
+    return out
+  })
+  const required = Object.entries(mapping)
+    .filter(([, source]) => source)
+    .map(([target]) => target)
+  const survived =
+    required.length === 0
+      ? 0
+      : mapped_rows.filter((row) => required.every((target) => row[target] != null && row[target] !== '')).length
+  return { ...probe, mapped_rows: mapped_rows as HfImportPreview['mapped_rows'], survived }
 }
 
 /**

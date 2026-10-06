@@ -224,7 +224,7 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
         </>
       )}
 
-      {(hf.probeLoading || hf.mappedLoading) && (
+      {hf.probeLoading && (
         <InlineLoading description="Loading sample rows..." />
       )}
 
@@ -233,19 +233,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
           kind="error"
           title="Could not preview this dataset"
           subtitle={hf.previewError}
-          lowContrast
-          hideCloseButton
-          className={styles.section}
-        />
-      )}
-
-      {/* Own state and own title: this error is about the mapped re-preview, not the
-          probe above. */}
-      {!!hf.mappedPreviewError && (
-        <InlineNotification
-          kind="error"
-          title="Could not preview this mapping"
-          subtitle={hf.mappedPreviewError}
           lowContrast
           hideCloseButton
           className={styles.section}
