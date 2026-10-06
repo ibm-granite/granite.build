@@ -257,7 +257,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
             />
           )}
 
-          <hr className={styles.sectionDivider} />
           <div className={styles.mappingHeaderRow}>
             <p className={styles.subheading} style={{ margin: 0 }}>
               Column mapping

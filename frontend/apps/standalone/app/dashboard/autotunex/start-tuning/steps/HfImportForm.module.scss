@@ -41,12 +41,6 @@
   margin: 0 0 0.5rem;
 }
 
-.sectionDivider {
-  border: none;
-  border-top: 1px solid var(--cds-border-subtle, #e0e0e0);
-  margin: 1.25rem 0;
-}
-
 /* Same grid as .mappingRow below, so the two column headings line up with the
    controls they label. */
 .mappingHeader {
@@ -79,10 +73,13 @@
   height: 2rem;
 }
 
+/* No divider above: the Dataset Name input's own underline already separates
+   the two, and a rule under it read as a doubled line. */
 .mappingHeaderRow {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  margin-top: 1.25rem;
   margin-bottom: 0.5rem;
 }
 
