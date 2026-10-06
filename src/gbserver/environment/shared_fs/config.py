@@ -3,7 +3,7 @@
 import os
 from typing import List, Literal, Optional
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from gbserver.types.config import Config
 
@@ -30,7 +30,9 @@ class EfsConfig(Config):
     vpc_id: Optional[str] = None
     subnets: Optional[List[str]] = None
     security_group_id: Optional[str] = None
-    access_point_id: Optional[str] = None
+    # AWS access-point ids are ``fsap-<hex>``; the id is interpolated into the
+    # mount command line, so reject anything else (e.g. shell metacharacters).
+    access_point_id: Optional[str] = Field(default=None, pattern=r"^fsap-[0-9a-f]+$")
 
     @model_validator(mode="after")
     def _require_target(self) -> "EfsConfig":
@@ -71,6 +73,11 @@ class EfsConfig(Config):
                     "efs: access_point_id requires file_system_id (an access "
                     "point names a specific filesystem; a dns_name-only mount "
                     "cannot select one)"
+                )
+            if not self.tls:
+                raise ValueError(
+                    "efs: access_point_id requires tls: true (amazon-efs-utils refuses "
+                    "to mount via an access point without tls)"
                 )
         if (
             self.cleanup_zone

@@ -69,11 +69,11 @@ class EfsProvider(SharedFilesystemProvider):
                     "shared_filesystem: access_point_id at "
                     f"{self.mount_point} requires file_system_id"
                 )
-            # Access-point mount: options combine accesspoint with optional tls.
-            # The AP binds a specific filesystem, so validation guarantees fsid.
-            opts = f"accesspoint={self.cfg.access_point_id}" + (
-                ",tls" if self.cfg.tls else ""
-            )
+            # Access-point mount: mount.efs requires tls with accesspoint (it
+            # refuses `-o accesspoint` alone), and validation enforces `tls: true`
+            # for access-point configs, so tls is always emitted here. The AP
+            # binds a specific filesystem, so validation guarantees fsid.
+            opts = f"accesspoint={self.cfg.access_point_id},tls"
             ap_cmd = (
                 f"$SUDO mount -t efs -o {opts} {shlex.quote(fsid + ':/')} {mp_quoted}"
             )

@@ -717,20 +717,28 @@ def test_access_point_mount_uses_accesspoint_and_fails_fast_without_efs_utils():
     _bash_ok(sh)
 
 
-def test_access_point_mount_without_tls_omits_tls_option():
-    p = EfsProvider(
-        "/mnt/x",
+def test_access_point_rejects_tls_false():
+    # amazon-efs-utils refuses `-o accesspoint=...` without `tls`, so reject the
+    # combination at config time rather than emit a mount line that always fails.
+    with pytest.raises(ValueError, match="requires tls"):
         EfsConfig(
-            file_system_id="fs-0abc",
+            file_system_id="fs-1",
             region="us-east-1",
-            access_point_id="fsap-9",
+            access_point_id="fsap-0abc123",
             tls=False,
-        ),
-    )
-    sh = p.mount_prologue()
-    assert "mount -t efs -o accesspoint=fsap-9 fs-0abc:/" in sh
-    assert ",tls" not in sh
-    _bash_ok(sh)
+        )
+
+
+@pytest.mark.parametrize("ap", ["fsap-0abc123", "fsap-0123456789abcdef0"])
+def test_access_point_id_format_accepted(ap):
+    cfg = EfsConfig(file_system_id="fs-1", region="us-east-1", access_point_id=ap)
+    assert cfg.access_point_id == ap
+
+
+@pytest.mark.parametrize("ap", ["fs-0abc123", "FSAP-0ABC", "fsap-0abc123;reboot"])
+def test_access_point_id_format_rejected(ap):
+    with pytest.raises(ValueError):
+        EfsConfig(file_system_id="fs-1", region="us-east-1", access_point_id=ap)
 
 
 def test_access_point_transit_note_is_none():
