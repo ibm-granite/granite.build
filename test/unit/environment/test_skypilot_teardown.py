@@ -488,6 +488,50 @@ class TestCleanupJobStatusChecked:
             await env.teardown_skypilot("sid")
         assert "ORPHAN" not in caplog.text.upper()
 
+    @pytest.mark.asyncio
+    async def test_running_then_succeeded_raises_no_orphan(self, monkeypatch, caplog):
+        # stream_and_get returns at submission, so the first poll sees the reap
+        # still RUNNING. A non-terminal status must NOT be read as failure; wait
+        # for the terminal SUCCEEDED. Regression for the real-AWS false positive.
+        monkeypatch.setattr(
+            "gbserver.environment.skypilot._CLEANUP_STATUS_POLL_INTERVAL_S", 0
+        )
+        env, mock_sky = _provider_teardown_sky(
+            monkeypatch,
+            launch_result=(7, object()),
+            get_side_effect=[
+                {7: _StubJobStatus("RUNNING")},
+                {7: _StubJobStatus("SUCCEEDED")},
+            ],
+        )
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            caplog.at_level("WARNING"),
+        ):
+            await env.teardown_skypilot("sid")
+        assert mock_sky.get.call_count == 2
+        assert "ORPHAN" not in caplog.text.upper()
+
+    @pytest.mark.asyncio
+    async def test_still_running_at_timeout_is_tolerated(self, monkeypatch, caplog):
+        # A reap that outlasts the wait budget is left unconfirmed, not orphaned.
+        monkeypatch.setattr(
+            "gbserver.environment.skypilot._CLEANUP_STATUS_TIMEOUT_S", 0
+        )
+        env, mock_sky = _provider_teardown_sky(
+            monkeypatch,
+            launch_result=(7, object()),
+            get_return={7: _StubJobStatus("RUNNING")},
+        )
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            caplog.at_level("WARNING"),
+        ):
+            await env.teardown_skypilot("sid")
+        assert "ORPHAN" not in caplog.text.upper()
+
 
 class TestTeardownWithProvider:
     @pytest.mark.asyncio
