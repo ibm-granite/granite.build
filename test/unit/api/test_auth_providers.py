@@ -69,7 +69,7 @@ def _make_app() -> FastAPI:
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
 
-    @app.get("/api/test")
+    @app.get("/test")
     async def test_endpoint(request: Request):
         user = request.state.data["user"]
         return JSONResponse(
@@ -475,7 +475,7 @@ class TestAuthMiddlewareMultiProvider:
             with patch("gbserver.api.auth_providers.requests") as mock_requests:
                 mock_requests.get.return_value = mock_response
                 response = client.get(
-                    "/api/test",
+                    "/test",
                     headers={"Authorization": "Bearer ghp_validtoken123"},
                 )
 
@@ -490,7 +490,7 @@ class TestAuthMiddlewareMultiProvider:
         with patch.dict(os.environ, env, clear=False):
             app = _make_app()
             client = TestClient(app)
-            response = client.get("/api/test")
+            response = client.get("/test")
         assert response.status_code == 401
 
     def test_analytics_path_requires_auth(self):
