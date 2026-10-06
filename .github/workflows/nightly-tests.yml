@@ -40,8 +40,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       # System prerequisites for the local kind cluster that `make kube-setup`
-      # (run by extended-tests-setup below) creates for the skypilot/kubernetes
-      # tests. SkyPilot reaches pods via `kubectl port-forward` and needs socat +
+      # (its own step, after extended-tests-setup below) creates for the
+      # skypilot/kubernetes tests. SkyPilot reaches pods via `kubectl port-forward` and needs socat +
       # netcat, without which `sky check` reports Kubernetes disabled. Ubuntu 24.04
       # has no `netcat` package candidate, so install netcat-openbsd (its `nc -h`
       # exits 0, which SkyPilot's dependency check accepts). kind is pinned and

@@ -27,12 +27,21 @@ the same "never by accident" rule the aws tests enforce by skipping unless
 credentials are explicitly exported.
 """
 
+import functools
 import os
 import shutil
 import subprocess
 
+import pytest
+
 #: Context ``sky local up`` creates with its default cluster name.
 DEFAULT_KIND_CONTEXT = "kind-skypilot"
+
+#: Every kube build test class carries this, so they run one at a time. Each pod
+#: requests 2 CPUs and a CI runner's kind node has ~3 left after the control
+#: plane, so concurrent xdist workers would leave pods unschedulable; with the
+#: Makefile's ``--dist=loadgroup`` a group runs serially on one worker.
+KUBE_XDIST_GROUP = pytest.mark.xdist_group(name="skypilot_kube")
 
 
 def expected_kind_context() -> str:
@@ -43,6 +52,10 @@ def expected_kind_context() -> str:
 def kind_cluster_reachable() -> bool:
     """True when the current kube context is the expected one and it answers.
 
+    Evaluated by ``skipif`` at collection time in every kube test module, on
+    every xdist worker, so the probe is cached per (kubectl, context) for the
+    life of the process — at most one pair of ``kubectl`` calls each.
+
     :returns: False when kubectl is missing, the current context is anything
         other than :func:`expected_kind_context`, or its API server does not
         report ready within a few seconds.
@@ -50,7 +63,12 @@ def kind_cluster_reachable() -> bool:
     kubectl = shutil.which("kubectl")
     if kubectl is None:
         return False
-    expected = expected_kind_context()
+    return _probe(kubectl, expected_kind_context())
+
+
+@functools.lru_cache(maxsize=None)
+def _probe(kubectl: str, expected: str) -> bool:
+    """Uncached check behind :func:`kind_cluster_reachable`."""
     try:
         current = subprocess.run(
             [kubectl, "config", "current-context"],

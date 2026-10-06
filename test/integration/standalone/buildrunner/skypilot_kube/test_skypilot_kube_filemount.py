@@ -36,16 +36,16 @@ from libgbtest.buildrunner.buildtest import (
     get_test_data_dir_for,
 )
 from libgbtest.constants import extended_testing_only
-from libgbtest.kube import kind_cluster_reachable, kind_skip_reason
+from libgbtest.kube import (
+    KUBE_XDIST_GROUP,
+    kind_cluster_reachable,
+    kind_skip_reason,
+)
 
 pytestmark = pytest.mark.skypilot_integration
 
 
-# One kube build test at a time: each pod requests 2 CPUs, and a CI runner's kind
-# node has ~3 left after the control plane, so concurrent xdist workers would leave
-# pods unschedulable. loadgroup (the Makefile's PYTEST_DIST_MODE) runs a group on
-# one worker, serially.
-@pytest.mark.xdist_group(name="skypilot_kube")
+@KUBE_XDIST_GROUP
 @extended_testing_only
 @pytest.mark.skipif(not kind_cluster_reachable(), reason=kind_skip_reason())
 class TestSkypilotKubeFileMount(AbstractYamlBuildRunnerTest):
