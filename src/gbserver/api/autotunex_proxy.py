@@ -13,27 +13,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Reverse proxy for AutoTuneX (fm-tune) API calls.
+"""Reverse proxy for AutoTuneX API calls.
 
-In standalone mode the frontend is served by gbserver at the same origin, so
-AutoTuneX calls arrive as same-origin ``/api/autotunex/*`` requests. This module
-forwards them server-side to the AutoTuneX FastAPI server's ``/api/v1/*``
-routes, so browser cookies flow with no CORS. Mirrors the ``next dev`` rewrite in
-frontend/next.config.ts. Mounted only when ``GBSERVER_ENABLE_AUTOTUNEX=true``
-(root_api.py).
+Forwards the dashboard's same-origin ``/api/autotunex/*`` requests to the AutoTuneX
+server's ``/api/v1/*``, so the browser needs no CORS. Mirrors the ``next dev``
+rewrite in frontend/next.config.ts. Mounted only when
+``GBSERVER_ENABLE_AUTOTUNEX=true`` (root_api.py).
 
-gbserver gives this prefix no auth exemption: it authenticates exactly like
-``/api/v1/*``. Nothing extra is needed for the deployments that ship it —
-standalone runs auth_mode apikey with no ``GBSERVER_API_KEY``, where any loopback
-caller is already admitted on any method, and the all-in-one image's co-located
-Caddy dials 127.0.0.1 so its callers are loopback too. Set ``GBSERVER_API_KEY``
-or an OIDC mode and this prefix requires credentials like everything else.
-
-Note that the upstream does not necessarily authenticate what is forwarded:
-AutoTuneX defaults to ``auth_providers=["disabled"]``, which enforces nothing. So
-whoever gbserver admits here reaches an unauthenticated API. The browser sends
-gbserver no credential of its own, which is why the all-in-one image expects
-access control at its edge.
+The prefix authenticates like ``/api/v1/*``. AutoTuneX itself defaults to no auth
+(``auth_providers=["disabled"]``), so whoever gbserver admits here reaches an
+unauthenticated API.
 """
 
 import os
@@ -49,18 +38,16 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 AUTOTUNEX_URL = os.getenv("AUTOTUNEX_API_URL", "http://localhost:8000")
-# AutoTuneX API v0.3.5 serves its resource routes under /api/v1 (was /fmtune/api).
+# AutoTuneX serves its resource routes under /api/v1.
 _UPSTREAM_PREFIX = "/api/v1"
 # Public path this proxy is mounted at; the browser side of the mapping.
 _PUBLIC_PREFIX = "/api/autotunex"
 
-# Headers we must not forward verbatim: httpx sets Host from the URL; the
-# StreamingResponse sets its own framing on the way back. Content-Length is
-# deliberately NOT dropped -- see the body handling in proxy_autotunex.
-# Accept-Encoding is dropped so httpx sends its own (gzip, deflate): the
-# response's Content-Encoding is stripped below on the assumption httpx decoded
-# the body, which only holds for encodings httpx can decode -- br/zstd need the
-# optional brotli/zstandard packages, which are not dependencies.
+# httpx sets Host from the URL. Accept-Encoding is dropped so httpx asks only for
+# encodings it can decode (br/zstd need optional packages): the response's
+# Content-Encoding is stripped on the assumption the body arrives decoded.
+# Content-Length is kept -- see the body handling in proxy_autotunex. On the way
+# back, StreamingResponse sets its own framing.
 _DROP_REQUEST_HEADERS = {"host", "accept-encoding"}
 _DROP_RESPONSE_HEADERS = {
     "content-length",
@@ -71,19 +58,16 @@ _DROP_RESPONSE_HEADERS = {
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
-# An unresponsive AutoTuneX (hung, not down) must not pin a gbserver worker
-# forever. read/write are per-chunk waits rather than whole-transfer budgets, so
-# a generous value still allows slow multipart dataset uploads and large
-# result-archive downloads while bounding a truly stalled connection.
+# Bound a hung AutoTuneX without cutting off slow dataset uploads or archive
+# downloads: read and write are per-chunk waits, not whole-transfer budgets.
 _TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=300.0, pool=10.0)
 
 router = APIRouter()
 
 _client: "httpx.AsyncClient | None" = None
 
-# Warn on the first outage, then drop to debug until one succeeds again. A gbserver
-# running without AutoTuneX answers every build page's linked-job lookup from here,
-# so warning per attempt made this the dominant line in the log.
+# Warn on the first outage, then log at debug until a request succeeds: without
+# AutoTuneX, every build page's linked-job lookup fails here.
 _upstream_unreachable_logged = False
 
 
@@ -96,18 +80,12 @@ def _get_client() -> httpx.AsyncClient:
 
 
 def _rewrite_location(value: str) -> str:
-    """Map an upstream Location back into the public ``/api/autotunex/*`` space.
+    """Map an upstream Location back into ``/api/autotunex/*``.
 
-    The upstream can emit an absolute Location built from its own host and its
-    ``/api/v1`` mount — e.g. FastAPI's trailing-slash 307 (``/api/v1/jobs/`` ->
-    ``http://localhost:8000/api/v1/jobs``), or any redirect that stays inside the
-    API. Because the proxy drops the Host header, that host is the upstream's, so
-    the browser would send the follow-up request cross-origin and hit CORS.
-    Rewrite the ``/api/v1`` path prefix to ``/api/autotunex`` and return a
-    host-relative URL so those requests come back through gbserver — regardless
-    of the upstream scheme/host or a trailing slash on AUTOTUNEX_API_URL.
-    Locations whose path is outside the upstream API space (e.g. an external auth
-    redirect) are left untouched.
+    An absolute Location from the upstream (e.g. FastAPI's trailing-slash 307)
+    names the upstream host, so the browser would follow it cross-origin. Rewrite
+    the ``/api/v1`` prefix to ``/api/autotunex`` as a host-relative URL; leave
+    Locations outside the API (e.g. an external auth redirect) alone.
     """
     parts = urlsplit(value)
     if parts.path == _UPSTREAM_PREFIX or parts.path.startswith(_UPSTREAM_PREFIX + "/"):
@@ -118,22 +96,11 @@ def _rewrite_location(value: str) -> str:
 
 @router.api_route("/api/autotunex/{path:path}", methods=_PROXY_METHODS)
 async def proxy_autotunex(request: Request, path: str) -> Response:
-    # httpx applies RFC 3986 dot-segment removal when it parses a URL, so a `..`
-    # segment in `path` escapes the /api/v1 mount and turns this into a relay to
-    # ANY path on the upstream host (uvicorn hands the raw ASGI path through
-    # unnormalized, so a non-browser client can send one). Resolve the URL first
-    # and refuse anything that no longer sits under the API prefix.
-    #
-    # The base is rstripped so a trailing slash on AUTOTUNEX_API_URL cannot make
-    # that `//api/v1/...`, which the check would read as leaving the API space
-    # (and which was previously forwarded upstream as a double slash).
-    #
-    # httpx also raises InvalidURL for a path it cannot encode -- a raw NUL or any
-    # other non-printable ASCII, which Starlette hands us already decoded from
-    # `{path:path}`, so any client can send one. InvalidURL is not an
-    # httpx.RequestError, so it escaped the handler further down and surfaced as a
-    # 500 with a traceback, for the same class of hostile input the check below
-    # answers with a 400.
+    # httpx removes `..` dot-segments when it parses a URL, so a raw `..` in `path`
+    # could escape the /api/v1 mount: resolve first and refuse anything outside it.
+    # The base is rstripped so a trailing slash on AUTOTUNEX_API_URL can't produce
+    # `//api/v1`. InvalidURL (e.g. a NUL in the path) is not an httpx.RequestError,
+    # so it is answered here with the same 400.
     try:
         upstream_url = httpx.URL(
             f"{AUTOTUNEX_URL.rstrip('/')}{_UPSTREAM_PREFIX}/{path}"
@@ -145,36 +112,21 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
         logger.warning("rejected AutoTuneX proxy path escaping the API mount: %r", path)
         return JSONResponse({"detail": "Invalid proxy path."}, status_code=400)
 
-    # Pairs, not a dict: Headers.items() yields one entry per header *line*, so a
-    # dict comprehension collapses repeats to the last value. Splitting Cookie
-    # across several lines is legal (and normal over HTTP/2), and that dropped
-    # every crumb but the last -- including the AutoTuneX session cookie. The
-    # response path below already preserves duplicates for the same reason.
+    # Pairs, not a dict: a header can repeat (Cookie split across lines is legal,
+    # and normal over HTTP/2), and a dict would keep only the last value.
     fwd_headers = [
         (k, v)
         for k, v in request.headers.items()
         if k.lower() not in _DROP_REQUEST_HEADERS
     ]
-    # The shared AsyncClient keeps a process-wide cookie jar. Without an
-    # explicit Cookie header, httpx injects jar cookies captured from a PRIOR
-    # proxied response, bleeding one user's AutoTuneX session onto another
-    # user's cookie-less request. Always forward an explicit Cookie (the
-    # browser's, or empty) so the jar is never consulted for injection.
+    # The shared client keeps a process-wide cookie jar; always send an explicit
+    # Cookie (possibly empty) so httpx never injects another user's session.
     if not any(k.lower() == "cookie" for k, _ in fwd_headers):
         fwd_headers.append(("cookie", ""))
 
-    # Forward the body as a stream rather than reading it with request.body().
-    # Buffering would fully materialize a multi-GB training-set upload in this
-    # process (and again inside httpx) -- exactly the case the generous write
-    # timeout above exists to support.
-    #
-    # The client's Content-Length is passed through: the bytes are relayed
-    # unchanged so it stays accurate, and httpx honours an explicit
-    # Content-Length instead of falling back to Transfer-Encoding: chunked,
-    # which keeps the upstream wire format identical to the browser's.
-    #
-    # Only attach a body when the request declares one, so a bodyless GET/HEAD
-    # is not sent with a spurious chunked encoding.
+    # Stream the body rather than buffering it, for multi-GB dataset uploads. The
+    # client's Content-Length is passed through unchanged, so httpx does not switch
+    # to chunked encoding. Attach a body only when the request declares one.
     declares_body = (
         request.headers.get("content-length") is not None
         or "transfer-encoding" in request.headers
@@ -185,11 +137,9 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
     upstream_request = client.build_request(
         request.method,
         upstream_url,
-        # tuple() for the same mypy reason as `params` below.
+        # tuple() here and for params: mypy rejects a list against httpx's declared
+        # pair type (list is invariant). Duplicate keys are preserved either way.
         headers=tuple(fwd_headers),
-        # tuple(), not the list multi_items() returns: httpx accepts either, but
-        # list is invariant so mypy rejects list[tuple[str, str]] against the
-        # wider pair type it declares. Duplicate keys are preserved either way.
         params=tuple(request.query_params.multi_items()),
         content=content,
     )
@@ -206,13 +156,10 @@ async def proxy_autotunex(request: Request, path: str) -> Response:
         )
     _upstream_unreachable_logged = False
 
-    # Built from the upstream's raw bytes, and built *before* the response object
-    # exists. Decoding each value to str and re-encoding it as latin-1 raised
-    # UnicodeEncodeError for any non-latin-1 value (a UTF-8 Content-Disposition
-    # filename), and raising after BackgroundTask(upstream.aclose) was attached
-    # but before the response was returned leaked the pooled upstream connection.
-    # Location still needs the rewrite; latin-1 is byte-exact in both directions,
-    # so decoding just that one value and re-encoding it cannot lose anything.
+    # Built from raw bytes, so a non-latin-1 value (a UTF-8 Content-Disposition
+    # filename) passes through unchanged, and before the response exists, so a
+    # failure here cannot leak the upstream connection. Only Location is decoded,
+    # for the rewrite; latin-1 round-trips bytes exactly.
     resp_headers = [
         (
             k,
