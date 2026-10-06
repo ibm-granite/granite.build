@@ -333,6 +333,10 @@ Common rejections from `BuildConfig.my_validate()`:
   `environment_uri` with no scheme counts as `file:`. On a shared server use
   `space://`, a git URI, or `env://` (a path on the worker) instead. An empty or
   missing `step_uri` still defaults to the bundled `gbstep` runner.
+- A `..` path segment in a `step_uri` or `environment_uri`, on any server
+  (standalone included). This covers `space://steps/../x`, `file:../x` and a
+  git `#subdirectory=../x`, and is checked after filling in space-config
+  templates. Dots inside a name (`a..b`) are fine.
 
 Run `gb build start -f build.yaml` and read the error — it'll point at the
 field.

@@ -136,3 +136,50 @@ def test_standalone_allows_file_uris():
             output_uri="file:outputs/run/",
         )
         assert _file_uri_errors(cfg) == []
+
+
+# ------------------------------------------------------------------ ".." segments
+#
+# A ".." path segment in step_uri/environment_uri could climb out of whatever
+# directory the URI resolves against (a space's base_uris, a git checkout's
+# #subdirectory=, a local path), so it is rejected in every mode, STANDALONE
+# included.
+
+
+def _parent_segment_errors(cfg: BuildConfig) -> list[str]:
+    return [str(e) for e in cfg.my_validate() if "'..'" in str(e)]
+
+
+@pytest.mark.parametrize("standalone", [True, False], ids=["standalone", "hosted"])
+class TestParentSegmentsRejected:
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "space://steps/../../../home/gbserver/.kube",
+            "space://environments/k8s/..",
+            "git+https://github.com/org/repo#subdirectory=steps/../../x",
+            "file:../outside",
+            "steps/../x",
+            "space://environments/{{ '..' }}/x",  # renders to a ".." segment
+        ],
+    )
+    def test_step_and_environment_uri(self, standalone, uri):
+        with patch.object(buildconfig_module, "is_standalone", return_value=standalone):
+            step_errors = _parent_segment_errors(_config(step_uri=uri))
+            env_errors = _parent_segment_errors(_config(environment_uri=uri))
+        assert len(step_errors) == 1 and "Step `0`" in step_errors[0]
+        assert len(env_errors) == 1 and "environment_uri" in env_errors[0]
+
+
+@pytest.mark.parametrize(
+    "uri", ["space://steps/a..b", "space://steps/..hidden", "file:///abs/x../y"]
+)
+def test_dots_inside_a_segment_are_allowed(uri):
+    with patch.object(buildconfig_module, "is_standalone", return_value=True):
+        assert _parent_segment_errors(_config(step_uri=uri)) == []
+
+
+def test_parent_segments_not_checked_on_inputs_outputs():
+    with patch.object(buildconfig_module, "is_standalone", return_value=True):
+        cfg = _config(input_uri="env:///a/../b", output_uri="env:///c/../d/")
+        assert _parent_segment_errors(cfg) == []

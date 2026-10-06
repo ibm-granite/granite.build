@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from gbcommon.types.gbenvconfig import is_standalone
 from gbcommon.uri.env import is_relative_env_uri
+from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.config import Config
 from gbserver.types.constants import (
@@ -37,6 +38,7 @@ from gbserver.types.constants import (
 )
 from gbserver.types.validation import GBValidationErrors, GBValidationErrorType
 from gbserver.utils.logger import get_logger
+from gbserver.utils.template import fill_template
 
 logger = get_logger(__name__)
 
@@ -63,6 +65,31 @@ def _may_be_file_uri(uri: Optional[str], default_scheme: str) -> bool:
     if "{{" in re.split(r"[:/]", uri, maxsplit=1)[0]:
         return True
     return urlparse(uri, default_scheme).scheme == FILE_SCHEME
+
+
+def _has_parent_segment(uri: Optional[str]) -> bool:
+    """Return True if a URI contains a ``..`` path segment.
+
+    The URI is checked both as written and after filling in space-config
+    templates (as URI.get_uri will), so ``{{ '..' }}`` cannot hide one. Segments
+    are split on ``/`` and on the ``:``/``#``/``?``/``&``/``=`` separators, so
+    ``file:../x`` and a git ``#subdirectory=../x`` are caught too; ``..`` inside
+    a name (``a..b``) is not a segment.
+
+    Args:
+        uri: The URI as written in build.yaml (None/empty means "not set").
+
+    Returns:
+        bool: True if any segment of the raw or rendered URI is exactly ``..``.
+    """
+    if not uri:
+        return False
+    candidates = [uri]
+    try:
+        candidates.append(fill_template(uri, URI.get_space_config()))
+    except (ValueError, RuntimeError):
+        pass  # an unrenderable template fails later in URI.get_uri anyway
+    return any(".." in re.split(r"[:/#?&=]", c) for c in candidates)
 
 
 class InvalidTarget(Exception):
@@ -445,6 +472,31 @@ class BuildConfig(Config):
                     )
         return errors
 
+    def __validate_no_parent_segments(self: Self) -> GBValidationErrors:
+        """Reject ``..`` path segments in step_uri and environment_uri.
+
+        A ``..`` segment could climb out of whatever the URI resolves against (a
+        space's base_uris, a git checkout's ``#subdirectory=``, a local path), so
+        it is rejected in every mode, STANDALONE included.
+
+        Returns:
+            GBValidationErrors: one error per offending URI.
+        """
+        errors = GBValidationErrors()
+        hint = "'..' path segments are not allowed"
+        for target_name, target in self.targets.items():
+            prefix = f"Target `{target_name}`"
+            if _has_parent_segment(target.environment_uri):
+                errors.add(
+                    f"{prefix} environment_uri '{target.environment_uri}': {hint}"
+                )
+            for i, step in enumerate(target.steps):
+                if _has_parent_segment(step.step_uri):
+                    errors.add(
+                        f"{prefix} Step `{i}` step_uri '{step.step_uri}': {hint}"
+                    )
+        return errors
+
     def __validate_output_push(self: Self) -> GBValidationErrors:
         """Validate each output's push config via the owning store's own rules.
 
@@ -492,6 +544,7 @@ class BuildConfig(Config):
         errors.add(self.__validate_target_inputs())
         errors.add(self.__validate_env_uris())
         errors.add(self.__validate_no_file_uris())
+        errors.add(self.__validate_no_parent_segments())
         errors.add(self.__validate_output_push())
         errors.add(self.__validate_lh_output_uris())
         logger.info("validated the build config and found %d errors", len(errors))
