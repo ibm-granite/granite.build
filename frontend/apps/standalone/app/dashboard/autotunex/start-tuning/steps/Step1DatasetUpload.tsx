@@ -1045,7 +1045,7 @@ export function Step1DatasetUpload({
                   </div>
                   {isSplitEnabled && uploadedFile && !existingDatasetId && (
                     <p className={styles.helperTextInline} style={{ marginBottom: '0.5rem' }}>
-                      {`Split: ${trainRecordCount.toLocaleString()} train, ${validationRecordCount.toLocaleString()} validation. The validation records are picked at random when the dataset is created, so they can't be previewed here.`}
+                      {`Split: ${trainRecordCount.toLocaleString()} train, ${validationRecordCount.toLocaleString()} validation. Validation records are randomly selected at dataset creation`}
                     </p>
                   )}
                   <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} {...previewTableProps} />
