@@ -49,6 +49,7 @@ from gbserver.utils.remote_files_ops import (
     content_disposition,
     peek_file,
     remote_stat,
+    run_list,
     validate_peek_args,
 )
 
@@ -300,3 +301,93 @@ class TestContentDisposition:
         # UTF-8 form percent-encodes; ascii fallback replaces non-ascii.
         assert "filename*=UTF-8''" in v
         assert "%" in v.split("UTF-8''", 1)[1]
+
+
+# ------------------------------------------------------------- run_list regex filter
+#
+# The stat=true listing filters paths with a user-supplied regex in Python on the
+# server. A catastrophic-backtracking pattern must not stall the event loop (and
+# with it every other API request): matching runs off the loop under one overall
+# time budget, and an over-long pattern is refused up front.
+
+from unittest.mock import patch  # noqa: E402
+
+from gbserver.utils import remote_files_ops as rfo  # noqa: E402
+
+
+def _listing_tunnel(names):
+    lines = "".join(f"{n}\tf\t1\t1700000000.0\n" for n in names)
+
+    async def run_remote(cmd, raise_on_error=True):
+        return 0, lines, ""
+
+    return _tunnel(run_remote)
+
+
+def _stat_list(names, pattern, regex=True):
+    return asyncio.run(
+        run_list(
+            _listing_tunnel(names),
+            ROOT,
+            ROOT,
+            recursive=True,
+            pattern=pattern,
+            regex=regex,
+            stat=True,
+        )
+    )
+
+
+def test_stat_list_regex_filters():
+    entries = _stat_list(["a.log", "b.txt", "c.log"], r"\.log$")
+    assert [e.path for e in entries] == ["a.log", "c.log"]
+
+
+def test_stat_list_substring_filter_unchanged():
+    entries = _stat_list(["a.log", "b.txt"], "txt", regex=False)
+    assert [e.path for e in entries] == ["b.txt"]
+
+
+def test_stat_list_invalid_regex_rejected():
+    with pytest.raises(RemoteFileBadRequest, match="invalid regex"):
+        _stat_list(["a.log"], "(unclosed")
+
+
+def test_stat_list_overlong_regex_rejected():
+    with pytest.raises(RemoteFileBadRequest, match="too long"):
+        _stat_list(["a.log"], "a" * (rfo._REGEX_FILTER_MAX_LEN + 1))
+
+
+def test_stat_list_slow_regex_times_out_without_blocking_loop():
+    # (a|aa)+$ against "aaaa...!" backtracks exponentially in both re and regex.
+    names = ["a" * 60 + "!"]
+
+    async def scenario():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        task = asyncio.create_task(ticker())
+        try:
+            with pytest.raises(RemoteFileBadRequest, match="too long to evaluate"):
+                await run_list(
+                    _listing_tunnel(names),
+                    ROOT,
+                    ROOT,
+                    recursive=True,
+                    pattern=r"(a|aa)+$",
+                    regex=True,
+                    stat=True,
+                )
+        finally:
+            task.cancel()
+        return ticks
+
+    with patch.object(rfo, "_REGEX_FILTER_TIMEOUT_S", 0.3):
+        ticks = asyncio.run(scenario())
+    # The loop kept running other tasks while the regex was being evaluated.
+    assert ticks >= 5

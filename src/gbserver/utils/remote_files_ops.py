@@ -37,12 +37,16 @@ it quotes with ``shlex.quote`` for shell safety but trusts that ``real`` is
 already confined to ``root``.
 """
 
+import asyncio
 import re
 import shlex
+import time
 from pathlib import PurePosixPath
 from typing import AsyncIterator, Dict, List, Optional, Tuple, Union
 from urllib.parse import quote
 
+# Aliased: run_list/_list_files_stat take a `regex: bool` parameter.
+import regex as regex_lib
 from pydantic import BaseModel
 
 from gbserver.types.constants import (
@@ -404,6 +408,95 @@ async def run_list(
     return rels
 
 
+# The stat=true listing filters paths with a user-supplied regex in this process
+# (the other branches hand theirs to grep on the remote host). Python's re cannot
+# be interrupted and holds the GIL, so one catastrophic-backtracking pattern
+# would stall the event loop and every API request with it. Matching instead uses
+# the `regex` package with an overall time budget, in a worker thread that
+# releases the GIL (concurrent=True), and over-long patterns are refused.
+_REGEX_FILTER_MAX_LEN = 512
+_REGEX_FILTER_TIMEOUT_S = 5.0
+
+
+def _compile_user_regex(pattern: str) -> "regex_lib.Pattern[str]":
+    """Compile a user-supplied list-filter regex.
+
+    Args:
+        pattern: The regex from the request.
+
+    Returns:
+        regex.Pattern[str]: The compiled pattern.
+
+    Raises:
+        RemoteFileBadRequest: If it is longer than _REGEX_FILTER_MAX_LEN
+            characters or does not compile.
+    """
+    if len(pattern) > _REGEX_FILTER_MAX_LEN:
+        raise RemoteFileBadRequest(
+            f"regex too long (max {_REGEX_FILTER_MAX_LEN} characters)"
+        )
+    try:
+        return regex_lib.compile(pattern)
+    except regex_lib.error as e:
+        raise RemoteFileBadRequest(f"invalid regex: {e}") from e
+
+
+def _search_paths(
+    rx: "regex_lib.Pattern[str]", entries: List[FileEntry], timeout_s: float
+) -> List[FileEntry]:
+    """Keep the entries whose path matches ``rx``, within one overall deadline.
+
+    Runs in a worker thread; ``concurrent=True`` releases the GIL while matching.
+
+    Args:
+        rx: The compiled filter.
+        entries: The listing to filter.
+        timeout_s: Total time allowed for all matches together.
+
+    Returns:
+        List[FileEntry]: The matching entries, in order.
+
+    Raises:
+        TimeoutError: If matching does not finish within ``timeout_s``.
+    """
+    deadline = time.monotonic() + timeout_s
+    kept: List[FileEntry] = []
+    for entry in entries:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("regex filter budget exhausted")
+        if rx.search(entry.path, timeout=remaining, concurrent=True):
+            kept.append(entry)
+    return kept
+
+
+async def _filter_entries_by_regex(
+    entries: List[FileEntry], pattern: str
+) -> List[FileEntry]:
+    """Filter a listing by a user-supplied regex without blocking the event loop.
+
+    Args:
+        entries: The listing to filter.
+        pattern: The regex from the request.
+
+    Returns:
+        List[FileEntry]: The entries whose path matches.
+
+    Raises:
+        RemoteFileBadRequest: If the pattern is too long or invalid, or matching
+            takes longer than _REGEX_FILTER_TIMEOUT_S in total.
+    """
+    rx = _compile_user_regex(pattern)
+    try:
+        return await asyncio.to_thread(
+            _search_paths, rx, entries, _REGEX_FILTER_TIMEOUT_S
+        )
+    except TimeoutError as e:
+        raise RemoteFileBadRequest(
+            "regex took too long to evaluate; simplify the pattern"
+        ) from e
+
+
 async def _list_files_stat(
     tunnel,
     root: PurePosixPath,
@@ -454,11 +547,7 @@ async def _list_files_stat(
 
     if pattern is not None:
         if regex:
-            try:
-                rx = re.compile(pattern)
-            except re.error as e:
-                raise RemoteFileBadRequest(f"invalid regex: {e}") from e
-            entries = [e for e in entries if rx.search(e.path)]
+            entries = await _filter_entries_by_regex(entries, pattern)
         else:
             entries = [e for e in entries if pattern in e.path]
 
