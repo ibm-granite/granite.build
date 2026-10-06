@@ -39,8 +39,11 @@ therefore applies `idle_minutes_to_autostop` on Kubernetes as autodown (`down=Tr
 minutes the pod is deleted.
 
 Per-step `cleanup_skypilot()` already runs `sky down` after each step, so the idle timeout (default 10) is
-only a safety net that reaps a pod orphaned by a crashed gbserver. Keep it small but not `0` — `0` means
-"delete as soon as idle", which SkyPilot rounds up to 1 minute. Set `null` to disable it entirely.
+only a safety net that reaps a pod orphaned by a crashed gbserver. **Keep it well above the step's monitor
+poll interval** (`poll_interval_seconds`, default 300s): a job that finishes just after a poll would
+otherwise be autodowned before the next one, and the poller then sees a missing pod and marks the step
+`FAILED`. gbserver enforces a floor of 2× the step's poll interval on Kubernetes, raising a shorter window
+and logging a warning; the shipped env uses 15. Set `null` to disable it entirely.
 
 > **`sbatch_options` is a no-op on Kubernetes.** The per-step `sbatch_options`
 > field ([skypilot.md](skypilot.md#config-overrides-docker-sbatch_options)) is a
@@ -68,7 +71,7 @@ name: sky-kube
 type: Skypilot
 config:
   default_cloud: kubernetes
-  idle_minutes_to_autostop: 5   # applied as autodown on Kubernetes
+  idle_minutes_to_autostop: 15  # applied as autodown on Kubernetes; keep well above the poll interval
 assetstores:
   - store_uri: space://assetstores/hf
     pull:
@@ -108,10 +111,11 @@ Two requirements, both checked on a local kind cluster:
   mirrors the Docker official images.
 - **An `hf://` input is downloaded inside the image.** With `inline: true` the download runs in the
   consuming step's own setup — in its image when it sets one. gbserver obtains the `hf` client itself:
-  it uses `pip` when the image has one (unchanged from before), else a preinstalled `hf`, else it
-  bootstraps one with `uv` via `curl` (which SkyPilot's startup guarantees). So images without pip work,
-  but that last route needs outbound access to `astral.sh` and PyPI; on an air-gapped cluster use an image
-  with `pip` or `hf` installed.
+  it uses `pip` when the image has one (unchanged from before), else a preinstalled `hf`, else it fetches a
+  pinned, sha256-verified `uv` release with `curl` (which SkyPilot's startup guarantees) and runs the
+  client through it. So images without pip work, but that last route needs outbound access to
+  `github.com` (the `uv` release, plus a Python build if the image has no `python3`) and to PyPI; on an
+  air-gapped cluster use an image with `pip` or `hf` installed.
 
 ## See also
 

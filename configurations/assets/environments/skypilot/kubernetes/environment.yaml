@@ -5,8 +5,11 @@ config:
   default_cloud: kubernetes
   # Applied as AUTODOWN on Kubernetes (a pod cannot be stopped; SkyPilot rejects
   # autostop there). Per-step cleanup already `sky down`s each pod, so this only
-  # reaps one orphaned by a crashed gbserver. Not 0: that deletes as soon as idle.
-  idle_minutes_to_autostop: 5
+  # reaps one orphaned by a crashed gbserver. Keep it well above the steps' poll
+  # interval (default 300s): a shorter window can delete the pod before the poller
+  # sees the job finish, failing the step. gbserver raises it to 2x the step's poll
+  # interval if it is shorter.
+  idle_minutes_to_autostop: 15
 assetstores:
   - store_uri: space://assetstores/hf
     pull:
