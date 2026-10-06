@@ -68,7 +68,9 @@ export function PreviewTable({
               <TableHeader key={header.key}>
                 {header.header}
                 {targetsBySource[header.key] && (
-                  <div style={{ fontWeight: 400, color: 'var(--cds-text-secondary, #525252)' }}>
+                  // nowrap: a narrow column otherwise breaks at the only space,
+                  // leaving the arrow alone above the target's name.
+                  <div style={{ fontWeight: 400, color: 'var(--cds-text-secondary, #525252)', whiteSpace: 'nowrap' }}>
                     → {targetsBySource[header.key].join(', ')}
                   </div>
                 )}
@@ -81,7 +83,16 @@ export function PreviewTable({
             <TableRow key={index}>
               {resolvedHeaders.map((header) => {
                 const value = row[header.key]
-                return <TableCell key={header.key}>{previewCellText(value, maxCellChars, cropFrom)}</TableCell>
+                // overflow-wrap: anywhere -- JSON values have long runs with no
+                // spaces, and under auto table layout the longest unbreakable run
+                // sets a column's minimum width. Those runs differ between cropping
+                // from the start and from the end, so the columns jumped when the
+                // crop switched, and the table overflowed its container.
+                return (
+                  <TableCell key={header.key} style={{ overflowWrap: 'anywhere' }}>
+                    {previewCellText(value, maxCellChars, cropFrom)}
+                  </TableCell>
+                )
               })}
             </TableRow>
           ))}
