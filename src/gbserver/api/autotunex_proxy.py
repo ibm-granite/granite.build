@@ -31,9 +31,9 @@ or an OIDC mode and this prefix requires credentials like everything else.
 
 Note that the upstream does not necessarily authenticate what is forwarded:
 AutoTuneX defaults to ``auth_providers=["disabled"]``, which enforces nothing. So
-whoever gbserver admits here reaches an unauthenticated API — see the warning in
-api/auth.py, and note that the browser sends gbserver no credential of its own,
-which is why the all-in-one image expects access control at its edge.
+whoever gbserver admits here reaches an unauthenticated API. The browser sends
+gbserver no credential of its own, which is why the all-in-one image expects
+access control at its edge.
 """
 
 import os
