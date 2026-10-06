@@ -504,8 +504,9 @@ def wandb_run_to_job(run: Any) -> Optional[dict]:
         }
 
     to_dataset = WandBLineageService._artifact_to_openlineage_dataset
-    sources = [to_dataset(a) for a in run.used_artifacts()]
-    targets = [to_dataset(a) for a in run.logged_artifacts()]
+    is_system = WandBLineageService._is_wandb_system_artifact
+    sources = [to_dataset(a) for a in run.used_artifacts() if not is_system(a)]
+    targets = [to_dataset(a) for a in run.logged_artifacts() if not is_system(a)]
 
     return {
         "job_name": config.get("job_name") or run.name,

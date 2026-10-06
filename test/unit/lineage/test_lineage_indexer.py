@@ -39,9 +39,9 @@ def _storage():
     return SimpleNamespace(kv_pair_storage=_KV())
 
 
-def _artifact(uri):
+def _artifact(uri, type="dataset"):
     return SimpleNamespace(
-        metadata={"uri": uri, "namespace": "ns", "name": uri}, name=uri
+        metadata={"uri": uri, "namespace": "ns", "name": uri}, name=uri, type=type
     )
 
 
@@ -124,6 +124,22 @@ def test_run_to_job_uses_config_namespace_not_entity_project():
     assert job["job_details"]["job_id"] == "t1"
     assert [s["uri"] for s in job["sources"]] == ["in"]
     assert [t["uri"] for t in job["targets"]] == ["out"]
+
+
+def test_run_to_job_drops_wandb_system_artifacts():
+    # wandb attaches e.g. run-<id>-history once someone opens the run's charts;
+    # it must not become a dataset in the index. Filtering is by type, so an
+    # artifact whose *name* starts with "run-" is still kept.
+    run = _run("r1", "2026-01-01T00:00:00")
+    run.logged_artifacts = lambda: [
+        _artifact("out"),
+        _artifact("run-r1-history", type="wandb-history"),
+        _artifact("run-r1-events", type="wandb-events"),
+        _artifact("run-r1-samples", type="run_table"),
+        _artifact("run-model", type="model"),
+    ]
+    job = idx.wandb_run_to_job(run)
+    assert [t["uri"] for t in job["targets"]] == ["out", "run-model"]
 
 
 def test_run_without_job_id_is_not_lineage():
