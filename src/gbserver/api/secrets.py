@@ -147,9 +147,13 @@ def _build_space_secret_manager(space_uri: str):
         space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
 
     SpaceSecretManager.load_spacesecretmanagers()
+    # space_name is space.yaml's name, not the registered name: standalone
+    # registers one space under several names (public/standalone/local), and the
+    # local manager keys its per-space directory on this.
     return SpaceSecretManager.get_spacesecretmanager(
         secret_manager_type=space_config.secret_manager.type,
         uri=space_uri,
+        space_name=space_config.name,
         **space_config.secret_manager.config,
     )
 

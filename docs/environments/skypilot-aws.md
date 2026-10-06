@@ -467,15 +467,18 @@ config:
 
 ### 2. Seed the local secret store (standalone)
 
-With `secret_manager: type: local`, secrets are read from `$GB_HOME_DIR/space_secrets/` (default
-`~/.granite.build/space_secrets/`). Files may be `.json`/`.yaml`/`.env`; **values are base64-encoded**
-and looked up by exact name. Write a file whose keys match the secret names above:
+With `secret_manager: type: local` and no `secrets_dir`, each space reads its secrets from its own
+directory, `$GB_HOME_DIR/space_secrets/<space name>/` (default
+`~/.granite.build/space_secrets/<space name>/`), where `<space name>` is the `name:` in the space's
+`space.yaml` — `public` for the default standalone space. Files placed directly in `space_secrets/`
+are **not** read. Files may be `.json`/`.yaml`/`.env`; **values are base64-encoded** and looked up by
+exact name. Write a file whose keys match the secret names above:
 
 ```bash
-mkdir -p ~/.granite.build/space_secrets
+mkdir -p ~/.granite.build/space_secrets/public
 python3 - <<'PY'
 import os, base64, json, pathlib
-d = pathlib.Path.home() / ".granite.build" / "space_secrets"; d.mkdir(parents=True, exist_ok=True)
+d = pathlib.Path.home() / ".granite.build" / "space_secrets" / "public"; d.mkdir(parents=True, exist_ok=True)
 enc = lambda v: base64.b64encode(v.encode()).decode()
 p = d / "aws.json"
 p.write_text(json.dumps({
@@ -556,10 +559,10 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
    also works in a server deployment (where the server-managed store supplies them):
 
    ```bash
-   mkdir -p ~/.granite.build/space_secrets
+   mkdir -p ~/.granite.build/space_secrets/public
    python3 - <<'PY'
    import os, base64, json, pathlib
-   d = pathlib.Path.home() / ".granite.build" / "space_secrets"; d.mkdir(parents=True, exist_ok=True)
+   d = pathlib.Path.home() / ".granite.build" / "space_secrets" / "public"; d.mkdir(parents=True, exist_ok=True)
    enc = lambda v: base64.b64encode(v.encode()).decode()
    p = d / "aws.json"
    p.write_text(json.dumps({

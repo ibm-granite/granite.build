@@ -20,7 +20,7 @@ Secret manager from local directory.
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Self, Union
+from typing import Any, Dict, Optional, Self, Set, Union
 
 from gbcommon.types.constants import get_gb_home_dir
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
@@ -32,6 +32,94 @@ from gbserver.utils.secretfile import (
 )
 
 logger = get_logger(__name__)
+
+
+def _check_space_name(space_name: Optional[str]) -> None:
+    """Require a space name usable as one directory name under space_secrets/.
+
+    Args:
+        space_name: The space.yaml ``name``.
+
+    Raises:
+        ValueError: If it is missing, ``.``/``..``, or contains a path separator.
+    """
+    if (
+        not space_name
+        or space_name in (".", "..")
+        or "/" in space_name
+        or "\\" in space_name
+    ):
+        raise ValueError(
+            "the local space secret manager needs a space_name that is a single"
+            f" directory name when no secrets_dir is configured, got {space_name!r}"
+        )
+
+
+def _migrate_legacy_space_file(shared_dir: Path, space_name: str, space_dir: Path):
+    """Move a space's pre-isolation secrets file into its own directory.
+
+    Before secrets were isolated per space, the /space_secrets admin API wrote a
+    space's secrets to ``<shared_dir>/<space_name>.yaml``. Move that file to
+    ``<space_dir>/<space_name>.yaml`` once so it keeps working; other spaces'
+    files, and any other files left in ``shared_dir``, are never read.
+
+    Args:
+        shared_dir: The old shared ``<gb_home>/space_secrets`` directory.
+        space_name: The space.yaml ``name``.
+        space_dir: This space's own secrets directory.
+    """
+    legacy = shared_dir / f"{space_name}.yaml"
+    target = space_dir / legacy.name
+    if not legacy.is_file() or target.exists():
+        return
+    try:
+        space_dir.mkdir(parents=True, exist_ok=True)
+        legacy.rename(target)
+        logger.info("Moved legacy space secrets %s to %s", legacy, target)
+    except OSError as e:
+        # A concurrent manager may have moved it first; never fail construction.
+        logger.warning("Could not move legacy space secrets %s: %s", legacy, e)
+
+
+# Shared space_secrets/ dirs already warned about (warn once per process, not on
+# every manager construction -- one is built per build/request).
+_warned_legacy_dirs: Set[Path] = set()
+
+
+def _warn_leftover_flat_files(shared_dir: Path, space_name: str) -> None:
+    """Warn once about secret files left directly in the old shared directory.
+
+    Such files (e.g. a hand-placed ``space_secrets/aws.json``) are no longer read:
+    they could belong to any space. Each space now reads only its own
+    ``space_secrets/<space name>/`` directory.
+
+    Args:
+        shared_dir: The old shared ``<gb_home>/space_secrets`` directory.
+        space_name: The space being loaded, named in the hint.
+    """
+    if shared_dir in _warned_legacy_dirs or not shared_dir.is_dir():
+        return
+    leftovers = sorted(
+        p.name
+        for p in shared_dir.iterdir()
+        if p.is_file()
+        and (
+            p.suffix.lower() in SUPPORTED_SECRET_FILE_EXTENSIONS
+            or p.name.lower() == ".env"
+        )
+    )
+    if leftovers:
+        _warned_legacy_dirs.add(shared_dir)
+        logger.warning(
+            "Ignoring secret files directly in %s (%s): space secrets are now read"
+            " per space from %s/<space name>/ -- move each file into the directory"
+            " of the space it belongs to (e.g. %s/%s/)",
+            shared_dir,
+            ", ".join(leftovers),
+            shared_dir,
+            shared_dir,
+            space_name,
+        )
 
 
 class LocalSpaceSecretManager(SpaceSecretManager):
@@ -51,20 +139,42 @@ class LocalSpaceSecretManager(SpaceSecretManager):
     SUPPORTED_EXTENSIONS = SUPPORTED_SECRET_FILE_EXTENSIONS
 
     def __init__(
-        self: Self, uri: str, secrets_dir: Optional[Union[str, Path]] = None, **kwargs
+        self: Self,
+        uri: str,
+        secrets_dir: Optional[Union[str, Path]] = None,
+        space_name: Optional[str] = None,
+        **kwargs,
     ) -> None:
+        """Create a manager reading/writing one space's local secrets.
+
+        Args:
+            uri: The space URI.
+            secrets_dir: An explicit secrets file or directory from space.yaml;
+                ``~`` and ``${ENV}`` are expanded so a committed space.yaml can
+                carry a portable path. Used as-is (the operator chose it).
+            space_name: The space.yaml ``name``. Required when ``secrets_dir`` is
+                omitted (e.g. ``config: {}``): the default is then
+                ``<gb_home>/space_secrets/<space_name>/`` -- one directory per
+                space, so one space never loads another's secrets. Resolved at
+                call time via get_gb_home_dir() so a GB_HOME_DIR override is
+                honored. (It sits beside the per-user secrets dir; see
+                usersecretmanager.factory.)
+            **kwargs: Passed through to SpaceSecretManager.
+
+        Raises:
+            ValueError: If ``secrets_dir`` is omitted and ``space_name`` is
+                missing or is not a single safe path segment.
+        """
         super().__init__(uri=uri, **kwargs)
-        # secrets_dir is optional: when omitted (e.g. a space.yaml with `config: {}`),
-        # default to <gb_home>/space_secrets — the sibling of the per-user secrets dir
-        # (see usersecretmanager.factory). Resolved at call time via get_gb_home_dir()
-        # so a GB_HOME_DIR override is honored. ~ and ${ENV} in an explicit value are
-        # expanded so a committed space.yaml can carry a portable path.
-        raw_dir = (
-            os.path.join(get_gb_home_dir(), "space_secrets")
-            if secrets_dir is None
-            else str(secrets_dir)
-        )
-        self.dir = Path(os.path.expanduser(os.path.expandvars(raw_dir)))
+        if secrets_dir is not None:
+            raw_dir = str(secrets_dir)
+            self.dir = Path(os.path.expanduser(os.path.expandvars(raw_dir)))
+            return
+        _check_space_name(space_name)
+        shared_dir = Path(get_gb_home_dir()) / "space_secrets"
+        self.dir = shared_dir / str(space_name)
+        _migrate_legacy_space_file(shared_dir, str(space_name), self.dir)
+        _warn_leftover_flat_files(shared_dir, str(space_name))
 
     def get_secret(
         self: Self,

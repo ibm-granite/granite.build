@@ -330,6 +330,7 @@ class Space:
                 SpaceSecretManager.get_spacesecretmanager(
                     secret_manager_type=self.space_config.secret_manager.type,
                     uri=self.uristr,
+                    space_name=self.space_config.name,
                     **self.space_config.secret_manager.config,
                 )
             )

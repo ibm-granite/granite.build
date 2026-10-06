@@ -18,7 +18,7 @@
 
 Covers the optional/defaulted/expanded `secrets_dir` behavior that lets a
 standalone space.yaml use `type: local` with `config: {}` (no secrets_dir) and
-land at <gb_home>/space_secrets.
+land at <gb_home>/space_secrets/<space name>.
 """
 
 from pathlib import Path
@@ -27,13 +27,13 @@ from gbserver.spacesecretmanager.localspacesecretmanager import LocalSpaceSecret
 
 
 def test_default_secrets_dir_uses_gb_home(tmp_path, monkeypatch):
-    """No secrets_dir -> <gb_home>/space_secrets, resolved from GB_HOME_DIR at call time."""
+    """No secrets_dir -> <gb_home>/space_secrets/<space name>, from GB_HOME_DIR at call time."""
     gb_home = tmp_path / "gbhome"
     monkeypatch.setenv("GB_HOME_DIR", str(gb_home))
 
-    manager = LocalSpaceSecretManager(uri="local")
+    manager = LocalSpaceSecretManager(uri="local", space_name="public")
 
-    assert manager.dir == gb_home / "space_secrets"
+    assert manager.dir == gb_home / "space_secrets" / "public"
 
 
 def test_explicit_secrets_dir_is_expanded(tmp_path, monkeypatch):
@@ -57,7 +57,7 @@ def test_explicit_path_object_preserved(tmp_path):
 def test_default_dir_is_writable_crud(tmp_path, monkeypatch):
     """The defaulted dir supports a create/read round-trip."""
     monkeypatch.setenv("GB_HOME_DIR", str(tmp_path / "gbhome"))
-    manager = LocalSpaceSecretManager(uri="local")
+    manager = LocalSpaceSecretManager(uri="local", space_name="public")
 
     manager.create_secret(
         secret_name="API_KEY", secret_value="hunter2", secret_group_name="group1"
