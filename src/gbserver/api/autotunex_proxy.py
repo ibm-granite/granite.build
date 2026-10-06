@@ -19,7 +19,8 @@ In standalone mode the frontend is served by gbserver at the same origin, so
 AutoTuneX calls arrive as same-origin ``/api/autotunex/*`` requests. This module
 forwards them server-side to the AutoTuneX FastAPI server's ``/api/v1/*``
 routes, so browser cookies flow with no CORS. Mirrors the ``next dev`` rewrite in
-frontend/next.config.ts.
+frontend/next.config.ts. Mounted only when ``GBSERVER_ENABLE_AUTOTUNEX=true``
+(root_api.py).
 
 gbserver gives this prefix no auth exemption: it authenticates exactly like
 ``/api/v1/*``. Nothing extra is needed for the deployments that ship it —

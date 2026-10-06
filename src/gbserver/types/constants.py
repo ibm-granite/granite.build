@@ -194,6 +194,7 @@ ENV_VAR_GBSERVER_ENABLE_SSH_HOST_KEY_VERIFICATION = (
     ENV_VAR_PREFIX + "_ENABLE_SSH_HOST_KEY_VERIFICATION"
 )
 ENV_VAR_GBSERVER_ENABLE_STEP_RETRY = ENV_VAR_PREFIX + "_ENABLE_STEP_RETRY"
+ENV_VAR_GBSERVER_ENABLE_AUTOTUNEX = ENV_VAR_PREFIX + "_ENABLE_AUTOTUNEX"
 ENV_VAR_BUILDRUNNERJOB_SLEEP_ON_END = ENV_VAR_PREFIX + "_BUILDRUNNERJOB_SLEEP_ON_END"
 ENV_VAR_BUILTIN_STEP_IMAGE = ENV_VAR_PREFIX + "_BUILTIN_STEP_IMAGE"
 
@@ -600,6 +601,11 @@ ENABLE_SSH_HOST_KEY_VERIFICATION = (
 )
 GBSERVER_ENABLE_STEP_RETRY = (
     os.getenv(ENV_VAR_GBSERVER_ENABLE_STEP_RETRY, "true").lower() == "true"
+)
+# Mount the AutoTuneX reverse proxy (/api/autotunex). Off by default: most
+# deployments run no AutoTuneX server for it to relay to.
+GBSERVER_ENABLE_AUTOTUNEX = (
+    os.getenv(ENV_VAR_GBSERVER_ENABLE_AUTOTUNEX, "false").lower() == "true"
 )
 # Metrics
 # Endpoint to push metrics to http://gb-metrics-gb-metrics:8081/api/metrics

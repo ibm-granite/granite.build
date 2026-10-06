@@ -29,6 +29,7 @@ from gbserver.api import event_subscribe as _event_subscribe  # noqa: F401
 from gbserver.api.artifacts import artifacts_api
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_routes import auth_api
+from gbserver.api.autotunex_proxy import AUTOTUNEX_URL
 from gbserver.api.autotunex_proxy import aclose_client as _autotunex_aclose_client
 from gbserver.api.autotunex_proxy import router as autotunex_router
 from gbserver.api.builds import builds_api
@@ -41,6 +42,7 @@ from gbserver.api.secrets import secrets_api
 from gbserver.api.spaces import spaces_api
 from gbserver.types.constants import (
     API_BASE_PATH,
+    GBSERVER_ENABLE_AUTOTUNEX,
     GBSERVER_EVENT_PUBLISHING_ENABLED,
     GBSERVER_GIT_COMMIT,
     GBSERVER_REST_SERVER_WORKERS,
@@ -136,9 +138,13 @@ else:
     logger.info("Analytics not enabled — /api/analytics not mounted")
 
 
-# AutoTuneX reverse proxy — must be registered before the "/" static mount so it
+# AutoTuneX reverse proxy, opt-in. Registered before the "/" static mount so it
 # wins over the SPA catch-all. See api/autotunex_proxy.py.
-root_api.include_router(autotunex_router)
+if GBSERVER_ENABLE_AUTOTUNEX:
+    root_api.include_router(autotunex_router)
+    logger.info("AutoTuneX proxy enabled — /api/autotunex relays to %s", AUTOTUNEX_URL)
+else:
+    logger.info("AutoTuneX proxy not enabled — /api/autotunex not mounted")
 
 
 def _is_rsc_request(request: Request) -> bool:

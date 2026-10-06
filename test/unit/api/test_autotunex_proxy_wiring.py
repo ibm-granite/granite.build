@@ -2,42 +2,52 @@
 # Copyright LLM.build Authors
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
-"""root_api wires the AutoTuneX proxy before the SPA static mount.
+"""root_api mounts the AutoTuneX proxy only when GBSERVER_ENABLE_AUTOTUNEX is set,
+and then before the SPA static mount.
 
 Importing root_api boots the app the same way test/unit/standalone/
 test_regression_smoke.py does (TestClient(root_api)), so this is a supported
 test-time import.
 """
 
+import importlib
+from contextlib import contextmanager
+
 import httpx
 from fastapi.testclient import TestClient
 
 
-def test_proxy_route_registered_before_static_mount(monkeypatch):
-    """A request to `/api/autotunex/*` must reach the proxy handler, not be
-    swallowed by the catch-all `"/"` static Mount + SPA-fallback 404 handler.
+@contextmanager
+def _root_api_with_autotunex(enabled: bool):
+    """root_api as imported with the flag at `enabled`.
 
-    root_api.include_router(autotunex_router) wraps the router in an internal
-    _IncludedRouter that computes its effective path lazily, so (unlike a
-    .mount()'d sub-app) it never appears as a flat `route.path` string on
-    root_api.routes — see test/unit/standalone/test_regression_smoke.py::
-    test_analytics_routes_included, which documents the identical behavior
-    for the analytics routers and verifies by request behavior instead.
-    This test follows the same approach, and mirrors test_autotunex_proxy.py's
-    MockTransport pattern so the assertion is deterministic regardless of
-    whether anything is actually listening on localhost:8000 in the
-    environment running the test.
-
-    If the proxy were registered *after* the static mount, the mount's
-    catch-all would claim this request first, the file lookup would 404, and
-    root_api's SPA-fallback 404 handler would return a JSON 404 (paths under
-    /api/ are excluded from the HTML SPA shell) instead of the mocked
-    response below.
+    The mount is decided at import, so flip the constant and reload root_api if
+    the cached copy disagrees; on exit, restore both so nothing leaks into later
+    tests in the same worker. Same approach as test_regression_smoke.py's
+    analytics fixture.
     """
+    import gbserver.api.root_api as root_api_mod
+    import gbserver.types.constants as constants
+
+    prev = constants.GBSERVER_ENABLE_AUTOTUNEX
+    constants.GBSERVER_ENABLE_AUTOTUNEX = enabled
+    reloaded = False
+    try:
+        if root_api_mod.GBSERVER_ENABLE_AUTOTUNEX != enabled:
+            root_api_mod = importlib.reload(root_api_mod)
+            reloaded = True
+        yield root_api_mod.root_api
+    finally:
+        constants.GBSERVER_ENABLE_AUTOTUNEX = prev
+        if reloaded:
+            importlib.reload(root_api_mod)
+
+
+def _mock_upstream(monkeypatch, calls):
     import gbserver.api.autotunex_proxy as proxy_mod
-    from gbserver.api.root_api import root_api
 
     def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
         return httpx.Response(200, json={"from": "autotunex-proxy"})
 
     monkeypatch.setattr(proxy_mod, "AUTOTUNEX_URL", "http://autotunex.test")
@@ -47,8 +57,35 @@ def test_proxy_route_registered_before_static_mount(monkeypatch):
         httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
-    client = TestClient(root_api)
-    response = client.get("/api/autotunex/some/path")
+
+def test_proxy_route_registered_before_static_mount(monkeypatch):
+    """With the flag on, `/api/autotunex/*` reaches the proxy handler rather than
+    the catch-all `"/"` static Mount + SPA-fallback 404 handler.
+
+    include_router() never shows up as a flat `route.path` on root_api.routes
+    (see test_regression_smoke.py::test_analytics_routes_included), so this
+    checks by request behaviour, against a MockTransport so nothing needs to
+    listen on localhost:8000.
+    """
+    calls = []
+    _mock_upstream(monkeypatch, calls)
+
+    with _root_api_with_autotunex(True) as app:
+        response = TestClient(app).get("/api/autotunex/some/path")
 
     assert response.status_code == 200
     assert response.json() == {"from": "autotunex-proxy"}
+    assert len(calls) == 1
+
+
+def test_proxy_not_mounted_by_default(monkeypatch):
+    """With the flag off, nothing is relayed: the request falls through to the
+    SPA-fallback 404, and the upstream is never called."""
+    calls = []
+    _mock_upstream(monkeypatch, calls)
+
+    with _root_api_with_autotunex(False) as app:
+        response = TestClient(app).get("/api/autotunex/some/path")
+
+    assert response.status_code == 404
+    assert calls == []
