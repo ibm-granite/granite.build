@@ -1,0 +1,47 @@
+granite.build:
+  name: skypilot-kube-command-image-hf-test
+  targets:
+    image-run:
+      environment_uri: space://environments/skypilot/kubernetes
+      inputs:
+        input_model:
+          # Public dataset (same one the slurm 1step-image pulls). On kube the hf
+          # pull is INLINE, so with an image set the download runs inside that
+          # image — this one has no pip, which exercises the inline pull's uv
+          # bootstrap (see _inline_hfpull_setup_block).
+          uri: hf:///datasets/ibm-research/vira-intents-live
+      outputs:
+        env_output:
+          uri: "env:///tmp/gb-env-output.txt"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              # Run INSIDE a container image (image_id: docker:<image>). Unlike
+              # SLURM (Pyxis), kube runs images natively, so this always runs.
+              #
+              # The image must be Debian/Ubuntu-based OR already contain the
+              # packages SkyPilot's pod bootstrap needs (rsync curl wget netcat
+              # gcc patch pciutils openssh-server): it installs missing ones
+              # with apt-get (sky/templates/kubernetes-ray.yml.j2). So the slurm
+              # test's quay.io/fedora/fedora-minimal does not work here.
+              # Plain Ubuntu: python3 but NO pip. public.ecr.aws mirrors the
+              # Docker official images without Docker Hub's pull-rate limits.
+              image: public.ecr.aws/docker/library/ubuntu:24.04
+              # Fail unless (a) this really runs in the Ubuntu image and (b) the
+              # hf input was staged into it by the inline pull.
+              command: >-
+                . /etc/os-release; echo "running in: $PRETTY_NAME";
+                case "$ID" in ubuntu) ;; *) echo "FAIL: expected the ubuntu image, got $ID"; exit 1;; esac;
+                command -v pip >/dev/null && { echo "FAIL: image unexpectedly has pip, so the uv route is not exercised"; exit 1; };
+                in={{ bindings.input_model.binding.path }};
+                echo "input path: $in";
+                test -n "$(ls -A "$in" 2>/dev/null)" || { echo "FAIL: input dir $in missing or empty in this image"; exit 1; };
+                ls -la "$in";
+                echo "pod-local output" > /tmp/gb-env-output.txt;
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-env-output.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

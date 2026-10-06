@@ -31,11 +31,19 @@ The Kubernetes backend uses neither inline block. If you need to tune SkyPilot's
 use a `cloud_config` with a `kubernetes:` block (deep-merged into `~/.sky/config.yaml`); otherwise the
 `config:` block is minimal.
 
-### Autostop
+### Idle timeout (autodown, not autostop)
 
-Kubernetes supports autostop, but per-step `cleanup_skypilot()` already runs `sky down` after each step.
-`idle_minutes_to_autostop` (default 10) is a safety net for crashed processes; set `0` for near-immediate
-autostop or `null` to disable.
+A pod cannot be stopped, only deleted, so SkyPilot supports **autodown** on Kubernetes but not autostop —
+a plain autostop request fails every launch with "Auto-stop is not supported on Kubernetes". gbserver
+therefore applies `idle_minutes_to_autostop` on Kubernetes as autodown (`down=True`): after that many idle
+minutes the pod is deleted.
+
+Per-step `cleanup_skypilot()` already runs `sky down` after each step, so the idle timeout (default 10) is
+only a safety net that reaps a pod orphaned by a crashed gbserver. **Keep it well above the step's monitor
+poll interval** (`poll_interval_seconds`, default 300s): a job that finishes just after a poll would
+otherwise be autodowned before the next one, and the poller then sees a missing pod and marks the step
+`FAILED`. gbserver enforces a floor of 2× the step's poll interval on Kubernetes, raising a shorter window
+and logging a warning; the shipped env uses 15. Set `null` to disable it entirely.
 
 > **`sbatch_options` is a no-op on Kubernetes.** The per-step `sbatch_options`
 > field ([skypilot.md](skypilot.md#config-overrides-docker-sbatch_options)) is a
@@ -63,20 +71,51 @@ name: sky-kube
 type: Skypilot
 config:
   default_cloud: kubernetes
-  idle_minutes_to_autostop: 0
+  idle_minutes_to_autostop: 15  # applied as autodown on Kubernetes; keep well above the poll interval
 assetstores:
   - store_uri: space://assetstores/hf
     pull:
       - mode: default
         config:
           cache_path: /tmp/hf_cache
+          inline: true
     push:
       - mode: default
         config: {}
 ```
 
-Steps may set `image_id` freely (Kubernetes runs containers natively — no Pyxis/enroot caveat), and
+**`inline: true` is required without a `shared_workdir`.** Every step runs in its own pod, which
+is torn down when the step finishes. Without `inline`, an `hf://` input is downloaded by a separate
+`hfpull` step into *its* pod's `/tmp`, and the consuming step's fresh pod finds an empty directory.
+`inline: true` injects the `hf download` into the consuming step's own `setup` instead — the same
+arrangement as `skypilot/aws`. If you mount a ReadWriteMany PVC as `shared_workdir`, drop both
+`cache_path` and `inline` so `hfpull` runs as its own step and caches to `${shared_workdir}/hf_cache`.
+
+For the same reason this example has no cross-target handoff: `env://` outputs stay in the
+producing pod. Add an `s3` assetstore or a `shared_workdir` PVC if one target must read another's
+output.
+
+Steps may set `image_id` (Kubernetes runs containers natively — no Pyxis/enroot caveat), and
 `resources.accelerators` / `resources.memory` map onto the pod's resource requests.
+
+### Custom images
+
+Two requirements, both checked on a local kind cluster:
+
+- **The image must be Debian/Ubuntu-based, or already contain SkyPilot's bootstrap packages.** Before a
+  step runs, SkyPilot's pod startup (`sky/templates/kubernetes-ray.yml.j2`) needs `rsync curl wget netcat
+  gcc patch pciutils openssh-server`; it installs any that are missing with **`apt-get`**, and the pod
+  exits if it cannot. Debian/Ubuntu images (including the `python:*-slim` family) work as-is; a Fedora,
+  RHEL or Alpine image works only if all of those are preinstalled. `quay.io/fedora/fedora-minimal`, for
+  example, fails at startup. To avoid Docker Hub pull-rate limits, `public.ecr.aws/docker/library/<image>`
+  mirrors the Docker official images.
+- **An `hf://` input is downloaded inside the image.** With `inline: true` the download runs in the
+  consuming step's own setup — in its image when it sets one. gbserver obtains the `hf` client itself:
+  it uses `pip` when the image has one (unchanged from before), else a preinstalled `hf`, else it fetches a
+  pinned, sha256-verified `uv` release with `curl` (which SkyPilot's startup guarantees) and runs the
+  client through it. So images without pip work, but that last route needs outbound access to
+  `github.com` (the `uv` release, plus a Python build if the image has no `python3`) and to PyPI; on an
+  air-gapped cluster use an image with `pip` or `hf` installed.
 
 ## See also
 

@@ -436,6 +436,20 @@ the default lands in the per-target workdir that is removed when the target fini
               output_path: /shared/dpk/tokens    # must match the uri above
 ```
 
+That example is for `skypilot/slurm` and `skypilot/lsf`, where `/shared` is mounted on every
+node. What works depends on the endpoint:
+
+| Endpoint | Output URI for a handoff | `output_path` |
+|---|---|---|
+| `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` | explicit, matching the `uri` |
+| `skypilot/aws` | `s3://bucket/…` (the S3 assetstore pushes it; the consumer pulls it) | may be left default |
+| `skypilot/kubernetes` | none with the shipped environment — it has no `s3` assetstore and no shared filesystem | — |
+
+On `skypilot/kubernetes`, a cross-target handoff needs an environment that adds an `s3`
+assetstore (then as `skypilot/aws`) or a ReadWriteMany PVC as its `shared_workdir` (then as
+`skypilot/slurm`, using the PVC's mount path). A node-local `env:///tmp/…` is never safe for a
+handoff: the consumer may run on a different node or pod and read an absent directory.
+
 ## Notes and limitations
 
 - **Runtime dependency install.** On the bare launcher node, dependencies are installed per

@@ -1,8 +1,9 @@
 """SkyPilot environment backend (unmanaged mode).
 
 Manages build step execution on SkyPilot-provisioned pods/VMs using
-sky.launch(). Each step gets its own cluster; pods auto-stop after
-idle timeout. The sky SDK is lazy-imported so gbserver does not
+sky.launch(). Each step gets its own cluster, torn down after the step; an
+idle timeout backstops a crash (autostop on VMs, autodown on Kubernetes pods,
+none on slurm/lsf). The sky SDK is lazy-imported so gbserver does not
 require it unless a Skypilot environment is actually configured.
 """
 
@@ -12,6 +13,7 @@ import functools
 import glob
 import importlib.util
 import json
+import math
 import os
 import re
 import shlex
@@ -422,6 +424,77 @@ _SSH_HPC_CLOUDS = ("slurm", "lsf")
 # _SSH_HPC_CLOUDS: this tracks one capability, not HPC-ness. Observed on SLURM
 # (BlueVela); LSF included because it also has autostop forced off.
 _CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
+
+# Clouds where SkyPilot supports auto-DOWN but not auto-STOP. A pod cannot be
+# stopped, only deleted, so SkyPilot rejects any idle_minutes_to_autostop without
+# down=True on Kubernetes ("Auto-stop is not supported on Kubernetes", upstream
+# since #5010) — every launch fails provisioning. Passing down=True turns the idle
+# window into autodown instead, keeping it as the backstop that reaps a pod
+# orphaned by a crashed gbserver (per-step cleanup still `sky down`s normally).
+# Both spellings: `k8s` is a documented default_cloud alias and _get_cloud()'s own
+# fallback.
+_CLOUDS_AUTODOWN_ONLY = ("kubernetes", "k8s")
+
+# On autodown-only clouds the idle window must outlast the step's poll interval
+# by a margin. Otherwise a job that finishes just after a poll can be autodowned
+# before the next one: the poller then sees "does not exist", marks the step
+# FAILED, and the on-completion log download has no pod left to read from.
+_AUTODOWN_MIN_POLL_MULTIPLE = 2
+
+
+def _step_poll_interval_seconds(step_config: dict) -> float:
+    """The step's monitor poll interval, as the skypilot monitor reads it.
+
+    Canonical key across step.yaml configs is ``poll_interval_seconds``; the
+    legacy ``poll_interval`` is accepted for back-compat. Templated configs may
+    render it as a string (e.g. "120"), so it is coerced to a number.
+
+    :param step_config: the step's config (monitor kwargs or the launch config).
+    :returns: seconds; ``_DEFAULT_POLL_INTERVAL_SECONDS`` when absent or invalid.
+    """
+    raw = step_config.get(
+        "poll_interval_seconds",
+        step_config.get("poll_interval", _DEFAULT_POLL_INTERVAL_SECONDS),
+    )
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid poll_interval_seconds %r; falling back to %d",
+            raw,
+            _DEFAULT_POLL_INTERVAL_SECONDS,
+        )
+        return float(_DEFAULT_POLL_INTERVAL_SECONDS)
+
+
+def _autodown_floor(
+    idle_minutes: Optional[int], poll_interval_s: float, cluster_name: str
+) -> Optional[int]:
+    """Raise an autodown window that is too short for the step's poll interval.
+
+    :param idle_minutes: the configured window (None = no idle action, kept).
+    :param poll_interval_s: the step's monitor poll interval in seconds.
+    :param cluster_name: for the warning.
+    :returns: ``idle_minutes``, or the floor
+        ``ceil(_AUTODOWN_MIN_POLL_MULTIPLE * poll_interval_s / 60)`` if larger.
+    """
+    if idle_minutes is None:
+        return None
+    floor = math.ceil(_AUTODOWN_MIN_POLL_MULTIPLE * poll_interval_s / 60)
+    if idle_minutes < floor:
+        logger.warning(
+            "idle_minutes_to_autostop=%s is shorter than %dx the step's poll "
+            "interval (%ss) on an autodown-only cloud; raising it to %d minutes "
+            "for cluster %s so the pod is not deleted before the poller sees the "
+            "job finish",
+            idle_minutes,
+            _AUTODOWN_MIN_POLL_MULTIPLE,
+            int(poll_interval_s),
+            floor,
+            cluster_name,
+        )
+        return floor
+    return idle_minutes
 
 
 def _cpus_floor(cloud: str, n: int) -> Union[int, str]:
@@ -1264,6 +1337,149 @@ def _build_skypilot_mounts(
         else:
             file_mounts[mount_path] = _resolve_local_mount_source(mount_val, asset_dir)
     return file_mounts, storage_mounts
+
+
+# Pin <2.0: huggingface_hub 2.x pulls httpx2, whose BrotliDecoder calls
+# brotli.Decompressor.process(output_buffer_limit=...) -- a kwarg added only in
+# brotli>=1.2.0. The bare worker's ambient conda brotli (1.0.9) rejects it
+# (TypeError), failing hf download. NOT a Python-version issue (reproduces on
+# py3.12 w/ brotli<1.2). Stop-gap until the worker ships brotli>=1.2.0 (or
+# httpx2[brotli]) so hf 2.x works; see follow-up issue.
+_INLINE_HF_CLI_SPEC = "huggingface_hub[cli]<2.0"
+
+# Pinned uv release, used only when the image has neither a working `pip` nor an
+# `hf` on PATH. The statically linked musl builds run on any Linux image (glibc or
+# musl), so only the CPU architecture is detected. Each tarball is sha256-verified
+# before it is unpacked — never piped into a shell. Bumping the version means
+# updating both checksums from the release's published `<asset>.sha256` files.
+_INLINE_HF_UV_VERSION = "0.12.23"
+_INLINE_HF_UV_SHA256 = {
+    "x86_64": "1cff8783850e794470aadb73f54b749542a511fc57b0ce6468b64bd3852e0ade",
+    "aarch64": "b536543cc4d50661986b165c76ee8aa9056e4fa332edcd153ff2e98760f9359b",
+}
+_INLINE_HF_UV_URL = (
+    "https://github.com/astral-sh/uv/releases/download/"
+    f"{_INLINE_HF_UV_VERSION}/uv-{{arch}}-unknown-linux-musl.tar.gz"
+)
+
+
+def _inline_hf_client_lines() -> list[str]:
+    """Shell that defines ``gb_hf``, an ``hf`` client usable inside any image.
+
+    Tries, in order:
+
+    1. ``pip`` on PATH: install the pinned client (the original behaviour, kept
+       first so every image that worked before takes the same path).
+    2. ``hf`` on PATH afterwards (from step 1, or preinstalled in the image): use
+       it. A preinstalled ``hf`` may be 2.x and so bypass the ``<2.0`` pin; that is
+       acceptable because the brotli incompatibility behind the pin is specific to
+       the bare SkyPilot worker's conda environment — an image that ships hf 2.x is
+       expected to ship a brotli that works with it.
+    3. Otherwise fetch the pinned ``uv`` release with ``curl`` (which SkyPilot's
+       node/pod bootstrap guarantees), verify its sha256, and run the pinned client
+       via ``uvx``. Covers images with no pip (e.g. plain Ubuntu), a PEP 668
+       "externally managed" pip, and a ``--user`` install whose bin dir is not on
+       PATH. Needs outbound access to github.com (the uv release, and a Python
+       build if the image has no ``python3``) and to PyPI.
+    4. None of these: fail before any download, naming what is missing.
+
+    :returns: shell lines; the block runs under the step prologue's ``set -eu``.
+    """
+    sha_cases = " ".join(
+        f"{arch}) gb_uv_sha={sha} ;;" for arch, sha in _INLINE_HF_UV_SHA256.items()
+    )
+    return [
+        f"gb_hf_spec={shlex.quote(_INLINE_HF_CLI_SPEC)}",
+        "if command -v pip >/dev/null 2>&1; then",
+        '  pip install --no-cache-dir "$gb_hf_spec" >/tmp/gb-hfpull-pip.log 2>&1 \\',
+        '    || echo "gbserver: pip install of $gb_hf_spec failed'
+        ' (see /tmp/gb-hfpull-pip.log); trying another way to get hf" >&2',
+        "fi",
+        "if command -v hf >/dev/null 2>&1; then",
+        '  gb_hf() { hf "$@"; }',
+        "elif command -v curl >/dev/null 2>&1; then",
+        '  echo "gbserver: no usable hf client in this image; fetching pinned'
+        f' uv {_INLINE_HF_UV_VERSION}" >&2',
+        '  case "$(uname -m)" in x86_64|amd64) gb_uv_arch=x86_64 ;;'
+        " aarch64|arm64) gb_uv_arch=aarch64 ;;"
+        ' *) echo "gbserver: ERROR no pinned uv build for $(uname -m);'
+        ' use an image with python+pip or hf installed" >&2; exit 1 ;; esac',
+        f'  case "$gb_uv_arch" in {sha_cases} esac',
+        '  gb_uv_dir="${TMPDIR:-/tmp}/gb-hfpull-uv"; mkdir -p "$gb_uv_dir"',
+        '  gb_uv_tgz="$gb_uv_dir/uv.tar.gz"',
+        f'  gb_uv_url="{_INLINE_HF_UV_URL.format(arch="$gb_uv_arch")}"',
+        '  if ! curl -fsSLo "$gb_uv_tgz" "$gb_uv_url"; then',
+        '    echo "gbserver: ERROR could not download $gb_uv_url to fetch inline'
+        ' hf:// inputs; use an image with python+pip or hf installed" >&2',
+        "    exit 1",
+        "  fi",
+        # Refuse to unpack anything unverified: no checksum tool is a failure too.
+        "  if command -v sha256sum >/dev/null 2>&1; then gb_uv_got=$(sha256sum"
+        ' "$gb_uv_tgz" | cut -d" " -f1)',
+        "  elif command -v shasum >/dev/null 2>&1; then gb_uv_got=$(shasum -a 256"
+        ' "$gb_uv_tgz" | cut -d" " -f1)',
+        "  else gb_uv_got=''; fi",
+        '  if [ "$gb_uv_got" != "$gb_uv_sha" ]; then',
+        '    echo "gbserver: ERROR uv download failed sha256 verification'
+        ' (expected $gb_uv_sha, got ${gb_uv_got:-no sha256 tool}); refusing to run it"'
+        " >&2",
+        "    exit 1",
+        "  fi",
+        '  tar -xzf "$gb_uv_tgz" -C "$gb_uv_dir"',
+        '  gb_uvx="$gb_uv_dir/uv-$gb_uv_arch-unknown-linux-musl/uvx"',
+        '  gb_hf() { "$gb_uvx" --from "$gb_hf_spec" hf "$@"; }',
+        "else",
+        '  echo "gbserver: ERROR cannot download inline hf:// inputs: this image has'
+        " no 'hf', no working 'pip' and no 'curl' to fetch one."
+        ' Use an image with python+pip or hf installed" >&2',
+        "  exit 1",
+        "fi",
+    ]
+
+
+def _inline_hf_download_lines(pending_hfpulls: dict[str, dict]) -> list[str]:
+    """One ``gb_hf download`` per inline input, every value shell-quoted.
+
+    :param pending_hfpulls: binding id -> ``_hfpull`` metadata (``repo``,
+        ``path``, optional ``revision`` / ``type``).
+    :returns: shell lines.
+    """
+    lines = []
+    for pull_info in pending_hfpulls.values():
+        cmd = (
+            f"gb_hf download {shlex.quote(str(pull_info['repo']))}"
+            f" --local-dir {shlex.quote(str(pull_info['path']))}"
+        )
+        if pull_info.get("revision"):
+            cmd += f" --revision {shlex.quote(str(pull_info['revision']))}"
+        if pull_info.get("type"):
+            cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
+        lines.append(cmd)
+    return lines
+
+
+def _inline_hfpull_setup_block(pending_hfpulls: dict[str, dict]) -> str:
+    """Shell prepended to a step's ``setup`` to download its inline ``hf://`` inputs.
+
+    Inline pulls (``inline: true`` on the hf assetstore, for envs without a
+    shared filesystem) run the download in the CONSUMING step's own setup, so
+    when the step sets an image the download runs INSIDE that image. The block
+    therefore obtains its own client (:func:`_inline_hf_client_lines`) rather than
+    assuming what the image ships, then downloads each input
+    (:func:`_inline_hf_download_lines`).
+
+    Runs under the step prologue's ``set -eu``, so a failed download fails setup.
+
+    :param pending_hfpulls: binding id -> ``_hfpull`` metadata.
+    :returns: the shell block, newline-terminated.
+    """
+    lines = [
+        "# -- gbserver: inline hfpull for inputs --",
+        *_inline_hf_client_lines(),
+        *_inline_hf_download_lines(pending_hfpulls),
+        "# -- end inline hfpull --",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def aws_credentials_present() -> bool:
@@ -2749,28 +2965,11 @@ class Skypilot(Environment):
                 if isinstance(bval, dict) and "_hfpull" in bval:
                     pending_hfpulls[bid] = bval["_hfpull"]
             if pending_hfpulls:
-                # Pin <2.0: huggingface_hub 2.x pulls httpx2, whose BrotliDecoder
-                # calls brotli.Decompressor.process(output_buffer_limit=...) -- a
-                # kwarg added only in brotli>=1.2.0. The bare worker's ambient
-                # conda brotli (1.0.9) rejects it (TypeError), failing hf download.
-                # NOT a Python-version issue (reproduces on py3.12 w/ brotli<1.2).
-                # Stop-gap until the worker ships brotli>=1.2.0 (or httpx2[brotli])
-                # so hf 2.x works; see follow-up issue.
-                hfpull_lines = [
-                    "# -- gbserver: inline hfpull for inputs --",
-                    "pip install --no-cache-dir 'huggingface_hub[cli]<2.0' "
-                    "2>/dev/null || true",
-                ]
-                for bid, pull_info in pending_hfpulls.items():
-                    cmd = f'hf download "{pull_info["repo"]}" --local-dir "{pull_info["path"]}"'
-                    if pull_info.get("revision"):
-                        cmd += f' --revision "{pull_info["revision"]}"'
-                    if pull_info.get("type"):
-                        cmd += f' --repo-type {pull_info["type"]}'
-                    hfpull_lines.append(cmd)
-                hfpull_lines.append("# -- end inline hfpull --")
-                hfpull_block = "\n".join(hfpull_lines) + "\n"
-                setup_script = hfpull_block + setup_script
+                # Runs inside the step's image when it sets one, so the block
+                # obtains its own hf client — see _inline_hfpull_setup_block.
+                setup_script = (
+                    _inline_hfpull_setup_block(pending_hfpulls) + setup_script
+                )
                 logger.info(
                     "Injected %d inline hfpull download(s) into setup script",
                     len(pending_hfpulls),
@@ -2855,6 +3054,10 @@ class Skypilot(Environment):
             # backends regardless of the user's config. Reuses cloud_group
             # (normalized first infra segment) computed above.
             autostop = None if cloud_group in _SSH_HPC_CLOUDS else idle_minutes
+            if cloud_group in _CLOUDS_AUTODOWN_ONLY:
+                autostop = _autodown_floor(
+                    autostop, _step_poll_interval_seconds(config), cluster_name
+                )
 
             # (The opt-in SSH-socket clear, if GBTEST_SKY_SSH_RESET is set, ran
             # earlier via _prepare_ssh_for_launch, before the SSH config was
@@ -2988,7 +3191,8 @@ class Skypilot(Environment):
         Args:
             task: The ``sky.Task`` to launch.
             cluster_name: Deterministic cluster name for this launch.
-            autostop: idle_minutes_to_autostop (None on slurm/lsf).
+            autostop: idle_minutes_to_autostop (None on slurm/lsf). On
+                kubernetes it is applied as autodown (see _CLOUDS_AUTODOWN_ONLY).
             cloud_group: Normalized target cloud, as resolved from the launch
                 infra by the caller — NOT the env's ``default_cloud``, which a
                 step can override via ``infra:``/``resources.cloud``. Decides
@@ -3034,6 +3238,10 @@ class Skypilot(Environment):
             reraise=True,
         ):
             with attempt:
+                # Autodown rather than autostop where only autodown exists (see
+                # _CLOUDS_AUTODOWN_ONLY). None means "no idle action" and needs no
+                # flag; elsewhere down stays False so the idle window still stops.
+                down = cloud_group in _CLOUDS_AUTODOWN_ONLY and autostop is not None
                 try:
                     # Both sky.launch (submit) and sky.stream_and_get (wait)
                     # block in an OS thread, so a CancelledError delivered to
@@ -3050,6 +3258,7 @@ class Skypilot(Environment):
                             task,
                             cluster_name=cluster_name,
                             idle_minutes_to_autostop=autostop,
+                            down=down,
                         )
                     )
                     try:
@@ -3321,19 +3530,7 @@ class Skypilot(Environment):
         # Canonical key across step.yaml configs is ``poll_interval_seconds``;
         # accept the legacy ``poll_interval`` for back-compat. Templated configs
         # may render this as a string (e.g. "120"), so coerce to a number.
-        _raw_poll = kwargs.get(
-            "poll_interval_seconds",
-            kwargs.get("poll_interval", _DEFAULT_POLL_INTERVAL_SECONDS),
-        )
-        try:
-            poll_interval = float(_raw_poll)
-        except (TypeError, ValueError):
-            logger.warning(
-                "Invalid poll_interval_seconds %r; falling back to %d",
-                _raw_poll,
-                _DEFAULT_POLL_INTERVAL_SECONDS,
-            )
-            poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
+        poll_interval = _step_poll_interval_seconds(kwargs)
         # Per-step log-retrieval policy (mode + cadence). Defaults to
         # on_completion: pull the full log once at terminal status.
         log_mode, log_interval, startup_window = _parse_log_retrieval(

@@ -39,10 +39,37 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # System prerequisites for the local kind cluster that `make kube-setup`
+      # (its own step, after extended-tests-setup below) creates for the
+      # skypilot/kubernetes tests. SkyPilot reaches pods via `kubectl port-forward` and needs socat +
+      # netcat, without which `sky check` reports Kubernetes disabled. Ubuntu 24.04
+      # has no `netcat` package candidate, so install netcat-openbsd (its `nc -h`
+      # exits 0, which SkyPilot's dependency check accepts). kind is pinned and
+      # checksum-verified rather than taken from the runner image, so the cluster
+      # matches the version these tests are verified with.
+      - name: Install kind cluster prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq socat netcat-openbsd
+          KIND_VERSION=v0.33.0
+          KIND_SHA256=aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+          curl -fsSLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  /tmp/kind" | sha256sum -c -
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          kind version
+          kubectl version --client
+
       - name: Install extended test dependencies
         run: |
           python -m pip install --upgrade pip
           make extended-tests-setup
+
+      # Its own step rather than part of extended-tests-setup, which stays free of
+      # the kind prerequisites for local use (see the Makefile). Steps share this
+      # runner, so the cluster is still up for "Run extended tests" below; a failure
+      # here fails the job rather than letting the kube tests silently self-skip.
+      - name: Start local kind cluster (skypilot/kubernetes tests)
+        run: make kube-setup
 
       - name: Run extended tests
         env:

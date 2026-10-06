@@ -3,13 +3,26 @@ type: Skypilot
 subtype: kubernetes
 config:
   default_cloud: kubernetes
-  idle_minutes_to_autostop: 0
+  # Applied as AUTODOWN on Kubernetes (a pod cannot be stopped; SkyPilot rejects
+  # autostop there). Per-step cleanup already `sky down`s each pod, so this only
+  # reaps one orphaned by a crashed gbserver. Keep it well above the steps' poll
+  # interval (default 300s): a shorter window can delete the pod before the poller
+  # sees the job finish, failing the step. gbserver raises it to 2x the step's poll
+  # interval if it is shorter.
+  idle_minutes_to_autostop: 15
 assetstores:
   - store_uri: space://assetstores/hf
     pull:
       - mode: default
         config:
           cache_path: /tmp/hf_cache
+          # Download in the consuming step's own setup rather than as a separate
+          # hfpull step. Each step runs in its own pod and this env has no
+          # shared_workdir, so a separate hfpull pod would cache to its own /tmp and
+          # be torn down, leaving the consumer an empty directory. Same reason as
+          # skypilot/aws. If you add a ReadWriteMany PVC as shared_workdir, drop both
+          # keys here so hfpull runs once and caches to ${shared_workdir}/hf_cache.
+          inline: true
     push:
       - mode: default
         config: {}

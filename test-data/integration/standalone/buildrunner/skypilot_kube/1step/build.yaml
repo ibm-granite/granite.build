@@ -1,0 +1,41 @@
+granite.build:
+  name: skypilot-kube-command-hf-test
+  targets:
+    pod-run:
+      environment_uri: space://environments/skypilot/kubernetes
+      inputs:
+        input_model:
+          # Public dataset (same one the slurm 1step pulls). The kube env pulls hf
+          # inputs INLINE — injected into this step's setup — because each step is
+          # its own pod with no shared filesystem.
+          uri: hf:///datasets/ibm-research/vira-intents-live
+      outputs:
+        env_output:
+          uri: "env:///tmp/gb-env-output.txt"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          # The command step defaults to retry_enabled_default: false, and the
+          # buildtest's simulate_step_failure only injects its synthetic failure
+          # when step retry is enabled — without this the "retry" coverage passes
+          # without ever retrying (the harness merely logs a warning). With it, the
+          # injected failure makes AnyFailureRetryStrategy tear the pod down and
+          # relaunch it under the same cluster name.
+          retry_enabled: true
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              # Fail loudly unless the hf input was staged INTO THIS POD. Without
+              # inline pulls the binding path exists only in a torn-down hfpull pod,
+              # so `ls -A` here is empty (or the dir is absent) and the step fails.
+              command: >-
+                in={{ bindings.input_model.binding.path }};
+                echo "input path: $in";
+                test -d "$in" || { echo "FAIL: input dir $in missing in this pod"; exit 1; };
+                test -n "$(ls -A "$in")" || { echo "FAIL: input dir $in is empty in this pod"; exit 1; };
+                ls -la "$in";
+                echo "pod-local output" > /tmp/gb-env-output.txt;
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-env-output.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

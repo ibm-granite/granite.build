@@ -1,0 +1,29 @@
+# YAML-driven spec for test/integration/standalone/buildrunner/skypilot_kube/test_skypilot_kube_1step.py.
+# Kube sibling of test-data/integration/standalone/buildrunner/skypilot_slurm/1step/buildtest.yaml.
+targets:
+  - pod-run
+target_expectations:
+  - target_name: pod-run
+    # step_count = 1: the command step only. The hf input adds NO hfpull step on
+    # this env, because skypilot/kubernetes pulls hf inline (injected into the
+    # step's setup) — 2 here would mean the separate-pod pull is back, which is the
+    # bug this pins. The env:// output moves no bytes, so it queues no push step.
+    step_count: 1
+    input_artifact_count: 1    # input_model
+    output_artifact_count: 1   # env_output, registered from the marker
+    # Not asserted under standalone's NoopLineageStore; CALIBRATE on a lineage run.
+    jobstats_count: 1
+# Shared standalone space, as the slurm tests use, so the SHIPPED
+# configurations/assets/environments/skypilot/kubernetes/environment.yaml is the
+# env under test.
+space_uri: ../../../../../../configurations/spaces/local
+# Same coverage as the slurm spec. `tests` is left at its default, so both
+# `runner` and `runner_cancellation` run: the cancel lands once the build is
+# RUNNING — typically mid-provision on kube — so it exercises gbserver's
+# abort-provision path. `simulate_step_failure: true` injects one synthetic
+# failure event, and AnyFailureRetryStrategy tears the pod down and relaunches it
+# under the same cluster name, exercising the kube teardown -> relaunch path.
+simulate_step_failure: true
+# Pod scheduling + SkyPilot runtime setup on first launch (image pull) + the
+# inline hf download. Generous for a laptop kind cluster.
+timeout_minutes: 20
