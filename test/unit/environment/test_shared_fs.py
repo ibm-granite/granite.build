@@ -754,3 +754,53 @@ def test_access_point_transit_note_is_none():
         ),
     )
     assert p.transit_encryption_note() is None
+
+
+def _ap_provider():
+    return EfsProvider(
+        "/mnt/gb-shared",
+        EfsConfig(
+            file_system_id="fs-0abc123",
+            region="us-east-1",
+            access_point_id="fsap-0abc123",
+        ),
+    )
+
+
+def test_access_point_cleanup_script_installs_efs_utils_before_mount():
+    # The teardown VM runs SkyPilot's default image (no mount.efs), so in AP mode
+    # the gbserver-owned cleanup script installs amazon-efs-utils first.
+    sh = _ap_provider().cleanup_run_script("/mnt/gb-shared/gbroot/builds/b/runs/r")
+    clone = "git clone --depth 1 --branch v1.35.2 https://github.com/aws/efs-utils"
+    assert clone in sh
+    assert sh.startswith("set -eu\n")
+    assert sh.index(clone) < sh.index("accesspoint=fsap-0abc123,tls")
+    assert sh.index(clone) < sh.index("rm -rf ")
+    _bash_ok(sh)
+
+
+def test_non_access_point_cleanup_script_has_no_efs_utils_install():
+    p = EfsProvider(
+        "/mnt/gb-shared", EfsConfig(file_system_id="fs-0abc", region="us-east-1")
+    )
+    sh = p.cleanup_run_script("/mnt/gb-shared/gbroot/builds/b/runs/r")
+    assert "git clone" not in sh
+    assert "github.com/aws/efs-utils" not in sh
+    assert "build-deb.sh" not in sh
+    assert sh == "set -eu\n" + p.mount_prologue() + (
+        "rm -rf '/mnt/gb-shared/gbroot/builds/b/runs/r'\n"
+        "rmdir --ignore-fail-on-non-empty "
+        "\"$(dirname '/mnt/gb-shared/gbroot/builds/b/runs/r')\" 2>/dev/null || true\n"
+        "rmdir --ignore-fail-on-non-empty "
+        '"$(dirname "$(dirname \'/mnt/gb-shared/gbroot/builds/b/runs/r\')")" '
+        "2>/dev/null || true\n"
+    )
+
+
+def test_access_point_worker_prologue_never_installs_efs_utils():
+    # Worker steps fail fast when mount.efs is missing; they never auto-install.
+    sh = _ap_provider().mount_prologue()
+    assert "git clone" not in sh
+    assert "github.com/aws/efs-utils" not in sh
+    assert "build-deb.sh" not in sh
+    assert "yum install -y -q amazon-efs-utils" not in sh

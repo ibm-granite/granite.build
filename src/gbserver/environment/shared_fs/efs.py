@@ -31,6 +31,35 @@ _INSTALL_NFS = (
 )
 
 
+# amazon-efs-utils release built on the teardown VM. Pinned to v1.35.2 because it
+# is the last pure-Python/stunnel release; v2+ needs a Rust toolchain to build.
+_EFS_UTILS_VERSION = "v1.35.2"
+# Install amazon-efs-utils (mount.efs) if absent. For the gbserver-owned teardown
+# cleanup VM ONLY: that throwaway VM runs SkyPilot's default image (no mount.efs),
+# and an access-point mount cannot fall back to nfs4. Worker steps NEVER
+# auto-install -- their access-point mount fails fast when mount.efs is missing.
+# apt hosts build the .deb from github.com/aws/efs-utils (Ubuntu ships no
+# amazon-efs-utils package); yum hosts (Amazon Linux) install the distro package.
+_INSTALL_EFS_UTILS = (
+    "if ! command -v mount.efs >/dev/null 2>&1; then\n"
+    "  if command -v apt-get >/dev/null 2>&1; then\n"
+    "    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq\n"
+    "    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git "
+    "ca-certificates binutils build-essential debhelper dh-make nfs-common "
+    "stunnel4 python3\n"
+    '    __gb_efs="$(mktemp -d)"\n'
+    f"    git clone --depth 1 --branch {_EFS_UTILS_VERSION} "
+    'https://github.com/aws/efs-utils "$__gb_efs"\n'
+    '    (cd "$__gb_efs" && $SUDO ./build-deb.sh)\n'
+    "    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+    '"$__gb_efs"/build/amazon-efs-utils*.deb\n'
+    "  else\n"
+    "    $SUDO yum install -y -q amazon-efs-utils\n"
+    "  fi\n"
+    "fi\n"
+)
+
+
 class EfsProvider(SharedFilesystemProvider):
     def __init__(self, mount_point: str, cfg: EfsConfig) -> None:
         super().__init__(mount_point)
@@ -124,6 +153,10 @@ class EfsProvider(SharedFilesystemProvider):
         return (
             f"{_SUDO_SETUP}"
             f"{_INSTALL_NFS}\n"
+            # An existing mount at mount_point is trusted as-is, so the mount
+            # stays idempotent across steps on a host. With access_point_id, a
+            # pre-existing mount of the filesystem ROOT there (made out of band,
+            # not by gbserver) would bypass the access point.
             f"if ! mountpoint -q {mp}; then\n"
             f"  $SUDO mkdir -p {mp}\n"
             f"  {self._mount_line(mp, dns_override)} || {{ {fail}; }}\n"
@@ -140,6 +173,9 @@ class EfsProvider(SharedFilesystemProvider):
             # (|| exit 1) before any rm if the mount fails; `set -eu` is
             # defense-in-depth so nothing runs after a silent failure.
             "set -eu\n"
+            # Access-point mounts need mount.efs (no nfs4 fallback), which the
+            # default-image teardown VM lacks: install it first (teardown only).
+            + (_SUDO_SETUP + _INSTALL_EFS_UTILS if self.cfg.access_point_id else "")
             + self.mount_prologue()
             + f"rm -rf {pr}\n"
             + f'rmdir --ignore-fail-on-non-empty "$(dirname {pr})" 2>/dev/null || true\n'
