@@ -32,8 +32,8 @@ from typing import Optional
 from fastapi import HTTPException, Request, status
 
 from gbserver.api.utils import (
-    confirm_space_member_access,
     confirm_existing_item_write_access,
+    confirm_space_member_access,
 )
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.stored_build import StoredBuild

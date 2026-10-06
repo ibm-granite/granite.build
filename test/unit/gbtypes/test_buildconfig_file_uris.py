@@ -183,3 +183,19 @@ def test_parent_segments_not_checked_on_inputs_outputs():
     with patch.object(buildconfig_module, "is_standalone", return_value=True):
         cfg = _config(input_uri="env:///a/../b", output_uri="env:///c/../d/")
         assert _parent_segment_errors(cfg) == []
+
+
+@pytest.mark.usefixtures("hosted")
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "{# x #}file:///home/gbserver/.kube/config",  # Jinja comment hides the scheme
+        "{% if true %}file:///home/gbserver/.ssh{% endif %}",  # block tag
+        "fi{# #}le:///etc",
+    ],
+)
+def test_jinja_comment_or_block_before_scheme_rejected(uri):
+    # Inputs/outputs default to the git scheme, so without this a templated
+    # prefix would hide a file: URI until it is rendered at run time.
+    assert len(_file_uri_errors(_config(input_uri=uri))) == 1
+    assert len(_file_uri_errors(_config(output_uri=uri))) == 1

@@ -361,8 +361,8 @@ def restart_build(request: Request, req: BuildRestartRequest) -> BuildRestartRes
         confirm_can_add_to_space(
             request, username_on_target=build.username, space_name=stored_space.name
         )
-    except HTTPException:
-        raise not_found
+    except HTTPException as exc:
+        raise not_found from exc
 
     # Only a finished build can be restarted: re-opening a build with a live runner
     # would attach a second runner to it. There is no runner-liveness table; the

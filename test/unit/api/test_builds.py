@@ -66,10 +66,10 @@ from gbserver.api.builds import (
     validate_build,
 )
 from gbserver.api.utils import (
-    confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
+    _has_existing_item_write_access as _real_has_existing_item_write_access,
 )
 from gbserver.api.utils import (
-    _has_existing_item_write_access as _real_has_existing_item_write_access,
+    confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
 )
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_space import StoredSpace

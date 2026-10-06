@@ -67,10 +67,10 @@ from gbserver.api.artifacts import (
     register_hf_model,
 )
 from gbserver.api.utils import (
-    confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
+    _has_existing_item_write_access as _real_has_existing_item_write_access,
 )
 from gbserver.api.utils import (
-    _has_existing_item_write_access as _real_has_existing_item_write_access,
+    confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
 )
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.types.artifact import ArtifactType

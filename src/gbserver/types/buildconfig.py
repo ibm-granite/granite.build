@@ -56,13 +56,15 @@ def _may_be_file_uri(uri: Optional[str], default_scheme: str) -> bool:
 
     Returns:
         bool: True if the scheme is ``file`` (or ``default_scheme`` is ``file``
-        and none is given), or if a Jinja template appears before the first
-        ``:``/``/`` -- the scheme is then only decided when it is rendered, so it
-        cannot be shown not to be ``file``.
+        and none is given), or if any Jinja syntax (``{{``, ``{%`` or ``{#``)
+        appears before the first ``:``/``/`` -- the scheme is then only decided
+        when it is rendered (possibly with run-time values), so it cannot be
+        shown not to be ``file``.
     """
     if not uri:
         return False
-    if "{{" in re.split(r"[:/]", uri, maxsplit=1)[0]:
+    prefix = re.split(r"[:/]", uri, maxsplit=1)[0]
+    if any(tag in prefix for tag in ("{{", "{%", "{#")):
         return True
     return urlparse(uri, default_scheme).scheme == FILE_SCHEME
 
@@ -519,7 +521,6 @@ class BuildConfig(Config):
         names) fail at submit time. Templated URIs are checked at push time.
         """
         from gbcommon.uri.lh import LH_URI_SCHEME
-        from gbcommon.uri.uri import URI
 
         errors = GBValidationErrors()
         for target_name, target in self.targets.items():
