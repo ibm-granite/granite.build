@@ -25,7 +25,6 @@ The prefix authenticates like ``/api/v1/*``. AutoTuneX itself defaults to no aut
 unauthenticated API.
 """
 
-import os
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -33,11 +32,11 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
+from gbserver.types.constants import AUTOTUNEX_URL
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-AUTOTUNEX_URL = os.getenv("AUTOTUNEX_API_URL", "http://localhost:8000")
 # AutoTuneX serves its resource routes under /api/v1.
 _UPSTREAM_PREFIX = "/api/v1"
 # Public path this proxy is mounted at; the browser side of the mapping.

@@ -15,10 +15,12 @@ import type { JobDetail } from '@granite-build/ui-core/types'
  * panel. Ask the authoritative endpoint instead, for every build.
  *
  * EVERY failure means "no linked job", and renders nothing. `getJobByBuildId` maps
- * 404 to null; this hook additionally swallows the 502 gbserver's proxy returns
- * when AutoTuneX is not deployed, the 401/403 a viewer without access gets, and
- * plain network errors. A build page in a deployment without AutoTuneX has to look
- * exactly as it did before AutoTuneX existed — an error banner on every build would
+ * 404 to null — which also covers a gbserver without GBSERVER_ENABLE_AUTOTUNEX,
+ * where /api/autotunex is unmounted and falls through to the SPA-fallback 404.
+ * This hook additionally swallows the 502 the proxy returns when it is enabled but
+ * the AutoTuneX server is unreachable, the 401/403 a viewer without access gets,
+ * and plain network errors. A build page in a deployment without AutoTuneX has to
+ * look exactly as it did before AutoTuneX existed — an error banner on every build would
  * be worse than an absent tab — so loading and failure are deliberately
  * indistinguishable and neither `isLoading` nor `isError` is returned.
  */
@@ -44,9 +46,9 @@ export function useLinkedTuningJob(buildId: string): {
     // (A failed `listSpaces` also settles, leaving scope=own, so this cannot hang.)
     enabled: Boolean(buildId) && !spacesPending,
     // Nothing is rendered on failure, so a retry buys no visible recovery — and on
-    // a deployment without AutoTuneX every build page would pay one extra request
-    // for a 502 that cannot succeed. That's one, not react-query's library default
-    // of three, because this app's own QueryClient (ClientShell) already sets
+    // a deployment whose proxy is enabled but AutoTuneX is down, every build page
+    // would pay one extra request for a 502 that cannot succeed. That's one, not
+    // react-query's library default of three, because this app's own QueryClient (ClientShell) already sets
     // `retry: 1`. react-query's default refetchOnWindowFocus still heals a
     // transient blip.
     retry: false,
