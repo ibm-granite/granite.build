@@ -7,10 +7,13 @@ export interface PreviewTableHeader {
  * Rendered text for one preview cell. A null/undefined value renders empty --
  * this needs saying because typeof null === 'object', which would otherwise
  * route it into JSON.stringify and print the literal text "null".
+ * cropFrom 'end' keeps the last maxCellChars characters instead of the first:
+ * rows sharing a long prefix (a common system prompt) differ only at the end.
  */
-export function previewCellText(value: unknown, maxCellChars?: number): string {
+export function previewCellText(value: unknown, maxCellChars?: number, cropFrom: 'start' | 'end' = 'start'): string {
   const text = value == null ? '' : typeof value === 'string' ? value : JSON.stringify(value)
-  return maxCellChars != null && text.length > maxCellChars ? `${text.slice(0, maxCellChars)}...` : text
+  if (maxCellChars == null || text.length <= maxCellChars) return text
+  return cropFrom === 'end' ? `...${text.slice(-maxCellChars)}` : `${text.slice(0, maxCellChars)}...`
 }
 
 /**

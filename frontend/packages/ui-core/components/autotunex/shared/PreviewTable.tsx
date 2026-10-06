@@ -18,6 +18,8 @@ interface PreviewTableProps {
   maxRows?: number
   /** Truncate rendered cell text to this many characters. Omit for no truncation. */
   maxCellChars?: number
+  /** Which end of the cell text maxCellChars keeps. Default 'start'. */
+  cropFrom?: 'start' | 'end'
   /** Rendered in place of the table when there is nothing to show. */
   emptyMessage?: string
 }
@@ -27,6 +29,7 @@ export function PreviewTable({
   headers,
   maxRows,
   maxCellChars,
+  cropFrom,
   emptyMessage,
 }: PreviewTableProps) {
   const resolvedHeaders = useMemo<PreviewTableHeader[]>(() => {
@@ -57,7 +60,7 @@ export function PreviewTable({
             <TableRow key={index}>
               {resolvedHeaders.map((header) => {
                 const value = row[header.key]
-                return <TableCell key={header.key}>{previewCellText(value, maxCellChars)}</TableCell>
+                return <TableCell key={header.key}>{previewCellText(value, maxCellChars, cropFrom)}</TableCell>
               })}
             </TableRow>
           ))}

@@ -50,6 +50,7 @@ import { InfoTooltip } from './InfoTooltip'
 import { useHfImport } from './useHfImport'
 import { HfImportForm } from './HfImportForm'
 import { HfImportPreview } from './HfImportPreview'
+import { PreviewCropSwitcher, previewCropProps, type CropMode } from './PreviewCropSwitcher'
 import { HfImportSummaryCard } from './HfImportSummaryCard'
 import { truncationNotice, type HfImportSnapshot } from './hfImport'
 import { ALGORITHM_DETAILS, ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotunexAlgorithms'
@@ -81,10 +82,9 @@ function buildPreviewData(data: ParsedDataRow[]): { headers: PreviewHeader[]; ro
       if (val === null || val === undefined) {
         processedRow[col] = ''
       } else if (typeof val === 'string') {
-        processedRow[col] = val.length > 120 ? val.substring(0, 120) + '...' : val
+        processedRow[col] = val
       } else {
-        const str = JSON.stringify(val)
-        processedRow[col] = str.length > 120 ? str.substring(0, 120) + '...' : str
+        processedRow[col] = JSON.stringify(val)
       }
     }
     return processedRow
@@ -204,6 +204,7 @@ export function Step1DatasetUpload({
   const [valPreviewHeaders, setValPreviewHeaders] = useState<PreviewHeader[]>([])
   const [validationRecordCount, setValidationRecordCount] = useState(0)
   const [activePreviewTab, setActivePreviewTab] = useState(0)
+  const [cropMode, setCropMode] = useState<CropMode>('start')
   const [userColumns, setUserColumns] = useState<string[]>([])
   // Increments on every upload, reset and existing-dataset pick, so anything that
   // resolves late can tell whether it still describes the file now selected. The
@@ -730,6 +731,9 @@ export function Step1DatasetUpload({
   const showColumnMapping = uploadedFile && parsedData.length > 0 && userColumns.length > 0 && !existingDatasetId
   const sortedColumns = [...allColumns].sort((a, b) => Number(b.required) - Number(a.required))
 
+  const previewCrop = previewCropProps(cropMode)
+  const cropSwitcher = <PreviewCropSwitcher value={cropMode} onChange={setCropMode} />
+
   return (
     <div className={layoutStyles.rowWrap}>
       <div className={styles.settingsColumn}>
@@ -1004,40 +1008,45 @@ export function Step1DatasetUpload({
               {/* A frozen import shows the samples it was approved against, with no new request. */}
               <HfImportPreview
                 preview={pendingHfImport ? pendingHfImport.preview : hf.preview}
-                mappedPreview={pendingHfImport ? pendingHfImport.mappedPreview : hf.freshMappedPreview}
               />
             </Tile>
           ) : previewRows.length > 0 && previewHeaders.length > 0 ? (
             <Tile className={styles.previewTile}>
               {valPreviewRows.length > 0 ? (
                 <Tabs selectedIndex={activePreviewTab} onChange={({ selectedIndex }) => setActivePreviewTab(selectedIndex)}>
-                  <TabList aria-label="Dataset preview tabs">
-                    <Tab>{`Train (${trainRecordCount.toLocaleString()})`}</Tab>
-                    <Tab>{`Validation (${validationRecordCount.toLocaleString()})`}</Tab>
-                  </TabList>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+                    <TabList aria-label="Dataset preview tabs">
+                      <Tab>{`Train (${trainRecordCount.toLocaleString()})`}</Tab>
+                      <Tab>{`Validation (${validationRecordCount.toLocaleString()})`}</Tab>
+                    </TabList>
+                    {cropSwitcher}
+                  </div>
                   <TabPanels>
                     <TabPanel style={{ padding: '0.5rem 0' }}>
-                      <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} />
+                      <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} {...previewCrop} />
                     </TabPanel>
                     <TabPanel style={{ padding: '0.5rem 0' }}>
-                      <PreviewTable headers={valPreviewHeaders} rows={valPreviewRows} maxRows={15} />
+                      <PreviewTable headers={valPreviewHeaders} rows={valPreviewRows} maxRows={15} {...previewCrop} />
                     </TabPanel>
                   </TabPanels>
                 </Tabs>
               ) : (
                 <>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                    <h6 className={styles.tileHeading} style={{ margin: 0 }}>Data Preview</h6>
-                    <span className={styles.helperTextInline}>
-                      {previewRows.length} of {totalRecords.toLocaleString()} records
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.75rem' }}>
+                      <h6 className={styles.tileHeading} style={{ margin: 0 }}>Data Preview</h6>
+                      <span className={styles.helperTextInline}>
+                        {previewRows.length} of {totalRecords.toLocaleString()} records
+                      </span>
+                    </div>
+                    {cropSwitcher}
                   </div>
                   {isSplitEnabled && uploadedFile && !existingDatasetId && (
-                    <p className={styles.helperTextInline} style={{ marginBottom: '0.75rem' }}>
+                    <p className={styles.helperTextInline} style={{ marginBottom: '0.5rem' }}>
                       {`Split: ${trainRecordCount.toLocaleString()} train, ${validationRecordCount.toLocaleString()} validation. The validation records are picked at random when the dataset is created, so they can't be previewed here.`}
                     </p>
                   )}
-                  <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} />
+                  <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} {...previewCrop} />
                 </>
               )}
             </Tile>
