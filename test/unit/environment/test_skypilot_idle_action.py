@@ -32,8 +32,14 @@ from unittest.mock import patch
 import pytest
 from libgbtest.environments.skypilot_mocks import _make_env, _mock_sky
 
+# A fast poll, as the build fixtures use, so the autodown floor (a multiple of the
+# step's poll interval) stays below the windows these tests set.
+_FAST_POLL = {"poll_interval_seconds": 5}
 
-async def _launch_kwargs(env_config: dict, launcher_config: dict) -> dict:
+
+async def _launch_kwargs(
+    env_config: dict, launcher_config: dict, step_config: dict | None = None
+) -> dict:
     """Run one mocked launch and return the kwargs ``sky.launch`` received."""
     env = _make_env(env_config)
     mock_sky = _mock_sky()
@@ -45,7 +51,7 @@ async def _launch_kwargs(env_config: dict, launcher_config: dict) -> dict:
         await env.launch_skypilot(
             launch_id="idle-1",
             launcher_config={"run": "hostname", **launcher_config},
-            config={},
+            config=_FAST_POLL if step_config is None else step_config,
         )
     mock_sky.launch.assert_called_once()
     return mock_sky.launch.call_args.kwargs
@@ -62,12 +68,13 @@ class TestIdleActionPerCloud:
         assert kwargs["down"] is True
 
     @pytest.mark.asyncio
-    async def test_kubernetes_zero_is_still_autodown_not_autostop(self):
-        # The shipped env used 0; SkyPilot still reads 0 as an idle action.
+    async def test_kubernetes_zero_is_raised_to_the_floor_and_still_autodown(self):
+        # `main`'s env used 0, i.e. delete the moment the job ends: the race the
+        # floor exists for. Even with a 5s poll it becomes 1 minute.
         kwargs = await _launch_kwargs(
             {"default_cloud": "kubernetes", "idle_minutes_to_autostop": 0}, {}
         )
-        assert kwargs["idle_minutes_to_autostop"] == 0
+        assert kwargs["idle_minutes_to_autostop"] == 1
         assert kwargs["down"] is True
 
     @pytest.mark.asyncio
@@ -81,8 +88,9 @@ class TestIdleActionPerCloud:
     @pytest.mark.asyncio
     async def test_kubernetes_default_idle_window_is_autodown(self):
         # Omitting the key falls back to the env default (10) — which, before
-        # this fix, was itself an autostop request and failed every launch.
-        kwargs = await _launch_kwargs({"default_cloud": "kubernetes"}, {})
+        # this fix, was itself an autostop request and failed every launch. With
+        # the default 300s poll the floor is also 10, so it is kept.
+        kwargs = await _launch_kwargs({"default_cloud": "kubernetes"}, {}, {})
         assert kwargs["idle_minutes_to_autostop"] == 10
         assert kwargs["down"] is True
 
@@ -109,4 +117,57 @@ class TestIdleActionPerCloud:
             {"default_cloud": "slurm", "idle_minutes_to_autostop": 5}, {}
         )
         assert kwargs["idle_minutes_to_autostop"] is None
+        assert kwargs["down"] is False
+
+
+class TestAutodownFloor:
+    """On autodown-only clouds the window must outlast the step's poll interval.
+
+    Otherwise a job finishing just after a poll is deleted before the next one and
+    the poller marks the step FAILED (pod "does not exist").
+    """
+
+    @pytest.mark.asyncio
+    async def test_short_window_with_default_poll_is_raised(self, caplog):
+        # 5 minutes vs the default 300s poll: raised to 2 x 300s = 10 minutes.
+        with caplog.at_level("WARNING"):
+            kwargs = await _launch_kwargs(
+                {"default_cloud": "kubernetes", "idle_minutes_to_autostop": 5}, {}, {}
+            )
+        assert kwargs["idle_minutes_to_autostop"] == 10
+        assert kwargs["down"] is True
+        assert "raising it to 10 minutes" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_window_above_the_floor_is_kept(self):
+        kwargs = await _launch_kwargs(
+            {"default_cloud": "kubernetes", "idle_minutes_to_autostop": 15}, {}, {}
+        )
+        assert kwargs["idle_minutes_to_autostop"] == 15
+
+    @pytest.mark.asyncio
+    async def test_templated_string_poll_interval_is_honoured(self):
+        # "120" (as a template renders it) -> floor ceil(240/60) = 4.
+        kwargs = await _launch_kwargs(
+            {"default_cloud": "kubernetes", "idle_minutes_to_autostop": 2},
+            {},
+            {"poll_interval_seconds": "120"},
+        )
+        assert kwargs["idle_minutes_to_autostop"] == 4
+
+    @pytest.mark.asyncio
+    async def test_null_window_is_left_alone(self):
+        kwargs = await _launch_kwargs(
+            {"default_cloud": "kubernetes", "idle_minutes_to_autostop": None}, {}, {}
+        )
+        assert kwargs["idle_minutes_to_autostop"] is None
+        assert kwargs["down"] is False
+
+    @pytest.mark.asyncio
+    async def test_vm_clouds_are_not_floored(self):
+        # Autostop (not autodown) keeps the disk, so there is no race to guard.
+        kwargs = await _launch_kwargs(
+            {"default_cloud": "aws", "idle_minutes_to_autostop": 1}, {}, {}
+        )
+        assert kwargs["idle_minutes_to_autostop"] == 1
         assert kwargs["down"] is False
