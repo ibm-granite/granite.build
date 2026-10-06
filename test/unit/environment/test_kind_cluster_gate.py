@@ -82,3 +82,25 @@ class TestKindClusterGate:
         _stub_kubectl(stub_path, "kind-other")
         assert kube.expected_kind_context() == "kind-skypilot"
         assert not kube.kind_cluster_reachable()
+
+
+class TestProbeIsCached:
+    """The gate runs from ``skipif`` in every kube module on every xdist worker."""
+
+    def test_repeated_checks_call_kubectl_once(self, stub_path):
+        calls = stub_path / "calls"
+        script = stub_path / "kubectl"
+        script.write_text(
+            f"#!{_BASH}\n"
+            f'echo "$*" >> {calls}\n'
+            'if [ "$1 $2" = "config current-context" ]; then echo kind-skypilot; fi\n'
+            "exit 0\n"
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        assert all(kube.kind_cluster_reachable() for _ in range(5))
+        # One current-context lookup + one /readyz probe, not five of each.
+        assert len(calls.read_text().splitlines()) == 2
+
+    def test_shared_marker_is_the_skypilot_kube_group(self):
+        assert kube.KUBE_XDIST_GROUP.name == "xdist_group"
+        assert kube.KUBE_XDIST_GROUP.kwargs == {"name": "skypilot_kube"}
