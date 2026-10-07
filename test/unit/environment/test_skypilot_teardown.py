@@ -1,4 +1,5 @@
 import asyncio
+import enum
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -373,19 +374,24 @@ def make_skypilot_env(config):
     return Skypilot(event_q=event_q, environment_config=ec)
 
 
-class _StubJobStatus:
-    """Minimal stand-in for sky.JobStatus whose str() matches the production
-    comparison ``str(status) != "JobStatus.SUCCEEDED"``."""
+class _FakeJobStatus(enum.Enum):
+    """Stand-in for sky.JobStatus, so these tests don't need the skypilot extra.
+    Teardown only uses ``is_terminal()`` and ``SUCCEEDED``."""
 
-    def __init__(self, name):
-        self._name = name
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
 
-    def __str__(self):
-        return f"JobStatus.{self._name}"
+    def is_terminal(self):
+        return self is not _FakeJobStatus.RUNNING
 
 
 def _provider_teardown_sky(
-    monkeypatch, launch_result, get_return=None, get_side_effect=None
+    monkeypatch,
+    launch_result,
+    get_return=None,
+    get_side_effect=None,
+    cleanup_timeout_s=None,
 ):
     """Build a provider-backed Skypilot env and a mocked ``sky`` whose cleanup
     VM launch returns ``launch_result`` (the (job_id, handle) tuple) and whose
@@ -399,6 +405,9 @@ def _provider_teardown_sky(
 
         def cleanup_zone(self):
             return "us-east-1a"
+
+        def cleanup_timeout_s(self):
+            return cleanup_timeout_s
 
     monkeypatch.setattr(
         "gbserver.environment.skypilot.build_providers", lambda cfg: [_Prov()]
@@ -424,6 +433,7 @@ def _provider_teardown_sky(
         "build_config_name": "c",
     }
     mock_sky = MagicMock()
+    mock_sky.JobStatus = _FakeJobStatus
     mock_sky.Resources = MagicMock(return_value=MagicMock())
     mock_sky.Task = MagicMock(return_value=MagicMock())
     mock_sky.launch = MagicMock(return_value="req-launch")
@@ -444,7 +454,7 @@ class TestCleanupJobStatusChecked:
         env, mock_sky = _provider_teardown_sky(
             monkeypatch,
             launch_result=(7, object()),
-            get_return={7: _StubJobStatus("FAILED")},
+            get_return={7: _FakeJobStatus.FAILED},
         )
         with (
             patch("gbserver.environment.skypilot.sky", mock_sky),
@@ -461,7 +471,7 @@ class TestCleanupJobStatusChecked:
         env, mock_sky = _provider_teardown_sky(
             monkeypatch,
             launch_result=(7, object()),
-            get_return={7: _StubJobStatus("SUCCEEDED")},
+            get_return={7: _FakeJobStatus.SUCCEEDED},
         )
         with (
             patch("gbserver.environment.skypilot.sky", mock_sky),
@@ -500,8 +510,8 @@ class TestCleanupJobStatusChecked:
             monkeypatch,
             launch_result=(7, object()),
             get_side_effect=[
-                {7: _StubJobStatus("RUNNING")},
-                {7: _StubJobStatus("SUCCEEDED")},
+                {7: _FakeJobStatus.RUNNING},
+                {7: _FakeJobStatus.SUCCEEDED},
             ],
         )
         with (
@@ -514,15 +524,19 @@ class TestCleanupJobStatusChecked:
         assert "ORPHAN" not in caplog.text.upper()
 
     @pytest.mark.asyncio
-    async def test_still_running_at_timeout_is_tolerated(self, monkeypatch, caplog):
-        # A reap that outlasts the wait budget is left unconfirmed, not orphaned.
+    async def test_still_running_at_timeout_warns_unconfirmed(
+        self, monkeypatch, caplog
+    ):
+        # A reap that outlasts the wait budget is not a confirmed failure, but
+        # it must be visible to operators (WARNING naming the tree), not hidden
+        # at debug.
         monkeypatch.setattr(
             "gbserver.environment.skypilot._CLEANUP_STATUS_TIMEOUT_S", 0
         )
         env, mock_sky = _provider_teardown_sky(
             monkeypatch,
             launch_result=(7, object()),
-            get_return={7: _StubJobStatus("RUNNING")},
+            get_return={7: _FakeJobStatus.RUNNING},
         )
         with (
             patch("gbserver.environment.skypilot.sky", mock_sky),
@@ -530,7 +544,40 @@ class TestCleanupJobStatusChecked:
             caplog.at_level("WARNING"),
         ):
             await env.teardown_skypilot("sid")
-        assert "ORPHAN" not in caplog.text.upper()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            "/mnt/gb-shared/gbroot/builds/b1/runs/r1" in r.getMessage()
+            and "may be orphaned" in r.getMessage()
+            for r in warnings
+        )
+        assert "post-build cleanup failed" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_provider_cleanup_timeout_overrides_default(
+        self, monkeypatch, caplog
+    ):
+        # The provider's cleanup_timeout_s() budget (e.g. the longer AP-mode
+        # budget) replaces the module default.
+        monkeypatch.setattr(
+            "gbserver.environment.skypilot._CLEANUP_STATUS_TIMEOUT_S", 10_000
+        )
+        monkeypatch.setattr(
+            "gbserver.environment.skypilot._CLEANUP_STATUS_POLL_INTERVAL_S", 0
+        )
+        env, mock_sky = _provider_teardown_sky(
+            monkeypatch,
+            launch_result=(7, object()),
+            get_side_effect=[{7: _FakeJobStatus.RUNNING}] * 3,
+            cleanup_timeout_s=0,
+        )
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            caplog.at_level("WARNING"),
+        ):
+            await env.teardown_skypilot("sid")
+        assert mock_sky.get.call_count == 1
+        assert "may be orphaned" in caplog.text
 
 
 class TestTeardownWithProvider:

@@ -66,7 +66,7 @@ class EfsConfig(Config):
                 raise ValueError(
                     "efs: access_point_id is not supported for provision "
                     "'ephemeral' (ephemeral EFS is single-tenant and needs no "
-                    "access point); see #396"
+                    "access point)"
                 )
             if not self.file_system_id:
                 raise ValueError(

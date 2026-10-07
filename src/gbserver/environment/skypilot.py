@@ -423,22 +423,11 @@ _SSH_HPC_CLOUDS = ("slurm", "lsf")
 _CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
 
 
-# Non-terminal SkyPilot job states, by their str() form (sky.JobStatus is an
-# enum; comparing the string avoids importing it into this lazy-skypilot module,
-# matching the existing "JobStatus.RUNNING" check in the poll loop). Used when
-# waiting for the teardown cleanup VM's reap job to reach a terminal state.
-_NONTERMINAL_JOB_STATUSES = frozenset(
-    {
-        "JobStatus.INIT",
-        "JobStatus.SETTING_UP",
-        "JobStatus.PENDING",
-        "JobStatus.RUNNING",
-    }
-)
 # How long, and how often, to wait for the cleanup VM's reap job to finish.
 # sky.launch's stream_and_get returns (job_id, handle) once the job is
-# submitted, NOT when it completes, so the reap (install efs-utils + mount + rm,
-# up to ~2 min in AP mode) is still running when we start polling.
+# submitted, NOT when it completes, so the reap is still running when we start
+# polling. The timeout is the default; a provider may extend it via
+# cleanup_timeout_s() (EFS access-point mode builds efs-utils first).
 _CLEANUP_STATUS_POLL_INTERVAL_S = 5.0
 _CLEANUP_STATUS_TIMEOUT_S = 300.0
 
@@ -2090,11 +2079,18 @@ class Skypilot(Environment):
             # an ORPHANED tree instead of dropped silently.
             job_id = launch_result[0] if isinstance(launch_result, tuple) else None
             if job_id is not None:
-                final = await self._await_cleanup_job_status(cluster_name, job_id)
-                if final is not None and final != "JobStatus.SUCCEEDED":
+                budget = provider.cleanup_timeout_s() if provider is not None else None
+                final = await self._await_cleanup_job_status(
+                    cluster_name,
+                    job_id,
+                    workdir,
+                    setup_id,
+                    budget if budget is not None else _CLEANUP_STATUS_TIMEOUT_S,
+                )
+                if final is not None and final != sky.JobStatus.SUCCEEDED:
                     raise RuntimeError(
-                        f"cleanup job {job_id} ended {final} (reap script exited "
-                        "non-zero); per-run tree may be only partly removed"
+                        f"cleanup job {job_id} ended {final.value} (reap script "
+                        "exited non-zero); per-run tree may be only partly removed"
                     )
         except Exception as e:  # don't fail a finished build for cleanup
             # Make an orphaned per-run tree visible so it can be reaped (see the
@@ -2126,18 +2122,23 @@ class Skypilot(Environment):
                 await self._teardown(cluster_name)
 
     async def _await_cleanup_job_status(
-        self: Self, cluster_name: str, job_id: int
-    ) -> Optional[str]:
+        self: Self,
+        cluster_name: str,
+        job_id: int,
+        workdir: str,
+        setup_id: str,
+        timeout_s: float,
+    ):
         """Poll the cleanup VM's reap job until it reaches a terminal state.
 
-        Returns the terminal status (str(sky.JobStatus), e.g. "JobStatus.FAILED")
-        or ``None`` when the outcome cannot be confirmed -- the ``down=True``
-        autodown can remove the cluster before or during polling, and the reap
-        can outlast the timeout. ``None`` MUST be read as "not a failure": the
-        job ran to completion unobserved, which is the pre-existing behaviour.
-        Only a confirmed non-SUCCEEDED terminal status should orphan the tree.
+        Returns the terminal ``sky.JobStatus`` or ``None`` when the outcome
+        cannot be confirmed -- the ``down=True`` autodown can remove the cluster
+        before or during polling, and the reap can outlast ``timeout_s``.
+        ``None`` is not a failure: only a confirmed non-SUCCEEDED terminal status
+        orphans the tree. A timeout is still logged as a WARNING naming the
+        tree, since the reap may never finish.
         """
-        deadline = time.monotonic() + _CLEANUP_STATUS_TIMEOUT_S
+        deadline = time.monotonic() + timeout_s
         while True:
             try:
                 status_req = await asyncio.to_thread(
@@ -2145,7 +2146,7 @@ class Skypilot(Environment):
                 )
                 statuses = await asyncio.to_thread(sky.get, status_req)
             except Exception as status_err:
-                logger.debug(
+                logger.info(
                     "teardown_skypilot: cleanup job %s status unconfirmable on "
                     "%s (likely already autodowned): %s",
                     job_id,
@@ -2156,16 +2157,18 @@ class Skypilot(Environment):
             status = statuses.get(job_id) if statuses else None
             if status is None:
                 return None
-            status_str = str(status)
-            if status_str not in _NONTERMINAL_JOB_STATUSES:
-                return status_str  # terminal: SUCCEEDED or a FAILED/CANCELLED
+            if status.is_terminal():
+                return status  # SUCCEEDED or a FAILED*/CANCELLED
             if time.monotonic() >= deadline:
-                logger.debug(
-                    "teardown_skypilot: cleanup job %s still %s after %ss; not "
-                    "waiting further (treating as unconfirmed, not failed)",
+                logger.warning(
+                    "teardown_skypilot: cleanup job %s still %s after %ss; reap "
+                    "unconfirmed, the per-run tree at %s may be orphaned "
+                    "(setup_id=%s). This does NOT affect the build outcome.",
                     job_id,
-                    status_str,
-                    _CLEANUP_STATUS_TIMEOUT_S,
+                    status.value,
+                    timeout_s,
+                    workdir,
+                    setup_id,
                 )
                 return None
             await asyncio.sleep(_CLEANUP_STATUS_POLL_INTERVAL_S)

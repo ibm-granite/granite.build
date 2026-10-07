@@ -595,6 +595,19 @@ def test_efs_cleanup_zone_from_config():
     assert p.cleanup_zone() == "us-east-1a"
 
 
+def test_efs_cleanup_timeout_longer_for_access_point():
+    # AP-mode reap builds amazon-efs-utils on the cleanup VM before mounting, so
+    # it gets a longer wait budget than the teardown default.
+    assert _ap_provider().cleanup_timeout_s() == 600.0
+
+
+def test_efs_cleanup_timeout_default_without_access_point():
+    p = EfsProvider(
+        "/mnt/gb-shared", EfsConfig(file_system_id="fs-1", region="us-east-1")
+    )
+    assert p.cleanup_timeout_s() is None
+
+
 # --- Task 4: build_providers returns one provider per mount (#404) ---
 
 
@@ -781,6 +794,38 @@ def test_access_point_cleanup_script_installs_efs_utils_before_mount():
     assert len(apt_lines) == 3
     assert all("-o DPkg::Lock::Timeout=120" in ln for ln in apt_lines)
     _bash_ok(sh)
+
+
+_EFS_UTILS_PINNED_SHA = "0fdb5b0af469737f5730c5bdca91d9846f042247"
+
+
+def test_access_point_cleanup_script_verifies_pinned_commit_before_build():
+    # A tag can be moved, so the clone is checked against a pinned commit before
+    # build-deb.sh runs as root.
+    sh = _ap_provider().cleanup_run_script("/mnt/gb-shared/gbroot/builds/b/runs/r")
+    assert _EFS_UTILS_PINNED_SHA in sh
+    assert sh.index(_EFS_UTILS_PINNED_SHA) < sh.index("build-deb.sh")
+
+
+@pytest.mark.parametrize(
+    "head_sha, expected_rc",
+    [(_EFS_UTILS_PINNED_SHA, 0), ("1111111111111111111111111111111111111111", 1)],
+)
+def test_efs_utils_commit_check_aborts_on_mismatch(tmp_path, head_sha, expected_rc):
+    from gbserver.environment.shared_fs.efs import _VERIFY_EFS_UTILS_COMMIT
+
+    fake_git = tmp_path / "git"
+    fake_git.write_text(f"#!/bin/sh\necho {head_sha}\n")
+    fake_git.chmod(0o755)
+    proc = subprocess.run(
+        ["bash", "-c", f'set -eu\n__gb_efs="{tmp_path}"\n{_VERIFY_EFS_UTILS_COMMIT}'],
+        env={"PATH": f"{tmp_path}:/usr/bin:/bin"},
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode == expected_rc, proc.stderr
+    if expected_rc:
+        assert "pinned commit" in proc.stderr
 
 
 def test_non_access_point_cleanup_script_has_no_efs_utils_install():
