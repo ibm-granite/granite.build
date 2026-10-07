@@ -1,7 +1,7 @@
 # granite / eval-granite42
 
 Scores one checkpoint on the Granite **Granite 4.2** suite on BlueVela. Each benchmark
-runs its own step (`space://steps/granite-<benchmark>`), so a failure or a rerun stays
+runs its own step (`space://steps/eval/granite-<benchmark>`), so a failure or a rerun stays
 local to that benchmark. This file is the full suite; to run a subset, name targets
 (see [Running](#running)); to build another recipe, copy the targets you need (see
 [How a benchmark is wired](#how-a-benchmark-is-wired)).
@@ -46,7 +46,7 @@ inside generation (`terminal-bench-2.1`: the agent's container is the test;
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/granite-tau3-retail   # (2) same step in both
+        - step_uri: space://steps/eval/granite-tau3-retail   # (2) same step in both
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -86,7 +86,7 @@ inside generation (`terminal-bench-2.1`: the agent's container is the test;
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/granite-tau3-retail
+        - step_uri: space://steps/eval/granite-tau3-retail
           config:
             # ... poll intervals and granite_config exactly as above, but:
             granite_config:
@@ -161,7 +161,7 @@ model itself, and the score job serves nothing, so it refuses them.
 
    `publish-step` renders to
    `configurations/assets/environments/skypilot/steps/granite-<bench>/`, which is what
-   `space://steps/granite-<bench>` resolves to. Commit both. A stale published step is
+   `space://steps/eval/granite-<bench>` resolves to. Commit both. A stale published step is
    the one that runs, so run `check-published` after every template change.
 3. Its targets: copy a pair (or a single target) above, rename, point `step_uri`,
    `output_dir` and the image param at the new benchmark, add `<BENCH>_WORKERS` /
