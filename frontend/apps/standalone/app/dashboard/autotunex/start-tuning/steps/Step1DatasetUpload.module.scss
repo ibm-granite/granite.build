@@ -120,10 +120,12 @@
   overflow: auto;
 }
 
+// Stacked, not a `120px 1fr` grid: Carbon's file item will not shrink below its
+// filename, so a name wider than the 1fr track ran off the tile edge. Same cause
+// and fix as the HF import form's Dataset row (see HfImportForm.module.scss).
 .fileRow {
-  display: grid;
-  grid-template-columns: 120px 1fr;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
 }
 
@@ -136,6 +138,17 @@
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
+}
+
+// A filename wider than the tile still overflows once stacked, since both elements
+// Carbon renders it into carry `white-space: nowrap`. Wrap it instead; `anywhere`
+// because `customer_support_validation.parquet` has no break opportunity. The
+// `<button>` variant centres its text by UA default, which leaves a ragged second line.
+.fileRow :global(.cds--file__selected-file .cds--file-filename),
+.fileRow :global(.cds--file__selected-file .cds--file-filename-button) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
 }
 
 .aiTagButton {

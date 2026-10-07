@@ -843,7 +843,7 @@ export function Step1DatasetUpload({
                   Train file
                   <InfoTooltip label="The main dataset used to train the model. This is where the model learns patterns from your data." />
                 </span>
-                <FileUploaderItem name={uploadedFile.name} status="edit" onDelete={clearTrainFile} />
+                <FileUploaderItem name={uploadedFile.name} status="edit" size="sm" onDelete={clearTrainFile} />
               </div>
             ) : null}
 
@@ -913,6 +913,7 @@ export function Step1DatasetUpload({
                     <FileUploaderItem
                       name={validationFile.name}
                       status="edit"
+                      size="sm"
                       onDelete={() => {
                         setValidationFile(null)
                         onDatasetSplitChanged()
