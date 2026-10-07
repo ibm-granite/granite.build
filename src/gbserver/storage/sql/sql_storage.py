@@ -578,7 +578,8 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         finally:
             session.close()
 
-    # Don't need @retry here since we have it on get_by_where() above.
+    # Don't need @retry here since get_by_where() is retried (via
+    # _get_by_where_with_retry()) above.
     def _get_by_where_row_dicts(
         self,
         where: Optional[Union[str, dict]] = None,
@@ -855,17 +856,39 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 raise e
         return existing_columns
 
-    @retry(
-        wait=wait_random_exponential(multiplier=1, min=1, max=30),
-        stop=stop_after_attempt(10),
-        reraise=True,
-    )
     def get_by_where(
         self,
         where: str | dict | None = None,
         query_control: Optional[QueryControl] = None,
     ) -> list[BASE_ITEM_TYPE]:
-        """Override the super-class method to add support for like-style queries on the exact_liked_columns."""
+        """Override the super-class method to add support for like-style queries on the exact_liked_columns.
+
+        Retried via _get_by_where_with_retry. The @retry decorator is kept off this
+        public method on purpose: tenacity (>= 9.2) types a decorated function as a
+        ``_RetryDecorated`` protocol rather than a plain method, so mypy would reject
+        subclasses that combine this class with a mixin defining a plain
+        ``get_by_where`` (e.g. the SQLite storages' SqliteStorageOverrides).
+
+        Args:
+            where: A SQL where-clause string or a column->value dict, or None for all.
+            query_control: Optional pagination/sorting control.
+
+        Returns:
+            list[BASE_ITEM_TYPE]: The matching items.
+        """
+        return self._get_by_where_with_retry(where, query_control)
+
+    @retry(
+        wait=wait_random_exponential(multiplier=1, min=1, max=30),
+        stop=stop_after_attempt(10),
+        reraise=True,
+    )
+    def _get_by_where_with_retry(
+        self,
+        where: str | dict | None = None,
+        query_control: Optional[QueryControl] = None,
+    ) -> list[BASE_ITEM_TYPE]:
+        """Retried implementation of get_by_where (see its docstring)."""
         items = super().get_by_where(where, query_control=query_control)
         if isinstance(where, dict):
             # For queries, such as %like%, we can enable better exact list member match here via exact_liked_list_columns.
