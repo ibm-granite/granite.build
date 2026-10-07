@@ -5,9 +5,10 @@ granite.build:
   # (`mount -t efs -o accesspoint=<fsap>,tls`), so every step needs amazon-efs-utils
   # (mount.efs) — worker steps never auto-install it and fail fast without it.
   #
-  # Both steps run in public.ecr.aws/v5k6k6b9/gb-efs-utils:latest, a public image
-  # with amazon-efs-utils v1.35.2 on debian:12-slim. Any image that bundles
-  # mount.efs works.
+  # Both steps run quay.io/granitebuild/gb-efs-utils:v1.35.2 (amazon-efs-utils
+  # v1.35.2 on debian:13-slim), pinned by digest. It is built from
+  # ../efs-utils-image/Dockerfile; rebuild, push, and update the digest here to
+  # change it. Any image that bundles mount.efs works.
   #
   # The target has NO inputs/outputs, so buildrunner queues no hidden pull/push
   # steps (hfpull/s3pull/... run on images without mount.efs and would fail fast
@@ -35,7 +36,7 @@ granite.build:
             command_config:
               # Bundles amazon-efs-utils (mount.efs); the in-container AP mount
               # needs it.
-              image: "public.ecr.aws/v5k6k6b9/gb-efs-utils:latest"
+              image: "quay.io/granitebuild/gb-efs-utils@sha256:b3474545523b5f8d441557ea16adea63485b1c20136b6f725b5056321da882c2"
               command: >-
                 set -eu;
                 echo "producer on $(hostname) cwd=$(pwd) uid=$(id -u)";
@@ -54,7 +55,7 @@ granite.build:
           config:
             poll_interval_seconds: 5
             command_config:
-              image: "public.ecr.aws/v5k6k6b9/gb-efs-utils:latest"
+              image: "quay.io/granitebuild/gb-efs-utils@sha256:b3474545523b5f8d441557ea16adea63485b1c20136b6f725b5056321da882c2"
               command: >-
                 set -eu;
                 echo "consumer on $(hostname) cwd=$(pwd) uid=$(id -u)";
