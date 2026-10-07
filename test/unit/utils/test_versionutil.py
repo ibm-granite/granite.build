@@ -332,3 +332,8 @@ class TestVersionCheckCache:
         versionutil.evaluate_version_status(use_cache=True)
         versionutil.evaluate_version_status()
         assert len(calls) == 2
+
+    def test_invalid_ttl_env_falls_back(self, monkeypatch):
+        """A malformed TTL must not break module import (every command imports it)."""
+        monkeypatch.setenv("GBCLI_VERSION_CHECK_TTL", "6h")
+        assert versionutil._env_seconds("GBCLI_VERSION_CHECK_TTL", 123) == 123

@@ -115,7 +115,8 @@ def get_token_using_device_code(
     return data_obj_parsed, False
 
 
-def get_user(token: str) -> UserInfoResponse:
+def get_user(token: str, verify: bool = False) -> UserInfoResponse:
+    """Identity for ``token``. ``verify=True`` always asks GitHub (used at login)."""
     import os
 
     from gbcli.utils.gbcredentials import GBCredentials
@@ -149,6 +150,9 @@ def get_user(token: str) -> UserInfoResponse:
             login=login, id=0, url="", html_url="", name=login, email=""
         )
 
+    if verify:
+        return _request_github_user(token)
+
     # The stored token's identity was recorded by `gb auth login`; reuse it instead
     # of a GitHub round-trip on every command. gbserver still authenticates the
     # token itself (a bad one surfaces as GBServerAuthError).
@@ -164,12 +168,7 @@ def get_user(token: str) -> UserInfoResponse:
     return _fetch_github_user(token)
 
 
-@lru_cache(maxsize=8)
-def _fetch_github_user(token: str) -> UserInfoResponse:
-    """GET /user for a token we have no stored identity for (e.g. during login).
-
-    Memoized per process so repeated lookups of the same token cost one request.
-    """
+def _request_github_user(token: str) -> UserInfoResponse:
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
@@ -180,6 +179,11 @@ def _fetch_github_user(token: str) -> UserInfoResponse:
     data_obj = response.json()
     data_obj_parsed = UserInfoResponse.model_validate(data_obj)
     return data_obj_parsed
+
+
+# A token with no stored identity (e.g. one passed in by gbmcp) costs one /user
+# request per process.
+_fetch_github_user = lru_cache(maxsize=8)(_request_github_user)
 
 
 def get_token() -> TokenCodeObject:

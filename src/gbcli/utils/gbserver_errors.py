@@ -4,13 +4,15 @@ Owned by gbcli (rather than reusing fastapi's ``HTTPException``) so the CLI does
 not import the web framework at startup.
 """
 
+from typing import Any
+
 RELOGIN_HINT = "Run 'gb auth login' to re-authenticate."
 
 
 class GBServerHTTPError(Exception):
     """A 4xx/5xx response from gbserver; mirrors ``HTTPException``'s fields."""
 
-    def __init__(self, status_code: int, detail: str = ""):
+    def __init__(self, status_code: int, detail: Any = ""):
         super().__init__(f"{status_code}: {detail}")
         self.status_code = status_code
         self.detail = detail
@@ -24,12 +26,13 @@ class GBServerAuthError(GBServerHTTPError):
     of ``detail`` so it survives callers that re-wrap ``status_code``/``detail``.
     """
 
-    def __init__(self, detail: str = ""):
-        detail = f"{detail.rstrip('. ')}. {RELOGIN_HINT}" if detail else RELOGIN_HINT
-        super().__init__(401, detail)
+    def __init__(self, detail: Any = ""):
+        # gbserver's detail is usually a string but may be any JSON value.
+        text = str(detail).rstrip(". ") if detail else ""
+        super().__init__(401, f"{text}. {RELOGIN_HINT}" if text else RELOGIN_HINT)
 
 
-def gbserver_http_error(status_code: int, detail: str = "") -> GBServerHTTPError:
+def gbserver_http_error(status_code: int, detail: Any = "") -> GBServerHTTPError:
     """Build the error for a failed gbserver response, picking the 401 subclass."""
     if status_code == 401:
         return GBServerAuthError(detail)

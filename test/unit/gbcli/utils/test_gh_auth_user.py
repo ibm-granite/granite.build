@@ -88,6 +88,15 @@ class TestGetUser:
         assert first.login == second.login == "fetched"
         assert get.call_count == 1
 
+    def test_verify_always_asks_github(self, github_creds):
+        """`gb auth login` must validate even a token equal to the stored one."""
+        with patch(
+            "gbcli.utils.gh_auth.requests.get", return_value=_ok_response()
+        ) as get:
+            gh_auth.get_user("stored_tok", verify=True)
+            gh_auth.get_user("stored_tok", verify=True)
+        assert get.call_count == 2
+
 
 class TestGBServerErrors:
     def test_401_maps_to_auth_error_with_hint(self):
@@ -102,3 +111,7 @@ class TestGBServerErrors:
         assert type(err) is GBServerHTTPError
         assert (err.status_code, err.detail) == (404, "missing")
         assert str(err) == "404: missing"
+
+    def test_auth_error_accepts_non_string_detail(self):
+        err = gbserver_http_error(401, [{"msg": "bad token"}])
+        assert "bad token" in err.detail and RELOGIN_HINT in err.detail

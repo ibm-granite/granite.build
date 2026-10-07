@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import os
@@ -29,11 +30,20 @@ _UPGRADE_CMD = (
 )
 
 
+def _env_seconds(name: str, default: int) -> int:
+    # Parsed at import by every command, so a bad value must not raise.
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        logger.warning("Ignoring invalid %s; using %ds", name, default)
+        return default
+
+
 # The per-command version check caches the (latest, floor) it resolved from the public
 # repo tags, so most commands skip the GitHub round-trip (and its 60/hour anonymous
 # rate limit). Status is still recomputed against the installed version every time.
 VERSION_CHECK_CACHE_FILE = "version_check.json"
-VERSION_CHECK_CACHE_TTL_S = int(os.environ.get("GBCLI_VERSION_CHECK_TTL", 6 * 3600))
+VERSION_CHECK_CACHE_TTL_S = _env_seconds("GBCLI_VERSION_CHECK_TTL", 6 * 3600)
 # A failed lookup (offline, or rate-limited with 403) is remembered briefly too, so
 # each command doesn't re-pay the timeout or keep the anonymous quota exhausted.
 VERSION_CHECK_FAILURE_TTL_S = 15 * 60
@@ -189,13 +199,15 @@ def _cached_latest_and_floor() -> tuple[str, str]:
 
 
 def _write_version_cache(path, entry: dict) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps({**entry, "checked_at": time.time()}))
         os.replace(tmp, path)
     except OSError as e:
         logger.debug("Could not write version check cache: %s", e)
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def evaluate_version_status(
