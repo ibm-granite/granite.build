@@ -2128,7 +2128,7 @@ class Skypilot(Environment):
         workdir: str,
         setup_id: str,
         timeout_s: float,
-    ):
+    ) -> Optional[sky.JobStatus]:
         """Poll the cleanup VM's reap job until it reaches a terminal state.
 
         Returns the terminal ``sky.JobStatus`` or ``None`` when the outcome

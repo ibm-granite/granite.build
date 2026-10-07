@@ -360,10 +360,10 @@ it when the default placement might pick an AZ without one.
   is removed **only if it is now empty** (never a build-completion `rm -rf` of the whole build tree), so
   concurrent runs under the same build are left intact. Teardown waits for the reap job to finish
   (up to 5 min, or 10 min for access-point mounts, which build amazon-efs-utils first) so a failed
-  reap is logged as an `ORPHANED` tree; the build status is already final by then. A reap still
-  running at the limit logs a `WARNING` that the tree may be orphaned. Retries get a fresh dir. Crashes or killed
-  servers can still orphan trees, and `hf_cache/` is intentionally **not** reaped (it is a shared
-  cache), so it grows unbounded.
+  reap is logged as an `ORPHANED` tree; the build status is already final by then. A reap still running
+  at the limit logs a `WARNING` that the tree may be orphaned. Retries get a fresh dir. Crashes or
+  killed servers can still orphan trees, and `hf_cache/` is intentionally **not** reaped (it is a
+  shared cache), so it grows unbounded.
 - **Operator hygiene.** Run a **TTL sweeper** over `builds/<id>/` for crash-orphans, cap per-space
   usage, and **monitor `hf_cache/`** size — none of these are automatic.
 - **Cost.** Empty ≈ $0, but Elastic throughput bills **per byte moved** (~$0.03/GB read, ~$0.06/GB
