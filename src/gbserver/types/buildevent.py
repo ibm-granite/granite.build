@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Self, Type
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.metrics import Metric
 from gbserver.types.status import Status
-from gbserver.utils.utils import get_time
+from gbserver.utils.utils import get_time, short_alphanumeric_lower_hash
 
 
 class BuildLogLevel(StrEnum):
@@ -137,6 +137,8 @@ class EntityRunMetadata:
     targetstep_uri: Optional[str] = field(default="")
     target_step_index: Optional[int] = None
     target_hash: str = ""
+    # RetryHandler retry count within this targetsteprun.
+    attempt: int = 0
 
     @classmethod
     def from_dict(cls: Type[Self], xs: dict) -> Self:
@@ -152,7 +154,12 @@ class EntityRunMetadata:
             targetstep_uri=xs.get("targetstep_uri", ""),
             target_step_index=xs.get("target_step_index", None),
             target_hash=xs.get("target_hash", ""),
+            attempt=xs.get("attempt", 0),
         )
+
+    def unique_hash(self: Self) -> str:
+        """Value of ``{{ unique_hash }}``: changes on every build or workload retry."""
+        return short_alphanumeric_lower_hash(f"{self.targetsteprun_id}:{self.attempt}")
 
     def to_dict(self: Self) -> dict:
         """Convert into a dict."""

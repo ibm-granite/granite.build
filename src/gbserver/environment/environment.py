@@ -79,6 +79,7 @@ from gbserver.types.config import Config
 from gbserver.types.constants import (
     FULL_CONFIG_RUN_METADATA_KEY,
     GBSERVER_ENABLE_STEP_RETRY,
+    UNIQUE_HASH_KEY,
 )
 from gbserver.types.environment.environment import (
     EnvironmentVariableConfig,
@@ -1564,6 +1565,8 @@ class Environment(ABC):
         """Push an asset from the environment to an asset store."""
         uristr = URI.get_uristr(uristr)
         config = {BINDING_KEY: binding, FULL_CONFIG_RUN_METADATA_KEY: run_metadata}
+        if run_metadata is not None:
+            config[UNIQUE_HASH_KEY] = run_metadata.unique_hash()
         space_variables = URI.get_space_config()
         if space_variables is not None:
             config = config | space_variables

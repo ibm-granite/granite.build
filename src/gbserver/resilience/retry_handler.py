@@ -34,6 +34,7 @@ conditions, then delegates to the appropriate environment for retry execution.
 """
 
 import asyncio
+import dataclasses
 import json
 import re
 from abc import ABC, abstractmethod
@@ -382,6 +383,8 @@ class RetryHandler:
                 async with asyncio.timeout(1.0):
                     event = await self.wrapper_queue.get()
 
+                self._stamp_attempt(event)
+
                 # Evaluate if this event should trigger a retry
                 retry_triggered = await self._evaluate_and_retry(event)
 
@@ -480,6 +483,16 @@ class RetryHandler:
             self.launch_id,
         )
 
+    def _stamp_attempt(self: Self, event: BuildEvent) -> None:
+        """Stamp ``attempt`` for ``{{ unique_hash }}``; copies since monitors share run_metadata."""
+        if (
+            event.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            and event.run_metadata is not None
+        ):
+            event.run_metadata = dataclasses.replace(
+                event.run_metadata, attempt=self.retry_count
+            )
+
     async def _drain_wrapper_queue(self: Self) -> None:
         """Forward any remaining wrapper_queue events to the downstream queue.
 
@@ -496,6 +509,7 @@ class RetryHandler:
             except asyncio.QueueEmpty:
                 break
             try:
+                self._stamp_attempt(event)
                 await self.downstream_queue.put(event)
                 drained += 1
             except Exception as forward_err:
