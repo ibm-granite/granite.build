@@ -293,7 +293,7 @@ Available variables:
 | Variable          | What it is |
 |-------------------|------------|
 | `run_metadata.*`  | Per-run identifiers (`targetsteprun_id`, `build_id`, etc.). |
-| `unique_hash`     | Output `uri` only. Hash that changes on every build or workload step retry, so retried outputs don't collide, e.g. `lh://…/tables/eval_{{ unique_hash }}`. Unlike `{{ target_hash }}`, which retries reuse. |
+| `unique_hash`     | Output `uri` only. Hash of the artifact event that triggers the push, so each push of an output gets a new value, including a workload step retry; a push step retry keeps it. A build retry that reuses a target keeps its old URI. Keep a prefix (e.g. `hf://huggingface.co/datasets/my-org/eval_{{ unique_hash }}`): the hash may start with a digit. Unlike `{{ target_hash }}`, which retries reuse. |
 | `space.variables.*` | Variables defined in the space's `space.yaml`. |
 | `binding.*`       | Resolved upstream artifact info for a bound input. `binding.path` is the filesystem location (filesystem-backed outputs); `binding.state` is the verbatim value of a `mem://` output. Use whichever the upstream output's scheme produces. |
 | `bindings.*`      | Map of all bound inputs by name (`bindings.<name>.binding.path` / `.state`); use when a target has more than one bound input. |

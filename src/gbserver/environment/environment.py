@@ -1561,12 +1561,13 @@ class Environment(ABC):
         additional_targetsteps_queue: Optional[Queue] = None,
         run_metadata: Optional[EntityRunMetadata] = None,
         output_config: Optional[BuildTargetOutputConfig] = None,
+        unique_hash: Optional[str] = None,
     ) -> Task[URI]:
         """Push an asset from the environment to an asset store."""
         uristr = URI.get_uristr(uristr)
         config = {BINDING_KEY: binding, FULL_CONFIG_RUN_METADATA_KEY: run_metadata}
-        if run_metadata is not None:
-            config[UNIQUE_HASH_KEY] = run_metadata.unique_hash()
+        if unique_hash is not None:
+            config[UNIQUE_HASH_KEY] = unique_hash
         space_variables = URI.get_space_config()
         if space_variables is not None:
             config = config | space_variables

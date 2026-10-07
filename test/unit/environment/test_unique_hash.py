@@ -17,139 +17,150 @@
 """Tests for the ``{{ unique_hash }}`` output-URI template variable."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
+from gbcommon.uri.uri import URI
+from gbserver.build.build import Build
+from gbserver.build.buildrun import BuildRun
 from gbserver.environment.environment import Environment
-from gbserver.resilience import RetryHandler
+from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+from gbserver.storage.stored_event import StoredEvent
+from gbserver.types.buildconfig import (
+    BuildConfig,
+    BuildTargetConfig,
+    BuildTargetOutputConfig,
+)
 from gbserver.types.buildevent import (
     ArtifactEventPayload,
     BuildEvent,
     BuildEventType,
     EntityRunMetadata,
-    MultiArtifactEventPayload,
 )
 from gbserver.utils.template import fill_template
-from gbserver.utils.utils import short_alphanumeric_lower_hash
+from gbserver.utils.utils import get_uuid, short_alphanumeric_lower_hash
 
 URI_TEMPLATE = "file:///tmp/out/eval_{{ unique_hash }}"
+TS = datetime(2026, 10, 7, 12, 0, 0, 123456, tzinfo=timezone.utc)
 
 
-class _Rendered(Exception):
-    """Raised by the stub store lookup to capture the rendered push URI."""
-
-
-def _render_push_uri(run_metadata: EntityRunMetadata) -> str:
-    def _capture(uri, **kwargs):
-        raise _Rendered(str(uri))
-
-    stub = SimpleNamespace(_get_storeconfig=_capture)
-    with pytest.raises(_Rendered) as exc:
-        Environment.pushasset(
-            stub,  # type: ignore[arg-type]
-            task_group=None,  # type: ignore[arg-type]
-            binding={"path": "/tmp/out"},
-            uristr=URI_TEMPLATE,
-            run_metadata=run_metadata,
-        )
-    return str(exc.value)
+def _artifact_event(timestamp: datetime = TS, binding_id: str = "out") -> BuildEvent:
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(
+            build_id="b1",
+            target_name="t",
+            targetrun_id="tr1",
+            targetsteprun_id="tsr1",
+        ),
+        type=BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT,
+        payload=ArtifactEventPayload(binding_id=binding_id, binding={"path": "/x"}),
+        timestamp=timestamp,
+    )
 
 
 def test_unique_hash_definition():
-    rm = EntityRunMetadata(targetsteprun_id="tsr-1", attempt=2)
-    assert rm.unique_hash() == short_alphanumeric_lower_hash("tsr-1:2")
-
-
-def test_unique_hash_changes_per_attempt_and_targetsteprun():
-    base = EntityRunMetadata(targetsteprun_id="tsr-1")
-    assert base.attempt == 0
-    assert (
-        base.unique_hash() == EntityRunMetadata(targetsteprun_id="tsr-1").unique_hash()
-    )
-    assert (
-        base.unique_hash()
-        != EntityRunMetadata(targetsteprun_id="tsr-1", attempt=1).unique_hash()
-    )
-    assert (
-        base.unique_hash() != EntityRunMetadata(targetsteprun_id="tsr-2").unique_hash()
+    epoch_us = int(TS.timestamp()) * 1_000_000 + TS.microsecond
+    assert _artifact_event().unique_hash("out") == short_alphanumeric_lower_hash(
+        f"tsr1:out:{epoch_us}"
     )
 
 
-def test_attempt_round_trips_through_dict():
-    rm = EntityRunMetadata(targetsteprun_id="tsr-1", attempt=3)
-    assert EntityRunMetadata.from_dict(rm.to_dict()).attempt == 3
-    assert EntityRunMetadata.from_dict({}).attempt == 0
+def test_unique_hash_changes_per_event_and_output():
+    h = _artifact_event().unique_hash("out")
+    assert _artifact_event(TS + timedelta(microseconds=1)).unique_hash("out") != h
+    assert _artifact_event().unique_hash("other") != h
 
 
-def test_pushasset_renders_unique_hash():
-    rm = EntityRunMetadata(targetsteprun_id="tsr-1", attempt=1)
-    rendered = _render_push_uri(rm)
-    assert rendered.endswith(f"eval_{rm.unique_hash()}")
-    # Deterministic: a second render of the same attempt agrees.
-    assert _render_push_uri(rm) == rendered
+def test_unique_hash_is_timezone_independent():
+    h = _artifact_event().unique_hash("out")
+    pst = TS.astimezone(timezone(timedelta(hours=-7)))
+    assert _artifact_event(pst).unique_hash("out") == h
+    assert _artifact_event(TS.replace(tzinfo=None)).unique_hash("out") == h
+
+
+@pytest.mark.parametrize("ts", [TS, TS.replace(microsecond=0)])
+def test_unique_hash_recomputable_from_gb_events(ts):
+    """The value recomputed from the stored row matches the in-memory one."""
+    storage = SqliteStorageFactory().create_event_storage(
+        table_name=f"test_unique_hash_{get_uuid().replace('-', '_')}"
+    )
+    try:
+        event = _artifact_event(ts.astimezone())
+        event.run_metadata.build_id = get_uuid()
+        storage.add(StoredEvent(build_event=event))
+        (stored,) = storage.get_sorted_build_events(event.run_metadata.build_id)
+        assert stored.build_event.unique_hash("out") == event.unique_hash("out")
+    finally:
+        storage.delete_table()
 
 
 def test_non_strict_render_preserves_unique_hash():
     assert fill_template(URI_TEMPLATE, {"run_metadata": {}}) == URI_TEMPLATE
 
 
-def _artifact_event(rm: EntityRunMetadata) -> BuildEvent:
-    return BuildEvent(
-        run_metadata=rm,
-        type=BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT,
-        payload=ArtifactEventPayload(binding={"path": "/tmp/out"}),
+@pytest.mark.asyncio
+async def test_buildrun_passes_source_event_hash():
+    """BuildRun hashes the source artifact event, not its multi-artifact wrapper."""
+    pushasset = MagicMock(side_effect=RuntimeError("stop after pushasset"))
+    target = SimpleNamespace(
+        config=BuildTargetConfig(
+            environment_uri="space://environments/x",
+            outputs={"out": BuildTargetOutputConfig(uri=URI_TEMPLATE)},
+            steps=[],
+        ),
+        environment=SimpleNamespace(pushasset=pushasset),
     )
-
-
-def test_retry_handler_stamps_attempt_on_new_artifact():
-    handler = RetryHandler(
-        launch_id="l1",
-        downstream_queue=asyncio.Queue(),
-        environment=SimpleNamespace(),  # type: ignore[arg-type]
-        max_retries=3,
+    entity = MagicMock(spec=Build)
+    entity.config = MagicMock(spec=BuildConfig)
+    entity.targets = {"t": target}
+    stub = SimpleNamespace(
+        build_id="b1",
+        dispatch_event=MagicMock(),
+        entity=entity,
+        targetruns={"tr1": SimpleNamespace(bindings={})},
+        targetrun_additionaljobs_queue={"tr1": asyncio.Queue()},
     )
-    shared = EntityRunMetadata(targetsteprun_id="tsr-1")
-    first = _artifact_event(shared)
-    handler._stamp_attempt(first)
-    assert first.run_metadata.attempt == 0
-
-    handler.retry_count = 2
-    second = _artifact_event(shared)
-    handler._stamp_attempt(second)
-    assert second.run_metadata.attempt == 2
-    # The shared monitor metadata (and earlier events) are not mutated.
-    assert shared.attempt == 0
-    assert first.run_metadata.attempt == 0
+    event = _artifact_event()
+    with pytest.raises(RuntimeError, match="stop after pushasset"):
+        await BuildRun._process_event(stub, event, tg=None)  # type: ignore[arg-type]
+    assert pushasset.call_args.kwargs["unique_hash"] == event.unique_hash("out")
 
 
-def test_retry_handler_stamps_multiartifact_event():
-    handler = RetryHandler(
-        launch_id="l1",
-        downstream_queue=asyncio.Queue(),
-        environment=SimpleNamespace(),  # type: ignore[arg-type]
-        max_retries=3,
+@pytest.mark.asyncio
+async def test_pushasset_renders_unique_hash_once():
+    async def _handler(self, **kwargs):
+        return None
+
+    env = SimpleNamespace(
+        _get_storeconfig=lambda uri, **kw: (
+            SimpleNamespace(type="file", get_secrets=lambda: {}),
+            SimpleNamespace(push=None),
+        ),
+        pushasset_types={"file": _handler},
+        event_q=asyncio.Queue(),
+        asset_bindings={},
     )
-    handler.retry_count = 1
-    event = BuildEvent(
-        run_metadata=EntityRunMetadata(targetsteprun_id="tsr-1"),
-        type=BuildEventType.NEW_MULTIARTIFACT_IN_ENVIRONMENT_EVENT,
-        payload=MultiArtifactEventPayload(artifacts=[]),
+    Environment._thread_local.asset_events = {}
+    uri = await Environment.pushasset(
+        env,  # type: ignore[arg-type]
+        task_group=None,  # type: ignore[arg-type]
+        binding={"path": "/tmp/out"},
+        uristr=URI_TEMPLATE,
+        binding_id="out",
+        run_metadata=EntityRunMetadata(targetsteprun_id="tsr1"),
+        unique_hash="abc12345",
     )
-    handler._stamp_attempt(event)
-    assert event.run_metadata.attempt == 1
-
-
-def test_retry_handler_does_not_stamp_other_events():
-    handler = RetryHandler(
-        launch_id="l1",
-        downstream_queue=asyncio.Queue(),
-        environment=SimpleNamespace(),  # type: ignore[arg-type]
-        max_retries=3,
-    )
-    handler.retry_count = 1
-    rm = EntityRunMetadata(targetsteprun_id="tsr-1")
-    event = BuildEvent(run_metadata=rm, type=BuildEventType.MESSAGE_EVENT)
-    handler._stamp_attempt(event)
-    assert event.run_metadata is rm
-    assert rm.attempt == 0
+    uristr = URI.get_uristr(uri)
+    assert uristr == "file:///tmp/out/eval_abc12345"
+    events = []
+    while not env.event_q.empty():
+        events.append(env.event_q.get_nowait())
+    # Registration and push events carry the same rendered URI.
+    assert [e.type for e in events] == [
+        BuildEventType.ARTIFACT_EVENT,
+        BuildEventType.ARTIFACT_PUSHED_EVENT,
+    ]
+    assert {e.payload.uri for e in events} == {uristr}
