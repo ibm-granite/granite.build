@@ -58,17 +58,21 @@ def check_tar_safe(
         ValueError: If the archive has more members, or more total
             uncompressed size, than the given caps.
     """
-    members = tar.getmembers()
-    if len(members) > max_entries:
-        raise ValueError(
-            f"archive has too many entries ({len(members)} > {max_entries})"
-        )
-    total_size = sum(m.size for m in members)
-    if total_size > max_uncompressed_bytes:
-        raise ValueError(
-            f"archive uncompressed size too large "
-            f"({total_size} > {max_uncompressed_bytes} bytes)"
-        )
+    # Iterate rather than getmembers(): a tar has no central index, so headers
+    # are read one by one, and stopping at the first member past a cap keeps an
+    # oversized archive from loading every header before it is rejected.
+    count = 0
+    total_size = 0
+    for member in tar:
+        count += 1
+        total_size += member.size
+        if count > max_entries:
+            raise ValueError(f"archive has too many entries (more than {max_entries})")
+        if total_size > max_uncompressed_bytes:
+            raise ValueError(
+                f"archive uncompressed size too large "
+                f"(more than {max_uncompressed_bytes} bytes)"
+            )
 
 
 def _extract_zip(

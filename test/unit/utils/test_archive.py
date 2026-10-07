@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from gbserver.utils.archive import check_zip_safe, extract_archive
+from gbserver.utils.archive import check_tar_safe, check_zip_safe, extract_archive
 
 
 def _make_zip(entries: dict[str, bytes]) -> zipfile.ZipFile:
@@ -141,3 +141,36 @@ class TestExtractArchiveZip:
         with pytest.raises(ValueError, match="uncompressed size too large"):
             extract_archive(blob, tmp_path / "out", max_uncompressed_bytes=100)
         assert not (tmp_path / "out" / "big.txt").exists()
+
+
+class TestCheckTarSafeStopsEarly:
+    """The caps must be enforced while reading the tar index, not after it: a
+    tar's headers are only discovered by reading them, so checking a full
+    getmembers() list would load every header of an oversized archive first."""
+
+    @staticmethod
+    def _open(names_and_sizes):
+        infos = []
+        payloads = {}
+        for name, size in names_and_sizes:
+            infos.append(tarfile.TarInfo(name))
+            payloads[name] = b"x" * size
+        blob = _make_tar(infos, payloads)
+        return tarfile.open(fileobj=io.BytesIO(blob), mode="r:*")
+
+    def test_entry_cap_stops_reading_headers(self):
+        with self._open([(f"f{i}", 1) for i in range(100)]) as tar:
+            with pytest.raises(ValueError, match="too many entries"):
+                check_tar_safe(tar, max_entries=5)
+            # Only the headers up to the first one past the cap were read.
+            assert len(tar.members) == 6
+
+    def test_size_cap_stops_reading_headers(self):
+        with self._open([(f"f{i}", 60) for i in range(100)]) as tar:
+            with pytest.raises(ValueError, match="uncompressed size too large"):
+                check_tar_safe(tar, max_uncompressed_bytes=100)
+            assert len(tar.members) == 2
+
+    def test_within_caps_passes(self):
+        with self._open([("a", 1), ("b", 1)]) as tar:
+            check_tar_safe(tar, max_entries=2, max_uncompressed_bytes=2)
