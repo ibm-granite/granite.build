@@ -1,5 +1,6 @@
 # import time is required here, even the it is not referenced in the code explicitly
 import time
+from functools import lru_cache
 from typing import List, Optional, Tuple
 from urllib.parse import parse_qs
 
@@ -148,6 +149,27 @@ def get_user(token: str) -> UserInfoResponse:
             login=login, id=0, url="", html_url="", name=login, email=""
         )
 
+    # The stored token's identity was recorded by `gb auth login`; reuse it instead
+    # of a GitHub round-trip on every command. gbserver still authenticates the
+    # token itself (a bad one surfaces as GBServerAuthError).
+    gh_section = get_gh_credentials_section()
+    if token and token == creds.get("token", section=gh_section):
+        login = creds.get("login", section=gh_section)
+        if login:
+            email = creds.get("email", section=gh_section) or ""
+            return UserInfoResponse(
+                login=login, id=0, url="", html_url="", name=login, email=email
+            )
+
+    return _fetch_github_user(token)
+
+
+@lru_cache(maxsize=8)
+def _fetch_github_user(token: str) -> UserInfoResponse:
+    """GET /user for a token we have no stored identity for (e.g. during login).
+
+    Memoized per process so repeated lookups of the same token cost one request.
+    """
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",

@@ -1,10 +1,14 @@
+import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 
 from packaging.version import InvalidVersion, Version
 
+from gbcli.utils.cli_config import get_local_gb_config
 from gbcli.utils.gbconstants import PROJECT_NAME
 from gbcli.utils.gh_clone import get_public_repo_tags, run_github_command
 from gbcommon.types.constants import GB_PUBLIC_REPO_NAME, GB_PUBLIC_REPO_ORG
@@ -23,6 +27,16 @@ _UPGRADE_CMD = (
     "pip install --upgrade "
     "'git+https://github.com/ibm-granite/granite.build.git@stable'"
 )
+
+
+# The per-command version check caches the (latest, floor) it resolved from the public
+# repo tags, so most commands skip the GitHub round-trip (and its 60/hour anonymous
+# rate limit). Status is still recomputed against the installed version every time.
+VERSION_CHECK_CACHE_FILE = "version_check.json"
+VERSION_CHECK_CACHE_TTL_S = int(os.environ.get("GBCLI_VERSION_CHECK_TTL", 6 * 3600))
+# A failed lookup (offline, or rate-limited with 403) is remembered briefly too, so
+# each command doesn't re-pay the timeout or keep the anonymous quota exhausted.
+VERSION_CHECK_FAILURE_TTL_S = 15 * 60
 
 
 class VersionStatus(Enum):
@@ -137,7 +151,56 @@ def mandatory_upgrade_message(current: str, latest: str) -> str:
     )
 
 
-def evaluate_version_status(package_name: str = "granite.build") -> VersionCheckResult:
+def _fetch_latest_and_floor() -> tuple[str, str]:
+    tags = run_github_command(
+        lambda: get_public_repo_tags(GB_PUBLIC_REPO_ORG, GB_PUBLIC_REPO_NAME)
+    )
+    return _resolve_versions_from_tags(tags)
+
+
+def _cached_latest_and_floor() -> tuple[str, str]:
+    """``_fetch_latest_and_floor`` behind a TTL file cache in the gb config dir.
+
+    Cache I/O problems never fail the check; they just fall through to a live fetch.
+    """
+    try:
+        path = get_local_gb_config() / VERSION_CHECK_CACHE_FILE
+    except Exception:
+        return _fetch_latest_and_floor()
+    try:
+        cached = json.loads(path.read_text())
+        age = time.time() - float(cached["checked_at"])
+    except Exception:
+        cached, age = None, -1.0  # missing or unreadable -> refresh
+    if cached is not None and age >= 0:
+        if cached.get("failed"):
+            if age < VERSION_CHECK_FAILURE_TTL_S:
+                raise RuntimeError("version lookup failed recently; backing off")
+        elif age < VERSION_CHECK_CACHE_TTL_S:
+            return str(cached["latest"]), str(cached["floor"])
+
+    try:
+        latest, floor = _fetch_latest_and_floor()
+    except Exception:
+        _write_version_cache(path, {"failed": True})
+        raise
+    _write_version_cache(path, {"latest": latest, "floor": floor})
+    return latest, floor
+
+
+def _write_version_cache(path, entry: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({**entry, "checked_at": time.time()}))
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.debug("Could not write version check cache: %s", e)
+
+
+def evaluate_version_status(
+    package_name: str = "granite.build", use_cache: bool = False
+) -> VersionCheckResult:
     """Resolve the CLI's version status against the public repo. Click-free, best-effort.
 
     The check queries the public granite.build repo over unauthenticated HTTPS, so it
@@ -154,12 +217,14 @@ def evaluate_version_status(package_name: str = "granite.build") -> VersionCheck
     unknown (no ``min-supported`` tag, or it can't be resolved) we fall back to the
     pre-floor behavior and mandate the upgrade for any outdated client, so a missing tag
     never silently downgrades a block to a warning.
+
+    ``use_cache`` reuses tags resolved within ``VERSION_CHECK_CACHE_TTL_S`` (the
+    per-command gate); an explicit ``gb version --check-updates`` always goes live.
     """
     try:
-        tags = run_github_command(
-            lambda: get_public_repo_tags(GB_PUBLIC_REPO_ORG, GB_PUBLIC_REPO_NAME)
+        latest, floor = (
+            _cached_latest_and_floor() if use_cache else _fetch_latest_and_floor()
         )
-        latest, floor = _resolve_versions_from_tags(tags)
         current = get_current_version(package_name)
         current_v = Version(current)
         latest_v = Version(latest)

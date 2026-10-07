@@ -7,7 +7,6 @@ from typing import Dict
 
 import click
 from click.core import ParameterSource
-from fastapi import HTTPException
 from tqdm import tqdm
 
 from gbcli.client.client import GBClient

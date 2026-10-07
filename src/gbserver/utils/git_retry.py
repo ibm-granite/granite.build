@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import requests
-from git.exc import GitCommandError, GitError
 from tenacity import (
     RetryCallState,
     before_sleep_log,
@@ -111,6 +110,10 @@ def is_transient_git_error(exception: BaseException) -> bool:
     Returns:
         True if the error is transient and should be retried, False otherwise
     """
+    # Lazy: importing gitpython spawns `git --version`; keep it off the gb CLI's
+    # import path (gbcommon.uri reaches here via myghapi).
+    from git.exc import GitCommandError, GitError
+
     if not isinstance(exception, (GitCommandError, GitError)):
         return False
 

@@ -23,9 +23,10 @@ import tempfile
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import List, Optional, Self, Tuple, Type
+from typing import TYPE_CHECKING, List, Optional, Self, Tuple, Type
 
-from git import Repo
+if TYPE_CHECKING:
+    from git import Repo
 
 from gbcommon.uri.uri import URI
 from gbserver.github.myghapi import MyGHApi
@@ -296,8 +297,10 @@ class GitURI(URI):
         return repo_cache_path
 
     @git_clone_retry
-    def _clone_with_retry(self, repo_url: str, path: Path, **kwargs) -> Repo:
+    def _clone_with_retry(self, repo_url: str, path: Path, **kwargs) -> "Repo":
         """Clone repository with retry logic."""
+        from git import Repo
+
         return Repo.clone_from(repo_url, path, **kwargs)
 
     def get_path_in_repo_from_cache(self: Self, force: bool = False) -> Optional[Path]:

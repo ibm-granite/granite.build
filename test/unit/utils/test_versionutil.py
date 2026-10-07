@@ -242,3 +242,93 @@ class TestGetLatestVersion:
         tags = [_tag("nightly"), _tag("release-candidate")]
         monkeypatch.setattr(versionutil, "get_public_repo_tags", lambda *_: tags)
         assert versionutil.get_latest_version("ibm-granite", "granite.build") == "0.0.0"
+
+
+class TestVersionCheckCache:
+    """``use_cache=True`` (the per-command gate) reuses recently resolved tags."""
+
+    def _setup(self, monkeypatch, tmp_path, tags, current="1.0.0"):
+        monkeypatch.setenv("GB_CONFIG", str(tmp_path))
+        calls = []
+
+        def _fake_tags(*_):
+            calls.append(1)
+            return tags
+
+        monkeypatch.setattr(versionutil, "get_public_repo_tags", _fake_tags)
+        monkeypatch.setattr(versionutil, "get_current_version", lambda _: current)
+        return calls
+
+    def test_second_call_within_ttl_skips_fetch(self, monkeypatch, tmp_path):
+        calls = self._setup(monkeypatch, tmp_path, [_tag("v2.0.0")], current="2.0.0")
+        for _ in range(3):
+            result = versionutil.evaluate_version_status(use_cache=True)
+            assert result.status is VersionStatus.UP_TO_DATE
+        assert len(calls) == 1
+
+    def test_cached_floor_still_blocks(self, monkeypatch, tmp_path):
+        tags = [
+            _tag("v1.0.0", sha="a"),
+            _tag("v1.5.0", sha="b"),
+            _tag("v2.0.0", sha="c"),
+            _tag("min-supported", sha="b"),
+        ]
+        calls = self._setup(monkeypatch, tmp_path, tags, current="1.0.0")
+        versionutil.evaluate_version_status(use_cache=True)
+        result = versionutil.evaluate_version_status(use_cache=True)
+        assert result.status is VersionStatus.BELOW_FLOOR
+        assert len(calls) == 1
+
+    def test_status_recomputed_for_installed_version(self, monkeypatch, tmp_path):
+        """An upgrade takes effect immediately; only the tags are cached."""
+        self._setup(monkeypatch, tmp_path, [_tag("v2.0.0")], current="1.0.0")
+        first = versionutil.evaluate_version_status(use_cache=True)
+        assert first.status is VersionStatus.BELOW_FLOOR
+        monkeypatch.setattr(versionutil, "get_current_version", lambda _: "2.0.0")
+        second = versionutil.evaluate_version_status(use_cache=True)
+        assert second.status is VersionStatus.UP_TO_DATE
+
+    def test_expired_cache_refetches(self, monkeypatch, tmp_path):
+        calls = self._setup(monkeypatch, tmp_path, [_tag("v2.0.0")], current="2.0.0")
+        monkeypatch.setattr(versionutil, "VERSION_CHECK_CACHE_TTL_S", 0)
+        versionutil.evaluate_version_status(use_cache=True)
+        versionutil.evaluate_version_status(use_cache=True)
+        assert len(calls) == 2
+
+    def test_failed_fetch_backs_off(self, monkeypatch, tmp_path):
+        """A failure (offline / rate-limited) is UNKNOWN and not retried right away."""
+        self._setup(monkeypatch, tmp_path, [])
+        calls = []
+
+        def _boom(*_):
+            calls.append(1)
+            raise ConnectionError("offline")
+
+        monkeypatch.setattr(versionutil, "get_public_repo_tags", _boom)
+        for _ in range(2):
+            result = versionutil.evaluate_version_status(use_cache=True)
+            assert result.status is VersionStatus.UNKNOWN
+        assert len(calls) == 1
+
+    def test_failure_back_off_expires(self, monkeypatch, tmp_path):
+        calls = self._setup(monkeypatch, tmp_path, [_tag("v2.0.0")], current="2.0.0")
+        (tmp_path / versionutil.VERSION_CHECK_CACHE_FILE).write_text(
+            '{"failed": true, "checked_at": 0}'
+        )
+        result = versionutil.evaluate_version_status(use_cache=True)
+        assert result.status is VersionStatus.UP_TO_DATE
+        assert len(calls) == 1
+
+    def test_corrupt_cache_ignored(self, monkeypatch, tmp_path):
+        calls = self._setup(monkeypatch, tmp_path, [_tag("v2.0.0")], current="2.0.0")
+        (tmp_path / versionutil.VERSION_CHECK_CACHE_FILE).write_text("{not json")
+        result = versionutil.evaluate_version_status(use_cache=True)
+        assert result.status is VersionStatus.UP_TO_DATE
+        assert len(calls) == 1
+
+    def test_default_is_live(self, monkeypatch, tmp_path):
+        """`gb version --check-updates` (no use_cache) always fetches."""
+        calls = self._setup(monkeypatch, tmp_path, [_tag("v2.0.0")], current="2.0.0")
+        versionutil.evaluate_version_status(use_cache=True)
+        versionutil.evaluate_version_status()
+        assert len(calls) == 2
