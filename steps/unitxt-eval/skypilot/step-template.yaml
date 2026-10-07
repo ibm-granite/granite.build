@@ -1,0 +1,118 @@
+name: unitxt-eval
+version: 1.0.0
+# Runs a unitxt evaluation with the `unitxt-evaluate` CLI and registers its output
+# directory as an artifact. The CLI is used as a black box: the step installs unitxt,
+# passes the configured arguments through, and registers what the CLI wrote.
+#
+# `custom` rather than EVAL: there is no EVAL member in StepType (see bfcl-eval's
+# step-template.yaml for the longer note).
+type: custom
+config:
+  unitxt_config:
+    # unitxt task(s), passed as --tasks. A catalog recipe such as
+    # "card=cards.mmlu_pro.engineering", a benchmark such as "benchmarks.tool_calling",
+    # or several joined with "+". REQUIRED.
+    tasks: ""
+    # Inference backend, passed as --model: "hf" (local transformers) or
+    # "cross_provider" (a remote model; its credentials come from the build's
+    # launcher_config.envs).
+    model: "cross_provider"
+    # Passed as --model_args. Names the model directly, so the step declares no model
+    # input: "model_name=<id>" for cross_provider (e.g. llama-3-1-8b-instruct),
+    # "pretrained=<hf id>" for hf. REQUIRED.
+    model_args: ""
+    # Instances per task, passed as --limit. 0 (the default) passes no --limit, so
+    # every instance is evaluated.
+    limit: 0
+    # Directory the CLI writes into (--output_path), registered as the `results`
+    # artifact. Relative paths resolve in the step's working directory.
+    output_path: "output"
+    # unitxt release installed in setup. Ignored when `unitxt_image` is set.
+    unitxt_version: "1.26.10"
+    pip_index_url: "https://pypi.org/simple"
+    # Container image that already provides unitxt-evaluate. Setting it skips the
+    # venv and install entirely (dpk's `dpk_image` pattern). Empty => bare node.
+    unitxt_image: ""
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: "4Gi"
+
+# The model is named in unitxt_config.model_args rather than bound as an input, so
+# there is no fixed input name to declare.
+inputs:
+  allow_unknown: true
+outputs:
+  optional:
+    results:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    # No `subtypes:` restriction: resolves on all four SkyPilot endpoints.
+    default_launcher: unitxt-eval
+    launchers:
+      unitxt-eval:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Not shell-escaped: passed to sky.Resources(image_id=...) as a python
+          # value, never through a shell (same as dpk).
+          image_id: '{{ ("docker:" ~ config.unitxt_config.unitxt_image) if config.unitxt_config.unitxt_image else "" }}'
+          # Cloud-agnostic: the build supplies cpus/memory/accelerators via
+          # config.launcher_config.resources.
+          resources: {}
+          setup: |
+            set -eu
+            {#- Shell-quote escaping for author-supplied values. Jinja macros are
+                block-scoped, so `run` carries its own identical copy. #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- if not config.unitxt_config.unitxt_image %}
+            # Install unitxt into a venv with uv, as dpk does. --break-system-packages
+            # is needed on PEP 668 interpreters; older pip lacks it, so fall back.
+            if ! pip install --quiet --no-cache-dir --break-system-packages uv 2>/dev/null; then
+              pip install --quiet --no-cache-dir uv
+            fi
+            export UV_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-cache"
+            uv venv ./venv
+            . ./venv/bin/activate
+            uv pip install --index-url '{{ q(config.unitxt_config.pip_index_url) }}' \
+              'unitxt=={{ q(config.unitxt_config.unitxt_version) }}'
+            {%- endif %}
+          # run starts in the same working directory as setup, so ./venv is relative.
+          run: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- if not config.unitxt_config.unitxt_image %}
+            . ./venv/bin/activate
+            {%- endif %}
+            TASKS='{{ q(config.unitxt_config.tasks) }}'
+            MODEL_ARGS='{{ q(config.unitxt_config.model_args) }}'
+            if [ -z "$TASKS" ]; then
+              echo "unitxt-eval: ERROR unitxt_config.tasks is required." >&2; exit 1
+            fi
+            if [ -z "$MODEL_ARGS" ]; then
+              echo "unitxt-eval: ERROR unitxt_config.model_args is required." >&2; exit 1
+            fi
+            OUTPUT_DIR='{{ q(config.unitxt_config.output_path) }}'
+            mkdir -p "$OUTPUT_DIR"
+            # Absolute, because the server reads the artifact marker off-node.
+            OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+            unitxt-evaluate \
+              --tasks "$TASKS" \
+              --model '{{ q(config.unitxt_config.model) }}' \
+              --model_args "$MODEL_ARGS" \
+              {%- if config.unitxt_config.limit %}
+              --limit '{{ q(config.unitxt_config.limit) }}' \
+              {%- endif %}
+              --output_path "$OUTPUT_DIR"
+            # Must start the line for skypilot_monitor's regex to capture it.
+            echo "GB_ARTIFACT_ID:results GB_ARTIFACT_PATH:${OUTPUT_DIR}"
+    monitors:
+      # Standard artifact/status convention from the shipped monitor library.
+      skypilot_monitor:
+        ref: space://monitors/skypilot
