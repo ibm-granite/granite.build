@@ -28,6 +28,7 @@ from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventType,
     EntityRunMetadata,
+    MultiArtifactEventPayload,
 )
 from gbserver.utils.template import fill_template
 from gbserver.utils.utils import short_alphanumeric_lower_hash
@@ -101,12 +102,10 @@ def _artifact_event(rm: EntityRunMetadata) -> BuildEvent:
     )
 
 
-@pytest.mark.asyncio
-async def test_retry_handler_stamps_attempt_on_new_artifact():
-    downstream: asyncio.Queue = asyncio.Queue()
+def test_retry_handler_stamps_attempt_on_new_artifact():
     handler = RetryHandler(
         launch_id="l1",
-        downstream_queue=downstream,
+        downstream_queue=asyncio.Queue(),
         environment=SimpleNamespace(),  # type: ignore[arg-type]
         max_retries=3,
     )
@@ -124,8 +123,24 @@ async def test_retry_handler_stamps_attempt_on_new_artifact():
     assert first.run_metadata.attempt == 0
 
 
-@pytest.mark.asyncio
-async def test_retry_handler_does_not_stamp_other_events():
+def test_retry_handler_stamps_multiartifact_event():
+    handler = RetryHandler(
+        launch_id="l1",
+        downstream_queue=asyncio.Queue(),
+        environment=SimpleNamespace(),  # type: ignore[arg-type]
+        max_retries=3,
+    )
+    handler.retry_count = 1
+    event = BuildEvent(
+        run_metadata=EntityRunMetadata(targetsteprun_id="tsr-1"),
+        type=BuildEventType.NEW_MULTIARTIFACT_IN_ENVIRONMENT_EVENT,
+        payload=MultiArtifactEventPayload(artifacts=[]),
+    )
+    handler._stamp_attempt(event)
+    assert event.run_metadata.attempt == 1
+
+
+def test_retry_handler_does_not_stamp_other_events():
     handler = RetryHandler(
         launch_id="l1",
         downstream_queue=asyncio.Queue(),

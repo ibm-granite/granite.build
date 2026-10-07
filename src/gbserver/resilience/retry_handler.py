@@ -486,7 +486,11 @@ class RetryHandler:
     def _stamp_attempt(self: Self, event: BuildEvent) -> None:
         """Stamp ``attempt`` for ``{{ unique_hash }}``; copies since monitors share run_metadata."""
         if (
-            event.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            event.type
+            in (
+                BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT,
+                BuildEventType.NEW_MULTIARTIFACT_IN_ENVIRONMENT_EVENT,
+            )
             and event.run_metadata is not None
         ):
             event.run_metadata = dataclasses.replace(
