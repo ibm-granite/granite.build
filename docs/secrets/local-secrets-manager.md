@@ -56,6 +56,15 @@ Files placed directly in `space_secrets/` (the shared layout used before per-spa
 belongs to. The one exception is `space_secrets/<space name>.yaml` (what the admin API used to write),
 which is moved into `space_secrets/<space name>/` automatically on first use.
 
+Because the directory is keyed on the space.yaml `name`, not the registered space name, two different
+spaces using the default location must not share a space.yaml `name`; otherwise they would read each
+other's secrets. Registration enforces this. Standalone startup and `gbserver create-spaces` refuse a
+space whose space.yaml `name` matches that of another registered space (with a different URI) that also
+uses the default location. Rows that are aliases of one space, such as standalone's `public`,
+`standalone` and `local`, share a URI and are allowed. A registered space whose space.yaml can't be read
+(for example a stale row for a deleted directory) is skipped with a warning. Give the second space a
+different space.yaml `name`, or an explicit `secrets_dir`.
+
 An explicit `secrets_dir` is used exactly as given; spaces configured with the same `secrets_dir`
 share those secrets.
 

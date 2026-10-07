@@ -1,6 +1,6 @@
 import os
 import shutil
-from typing import Optional
+from typing import List, Optional, cast
 
 import click
 
@@ -210,57 +210,92 @@ def check_and_init_for_standalone(space_dir: Optional[str] = None) -> None:
     if space_dir is None:
         return
 
+    register_standalone_space(
+        singleton_storage.get_admin_storage().space_storage, space_dir
+    )
+
+
+# Backward compatibility:  the standalone space.yaml's `name:` field used
+# to be `standalone`, then `public`.  The space directory has since moved
+# to configurations/spaces/local, but the `name:` field is still `public`.
+# Existing deployments, bookmarks, scripts, and database rows reference the
+# older names, so we register several rows pointing at the exact same
+# directory:
+#
+#   - 'public'     — matches the current space.yaml name field.
+#   - 'standalone' — legacy alias kept so old build configs and tooling
+#                    that still say `space_name: standalone` continue to
+#                    resolve.
+#   - 'local'      — alias matching the current directory name
+#                    (configurations/spaces/local) for configs and tooling
+#                    that reference the space by its directory name.
+#
+# All rows share the same `git_repo_uri`.  This is allowed because the
+# `git_repo_uri` column is not unique (see SQLSpaceStorage); only `name`
+# is unique, so the rows coexist cleanly.
+STANDALONE_SPACE_ALIASES = ("public", "standalone", "local")
+
+
+def register_standalone_space(space_storage, space_dir: str) -> None:
+    """Register (or re-point) the standalone space under each of its aliases.
+
+    The aliases share one URI, so they may share the default local secret
+    store, but no *other* registered space may use that store under the same
+    space.yaml name (see gbserver.spaces.local_secrets_isolation).
+
+    Args:
+        space_storage: The admin space storage.
+        space_dir: The standalone server's space directory.
+
+    Raises:
+        LocalSecretsCollisionError: If another registered space would share the
+            standalone space's default local secrets.
+    """
+    from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
     from gbserver.storage.stored_space import StoredSpace
 
-    # Backward compatibility:  the standalone space.yaml's `name:` field used
-    # to be `standalone`, then `public`.  The space directory has since moved
-    # to configurations/spaces/local, but the `name:` field is still `public`.
-    # Existing deployments, bookmarks, scripts, and database rows reference the
-    # older names, so we register several rows pointing at the exact same
-    # directory:
-    #
-    #   - 'public'     — matches the current space.yaml name field.
-    #   - 'standalone' — legacy alias kept so old build configs and tooling
-    #                    that still say `space_name: standalone` continue to
-    #                    resolve.
-    #   - 'local'      — alias matching the current directory name
-    #                    (configurations/spaces/local) for configs and tooling
-    #                    that reference the space by its directory name.
-    #
-    # All rows share the same `git_repo_uri`.  This is allowed because the
-    # `git_repo_uri` column is not unique (see SQLSpaceStorage); only `name`
-    # is unique, so the rows coexist cleanly.
-    storage = singleton_storage.get_admin_storage()
-    abs_dir = os.path.abspath(space_dir)
-    space_uri = f"file://{abs_dir}"
-    space_aliases = [
-        ("public", space_uri),
-        ("standalone", space_uri),
-        ("local", space_uri),
-    ]
-    for name, uri in space_aliases:
-        existing = storage.space_storage.get_by_name(name)
-        stored_space = StoredSpace(
-            name=name,
-            git_repo_uri=uri,
-            lakehouse_namespace="",
+    space_uri = f"file://{os.path.abspath(space_dir)}"
+    check_local_secrets_collision(
+        StoredSpace(name="public", git_repo_uri=space_uri, lakehouse_namespace=""),
+        # The alias rows themselves are re-pointed below, so exclude them.
+        [
+            s
+            for s in cast(List[StoredSpace], space_storage.get_by_uuid(None))
+            if s.name not in STANDALONE_SPACE_ALIASES
+        ],
+    )
+    for name in STANDALONE_SPACE_ALIASES:
+        _upsert_space_alias(
+            space_storage,
+            StoredSpace(name=name, git_repo_uri=space_uri, lakehouse_namespace=""),
         )
-        if existing is None:
-            storage.space_storage.add(stored_space)
-            logger.info("Created '%s' space with URI %s", name, uri)
-        elif existing.git_repo_uri != uri:
-            # Update the existing row to point at the current --space-dir.
-            # Without this, re-launching standalone against a different
-            # directory would silently keep using the stale URI from the
-            # prior run.
-            stored_space.uuid = existing.uuid
-            storage.space_storage.update(stored_space, create_if_not_exist=False)
-            logger.info(
-                "Updated '%s' space (uuid=%s) from %s to %s",
-                name,
-                existing.uuid,
-                existing.git_repo_uri,
-                uri,
-            )
-        else:
-            logger.info("'%s' space already exists (uuid=%s)", name, existing.uuid)
+
+
+def _upsert_space_alias(space_storage, stored_space) -> None:
+    """Add a space row, or re-point an existing row with that name at its URI.
+
+    Args:
+        space_storage: The admin space storage.
+        stored_space: The row to write (a StoredSpace).
+    """
+    name, uri = stored_space.name, stored_space.git_repo_uri
+    existing = space_storage.get_by_name(name)
+    if existing is None:
+        space_storage.add(stored_space)
+        logger.info("Created '%s' space with URI %s", name, uri)
+    elif existing.git_repo_uri != uri:
+        # Update the existing row to point at the current --space-dir.
+        # Without this, re-launching standalone against a different
+        # directory would silently keep using the stale URI from the
+        # prior run.
+        stored_space.uuid = existing.uuid
+        space_storage.update(stored_space, create_if_not_exist=False)
+        logger.info(
+            "Updated '%s' space (uuid=%s) from %s to %s",
+            name,
+            existing.uuid,
+            existing.git_repo_uri,
+            uri,
+        )
+    else:
+        logger.info("'%s' space already exists (uuid=%s)", name, existing.uuid)

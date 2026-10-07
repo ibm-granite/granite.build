@@ -127,24 +127,10 @@ def _build_space_secret_manager(space_uri: str):
     space.yaml; the resulting manager reads from its own configured location
     (env vars / a configured secrets dir), not from the pulled copy.
     """
-    import glob
-    import tempfile
-    from pathlib import Path
-
-    from gbcommon.uri.uri import URI
+    from gbserver.spaces.local_secrets_isolation import load_space_config
     from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
-    from gbserver.types.spaceconfig import SpaceConfig
 
-    space_yaml_name = "space.yaml"
-    uriobj = URI.get_uri(uri=space_uri, default_scheme="file")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        uriobj.pull(dest=Path(tmpdir))
-        space_yamls = glob.glob(
-            str(Path(tmpdir) / "**" / space_yaml_name), recursive=True
-        )
-        if not space_yamls:
-            raise ValueError(f"No '{space_yaml_name}' found for space at {space_uri}")
-        space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
+    space_config = load_space_config(space_uri)
 
     SpaceSecretManager.load_spacesecretmanagers()
     # space_name is space.yaml's name, not the registered name: standalone
