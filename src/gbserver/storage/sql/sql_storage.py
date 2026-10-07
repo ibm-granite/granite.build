@@ -578,8 +578,8 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         finally:
             session.close()
 
-    # Don't need @retry here since get_by_where() is retried (via
-    # _get_by_where_with_retry()) above.
+    # Don't need @retry here: it is only reached through get_by_where(), which is
+    # retried via _get_by_where_with_retry() (both defined further below).
     def _get_by_where_row_dicts(
         self,
         where: Optional[Union[str, dict]] = None,
@@ -875,6 +875,11 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
 
         Returns:
             list[BASE_ITEM_TYPE]: The matching items.
+
+        Raises:
+            ValueError: If ``where`` is neither a string, a dict, nor None.
+            sqlalchemy.exc.SQLAlchemyError: If the query still fails after the
+                retries in _get_by_where_with_retry are exhausted.
         """
         return self._get_by_where_with_retry(where, query_control)
 
@@ -888,7 +893,25 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         where: str | dict | None = None,
         query_control: Optional[QueryControl] = None,
     ) -> list[BASE_ITEM_TYPE]:
-        """Retried implementation of get_by_where (see its docstring)."""
+        """Run get_by_where's query, retrying failures with exponential backoff.
+
+        Retries any exception up to 10 attempts, waiting 1-30 seconds (randomized
+        exponential) between them, then re-raises the last one. After the base
+        query, dict ``where`` values for exact_liked_list_columns are post-filtered
+        to exact list-member matches.
+
+        Args:
+            where: A SQL where-clause string or a column->value dict, or None for all.
+            query_control: Optional pagination/sorting control.
+
+        Returns:
+            list[BASE_ITEM_TYPE]: The matching items.
+
+        Raises:
+            ValueError: If ``where`` is neither a string, a dict, nor None (after
+                the retries, since every exception is retried).
+            sqlalchemy.exc.SQLAlchemyError: If the query fails on every attempt.
+        """
         items = super().get_by_where(where, query_control=query_control)
         if isinstance(where, dict):
             # For queries, such as %like%, we can enable better exact list member match here via exact_liked_list_columns.
