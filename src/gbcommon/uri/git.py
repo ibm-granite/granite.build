@@ -304,12 +304,15 @@ class GitURI(URI):
         from gbserver.utils.git_retry import git_clone_retry
 
         @git_clone_retry
-        def clone(_self, repo_url: str, path: Path, **kwargs) -> "Repo":
+        def clone(repo_url: str, path: Path, **kwargs) -> "Repo":
             from git import Repo
 
             return Repo.clone_from(repo_url, path, **kwargs)
 
-        return clone(self, repo_url, path, **kwargs)
+        # Keyword-only call: git_retry's cleanup_failed_clone takes args[1] as the
+        # clone path when there are 2+ positional args (here that would be the URL)
+        # and otherwise kwargs["path"], which it removes before each retry.
+        return clone(repo_url=repo_url, path=path, **kwargs)
 
     def get_path_in_repo_from_cache(self: Self, force: bool = False) -> Optional[Path]:
         """
