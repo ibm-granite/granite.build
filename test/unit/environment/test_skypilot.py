@@ -39,6 +39,19 @@ class TestStepSkypilotConfig:
         assert config.image_id == "docker:nvcr.io/nvidia/pytorch:24.01-py3"
 
 
+@pytest.fixture
+def skypilot_standalone():
+    """Run file_mounts resolution as a STANDALONE server (the suite runs as DEV).
+
+    On a standalone server the user owns the host, so absolute/``file://``
+    sources are passed through; elsewhere they are refused (see
+    TestHostedMountSources).
+    """
+    with patch("gbserver.environment.skypilot.is_standalone", return_value=True):
+        yield
+
+
+@pytest.mark.usefixtures("skypilot_standalone")
 class TestResolveLocalMountSource:
     """_resolve_local_mount_source: relative sources rebase onto the asset dir."""
 
@@ -101,6 +114,7 @@ class TestResolveLocalMountSource:
         assert _resolve_local_mount_source("d", "file:///work/run1") == "/work/run1/d"
 
 
+@pytest.mark.usefixtures("skypilot_standalone")
 class TestBuildSkypilotMounts:
     """_build_skypilot_mounts: routes strings vs dicts and resolves sources."""
 
@@ -149,6 +163,71 @@ class TestBuildSkypilotMounts:
                 {"payload": "payload"}, "/work/run1", "/proj/gbtest/builds/b1"
             )
         assert file_mounts == {"/proj/gbtest/builds/b1/payload": "/work/run1/payload"}
+
+
+class TestHostedMountSources:
+    """Outside STANDALONE, a file_mounts source may only name files in the step dir.
+
+    file_mounts can come from step.yaml (possibly a user's git repo), the
+    build.yaml step ``config:`` (merged on top), or a git-hosted environment, and
+    SkyPilot rsyncs local sources from the gbserver host to the cluster. So an
+    absolute or ``file://`` source, or a step-dir symlink pointing out of it,
+    would ship server files (e.g. ``/home/gbserver/.kube``) to compute.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _hosted(self):
+        with patch("gbserver.environment.skypilot.is_standalone", return_value=False):
+            yield
+
+    @pytest.mark.parametrize(
+        "source",
+        ["/home/gbserver/.kube", "file:///home/gbserver/.kube", "file://host/etc"],
+    )
+    def test_host_path_sources_rejected(self, source, tmp_path):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        with pytest.raises(ValueError, match="standalone"):
+            _resolve_local_mount_source(source, tmp_path)
+
+    def test_relative_source_inside_step_dir_allowed(self, tmp_path):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        (tmp_path / "scripts").mkdir()
+        assert _resolve_local_mount_source("scripts", tmp_path) == str(
+            tmp_path / "scripts"
+        )
+
+    def test_symlink_out_of_step_dir_rejected(self, tmp_path):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        step_dir, outside = tmp_path / "step", tmp_path / "outside"
+        step_dir.mkdir()
+        outside.mkdir()
+        (step_dir / "k").symlink_to(outside)
+        with pytest.raises(ValueError, match="outside the step directory"):
+            _resolve_local_mount_source("k", step_dir)
+
+    def test_relative_source_without_step_dir_rejected(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        with pytest.raises(ValueError, match="no step directory"):
+            _resolve_local_mount_source("scripts", None)
+
+    def test_remote_uri_sources_allowed(self, tmp_path):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert _resolve_local_mount_source("s3://b/k", tmp_path) == "s3://b/k"
+
+    @pytest.mark.parametrize(
+        "mount", ["/home/gbserver/.kube", {"source": "file:///home/gbserver/.kube"}]
+    )
+    def test_build_mounts_rejects_host_sources(self, mount, tmp_path):
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        with patch("gbserver.environment.skypilot.sky", MagicMock()):
+            with pytest.raises(ValueError, match="standalone"):
+                _build_skypilot_mounts({"/tmp/k": mount}, tmp_path)
 
 
 class TestRemapRelativeDest:

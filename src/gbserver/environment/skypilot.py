@@ -43,6 +43,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from gbcommon.types.gbenvconfig import is_standalone
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.environment.shared_fs import (
@@ -57,7 +58,7 @@ from gbserver.spaces.hf_push_config import (
 )
 from gbserver.types.buildconfig import BuildTargetStepConfig
 from gbserver.types.buildevent import EntityRunMetadata
-from gbserver.types.constants import GBSERVER_LOG_RECORD_MAX_CHARS
+from gbserver.types.constants import FILE_SCHEME, GBSERVER_LOG_RECORD_MAX_CHARS
 from gbserver.types.environment.environment import EnvironmentVariableConfig
 from gbserver.types.environment.skypilot import StepSkypilotConfig
 from gbserver.types.environmentconfig import EnvironmentConfig
@@ -1032,35 +1033,79 @@ def _reject_home_prefixed(path: str, role: str) -> None:
         )
 
 
+def _reject_host_mount_source(source: str) -> None:
+    """Refuse a ``file_mounts`` source naming a gbserver-host path, unless STANDALONE.
+
+    SkyPilot rsyncs local ``file_mounts`` sources from the gbserver host to the
+    cluster, and the mapping can come from a user's git-hosted step.yaml, the
+    build.yaml step ``config:`` (merged on top), or a git-hosted environment. On
+    a shared server an absolute or ``file://`` source would therefore copy
+    server files (``/home/gbserver/.kube``, ``~/.sky``, the database) to compute
+    the user controls. A STANDALONE server is the user's own machine.
+
+    :param source: an absolute path or ``file://`` URI from a ``file_mounts`` entry.
+    :raises ValueError: if the server is not STANDALONE.
+    """
+    if not is_standalone():
+        raise ValueError(
+            f"file_mounts source {source!r} names a path on the gbserver host; "
+            "only paths inside the step directory (or remote URIs such as "
+            "s3://) are allowed unless the server is standalone"
+        )
+
+
+def _require_inside_step_dir(source: str, base: Path) -> None:
+    """Outside STANDALONE, require ``base/source`` to stay in ``base`` after symlinks.
+
+    A step from a user's git repo can contain a symlink (``k -> /home/gbserver``)
+    that a plain ``..`` check misses but rsync would follow.
+
+    :param source: the relative source from a ``file_mounts`` entry.
+    :param base: the step's asset dir.
+    :raises ValueError: if not STANDALONE and the resolved source leaves ``base``.
+    """
+    if is_standalone():
+        return
+    if not (base / source).resolve().is_relative_to(base.resolve()):
+        raise ValueError(
+            f"file_mounts source {source!r} resolves outside the step directory"
+        )
+
+
 def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) -> str:
     """Resolve a ``file_mounts`` local source against the step's asset dir.
 
-    Remote URIs (``s3://``, ``gs://``, ``file://``, ``http…``) and absolute paths
-    are returned unchanged. A relative local path is joined onto ``asset_dir`` —
-    the per-run directory holding the rendered ``step.yaml`` and its sibling
-    files — so a path written in ``step.yaml`` is interpreted relative to the
-    ``step.yaml``'s own location (matching how bash/k8s treat step-relative
-    assets).
+    Remote URIs (``s3://``, ``gs://``, ``http…``) are returned unchanged. On a
+    STANDALONE server so are absolute paths and ``file://`` URIs; on any other
+    server those name gbserver-host files and are rejected (see
+    :func:`_reject_host_mount_source`). A relative local path is joined onto
+    ``asset_dir`` — the per-run directory holding the rendered ``step.yaml`` and
+    its sibling files — so a path written in ``step.yaml`` is interpreted
+    relative to the ``step.yaml``'s own location (matching how bash/k8s treat
+    step-relative assets).
 
     A ``~``/``~/``-prefixed source is rejected: this launcher resolves relative
     sources against the step dir and never expands ``~`` for sources, so it would
     otherwise become a literal ``<asset_dir>/~/…`` path rather than a home dir.
     A relative source that uses ``..`` to climb out of the step dir (e.g.
-    ``../other``) is also rejected, so sources stay confined to the step's own
-    assets. Use an absolute path or a step-relative one instead.
+    ``../other``) is also rejected, and outside STANDALONE so is one that leaves
+    it through a symlink, so sources stay confined to the step's own assets.
 
     :param source: the local/remote source string from a ``file_mounts`` entry.
     :param asset_dir: ``targetsteprun_asset_dir`` (a ``Path`` or ``file://``
         string), or ``None`` when unavailable (e.g. a retry with no stashed dir).
-    :returns: the resolved source string (unchanged for URIs and absolute paths).
+    :returns: the resolved source string (unchanged for URIs and, on a
+        standalone server, absolute paths).
     :raises ValueError: if ``source`` is ``~``/``~/``-prefixed or escapes the
-        step dir via ``..``.
+        step dir; or, outside STANDALONE, if it is absolute, ``file://``, or
+        relative with no asset dir to confine it to.
     """
     parsed = urllib.parse.urlparse(source)
-    if parsed.scheme:  # remote URI (s3/gs/file/http/…) — leave as-is
+    if parsed.scheme == FILE_SCHEME or (not parsed.scheme and os.path.isabs(source)):
+        _reject_host_mount_source(source)
+        return source  # standalone: absolute host path is the author's choice
+    if parsed.scheme:  # remote URI (s3/gs/http/…) — leave as-is
         return source
-    if os.path.isabs(source):
-        return source  # absolute host path — author's explicit choice
     _reject_home_prefixed(source, "source")
     if _escapes_parent(source):
         raise ValueError(
@@ -1069,6 +1114,11 @@ def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) 
             f"source"
         )
     if asset_dir is None:
+        if not is_standalone():
+            raise ValueError(
+                f"file_mounts source {source!r} is relative but there is no step "
+                "directory to resolve it against"
+            )
         logger.warning(
             "Relative file_mount source %r but no asset dir available; "
             "leaving it unresolved",
@@ -1077,6 +1127,7 @@ def _resolve_local_mount_source(source: str, asset_dir: Union[Path, str, None]) 
         return source
     # Tolerate a file:// URI form for asset_dir, matching the bash launcher.
     base = Path(urllib.parse.urlparse(str(asset_dir)).path)
+    _require_inside_step_dir(source, base)
     return str(base / source)
 
 
@@ -1248,6 +1299,8 @@ def _build_skypilot_mounts(
                 "mode": sky.StorageMode[mount_val.get("mode", "MOUNT").upper()],
             }
             parsed = urllib.parse.urlparse(source)
+            if parsed.scheme == FILE_SCHEME:  # a host path, not a bucket
+                _reject_host_mount_source(source)
             if parsed.scheme:  # bucket URI: extract the bucket-only source
                 sub_path = parsed.path.lstrip("/")
                 if sub_path:

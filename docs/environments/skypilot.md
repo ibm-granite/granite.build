@@ -342,11 +342,18 @@ which gbserver routes to different SkyPilot APIs:
 
 **Source path resolution.** A **relative** local source is resolved against the **`step.yaml`
 directory** (the per-run asset dir gbserver renders the step into), so you can mount files that ship
-alongside your `step.yaml`. Absolute paths and remote URIs (`s3://`, `gs://`, `file://`, …) are used
-unchanged. A **`~`/`~/`-prefixed source is rejected**: `~` is not expanded for sources (it would
-resolve to a literal `~` directory under the `step.yaml` dir), so use an absolute or step-relative
-source instead. A **relative source that uses `..` to climb out of the `step.yaml` dir** (e.g.
-`../other`) is likewise rejected, keeping sources confined to the step's own assets.
+alongside your `step.yaml`. Remote URIs (`s3://`, `gs://`, …) are used unchanged. A **`~`/`~/`-prefixed
+source is rejected**: `~` is not expanded for sources (it would resolve to a literal `~` directory under
+the `step.yaml` dir), so use an absolute or step-relative source instead. A **relative source that uses
+`..` to climb out of the `step.yaml` dir** (e.g. `../other`) is likewise rejected, keeping sources
+confined to the step's own assets.
+
+**Host paths are standalone-only.** Local sources are copied from the gbserver host, so an **absolute
+path or `file://` source** names a file on the server itself. Only a standalone server
+(`GB_ENVIRONMENT=STANDALONE`, your own machine) uses them unchanged. On any other server they are
+rejected, as is a relative source that leaves the `step.yaml` dir through a symlink, or a relative
+source with no step directory to resolve it against. This applies wherever `file_mounts` comes from:
+`step.yaml`, the build.yaml step `config:`, or the environment.
 
 **Destination path resolution — the destination *shape* decides where the payload lands.** When the
 environment defines `shared_workdir` (so a per-run workdir exists), the destination key is routed by
