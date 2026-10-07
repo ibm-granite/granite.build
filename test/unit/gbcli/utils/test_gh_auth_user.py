@@ -21,9 +21,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gbcli.utils import gh_auth
+from gbcli.utils import gbserver_errors, gh_auth
 from gbcli.utils.gbserver_errors import (
-    RELOGIN_HINT,
     GBServerAuthError,
     GBServerHTTPError,
     gbserver_http_error,
@@ -104,7 +103,7 @@ class TestGBServerErrors:
         assert isinstance(err, GBServerAuthError)
         assert isinstance(err, GBServerHTTPError)
         assert err.status_code == 401
-        assert "Invalid token" in err.detail and RELOGIN_HINT in err.detail
+        assert "Invalid token" in err.detail and "auth login" in err.detail
 
     def test_other_status_is_plain_http_error(self):
         err = gbserver_http_error(404, "missing")
@@ -114,4 +113,34 @@ class TestGBServerErrors:
 
     def test_auth_error_accepts_non_string_detail(self):
         err = gbserver_http_error(401, [{"msg": "bad token"}])
-        assert "bad token" in err.detail and RELOGIN_HINT in err.detail
+        assert "bad token" in err.detail and "auth login" in err.detail
+
+
+class TestReloginHint:
+    """The 401 hint names the login flow for the configured provider."""
+
+    @pytest.mark.parametrize(
+        "provider, command",
+        [
+            (None, "'gb auth login'"),
+            ("github", "'gb auth login'"),
+            ("ibmid", "'gb auth login --sso ibm'"),
+            ("apikey", "'gb auth login --gbserver'"),
+        ],
+    )
+    def test_hint_follows_default_provider(self, tmp_path, provider, command):
+        creds = f'[user]\ndefault_provider = "{provider}"\n' if provider else ""
+        (tmp_path / "credentials").write_text(creds)
+        with (
+            patch(
+                "gbcli.utils.gbcredentials.get_local_gb_config",
+                return_value=str(tmp_path),
+            ),
+            patch("gbcommon.types.gbenvconfig.is_standalone", return_value=False),
+        ):
+            assert command in gbserver_errors.relogin_hint()
+            assert command in GBServerAuthError("Invalid token").detail
+
+    def test_standalone_points_at_gbserver_login(self):
+        with patch("gbcommon.types.gbenvconfig.is_standalone", return_value=True):
+            assert "'gb auth login --gbserver'" in gbserver_errors.relogin_hint()

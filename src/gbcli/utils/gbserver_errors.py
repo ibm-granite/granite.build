@@ -6,7 +6,34 @@ not import the web framework at startup.
 
 from typing import Any
 
-RELOGIN_HINT = "Run 'gb auth login' to re-authenticate."
+_RELOGIN_COMMANDS = {
+    "github": "gb auth login",
+    "ibmid": "gb auth login --sso ibm",
+    "apikey": "gb auth login --gbserver",
+}
+
+
+def relogin_hint() -> str:
+    """Re-login instruction for the configured auth provider.
+
+    Bare ``gb auth login`` is the GitHub flow (and makes GitHub the default), so an
+    IBMid or API-key user must be pointed at their own flow instead.
+    """
+    provider = "github"
+    try:
+        from gbcli.utils.gbcredentials import GBCredentials
+        from gbcommon.types.gbenvconfig import is_standalone
+
+        if is_standalone():
+            provider = "apikey"
+        else:
+            provider = (
+                GBCredentials().get("default_provider", section="user") or "github"
+            )
+    except Exception:  # credentials unreadable: fall back to the GitHub flow
+        pass
+    command = _RELOGIN_COMMANDS.get(provider, _RELOGIN_COMMANDS["github"])
+    return f"Run '{command}' to re-authenticate."
 
 
 class GBServerHTTPError(Exception):
@@ -29,7 +56,8 @@ class GBServerAuthError(GBServerHTTPError):
     def __init__(self, detail: Any = ""):
         # gbserver's detail is usually a string but may be any JSON value.
         text = str(detail).rstrip(". ") if detail else ""
-        super().__init__(401, f"{text}. {RELOGIN_HINT}" if text else RELOGIN_HINT)
+        hint = relogin_hint()
+        super().__init__(401, f"{text}. {hint}" if text else hint)
 
 
 def gbserver_http_error(status_code: int, detail: Any = "") -> GBServerHTTPError:
