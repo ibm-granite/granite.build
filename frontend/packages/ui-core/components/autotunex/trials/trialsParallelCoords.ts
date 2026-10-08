@@ -117,8 +117,9 @@ function fraction(value: number, min: number, max: number, invert: boolean): num
  * of them varied. They are then reordered by PLOT_AXIS_ORDER for legibility.
  *
  * Every axis carries its own real scale and its real tick values. Nothing is
- * remapped onto a shared 0..1 "goodness" scale the way the radar does it, which is
- * what let a 0.5% spread in loss read as the full distance from centre to rim.
+ * remapped onto a shared 0..1 "goodness" scale the way the removed radar did it,
+ * which is what let a 0.5% spread in loss read as the full distance from centre
+ * to rim.
  *
  * The two outcome axes are inverted when smaller is better, so on both of them the
  * top of the axis is the better result and a line that stays high did well. The
@@ -126,8 +127,7 @@ function fraction(value: number, min: number, max: number, invert: boolean): num
  * is simply higher, and `topLabel` / `bottomLabel` say which is which.
  *
  * `boundsFrom` sets each axis's scale, defaulting to the plotted trials. Passing the
- * whole run holds the axes still as the reader ticks trials on and off, the same
- * reason `toRadarData` takes it.
+ * whole run holds the axes still as the reader ticks trials on and off.
  */
 export function buildParallelCoords(
   trials: Trial[],
@@ -148,8 +148,7 @@ export function buildParallelCoords(
   })
 
   // Scales come from `boundsFrom` plus the plotted trials, so a plotted value can
-  // never land outside its own axis however the caller picks `boundsFrom` — the
-  // same guard toRadarData applies.
+  // never land outside its own axis however the caller picks `boundsFrom`.
   const scaleTrials = [...new Map([...boundsFrom, ...trials].map((t) => [t.id, t])).values()]
 
   const configValue = (trial: Trial, key: string): unknown => {

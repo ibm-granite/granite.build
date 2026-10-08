@@ -53,7 +53,7 @@ export function isEmptyValue(value: unknown): boolean {
 //
 // The union, not rows[0]'s keys: each row is built independently from its own
 // trial's config and metrics (see toCompareRow), so field sets genuinely differ
-// between trials — TrialsTable's radar code notes the same about `loss`. Reading
+// between trials (one trial can report `loss` while another does not). Reading
 // only the first row made anything it lacked invisible in all three sections and
 // absent from the counts the headings claim are exhaustive. Which trial is first
 // is decided by the loss sort, so the visible set even moved with the ranking.

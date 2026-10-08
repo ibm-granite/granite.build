@@ -31,7 +31,6 @@ import {
   Pagination,
 } from '@carbon/react'
 import { ArrowLeft, Compare } from '@carbon/icons-react'
-import { RadarChart } from '@carbon/charts-react'
 import { useQuery } from '@tanstack/react-query'
 import { useChartsTheme } from '../../../hooks/useTheme'
 import { getJobTrials } from '../../../api/autotunex'
@@ -45,21 +44,8 @@ import { TrialSearchSpace } from './TrialSearchSpace'
 import { EMPHASIS_THRESHOLD, emphasisColorScale, selectionSlots, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import { formatHyperparamValue, hyperparamColumnLabel, hyperparamColumns } from './trialHyperparams'
-import styles from './TrialsTable.module.scss'
-import { bestTrialId, isLowerBetter, jobMetric, primaryMetric, rankBestFirst, scoreOn, toFeatureLabel, toRadarData } from './trialsRadar'
+import { bestTrialId, isLowerBetter, jobMetric, primaryMetric, rankBestFirst, scoreOn, toFeatureLabel } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
-
-// The radar chart is superseded by TrialSearchSpace but kept behind this flag,
-// not deleted, because stakeholders may ask for it back. A radar is the same
-// construction in polar coordinates, so the two show the same trials; the parallel
-// plot drops the square aspect ratio that left most of a full-width row empty, and
-// the enclosed area that reads as meaning when the axes carry different units.
-//
-// Flip to `true` to restore it. Everything it needs — `toRadarData`, `radarData`,
-// `axisCount`, styles.radar and the RadarChart import — is still wired up, so
-// nothing else has to change. Remove this flag and that machinery together if the
-// decision is ever made final.
-const SHOW_RADAR = false
 
 // Hyperparameter columns are appended to these at render time. Appended, not
 // inserted: cause-then-effect would read more naturally, but on a wide sweep it
@@ -314,21 +300,14 @@ export function TrialsTable({ job }: Props) {
       ...Object.fromEntries(hyperparamKeys.map((key) => [key, ((t.config ?? {}) as Record<string, unknown>)[key]])),
     }))
 
-  // Only completed trials with metrics can be plotted — the radar needs a full
-  // metric grid, and running/errored trials have no (or partial) metrics.
+  // Only completed trials with metrics can be plotted — running/errored trials
+  // have no (or partial) metrics.
   const plottableTrials = trials.filter(
     (t) => t.status === 'completed' && Object.keys(t.metrics ?? {}).length > 0
   )
   const comparableTrials = plottableTrials.filter((t) => selectedIds.includes(t.id))
-  // Ticked trials draw; the whole run sets the scale they are drawn against.
-  const radarData = toRadarData(comparableTrials, plottableTrials)
-  // One ticked trial is enough to draw, since the scale spans the run and a lone
-  // blob still sits where that trial landed within it. Two axes is Carbon's own
-  // floor: a single-axis radar makes RadarChart reject.
-  const axisCount = new Set(radarData.map((d) => d.feature)).size
-  const canShowRadar = SHOW_RADAR && comparableTrials.length >= 1 && axisCount >= 2
   // The parallel plot draws the ticked trials and nothing else — with no selection
-  // the section is absent, the same gate the radar used. With two or more ticked,
+  // the section is absent. With two or more ticked,
   // the axes span only those trials: one outlier elsewhere in the run would otherwise
   // stretch an axis — Loss above all — until every drawn line bunched at one end and
   // the winner could not be told apart. The cost is that ticking a trial on or off
@@ -352,8 +331,8 @@ export function TrialsTable({ job }: Props) {
   return (
     <div>
       <TrialProgressSummary job={job} trials={trials} />
-      {/* Table first, radar stacked under it once a plottable trial is ticked, so
-          each one gets the row's full width. `overflowX: 'auto'` keeps a wide
+      {/* Table first, the parallel plot stacked under it once a plottable trial is
+          ticked, so each one gets the row's full width. `overflowX: 'auto'` keeps a wide
           table scrolling inside its own box rather than stretching the page. */}
       <div style={{ overflowX: 'auto' }}>
       <DataTable
@@ -606,28 +585,6 @@ export function TrialsTable({ job }: Props) {
         )}
       </DataTable>
       </div>
-
-      {canShowRadar && (
-        <div className={styles.radar} style={{ marginTop: '2rem', height: '420px' }}>
-          <RadarChart
-            data={radarData}
-            options={{
-              title: comparableTrials.length > 1 ? 'Trial comparison' : 'Trial metrics',
-              radar: { axes: { angle: 'feature', value: 'score' } },
-              data: { groupMapsTo: 'product' },
-              // The same map the line charts and the row checkboxes use, so a
-              // trial reads as one colour across all three. Carbon resolves a
-              // radar blob's fill through model.getFillColor, which is what
-              // reads this scale; without it the radar picks its own hues by
-              // group order, so a trial changes colour whenever the selection
-              // does.
-              color: { scale: colorScale },
-              theme,
-              height: '420px',
-            }}
-          />
-        </div>
-      )}
 
       {parallelTrials.length > 0 && (
         <div style={{ marginTop: '2rem' }}>
