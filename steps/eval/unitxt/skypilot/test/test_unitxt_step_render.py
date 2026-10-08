@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Render tests for the `unitxt-eval` step's step-template.yaml.
+"""Render tests for the `eval/unitxt` step's step-template.yaml.
 
 Cluster-agnostic, so this sits at the root of the step's ``test/`` dir (Mode 1
 only) and is not copied by ``make publish-step``.
@@ -50,7 +50,7 @@ def defaults(template) -> dict:
 
 @pytest.fixture(scope="module")
 def launcher(template) -> dict:
-    return template["environment_configs"]["Skypilot"]["launchers"]["unitxt-eval"][
+    return template["environment_configs"]["Skypilot"]["launchers"]["unitxt"][
         "config"
     ]
 
@@ -116,8 +116,8 @@ def _opt(argv: list[str], name: str) -> str | None:
 
 
 class TestStepContract:
-    def test_is_a_custom_step_named_unitxt_eval(self, template):
-        assert template["name"] == "unitxt-eval"
+    def test_is_a_custom_step_named_unitxt(self, template):
+        assert template["name"] == "unitxt"
         assert template["type"] == "custom"
 
     def test_no_image_ref_token(self):
@@ -127,7 +127,7 @@ class TestStepContract:
     def test_serves_every_skypilot_endpoint(self, template):
         skypilot = template["environment_configs"]["Skypilot"]
         assert "subtypes" not in skypilot
-        assert skypilot["default_launcher"] == "unitxt-eval"
+        assert skypilot["default_launcher"] == "unitxt"
 
     def test_declares_a_required_model_input_and_a_results_output(self, template):
         """The model is a declared input read from bindings (the #457 convention)."""

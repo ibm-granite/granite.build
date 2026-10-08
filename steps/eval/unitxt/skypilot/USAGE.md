@@ -1,4 +1,4 @@
-# unitxt-eval (SkyPilot)
+# eval/unitxt (SkyPilot)
 
 Evaluates a model with [unitxt](https://www.unitxt.ai) by running its
 `unitxt-evaluate` CLI in `hf` mode (a local Hugging Face checkpoint), and registers
@@ -11,7 +11,7 @@ mode needs on the node at setup time (or uses a prebuilt image) and passes
 
 ```yaml
 steps:
-  - step_uri: space://steps/unitxt-eval
+  - step_uri: space://steps/eval/unitxt
 ```
 
 ## Inputs and outputs
@@ -49,7 +49,7 @@ Runs MMLU-Pro engineering against granite-4.2-3b on one AWS A10G, 10 instances:
 
 ```yaml
 granite.build:
-  name: unitxt-eval-example
+  name: eval-unitxt-example
   version: 0.0.1
   targets:
     evaluate:
@@ -62,7 +62,7 @@ granite.build:
           uri: "env:///results"
           type: dataset
       steps:
-        - step_uri: space://steps/unitxt-eval
+        - step_uri: space://steps/eval/unitxt
           config:
             launcher_config:
               resources:
