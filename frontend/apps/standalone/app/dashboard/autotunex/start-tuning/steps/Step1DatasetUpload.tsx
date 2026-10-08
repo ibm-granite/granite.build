@@ -827,7 +827,7 @@ export function Step1DatasetUpload({
                   // appConfig (and hfConfig) has resolved yet.
                   <HfImportSummaryCard snapshot={pendingHfImport} onChange={onDatasetChanged} requiredColumns={requiredColumns} />
                 ) : hfConfig ? (
-                  <HfImportForm hf={hf} mappableColumns={mappableColumns} hfConfig={hfConfig} />
+                  <HfImportForm hf={hf} mappableColumns={mappableColumns} />
                 ) : null}
               </>
             )}

@@ -13,8 +13,6 @@ import {
   Toggle,
   TextInput,
 } from '@carbon/react'
-import type { HfImportConfig } from '@granite-build/ui-core/types'
-import { formatBytes } from '@granite-build/ui-core/lib/autotunex/formatBytes'
 import { toUpperCase } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { InfoTooltip } from './InfoTooltip'
 import { preselectValidationSplit, problemDetail } from './hfImport'
@@ -29,10 +27,9 @@ interface HfImportFormProps {
    * option; required ones gate Next via the hook.
    */
   mappableColumns: { name: string; desc: string; required: boolean }[]
-  hfConfig: HfImportConfig
 }
 
-export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProps) {
+export function HfImportForm({ hf, mappableColumns }: HfImportFormProps) {
   // Only a split other than the one being trained on can serve as validation. With
   // none left over there is nothing to choose, and with a single split there is
   // nothing to choose for training either -- so the train select and the split
@@ -79,10 +76,6 @@ export function HfImportForm({ hf, mappableColumns, hfConfig }: HfImportFormProp
                 if (selectedItem) hf.setRepoId(selectedItem)
               }}
             />
-            {/* <p className={styles.limits}>
-              Up to {hfConfig.max_rows.toLocaleString('en-US')} rows and{' '}
-              {formatBytes(hfConfig.max_bytes)} per import.
-            </p> */}
           </>
         )}
       </div>
