@@ -424,6 +424,15 @@ _SSH_HPC_CLOUDS = ("slurm", "lsf")
 _CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
 
 
+# How long, and how often, to wait for the cleanup VM's reap job to finish.
+# sky.launch's stream_and_get returns (job_id, handle) once the job is
+# submitted, NOT when it completes, so the reap is still running when we start
+# polling. The timeout is the default; a provider may extend it via
+# cleanup_timeout_s() (EFS access-point mode builds efs-utils first).
+_CLEANUP_STATUS_POLL_INTERVAL_S = 5.0
+_CLEANUP_STATUS_TIMEOUT_S = 300.0
+
+
 def _cpus_floor(cloud: str, n: int) -> Union[int, str]:
     """Return a SkyPilot ``cpus`` floor of ``n`` vCPUs in the form ``cloud`` accepts.
 
@@ -1198,22 +1207,33 @@ def _compose_step_prologue(providers, resolved, workdir_mount, build_workdir):
     for p in providers:
         prologue += p.mount_prologue(dns_override=(resolved or {}).get(p.mount_point))
     if build_workdir and workdir_mount is not None:
-        mount_root = shlex.quote(workdir_mount.mount_point)
-        prologue += (
-            'mkdir -p "$GB_LOCAL_SCRATCH"\n'
-            # Create the per-run tree world-writable ATOMICALLY (umask 000 in a
-            # subshell, so mkdir -p makes every new level 0777 with no 0755 gap) —
-            # a concurrent different-uid step in the same build can then create its
-            # own per-run dir immediately. The guarded chmod walk below adds the
-            # sticky bit (1777) and fixes any pre-existing level.
-            '(umask 000 && mkdir -p "$GB_BUILD_WORKDIR")\n'
-            '__gb_d="$GB_BUILD_WORKDIR"\n'
-            f'while [ "$__gb_d" != {mount_root} ] && [ "$__gb_d" != "/" ]; do\n'
-            '  chmod 1777 "$__gb_d" 2>/dev/null || true\n'
-            '  __gb_d="$(dirname "$__gb_d")"\n'
-            "done\n"
-            'cd "$GB_BUILD_WORKDIR"\n'
-        )
+        if workdir_mount.efs is not None and workdir_mount.efs.access_point_id:
+            # Access-point mount: the AP pins a fixed PosixUser (uid/gid) and owns
+            # the (operator-provisioned) RootDirectory, so every step runs as the
+            # same uid and a plain mkdir -p suffices — no 1777 bootstrap / chmod
+            # walk, and no world-writable window.
+            prologue += (
+                'mkdir -p "$GB_LOCAL_SCRATCH"\n'
+                'mkdir -p "$GB_BUILD_WORKDIR"\n'
+                'cd "$GB_BUILD_WORKDIR"\n'
+            )
+        else:
+            mount_root = shlex.quote(workdir_mount.mount_point)
+            prologue += (
+                'mkdir -p "$GB_LOCAL_SCRATCH"\n'
+                # Create the per-run tree world-writable ATOMICALLY (umask 000 in a
+                # subshell, so mkdir -p makes every new level 0777 with no 0755 gap) —
+                # a concurrent different-uid step in the same build can then create its
+                # own per-run dir immediately. The guarded chmod walk below adds the
+                # sticky bit (1777) and fixes any pre-existing level.
+                '(umask 000 && mkdir -p "$GB_BUILD_WORKDIR")\n'
+                '__gb_d="$GB_BUILD_WORKDIR"\n'
+                f'while [ "$__gb_d" != {mount_root} ] && [ "$__gb_d" != "/" ]; do\n'
+                '  chmod 1777 "$__gb_d" 2>/dev/null || true\n'
+                '  __gb_d="$(dirname "$__gb_d")"\n'
+                "done\n"
+                'cd "$GB_BUILD_WORKDIR"\n'
+            )
     return prologue
 
 
@@ -2161,7 +2181,28 @@ class Skypilot(Environment):
                 idle_minutes_to_autostop=0,
                 down=True,
             )
-            await asyncio.to_thread(sky.stream_and_get, request_id)
+            launch_result = await asyncio.to_thread(sky.stream_and_get, request_id)
+            # stream_and_get returns (job_id, handle) once the reap job is
+            # SUBMITTED, not when it finishes, and never raises on a non-zero
+            # reap exit -- that only shows as a non-SUCCEEDED job status. Wait for
+            # the job to reach a terminal state so a reap that mounted but failed
+            # (a failed rm, or mount.efs missing in AP mode) is surfaced below as
+            # an ORPHANED tree instead of dropped silently.
+            job_id = launch_result[0] if isinstance(launch_result, tuple) else None
+            if job_id is not None:
+                budget = provider.cleanup_timeout_s() if provider is not None else None
+                final = await self._await_cleanup_job_status(
+                    cluster_name,
+                    job_id,
+                    workdir,
+                    setup_id,
+                    budget if budget is not None else _CLEANUP_STATUS_TIMEOUT_S,
+                )
+                if final is not None and final != sky.JobStatus.SUCCEEDED:
+                    raise RuntimeError(
+                        f"cleanup job {job_id} ended {final.value} (reap script "
+                        "exited non-zero); per-run tree may be only partly removed"
+                    )
         except Exception as e:  # don't fail a finished build for cleanup
             # Make an orphaned per-run tree visible so it can be reaped (see the
             # teardown notes in docs/environments/skypilot-aws.md). For OSError,
@@ -2190,6 +2231,58 @@ class Skypilot(Environment):
             cloud_group = (str(self._get_cloud()).split("/", 1)[0] or "").lower()
             if cloud_group in _CLOUDS_NEEDING_MANUAL_TEARDOWN:
                 await self._teardown(cluster_name)
+
+    async def _await_cleanup_job_status(
+        self: Self,
+        cluster_name: str,
+        job_id: int,
+        workdir: str,
+        setup_id: str,
+        timeout_s: float,
+    ) -> Optional["sky.JobStatus"]:
+        """Poll the cleanup VM's reap job until it reaches a terminal state.
+
+        Returns the terminal ``sky.JobStatus`` or ``None`` when the outcome
+        cannot be confirmed -- the ``down=True`` autodown can remove the cluster
+        before or during polling, and the reap can outlast ``timeout_s``.
+        ``None`` is not a failure: only a confirmed non-SUCCEEDED terminal status
+        orphans the tree. A timeout is still logged as a WARNING naming the
+        tree, since the reap may never finish.
+        """
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                status_req = await asyncio.to_thread(
+                    lambda: sky.job_status(cluster_name, job_ids=[job_id])
+                )
+                statuses = await asyncio.to_thread(sky.get, status_req)
+            except Exception as status_err:
+                logger.info(
+                    "teardown_skypilot: cleanup job %s status unconfirmable on "
+                    "%s (likely already autodowned): %s",
+                    job_id,
+                    cluster_name,
+                    status_err,
+                )
+                return None
+            status = statuses.get(job_id) if statuses else None
+            if status is None:
+                return None
+            if status.is_terminal():
+                return status  # SUCCEEDED or a FAILED*/CANCELLED
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "teardown_skypilot: cleanup job %s still %s after %ss; reap "
+                    "unconfirmed, the per-run tree at %s may be orphaned "
+                    "(setup_id=%s). This does NOT affect the build outcome.",
+                    job_id,
+                    status.value,
+                    timeout_s,
+                    workdir,
+                    setup_id,
+                )
+                return None
+            await asyncio.sleep(_CLEANUP_STATUS_POLL_INTERVAL_S)
 
     async def _deprovision_ephemeral(
         self: Self, provisioned: list, run_meta: Dict, setup_id: str

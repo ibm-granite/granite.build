@@ -1,0 +1,29 @@
+# YAML spec for the gated BYO EFS access-point producer->consumer build test (#396,
+# TestSkypilotAwsSharedFsAccessPointContainerized in test_shared_fs.py).
+# Two containerized command steps (an image bundling amazon-efs-utils) in one
+# target: the producer writes probe.txt onto the AP-backed per-run workdir, and the
+# consumer (on a SEPARATE instance) reads it back under `set -eu`. Self-skips while
+# the Space's environment ships the placeholder fs-/fsap- ids.
+targets:
+  - shared-fs-ap-probe
+target_expectations:
+  - target_name: shared-fs-ap-probe
+    # Two explicit command steps; no I/O -> no hidden pull/push steps.
+    step_count: 2
+    input_artifact_count: 0
+    output_artifact_count: 0
+    # jobstats not asserted (default -1): a no-output command step records none.
+# The committed Space (../space) carries environments/skypilot/aws-shared-fs-ap and
+# chains base_uris to configurations/assets, from which space://steps/command
+# resolves. No `make space` render needed.
+space_uri: ../space
+# Only the basic build; skip the cancellation variant.
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: a missing/mismatched
+# probe (test -e / grep) or a failed access-point mount fails the build, so
+# SUCCESS proves the cross-instance share through the access point worked.
+simulate_step_failure: false
+# EC2 cold-start + SkyPilot setup + image pull for two sequential instances plus
+# the EFS access-point mount.
+timeout_minutes: 40

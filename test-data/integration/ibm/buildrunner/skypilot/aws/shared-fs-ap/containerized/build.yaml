@@ -1,0 +1,71 @@
+granite.build:
+  name: skypilot-aws-shared-fs-ap-probe-containerized
+  # Gated BYO EFS access-point (#396) producer -> consumer build. The environment's
+  # shared_filesystem mounts a pre-provisioned EFS through a per-space access point
+  # (`mount -t efs -o accesspoint=<fsap>,tls`), so every step needs amazon-efs-utils
+  # (mount.efs) — worker steps never auto-install it and fail fast without it.
+  #
+  # Both steps run quay.io/granitebuild/gb-efs-utils:v1.35.2 (amazon-efs-utils
+  # v1.35.2 on debian:13-slim), pinned by digest. It is built from
+  # ../efs-utils-image/Dockerfile; rebuild, push, and update the digest here to
+  # change it. Any image that bundles mount.efs works.
+  #
+  # The target has NO inputs/outputs, so buildrunner queues no hidden pull/push
+  # steps (hfpull/s3pull/... run on images without mount.efs and would fail fast
+  # under an access point; see the "Not yet supported" limitation in
+  # docs/environments/skypilot-aws.md).
+  #
+  # Two `command` steps run in sequence, each on its OWN EC2 instance: the producer
+  # writes probe.txt into the per-run $GB_BUILD_WORKDIR (relative, since
+  # shared_filesystem cd's every step there), and the consumer — on a SEPARATE
+  # instance — reads it back and prints its owner. Both run under `set -eu`, so a
+  # missing/mismatched file fails the build. Reaching SUCCESS proves the per-run
+  # workdir crossed instances through the access point with no 1777 bootstrap (the
+  # AP's PosixUser pins uid/gid, so the consumer's stat shows that uid:gid).
+  targets:
+    shared-fs-ap-probe:
+      # The aws-shared-fs-ap environment (shared_filesystem efs + access_point_id)
+      # carried by the committed Space at ../space.
+      environment_uri: space://environments/skypilot/aws-shared-fs-ap
+      steps:
+        # Producer: writes a probe file to the AP-backed per-run workdir.
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Bundles amazon-efs-utils (mount.efs); the in-container AP mount
+              # needs it.
+              image: "quay.io/granitebuild/gb-efs-utils@sha256:b3474545523b5f8d441557ea16adea63485b1c20136b6f725b5056321da882c2"
+              command: >-
+                set -eu;
+                echo "producer on $(hostname) cwd=$(pwd) uid=$(id -u)";
+                echo "gb-ap-probe" > probe.txt;
+                echo "wrote probe.txt onto the AP-backed EFS per-run workdir"
+            launcher_config:
+              resources:
+                # Pin the EFS region (mount targets live in us-east-1); the
+                # shared_filesystem provider also constrains launches to it.
+                infra: "aws/us-east-1"
+                # t3.small = 2 vCPU / 2 GiB (~$0.02/hr): cheapest reliable size.
+                instance_type: t3.small
+                disk_size: 40
+        # Consumer: a SEPARATE instance reads the producer's file back through the AP.
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              image: "quay.io/granitebuild/gb-efs-utils@sha256:b3474545523b5f8d441557ea16adea63485b1c20136b6f725b5056321da882c2"
+              command: >-
+                set -eu;
+                echo "consumer on $(hostname) cwd=$(pwd) uid=$(id -u)";
+                test -e probe.txt;
+                grep -q gb-ap-probe probe.txt;
+                echo "owner of probe.txt (expect the AP PosixUser uid:gid):";
+                stat -c '%u:%g %a %n' probe.txt;
+                echo "verified probe.txt from a separate instance over the AP-backed EFS"
+            launcher_config:
+              resources:
+                infra: "aws/us-east-1"
+                instance_type: t3.small
+                disk_size: 40

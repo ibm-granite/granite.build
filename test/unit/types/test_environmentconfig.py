@@ -378,3 +378,65 @@ def test_hf_cache_path_sibling_prefix_still_warns(caplog):
             }
         )
     assert "will not cache to the shared filesystem" in caplog.text
+
+
+# --- #396: BYO EFS access_point_id through EnvironmentConfig ---
+
+
+def _ap_env(efs):
+    return _aws_env(
+        {
+            "default_cloud": "aws",
+            "shared_workdir": "/mnt/gb-shared/gbroot",
+            "shared_filesystem": {
+                "provider": "efs",
+                "mount_point": "/mnt/gb-shared",
+                "efs": efs,
+            },
+        }
+    )
+
+
+def test_access_point_byo_env_round_trips_id():
+    from gbserver.environment.shared_fs.config import parse_shared_filesystems
+
+    env = EnvironmentConfig.model_validate(
+        _ap_env(
+            {
+                "file_system_id": "fs-0abc123",
+                "region": "us-east-1",
+                "access_point_id": "fsap-0abc123",
+            }
+        )
+    )
+    sf = (env.config or {})["shared_filesystem"]
+    assert sf["efs"]["access_point_id"] == "fsap-0abc123"
+    (mount,) = parse_shared_filesystems(sf)
+    assert mount.efs is not None and mount.efs.access_point_id == "fsap-0abc123"
+
+
+def test_access_point_env_rejected_for_ephemeral():
+    with pytest.raises(ValidationError, match="access_point_id.*ephemeral"):
+        EnvironmentConfig.model_validate(
+            _ap_env(
+                {
+                    "provision": "ephemeral",
+                    "region": "us-east-1",
+                    "access_point_id": "fsap-0abc123",
+                }
+            )
+        )
+
+
+def test_access_point_env_rejected_with_tls_false():
+    with pytest.raises(ValidationError, match="requires tls"):
+        EnvironmentConfig.model_validate(
+            _ap_env(
+                {
+                    "file_system_id": "fs-0abc123",
+                    "region": "us-east-1",
+                    "access_point_id": "fsap-0abc123",
+                    "tls": False,
+                }
+            )
+        )

@@ -73,6 +73,11 @@ class SharedFilesystemProvider(ABC):
         """AZ to pin the cleanup VM to (must have a mount target), or None."""
         return None
 
+    def cleanup_timeout_s(self) -> Optional[float]:
+        """Seconds teardown waits for the cleanup VM's reap job to finish, or
+        None for the caller's default."""
+        return None
+
     def transit_encryption_note(self) -> Optional[str]:
         """A one-line note logged server-side (gbserver) at launch about transit
         encryption — e.g. that a fallback mount may be cleartext — so an operator

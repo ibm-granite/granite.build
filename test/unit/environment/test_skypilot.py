@@ -2352,6 +2352,8 @@ class _FakeProvider:
 class _WorkdirMount:
     def __init__(self, mp):
         self.mount_point = mp
+        # Mirrors SharedFilesystemConfig.efs; None => non-access-point mount.
+        self.efs = None
 
 
 def test_prologue_orders_mount_before_cd_and_chmods_1777():
@@ -2697,3 +2699,49 @@ def test_no_gbserver_pinned_container_run_options():
     constant were removed; assert they no longer exist."""
     assert not hasattr(skymod, "_with_container_mount_options")
     assert not hasattr(skymod, "_CONTAINER_SHARED_FS_RUN_OPTIONS")
+
+
+def test_prologue_access_point_skips_chmod_walk():
+    import subprocess
+
+    from gbserver.environment.shared_fs.config import SharedFilesystemConfig
+
+    wm = SharedFilesystemConfig.model_validate(
+        {
+            "provider": "efs",
+            "mount_point": "/mnt/gb-shared",
+            "efs": {
+                "file_system_id": "fs-1",
+                "region": "us-east-1",
+                "access_point_id": "fsap-1",
+            },
+        }
+    )
+    sh = skymod._compose_step_prologue(
+        [_FakeProvider()], {}, wm, "/mnt/gb-shared/gbroot/builds/b/runs/r"
+    )
+    assert sh.startswith("set -eu")
+    assert 'mkdir -p "$GB_BUILD_WORKDIR"' in sh
+    assert 'cd "$GB_BUILD_WORKDIR"' in sh
+    # The AP pins a fixed uid/gid, so no world-writable bootstrap.
+    assert "chmod 1777" not in sh
+    assert "umask 000" not in sh
+    proc = subprocess.run(["bash", "-n"], input=sh, text=True, capture_output=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_prologue_non_access_point_keeps_chmod_walk():
+    from gbserver.environment.shared_fs.config import SharedFilesystemConfig
+
+    wm = SharedFilesystemConfig.model_validate(
+        {
+            "provider": "efs",
+            "mount_point": "/mnt/gb-shared",
+            "efs": {"file_system_id": "fs-1", "region": "us-east-1"},
+        }
+    )
+    sh = skymod._compose_step_prologue(
+        [_FakeProvider()], {}, wm, "/mnt/gb-shared/gbroot/builds/b/runs/r"
+    )
+    assert "chmod 1777" in sh
+    assert "umask 000" in sh
