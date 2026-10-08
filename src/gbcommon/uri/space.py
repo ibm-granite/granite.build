@@ -91,8 +91,6 @@ class SpaceURI(URI):
             resolved.append_path(uri_suffix)
             if not resolved.exists():
                 continue
-            if not SpaceURI._inside_file_base(base_uri, resolved):
-                continue
             if after is None or SpaceURI._fallback_steps_ok(base_uri, after):
                 return resolved  # type: ignore[return-value]
         raise ValueError(f"Unresolvable space uri : {uristr}")
@@ -120,30 +118,6 @@ class SpaceURI(URI):
                 f"Unresolvable space uri : {uristr} ('..' path segments are not"
                 " allowed)"
             )
-
-    @staticmethod
-    def _inside_file_base(base_uri: str, resolved: URI) -> bool:
-        """Return whether a tier-3 result stays inside its ``file:`` base.
-
-        ``..`` is already rejected, but a symlink inside a local space can still
-        point outside it. Non-``file:`` bases are not checked here (a git base's
-        ``#subdirectory=`` is contained by GitURI itself).
-
-        Args:
-            base_uri: The base_uri the result was resolved against.
-            resolved: The resolved URI.
-
-        Returns:
-            bool: False only for a ``file:`` result outside a ``file:`` base.
-        """
-        base = urlparse(base_uri)
-        if base.scheme != "file" or resolved.uri is None:
-            return True
-        if resolved.uri.scheme != "file":
-            return True
-        return (
-            Path(resolved.uri.path).resolve().is_relative_to(Path(base.path).resolve())
-        )
 
     @staticmethod
     def _steps_suffix(uri_suffix: str) -> Optional[str]:

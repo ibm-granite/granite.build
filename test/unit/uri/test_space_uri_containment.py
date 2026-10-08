@@ -20,8 +20,9 @@ The env-agnostic fallback (tier 3) appends the URI's suffix to each base_uri
 verbatim, so ``space://../../home/gbserver/.kube/config`` against a ``file:``
 base -- in a build input, step.yaml, environment.yaml or monitor ref -- would
 otherwise read a server file. ``..`` segments (also percent-encoded) are
-rejected outright, and a ``file:`` result must stay inside its base after
-symlinks are resolved.
+rejected outright. Symlinks inside a local (``file:``) space are allowed: those
+bases are operator-controlled, and spaces assembled from symlinks are legitimate
+(git bases are contained by GitURI itself).
 """
 
 from pathlib import Path
@@ -40,7 +41,6 @@ def space(tmp_path: Path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "config").write_text("secret")
-    (base / "environments" / "link").symlink_to(outside)
     with SpaceURI._scope_thread_local(base_uris=[base.as_uri()], space_secrets={}):
         yield base
 
@@ -64,6 +64,13 @@ def test_parent_segments_rejected(space, uri):
         URI.get_uri(uri)
 
 
-def test_symlink_out_of_file_base_rejected(space):
-    with pytest.raises(ValueError, match="Unresolvable space uri"):
-        URI.get_uri("space://environments/link/config")
+def test_symlinked_local_space_resolves(space, tmp_path):
+    # e.g. the standalone e2e tests build a temp space whose environments/ is a
+    # symlink into the repo's test-data/.
+    target = tmp_path / "real_envs" / "bash"
+    target.mkdir(parents=True)
+    (target / "environment.yaml").write_text("name: bash\n")
+    (space / "environments" / "bash").symlink_to(target)
+
+    uri = URI.get_uri("space://environments/bash")
+    assert Path(uri.uri.path) == space / "environments" / "bash"
