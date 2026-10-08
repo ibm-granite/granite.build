@@ -1,0 +1,79 @@
+# sft-smoke — smoke-test distill-sft in isolation, for BlueVela (SkyPilot / LSF).
+#
+# Same pair, corpus fixture and chat template as distill-smoke (granite-4.0-350m
+# student, granite-4.1-3b teacher) — see that recipe's parameters.yaml for the
+# full reasoning behind each of those choices. This file only carries what
+# align, corpus and train-sft actually read; every GOLD/export/eval parameter
+# distill-smoke has is absent on purpose, not just unused.
+#
+# Override any value with: gb build start --param KEY=VALUE
+
+# ─── Run identification ───────────────────────────────────────────────
+RUN_NAME: "sft-smoke"
+WORKDIR_ROOT: "/proj/granite-build/g4os/gbtest/distill"
+BUILD_SUBDIR: "{{ run_metadata.build_id }}"
+SEED: 42
+
+# ─── Image and trainer code ────────────────────────────────────────────
+IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+
+# ─── The pair, the data, and the chat template ─────────────────────────
+# See distill-smoke/parameters.yaml for why this pair, why the teacher needs a
+# pinned-tokenizer copy rather than the model directory, and why REQUIRE_CHATML
+# is false.
+#
+# Each *_URI carries a FULL uri, not a bare path — the scheme picks how
+# granite.build fetches it (see ibm-bluevela's environment.yaml
+# assetstores block for what's wired in):
+#   env://<absolute path>   already on the shared filesystem (BlueVela's /proj)
+#   hf:///<org>/<repo>      pulled fresh from the Hugging Face Hub
+#   s3://<bucket>/<key>     pulled from S3-compatible object storage
+# The defaults below use env:// against the same /proj assets distill-smoke
+# uses, since that pinned-tokenizer teacher copy and this SFT checkpoint
+# don't exist anywhere public today. Override with --param to point at a
+# Hub model or your own bucket instead, e.g.:
+#   --param TEACHER_MODEL_URI=hf:///ibm-granite/granite-4.1-3b
+#   --param STUDENT_MODEL_URI=hf:///ibm-granite/granite-4.0-350m-base
+#   --param DATASET_URI=s3://my-bucket/corpora/smoke.jsonl
+TEACHER_MODEL_URI: "env:///proj/granite-build/g4os/models/granite-4.1-3b-pinned"
+STUDENT_MODEL_URI: "env:///proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+DATASET_URI: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+CHAT_TEMPLATE_URI: "env:///proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"
+REQUIRE_CHATML: false
+THINK_POLICY: "keep"
+
+# ─── The corpus ─────────────────────────────────────────────────────────
+# Smaller than distill-smoke's 64: no eval target here holds a quarter back,
+# so every row goes to training and this recipe needs fewer of them to reach
+# a full batch.
+MAX_EXAMPLES: 48
+MAX_LENGTH: 4096
+DATASET_NUM_PROC: 8
+DOCUMENTS_POLICY: "keep"
+
+# ─── SFT ────────────────────────────────────────────────────────────────
+RESPONSE_TEMPLATE: '<|start_of_role|>assistant<|end_of_role|>'
+SFT_LEARNING_RATE: "1.0e-05"
+SFT_NUM_TRAIN_EPOCHS: 1
+# Effective batch 1 x 8 x 1 x 1 = 8 over 48 rows: six optimizer steps, enough
+# for a real trajectory without meaning anything scientifically.
+SFT_PER_DEVICE_TRAIN_BATCH_SIZE: 1
+SFT_GRADIENT_ACCUMULATION_STEPS: 8
+SFT_NUM_GPUS: 1
+
+# ─── Topology and resources ────────────────────────────────────────────
+CPU_ONLY_CPUS: 1
+CPU_ONLY_MEMORY: 32
+GPU_MEMORY: 256
+CLUSTER: "bluevela"
+# Where every target runs. One value rather than one literal per target, so moving this
+# recipe to another environment (a gbspace-public one, say) is a one-line change.
+ENVIRONMENT_URI: "space://environments/skypilot/lsf/ibm-bluevela"
+QUEUE: "normal"
+
+# ─── Retries ────────────────────────────────────────────────────────────
+MAX_RETRIES: 1
+
+# ─── Monitoring ─────────────────────────────────────────────────────────
+POLL_INTERVAL_SECONDS: 30
+LOG_RETRIEVAL_INTERVAL_SECONDS: 30

@@ -7,7 +7,6 @@ from typing import Dict
 
 import click
 from click.core import ParameterSource
-from fastapi import HTTPException
 from tqdm import tqdm
 
 from gbcli.client.client import GBClient
@@ -69,14 +68,19 @@ class _MissingLakehouseUnauthorizedException(Exception):
     """Placeholder used when the optional `lakehouse` package is absent."""
 
 
-try:
-    # Lakehouse is an optional dependency: it is only required for the
-    # Lakehouse artifact store (--store lh). When it is not installed we fall
-    # back to a sentinel exception so `except UnauthorizedException` clauses
-    # remain valid without importing lakehouse (e.g. for --store hf).
-    from lakehouse.core import UnauthorizedException
-except ModuleNotFoundError:
-    UnauthorizedException = _MissingLakehouseUnauthorizedException
+def _lakehouse_unauthorized() -> type[Exception]:
+    """``lakehouse.core.UnauthorizedException``, for use in ``except`` clauses.
+
+    Lakehouse is optional (only ``--store lh`` needs it) and importing it costs
+    over a second (pandas, numpy), so it is never imported here. An except
+    expression is only evaluated when an exception reaches it, and only lakehouse
+    code raises this class, so if ``lakehouse.core`` is not loaded yet the
+    exception cannot be one: the sentinel matches nothing.
+    """
+    lh_core = sys.modules.get("lakehouse.core")
+    return getattr(
+        lh_core, "UnauthorizedException", _MissingLakehouseUnauthorizedException
+    )
 
 
 def _reject_resource_group_for_non_enterprise(exit_fn, org: str) -> None:
@@ -1078,7 +1082,7 @@ def push(
         click.echo(f"❌ {str(e)}", err=True)
         handle_lh_push_exception(artifact_id)
         ctx.exit(1)  # Exit with a non-zero status
-    except UnauthorizedException as e:
+    except _lakehouse_unauthorized() as e:
         click.echo(f"❌ {str(e)}", err=True)
         handle_lh_push_exception(artifact_id)
         ctx.exit(1)  # Exit with a non-zero status
@@ -2801,7 +2805,7 @@ def copy(
     except ValueError as e:
         click.echo(f"\n❌ Artifact copy failed! {str(e)}", err=True)
         ctx.exit(1)
-    except UnauthorizedException as e:
+    except _lakehouse_unauthorized() as e:
         click.echo(f"\n❌ {str(e)}", err=True)
         ctx.exit(1)  # Exit with a non-zero status
     except Exception as e:

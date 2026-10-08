@@ -22,34 +22,22 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
+from gbcommon.utils.archive_safety import (
+    MAX_ZIP_ENTRIES,
+    MAX_ZIP_UNCOMPRESSED_BYTES,
+    check_zip_safe,
+)
 from gbserver.types.constants import DEFAULT_DIR_PERMS
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-MAX_ZIP_ENTRIES = 1000
-MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024  # 50 MB
-
-
-def check_zip_safe(
-    zf: zipfile.ZipFile,
-    max_entries: int = MAX_ZIP_ENTRIES,
-    max_uncompressed_bytes: int = MAX_ZIP_UNCOMPRESSED_BYTES,
-) -> None:
-    """Guard against zip-bomb archives before reading any entry.
-
-    Raises ValueError if the archive has more entries, or more total
-    uncompressed size, than the given caps.
-    """
-    infos = zf.infolist()
-    if len(infos) > max_entries:
-        raise ValueError(f"archive has too many entries ({len(infos)} > {max_entries})")
-    total_size = sum(info.file_size for info in infos)
-    if total_size > max_uncompressed_bytes:
-        raise ValueError(
-            f"archive uncompressed size too large "
-            f"({total_size} > {max_uncompressed_bytes} bytes)"
-        )
+# check_zip_safe and its two limits now live in gbcommon, which is shipped by
+# distributions that do not include gbserver (granite-build-analytics packages
+# gb_ui_backend + gbcommon). The import above is what keeps them importable from
+# here, so existing `from gbserver.utils.archive import check_zip_safe` call
+# sites are unaffected -- no re-assignment is needed for that, and the two that
+# used to sit here were self-assignments that did nothing.
 
 
 def extract_archive(

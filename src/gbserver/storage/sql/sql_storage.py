@@ -506,7 +506,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     f"Could not create engine/inspector/sessionmaker for {self._obfuscated_db_url}: {e}"
                 )
 
-    def __get_session_without_retry(self) -> Any:
+    def _get_session_without_retry(self) -> Any:
         self.__connect_without_retry()
         # return self._session_maker()
         return self._scoped_session()
@@ -616,7 +616,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             the UUID_COLUMN_NAME, JSON_COLUMN_NAME and any other keys/values as defined by the sub-classes' _get_column_values(item) method.
 
         """
-        session = self.__get_session_without_retry()
+        session = self._get_session_without_retry()
         try:
             if len(items) > 5:
                 batch_size = 100
@@ -672,7 +672,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             _add_item_dict().
         """
 
-        session = self.__get_session_without_retry()
+        session = self._get_session_without_retry()
         try:
             r = self.__get_by_where_row_dicts_with_session(
                 session, where, query_control
@@ -873,7 +873,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         Args:
             uuids (list[str]): _description_
         """
-        session = self.__get_session_without_retry()
+        session = self._get_session_without_retry()
         try:
             deleted_uuids = []
             for uuid in uuids:
@@ -1008,7 +1008,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         Returns:
             int: the count of matching rows.
         """
-        session = self.__get_session_without_retry()
+        session = self._get_session_without_retry()
         try:
             query = self.__get_where_query(session, where=where, query_control=None)
             count = query.count()
@@ -1055,7 +1055,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             Optional[BASE_ITEM_TYPE]: The updated item if the update was performed, or None if
             should_update was provided and returned False.
         """
-        session = self.__get_session_without_retry()
+        session = self._get_session_without_retry()
         try:
             # Use SELECT FOR UPDATE to lock the row during read - prevents race conditions
             stmt = (

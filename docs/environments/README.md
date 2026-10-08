@@ -334,11 +334,11 @@ config:
                                     # Overridable per-run in build.yaml. Default: false.
   retry_transparently_default: true # Deduplicate NEWARTIFACT events across retries. Default: true.
 
-  compute_config:                   # Generic resource hints. K8s/Lsf/Docker/Runpod translate these
-    num_nodes: 1                    # into backend resource specs. (SkyPilot ignores compute_config —
-    num_gpus_per_node: 0            # it reads resources from the launcher; see skypilot.md.)
-    num_cpus_per_node: 0
-    total_memory_per_node: ""
+  compute_config:                   # Generic resource hints, translated into backend resource specs.
+    num_nodes: 1                    # SkyPilot reads num_nodes, num_cpus_per_node and
+    num_gpus_per_node: 0            # total_memory_per_node; it takes accelerators from the
+    num_cpus_per_node: 0            # launcher's resources instead of num_gpus_per_node.
+    total_memory_per_node: ""        # See skypilot.md.
 
   workload:                         # Used by Lsf (and bash-style steps) to derive workspace/log paths.
     path: ""

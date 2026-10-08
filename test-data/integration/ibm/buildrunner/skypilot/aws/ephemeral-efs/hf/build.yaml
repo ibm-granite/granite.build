@@ -1,0 +1,70 @@
+granite.build:
+  name: skypilot-aws-ephemeral-efs-hf
+  # Full E2E for ephemeral EFS (#391/#422): the realistic hfpull -> EFS ->
+  # command -> hfpush data path, on an AUTO-PROVISIONED ephemeral EFS (not a BYO
+  # one, and not the probe-file smoke). The environment's shared_filesystem uses
+  # `provision: ephemeral`, so gbserver CREATES the EFS at target-run setup,
+  # mounts it on every worker, and DESTROYS it at teardown. buildrunner auto-queues
+  # a hidden hfpull step for the real hf:// input; under shared_filesystem that
+  # hfpull runs on its OWN EC2 instance and caches the download onto the
+  # EFS-backed per-run $GB_BUILD_WORKDIR. The command step -- which SkyPilot places
+  # on a DIFFERENT instance -- reads it back (test -e under set -eu) and writes a
+  # real file that the hfpush step uploads from a THIRD instance. Reaching SUCCESS
+  # proves the auto-provisioned EFS carried a real assetstore pull across
+  # instances; teardown then deprovisions it (verify no leak by the
+  # gb-ephemeral=true tag; see docs/environments/skypilot-aws.md).
+  targets:
+    ephemeral-efs-hf:
+      # The aws-ephemeral environment (shared_filesystem efs provision: ephemeral)
+      # carried by the committed Space at ../space; the ephemeral EFS is created
+      # at setup and hosts the per-target-run shared_workdir.
+      environment_uri: space://environments/skypilot/aws-ephemeral
+      inputs:
+        # Real hf:// input -> buildrunner queues an hfpull step. Under
+        # shared_filesystem it runs on its own instance and caches the download
+        # onto the ephemeral-EFS-backed shared workdir, then binds its local path.
+        # A tiny public model keeps the download fast and needs no read token.
+        hf_input:
+          uri: hf:///hf-internal-testing/tiny-random-gpt2
+      outputs:
+        # Real hf:// output -> buildrunner queues an hfpush step that uploads the
+        # fileset the command registers via the GB_ARTIFACT marker below. Pushes to
+        # the test account's OWN user namespace (granite-build-test): a push to an
+        # individual user namespace skips HF Enterprise resource groups, so this
+        # stays self-contained. Requires the granite-build-test HF token (write).
+        hf_output:
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-ephemeral-efs-test-output_{{ binding.path | short_hash }}
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base skypilot default 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # Empty image => run BARE on the EC2 VM; the command reads the EFS
+              # mount directly.
+              image: ""
+              # set -eu: a missing hf input (test -e) fails the step -- and thus the
+              # build -- so reaching SUCCESS proves the hfpull output landed on the
+              # ephemeral EFS and is readable from this separate instance. The output
+              # goes into a RELATIVE out/ dir: shared_filesystem cd's every step into
+              # the same per-run $GB_BUILD_WORKDIR on EFS, so a relative path written
+              # here is visible to the separate hfpush instance (an absolute path
+              # outside $GB_BUILD_WORKDIR would not be cross-instance-visible).
+              command: >-
+                set -eu;
+                pwd=$(pwd);
+                mkdir -p out;
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                test -e "{{ bindings.hf_input.binding.path }}";
+                echo "verified hf input present on the ephemeral EFS (hfpull ran on a separate instance)";
+                echo '{"artifact": "hf_output", "produced_by": "ephemeral-efs-hf"}' > out/result.json;
+                echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$pwd/out"
+            launcher_config:
+              resources:
+                # Pin the EFS region (gbserver provisions the ephemeral EFS + mount
+                # targets in us-east-1; launches must land there to reach them).
+                infra: "aws/us-east-1"
+                # t3.small = 2 vCPU / 2 GiB (~$0.02/hr): cheapest reliable size.
+                instance_type: t3.small
+                disk_size: 40

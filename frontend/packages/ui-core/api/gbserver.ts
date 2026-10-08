@@ -11,8 +11,7 @@
  *   GET  /artifacts/{id}    → ArtifactRegistration
  *   GET  /spaces/           → { spaces: StoredSpace[] }
  */
-import axios from 'axios'
-import { apiBase } from './client'
+import { apiBase, createApiClient } from './client'
 import { isLaterAttempt } from './targetAttempts'
 import type {
   Build,
@@ -25,7 +24,13 @@ import type {
   Space,
 } from '../types'
 
-const client = axios.create({ baseURL: apiBase('/api/v1') })
+// The scoping, the host overrides and the 401 hook all live in createApiClient —
+// see client.ts. getBuildStepLog below is the call site that depends on the
+// scoping: it passes `baseURL: ''` so gbserver's log_path is used verbatim.
+//
+// This is the only client that opts into `resolveBaseUrl` — see
+// `allowHostBaseUrl` in client.ts for why that is per-client rather than shared.
+const client = createApiClient(apiBase('/api/v1'), { allowHostBaseUrl: true })
 
 // ── Response adapters ─────────────────────────────────────────────────────────
 // gbserver returns StoredBuild which uses uppercase Status enums and slightly

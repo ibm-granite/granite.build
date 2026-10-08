@@ -20,6 +20,7 @@ import {
 import React from "react";
 import { useRouter } from "next/navigation";
 import type { Build, BuildStatus } from "../types";
+import { useRoutes } from "../config/routes";
 import { BuildStatusBadge } from "./BuildStatusBadge";
 import { TagsCell } from "./TagsCell";
 
@@ -64,6 +65,7 @@ export function BuildsTable({
   onSearch,
 }: Props) {
   const router = useRouter();
+  const routes = useRoutes();
 
   if (isLoading) {
     return (
@@ -128,7 +130,7 @@ export function BuildsTable({
                   <TableRow
                     key={row.id}
                     {...rowProps}
-                    onClick={() => router.push(`/dashboard/builds/_/?id=${row.id}`)}
+                    onClick={() => router.push(routes.buildHref(row.id))}
                     style={{ cursor: "pointer" }}
                   >
                     {row.cells.map((cell) => (

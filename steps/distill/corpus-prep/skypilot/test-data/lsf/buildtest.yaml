@@ -1,0 +1,50 @@
+# YAML-driven spec for test_skypilot_lsf_distill_corpus_prep.py (located by the test/ <->
+# test-data/ helper, so the pairing holds in both test modes; see steps/README.md).
+#
+# Runs align -> corpus on the SkyPilot LSF/BlueVela environment, proving the port's launch
+# path end to end: the shared distillation package delivered from the /proj checkout, a real
+# tokenizer loaded FROM THE BOUND UPSTREAM ARTIFACT, conversations rendered and filtered, and
+# the corpus registered as the train JSONL FILE rather than its directory.
+#
+# Two targets because this step cannot be tested standalone: no pre-existing tokenizer on
+# this cluster has a {% generation %} block tag, so the assistant mask would be empty for
+# every row and the step would (correctly) refuse.
+targets:
+  - align
+  - corpus
+target_expectations:
+  # The align target is a prerequisite, not the subject: it is the only source of a chat
+  # template with a real {% generation %} block tag on this cluster (measured — see
+  # build.yaml). Its own step test asserts its internals; here it only has to succeed and
+  # hand over three artifacts.
+  - target_name: align
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 3
+    jobstats_count: 1
+
+  - target_name: corpus
+    # One workload, one output. The env:// pushes and pulls are shared-FS no-ops, so the
+    # bound tokenizer registers as this target's single input off its URI string.
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+    expected_steps:
+      - metadata_matches:
+          distill_code_commit: "^[0-9a-f]{40}$"
+          distill_code_source: "^(filesystem|git)$"
+          distill_code_dirty: "^[0-9]+$"
+        config:
+          corpus_config:
+            # Pin the settings whose wrong value changes WHICH examples survive rather
+            # than failing the run.
+            max_length: 4096
+            length_policy: "drop"
+            completion_boundary: "last_message"
+            documents_policy: "drop"
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+timeout_minutes: 60

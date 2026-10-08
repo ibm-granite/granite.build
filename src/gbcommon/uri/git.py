@@ -23,18 +23,17 @@ import tempfile
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import List, Optional, Self, Tuple, Type
+from typing import TYPE_CHECKING, List, Optional, Self, Tuple, Type
 
-from git import Repo
+if TYPE_CHECKING:
+    from git import Repo
 
 from gbcommon.uri.uri import URI
-from gbserver.github.myghapi import MyGHApi
 from gbserver.types.constants import (
     GBSERVER_GITHUB_TOKEN,
     SPACE_REPO_CONFIG_BRANCH_NAME,
 )
 from gbserver.utils.filesystem import sync_or_copy
-from gbserver.utils.git_retry import git_clone_retry
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import short_alphanumeric_lower_hash
 
@@ -156,6 +155,8 @@ class GitURI(URI):
         token: str, uri: str, config_branch_name: str
     ) -> Optional[str]:
         host, owner, repo = GitURI.__parse_repo_components(uri)
+        from gbserver.github.myghapi import MyGHApi
+
         myapi = MyGHApi(token=token, owner=owner, repo=repo, domain=host)
         config_branch_exists = myapi.is_branch_present(config_branch_name)
         return config_branch_name if config_branch_exists else None
@@ -295,10 +296,23 @@ class GitURI(URI):
             self._clone_with_retry(repo_url, repo_cache_path, depth=1)
         return repo_cache_path
 
-    @git_clone_retry
-    def _clone_with_retry(self, repo_url: str, path: Path, **kwargs) -> Repo:
+    def _clone_with_retry(self, repo_url: str, path: Path, **kwargs) -> "Repo":
         """Clone repository with retry logic."""
-        return Repo.clone_from(repo_url, path, **kwargs)
+        # Imported here, not at module level: git_retry and myghapi pull in
+        # gitpython, which runs `git --version` on import, and the gb CLI loads
+        # this module at startup through the URI handler scan.
+        from gbserver.utils.git_retry import git_clone_retry
+
+        @git_clone_retry
+        def clone(repo_url: str, path: Path, **kwargs) -> "Repo":
+            from git import Repo
+
+            return Repo.clone_from(repo_url, path, **kwargs)
+
+        # Keyword-only call: git_retry's cleanup_failed_clone takes args[1] as the
+        # clone path when there are 2+ positional args (here that would be the URL)
+        # and otherwise kwargs["path"], which it removes before each retry.
+        return clone(repo_url=repo_url, path=path, **kwargs)
 
     def get_path_in_repo_from_cache(self: Self, force: bool = False) -> Optional[Path]:
         """

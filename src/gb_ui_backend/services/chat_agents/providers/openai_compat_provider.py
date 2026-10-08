@@ -135,7 +135,7 @@ class OpenAICompatProvider:
                         if isinstance(raw_arguments, dict)
                         else json.loads(raw_arguments)
                     )
-                    content: str | None = None
+                    content = None
                 except (json.JSONDecodeError, TypeError):
                     # Still yield tool_call below with whatever we've got
                     # — every attempt gets exactly one, whether it fails

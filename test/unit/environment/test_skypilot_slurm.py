@@ -381,7 +381,9 @@ class TestBuildWorkdir:
         result = await env.setup_skypilot(setup_id="setup-1", runmetadata=runmetadata)
 
         expected = "/shared/builds/b-123/runs/tr-456"
-        assert result == {"skypilot": {"build_workdir": expected}}
+        assert result == {
+            "skypilot": {"build_workdir": expected, "shared_fs_mounts": []}
+        }
         assert env._setup_workdirs["setup-1"] == expected
 
     @pytest.mark.asyncio
@@ -851,6 +853,118 @@ class TestProvisionRetry:
 
         mock_sky.down.assert_called_once()
         assert "td-1" not in slurm_env._cluster_names
+
+    @staticmethod
+    def _failover_env(cloud="slurm", alias="bluevela"):
+        """An env whose ``alias`` cluster lists two candidate login nodes for ``cloud``."""
+        return Skypilot(
+            event_q=asyncio.Queue(),
+            environment_config=EnvironmentConfig(
+                name="test-failover",
+                type="Skypilot",
+                config={
+                    "default_cloud": cloud,
+                    "idle_minutes_to_autostop": 0,
+                    "cluster_ssh_configs": {
+                        cloud: [{"Host": alias, "HostName": ["h1", "h2"], "User": "gb"}]
+                    },
+                },
+            ),
+        )
+
+    async def _run_failover_launch(self, first_error, launch_id, *, resources=None):
+        """Launch with ``first_error`` on attempt 1 then success, recording the
+        login-node ``HostName`` written on each SSH materialize.
+
+        The random pick is pinned (no-op shuffle) so the initial selection is ``h1``
+        and the writes are deterministic; ``_merge_selected_hosts`` is patched to
+        capture without touching the filesystem, and ``_read_managed_hostnames`` is
+        stubbed empty so the sticky read cannot pull a real ``~/.<cloud>/config``.
+
+        :param first_error: Exception raised by ``stream_and_get`` on attempt 1.
+        :param launch_id: The launch id to run under.
+        :param resources: ``resources`` block for the launcher; defaults to the
+            bluevela slurm cluster. Omit the ``cluster`` to exercise the bare-infra
+            single-host failover fallback.
+        :returns: ``(mock_sky, merged_hostnames)`` for assertions.
+        """
+        env = self._failover_env()
+        merged_hostnames = []
+
+        def _record(
+            cloud, hosts, secrets, env_name, *, home=None, candidate_hostnames=None
+        ):
+            merged_hostnames.append(hosts[0]["HostName"])
+
+        mock_sky = _mock_sky()
+        mock_sky.stream_and_get.side_effect = [first_error, (1, MagicMock())]
+        s, h, bmax, batt = self._patches(mock_sky)
+        with (
+            s,
+            h,
+            bmax,
+            batt,
+            patch(
+                "gbserver.environment.skypilot_config._merge_selected_hosts", _record
+            ),
+            patch(
+                "gbserver.environment.skypilot_config._read_managed_hostnames",
+                lambda cloud, *, home=None: {},
+            ),
+            patch(
+                "gbserver.environment.skypilot_config.random.shuffle", lambda seq: None
+            ),
+        ):
+            env._get_launch_ready_event(launch_id)
+            await env.launch_skypilot(
+                launch_id=launch_id,
+                launcher_config={
+                    "run": "hostname",
+                    "resources": (
+                        resources
+                        if resources is not None
+                        else {"cloud": "slurm", "cluster": "bluevela"}
+                    ),
+                },
+                config={},
+            )
+        return mock_sky, merged_hostnames
+
+    @pytest.mark.asyncio
+    async def test_ssh_transient_fails_over_to_next_login_node(self):
+        """A transient SSH control-plane error rotates the target cluster's HostName
+        to its next candidate login node before the retry, which then succeeds."""
+        mock_sky, merged = await self._run_failover_launch(
+            Exception("Connection timed out during banner exchange"), "fo-ssh"
+        )
+        assert mock_sky.stream_and_get.call_count == 2  # blip, then success
+        # Initial materialize picked h1; the SSH blip rotated to h2 before the retry.
+        assert merged == ["h1", "h2"]
+        assert mock_sky.down.call_count == 1  # bounded teardown between attempts
+
+    @pytest.mark.asyncio
+    async def test_capacity_error_does_not_fail_over(self):
+        """A capacity shortfall is retried but must NOT rotate login nodes — every
+        candidate hits it alike, so the same node is retried."""
+        mock_sky, merged = await self._run_failover_launch(
+            Exception("Failed to acquire resources in normal for {Slurm(cpus=1+)}"),
+            "fo-cap",
+        )
+        assert mock_sky.stream_and_get.call_count == 2  # retried
+        assert merged == ["h1"]  # never rotated: only the initial materialize wrote
+
+    @pytest.mark.asyncio
+    async def test_bare_infra_single_host_still_fails_over(self):
+        """A bare ``slurm`` infra (no cluster segment, so no target alias from the
+        infra string) still fails over when the env declares exactly one host: that
+        host is the unambiguous launch target and its candidate login nodes rotate."""
+        mock_sky, merged = await self._run_failover_launch(
+            Exception("Connection timed out during banner exchange"),
+            "fo-bare",
+            resources={"cloud": "slurm"},  # no cluster => infra is bare "slurm"
+        )
+        assert mock_sky.stream_and_get.call_count == 2  # blip, then success
+        assert merged == ["h1", "h2"]  # single-host fallback adopted the target alias
 
 
 class TestMonitorRetryHandoff:
@@ -1345,7 +1459,7 @@ class TestSshControlSocketClear:
             patch.object(
                 slurm_env,
                 "_materialize_ssh_for_launch",
-                side_effect=lambda _c: order.append("materialize"),
+                side_effect=lambda _c, _a: order.append("materialize"),
             ),
         ):
             slurm_env._get_launch_ready_event("clear-1")
@@ -1380,7 +1494,8 @@ class TestSshControlSocketClear:
         clear.assert_not_called()
         mat.assert_called_once()  # SSH config is still materialized
 
-    def test_not_cleared_for_non_hpc_cloud(self, slurm_env, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_not_cleared_for_non_hpc_cloud(self, slurm_env, monkeypatch):
         # Even with the flag set, a non-HPC cloud (no shared SSH config file) is
         # a no-op: neither the clear nor the SSH materialization runs.
         monkeypatch.setenv("GBTEST_SKY_SSH_RESET", "true")
@@ -1390,7 +1505,7 @@ class TestSshControlSocketClear:
             ) as clear,
             patch.object(slurm_env, "_materialize_ssh_for_launch") as mat,
         ):
-            slurm_env._prepare_ssh_for_launch("k8s")
+            await slurm_env._prepare_ssh_for_launch("k8s", None)
         clear.assert_not_called()
         mat.assert_not_called()
 

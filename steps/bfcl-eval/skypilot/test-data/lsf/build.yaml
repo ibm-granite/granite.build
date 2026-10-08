@@ -1,0 +1,96 @@
+granite.build:
+  name: bfcl-eval-smoke
+  # Smoke build for the bfcl-eval step on BlueVela (SkyPilot / LSF).
+  #
+  # ⚠️ THIS FIXTURE HAS NEVER BEEN RUN. It needs two things this step does not yet have:
+  # a published image (see README.md — none has ever been built) and a GPU reservation.
+  # It is written against the config contract the offline tests assert, so treat the first
+  # execution as unproven work and expect to correct paths, not just wait for a score.
+  #
+  # ONE target, unlike the sibling distill-* fixtures. Those chain two or three targets
+  # because their inputs only exist once an earlier step has produced them. This step's
+  # single input is a model directory, and a pre-existing one on /proj is enough to
+  # exercise everything the step owns: the vLLM server lifecycle, the handler selection,
+  # the score-file choice, and the artifact registration. Chaining an export target ahead
+  # of it would test distill-hf-export, which has its own fixture.
+  version: 0.0.1
+  targets:
+    eval-bfcl:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      # NO `inputs:` block, and so `input_artifact_count: 0` in buildtest.yaml. The model
+      # is named as a literal path below rather than declared as an artifact — the same
+      # thing distill-eval's fixture does for its teacher. A pre-existing directory on
+      # /proj is not the product of any target here, and declaring an input with no
+      # binding would need a URI scheme to fetch it with.
+      #
+      # In the real pipeline this target DOES bind — `model: { binding: export.hf_model }`
+      # — and then model_path is "{{ bindings.model.binding.path }}". USAGE.md shows that
+      # form; this fixture deliberately isolates the step from the chain.
+      outputs:
+        bfcl_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/bfcl-eval
+          config:
+            # Short poll for a smoke run: the step's own default is 900s, sized for a
+            # full-corpus run measured in hours.
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              resources:
+                # One H100. num_gpus_generate below must not exceed this — it is vLLM's
+                # tensor-parallel size, not a request for hardware.
+                accelerators: "H100:1"
+                cluster: "bluevela"
+                zone: "normal"
+                # Host RAM. vLLM's weight load plus the harness; the model is 3B.
+                memory: 64
+            bfcl_config:
+              # Dense granite (GraniteForCausalLM), and the same directory distill-eval's
+              # fixture uses as its teacher — chosen because it is known to exist on this
+              # cluster. Unverifiable from the authoring account: /proj/granite-build is
+              # group-gated there, so this path is carried over from his fixture rather
+              # than stat'ed. Check it before the first run.
+              model_path: "/proj/granite-build/g4os/models/granite-4.2-3b-nothink"
+              # Selects the HANDLER, not the weights: which prompt format is used and how
+              # tool calls are parsed back out. `ibm-granite/granite-4.2-3b` is one of the
+              # ids src/bfcl-shim registers (reusing Granite4FCHandler), which is why this
+              # names a real 4.2 checkpoint instead of borrowing another size's entry.
+              #
+              # It does not have to spell the directory above: the -nothink variant is the
+              # same 4.2 family and takes the same formatting. Reasoning-disabled is also
+              # the steadier choice for a tool-calling score, where the graded object is
+              # the call and not the prose around it.
+              model_id: "ibm-granite/granite-4.2-3b"
+              experiment: "smoke"
+              eval_name: "bfclv4"
+              # ONE CATEGORY, and deliberately NOT `sample_fraction` — the two are not
+              # interchangeable cost knobs. Sampling works through the harness's --run-ids
+              # file, which makes bfcl_eval IGNORE --test-category during generate, so a
+              # sampled run generates across the whole benchmark and only scores the
+              # categories named. Naming a category and leaving sample_fraction empty is
+              # the one combination where what is generated equals what is scored, which
+              # is what a fixture wants: a small, complete, honest run. See USAGE.md.
+              test_categories: "simple"
+              num_gpus_generate: 1
+              # Unused by today's harness (scoring is CPU-side); set to exercise that the
+              # key still validates, as the legacy asset's consumers pass it.
+              num_gpus_evaluate: 1
+              gpu_memory_utilization: "0.9"
+              # RELATIVE, unlike distill-eval's fixture which needed an absolute shared
+              # root to hand a path to a later target. Nothing downstream of this target
+              # reads the tree by path — the score file travels as an artifact — so the
+              # per-run $GB_BUILD_WORKDIR is the right home and gives re-run isolation.
+              # The step absolutises it before printing the marker.
+              output_dir: "output"
+              sample_fraction: ""
+              sample_seed: "42"
+              # Empty: the model is served from disk and BFCL's corpus ships inside the
+              # wheel, so nothing here should resolve from the Hub. If a first run turns
+              # out to reach for it, that is a finding worth recording, not a value to
+              # quietly fill in.
+              hf_home: ""

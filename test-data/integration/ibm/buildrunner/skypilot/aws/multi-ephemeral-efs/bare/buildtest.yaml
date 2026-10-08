@@ -1,0 +1,30 @@
+# YAML spec for the gated 2-ephemeral-EFS multi-mount build test (#391/#422).
+# Two command steps in one target: gbserver auto-provisions TWO EFS at setup (one
+# per shared_filesystem mount), the producer writes a probe onto each, the
+# consumer (on a SEPARATE instance) reads both back under `set -eu`, and teardown
+# deprovisions both. Reaching SUCCESS proves two ephemeral EFS were provisioned
+# together (no SG-name collision), shared across instances, and consumed. No
+# inputs/outputs (no hf/env I/O) -> no pull/push steps queued.
+targets:
+  - multi-ephemeral-efs-probe
+target_expectations:
+  - target_name: multi-ephemeral-efs-probe
+    # Two explicit command steps; no I/O -> no hidden pull/push steps.
+    step_count: 2
+    input_artifact_count: 0
+    output_artifact_count: 0
+    # jobstats not asserted (default -1): a no-output command step records none.
+# The committed Space (../space) carries environments/skypilot/aws-multi-ephemeral
+# and chains base_uris to configurations/assets, from which space://steps/command
+# resolves. No `make space` render needed.
+space_uri: ../space
+# Only the basic build; skip the cancellation variant.
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: a missing/mismatched
+# probe on either mount (test -e / grep) fails the build, so SUCCESS proves the
+# two-ephemeral-EFS provision -> cross-instance share -> teardown path worked.
+simulate_step_failure: false
+# EC2 cold-start + SkyPilot setup for two sequential instances plus creating,
+# mounting, and destroying TWO ephemeral EFS (a bit more than the single-mount case).
+timeout_minutes: 45

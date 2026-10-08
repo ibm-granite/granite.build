@@ -559,6 +559,8 @@ class SharedFileSystemLock:
         holder's own I/O is the liveness signal), so a live-but-slow holder is
         never broken. Without a ``progress_path``, age alone decides.
         """
+        if self.ttl is None:
+            return False
         created = self._lock_age_anchor()
         if created is None:
             return False

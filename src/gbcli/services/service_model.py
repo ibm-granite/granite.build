@@ -2,7 +2,6 @@ import logging
 from typing import Any, List, Optional
 
 import requests
-from openai import OpenAI
 
 from gbcli.utils.gbconstants import (
     RITS_BASE_URL,
@@ -92,6 +91,8 @@ def prompt_model(
     top_p: float,
     callback=None,
 ):
+    from openai import OpenAI
+
     client = OpenAI(
         api_key=rits_api_key,
         base_url=f"{url}/v1",
@@ -130,6 +131,8 @@ def model_chat(
     chat_template: Optional[Any] = None,
     callback=None,
 ):
+    from openai import OpenAI
+
     client = OpenAI(
         api_key=rits_api_key,
         base_url=f"{url}/v1",

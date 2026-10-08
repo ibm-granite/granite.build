@@ -47,7 +47,7 @@ Used when `GBSERVER_METADATA_STORAGE=sql`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `GBSERVER_SQL_SCHEME` | `postgresql` | DB scheme. |
+| `GBSERVER_SQL_SCHEME` | `postgresql+psycopg` | DB scheme, including the SQLAlchemy driver (psycopg 3). |
 | `GBSERVER_SQL_HOST` / `GBSERVER_SQL_PORT` | (IBM Cloud) / `31842` | Host and port. |
 | `GBSERVER_SQL_DBNAME` | `ibmclouddb` | Database name. |
 | `GBSERVER_SQL_SCHEMA` | per-environment | Schema (e.g. `granite_dot_build_prod`). |
@@ -116,8 +116,7 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY` | `4` | Concurrent `sky.launch` operations. |
-| `GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS` / `_BACKOFF_MAX` | `4` / `30` | Provision retry policy. |
-| `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` | `30` | Pre-launch SSH reachability probe for slurm/lsf; `0` disables it (set to `0` in our deployments — see [SkyPilot SLURM](../environments/skypilot-slurm.md)). |
+| `GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS` / `_BACKOFF_MAX` | `4` / `30` | Provision retry policy (also drives login-node failover — see [SkyPilot SLURM](../environments/skypilot-slurm.md)). |
 | `GBSERVER_LSF_TRANSIENT_ERROR_MAX_RETRIES` / `_RETRY_DELAY` | `3` / `30` | LSF transient-error retry policy. |
 | `GBSERVER_K8S_USE_ASPERA` / `GBSERVER_LSF_USE_ASPERA` | `true` / `false` | Use Aspera for asset transfer. |
 | `GBSERVER_ENABLE_STEP_RETRY` | `true` | Master switch for step-level retry. See [step retry](../builds/step-retry-configuration.md). |

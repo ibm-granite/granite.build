@@ -14,7 +14,7 @@ gbserver's REST API at `/api/v1`.
 | `--loglevel` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `--format`   | `simple` (default), `json`, or `plain` — varies by command. |
 | `--quiet`    | Suppress informational output. |
-| `--skip-version-check` | Skip the client/server version check at startup. |
+| `--skip-version-check` | Skip the client/server version check at startup. The check's result is cached for 6 hours (`GBCLI_VERSION_CHECK_TTL`, in seconds); `gb version --check-updates` always checks live. |
 
 Server target and credentials are picked up from environment variables
 configured during `gb auth login`. See

@@ -309,7 +309,7 @@ explicitly (`<cloud>/<cluster>[/<zone>]`). Prefer numeric/`"N+"` strings for `cp
 `cpus: "1+"` **breaks on the LSF cloud** (it parses the value as a float without stripping `+`), so
 cloud-agnostic steps leave `resources` empty and let the build.yaml supply them.
 
-> `compute_config` is **not** read by this launcher (unlike K8s/LSF) — see the dedicated note below.
+> `compute_config` is read only partially by this launcher (unlike K8s/LSF) — see the dedicated note below.
 
 #### `config` overrides (`docker`, `sbatch_options`)
 
@@ -497,14 +497,26 @@ The exact contents of each block are cloud-specific — see the per-cloud pages:
 `cloud_config`); [AWS](skypilot-aws.md) uses `aws_credentials`; [Kubernetes](skypilot-kubernetes.md)
 uses neither.
 
-## `compute_config` is not honored by the Skypilot launcher
+## `compute_config` is only partially honored by the Skypilot launcher
 
-K8s and Lsf translate `compute_config.num_gpus_per_node` / `total_memory_per_node` into resource specs.
-SkyPilot reads `resources` directly from the launcher config. If a step needs GPU/memory, set
-`resources.accelerators` and `resources.memory` in the step.yaml (you may template them off
-`{{ config.compute_config.* }}` for a single source of truth). The K8s-only `gb.step_contents_in_env`,
-`k8s.*`, and `lsf.*` blocks are likewise ignored — step-asset code is not copied into the pod; if the
-`run:` script needs files, use `file_mounts` or fetch them in `setup:` / `run:`.
+Three keys are read:
+
+| Key | Effect |
+|---|---|
+| `num_nodes` | Becomes `sky.Task(num_nodes=...)`. Overridable by `launcher_config.num_nodes`. |
+| `num_cpus_per_node` | A low-precedence `cpus` floor on `sky.Resources`. |
+| `total_memory_per_node` | A low-precedence `memory` floor (skipped on slurm/lsf). |
+
+`num_gpus_per_node` is **not** read. Set `resources.accelerators` in the step.yaml instead (you may
+template it off `{{ config.compute_config.* }}` for a single source of truth). Accelerators are **per
+node**, so `accelerators: "H100:8"` with `num_nodes: 2` requests 16 GPUs in total.
+
+Do not put `num_nodes` under `resources`: it is a `sky.Task` field, not a `sky.Resources` one, so
+SkyPilot discards it silently. gbserver warns when it sees one, and the run proceeds single-node.
+
+The K8s-only `gb.step_contents_in_env`, `k8s.*`, and `lsf.*` blocks are ignored — step-asset code is
+not copied into the pod; if the `run:` script needs files, use `file_mounts` or fetch them in
+`setup:` / `run:`.
 
 ## See also
 

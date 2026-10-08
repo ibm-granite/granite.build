@@ -29,6 +29,20 @@ config:
   # be masked by a stale connection for the ControlPersist window. When testing a
   # modified key, set GBTEST_SKY_SSH_RESET=true in gbserver's environment so it
   # clears those sockets before the launch and the changed config re-authenticates.
+  #
+  # MULTIPLE LOGIN NODES: `HostName` may be a single value (below) OR a list of
+  # interchangeable candidate login hostnames sharing one `Host` block. gbserver
+  # picks one at random at launch (spreading load); all candidates share this
+  # block's User/Port/IdentityFile/etc. The candidates are also a failover pool: on
+  # a transient SSH control-plane error during provisioning (late banner, wedged
+  # session, key-exchange reset) gbserver rewrites the config to the next candidate
+  # before the launch is retried. Capacity failures and SSH auth rejections do not
+  # fail over. Example:
+  #     - Host: slurm-docker
+  #       HostName:
+  #         - login1.cluster.example.com
+  #         - login2.cluster.example.com
+  #       User: root
   cluster_ssh_configs:
     slurm:
       - Host: slurm-docker

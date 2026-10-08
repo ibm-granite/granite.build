@@ -1,0 +1,59 @@
+granite.build:
+  name: skypilot-aws-multi-ephemeral-efs-probe
+  # Two-ephemeral-EFS (#391/#422) analog of the single-mount ephemeral probe. The
+  # aws-multi-ephemeral environment's shared_filesystem lists TWO
+  # `provision: ephemeral` mounts (/mnt/gb-eph-a hosts the workdir, /mnt/gb-eph-b
+  # is a second FS), so gbserver CREATES two EFS at target-run setup -- each with
+  # its own NFS security group (distinct names, so no InvalidGroup.Duplicate) and
+  # one mount target per AZ -- mounts both on every worker, and DESTROYS both at
+  # teardown. Two `command` steps run in sequence on their OWN EC2 instances: the
+  # producer writes a probe onto BOTH mounts (probe.txt in the per-run
+  # $GB_BUILD_WORKDIR on mount A, and an absolute file on mount B), the consumer --
+  # on a SEPARATE instance -- reads BOTH back under `set -eu`. Reaching SUCCESS
+  # proves two ephemeral EFS were provisioned together and each carried state
+  # across instances; teardown then deprovisions both (verify no leak by the
+  # gb-ephemeral=true tag; see docs/environments/skypilot-aws.md).
+  targets:
+    multi-ephemeral-efs-probe:
+      # The aws-multi-ephemeral environment (two shared_filesystem efs mounts,
+      # both provision: ephemeral) carried by the committed Space at ../space.
+      environment_uri: space://environments/skypilot/aws-multi-ephemeral
+      steps:
+        # Producer: write a probe onto each ephemeral mount.
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              image: ""  # bare EC2 host; reads/writes the EFS mounts directly
+              command: >-
+                set -eu;
+                echo "producer on $(hostname) cwd=$(pwd)";
+                echo "gb-eph-a-probe" > probe.txt;
+                echo "gb-eph-b-probe" > /mnt/gb-eph-b/probe_b.txt;
+                echo "wrote probes onto both ephemeral EFS mounts"
+            launcher_config:
+              resources:
+                # Pin the EFS region (gbserver provisions both ephemeral EFS + mount
+                # targets in us-east-1; launches must land there to reach them).
+                infra: "aws/us-east-1"
+                instance_type: t3.small
+                disk_size: 40
+        # Consumer: a SEPARATE instance reads both probes back over the two EFS.
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              image: ""
+              command: >-
+                set -eu;
+                echo "consumer on $(hostname) cwd=$(pwd)";
+                test -e probe.txt;
+                grep -q gb-eph-a-probe probe.txt;
+                test -e /mnt/gb-eph-b/probe_b.txt;
+                grep -q gb-eph-b-probe /mnt/gb-eph-b/probe_b.txt;
+                echo "verified both probes from a separate instance over two ephemeral EFS mounts"
+            launcher_config:
+              resources:
+                infra: "aws/us-east-1"
+                instance_type: t3.small
+                disk_size: 40

@@ -52,6 +52,7 @@ CURRENT_BUILD_YAML_VERSION_KEY = "version"
 CURRENT_BUILD_YAML_VERSION = "0.0.1"
 DEFAULT_REPO_DIR_TO_WATCH = "experiments"
 FULL_CONFIG_RUN_METADATA_KEY = "run_metadata"
+UNIQUE_HASH_KEY = "unique_hash"
 GBSERVER_SECRET_NAME_SEPARATOR = "___"
 STEP_FILE_NAME = "step.yaml"
 
@@ -166,7 +167,6 @@ ENV_VAR_SKYPILOT_PROVISION_MAX_ATTEMPTS = (
 ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX = (
     ENV_VAR_PREFIX + "_SKYPILOT_PROVISION_BACKOFF_MAX"
 )
-ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S = ENV_VAR_PREFIX + "_SKYPILOT_SSH_PROBE_TIMEOUT_S"
 ENV_VAR_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S = (
     ENV_VAR_PREFIX + "_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S"
 )
@@ -195,6 +195,10 @@ ENV_VAR_GBSERVER_ENABLE_SSH_HOST_KEY_VERIFICATION = (
     ENV_VAR_PREFIX + "_ENABLE_SSH_HOST_KEY_VERIFICATION"
 )
 ENV_VAR_GBSERVER_ENABLE_STEP_RETRY = ENV_VAR_PREFIX + "_ENABLE_STEP_RETRY"
+ENV_VAR_GBSERVER_ENABLE_AUTOTUNEX = ENV_VAR_PREFIX + "_ENABLE_AUTOTUNEX"
+# Unprefixed so one variable serves this proxy and the `next dev` rewrite
+# (frontend/apps/standalone/next.config.ts).
+ENV_VAR_AUTOTUNEX_API_URL = "AUTOTUNEX_API_URL"
 ENV_VAR_BUILDRUNNERJOB_SLEEP_ON_END = ENV_VAR_PREFIX + "_BUILDRUNNERJOB_SLEEP_ON_END"
 ENV_VAR_BUILTIN_STEP_IMAGE = ENV_VAR_PREFIX + "_BUILTIN_STEP_IMAGE"
 
@@ -245,7 +249,8 @@ def derive_analytics_database_url() -> Optional[str]:
     Distinct table prefixes mean this doesn't collide with the main store.
     """
     if GB_METADATA_STORAGE == "sql":
-        if GBSERVER_SQL_SCHEME != "postgresql":
+        # Any driver suffix (e.g. +psycopg) is swapped for +asyncpg.
+        if GBSERVER_SQL_SCHEME.split("+", 1)[0] != "postgresql":
             # Lazy import: gbserver.utils.logger imports this module at its own top
             # level, so importing it back at our module top would be circular.
             from gbserver.utils.logger import get_logger
@@ -276,7 +281,7 @@ def derive_analytics_sql_connect_args() -> dict:
     """JSON-serializable create_async_engine() connect_args for a derived
     postgresql+asyncpg analytics URL, translating the main SQL store's TLS cert.
 
-    The main store's sync psycopg2 driver takes sslrootcert/sslmode as URL query
+    The main store's sync psycopg driver takes sslrootcert/sslmode as URL query
     params (see sql_storage.py's _get_connection_specs()); asyncpg instead needs an
     ssl.SSLContext passed as a connect arg, which isn't JSON-serializable and can't
     cross the os.environ boundary to gb_ui_backend as-is. So this only ever returns
@@ -601,6 +606,13 @@ ENABLE_SSH_HOST_KEY_VERIFICATION = (
 GBSERVER_ENABLE_STEP_RETRY = (
     os.getenv(ENV_VAR_GBSERVER_ENABLE_STEP_RETRY, "true").lower() == "true"
 )
+# Mount the AutoTuneX reverse proxy (/api/autotunex). Off by default: most
+# deployments run no AutoTuneX server for it to relay to.
+GBSERVER_ENABLE_AUTOTUNEX = (
+    os.getenv(ENV_VAR_GBSERVER_ENABLE_AUTOTUNEX, "false").lower() == "true"
+)
+# AutoTuneX server the proxy relays to.
+AUTOTUNEX_URL = os.getenv(ENV_VAR_AUTOTUNEX_API_URL, "http://localhost:8000")
 # Metrics
 # Endpoint to push metrics to http://gb-metrics-gb-metrics:8081/api/metrics
 GBSERVER_METRICS_ENDPOINT = os.getenv(ENV_VAR_GBSERVER_METRICS_ENDPOINT, "")
@@ -631,14 +643,6 @@ GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS = int(
 )
 GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX = int(
     os.getenv(ENV_VAR_SKYPILOT_PROVISION_BACKOFF_MAX, "30"), base=10
-)
-# Overall timeout for the `ssh` reachability probe gating an HPC (slurm/lsf)
-# SkyPilot launch. Mirrors GBSERVER_LSF_SSH_PROBE_TIMEOUT_S: SkyPilot's own SSH
-# bounds only the TCP leg, not the banner/login phase, so a wedged login node
-# otherwise surfaces as an opaque precheck ValueError. One probe per launch (not a
-# sweep), so this is the whole cost. 0 disables.
-GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S = int(
-    os.getenv(ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S, "30"), base=10
 )
 # Bounds the banner/login phase of the post-launch host SSH (sidecar tasks), which
 # ConnectTimeout (TCP leg only) leaves unbounded.
@@ -1019,7 +1023,8 @@ GBSERVER_WANDB_BASE_URL = os.getenv(
 GBSERVER_WANDB_QUIET = getenv_boolean(ENV_VAR_PREFIX + "_WANDB_QUIET", True)
 GBSERVER_WANDB_LOG_LEVEL = os.getenv(ENV_VAR_PREFIX + "_WANDB_LOG_LEVEL", "warning")
 
-GBSERVER_SQL_SCHEME = os.getenv(ENV_VAR_GBSERVER_SQL_SCHEME, "postgresql")
+# Explicit driver, not SQLAlchemy's default for bare postgresql.
+GBSERVER_SQL_SCHEME = os.getenv(ENV_VAR_GBSERVER_SQL_SCHEME, "postgresql+psycopg")
 GBSERVER_SQL_HOST = os.getenv(
     ENV_VAR_GBSERVER_SQL_HOST,
     "05ed7d0c-3027-412e-bc75-23351a34b8fa.blrrvkdw0thh68l98t20.databases.appdomain.cloud",

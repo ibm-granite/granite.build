@@ -1,0 +1,193 @@
+######
+# sft-smoke — smoke-test distill-sft IN ISOLATION, on BlueVela (SkyPilot / LSF).
+#
+# Three targets, not seven: align -> corpus -> train-sft, then stop. This is
+# NOT a trimmed distill-smoke — it deliberately does not continue into GOLD,
+# export or eval, because its only job is to prove distill-sft's own pin
+# resolves and the step runs, cheaply and in isolation, without paying for
+# the rest of the pipeline every time. For the integrated "SFT warm-up feeds
+# GOLD" shape, run distill-smoke (or distill-pipeline-smoke) with
+# --param INCLUDE_SFT=true instead — that is a recipe-level switch on the
+# full pipeline, not a separate recipe, and this one does not duplicate it.
+#
+# Same pair as distill-smoke: granite-4.0-350m (SFT checkpoint) as student,
+# granite-4.1-3b as teacher. See that recipe's README for why this pair and
+# not the 3b/30b reference one.
+#
+# Two edges, and neither is optional:
+#   align  -> corpus   the corpus must be measured with the tokenizer that
+#                      will train — lengths and the assistant-mask check are
+#                      counted in tokens, and prep needs align's chat
+#                      template to locate assistant spans at all.
+#   align  -> train    the student is the RETAGGED student, and corpus ->
+#                      train also carries the manifest the trainer's
+#                      row-count guard reads.
+#
+# Values come from parameters.yaml beside this file; the comments explaining
+# WHY each value is what it is live there.
+#
+# Run (parameters.yaml is picked up automatically because it sits next to
+# this file):
+#   gb build start -f recipes/granite4-350m/lsf/sft-smoke/build.yaml --space <space>
+######
+granite.build:
+  name: sft-smoke
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+    # ─── align ──────────────────────────────────────────────────────────────
+    # Re-embeds the base student onto the teacher's tokenizer and emits the
+    # tokenizer artifacts train-sft reads.
+    #
+    # TEACHER_MODEL_URI / STUDENT_MODEL_URI / CHAT_TEMPLATE_URI carry a FULL
+    # URI, not a bare path: "env:///proj/..." for a shared-filesystem
+    # checkout (what BlueVela has always used), "hf:///org/repo" to pull a
+    # public (or token-gated) Hub model fresh, or "s3://bucket/key" /
+    # "cos://bucket/key" for object storage — see ibm-bluevela's
+    # environment.yaml assetstores block for what's wired in. Whichever
+    # scheme wins, granite.build resolves it to a local path BEFORE this
+    # step runs, so align_config below reads the resolved binding path, not
+    # the URI itself: the step's own code has no notion of hf:// or s3://
+    # and never needs one.
+    align:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        teacher_model:
+          uri: "$${TEACHER_MODEL_URI}"
+          type: model
+        student_model:
+          uri: "$${STUDENT_MODEL_URI}"
+          type: model
+        chat_template:
+          uri: "$${CHAT_TEMPLATE_URI}"
+          type: dataset
+      outputs:
+        retagged_student:
+          uri: "env://{{ binding.path }}"
+          type: model
+        teacher_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+        student_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/tokenizer-align
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            align_config:
+              teacher_model: "{{ bindings.teacher_model.binding.path }}"
+              student_model: "{{ bindings.student_model.binding.path }}"
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
+              chat_template: "{{ bindings.chat_template.binding.path }}"
+              # FALSE for this pair — see distill-smoke's parameters.yaml for
+              # the full reasoning (no granite 4.x model has ChatML turn
+              # tokens; the turn boundary is still checked separately).
+              require_chatml: $${REQUIRE_CHATML}
+              verify: true
+              dry_run: false
+
+    # ─── corpus ─────────────────────────────────────────────────────────────
+    # DATASET_URI: same full-URI convention as align's inputs above.
+    corpus:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        tokenizer:
+          binding: align.retagged_student
+        source_dataset:
+          uri: "$${DATASET_URI}"
+          type: dataset
+      outputs:
+        corpus:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-prep
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            corpus_config:
+              dataset: "{{ bindings.source_dataset.binding.path }}"
+              tokenizer: "{{ bindings.tokenizer.binding.path }}"
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus"
+              max_length: $${MAX_LENGTH}
+              think_policy: "$${THINK_POLICY}"
+              completion_boundary: "last_message"
+              # Zero: no eval target here to consume a held-out split, so
+              # holding one out would just shrink train-sft's corpus for
+              # nothing.
+              eval_fraction: 0.0
+              max_examples: $${MAX_EXAMPLES}
+              emit_row_id: true
+              documents_policy: "$${DOCUMENTS_POLICY}"
+              seed: $${SEED}
+
+    # ─── train-sft ──────────────────────────────────────────────────────────
+    # A plain-SFT pass over the corpus, with no teacher in the loop. This is
+    # the whole point of this recipe: prove distill-sft's pin resolves and
+    # the step runs and publishes a checkpoint, in isolation.
+    train-sft:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: align.retagged_student
+        corpus:
+          binding: corpus.corpus
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/sft
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${SFT_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:$${SFT_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            workload:
+              gpus_per_node: $${SFT_NUM_GPUS}
+              nodes: 1
+            sft_config:
+              student_model_path: "{{ bindings.student.binding.path }}"
+              corpus_path: "{{ bindings.corpus.binding.path }}"
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/train-sft"
+              response_template: "$${RESPONSE_TEMPLATE}"
+              max_length: $${MAX_LENGTH}
+              per_device_train_batch_size: $${SFT_PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${SFT_GRADIENT_ACCUMULATION_STEPS}
+              learning_rate: "$${SFT_LEARNING_RATE}"
+              num_train_epochs: $${SFT_NUM_TRAIN_EPOCHS}
+              save_steps: 1
+              seed: $${SEED}
+              max_dataset_size: -1
+              extra_config_yaml: "logging_steps: 1"
+              precomputed_logits_dir: ""

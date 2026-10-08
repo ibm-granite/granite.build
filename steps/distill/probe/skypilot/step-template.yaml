@@ -1,0 +1,60 @@
+######
+# distill-probe — one of three cheap questions that gate the granite4-350m
+# distillation family: load-student, tokenizer, tokenizer-fit.
+#
+# Was three inline `command` targets in recipes/granite4-350m/lsf/distill-probe. The
+# probes, and the reasoning behind each, live in src/distill_probe.py; this file only
+# passes the configuration through. Nothing is produced: the answer is the
+# `PROBE VERDICT` line in the log.
+#
+# Needs torch + transformers (present in the kd-sandbox image's venv) and, for
+# load-student and tokenizer-fit, one GPU, which the build supplies. No trainer source,
+# so it carries none of the distill-* steps' code_config / source-delivery contract.
+#
+# Deliberately no HF_HUB_OFFLINE / HF_HOME, unlike gen-smoke: load-student asks whether
+# transformers' lazy kernel fetch works in this image, and an offline hub would answer a
+# different question.
+######
+name: probe
+version: 1.0.0
+type: custom
+config:
+  probe_config:
+    # load-student | tokenizer | tokenizer-fit
+    probe: ""
+    # The HF checkpoint directory to probe. Only read; the tokenizer probes rewrite a
+    # scratch copy.
+    checkpoint: ""
+    # tokenizer-fit only: a JSONL of {"messages": [...]} rows, and how many to score.
+    corpus: ""
+    rows: 200
+    python: "/stage/.venv/bin/python"
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+    default_launcher: probe
+    launchers:
+      probe:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          # Cloud-agnostic: the build supplies the GPU, cpus and memory via
+          # config.compute_config and config.launcher_config.resources.
+          resources: {}
+          file_mounts:
+            src: src
+          run: |
+            set -euo pipefail
+            echo "=== distill-probe {{ config.probe_config.probe }} on $(hostname) ==="
+            "{{ config.probe_config.python }}" ./src/distill_probe.py \
+              "{{ config.probe_config.probe }}" \
+              --checkpoint "{{ config.probe_config.checkpoint }}" \
+              --corpus "{{ config.probe_config.corpus }}" \
+              --rows "{{ config.probe_config.rows }}"
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot

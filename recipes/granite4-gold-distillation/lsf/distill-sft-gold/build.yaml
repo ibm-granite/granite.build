@@ -1,0 +1,391 @@
+######
+# distill-sft-gold — SFT warm-up feeding real-scale GOLD distillation,
+# granite-4.2-30b teacher / granite-4.1-3b-base student, for BlueVela
+# (SkyPilot / LSF).
+#
+# FOUR OR SIX TARGETS, depending on ON_POLICY:
+#
+#   align -> corpus -> train-sft -> train-gold                         (ON_POLICY=false, default)
+#   align -> corpus -> train-sft -> vllm-server -> train-gold -> teardown   (ON_POLICY=true)
+#
+# This is distill-gold with one edge inserted: train-gold's student comes
+# from train-sft's checkpoint rather than directly from align's retag. A raw
+# base student has never seen the teacher's chat template or turn markers;
+# train-sft's checkpoint is what train-gold actually distills from, so the
+# distillation stage is measuring "did it learn from the teacher" rather than
+# conflating that with "did it learn the template" — see distill-sft's own
+# step header for the fuller framing of why this stage exists.
+#
+# LMBDA is the tunable that selects the GOLD loss (0.0 = off-policy; >0.0 =
+# on-policy weight). ON_POLICY is a SEPARATE switch, for the same reason
+# distill-gold's header explains: a build.yaml cannot conditionally add a
+# target on a numeric parameter's VALUE, only on a boolean evaluated by the
+# CLI before submission. Set both together: --param ON_POLICY=true
+# --param LMBDA=1.0.
+#
+# align -> corpus -> train-sft is not optional, for the same reasons as
+# distill-gold's align -> corpus edge, plus one more: train-sft's own
+# completion-boundary fallback and train-gold's loss masking both key off the
+# SAME response_template, and a control/warm-up stage that masked a
+# different span than the treatment stage would not be a warm-up for the
+# treatment that follows it.
+#
+# Values come from parameters.yaml beside this file; the comments explaining
+# WHY each value is what it is live there.
+#
+# Run (parameters.yaml is picked up automatically because it sits next to this
+# file):
+#   gb build start -f recipes/granite4-gold-distillation/lsf/distill-sft-gold/build.yaml --space <space>
+#   gb build start -f recipes/granite4-gold-distillation/lsf/distill-sft-gold/build.yaml \
+#     --param ON_POLICY=true --param LMBDA=1.0 --space <space>
+######
+granite.build:
+  name: distill-sft-gold
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+    # ─── align ──────────────────────────────────────────────────────────────
+    # Re-embeds the raw student onto the teacher's tokenizer and emits the
+    # tokenizer artifacts the rest of the pipeline reads.
+    #
+    # TEACHER_MODEL_URI / STUDENT_MODEL_URI carry a FULL uri, not a bare path:
+    # "env://" for something already on a filesystem this environment can
+    # reach (the pull is then a no-op), "hf:///org/repo" to pull fresh from
+    # the Hub, or "s3://bucket/key" / "cos://bucket/key" for object storage —
+    # see ibm-bluevela's environment.yaml assetstores block for what's wired
+    # in. Whichever scheme wins, align_config below reads the RESOLVED
+    # binding path, never the URI itself.
+    #
+    # CHAT_TEMPLATE is NOT one of these: its default is a path RELATIVE to the
+    # ported step's own code checkout, and that default is currently BROKEN
+    # (the public gb-steps-distillation repo does not ship it) — so this
+    # recipe overrides it with an absolute, verified-on-BlueVela path instead
+    # of relying on that default.
+    align:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        teacher_model:
+          uri: "$${TEACHER_MODEL_URI}"
+          type: model
+        student_model:
+          uri: "$${STUDENT_MODEL_URI}"
+          type: model
+      outputs:
+        retagged_student:
+          uri: "env://{{ binding.path }}"
+          type: model
+        teacher_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+        student_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/tokenizer-align
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            align_config:
+              teacher_model: "{{ bindings.teacher_model.binding.path }}"
+              student_model: "{{ bindings.student_model.binding.path }}"
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
+              chat_template: "$${CHAT_TEMPLATE}"
+              # FALSE: no granite 4.x model carries <|im_start|>, and
+              # CHAT_TEMPLATE above is the granite-native template, not
+              # ChatML. See parameters.yaml for the full reasoning.
+              require_chatml: $${REQUIRE_CHATML}
+              verify: true
+              dry_run: false
+
+    # ─── corpus ─────────────────────────────────────────────────────────────
+    corpus:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        tokenizer:
+          binding: align.retagged_student
+        source_dataset:
+          uri: "$${DATASET_URI}"
+          type: dataset
+      outputs:
+        corpus:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-prep
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            corpus_config:
+              dataset: "{{ bindings.source_dataset.binding.path }}"
+              tokenizer: "{{ bindings.tokenizer.binding.path }}"
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus"
+              max_length: $${MAX_LENGTH}
+              length_policy: "drop"
+              think_policy: "$${THINK_POLICY}"
+              completion_boundary: "last_message"
+              min_messages: 2
+              documents_policy: "$${DOCUMENTS_POLICY}"
+              # A genuine held-out split: this recipe's dataset is fed through
+              # corpus-prep fresh against THIS run's retagged tokenizer, so
+              # the split is real even though the source file is itself the
+              # output of an earlier (different-tokenizer) prep run.
+              eval_fraction: $${EVAL_FRACTION}
+              max_examples: $${MAX_EXAMPLES}
+              emit_row_id: true
+              seed: $${SEED}
+
+    # ─── train-sft ──────────────────────────────────────────────────────────
+    # A plain-SFT pass over the same corpus, with no teacher in the loop.
+    # train-gold continues from this checkpoint rather than from the aligned
+    # student directly. The step's ZeRO-3 config sets zero3_save_16bit_model
+    # and sft.py calls save_model on the output directory, so the registered
+    # checkpoint is HF-native and loadable as a student init directly — no
+    # export needed between here and GOLD.
+    train-sft:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: align.retagged_student
+        corpus:
+          binding: corpus.corpus
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/sft
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${SFT_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:$${SFT_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${MEMORY}
+            workload:
+              # MUST match the allocation above: run-sft.sh asserts this
+              # against the GPUs visible in the container, because a
+              # mismatch trains at a different effective batch size than the
+              # config says. More than one node is refused by the script.
+              gpus_per_node: $${SFT_NUM_GPUS}
+              nodes: 1
+            sft_config:
+              student_model_path: "{{ bindings.student.binding.path }}"
+              corpus_path: "{{ bindings.corpus.binding.path }}"
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/train-sft"
+              response_template: "$${RESPONSE_TEMPLATE}"
+              max_length: $${MAX_LENGTH}
+              per_device_train_batch_size: $${SFT_PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${SFT_GRADIENT_ACCUMULATION_STEPS}
+              learning_rate: "$${SFT_LEARNING_RATE}"
+              num_train_epochs: $${SFT_NUM_TRAIN_EPOCHS}
+              save_steps: $${SFT_SAVE_STEPS}
+              seed: $${SEED}
+              # LEFT AT THE DEFAULT (-1, the whole corpus). max_dataset_size
+              # and corpus max_examples are NOT interchangeable ways to make
+              # a run small: sft.py compares its kept-row count against
+              # prep's manifest and raises ManifestDrift on any shortfall.
+              max_dataset_size: -1
+              extra_config_yaml: "logging_steps: 1"
+              # EMPTY is what makes this a plain-SFT pass. With a logits
+              # directory the step becomes a forward-KL distillation arm of
+              # its own, and the pipeline would distil twice rather than
+              # warm-start once.
+              precomputed_logits_dir: ""
+
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+    # ─── vllm-server (on-policy only) ────────────────────────────────────────
+    # Serves the SFT checkpoint, not the raw retagged student: on-policy
+    # continues from a warmed-up policy, and generating from a cold base
+    # student would just be noise. On-policy GOLD has the student generate
+    # and the teacher score those generations, so serving the teacher here
+    # would be a different algorithm that still runs and still reports a
+    # loss.
+    #
+    # A SEPARATE target/allocation from train-gold, not nodes carved out of
+    # the trainer's own — see gold-onpolicy-smoke, which exists to answer
+    # exactly the question of whether the trainer's NCCL weight-sync group
+    # can span two LSF allocations. It can; this recipe reuses that shape at
+    # real scale.
+    vllm-server:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student_model:
+          binding: train-sft.checkpoint
+      outputs:
+        # mem://, NOT env://: the payload is a URL, and env:// would run it
+        # through filesystem-path normalisation and mangle
+        # http://host:8001 into /http:/host:8001.
+        vllm_url:
+          uri: "mem://distill-sft-gold-vllm"
+        # LSF SERVICE clusters never autostop and never get a terminal-status
+        # cleanup, so without this the allocation is held until someone runs
+        # `sky down` by hand.
+        cluster_name:
+          uri: "mem://distill-sft-gold-vllm-cluster"
+      steps:
+        - step_uri: space://steps/distill/vllm-server
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${VLLM_NUM_GPUS_PER_NODE}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "$${VLLM_ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+            vllm_config:
+              model_path: "{{ bindings.student_model.binding.path }}"
+              port: $${VLLM_PORT}
+              # Must be >= the trainer's max_length, or a prompt the trainer
+              # accepts is one the server refuses mid-run.
+              max_model_len: $${MAX_LENGTH}
+              health_timeout_seconds: $${VLLM_HEALTH_TIMEOUT_SECONDS}
+              # The server's own ceiling on holding its node. teardown is
+              # gated on train-gold.checkpoint, which a crashed trainer never
+              # emits, so without this a trainer failure strands the
+              # allocation.
+              max_lifetime_seconds: $${VLLM_MAX_LIFETIME_SECONDS}
+<% endif %>
+
+    # ─── train-gold ─────────────────────────────────────────────────────────
+    # The distillation itself, continuing from train-sft's checkpoint.
+    train-gold:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+        # The ordering primitive AND the health gate: this binding resolves
+        # only once the server answers /health, so this target cannot start
+        # early.
+        vllm:
+          binding: vllm-server.vllm_url
+<% endif %>
+        student:
+          binding: train-sft.checkpoint
+        corpus:
+          binding: corpus.corpus
+        teacher_model:
+          uri: "$${TEACHER_MODEL_URI}"
+          type: model
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/gold
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+            gold_config:
+              run_name: "$${RUN_NAME}"
+              ds_config: "$${DS_CONFIG}"
+              model_name_or_path: "{{ bindings.student.binding.path }}"
+              teacher_model_name_or_path: "{{ bindings.teacher_model.binding.path }}"
+              dataset_name: "{{ bindings.corpus.binding.path }}"
+              max_steps: $${MAX_STEPS}
+              num_train_epochs: $${NUM_TRAIN_EPOCHS}
+              learning_rate: $${LEARNING_RATE}
+              min_lr: $${MIN_LR}
+              warmup_ratio: $${WARMUP_RATIO}
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              per_device_train_batch_size: $${PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${GRADIENT_ACCUMULATION_STEPS}
+              max_length: $${MAX_LENGTH}
+              max_completion_length: $${MAX_COMPLETION_LENGTH}
+              gradient_checkpointing: $${GRADIENT_CHECKPOINTING}
+              save_strategy: "$${SAVE_STRATEGY}"
+              save_steps: $${SAVE_STEPS}
+              save_total_limit: $${SAVE_TOTAL_LIMIT}
+              logging_steps: $${LOGGING_STEPS}
+              dataset_num_proc: $${DATASET_NUM_PROC}
+              temperature: $${TEMPERATURE}
+              lmbda: $${LMBDA}
+              beta: $${BETA}
+              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
+              response_template: "$${RESPONSE_TEMPLATE}"
+              nccl_debug: "$${NCCL_DEBUG}"
+              nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
+              nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
+              nccl_enable_monitoring: $${NCCL_ENABLE_MONITORING}
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+              # The external server. Setting this makes EVERY node in this
+              # allocation a trainer and hands the address to gold.py on its
+              # command line.
+              vllm_server_url: "{{ bindings.vllm.binding.state }}"
+              vllm_mode: "$${VLLM_MODE}"
+              vllm_sync_frequency: $${VLLM_SYNC_FREQUENCY}
+              # Counts EXTERNAL servers, so it does not compete with the
+              # trainer for nodes. Must be >= 1: it is what makes the
+              # renderer emit the on-policy config block at all.
+              vllm_num_servers: $${VLLM_NUM_SERVERS}
+<% else %>
+              # 0 => off-policy: every rank trains on the fixed corpus, no
+              # vLLM server to coordinate.
+              vllm_num_servers: 0
+<% endif %>
+              top_p: $${TOP_P}
+              use_sampled_opd_loss: $${USE_SAMPLED_OPD_LOSS}
+              last_message_only: $${LAST_MESSAGE_ONLY}
+              clip_alpha: $${CLIP_ALPHA}
+              opd_importance_sampling: $${OPD_IMPORTANCE_SAMPLING}
+
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+    # ─── teardown (on-policy only) ───────────────────────────────────────────
+    # LSF SERVICE clusters never autostop, so the vllm-server allocation needs
+    # an explicit reaper once training ends.
+    teardown:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # `gate` is the ordering primitive and nothing else: the trainer
+        # emits checkpoint as its final log line, so this target runs after
+        # training ends.
+        gate:
+          binding: train-gold.checkpoint
+        vllm_cluster:
+          binding: vllm-server.cluster_name
+      steps:
+        - step_uri: space://steps/skypilot-teardown
+          config:
+            teardown_config:
+              cluster_names:
+                - "{{ bindings.vllm_cluster.binding.state }}"
+<% endif %>

@@ -147,25 +147,27 @@ class TestSshMerge:
         assert "HostName NEW" in text and "HostName a" not in text
 
     def test_cross_env_alias_collision_raises(self, tmp_path):
-        # A differing managed block owned by a DIFFERENT environment is a
-        # cross-environment clash, not a re-key: gbserver refuses and names both
-        # environments rather than silently clobbering the other's host.
+        # A managed block owned by a DIFFERENT environment that differs in a
+        # non-HostName directive (here User) is a genuine cross-environment clash,
+        # not a re-key: gbserver refuses and names both environments rather than
+        # silently clobbering the other's host. (A HostName-only difference is
+        # instead last-writer-wins — see TestHostnameOnlyMergeRelaxation.)
         sc.merge_ssh_blocks(
             "slurm",
-            sc.render_ssh_hosts([_host("clusterA", HostName="a")], {}),
+            sc.render_ssh_hosts([_host("clusterA", HostName="a", User="gb")], {}),
             "envA",
             home=tmp_path,
         )
         with pytest.raises(SkypilotConfigCollisionError, match="envA"):
             sc.merge_ssh_blocks(
                 "slurm",
-                sc.render_ssh_hosts([_host("clusterA", HostName="NEW")], {}),
+                sc.render_ssh_hosts([_host("clusterA", HostName="a", User="root")], {}),
                 "envB",
                 home=tmp_path,
             )
         # The first environment's entry is left intact (no partial overwrite).
         text = _read(tmp_path / ".slurm" / "config")
-        assert "HostName a" in text and "HostName NEW" not in text
+        assert "User gb" in text and "User root" not in text
 
     def test_foreign_content_preserved_and_differing_alias_conflicts(self, tmp_path):
         dest = tmp_path / ".slurm" / "config"
@@ -450,3 +452,162 @@ class TestNoTeardownAndConcurrency:
         text = _read(tmp_path / ".slurm" / "config")
         for i in range(8):
             assert f"Host c{i}" in text
+
+
+# --------------------------------------------------------------------------- #
+# HostName selection (multiple login nodes)
+# --------------------------------------------------------------------------- #
+class TestHostnameCandidates:
+    """`_expand_hostname_candidates` / `_collapse_to_random_hostname` — turning a
+    scalar-or-list ``HostName`` into per-candidate host dicts and picking one at
+    random. Pure and I/O-free: candidate login nodes reach the same scheduler, so any
+    one is a valid launch target (no reachability probe) and the rest are failover
+    alternates the launch path retains."""
+
+    _NODES = ["login1.ex.com", "login2.ex.com", "login3.ex.com"]
+
+    def test_no_hostname_expands_to_none(self):
+        # Nothing to select: a host without HostName has no candidates.
+        assert sc._expand_hostname_candidates(_host(User="root")) is None
+
+    def test_scalar_expands_to_one_candidate(self):
+        cands = sc._expand_hostname_candidates(_host(HostName="only.ex.com", User="r"))
+        assert [c["HostName"] for c in cands] == ["only.ex.com"]
+        assert cands[0]["User"] == "r"  # other directives carried onto the candidate
+
+    def test_list_expands_to_all_candidates_as_scalars(self):
+        cands = sc._expand_hostname_candidates(
+            _host(HostName=list(self._NODES), User="root")
+        )
+        assert {c["HostName"] for c in cands} == set(self._NODES)  # every candidate
+        assert all(isinstance(c["HostName"], str) for c in cands)  # each a scalar
+        assert all(c["User"] == "root" for c in cands)  # directives carried through
+
+    def test_collapse_no_hostname_unchanged(self):
+        host = _host(User="root")
+        assert sc._collapse_to_random_hostname(host) is host
+
+    def test_collapse_picks_single_candidate(self, monkeypatch):
+        # shuffle pinned to a no-op => the first listed candidate is chosen.
+        monkeypatch.setattr(sc.random, "shuffle", lambda seq: None)
+        chosen = sc._collapse_to_random_hostname(_host(HostName=list(self._NODES)))
+        assert chosen["HostName"] == "login1.ex.com"
+
+    def test_materialize_collapses_list_to_one_hostname(self, tmp_path, monkeypatch):
+        # A list HostName is written to ~/.<cloud>/config as a single scalar.
+        monkeypatch.setattr(sc.random, "shuffle", lambda seq: None)
+        ssh = ClusterSshConfigs(
+            lsf=[_host("bluevela", HostName=list(self._NODES), User="gb")]
+        )
+        sc.materialize_ssh_for_cloud("sky-lsf", ssh, {}, "lsf", home=tmp_path)
+        text = _read(tmp_path / ".lsf" / "config")
+        assert "HostName login1.ex.com" in text  # the (pinned) random pick
+        assert "login2.ex.com" not in text and "login3.ex.com" not in text
+
+    def test_sticky_candidate_is_kept_in_front(self, monkeypatch):
+        # A sticky node already written for this alias leads the order even though it
+        # is not first in the declared list, so a prior failover is not re-randomized.
+        monkeypatch.setattr(sc.random, "shuffle", lambda seq: None)  # keep listed order
+        cands = sc._expand_hostname_candidates(
+            _host(HostName=list(self._NODES)), sticky="login3.ex.com"
+        )
+        assert cands[0]["HostName"] == "login3.ex.com"  # written node moved to front
+        assert {c["HostName"] for c in cands} == set(self._NODES)  # none dropped
+
+    def test_sticky_non_candidate_is_ignored(self, monkeypatch):
+        # A sticky value that is not among the candidates leaves the order unchanged.
+        monkeypatch.setattr(sc.random, "shuffle", lambda seq: None)
+        cands = sc._expand_hostname_candidates(
+            _host(HostName=list(self._NODES)), sticky="stale.ex.com"
+        )
+        assert cands[0]["HostName"] == "login1.ex.com"  # random (pinned) order intact
+
+    def test_read_managed_hostnames_round_trips(self, tmp_path):
+        # The written HostName is read back per alias so a later launch can be sticky.
+        ssh = ClusterSshConfigs(lsf=[_host("bluevela", HostName="login2.ex.com")])
+        sc.materialize_ssh_for_cloud("sky-lsf", ssh, {}, "lsf", home=tmp_path)
+        assert sc._read_managed_hostnames("lsf", home=tmp_path) == {
+            "bluevela": "login2.ex.com"
+        }
+
+    def test_read_managed_hostnames_absent_file_is_empty(self, tmp_path):
+        assert sc._read_managed_hostnames("slurm", home=tmp_path) == {}
+
+
+class TestHostnameOnlyMergeRelaxation:
+    """A block differing from another environment's ONLY in ``HostName`` last-writer-
+    wins *only* when the already-written node is one of the incoming env's own candidate
+    login nodes (so the two envs genuinely front the same cluster). An unknown node, or
+    any other differing directive, stays a genuine cross-environment clash."""
+
+    def test_blocks_differ_only_in_hostname_true_for_hostname_only(self):
+        a = sc.render_ssh_host(_host("c", HostName="h1", User="gb"), {})
+        b = sc.render_ssh_host(_host("c", HostName="h2", User="gb"), {})
+        assert sc._blocks_differ_only_in_hostname(a, b) is True
+
+    def test_blocks_differ_only_in_hostname_false_for_other_directive(self):
+        a = sc.render_ssh_host(_host("c", HostName="h1", User="gb"), {})
+        b = sc.render_ssh_host(_host("c", HostName="h1", User="root"), {})
+        assert sc._blocks_differ_only_in_hostname(a, b) is False  # User differs
+
+    def test_blocks_differ_only_in_hostname_false_when_equivalent(self):
+        # An exact match is handled by _blocks_equivalent, not this predicate.
+        a = sc.render_ssh_host(_host("c", HostName="h1", User="gb"), {})
+        assert sc._blocks_differ_only_in_hostname(a, a) is False
+
+    def test_cross_env_hostname_only_is_last_writer_wins(self, tmp_path):
+        # envA then envB name the same alias, differing only in HostName, and the
+        # written node (h1) is one of envB's declared candidates => same cluster, so
+        # no raise and envB's login node wins.
+        sc.merge_ssh_blocks(
+            "slurm",
+            sc.render_ssh_hosts([_host("c", HostName="h1", User="gb")], {}),
+            "envA",
+            home=tmp_path,
+        )
+        sc.merge_ssh_blocks(
+            "slurm",
+            sc.render_ssh_hosts([_host("c", HostName="h2", User="gb")], {}),
+            "envB",
+            home=tmp_path,
+            candidate_hostnames={"c": {"h1", "h2"}},  # envB fronts this same cluster
+        )
+        text = _read(tmp_path / ".slurm" / "config")
+        assert "HostName h2" in text and "HostName h1" not in text  # last writer wins
+
+    def test_cross_env_hostname_only_unknown_node_raises(self, tmp_path):
+        # The written node (h1) is NOT among envB's candidates: envB is a *different*
+        # cluster reusing the alias, so the HostName-only difference is still a clash.
+        sc.merge_ssh_blocks(
+            "slurm",
+            sc.render_ssh_hosts([_host("c", HostName="h1", User="gb")], {}),
+            "envA",
+            home=tmp_path,
+        )
+        with pytest.raises(SkypilotConfigCollisionError, match="envA"):
+            sc.merge_ssh_blocks(
+                "slurm",
+                sc.render_ssh_hosts([_host("c", HostName="h2", User="gb")], {}),
+                "envB",
+                home=tmp_path,
+                candidate_hostnames={"c": {"h2", "h3"}},  # h1 is not ours
+            )
+        text = _read(tmp_path / ".slurm" / "config")
+        assert "HostName h1" in text and "HostName h2" not in text  # envA untouched
+
+    def test_cross_env_hostname_only_without_candidates_raises(self, tmp_path):
+        # Strict default: with no candidate_hostnames the merge cannot prove the two
+        # envs share a cluster, so a HostName-only cross-env difference stays a clash.
+        sc.merge_ssh_blocks(
+            "slurm",
+            sc.render_ssh_hosts([_host("c", HostName="h1", User="gb")], {}),
+            "envA",
+            home=tmp_path,
+        )
+        with pytest.raises(SkypilotConfigCollisionError, match="envA"):
+            sc.merge_ssh_blocks(
+                "slurm",
+                sc.render_ssh_hosts([_host("c", HostName="h2", User="gb")], {}),
+                "envB",
+                home=tmp_path,
+            )

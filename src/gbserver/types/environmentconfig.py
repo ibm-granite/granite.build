@@ -48,6 +48,13 @@ class ClusterSshConfigs(Config):
     Multiple hosts per cloud are supported, so one environment can describe
     several clusters.
 
+    ``HostName`` may be a single value (the classic single login node) **or** a list
+    of interchangeable candidate login hostnames for one cluster. gbserver picks one
+    at random per launch (spreading load) and, if a transient SSH control-plane error
+    stalls provisioning, fails over to the next candidate on retry. The chosen
+    hostname is rendered as a normal scalar ``HostName`` directive, so all candidates
+    share this entry's ``User``/``Port``/``IdentityFile``/etc.
+
     Attributes:
         slurm: Host entries rendered into ``~/.slurm/config``.
         lsf: Host entries rendered into ``~/.lsf/config``.
@@ -167,20 +174,24 @@ class EnvironmentConfig(Config):
                 "shared_filesystem is only supported on a Skypilot/aws environment "
                 f"(got type={self.type!r}, subtype={self.subtype!r})"
             )
-        mount_point = (sf.get("mount_point") if isinstance(sf, dict) else None) or ""
-        mp = mount_point.rstrip("/") or "/"
+        # Keep the import inside the method to avoid a circular import at module
+        # load (shared_fs imports environmentconfig types).
+        from gbserver.environment.shared_fs import resolve_workdir_mount
+        from gbserver.environment.shared_fs.config import parse_shared_filesystems
+
+        mounts = parse_shared_filesystems(sf)  # validates each + unique/non-nested
         workdir = cfg.get("shared_workdir")
         if not workdir:
             raise ValueError(
                 "shared_filesystem requires 'shared_workdir' (an absolute path "
-                "under mount_point)"
+                "under one mount's mount_point)"
             )
-        if not os.path.isabs(workdir) or not (
-            workdir == mp or workdir.startswith(mp.rstrip("/") + "/")
-        ):
+        if not os.path.isabs(workdir):
+            raise ValueError(f"shared_workdir {workdir!r} must be absolute")
+        if resolve_workdir_mount(self) is None:
             raise ValueError(
-                f"shared_workdir {workdir!r} must be under "
-                f"shared_filesystem.mount_point {mp!r}"
+                f"shared_workdir {workdir!r} is not under any shared_filesystem "
+                f"mount_point ({[m.mount_point for m in mounts]})"
             )
         # The EFS mount targets and the teardown VM are AWS-only, and both the
         # per-run mount and teardown launch key on ``default_cloud`` (skypilot's
@@ -196,14 +207,21 @@ class EnvironmentConfig(Config):
                 "targets and the teardown VM are AWS-only); got "
                 f"default_cloud={default_cloud!r}"
             )
+        mount_points = [m.mount_point for m in mounts]
         for store in self.assetstores:
             if "hf" not in (store.store_uri or ""):
                 continue
             for pull in store.pull:
                 pcfg = pull.config or {}
                 cache_path = pcfg.get("cache_path")
-                local_cache = cache_path and not (
-                    mount_point and str(cache_path).startswith(mount_point)
+                cp = str(cache_path) if cache_path else ""
+                # Boundary-safe "under a mount" test: a bare startswith would
+                # treat /mnt/efs-data as under mount /mnt/efs. Match the mount
+                # itself or a path strictly below it (mirrors the mount_point
+                # nesting check in parse_shared_filesystems).
+                local_cache = cache_path and not any(
+                    cp == mp or cp.startswith(mp.rstrip("/") + "/")
+                    for mp in mount_points
                 )
                 if pcfg.get("inline") or local_cache:
                     logger.warning(

@@ -23,6 +23,10 @@ spec:
       labels:
         'llmbuild/internal': '{{ $restServerName }}'
     spec:
+      {{- with .Values.deployments.restServer.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: rest-server
         image: '{{ .Values.deployments.image }}'

@@ -2,16 +2,12 @@ import logging
 import os
 import sys
 
-import portalocker
-import requests
 import toml
-from requests import HTTPError
-from requests.exceptions import ConnectionError
 from toml import TomlDecodeError
 
 from gbcli.utils.cli_config import get_local_gb_config
 from gbcli.utils.gbconstants import USER_NOT_LOGGED_IN_ERROR_MESSAGE
-from gbcommon.types.constants import get_gh_api_base, get_gh_credentials_section
+from gbcommon.types.constants import get_gh_credentials_section
 from gbcommon.types.gbenvconfig import is_standalone
 
 logger = logging.getLogger(__name__)
@@ -40,6 +36,8 @@ class GBTomlConfig:
             self._config = toml.load(self._config_path)
 
     def save(self):
+        import portalocker  # pulls in redis; only needed on write
+
         os.makedirs(self._config_dir, exist_ok=True)
         try:
             with portalocker.Lock(self._config_path, "w", timeout=3) as configfile:
@@ -132,44 +130,19 @@ class GBCredentials(GBTomlConfig):
         return all(val is not None for val in credentials)
 
     def check_values(self):
+        """Return True if GitHub credentials are present.
+
+        Local only: the token is not validated against GitHub here, since that cost
+        a round-trip on every command. gbserver authenticates it on each request and
+        an invalid or revoked token surfaces as ``GBServerAuthError``.
+        """
         gh_section = get_gh_credentials_section()
         credentials = [
             self.get("token", section=gh_section),
             self.get("login", section=gh_section),
             self.get("email", section=gh_section),
         ]
-
-        if any(val is None for val in credentials):
-            return False
-        else:
-            # Validate token
-            headers = {
-                "Authorization": f'token {self.get("token", section=gh_section)}'
-            }
-
-            try:
-                response = requests.get(f"{get_gh_api_base()}/user", headers=headers)
-                response.raise_for_status()
-                return True
-
-            except ConnectionError as e:
-                logger.error(
-                    f"Error: Unable to connect to network. Please check network connection."
-                )
-                sys.exit(1)
-
-            except HTTPError as e:
-                if e.response.status_code == 401:
-                    logger.error(
-                        f"Error: GitHub token is invalid. Please reauthenticate by obtaining a new token with auth login."
-                    )
-                else:
-                    logger.error(str(e))
-                sys.exit(1)
-
-            except Exception as e:
-                logger.error(str(e))
-                sys.exit(1)
+        return all(val is not None for val in credentials)
 
 
 def get_user_token() -> str:

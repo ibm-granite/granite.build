@@ -1,0 +1,44 @@
+# YAML-driven spec for test_skypilot_lsf_distill_tokenizer_align.py (located by the
+# test/ <-> test-data/ helper, so the pairing holds in both test modes; see
+# steps/README.md).
+#
+# Runs the distill-tokenizer-align step (space://steps/distill/tokenizer-align) on the
+# SkyPilot LSF/BlueVela environment, proving the port's launch path end to end: the
+# shared distillation package delivered from the /proj checkout, the two overlays built,
+# the student retagged, the ChatML post-condition asserted, and THREE artifacts
+# registered — the count is the point, since an undeclared output is dropped silently.
+targets:
+  - align
+target_expectations:
+  - target_name: align
+    # One workload. The env:// output pushes are shared-FS no-ops, so all three
+    # outputs register off their URI strings with no extra push step.
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 3
+    jobstats_count: 1
+    expected_steps:
+      # The package comes from a mutable /proj checkout, so the step records which
+      # commit ran and whether that checkout was dirty. Asserting both is what keeps
+      # the lineage hook honest — a run that cannot say which code produced these
+      # tokenizers is a run whose four downstream consumers cannot be audited.
+      - metadata_matches:
+          distill_code_commit: "^[0-9a-f]{40}$"
+          distill_code_source: "^(filesystem|git)$"
+          distill_code_dirty: "^[0-9]+$"
+        config:
+          align_config:
+            # Pin the two settings whose wrong value corrupts the run silently rather
+            # than failing it: verify off would skip the post-condition that catches a
+            # backend disagreeing with tokenizer.json, and a dry run publishes nothing.
+            verify: true
+            dry_run: false
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+  - runner
+# No injected failure — a failed source resolution, overlay build, retag or
+# post-condition fails the build, so reaching SUCCESS is itself the proof.
+simulate_step_failure: false
+# Budget for LSF queue time on a shared cluster. No cold enroot import is expected:
+# this step reuses the image distill-gold and vllm-server already pull.
+timeout_minutes: 60

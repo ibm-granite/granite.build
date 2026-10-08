@@ -14,6 +14,7 @@ Ported from gb_dashboard/src/gb_dashboard/api/data_processing.py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -28,6 +29,40 @@ from gb_ui_backend.config import get_config
 from gb_ui_backend.services.gbserver_source import get_gbserver_source
 
 logger = logging.getLogger(__name__)
+
+# Longest window the Data Processing page may ask for.
+#
+# Raised from 30 so the page can reach back past a quarter: the pipelines users
+# need to find are mostly old, and 30 days made them unreachable regardless of
+# how fast the scan was.
+#
+# 180 rather than 365 because the scan has no index -- the markers it filters on
+# live inside a base64-encoded ZIP in gb_builds, so every build in the window is
+# fetched and decoded. Measured against a production database, per rolling window:
+# 826 builds in 30 days, 1,365 in 90, 4,813 in 180, 5,341 in 200, 22,154 in 365.
+# CPU is negligible at any of those (~0.02ms per build); the binding constraints
+# are transfer volume (a year moves ~250MB per request) and _SCAN_ROW_CAP, which
+# drops the *oldest* rows -- precisely the builds a wider window was opened to find.
+#
+# Read that data carefully, because it is easy to overclaim from it. 180 days fits
+# the cap at today's volume with room to spare, and on the current distribution the
+# cap is not crossed until roughly 246 days. But the distribution is heavily
+# back-loaded: the 200-365 day band ran at ~102 builds/day against ~27/day over the
+# last month. If activity returns to that earlier level, a 180-day window is ~18,400
+# builds and the cap bites at ~98 days -- inside this ceiling.
+#
+# So 180 is safe at the volume actually measured, not safe by construction. What
+# makes the ceiling safe at *any* volume is the truncation warning: a capped window
+# says so instead of quietly under-reporting. Keep that in mind before raising this;
+# raising it means raising _SCAN_ROW_CAP in the same change and re-measuring
+# builds-per-day against a real deployment rather than extrapolating from the
+# figures above. test_dp_window.py pins that pairing.
+_MAX_WINDOW_DAYS = 180
+
+# Row cap for one dataset scan. Named rather than inlined at the call site so the
+# window ceiling above can be tied to it -- as an inline literal it was impossible
+# for a test to reference, which is how the ceiling and the cap drifted apart.
+_SCAN_ROW_CAP = 10_000
 
 _cos_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cos-io")
 
@@ -134,7 +169,7 @@ async def _scan_datasets_async(days: int) -> tuple[list[dict], int, int, Optiona
 
     try:
         builds, db_warning = await source.list_builds_for_dp_scan(
-            days_back=days, limit=10000
+            days_back=days, limit=_SCAN_ROW_CAP
         )
     except Exception as exc:
         msg = (
@@ -148,40 +183,26 @@ async def _scan_datasets_async(days: int) -> tuple[list[dict], int, int, Optiona
     scanned = 0
     matched = 0
 
-    # Diagnostic: log all build names and look for any DP-related patterns
-    DP_KEYWORDS = (
-        "run_cos_pipeline",
-        "tokenization2arrow",
-        "dpk",
-        "megatron",
-        "arrow_path",
-        "output_folder",
-        "parquet",
-        "tokenize",
-        "cos_pipeline",
+    # Path extraction is pure-CPU regex work over one YAML per build, and a wide
+    # window has thousands, so it goes to a worker thread in a single hop rather
+    # than running per build on the event loop. Moving only the archive decode off
+    # the loop left roughly as much work on it as it removed -- the extraction and
+    # a keyword diagnostic that lowercased every YAML nine times per build and
+    # logged every build name in one ~129KB INFO line. The diagnostic is gone; this
+    # is the rest of it.
+    #
+    # Only the extraction crosses the boundary. Assembling the datasets dict below
+    # is cheap and stays here, where it can keep using `datasets` directly.
+    extracted = await asyncio.to_thread(
+        lambda: [
+            (b, _extract_dp_paths(b["yaml_content"]))
+            for b in builds
+            if b.get("yaml_content")
+        ]
     )
-    build_names = [b.get("name", "?")[:40] for b in builds]
-    logger.info("scan-datasets days=%d: fetched builds = %s", days, build_names)
-    for b in builds:
-        yaml = b.get("yaml_content") or ""
-        found = [kw for kw in DP_KEYWORDS if kw.lower() in yaml.lower()]
-        if found:
-            sample = yaml[:300].replace("\n", " | ")
-            logger.info(
-                "  DP keyword(s) %s in build %s (%s): %s",
-                found,
-                b["uuid"][:8],
-                b.get("name", "?")[:30],
-                sample,
-            )
 
-    for build in builds:
-        yaml_content = build.get("yaml_content")
-        if not yaml_content:
-            continue
-
+    for build, paths in extracted:
         scanned += 1
-        paths = _extract_dp_paths(yaml_content)
         if not paths:
             continue
 
@@ -387,7 +408,7 @@ def _build_lineage_graph(datasets: list[dict]) -> dict:
 
 
 @router.get("/lineage")
-async def get_lineage(days: int = Query(1, ge=1, le=30)) -> JSONResponse:
+async def get_lineage(days: int = Query(1, ge=1, le=_MAX_WINDOW_DAYS)) -> JSONResponse:
     """Return lineage DAG (nodes + edges + datasets) from recent DP builds."""
     datasets, scanned, matched, warning = await _scan_datasets_async(days)
     graph = _build_lineage_graph(datasets)
@@ -405,7 +426,9 @@ async def get_lineage(days: int = Query(1, ge=1, le=30)) -> JSONResponse:
 
 
 @router.get("/recent-datasets")
-async def recent_datasets(days: int = Query(1, ge=1, le=30)) -> JSONResponse:
+async def recent_datasets(
+    days: int = Query(1, ge=1, le=_MAX_WINDOW_DAYS)
+) -> JSONResponse:
     """Scan recent builds and return data processing datasets."""
     datasets, scanned, matched, warning = await _scan_datasets_async(days)
     resp: dict[str, Any] = {

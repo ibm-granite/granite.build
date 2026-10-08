@@ -1,4 +1,8 @@
+from unittest.mock import patch
+
 import pytest
+from git import Repo
+from git.exc import GitCommandError
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN
 from gbcommon.uri.git import GitURI
@@ -88,3 +92,27 @@ def test_custom_step_uri():
     gen_uri = GitURI.get_uristr(gen_URI)
     expected = f"git+ssh://{DEFAULT_GH_DOMAIN}/granite-dot-build/gb-test#subdirectory="
     assert gen_uri == expected
+
+
+def test_clone_retry_removes_partial_clone(tmp_path):
+    """A transient clone failure that leaves a partial directory is cleaned up
+    before the retry, so the retry doesn't fail on a non-empty destination."""
+    dest = tmp_path / "repo"
+    attempts = []
+
+    def fake_clone_from(url, path, **kwargs):
+        attempts.append(path.exists())
+        if len(attempts) == 1:
+            path.mkdir()
+            (path / "partial").write_text("x")
+            raise GitCommandError("clone", 128, "fatal: connection reset by peer")
+        return "repo"
+
+    uri = GitURI.__new__(GitURI)
+    with (
+        patch.object(Repo, "clone_from", side_effect=fake_clone_from),
+        patch("tenacity.nap.time.sleep"),
+    ):
+        assert uri._clone_with_retry("https://example.com/o/r.git", dest) == "repo"
+    # The second attempt saw the partial directory already removed.
+    assert attempts == [False, False]

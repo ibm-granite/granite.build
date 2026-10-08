@@ -1,0 +1,72 @@
+granite.build:
+  name: distill-hf-export-smoke
+  # Smoke build for the distill-hf-export step on BlueVela (SkyPilot / LSF).
+  #
+  # Single-target on purpose, and possible here for a reason the corpus-prep fixture could
+  # not rely on: this step's input is a TRAINER OUTPUT DIR, and real ones already exist on
+  # /proj from earlier kd-sandbox runs. So the step can be exercised against genuine
+  # DeepSpeed checkpoint trees without first spending a training run.
+  #
+  # The step only READS that directory — files reach `dest` through shutil.copy2 against an
+  # explicit keep list, and nothing is deleted, moved or written under train_output_dir —
+  # so pointing it at a run this build did not produce is safe on a shared account.
+  targets:
+    export:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        # Recorded as a lineage input: env:// means "already on a filesystem this
+        # environment can reach", so the pull is a no-op and this costs no extra step.
+        train_output:
+          uri: "env:///proj/granite-build/g4os/kd-sandbox/checkpoints/granite-4.1-3b-base_from-4.2-30b_onpolicy-multidomain_custom-1.0_node4"
+          type: model
+      outputs:
+        hf_model:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/hf-export
+          config:
+            poll_interval_seconds: 20
+            log_retrieval_interval_seconds: 20
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: 4
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                # A 3B checkpoint plus its verify load. Host memory, per node.
+                memory: 64
+            export_config:
+              # A real on-policy GOLD run: checkpoint-50 .. checkpoint-390, each with a
+              # DeepSpeed global_step*/ tree — which is precisely what gets pruned.
+              train_output_dir: "/proj/granite-build/g4os/kd-sandbox/checkpoints/granite-4.1-3b-base_from-4.2-30b_onpolicy-multidomain_custom-1.0_node4"
+              dest: "hf-export-smoke"
+              # PINNED rather than left empty. Empty means "highest step number", which is
+              # correct behaviour but not a deterministic fixture: that directory gains
+              # checkpoints as the run is extended, so the test would silently change which
+              # checkpoint it published. Naming one also exercises the selection path.
+              checkpoint: "checkpoint-50"
+              # The whole point: the trainer left this 'left' for on-policy generation.
+              padding_side: "right"
+              # Prove the result loads before calling it a release.
+              verify: true
+              # TRUE HERE ONLY, and against the step's own default of false. Two kinds of
+              # entry in this real checkpoint are not in the ported classifier's lists:
+              #
+              #   rng_state_0.pth .. rng_state_23.pth  — HF Trainer writes ONE PER RANK for
+              #     a distributed run. Upstream's PRUNE_KNOWN carries only the
+              #     single-process "rng_state.pth", because it was validated against a
+              #     1-GPU smoke checkpoint. So it cannot classify any real multi-node
+              #     checkpoint. This is an UPSTREAM defect, reported rather than patched
+              #     here: forking the ported file would break the three-way re-sync. The
+              #     fix is one line in PRUNE_KNOWN upstream.
+              #   config.json.bak_nested_rope — a hand-made backup someone left in that
+              #     checkpoint. This one SHOULD stay unknown: refusing to guess whether a
+              #     stray file belongs in a published model is the behaviour we want.
+              #
+              # Both are resume state or debris, so dropping them is right for this smoke
+              # run, and export_manifest.json records exactly what was dropped. Do NOT
+              # copy this setting into a release recipe: there, an unrecognised file must
+              # stop the build until someone classifies it.
+              allow_unknown: true

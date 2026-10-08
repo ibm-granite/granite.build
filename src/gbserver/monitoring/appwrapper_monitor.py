@@ -586,7 +586,6 @@ class AppWrapperMonitor(MonitorBase):
 
     async def _get_appwrapper_failed_pods(self: Self) -> None:
         """Update the dictionary of failed pods owned by this AppWrapper with their status and logs."""
-        pod_list = []
         label_selector = f"workload.codeflare.dev/appwrapper={self.name}"
         assert self.v1 is not None, "CoreV1Api not initialized"
         try:
@@ -596,7 +595,7 @@ class AppWrapperMonitor(MonitorBase):
                 ),
                 timeout=API_CALL_TIMEOUT,
             )
-            if not pod_list.items:  # type: ignore[attr-defined]
+            if not pod_list.items:
                 logger.warning(
                     "No pods found with the specified label %s in namespace %s",
                     label_selector,
@@ -604,7 +603,7 @@ class AppWrapperMonitor(MonitorBase):
                 )
                 return
 
-            for pod in pod_list.items:  # type: ignore[attr-defined]
+            for pod in pod_list.items:
                 pod_name = pod.metadata.name
                 # update the list of all the pods ever launched by this appwrapper
                 self.launched_pods[pod_name] = pod

@@ -1,0 +1,118 @@
+# gold-sweep-smoke — the minutes-long gate for gold-sweep-100, on BlueVela
+# (SkyPilot / LSF).
+#
+# Same SHAPE as gold-sweep-100, not the same scale. It keeps everything that can be
+# wrong in a way no unit test catches — the step's new max_steps / save_strategy keys,
+# the three /proj/data-eng paths, the retagged student, the trailing-newline response
+# template, the beta 0.5 objective, the liger setting — and shrinks only what costs
+# time. Diff this file against gold-sweep-100/parameters.yaml: every difference should
+# be a cost, never a behaviour.
+#
+# One honest caveat about "minutes": the trainer maps and filters the WHOLE 802,027-row
+# corpus before step 1, regardless of max_steps. That startup, not the two training
+# steps, is most of this run's wall clock — and measuring it is useful, because it is
+# also gold-sweep-100's startup.
+#
+# Override any value with: gb build start --param KEY=VALUE
+
+# ─── Run identification ───────────────────────────────────────────────
+RUN_NAME: "gold-sweep-smoke"
+
+# ─── Trainer code and image ───────────────────────────────────────────
+# Identical to gold-sweep-100: a smoke run against a different trainer commit or a
+# different image would not gate anything.
+DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+
+# ─── Model pair and data ──────────────────────────────────────────────
+# Identical to gold-sweep-100, and that is the main thing this recipe gates: these are
+# the paths whose readability, tokenizer relationship and think-filtering the two-hour
+# run depends on. Substituting anything smaller here would defeat the purpose.
+TEACHER_MODEL: "/proj/data-eng/hew/.cache/hf/hub/models--ibm-granite--granite-4.2-30b/snapshots/a0057a78b9d98a88aba90b6ef6e00d292440a222"
+STUDENT_MODEL: "/proj/data-eng/hew/gb-steps-collection-post-training/data/distillation/work/model_copies/granite-4.1-3b-base_retagged_v2"
+TRAINING_DATASET: "/proj/data-eng/hew/gb-steps-collection-post-training/data/distillation/prepped/en-sft-4.1-0.2-16K-v2/merged/train.jsonl"
+
+# ─── Training hyperparameters ─────────────────────────────────────────
+# Two steps, not one: one step proves the trainer starts, two prove it can take a second
+# optimizer step with the first step's state — which is where a ZeRO-3 or scheduler
+# misconfiguration actually surfaces.
+MAX_STEPS: 2
+NUM_TRAIN_EPOCHS: 1.0
+LEARNING_RATE: "1.0e-05"
+MIN_LR: "1.0e-06"
+WARMUP_RATIO: 0.05
+LR_SCHEDULER_TYPE: "cosine_with_min_lr"
+# Effective batch 8 (1 x 1 x 1 x 8) against gold-sweep-100's 192. Deliberately NOT
+# preserved: effective batch is not meaningful at two steps, and shrinking it is what
+# keeps each step cheap. Nothing downstream compares this run's loss to anything.
+PER_DEVICE_TRAIN_BATCH_SIZE: 1
+GRADIENT_ACCUMULATION_STEPS: 1
+# 4x smaller than gold-sweep-100's 16384/4096, which is the single biggest cost cut here
+# — activation memory scales with it. NOTE the consequence for what this gates: an OOM
+# that only appears at 16384 will NOT appear here. See README, "What this cannot gate".
+MAX_LENGTH: 4096
+MAX_COMPLETION_LENGTH: 1024
+GRADIENT_CHECKPOINTING: true
+# Save at step 1 and keep one: this proves checkpoint publication works, which is the
+# other thing a smoke run is for, without writing four ~40 GB ZeRO-3 checkpoints.
+SAVE_STRATEGY: "steps"
+SAVE_STEPS: 1
+SAVE_TOTAL_LIMIT: 1
+LOGGING_STEPS: 1
+# 32, as in gold-sweep-100: the corpus is the same 3.2 GB and this startup cost is one
+# of the things worth measuring here rather than discovering there.
+DATASET_NUM_PROC: 32
+
+# ─── GOLD / distillation loss ─────────────────────────────────────────
+TEMPERATURE: 1.0
+LMBDA: 0.0
+# gold-sweep-100's value, so the objective this gates is the objective that will run.
+BETA: 0.5
+# The setting under test. false first — it is the one known to give a finite loss on
+# granite's logits_scaling=10. Then re-run with --param USE_LIGER_FUSED_JSD=true and
+# compare: true is only usable if the loss is finite AND beta demonstrably moves it.
+# See README, "The liger question". This is the cheapest place to answer it.
+USE_LIGER_FUSED_JSD: false
+# SINGLE-quoted with a DOUBLED backslash, as in gold-sweep-100: the trailing newline
+# crosses the wire as a literal escape because gbserver's config fill strips a real
+# one. See that file's comment for the mechanism and the build it cost.
+RESPONSE_TEMPLATE: '<|im_start|>assistant\\n'
+
+# ─── NCCL / distributed diagnostics ───────────────────────────────────
+# INFO here, unlike gold-sweep-100: on a short run the log is readable, and this is
+# where to confirm the transport rather than in a two-hour log.
+NCCL_DEBUG: "INFO"
+NCCL_DEBUG_SUBSYS: "INIT,NET"
+# 10 min rather than the reference hour, so a hang reports in minutes instead of tying
+# up an 8xH100 allocation. This is a genuine behaviour difference from gold-sweep-100 —
+# the one place this file deviates on purpose rather than on cost.
+NCCL_TIMEOUT_MS: 600000
+NCCL_ENABLE_MONITORING: true
+
+# ─── On-policy (off for this recipe) ──────────────────────────────────
+VLLM_NUM_SERVERS: 0
+TOP_P: 0.95
+USE_SAMPLED_OPD_LOSS: false
+LAST_MESSAGE_ONLY: false
+CLIP_ALPHA: 0.1
+OPD_IMPORTANCE_SAMPLING: false
+
+# ─── Topology and resources ───────────────────────────────────────────
+# One node, as in gold-sweep-100.
+NUM_NODES: 1
+NUM_GPUS_PER_NODE: 8
+ACCELERATORS: "H100:8"
+# Same as gold-sweep-100: host memory is driven by dataset_num_proc over a 3.2 GB
+# corpus, which this run does not shrink, so shrinking this would gate nothing and
+# risk a TERM_MEMLIMIT kill that looks like a hang.
+MEMORY: 256
+CLUSTER: "bluevela"
+# Where every target runs. One value rather than one literal per target, so moving this
+# recipe to another environment (a gbspace-public one, say) is a one-line change.
+ENVIRONMENT_URI: "space://environments/skypilot/lsf/ibm-bluevela"
+QUEUE: "normal"
+
+# ─── Monitoring ───────────────────────────────────────────────────────
+# A gate needs completion noticed promptly.
+POLL_INTERVAL_SECONDS: 30
+LOG_RETRIEVAL_INTERVAL_SECONDS: 30

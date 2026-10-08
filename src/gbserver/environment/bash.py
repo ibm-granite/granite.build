@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Self, Tuple, Union
 from urllib.parse import urlparse
 
 from gbcommon.types.constants import get_gb_home_dir
+from gbcommon.uri.file import FileURI
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import (
     BINDING_KEY,
@@ -549,7 +550,11 @@ class Bash(Environment):
             # base_uri branch below intentionally keeps the nesting — its returned
             # URI is base + "/" + the source basename.) source_path is an
             # absolute on-disk path produced by the step launch.
-            URI.get_uri(FILE_SCHEME + "://" + source_path).pull(
+            # source is a file:// URI, so pull() accepts the raise_errors /
+            # copy_dir_contents kwargs defined on FileURI (narrow for the checker).
+            source_uri = URI.get_uri(FILE_SCHEME + "://" + source_path)
+            assert isinstance(source_uri, FileURI)
+            source_uri.pull(
                 Path(uriobj.uri.path), raise_errors=True, copy_dir_contents=True
             )
             return uri

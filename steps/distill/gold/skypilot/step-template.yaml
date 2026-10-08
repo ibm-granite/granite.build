@@ -1,0 +1,975 @@
+name: gold
+version: 1.0.0
+# GOLD knowledge distillation (generalized JSD) of a small student from a larger
+# teacher, via the SkyPilot LSF cloud.
+#
+# Division of labour, which is what keeps this step small: SkyPilot's LSF
+# provisioner already owns the bsub submission, the blaunch fan-out, enroot image
+# import/creation, and the per-node topology (RANK / TOTAL_NODES / MASTER_ADDR).
+# So the launcher scripts from the ansible path are NOT ported here — this step
+# replaces only their inner logic: render the trainer's config, then start
+# accelerate with this node's rank.
+#
+# The trainer itself (gold.py, custom_gold_trainer.py, run_vllm_serve.py, and their
+# shared helpers) is part of the same source-delivery clone every other ported
+# distillation step already uses — the `code_config` block below — not a separate
+# checkout. This used to be a distinct `kd_code_dir` pointing at a live /proj
+# checkout, which meant a trainer fix landed without touching granite.build at the
+# cost of the checkout being unpinned, and meant the trainer's own source could not
+# be inspected without filesystem access to that path. Folding it into
+# `code_config` makes the trainer itself pinned, versioned, and publicly readable
+# like the rest of this collection — the same tradeoff already made for the other
+# five ported steps.
+type: training
+config:
+  # ─── Source delivery ──────────────────────────────────────────────────────────
+  # IDENTICAL IN EVERY PORTED DISTILLATION STEP. The block and the delimited region
+  # of `run` below are asserted byte-identical across the ported steps by
+  # test/test_source_contract.py — one contract, learned once. Change it here and
+  # the other steps' tests fail until they are changed to match.
+  code_config:
+    # THE DEFAULT: an unauthenticated HTTPS clone of the public source repo at run time.
+    # No /proj checkout, no BlueVela-specific path — this resolves identically on any
+    # environment class that can reach github.com, which is the point: the six ported
+    # distillation steps used to depend on a pre-staged /proj clone that only existed on
+    # BlueVela, so this step (and every other one pinned to it) could not run anywhere
+    # else. It also used to point at a personal-namespace private repo, which meant an
+    # outside reader of this pin could not even inspect the code, let alone run it.
+    #
+    # THE SOURCE OF TRUTH IS github.com/laminair/gb-steps-distillation, a small public
+    # repo holding exactly the vendored entrypoints and shared package these six steps
+    # import — see its README for what it is and is not. It is NOT the shared,
+    # continuously-advancing tree this pin used to track: that one broke every ported
+    # step's expect_ref out from under it whenever its upstream author moved it, and the
+    # failure looked like a recipe bug rather than a moved dependency. This repo only
+    # advances when this pin is deliberately bumped.
+    code_dir: ""
+    # The commit code_dir is EXPECTED to be at. Recorded either way, but when this is
+    # set and the checkout is at a different commit the step says so loudly rather
+    # than training against whatever happens to be checked out. Empty => no check.
+    expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    # code_dir is empty, so this is the path actually taken: an unauthenticated HTTPS
+    # clone. Public repos only — see token_secret below for why no credential is wired
+    # up here on purpose.
+    repo: "https://github.com/laminair/gb-steps-distillation.git"
+    # Branch, tag or commit checked out after that clone. Pinned to the same commit as
+    # expect_ref rather than a branch head, so two runs a week apart are the same run
+    # rather than silently drifting — bump both together.
+    ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    # Clone destination, RELATIVE to the step's working directory.
+    workdir: "distill-code"
+    # The NAME of a space secret holding a read-scoped credential — never a value.
+    # Only consulted on the clone path. Left EMPTY on purpose: gb-steps-distillation is
+    # public, so the clone needs no credential at all.
+    token_secret: ""
+    # The interpreter. NOT a bare `python`: this image's venv is not on PATH, and a
+    # bare python resolves to the system interpreter, which has no transformers.
+    python: "/stage/.venv/bin/python"
+    # Optional bash run after the source resolves and before the workload, from the
+    # step's working directory. Empty => skipped. Not needed on this image: it
+    # already carries torch 2.8.0, transformers 5.8.0, tokenizers 0.22.1 and
+    # safetensors 0.7.0, confirmed by direct measurement on a real GPU node.
+    setup_command: ""
+  # ── Per-checkpoint artifact emission ──────────────────────────────────────
+  # OFF by default, and that default is the contract: with it off this step emits
+  # exactly one artifact, `checkpoint`, at the end of the run — which is what every
+  # single-checkpoint recipe binds and what they all did before this existed.
+  #
+  # ON, a background watcher on rank 0 polls the checkpoint directory during training
+  # and emits `checkpoint_<N>` per HF checkpoint-<N> dir as soon as it is completely
+  # written. A recipe that declares matching `checkpoint_<N>` outputs can then export
+  # and evaluate rung N while the run is still training, instead of after it — see
+  # recipes/granite4-350m/lsf/distill-checkpoint-eval, where that turns ~36 GPU-h of
+  # eval from a serial tail into work overlapped with a 13-hour epoch.
+  #
+  # The emitted ids are a CONTRACT with the recipe: a rung whose checkpoint dir the
+  # trainer never writes is an artifact never emitted, and a target bound to it waits
+  # forever with no error. Hence the zero-emission guard in run: below, and hence the
+  # recipe tests that assert every rung is a multiple of save_steps.
+  emit_checkpoint_artifacts: false
+  # How often that watcher polls. Lower detects a new checkpoint sooner and costs a
+  # directory listing; the log-scrape interval of the monitor is the other half of
+  # the latency, since an emitted line is only seen when the logs are next pulled.
+  checkpoint_watch_interval_seconds: 60
+  # ── Resume from an earlier run ────────────────────────────────────────────
+  # EMPTY by default, and then nothing below renders. Set, it names the checkpoint
+  # directory of an earlier run of this step — the `<run_name>_node<N>` directory
+  # holding its checkpoint-<N> subdirectories, e.g.
+  #   /proj/.../builds/<build>/runs/<run>/checkpoints/<run_name>_node2
+  #
+  # Needed because the checkpoint directory is under GB_BUILD_WORKDIR, which is new
+  # for every build AND every retry, so the trainer's own auto-resume (gold.py
+  # resumes when its output_dir already holds a checkpoint-*) never finds anything.
+  # Before the trainer starts, rank 0 hardlinks every COMPLETE checkpoint-* from
+  # here into this run's checkpoint directory; the trainer then resumes from the
+  # highest one — weights, optimizer, scheduler, RNG and data position.
+  #
+  # Three consequences to know before setting it:
+  #  * The world size must match the source's. A ZeRO-3 checkpoint holds one
+  #    optimizer shard per rank, so the step refuses a source saved by a different
+  #    number of ranks rather than letting DeepSpeed fail after allocation.
+  #  * The schedule must match too (max_steps, batch sizes, learning rate). The
+  #    trainer restores the scheduler's state, not its shape; nothing checks this.
+  #  * With emit_checkpoint_artifacts on, every seeded checkpoint is emitted as
+  #    checkpoint_<N> again, so its downstream export and eval targets re-run. That
+  #    is also what keeps them from waiting forever on a rung this run never writes.
+  #
+  # Hardlinks, not copies: no data is duplicated and the source is never modified
+  # (the trainer only ever deletes whole checkpoint directories, which unlinks this
+  # run's names and leaves the source's). Falls back to a real copy across
+  # filesystems.
+  resume_from_checkpoint_dir: ""
+  # Whether the seeded checkpoints are emitted as checkpoint_<N> again. TRUE by
+  # default, which is what a recipe whose ladder still names those rungs needs: their
+  # export targets are bound to the ids and would otherwise wait forever. FALSE when
+  # the seeded rungs were already exported and evaluated by the stopped run and the
+  # relaunch's ladder names only the rungs still to come -- then the watcher treats
+  # them as already emitted and only checkpoints this run writes are announced.
+  # Has no effect unless both resume_from_checkpoint_dir and
+  # emit_checkpoint_artifacts are set.
+  resume_emit_seeded: true
+  gold_config:
+    # ── Code and image ──────────────────────────────────────────────────────
+    # DeepSpeed ZeRO-3 accelerate config, relative to code_config's clone.
+    ds_config: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+    # Names the checkpoint directory and the rendered config. The node count is
+    # appended at runtime, from the allocation, so the two cannot disagree.
+    run_name: "gold"
+
+    # ── Model and data ──────────────────────────────────────────────────────
+    model_name_or_path: ""          # student init
+    teacher_model_name_or_path: ""  # frozen, forward-only in the training loop
+    # Refuse to start when either of the two paths above names weights GPFS has
+    # migrated to tape. Reading those back is a per-shard recall of minutes to
+    # hours, inside a GPU allocation, and the failure it produces downstream does
+    # not look like a storage problem. The check is metadata-only (mmlsattr, and
+    # st_blocks arithmetic where mmlsattr cannot answer), it never touches file
+    # contents, and it refuses on OFFLINE -- GPFS's own verdict, or a large file
+    # with almost nothing allocated -- or on a path it cannot stat at all. If it
+    # cannot measure, it warns and proceeds. A hub id rather than a path is not a
+    # finding either. On BlueVela the environment bind-mounts /usr/lpp/mmfs so
+    # the container gets mmlsattr's answer rather than only the arithmetic's.
+    check_weight_residency: true
+    # Proceed anyway. Announces itself in the log; for the case where you know
+    # the recall is already running.
+    allow_offline_weights: false
+    # Must be think-filtered ("nothink"): an assistant completion containing an
+    # inline <think>...</think> breaks gold's completion extraction.
+    dataset_name: ""
+
+    # ── Training hyperparameters ────────────────────────────────────────────
+    num_train_epochs: 1.0
+    # Cap the run by optimizer steps rather than by epochs. 0 leaves the key out
+    # of the rendered config entirely, so an epoch-bounded run is unaffected;
+    # any positive value overrides num_train_epochs in the trainer. This is what
+    # a run over a corpus too large to epoch through needs — one epoch of the
+    # 802,027-row reference corpus is 4,177 steps at effective batch 192.
+    max_steps: 0
+    learning_rate: 1.0e-05
+    min_lr: 1.0e-06
+    warmup_ratio: 0.05
+    lr_scheduler_type: cosine_with_min_lr
+    per_device_train_batch_size: 1
+    # Effective batch = per_device * grad_accum * nodes * gpus_per_node. The
+    # reference run is 192 (1 x 6 x 4 x 8); halving the nodes wants 12 here to
+    # hold that, since the LR schedule was tuned against it.
+    gradient_accumulation_steps: 6
+    max_completion_length: 4096
+    max_length: 16384
+    gradient_checkpointing: true
+    # Keep the whole trajectory: an early, less-forgotten checkpoint is often the
+    # best one to evaluate, and a small limit deletes it irrecoverably.
+    # The renderer has always emitted this; it is a config key so a run can turn
+    # checkpointing off ("no") without editing the step. "steps" pairs with
+    # save_steps below and is what every validated reference config sets.
+    save_strategy: "steps"
+    save_steps: 500
+    save_total_limit: 20
+    logging_steps: 5
+    dataset_num_proc: 64
+
+    # ── GOLD / distillation loss ────────────────────────────────────────────
+    temperature: 1.0
+    # 0 => off-policy: every node trains on the fixed dataset, no vLLM.
+    lmbda: 0.0
+    beta: 0.0
+    # granite's logits_scaling=10 overflows the fused bf16 JSD kernel -> NaN loss.
+    use_liger_fused_jsd: false
+
+    # ── The CE anchor, and the instruments that watch for its absence ────────
+    # All five need the DELIVERED trainer to carry the ce_anchor_and_entropy_guard patch
+    # (patches/ce_anchor_and_entropy_guard.diff, whose header has the invocation and the
+    # directory remap). That trainer now comes from code_config, and the default pin does
+    # NOT carry the patch -- so a recipe using these keys points code_config.code_dir at a
+    # checkout that does, as recipes/granite4-350m/lsf/distill-stage1-v2 does.
+    #
+    # They are rendered into the trainer's config ONLY when non-default, so a recipe that
+    # leaves them alone runs against any checkout. When one does not,
+    # verify_trainer_accepts_keys below is what turns "TrlParser rejected your config after
+    # the allocation was held" into a refusal that names the patch.
+    #
+    # ce_coef ADDS cross entropy on the corpus tokens to the divergence:
+    #   loss = divergence + ce_coef * CE(student, labels)
+    # It is not the trainer's use_ce_loss, which REPLACES the divergence. Without an
+    # anchor the objective has no opinion about real text, so an already-SFT'd
+    # student — one that already matches the teacher closely — can only improve by
+    # sharpening, and sharpening ends in repetition loops. Additive rather than a
+    # convex mix because JSD runs ~0.07 here against CE ~1, so a convex 50/50 is
+    # ~20x CE-dominated. Both terms are logged, so the ratio is a reading.
+    ce_coef: 0.0
+    # Logs mean student entropy and reverse KL (nats, supervised positions) every
+    # logging_steps. The train loss is blind to collapse — it moved 2.7% across the
+    # 7,640 steps in which df8512e0's student lost 42% of its entropy.
+    log_student_entropy: false
+    # Stop when entropy falls this fraction below a baseline measured over the first
+    # entropy_guard_baseline_steps. 0 disables. Stops gracefully: the checkpoint is
+    # saved, the process exits 0, and export/eval still run, so a tripped guard is a
+    # finding rather than a failed build. Requires log_student_entropy.
+    entropy_guard_drop_frac: 0.0
+    entropy_guard_baseline_steps: 20
+    entropy_guard_patience: 3
+    # What a trip DOES. "stop" ends the run there; "warn" reports it, checkpoints it
+    # and continues to max_steps. Build d1acf1c0 is the argument for having the choice:
+    # the guard stopped it at step 77 of 2000, correctly by its own rule, and in doing
+    # so destroyed the checkpoint curve the run existed to measure and left its four
+    # fixed export rungs naming steps that never happened. Where max_steps already
+    # bounds the waste, the trip is worth a reading rather than a stop.
+    entropy_guard_action: "stop"
+    # The objective as a validated PRESET, instead of nine booleans a build may combine
+    # freely. EMPTY BY DEFAULT and empty means unchanged: the flags above stay
+    # authoritative, every existing recipe renders exactly the config it rendered before,
+    # and the escape hatch those recipes' READMEs document (--param
+    # USE_LIGER_FUSED_JSD=true) keeps working.
+    #
+    # Naming an arm buys two things a boolean cannot. First, the arm sets the switches the
+    # renderer has no flag for at all (use_kl_interpolation, use_adaptive_kld, use_distillm2,
+    # use_distillm2_like, use_reversed_distillm2_like, use_uld_loss, use_ce_loss). Second,
+    # it enforces that arm's requirements -- several of which exist because OUTSIDE them the
+    # arm does not fail, it silently becomes a different arm, which no later step could
+    # detect. See LOSS_ARMS in src/render_gold_config.py, which lists each arm and why.
+    loss_arm: ""
+    # Verify the student's tokenizer is the one the corpus was built with. Off by default;
+    # ON is worth it for any build that chains distill-corpus-prep into this step, because
+    # a mismatch does not error -- it trains on mis-segmented text at full speed with a
+    # falling loss.
+    check_corpus_tokenizer: false
+    # Check every key this step is about to emit that upstream trl's GOLDConfig does not
+    # define (the CE anchor, the collapse guard, the on-policy shaping pair) against the
+    # DELIVERED trainer's dataclass, and refuse before accelerate launches.
+    #
+    # ON by default, and that default is the point: code_config's pin is not guaranteed to
+    # carry those fields -- at a5d59bc4 it carries lmbda_schedule and not ce_coef -- and the
+    # two ways it goes wrong are both expensive. TrlParser rejects an unknown top-level key
+    # only after the teacher has loaded on every node of a held allocation, and
+    # min_completion_length fails the other way, silently, by never reaching the sampler at
+    # all. Costs one import of a package the run block already puts on PYTHONPATH.
+    #
+    # It only looks at keys that are actually emitted, so a recipe leaving all of them at
+    # their defaults never triggers it. Set false only to render deliberately against a
+    # trainer you know differs.
+    verify_trainer_accepts_keys: true
+    # Required for completion masking; the nothink chat template has no
+    # {% generation %} tag, so this is what locates the span.
+    #
+    # A trailing line boundary must be written as the two-character escape \n, not
+    # as a real newline: gbserver fills every config string through Jinja, which
+    # strips exactly one trailing newline from each value, so a real one never
+    # reaches this step. render_gold_config.py decodes the escape once, in the
+    # container. The default below wants no line boundary and so carries none.
+    response_template: "<|im_start|>assistant"
+
+    # ── NCCL / distributed diagnostics ──────────────────────────────────────
+    # Empty disables NCCL's own logging. Set to INFO (with nccl_debug_subsys
+    # INIT,NET) to see which transport and HCA each rank selected — the only way
+    # to tell an IB path from a silent TCP fallback, or to see where a collective
+    # stalls. Verbose, so off by default.
+    nccl_debug: ""
+    nccl_debug_subsys: "INIT,NET"
+    # Collective timeout. The reference launcher uses 3600000 (1 h) to survive a
+    # slow 30B teacher forward without spurious aborts. Lower it for debugging so
+    # a hang reports in minutes rather than tying up an allocation.
+    nccl_timeout_ms: 3600000
+    # Whether torch's monitor thread may abort a stalled collective. The
+    # reference launcher disables this; we default it ON deliberately, because
+    # with it off a deadlock does not fail — it hangs forever holding the
+    # allocation, producing no diagnostic at all. Set false only to reproduce the
+    # reference launcher's exact behaviour.
+    nccl_enable_monitoring: true
+    # NCCL_IB_HCA for this run, overriding the environment's nccl_tuning_file (which
+    # only sets it when unset). EMPTY => not touched, and the tuning file's value
+    # stands. Exported from the run block, never as a launcher env, because an empty
+    # env value would reach NCCL as "use every HCA" -- storage NICs included.
+    # Keep the tuning file's exclusions when adding one, e.g. on BlueVela
+    # "^=mlx5_1,mlx5_6,mlx5_8" drops the mlx5_8 rail on top of the storage NICs.
+    nccl_ib_hca: ""
+
+    # ── On-policy (online), default off ─────────────────────────────────────
+    # >0 dedicates the LAST N nodes to serving the student under vLLM and trains
+    # on the rest. On-policy continues from a good off-policy checkpoint, so set
+    # model_name_or_path to that checkpoint rather than the base overlay.
+    vllm_num_servers: 0
+    # An EXTERNAL vLLM server, reached by URL, instead of carving nodes out of
+    # this allocation. Set from another target's mem:// binding, e.g.
+    #   vllm_server_url: "{{ '{{' }} bindings.vllm.binding.state {{ '}}' }}"
+    # When set, EVERY node here trains and the role split below does not happen;
+    # the trainer is given the address on gold.py's command line. Empty keeps the
+    # in-allocation split that vllm_num_servers alone selects.
+    #
+    # NOT YET RUN ON A CLUSTER. The trainer pushes updated student weights to the
+    # server over NCCL (the reference launcher's VLLM_NCCL_COORDINATOR_PORT), so
+    # an external server means a NCCL process group spanning two LSF allocations.
+    # Whether that works here is the open question this path exists to answer.
+    vllm_server_url: ""
+    # server = talk to a vLLM HTTP server; the reference launcher's value. Only
+    # consulted on the on-policy path.
+    vllm_mode: "server"
+    # How often, in optimizer steps, the trainer pushes its updated weights to the
+    # server. The reference launcher uses 1: on-policy means generating from the
+    # CURRENT student, so a larger value samples from a staler policy.
+    vllm_sync_frequency: 1
+    top_p: 0.95
+    use_sampled_opd_loss: false
+    last_message_only: false
+    clip_alpha: 0.1
+    opd_importance_sampling: false
+    # constant, or linear to ramp lmbda from lmbda_init up to lmbda across training —
+    # off-policy early, where the corpus signal is, on-policy later, where the
+    # student's own degenerate regions are. Both need a vLLM server, so the renderer
+    # refuses linear at vllm_num_servers 0 rather than leaving it inert.
+    lmbda_schedule: "constant"
+    lmbda_init: 0.0
+    # vLLM min_tokens for the student's rollout. >0 blocks the immediate-EOS mode
+    # collapse. For vllm_mode server the SERVER must agree, via GOLD_MIN_TOKENS.
+    min_completion_length: 0
+
+outputs:
+  optional:
+    checkpoint:
+      type: model
+
+environment_configs:
+  Skypilot:
+    # enroot + the LSF topology contract this step reads are LSF-specific, and
+    # the image is an SM90 (H100) build that cannot run on A100.
+    subtypes:
+      - lsf
+    default_launcher: gold
+    launchers:
+      gold:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          # Node count and accelerators come from the build.yaml
+          # (compute_config.num_nodes and launcher_config.resources) so one step
+          # serves the smoke and reference runs.
+          resources: {}
+          # Ships the config renderer. A relative dest lands under
+          # $GB_BUILD_WORKDIR, which on BlueVela is on /proj — identity-mounted
+          # into the container at the same path and exempt from symlink-wrapping.
+          file_mounts:
+            src: src
+          envs:
+            HF_HOME: /opt/hf-cache
+            TORCH_NCCL_ENABLE_MONITORING: '{{ "1" if config.gold_config.nccl_enable_monitoring else "0" }}'
+            TORCH_NCCL_TIMEOUT_MS: "{{ config.gold_config.nccl_timeout_ms }}"
+            NCCL_TIMEOUT: "{{ config.gold_config.nccl_timeout_ms }}"
+            NCCL_DEBUG: "{{ config.gold_config.nccl_debug }}"
+            NCCL_DEBUG_SUBSYS: "{{ config.gold_config.nccl_debug_subsys }}"
+            USE_LIBUV: "0"
+            PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+            DS_SKIP_CUDA_CHECK: "1"
+            OMP_NUM_THREADS: "8"
+          # NCCL_IB_HCA / NCCL_SOCKET_IFNAME are deliberately absent: the
+          # environment's nccl_tuning_file is sourced outside the container
+          # before the enroot config is written, and the generated environ()
+          # forwards the outer environment. Confirm on a real run with
+          # `grep NCCL_ job.log`; if that file does not set them, add both here.
+          run: |
+            # The image's venv is not on PATH by default. The dispatcher runs this
+            # with `bash <file>` (non-login), so this export sticks — a login
+            # shell would re-run /etc/profile and drop it.
+            export PATH=/stage/.venv/bin:$PATH
+
+            # --- distill source delivery: BEGIN (identical in all ported steps) ---
+            # `set -eu` is already in effect: the launcher prefixes it.
+            CODE_DIR="{{ config.code_config.code_dir }}"
+            REPO="{{ config.code_config.repo }}"
+            REF="{{ config.code_config.ref }}"
+            PYBIN="{{ config.code_config.python }}"
+            WORK="${GB_BUILD_WORKDIR:-$PWD}"
+
+            if [ -n "$CODE_DIR" ] && [ -d "$CODE_DIR/src/gb_steps_post_training" ]; then
+              echo "distill: source = filesystem checkout $CODE_DIR"
+              CODE_SOURCE="filesystem"
+              # A shared checkout is mutable state, so say what is actually there.
+              # Uncommitted edits are not fatal — someone may be deliberately testing
+              # a fix — but a run whose code came from a dirty tree must not report a
+              # bare commit as its provenance.
+              DIRTY="$(git -C "$CODE_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+              if [ "${DIRTY:-0}" != "0" ]; then
+                echo "distill: WARNING: $CODE_DIR has $DIRTY uncommitted change(s)." >&2
+                echo "         This run's code is NOT the commit recorded below." >&2
+              fi
+              echo "GB_STEP_METADATA_KEY:distill_code_dirty GB_STEP_METADATA_VALUE:${DIRTY:-0}"
+              # And fail loudly if the checkout is not where the recipe expects. A
+              # silently-moved shared checkout is how two runs that report the same
+              # pin end up having trained on different code.
+              EXPECT_REF="{{ config.code_config.expect_ref }}"
+              if [ -n "$EXPECT_REF" ]; then
+                AT="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
+                if [ -n "$AT" ] && [ "$AT" != "$EXPECT_REF" ]; then
+                  echo "distill: FATAL: $CODE_DIR is at $AT but code_config.expect_ref" >&2
+                  echo "         is $EXPECT_REF. Either check that checkout out to the" >&2
+                  echo "         expected commit, or change expect_ref deliberately:" >&2
+                  echo "           git -C $CODE_DIR fetch --all" >&2
+                  echo "           git -C $CODE_DIR checkout $EXPECT_REF" >&2
+                  exit 1
+                fi
+              fi
+            elif [ -n "$REPO" ]; then
+              CODE_DIR="$WORK/{{ config.code_config.workdir }}"
+              CODE_SOURCE="git"
+              # code_dir is on the SHARED filesystem (GB_BUILD_WORKDIR), and distill-gold
+              # is the one ported step that runs multi-node: every rank reaches this
+              # branch with the same CODE_DIR. Letting every rank rm -rf/clone it
+              # concurrently is a real race, not a hypothetical one -- measured on build
+              # 7e9995b3, where rank 0's clone crashed inside git's ref-transaction code
+              # ("initial ref transaction called with existing refs") while rank 1's
+              # clone into the same path succeeded. Only rank 0 clones; every other rank
+              # waits for a completion marker rank 0 writes after checkout succeeds.
+              #
+              # The marker holds a token naming THIS attempt, and a waiting rank continues
+              # only on a match. Its mere existence is not enough: a relaunch into the same
+              # per-run workdir finds the previous attempt's marker still there, and the
+              # other ranks would go straight to training while rank 0 rm -rf's and
+              # re-clones the tree under them. The launch id alone does not name an attempt
+              # (a retry_workload replay reuses it); the job id distinguishes a resubmit to
+              # the same cluster, and the scheduler's allocation id a fresh cluster.
+              # All three empty would make every attempt's token "::" and bring the
+              # stale-marker race back; that cannot happen here, because gbserver sets
+              # GB_SKYPILOT_LAUNCH_ID on every launch and SkyPilot sets the job id.
+              DONE_MARKER="$CODE_DIR.gb-clone-done"
+              CLONE_TOKEN="${GB_SKYPILOT_LAUNCH_ID:-}:${SKYPILOT_INTERNAL_JOB_ID:-}:${LSB_JOBID:-${SLURM_JOB_ID:-}}"
+              if [ "${RANK:-0}" != "0" ]; then
+                echo "distill: rank ${RANK:-0} waiting for rank 0 to deliver $CODE_DIR (token $CLONE_TOKEN)"
+                WAITED=0
+                while [ "$(cat "$DONE_MARKER" 2>/dev/null || true)" != "$CLONE_TOKEN" ]; do
+                  sleep 2
+                  WAITED=$((WAITED + 2))
+                  if [ "$WAITED" -ge 600 ]; then
+                    echo "distill: FATAL: rank ${RANK:-0} waited ${WAITED}s for rank 0 to" >&2
+                    echo "         deliver $CODE_DIR and it never appeared." >&2
+                    exit 1
+                  fi
+                done
+              else
+                TOKEN_VAR="{{ config.code_config.token_secret }}"
+                # Indirect expansion, with :- so `set -u` does not abort when the space
+                # has no such secret. The dispatcher runs this with `bash <file>`, so
+                # bash-isms are available. Guarded on TOKEN_VAR itself: a public repo
+                # leaves token_secret empty, and "${!:-}" is a bash syntax error
+                # ("invalid variable name"), not an empty expansion.
+                TOKEN=""
+                if [ -n "$TOKEN_VAR" ]; then
+                  TOKEN="${!TOKEN_VAR:-}"
+                fi
+                echo "distill: source = git clone $REPO (ref=${REF:-<default>}) -> $CODE_DIR"
+                rm -rf "$CODE_DIR" "$DONE_MARKER"
+                if [ -n "$TOKEN" ]; then
+                  # GIT_ASKPASS, not a token in the URL: the URL form puts the secret in
+                  # argv (readable via /proc on a shared node) and persists it into
+                  # .git/config on the SHARED filesystem. The helper is written 0700 into
+                  # the node's own tmp and deleted immediately after use.
+                  ASKPASS="$(mktemp)"
+                  cat > "$ASKPASS" <<'ASKPASS_EOF'
+            #!/bin/sh
+            case "$1" in
+              Username*) printf '%s' "x-access-token" ;;
+              *)         printf '%s' "$GB_DISTILL_TOKEN" ;;
+            esac
+            ASKPASS_EOF
+                  chmod 700 "$ASKPASS"
+                  CLONE_RC=0
+                  GB_DISTILL_TOKEN="$TOKEN" GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+                    git clone --quiet "$REPO" "$CODE_DIR" || CLONE_RC=$?
+                  rm -f "$ASKPASS"
+                  if [ "$CLONE_RC" != "0" ]; then
+                    echo "distill: FATAL: clone of $REPO failed (rc=$CLONE_RC) using the token in" >&2
+                    echo "         \$$TOKEN_VAR. Check that secret's scope, not this step." >&2
+                    exit 1
+                  fi
+                elif [ -n "$TOKEN_VAR" ]; then
+                  echo "distill: FATAL: code_config.token_secret names '$TOKEN_VAR' but this" >&2
+                  echo "         space has no secret by that name. Either create that secret," >&2
+                  echo "         or leave code_config.token_secret empty if $REPO is public." >&2
+                  exit 1
+                else
+                  # No token_secret configured at all: REPO is a public clone, same as an
+                  # anonymous `git clone` from a terminal.
+                  CLONE_RC=0
+                  git clone --quiet "$REPO" "$CODE_DIR" || CLONE_RC=$?
+                  if [ "$CLONE_RC" != "0" ]; then
+                    echo "distill: FATAL: unauthenticated clone of $REPO failed (rc=$CLONE_RC)." >&2
+                    echo "         If this repo is private, set code_config.token_secret." >&2
+                    exit 1
+                  fi
+                fi
+                if [ -n "$REF" ]; then
+                  git -C "$CODE_DIR" checkout --quiet "$REF"
+                fi
+                if [ ! -d "$CODE_DIR/src/gb_steps_post_training" ]; then
+                  echo "distill: FATAL: $REPO@${REF:-default} has no src/gb_steps_post_training." >&2
+                  exit 1
+                fi
+                # tmp + mv, so a waiting rank never reads a half-written token.
+                printf '%s\n' "$CLONE_TOKEN" > "$DONE_MARKER.tmp.$$"
+                mv -f "$DONE_MARKER.tmp.$$" "$DONE_MARKER"
+              fi
+            else
+              echo "distill: FATAL: no source. code_config.code_dir ('$CODE_DIR') does not" >&2
+              echo "         contain src/gb_steps_post_training, and code_config.repo is empty." >&2
+              exit 1
+            fi
+
+            # The package ROOT, not the distillation/ directory: every module is
+            # imported by its full dotted path, so a flat path does not resolve. The
+            # absence of this export is what killed two upstream jobs at import time.
+            export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
+            # Lineage. A filesystem checkout is mutable and a clone may name a branch,
+            # so record the resolved commit either way. NEVER fail the build for
+            # metadata — and written as a full if/fi rather than `[ -n "$X" ] && echo`,
+            # which under `set -e` aborts the run when X is empty.
+            CODE_SHA="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
+            if [ -n "$CODE_SHA" ]; then
+              echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:$CODE_SHA"
+            else
+              echo "distill: WARNING: $CODE_DIR is not a git checkout, so this run has no" >&2
+              echo "         record of which code ran." >&2
+            fi
+            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:$CODE_SOURCE"
+            {% if config.code_config.setup_command %}
+            echo "distill: running setup_command in $(pwd)"
+            {{ config.code_config.setup_command }}
+            {% endif %}
+            # --- distill source delivery: END ---
+
+            # Snapshot the node-level topology the provisioner exported, then
+            # unset it. accelerate assigns per-process rank itself and would be
+            # confused by inherited RANK/WORLD_SIZE; these values belong on its
+            # command line instead.
+            NODE_RANK="${RANK:-0}"
+            NODES="${TOTAL_NODES:-1}"
+            GPUS="${NUM_GPUS_PER_NODE:-8}"
+            MADDR="${MASTER_ADDR:?MASTER_ADDR not set by the provisioner}"
+            MPORT="${MASTER_PORT:-29500}"
+            unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
+
+            # Weight residency, BEFORE the role split below: the vLLM branch `exec`s, so a
+            # check placed after it would never run on the node that serves the student --
+            # which loads model_name_or_path too. Every node checks (metadata-only, a few
+            # mmlsattr calls), because a rank-0-only check that refused would leave the
+            # other ranks waiting on a rendezvous that is never coming.
+            {% if config.gold_config.check_weight_residency %}
+            /stage/.venv/bin/python ./src/check_weight_residency.py \
+              {% if config.gold_config.allow_offline_weights %}--allow-offline{% endif %} \
+              "student={{ config.gold_config.model_name_or_path }}" \
+              "teacher={{ config.gold_config.teacher_model_name_or_path }}"
+            {% endif %}
+
+            # accelerate gets an IP, not a hostname. The provisioner exports
+            # MASTER_ADDR as a short hostname; the reference launcher resolves it
+            # from /etc/hosts and passes the address. Rendezvous works either way,
+            # but NCCL's bootstrap picks its interface from this value, so keep it
+            # identical to the validated path rather than assuming equivalence.
+            MIP="$(grep -w "$MADDR" /etc/hosts 2>/dev/null | awk '{print $1; exit}')"
+            if [ -z "$MIP" ]; then
+              MIP="$(getent ahostsv4 "$MADDR" 2>/dev/null | awk '{print $1; exit}')"
+            fi
+            [ -z "$MIP" ] && MIP="$MADDR"
+            echo "distill-gold: master $MADDR -> $MIP:$MPORT"
+
+            VLLM_SERVERS={{ config.gold_config.vllm_num_servers | int }}
+
+            # Identity derives from the ALLOCATION, never from a build parameter,
+            # so the checkpoint path cannot claim a node count the run did not have.
+            CONFIG_NAME="{{ config.gold_config.run_name }}_node${NODES}"
+            CKPT_DIR="${GB_BUILD_WORKDIR:-$PWD}/checkpoints/${CONFIG_NAME}"
+            CFG="${GB_BUILD_WORKDIR:-$PWD}/gold_config_${CONFIG_NAME}.yaml"
+
+            # The trainer's commit is already recorded above as distill_code_commit,
+            # by the (now unconditional) source-delivery block: the trainer and the
+            # rest of this collection are the same checkout, so there is nothing
+            # left to record separately here.
+            {% set _true = [true, "true", "True", "1", 1] -%}
+            {% if config.resume_from_checkpoint_dir | default("") | string | trim %}
+            # ── Resume: seed this run's checkpoint dir from an earlier run ──
+            # Rendered only when resume_from_checkpoint_dir is set. Runs BEFORE the
+            # checkpoint watcher starts, so the watcher never sees a half-linked
+            # directory, and before any rank reaches gold.py's checkpoint glob, so
+            # every rank makes the same resume-or-not decision. A split decision
+            # (rank 0 resumes, a worker starts fresh) would hang in the first
+            # collective rather than fail.
+            RESUME_SRC="{{ config.resume_from_checkpoint_dir | string | trim }}"
+            RESUME_SRC="${RESUME_SRC%/}"
+            RESUME_SEEDED="$CKPT_DIR/.resume-seeded"
+            # Same completeness test the watcher uses: these bracket HF Trainer's
+            # whole save sequence, so a checkpoint the source run was killed while
+            # writing is skipped rather than resumed from.
+            RESUME_SENTINELS="model.safetensors tokenizer.json trainer_state.json"
+            if [ "$NODE_RANK" = "0" ]; then
+              if [ ! -d "$RESUME_SRC" ]; then
+                echo "distill-gold: FATAL: resume_from_checkpoint_dir '$RESUME_SRC' is not a directory." >&2
+                exit 1
+              fi
+              mkdir -p "$CKPT_DIR"
+              RESUME_COUNT=0
+              RESUME_LAST=""
+              for ckpt in "$RESUME_SRC"/checkpoint-*; do
+                [ -d "$ckpt" ] || continue
+                complete=1
+                for sentinel in $RESUME_SENTINELS; do
+                  [ -f "$ckpt/$sentinel" ] || { complete=0; break; }
+                done
+                if [ "$complete" -ne 1 ]; then
+                  echo "distill-gold: resume: skipping incomplete $(basename "$ckpt")"
+                  continue
+                fi
+                if [ -e "$CKPT_DIR/$(basename "$ckpt")" ]; then
+                  echo "distill-gold: resume: $(basename "$ckpt") already present, not re-seeded"
+                else
+                  cp -al "$ckpt" "$CKPT_DIR/" 2>/dev/null || cp -a "$ckpt" "$CKPT_DIR/"
+                  echo "distill-gold: resume: seeded $(basename "$ckpt") from $RESUME_SRC"
+                fi
+                RESUME_COUNT=$(( RESUME_COUNT + 1 ))
+                # Numeric, not lexical: checkpoint-500 sorts after checkpoint-1500.
+                step="${ckpt##*/checkpoint-}"
+                if [ -z "$RESUME_LAST" ] || [ "$step" -gt "$RESUME_LAST" ]; then
+                  RESUME_LAST="$step"
+                fi
+              done
+              if [ "$RESUME_COUNT" -eq 0 ]; then
+                echo "distill-gold: FATAL: no complete checkpoint-* under '$RESUME_SRC'." >&2
+                echo "  Resuming was asked for, so starting from step 0 instead would" >&2
+                echo "  silently spend the whole schedule again." >&2
+                exit 1
+              fi
+              # A ZeRO-3 checkpoint holds one optimizer shard per rank and DeepSpeed
+              # cannot load it at another world size. Checked here, on a CPU-cheap
+              # count, rather than discovered by every rank after allocation.
+              RESUME_SHARDS="$(find "$CKPT_DIR/checkpoint-$RESUME_LAST" -mindepth 2 -maxdepth 2 \
+                -path '*/global_step*/*' -name '*optim_states.pt' 2>/dev/null | wc -l)"
+              # An EXTERNAL server (vllm_server_url set) is another target's allocation:
+              # every node here trains, whatever vllm_num_servers says. Only the
+              # in-allocation split gives nodes to vLLM -- see "Node roles" below.
+              {% if config.gold_config.vllm_server_url | default("") | string | trim %}
+              RESUME_WORLD=$(( NODES * GPUS ))
+              {% else %}
+              RESUME_WORLD=$(( (NODES - VLLM_SERVERS) * GPUS ))
+              {% endif %}
+              if [ "$RESUME_SHARDS" -gt 0 ] && [ "$RESUME_SHARDS" -ne "$RESUME_WORLD" ]; then
+                echo "distill-gold: FATAL: checkpoint-$RESUME_LAST holds $RESUME_SHARDS ZeRO optimizer shards" >&2
+                echo "  but this run trains on $RESUME_WORLD ranks. Resume with the source's topology." >&2
+                exit 1
+              fi
+              echo "distill-gold: resume: $RESUME_COUNT checkpoint(s) seeded; the trainer resumes from checkpoint-$RESUME_LAST"
+              echo "GB_STEP_METADATA_KEY:resumed_from GB_STEP_METADATA_VALUE:$RESUME_SRC/checkpoint-$RESUME_LAST"
+              touch "$RESUME_SEEDED"
+            else
+              # The checkpoint dir is on the shared filesystem, so rank 0's marker is
+              # visible here once it is written. Bounded, because a rank 0 that failed
+              # above never writes it.
+              waited=0
+              until [ -e "$RESUME_SEEDED" ]; do
+                if [ "$waited" -ge 900 ]; then
+                  echo "distill-gold: FATAL: rank 0 did not finish seeding $CKPT_DIR within 900s." >&2
+                  exit 1
+                fi
+                sleep 5
+                waited=$(( waited + 5 ))
+              done
+              echo "distill-gold: rank $NODE_RANK: resume seed present after ${waited}s"
+            fi
+            {% endif %}
+            {% if config.emit_checkpoint_artifacts in _true %}
+            # ── Per-checkpoint artifact emission ────────────────────────────
+            # Rendered only when emit_checkpoint_artifacts is on, so the
+            # single-checkpoint recipes get byte-identical script to before.
+            #
+            # HF Trainer writes each save into ${CKPT_DIR}/checkpoint-<N>, where
+            # <N> is the optimizer step. A downstream export/eval target can
+            # start against rung N the moment it is written rather than after the
+            # whole run, but only if something says so mid-run — the final
+            # artifact at the bottom of this script is emitted once, at the end.
+            # So: a background loop globs the dir and emits one artifact line per
+            # newly completed checkpoint, which the monitor's periodic log
+            # retrieval scrapes while the job is still RUNNING.
+            #
+            # The emitted id is checkpoint_<N> and it MUST match the output names
+            # the recipe declares on this target.
+            CKPT_GLOB="checkpoint-"
+            CKPT_WATCH_INTERVAL="{{ config.checkpoint_watch_interval_seconds | default(60) }}"
+            # Completeness sentinels: a checkpoint is emitted only once ALL of
+            # these exist. Trainer._save_checkpoint writes in a fixed order —
+            # save_model (config, weights, tokenizer) -> optimizer/scheduler ->
+            # rng_state -> state.save_to_json(trainer_state.json) — so requiring
+            # the weights, the last tokenizer file AND trainer_state.json brackets
+            # the entire write sequence. A plain non-empty check would race it and
+            # hand a half-written model to an export that has already allocated.
+            # Sharded weights (not this 350m pair) would need
+            # model.safetensors.index.json here too.
+            CKPT_SENTINELS="model.safetensors tokenizer.json trainer_state.json"
+            # One marker file per emitted checkpoint. On disk rather than in a
+            # shell variable because emit_new_checkpoints also runs inside the
+            # backgrounded watcher subshell, whose variables never propagate back
+            # to this shell — the markers are the two halves' only shared state,
+            # and the final guard counts them.
+            EMITTED_DIR="$(mktemp -d)"
+            {% if config.resume_from_checkpoint_dir | default("") | string | trim and config.resume_emit_seeded not in _true %}
+            # resume_emit_seeded is off: mark every seeded checkpoint as already
+            # emitted. Only seeded ones exist here -- the trainer has not started.
+            for ckpt in "$CKPT_DIR"/${CKPT_GLOB}*; do
+              [ -d "$ckpt" ] || continue
+              touch "$EMITTED_DIR/$(basename "$ckpt")"
+              echo "distill-gold: resume: not re-emitting seeded $(basename "$ckpt")"
+            done
+            {% endif %}
+
+            emit_new_checkpoints() {
+              for ckpt in "$CKPT_DIR"/${CKPT_GLOB}*; do
+                [ -d "$ckpt" ] || continue
+                base="$(basename "$ckpt")"
+                step="${base#${CKPT_GLOB}}"
+                marker="$EMITTED_DIR/$base"
+                [ -e "$marker" ] && continue
+                complete=1
+                for sentinel in $CKPT_SENTINELS; do
+                  [ -f "$ckpt/$sentinel" ] || { complete=0; break; }
+                done
+                [ "$complete" -eq 1 ] || continue
+                touch "$marker"
+                echo "GB_ARTIFACT_ID:checkpoint_${step} GB_ARTIFACT_PATH:${ckpt}"
+              done
+            }
+
+            watch_checkpoints() {
+              while true; do
+                emit_new_checkpoints
+                sleep "$CKPT_WATCH_INTERVAL"
+              done
+            }
+
+            WATCH_PID=""
+            cleanup_watcher() {
+              if [ -n "$WATCH_PID" ] && kill -0 "$WATCH_PID" 2>/dev/null; then
+                kill "$WATCH_PID" 2>/dev/null || true
+                wait "$WATCH_PID" 2>/dev/null || true
+                WATCH_PID=""
+              fi
+            }
+
+            # RANK 0 ONLY, for the same reason the final artifact line below is
+            # rank-guarded: the executor streams every node's stdout into one
+            # driver log, so an unguarded marker would register the same
+            # checkpoint N times. The watcher is started just before the trainer.
+            if [ "$NODE_RANK" = "0" ]; then
+              # EXIT-time cleanup on every path — success, trainer failure, or
+              # signal — so the loop cannot outlive the script and keep emitting.
+              trap 'cleanup_watcher; rm -rf "$EMITTED_DIR"' EXIT
+              mkdir -p "$CKPT_DIR"
+              watch_checkpoints &
+              WATCH_PID=$!
+              echo "distill-gold: watching $CKPT_DIR/${CKPT_GLOB}* every ${CKPT_WATCH_INTERVAL}s (pid $WATCH_PID)"
+            fi
+            {% endif %}
+
+            # The trainer's commit is already recorded above as distill_code_commit,
+            # by the (now unconditional) source-delivery block: the trainer and the
+            # rest of this collection are the same checkout, so there is nothing
+            # left to record separately here.
+
+            # Rendered per node (each has its own container filesystem) but into
+            # a shared path, so the content must be identical on every node — it
+            # is, since every input is a build parameter except the node count.
+            /stage/.venv/bin/python ./src/render_gold_config.py \
+              --output "$CFG" \
+              --total-nodes "$NODES" \
+              --model-name-or-path "{{ config.gold_config.model_name_or_path }}" \
+              --teacher-model-name-or-path "{{ config.gold_config.teacher_model_name_or_path }}" \
+              --dataset-name "{{ config.gold_config.dataset_name }}" \
+              --num-train-epochs {{ config.gold_config.num_train_epochs }} \
+              --max-steps {{ config.gold_config.max_steps }} \
+              --learning-rate {{ config.gold_config.learning_rate }} \
+              --min-lr {{ config.gold_config.min_lr }} \
+              --warmup-ratio {{ config.gold_config.warmup_ratio }} \
+              --lr-scheduler-type "{{ config.gold_config.lr_scheduler_type }}" \
+              --per-device-train-batch-size {{ config.gold_config.per_device_train_batch_size }} \
+              --gradient-accumulation-steps {{ config.gold_config.gradient_accumulation_steps }} \
+              --max-completion-length {{ config.gold_config.max_completion_length }} \
+              --max-length {{ config.gold_config.max_length }} \
+              --gradient-checkpointing {{ config.gold_config.gradient_checkpointing }} \
+              --save-strategy "{{ config.gold_config.save_strategy }}" \
+              --save-steps {{ config.gold_config.save_steps }} \
+              --save-total-limit {{ config.gold_config.save_total_limit }} \
+              --logging-steps {{ config.gold_config.logging_steps }} \
+              --dataset-num-proc {{ config.gold_config.dataset_num_proc }} \
+              --temperature {{ config.gold_config.temperature }} \
+              --lmbda {{ config.gold_config.lmbda }} \
+              --beta {{ config.gold_config.beta }} \
+              --use-liger-fused-jsd {{ config.gold_config.use_liger_fused_jsd }} \
+              --ce-coef {{ config.gold_config.ce_coef | default(0.0) }} \
+              --log-student-entropy {{ config.gold_config.log_student_entropy | default(false) }} \
+              --entropy-guard-drop-frac {{ config.gold_config.entropy_guard_drop_frac | default(0.0) }} \
+              --entropy-guard-baseline-steps {{ config.gold_config.entropy_guard_baseline_steps | default(20) }} \
+              --entropy-guard-patience {{ config.gold_config.entropy_guard_patience | default(3) }} \
+              --entropy-guard-action "{{ config.gold_config.entropy_guard_action | default('stop') }}" \
+              --lmbda-schedule "{{ config.gold_config.lmbda_schedule | default('constant') }}" \
+              --lmbda-init {{ config.gold_config.lmbda_init | default(0.0) }} \
+              --min-completion-length {{ config.gold_config.min_completion_length | default(0) }} \
+              --loss-arm "{{ config.gold_config.loss_arm }}" \
+              --verify-trainer-accepts-keys {{ config.gold_config.verify_trainer_accepts_keys | default(true) }} \
+              --check-corpus-tokenizer {{ config.gold_config.check_corpus_tokenizer }} \
+              --response-template '{{ config.gold_config.response_template }}' \
+              --vllm-num-servers {{ config.gold_config.vllm_num_servers }} \
+              --top-p {{ config.gold_config.top_p }} \
+              --use-sampled-opd-loss {{ config.gold_config.use_sampled_opd_loss }} \
+              --last-message-only {{ config.gold_config.last_message_only }} \
+              --clip-alpha {{ config.gold_config.clip_alpha }} \
+              --opd-importance-sampling {{ config.gold_config.opd_importance_sampling }} \
+              --vllm-server-url "{{ config.gold_config.vllm_server_url }}"
+
+            if [ "$NODE_RANK" = "0" ]; then
+              echo "--- rendered gold config ($CFG) ---"
+              cat "$CFG"
+              echo "--- end gold config ---"
+            fi
+            mkdir -p "$CKPT_DIR"
+
+            {% if config.gold_config.nccl_ib_hca | default("") | string | trim %}
+            export NCCL_IB_HCA="{{ config.gold_config.nccl_ib_hca | string | trim }}"
+            echo "distill-gold: rank $NODE_RANK: NCCL_IB_HCA overridden to $NCCL_IB_HCA"
+            {% endif %}
+
+            # Node roles, three cases.
+            #
+            # 1. EXTERNAL server (vllm_server_url set): the server lives in another
+            #    target's allocation and this one is all trainers. The address is
+            #    split out of the URL here rather than templated, because it is only
+            #    known at run time — it arrives through a mem:// binding.
+            # 2. In-allocation split (vllm_server_url empty, vllm_num_servers > 0):
+            #    the LAST N nodes serve, matching the reference launcher.
+            # 3. Off-policy (the default): every node trains.
+            VLLM_URL="{{ config.gold_config.vllm_server_url }}"
+            VLLM_ARGS=""
+            if [ -n "$VLLM_URL" ]; then
+              # http://host:port -> host, port. Strip the scheme, then split on the
+              # LAST colon so an IPv6 literal or a missing port is not silently
+              # mangled into something that fails at connect time instead of here.
+              _hostport="${VLLM_URL#*://}"
+              _hostport="${_hostport%%/*}"
+              case "$_hostport" in
+                *:*) VLLM_HOST="${_hostport%:*}"; VLLM_PORT="${_hostport##*:}" ;;
+                *)   VLLM_HOST="$_hostport";      VLLM_PORT="8001" ;;
+              esac
+              if [ -z "$VLLM_HOST" ]; then
+                echo "distill-gold: FATAL: could not parse a host out of vllm_server_url '$VLLM_URL'" >&2
+                exit 1
+              fi
+              TRAINER_NODES="$NODES"
+              VLLM_ARGS="--vllm_mode {{ config.gold_config.vllm_mode }}"
+              VLLM_ARGS="$VLLM_ARGS --vllm_sync_frequency {{ config.gold_config.vllm_sync_frequency }}"
+              VLLM_ARGS="$VLLM_ARGS --vllm_server_host $VLLM_HOST --vllm_server_port $VLLM_PORT"
+              echo "distill-gold: external vLLM server at $VLLM_HOST:$VLLM_PORT; all $NODES node(s) train"
+            else
+              TRAINER_NODES=$(( NODES - VLLM_SERVERS ))
+              if [ "$VLLM_SERVERS" -gt 0 ] && [ "$NODE_RANK" -ge "$TRAINER_NODES" ]; then
+                echo "distill-gold: rank $NODE_RANK serving the student under vLLM"
+                exec /stage/.venv/bin/python -m gb_steps_post_training.distillation.run_vllm_serve \
+                  --port "${KD_VLLM_API_PORT:-8001}" \
+                  --model "{{ config.gold_config.model_name_or_path }}" \
+                  --gpu-memory-utilization 0.9 \
+                  --tensor-parallel-size 1 \
+                  --data-parallel-size "$GPUS" \
+                  --log_level warning \
+                  --max-model-len {{ config.gold_config.max_length }}
+              fi
+            fi
+
+            # --use_vllm is stated in BOTH directions below, from the same
+            # vllm_num_servers that gates every other on-policy key. gold.py
+            # defaults it to False and custom_gold_trainer.py:2003 branches on it:
+            # False sends generation down the local ZeRO-3 path
+            # (generate_on_policy_outputs) rather than to the server. Emitted only
+            # negatively — as it was until now — an on-policy run allocates a vLLM
+            # node, health-checks it, plumbs its address in, then generates locally
+            # and leaves the server idle. Build d77546a9 did exactly that, logged
+            # not one request against the server, and died in the local path.
+            echo "distill-gold: rank $NODE_RANK/$NODES training ($TRAINER_NODES trainer node(s)), master $MADDR:$MPORT"
+            accelerate launch \
+              --num_processes $(( TRAINER_NODES * GPUS )) \
+              --num_machines "$TRAINER_NODES" \
+              --machine_rank "$NODE_RANK" \
+              --main_process_ip "$MIP" \
+              --main_process_port "$MPORT" \
+              --config_file "$CODE_DIR/{{ config.gold_config.ds_config }}" \
+              -m gb_steps_post_training.distillation.gold \
+              --config "$CFG" \
+              --output_dir "$CKPT_DIR" \
+              --use_vllm={{ 'True' if config.gold_config.vllm_num_servers | int > 0 else 'False' }} \
+              $VLLM_ARGS
+
+            {% if config.emit_checkpoint_artifacts in _true %}
+            # The trainer has exited. Stop the watcher, then sweep once more for
+            # anything written between its last poll and that exit — including the
+            # final checkpoint, which on a run bounded by an epoch rather than by
+            # save_steps is written at a step no save grid names.
+            if [ "$NODE_RANK" = "0" ]; then
+              cleanup_watcher
+              emit_new_checkpoints
+
+              # Fail LOUDLY on zero, because the alternative failure is silent:
+              # a recipe's checkpoint_<N> outputs would never be produced, every
+              # export/eval target bound to them would stay unready, and the build
+              # would hang with no error to read. Count the markers, not a shell
+              # variable — see EMITTED_DIR above.
+              EMITTED_COUNT="$(find "$EMITTED_DIR" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l)"
+              if [ "$EMITTED_COUNT" -eq 0 ]; then
+                echo "distill-gold: FATAL: no checkpoint dirs matched '${CKPT_DIR}/${CKPT_GLOB}*'." >&2
+                echo "  emit_checkpoint_artifacts is on, so a recipe is bound to" >&2
+                echo "  checkpoint_<N> ids that will now never arrive. Either the run" >&2
+                echo "  never reached save_steps, or the trainer's checkpoint dir" >&2
+                echo "  naming changed — align CKPT_GLOB and the recipe's ladder." >&2
+                exit 1
+              fi
+              echo "distill-gold: emitted $EMITTED_COUNT per-checkpoint artifact(s)"
+            fi
+            {% endif %}
+
+            # Rank 0 only: the executor streams every node's output into one
+            # driver log, so an unguarded marker would register N artifacts.
+            if [ "$NODE_RANK" = "0" ]; then
+              echo "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:${CKPT_DIR}"
+            fi
+    monitors:
+      skypilot_monitor:
+        # Artifact/binding convention from the shipped library; overridden to
+        # `periodic` retrieval because a distillation run lasts hours and the
+        # default on_completion surfaces nothing until the end.
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
+          extra_event_configs:
+          # TRL logs a metrics dict, not open-instruct's "Step: N" banner. Pin
+          # this against real job_log output from the first smoke run.
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "'loss':"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: "\\{'loss'.+"

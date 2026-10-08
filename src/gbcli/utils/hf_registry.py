@@ -7,9 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from huggingface_hub import HfApi, snapshot_download
-from huggingface_hub.errors import HfHubHTTPError
-
 from gbcli.models.artifact import ArtifactMetadata
 from gbcommon.utils.hf_utils import get_hf_artifact_uri
 
@@ -41,6 +38,8 @@ class HFRegistry:
         """
         if not hf_token:
             raise ValueError("HF_TOKEN must be set")
+        from huggingface_hub import HfApi
+
         self.api = HfApi(token=hf_token)
         self.token = hf_token
         self.resource_group_id = resource_group_id
@@ -83,6 +82,8 @@ class HFRegistry:
             ValueError: If repo_id format is invalid.
             RuntimeError: If upload fails or repository exists (when exist_ok=False).
         """
+        from huggingface_hub.errors import HfHubHTTPError
+
         local = Path(local_path)
         if not local.exists():
             raise FileNotFoundError(f"Local path does not exist: {local_path}")
@@ -380,6 +381,9 @@ For information about this model, visit the [repository](https://huggingface.co/
             ValueError: If repo_id format is invalid.
             RuntimeError: If download fails.
         """
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.errors import HfHubHTTPError
+
         local_dir = Path(download_dir)
         if "/" not in repo_id:
             raise ValueError(

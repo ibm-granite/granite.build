@@ -1,0 +1,1125 @@
+######
+# distill-checkpoint-eval — one epoch of off-policy GOLD for the granite4-350m pair,
+# with every checkpoint exported and put through the full 27-eval suite AS IT IS
+# WRITTEN, and the whole run summarized in one file. BlueVela (SkyPilot / LSF).
+#
+# WHAT THIS ANSWERS, AND WHY IT IS NOT distill-stage1-v2
+#
+# distill-stage1-v2 asks WHICH OBJECTIVE: it bounds the run at 300 steps, puts seven
+# rungs inside the descent, and reads divergence, entropy and repetition off them. It
+# does NOT run full-eval, on purpose — that is ~4 GPU-h per model and needs bcb-server
+# up, so it is launched by hand afterwards on whichever rungs looked healthy.
+#
+# This recipe asks WHICH CHECKPOINT, on the capability benchmarks, across a whole
+# epoch. Checkpoints every 1,000 steps plus the final one at 8,150; each exported and
+# fanned out to all 27 evaluations; the results rolled up into a benchmark x
+# checkpoint table. It is the distillation counterpart of
+# recipes/granite4-350m/lsf/rl-checkpoint-eval, which does exactly this for RL.
+#
+# The question is not academic. distill-stage1 ran this epoch once, as build df8512e0:
+# 8,150 steps, 13h20 on 2x8 H100, every step exit 0 — and exported ONE model, "the
+# last one". That model was worse on all 30+ benchmarks (HumanEval 40.85 -> 0.61,
+# MultiPL-E Java 21.05 -> 0.00), its good stopping point was somewhere near step 500,
+# and save_total_limit 3 had already deleted every checkpoint before 7750 by the time
+# anyone knew that. The epoch had to be repeated in full. Here the epoch is run once
+# and measured nine times.
+#
+# WHY THE FANOUT IS MID-RUN, AND WHAT PAYS FOR IT
+#
+# train-gold declares one checkpoint_<N> output per rung, and the distill-gold step's
+# watcher (emit_checkpoint_artifacts, added for this recipe) emits each one as soon as
+# that checkpoint is completely written. So export-1000 and its 27 evals dispatch
+# about eleven hours before training ends, and the ~36 GPU-h of evaluation overlaps
+# the 13-hour epoch instead of queueing behind it. rl-checkpoint-eval confirmed the
+# same mechanism on a real run: its step-10 evals dispatched ~11 min before training
+# completed.
+#
+# The cost is a contract. A rung whose checkpoint-<N> directory the trainer never
+# writes is an artifact never emitted, and a target bound to it waits forever with no
+# error to read. Two things hold that line: every rung but the last must be a
+# multiple of GOLD_SAVE_STEPS (the recipe test asserts it), and the step exits
+# non-zero if it emitted nothing at all.
+#
+# THE LAST RUNG IS MEASURED, NOT DERIVED — READ parameters.yaml BEFORE LAUNCHING
+#
+# 8150 is what one epoch over TARGET_ROWS 800000 at effective batch 96 actually came
+# to on build df8512e0, which kept checkpoint-7750, -8000 and -8150. Nothing here can
+# compute it: the step count falls out of the corpus after prep drops over-length
+# rows and holds out EVAL_FRACTION. Change TARGET_ROWS, the batch geometry,
+# EVAL_FRACTION or MAX_LENGTH and the last rung must change with them, or export-8150
+# fails after the epoch has been paid for. CKPT_LADDER's comment in parameters.yaml
+# says how to read the real total off the first train-gold log lines.
+#
+# NOTHING HERE ACTS ON A READING
+#
+# eval-transfer-<N> reports divergence and entropy per rung, gen-smoke reports
+# repetition, and the entropy guard runs in `warn` mode. All three are instruments:
+# none of them stops the run, fails a target or skips a rung. The run is one epoch
+# and the whole epoch is what is being measured, so a reading that cut it short would
+# destroy the thing this recipe exists to produce. gen-smoke in particular carries
+# NO exit gate here, unlike distill-stage1-v2 where it fails on a degenerate final
+# rung — read the table, decide yourself.
+#
+# THE GRAPH
+#
+#   align  -> corpus                   the corpus must be measured with the tokenizer
+#                                      that will train.
+#   align  -> train                    the student is the RETAGGED student.
+#   corpus -> train                    plus the manifest the row-count guard reads.
+#   train  -> export-N                 MID-RUN, on checkpoint_N, not on the final
+#                                      artifact. This is the edge that makes the
+#                                      overlap; a test asserts it.
+#   export -> eval-*                   every read measures an EXPORTED model.
+#   evals  -> export-sage-ckN          one CSV per rung per eval kind.
+#          -> export-bfcl-ckN
+#   those  -> export-combined          combined.csv: benchmark x checkpoint.
+#
+# Everything before train-gold — sources, align, corpus, corpus-pin-check and the
+# INCLUDE_SFT switch — is distill-stage1-v2 unchanged, including the reasons.
+#
+# The loop variables interpolate through the CLI's own marker syntax, the same form
+# every parameter here uses -- NOT through a doubled curly brace, which is left alone
+# for the SERVER to resolve as a binding. Getting that backwards yields a target
+# literally named export- followed by the unexpanded braces. A marker inside a
+# COMMENT is still rendered, so a loop variable named outside its loop fails the
+# build before submission -- hence the bare names in these comments.
+#
+# BEFORE LAUNCHING: bcb-server must be up, and its URL passed as
+# OE_EVAL_BCB_API_URL, or the olmes-bigcodebench rung of every checkpoint fails.
+#
+# Values come from parameters.yaml beside this file; the comments explaining WHY each
+# value is what it is live there. The README has the cost table and the launch order.
+#
+# Run (parameters.yaml is picked up automatically because it sits next to this file):
+#   gb build start -f recipes/granite4-350m/lsf/distill-checkpoint-eval/build.yaml \
+#     --space <space> --param OE_EVAL_BCB_API_URL=<bcb-server url>
+######
+granite.build:
+  name: distill-350m-ckpt-eval
+  # A retry is here because of a MEASURED cluster fault, not as general
+  # insurance. Builds 7853d33b and b5f030cd lost three GPU targets to
+  # `RuntimeError: CUDA unknown error` raised inside torch at cuda_init, every
+  # one of them on host p2-r03-n1 — 3 runs, 3 failures on that host, against 0
+  # failures across several hundred runs on every other host in the logs. The
+  # node takes the allocation and cannot initialise CUDA.
+  #
+  # Nothing in a build.yaml can steer LSF away from a host (see README for the
+  # bsub exclusion, which lives in ~/.sky/config.yaml), so the recipe's only
+  # lever is to run the target again and land somewhere else. target_reuse_enabled
+  # means a retry re-runs the FAILED target and reuses what already succeeded, so
+  # a fault three targets deep does not re-train.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+<% if not CORPUS_DIR | string | trim %>
+    # Skipped entirely when CORPUS_DIR is set -- see parameters.yaml.
+    # ─── sources ────────────────────────────────────────────────────────────
+    # Build ONE corpus file from the three SFT splits, because three things are
+    # true at once and no single one of them is optional:
+    #
+    #   1. prep takes ONE path. prep_corpus.py:294 refuses a directory outright --
+    #      "Pass the .jsonl itself, or an HF dataset id" -- so there is no glob and
+    #      no list form to hand it three files with.
+    #
+    #   2. THE ROWS ARE SPELLED `conversations`, NOT `messages`. prep reads
+    #      record.get("messages") (prep_corpus.py:367) and returns `no_messages`
+    #      otherwise. Handed these files unchanged it would drop all 5,081,504 rows
+    #      and raise PrepError. This rename is the single most load-bearing line in
+    #      the target.
+    #
+    #   3. The splits are wildly unequal -- general 84.86%, tools 13.98%, rag 1.17%
+    #      -- and prep's max_examples stops after N KEPT rows IN INPUT ORDER. A
+    #      plain concatenation plus max_examples would therefore yield a subset of
+    #      pure `general` with no tools and no rag in it, silently. Sampling
+    #      proportionally HERE, and shuffling, is what makes a subset representative
+    #      rather than just short.
+    #
+    # Reservoir sampling per split, seeded, so the selection is reproducible from
+    # SHUFFLE_SEED alone and memory is bounded by the sample rather than the corpus.
+    # Two passes: one to count, one to select, because the per-split quota cannot be
+    # computed until the totals are known.
+    sources:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Lineage. Three declared inputs mean the corpus's provenance is recorded as
+        # three artifacts rather than as a path inside a shell script.
+        source_general:
+          uri: "env://$${SOURCE_GENERAL}"
+          type: dataset
+        source_tools:
+          uri: "env://$${SOURCE_TOOLS}"
+          type: dataset
+        source_rag:
+          uri: "env://$${SOURCE_RAG}"
+          type: dataset
+      outputs:
+        corpus_source:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-sources
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${SOURCES_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SOURCES_MEMORY}
+            sources_config:
+              # Order names the per-split RNG streams; reordering changes the selection.
+              sources:
+                - "$${SOURCE_GENERAL}"
+                - "$${SOURCE_TOOLS}"
+                - "$${SOURCE_RAG}"
+              target_rows: $${TARGET_ROWS}
+              shuffle_seed: $${SHUFFLE_SEED}
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/sources"
+<% endif %>
+
+
+    # ─── align ──────────────────────────────────────────────────────────────
+    # Re-embeds the base student onto the teacher's tokenizer and emits the
+    # tokenizer artifacts the rest of the pipeline reads. Cheap relative to
+    # everything after it, and everything after it is wrong without it.
+    align:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Recorded as lineage inputs. env:// means "already on a filesystem this
+        # environment can reach", so the pull is a no-op: these add input
+        # artifacts and no extra step. A path passed only to a step's config
+        # would run fine and record nothing.
+        teacher_model:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
+        student_model:
+          uri: "env://$${STUDENT_MODEL}"
+          type: model
+      outputs:
+        # All three declared. An undeclared output makes the resolver drop the
+        # NEWARTIFACT event and the target completes with no output AND no error.
+        retagged_student:
+          uri: "env://{{ binding.path }}"
+          type: model
+        teacher_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+        student_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/tokenizer-align
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            align_config:
+              teacher_model: "$${TEACHER_MODEL}"
+              student_model: "$${STUDENT_MODEL}"
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
+              # Not optional for this pipeline: without a chat template carrying
+              # generation markers, prep cannot build assistant masks and the
+              # trainers fail deep inside sft.py. Relative to the step's code_dir.
+              chat_template: "$${CHAT_TEMPLATE}"
+              # FALSE for this pair, and it is the difference between this recipe
+              # running and aborting. The knob gates whether the TEACHER's tokenizer
+              # and the retagged student's must carry ChatML turn tokens. granite 4.0
+              # and 4.1 carry start_of_role/end_of_role and no im_start anywhere, so
+              # the upstream default fails align stage 1 of 4 on a granite-4.1
+              # teacher. False is only safe BECAUSE CHAT_TEMPLATE is granite-native:
+              # false with a ChatML template would align cleanly and then have the
+              # teacher score a format it has never seen. The turn boundary is still
+              # checked — align stage 4 of 4 derives the masking contract from the
+              # installed template and fails if it cannot.
+              require_chatml: $${REQUIRE_CHATML}
+              verify: true
+              dry_run: false
+
+<% if not CORPUS_DIR | string | trim %>
+    # Skipped entirely when CORPUS_DIR is set; corpus-pin-check runs instead.
+    # ─── corpus ─────────────────────────────────────────────────────────────
+    corpus:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The tokenizer that DEFINES this corpus, and the ordering edge that
+        # guarantees it exists before this target starts.
+        tokenizer:
+          binding: align.retagged_student
+        source_dataset:
+          binding: sources.corpus_source
+      outputs:
+        # The FILE, not out_dir: the trainers dispatch on the .jsonl suffix and
+        # find the manifest as a sibling of it. eval.jsonl is deliberately NOT an
+        # output — it exists only when eval_fraction is above zero, and a
+        # declared-but-absent output is a resolver failure.
+        corpus:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-prep
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            corpus_config:
+              dataset: "{{ bindings.source_dataset.binding.path }}"
+              tokenizer: "{{ bindings.tokenizer.binding.path }}"
+              # ABSOLUTE, and that is forced rather than chosen: the two eval
+              # targets have to name eval.jsonl and cannot compose it from their
+              # own workdir, because every target run gets its OWN
+              # GB_BUILD_WORKDIR. A shared absolute root is what makes one
+              # target's output nameable by another.
+              #
+              # BUILD_SUBDIR is what keeps that root shared WITHIN a build and
+              # distinct BETWEEN builds. It defaults to the build id, and it is
+              # not cosmetic: gbserver refuses to register an artifact whose URI
+              # another build in the space already registered, and a target whose
+              # artifact was refused still reports SUCCESS with an EMPTY output
+              # list. On a retry or a restart, reuse then propagates no binding
+              # from that target, every downstream consumer waits forever for an
+              # input that will never arrive, and the build reports SUCCESS having
+              # skipped them. Build b5f030cd did exactly that. See README.
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus"
+              # Must equal both trainers' max_length and both evals'. Four steps
+              # measure lengths and they have to agree about the budget, which is
+              # why this is one parameter and not four.
+              max_length: $${MAX_LENGTH}
+              think_policy: "$${THINK_POLICY}"
+              # last_message, and this couples to the eval step: the divergence
+              # is measured over the FINAL assistant turn, so a corpus prepared
+              # with a different boundary would be scored on a different span
+              # than it trained on.
+              completion_boundary: "last_message"
+              # Above zero on purpose: eval-transfer measures the held-out split,
+              # and at zero that split does not exist.
+              eval_fraction: $${EVAL_FRACTION}
+              max_examples: $${MAX_EXAMPLES}
+              # The schema the reference corpus carries. Costs nothing and makes a
+              # row traceable back through the manifest.
+              emit_row_id: true
+              # KEEP, against the step's own default of drop. The step defaults to
+              # dropping rows with a non-empty documents field because "granite's
+              # chat template does not render documents" — but the granite 4.x
+              # template this pipeline installs DOES render them, into the system
+              # turn via documents_system_message_prefix. Dropping them here would
+              # silently discard grounded rows for a reason that is not true of this
+              # template.
+              documents_policy: "$${DOCUMENTS_POLICY}"
+              seed: $${SEED}
+<% else %>
+    # ─── corpus-pin-check (only when CORPUS_DIR is set) ─────────────────────
+    # The corpus is DEFINED by the retagged tokenizer and by the prep policies: the
+    # rows were rendered through that chat template, the assistant masks were built
+    # with that tokenizer, and 5,908 rows were dropped for exceeding THAT max_length.
+    # A pin taken from a run that differed in any of those trains on a corpus this
+    # build does not describe, and every metric downstream would still look normal.
+    #
+    # So this target exists to turn that into a loud failure, and to do it BEFORE the
+    # 2-node H100 allocation is held. It is CPU-only and reads one JSON file, so the
+    # cost of having it is seconds; the cost of not having it is a run.
+    #
+    # Every consumer of the pinned corpus binds this target's output, which is what
+    # makes the check an ordering edge rather than a suggestion.
+    corpus-pin-check:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Declared so the pinned corpus appears in this build's lineage at all: with
+        # `sources` and `corpus` gone, this is the only place it is named as an input.
+        pinned_corpus:
+          uri: "env://$${CORPUS_DIR.rstrip('/')}/train.jsonl"
+          type: dataset
+        # The tokenizer the manifest has to agree with, and the ordering edge that
+        # guarantees align has run before the comparison is made.
+        tokenizer:
+          binding: align.retagged_student
+      outputs:
+        pin_check:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/corpus-pin-check
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            pin_check_config:
+              corpus_dir: "$${CORPUS_DIR.rstrip('/')}"
+              teacher_model: "$${TEACHER_MODEL}"
+              max_length: $${MAX_LENGTH}
+              think_policy: "$${THINK_POLICY}"
+              documents_policy: "$${DOCUMENTS_POLICY}"
+              eval_fraction: $${EVAL_FRACTION}
+              tokenizer_dir: "{{ bindings.tokenizer.binding.path }}"
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus-pin"
+
+<% endif %>
+
+<% if INCLUDE_SFT | string | lower in ("true", "yes", "1", "on") %>
+    # ─── train-sft (switched on) ────────────────────────────────────────────
+    # A plain-SFT pass over the same corpus, with no teacher in the loop. GOLD
+    # then continues from this checkpoint. The step's ZeRO-3 config sets
+    # zero3_save_16bit_model and sft.py calls save_model on the output directory,
+    # so the registered checkpoint is HF-native and loadable as a student init —
+    # which is why no export is needed between here and GOLD.
+    train-sft:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: align.retagged_student
+<% if CORPUS_DIR | string | trim %>
+        # Pinned: read DIRECTLY, because `corpus` was not rendered and a binding
+        # naming it would block this target on a producer that does not exist.
+        corpus:
+          uri: "env://$${CORPUS_DIR.rstrip('/')}/train.jsonl"
+          type: dataset
+        # The ordering edge the binding used to provide, now carrying the manifest
+        # comparison with it: nothing reads a pinned corpus before it is checked.
+        corpus_pin:
+          binding: corpus-pin-check.pin_check
+<% else %>
+        corpus:
+          binding: corpus.corpus
+<% endif %>
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/sft
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${SFT_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:$${SFT_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            workload:
+              # MUST match the allocation above: run-sft.sh asserts this against
+              # the GPUs visible in the container, because a mismatch trains at a
+              # different effective batch size than the config says. More than one
+              # node is refused by the script.
+              gpus_per_node: $${SFT_NUM_GPUS}
+              nodes: 1
+            sft_config:
+              student_model_path: "{{ bindings.student.binding.path }}"
+              corpus_path: "{{ bindings.corpus.binding.path }}"
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/train-sft"
+              response_template: "$${RESPONSE_TEMPLATE}"
+              max_length: $${MAX_LENGTH}
+              per_device_train_batch_size: $${SFT_PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${SFT_GRADIENT_ACCUMULATION_STEPS}
+              learning_rate: "$${SFT_LEARNING_RATE}"
+              num_train_epochs: $${SFT_NUM_TRAIN_EPOCHS}
+              # Checkpoint on the first step, so publication is exercised rather
+              # than assumed on a run this short.
+              save_steps: 1
+              seed: $${SEED}
+              # LEFT AT THE DEFAULT (-1, the whole corpus). max_dataset_size and
+              # corpus max_examples are NOT interchangeable ways to make a run
+              # small: sft.py compares its kept-row count against PREP's manifest
+              # and raises ManifestDrift on any shortfall, because the only
+              # shortfall it knows how to cause is a row whose tokenization
+              # produced no prompt — a chat-template or tokenizer mismatch. Shrink
+              # the CORPUS instead, so the two counts agree by construction.
+              max_dataset_size: -1
+              # logging_steps is not a contract key; it reaches the trainer through
+              # extra_config_yaml, the documented escape hatch for the long tail of
+              # CustomSFTConfig. At the step's default of 10 a run this short logs
+              # nothing and there is no loss trajectory to read.
+              extra_config_yaml: "logging_steps: 1"
+              # EMPTY is what makes this a plain-SFT pass. With a logits directory
+              # the step becomes a forward-KL distillation arm of its own, and the
+              # pipeline would distil twice rather than warm-start once.
+              precomputed_logits_dir: ""
+<% endif %>
+
+    # ─── train-gold ─────────────────────────────────────────────────────────
+    # The distillation itself. Off-policy at lmbda 0.0: every rank trains on the
+    # fixed corpus and there is no vLLM server to coordinate.
+    #
+    # This is the target v2 exists to change. Everything here except the five keys
+    # under "the anchor and the instruments" is what build df8512e0 ran.
+    train-gold:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The student GOLD starts from: the SFT checkpoint when that arm is on,
+        # the aligned student otherwise. One binding either way, so the recorded
+        # lineage and the trainer's argument cannot disagree about which model
+        # was loaded.
+<% if INCLUDE_SFT | string | lower in ("true", "yes", "1", "on") %>
+        student:
+          binding: train-sft.checkpoint
+<% else %>
+        student:
+          binding: align.retagged_student
+<% endif %>
+<% if CORPUS_DIR | string | trim %>
+        # Pinned: read DIRECTLY, because `corpus` was not rendered and a binding
+        # naming it would block this target on a producer that does not exist.
+        corpus:
+          uri: "env://$${CORPUS_DIR.rstrip('/')}/train.jsonl"
+          type: dataset
+        # The ordering edge the binding used to provide, now carrying the manifest
+        # comparison with it: nothing reads a pinned corpus before it is checked.
+        corpus_pin:
+          binding: corpus-pin-check.pin_check
+<% else %>
+        corpus:
+          binding: corpus.corpus
+<% endif %>
+        teacher_model:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
+      outputs:
+        # GB_BUILD_WORKDIR/checkpoints/<run_name>_node<N>, registered by rank 0.
+        # The node count in that path comes from the allocation, not from a
+        # parameter, so it always describes the run that produced it.
+        #
+        # Kept even though nothing in this recipe binds it: it is the artifact the
+        # single-checkpoint recipes use, and it is the one line of the step's output
+        # contract that does not depend on the watcher having worked.
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+        # ── One output per rung, emitted MID-RUN ────────────────────────────
+        # The ids must match what the step's watcher prints —
+        # GB_ARTIFACT_ID:checkpoint_<N> — for the checkpoint-<N> directory HF
+        # Trainer wrote at optimizer step N. binding.path is filled at push time
+        # with that directory, so each rung's URI is distinct: pointing them all
+        # at the shared parent would make nine outputs claim one URI, and gbserver
+        # refuses a duplicate registration while the target still reports SUCCESS
+        # with an empty output list (the b5f030cd mode).
+        #
+        # A rung the trainer never writes is an output never produced, and its
+        # export target then waits forever. GOLD_SAVE_STEPS is what guarantees
+        # these exist; the recipe test asserts the two agree.
+<% for N in CKPT_LADDER.split(",") %>
+        checkpoint_$${N}:
+          uri: "env://{{ binding.path }}"
+          type: model
+<% endfor %>
+      steps:
+        - step_uri: space://steps/distill/gold
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            # This bounds the whole overlap, and it is the knob to touch if rungs
+            # feel late. The watcher emits a line the moment a checkpoint is
+            # complete, but that line only reaches the build when the monitor next
+            # pulls the job's logs, so detection latency is the watch interval plus
+            # this. It is deliberately far below the step's 900s default: at 900 a
+            # rung could sit unnoticed for a quarter of an hour of an allocation
+            # that costs 16 H100.
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            # TRUE, and this single key is what makes the recipe mid-run. Off (the
+            # step's default) the step emits only the final `checkpoint`, every
+            # checkpoint_<N> output above goes unproduced, and every export target
+            # waits for an artifact that will never arrive.
+            emit_checkpoint_artifacts: true
+            checkpoint_watch_interval_seconds: $${CKPT_WATCH_INTERVAL_SECONDS}
+            # Empty unless relaunching a run that was stopped part-way: then the
+            # stopped run's checkpoint directory. See RESUME_FROM_CHECKPOINT_DIR.
+            resume_from_checkpoint_dir: "$${RESUME_FROM_CHECKPOINT_DIR}"
+            resume_emit_seeded: $${RESUME_EMIT_SEEDED}
+            compute_config:
+              num_nodes: $${GOLD_NUM_NODES}
+              num_gpus_per_node: $${GOLD_NUM_GPUS}
+            launcher_config:
+              # Overrides the step's own image (gbserver prefers a build.yaml
+              # image_id over the launcher's).
+              image_id: "$${IMAGE_ID}"
+              resources:
+                # accelerators is PER NODE; memory is host memory per node, and
+                # it has to be stated — the LSF provisioner defaults to 16G and a
+                # host-memory kill presents as a cross-node NCCL hang.
+                accelerators: "H100:$${GOLD_NUM_GPUS}"
+                memory: $${GPU_MEMORY}
+                cluster: "$${CLUSTER}"
+                # For the LSF cloud, SkyPilot's zone is the queue name.
+                zone: "$${QUEUE}"
+            code_config:
+              # The step's own public pin, restated. CODE_DIR is empty by default, so the
+              # step clones github.com/laminair/gb-steps-distillation at `ref` below --
+              # the same trainer every other distillation recipe here runs. This block
+              # used to point at a local patched checkout, because the CE anchor and the
+              # collapse guard need trainer fields that commit does not define; both are
+              # off now, nothing patch-gated renders, and the override is gone.
+              #
+              # Every key is restated rather than overriding code_dir alone, so this block
+              # does not depend on how a partial config override merges.
+              #
+              # To re-arm CE_COEF or the guard, build a patched checkout once on a node
+              # that can reach github.com and pass it as CODE_DIR (with CODE_EXPECT_REF):
+              #   git clone https://github.com/laminair/gb-steps-distillation.git $CODE_DIR
+              #   git -C $CODE_DIR checkout a5d59bc45524a8d75706e20d44ae1a254f273f23
+              #   cd $CODE_DIR/src/gb_steps_post_training/distillation
+              #   patch -p2 -F3 < <this repo>/steps/distill/gold/skypilot/patches/ce_anchor_and_entropy_guard.diff
+              #   git -C $CODE_DIR commit -am "ce anchor and entropy guard"
+              code_dir: "$${CODE_DIR}"
+              expect_ref: "$${CODE_EXPECT_REF}"
+              repo: "https://github.com/laminair/gb-steps-distillation.git"
+              ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+              workdir: "distill-code"
+              token_secret: ""
+              python: "/stage/.venv/bin/python"
+              setup_command: ""
+            gold_config:
+              run_name: "$${RUN_NAME}"
+              ds_config: "$${DS_CONFIG}"
+              model_name_or_path: "{{ bindings.student.binding.path }}"
+              # A path, never a hub id: this teacher is not publicly fetchable.
+              teacher_model_name_or_path: "$${TEACHER_MODEL}"
+              dataset_name: "{{ bindings.corpus.binding.path }}"
+              num_train_epochs: $${GOLD_NUM_TRAIN_EPOCHS}
+              # Caps the run by optimizer steps, and here that IS the point rather
+              # than a smoke-scale shortcut: the objective had ~12% of headroom and
+              # two-thirds of the realisable gain was gone by step 509, so an
+              # epoch-bounded run spends 75% of its wall clock past the point where
+              # anything is left to learn. When set, this overrides num_train_epochs
+              # in the trainer.
+              max_steps: $${GOLD_MAX_STEPS}
+              learning_rate: $${GOLD_LEARNING_RATE}
+              min_lr: $${GOLD_MIN_LR}
+              warmup_ratio: $${WARMUP_RATIO}
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              per_device_train_batch_size: $${GOLD_PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${GOLD_GRADIENT_ACCUMULATION_STEPS}
+              max_length: $${MAX_LENGTH}
+              max_completion_length: $${MAX_COMPLETION_LENGTH}
+              gradient_checkpointing: true
+              save_strategy: "steps"
+              save_steps: $${GOLD_SAVE_STEPS}
+              save_total_limit: $${GOLD_SAVE_TOTAL_LIMIT}
+              logging_steps: 1
+              dataset_num_proc: $${DATASET_NUM_PROC}
+              temperature: $${TEMPERATURE}
+              lmbda: $${LMBDA}
+              beta: $${BETA}
+              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
+
+              # ── the anchor and the guard, both off ──────────────────────────
+              # All six are patch-gated: they need trainer fields the step's public pin
+              # does not define, and render_gold_config.py emits each one only when it is
+              # non-default. At the zeroed defaults in parameters.yaml nothing here
+              # reaches the config, which is exactly what lets this recipe run on that
+              # public pin — and what makes its objective df8512e0's, unanchored.
+              #
+              # Setting any of them non-zero requires CODE_DIR at a patched checkout. See
+              # CE_COEF in parameters.yaml for the sweep that retired them.
+              ce_coef: $${CE_COEF}
+              log_student_entropy: $${LOG_STUDENT_ENTROPY}
+              entropy_guard_drop_frac: $${ENTROPY_GUARD_DROP_FRAC}
+              entropy_guard_baseline_steps: $${ENTROPY_GUARD_BASELINE_STEPS}
+              entropy_guard_patience: $${ENTROPY_GUARD_PATIENCE}
+              entropy_guard_action: "$${ENTROPY_GUARD_ACTION}"
+
+              response_template: "$${RESPONSE_TEMPLATE}"
+              nccl_debug: "$${NCCL_DEBUG}"
+              nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
+              nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
+              nccl_enable_monitoring: true
+              nccl_ib_hca: "$${NCCL_IB_HCA}"
+              vllm_num_servers: 0
+
+    # ─── export-<N>, one per rung, each gated on ITS OWN checkpoint ─────────
+    # A selector, not a converter: the trainer's ZeRO-3 config sets
+    # zero3_save_16bit_model, so every checkpoint-N/ is already HF-native
+    # safetensors. What this adds is a self-contained, downloadable directory with
+    # the resumable-run state pruned and the tokenizer asserted.
+    #
+    # THE BINDING IS THE POINT. distill-stage1-v2's exports all bind
+    # train-gold.checkpoint — the single artifact emitted when the run ends — so
+    # nothing exports until everything has trained. These bind
+    # train-gold.checkpoint_<N>, which the step's watcher emits as soon as rung N
+    # is completely written, so export-1000 runs about eleven hours before the
+    # epoch finishes and its 27 evals run beside the training that is still going.
+    # A test asserts this edge, because reverting it is a one-word edit that
+    # nothing else would notice.
+    #
+    # ~679 M each after pruning, CPU-only, so nine of them cost no GPU time.
+<% for N in CKPT_LADDER.split(",") %>
+    export-$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        checkpoint_dir:
+          binding: train-gold.checkpoint_$${N}
+        # Bound so the export can assert the tokenizer it ships is the one the run
+        # actually trained with, rather than whatever happened to be copied into
+        # the checkpoint directory.
+        expected_tokenizer:
+          binding: align.retagged_student
+      outputs:
+        hf_model:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/hf-export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${EXPORT_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${EXPORT_MEMORY}
+            export_config:
+              # The binding resolves to the CHECKPOINT directory, not to the
+              # trainer's parent output dir, because each rung's artifact has to
+              # carry a distinct URI (see train-gold's outputs). So the checkpoint
+              # is named as an ABSOLUTE PATH, which select_checkpoint returns
+              # directly — export_hf_model.py:301, `if cand.is_absolute()` — and
+              # train_output_dir is then never read. It is set to the same value
+              # rather than left empty because the step passes the flag
+              # unconditionally and the CLI requires it.
+              #
+              # Naming the rung explicitly, never leaving it empty: empty means
+              # "highest step number", which across nine concurrent exports of one
+              # directory would make every rung export the same model.
+              train_output_dir: "{{ bindings.checkpoint_dir.binding.path }}"
+              checkpoint: "{{ bindings.checkpoint_dir.binding.path }}"
+              dest: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/export-$${N}"
+              padding_side: "right"
+              chat_template_thinking: "$${CHAT_TEMPLATE_THINKING}"
+              # TRUE, and forced rather than lax. HF Trainer writes one
+              # rng_state_<rank>.pth per rank for a distributed run, while the
+              # ported classifier's PRUNE_KNOWN carries only the single-process
+              # "rng_state.pth" — it was validated against a 1-GPU checkpoint. So
+              # every checkpoint this pipeline produces contains files it cannot
+              # classify, and with false the export refuses AFTER the training run
+              # has been paid for. export_manifest.json still records exactly what
+              # was dropped. The fix is one line upstream.
+              allow_unknown: true
+              verify: true
+              expect_tokenizer_from: "{{ bindings.expected_tokenizer.binding.path }}"
+<% endfor %>
+
+    # ─── eval-transfer-<N>, one per rung ────────────────────────────────────
+    # The divergence reads: JSD, forward and reverse KL, and entropy, against the
+    # same teacher on the held-out split. An INSTRUMENT — nothing downstream is
+    # gated on what it says, and it does not fail on a bad number.
+    #
+    # There is no eval-transfer-baseline here, unlike distill-stage1-v2: the t=0
+    # column for this student has already been measured and recorded, and
+    # re-deriving it would spend a GPU to reproduce a number we hold.
+    #
+    # entropy is the metric to read first. On df8512e0 the 42% drop was visible
+    # nowhere else, and only after training finished. Per rung it becomes a curve,
+    # and the curve is what says where the model turned — which full-eval then
+    # prices in benchmark points.
+    #
+    # Minutes on one GPU each, so all nine together cost a fraction of one
+    # checkpoint's full-eval.
+<% for N in CKPT_LADDER.split(",") %>
+    eval-transfer-$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: export-$${N}.hf_model
+<% if CORPUS_DIR | string | trim %>
+        # Pinned: read DIRECTLY, because `corpus` was not rendered and a binding
+        # naming it would block this target on a producer that does not exist.
+        corpus:
+          uri: "env://$${CORPUS_DIR.rstrip('/')}/train.jsonl"
+          type: dataset
+        # The ordering edge the binding used to provide, now carrying the manifest
+        # comparison with it: nothing reads a pinned corpus before it is checked.
+        corpus_pin:
+          binding: corpus-pin-check.pin_check
+<% else %>
+        corpus:
+          binding: corpus.corpus
+<% endif %>
+      outputs:
+        eval_metrics:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/eval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${EVAL_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:$${EVAL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            eval_config:
+              student_model: "{{ bindings.student.binding.path }}"
+              teacher_model: "$${TEACHER_MODEL}"
+<% if CORPUS_DIR | string | trim %>
+              corpus: "$${CORPUS_DIR.rstrip('/')}/eval.jsonl"
+<% else %>
+              corpus: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus/eval.jsonl"
+<% endif %>
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-transfer-$${N}"
+              metrics: "$${EVAL_METRICS}"
+              max_samples: $${EVAL_MAX_SAMPLES}
+              seed: $${SEED}
+              # Same budget as prep and as training: a smaller value here scores
+              # truncated completions and reports the result as the divergence.
+              max_length: $${MAX_LENGTH}
+              max_incomplete_fraction: $${MAX_INCOMPLETE_FRACTION}
+              batch_size: $${EVAL_BATCH_SIZE}
+              dtype: "$${EVAL_DTYPE}"
+              # False, and it should stay false on this pairing: the retag exists
+              # precisely so the two tokenizers agree on ids.
+              allow_tokenizer_mismatch: false
+<% endfor %>
+
+    # ─── gen-smoke ──────────────────────────────────────────────────────────
+    # Does the model still write text? Nothing else here asks that.
+    #
+    # df8512e0's collapse was invisible to every metric computed during training, and
+    # the transfer evals that could see it ran at the end. What it was NOT invisible
+    # to is a handful of greedy completions: the distilled model emits "// (true)"
+    # fifty times and stops. Measured degeneracy was 20.8% on Java and 30.9% on Shell
+    # against a 0.4% / 6.7% baseline. That is one GPU-minute of evidence, and it
+    # arrived only after ~4 GPU-h of eval had confirmed a result already visible in
+    # the first sample. Here it arrives beside the run.
+    #
+    # One target for the whole ladder rather than one per rung: the model is 350m, so
+    # loading nine of them serially on one GPU is still minutes.
+    #
+    # IT REPORTS AND EXITS 0 — ALWAYS. distill-stage1-v2's copy of this target fails
+    # the build when the final rung is degenerate, because there it protects a
+    # downstream consumer from picking up a collapsed model. This recipe has no such
+    # consumer: it measures a whole epoch, every rung is priced by full-eval
+    # regardless, and a failure here would only remove evidence. The `degenerate`
+    # flags and the table are still produced; read them, and decide which rung ships
+    # yourself. The recipe test asserts there is no exit gate.
+    gen-smoke:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<% for N in CKPT_LADDER.split(",") %>
+        export_$${N}:
+          binding: export-$${N}.hf_model
+<% endfor %>
+      outputs:
+        repetition_report:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/gen-smoke
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:1"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            gen_smoke_config:
+              # One entry per rung, in ladder order; the last is the one the gate judges.
+              rungs:
+<% for N in CKPT_LADDER.split(",") %>
+                - "$${N}:$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/export-$${N}"
+<% endfor %>
+              max_repetition: $${GEN_SMOKE_MAX_REPETITION}
+              new_tokens: $${GEN_SMOKE_NEW_TOKENS}
+              gate_final_rung: false
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/gen-smoke"
+
+
+    # ═══ FULL-EVAL, PER RUNG ════════════════════════════════════════════════
+    # The 27 evaluations of recipes/granite4-350m/lsf/full-eval, run against every
+    # rung. 26 of them are sage evals driven by the EVAL_CATALOG loop below; the
+    # 27th is BFCL, which runs its own harness in its own image and therefore gets
+    # its own target shape.
+    #
+    # WHY THE CATALOG IS A PARAMETER. full-eval spells these 27 out as 27
+    # hand-written targets; rl-checkpoint-eval keeps them in eval-catalog.yaml and
+    # generates the build with a Python script. Neither transposes to a recipe that
+    # needs 27 x 9. So the per-eval facts — script, image, result subpath, and the
+    # handful of per-eval overrides — live in parameters.yaml as data, and a nested
+    # Jinja loop emits the cross product. The CLI hands Jinja the parsed parameters
+    # dict (buildutil.py:apply_parameters), so a list of mappings iterates directly.
+    #
+    # The one fact that CANNOT travel as data is the BigCodeBench API URL: a
+    # parameter MARKER inside a parameter VALUE is never re-rendered, it is emitted
+    # literally. So that eval carries needs_bcb_url and the template writes the
+    # marker itself, below. (And note this comment cannot spell the marker either --
+    # the CLI templates comments too, so a marker here would be evaluated.)
+    #
+    # EVAL_CATEGORIES filters both loops. Default is all six, i.e. the whole suite:
+    # 9 rungs x 27 evals = 243 eval targets, ~4 GPU-h per rung, each 1 H100 on the
+    # preemptable queue. Trim it for a cheaper pass — see the README.
+<% set CATS = (EVAL_CATEGORIES | string | replace(" ", "") | lower).split(",") %>
+<% set SAGE_NAMES = [] %>
+<% for e in EVAL_CATALOG %><% if e.category in CATS %><% set _ = SAGE_NAMES.append(e.name) %><% endif %><% endfor %>
+<% for N in CKPT_LADDER.split(",") %>
+<% for e in EVAL_CATALOG %><% if e.category in CATS %>
+    eval-$${e.name}-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The EXPORTED model, never the raw checkpoint: the export is what prunes
+        # the resumable-run state, normalises tokenizer.json and pins
+        # tokenizer_class, and a benchmark run against the unexported directory
+        # would measure a model nobody can download.
+        model:
+          binding: export-$${N}.hf_model
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${SAGE_OUTPUT_DIR}/$${EXPERIMENT}-ckpt_$${N}/$${e.output_subpath}"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            # TOP LEVEL, not inside sage_eval_config: that is where the step's
+            # monitor reads it from (sage-eval/step.yaml, poll_interval_seconds |
+            # default(900)). Nested under sage_eval_config it is silently ignored.
+            poll_interval_seconds: $${EVAL_STATUS_POLL_INTERVAL_SECONDS}
+            sage_eval_config:
+              gb_script: "$${e.gb_script}"
+              model_path: "{{ bindings.model.binding.path }}"
+              # A FLAT SUFFIX, never a "/"-separated subdir. sage builds a per-eval
+              # job-script FILENAME out of this value (sage-<experiment>-<eval>.sh),
+              # so a "/" turns that filename into a nested path and its
+              # open(..., "w") raises FileNotFoundError. Per-rung results are
+              # therefore siblings, which is fine: the roll-up pivots the
+              # per-rung CSVs rather than re-scanning a tree.
+              experiment: "$${EXPERIMENT}-ckpt_$${N}"
+              batch_size: $${e.batch_size | default(SAGE_BATCH_SIZE)}
+              max_length: $${e.max_length | default(SAGE_MAX_LENGTH)}
+              num_gpus: $${SAGE_NUM_GPUS}
+              output_dir: "$${SAGE_OUTPUT_DIR}"
+              image_id: "$${e.image_id}"
+<% if e.extra_env | default({}) or e.needs_bcb_url | default(false) %>
+              extra_env:
+<% for k, v in (e.extra_env | default({})).items() %>
+                $${k}: "$${v}"
+<% endfor %>
+<% if e.needs_bcb_url | default(false) %>
+                OE_EVAL_BCB_API_URL: "$${OE_EVAL_BCB_API_URL}"
+<% endif %>
+<% else %>
+              extra_env: {}
+<% endif %>
+            launcher_config:
+              resources:
+                accelerators: "$${EVAL_ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${EVAL_QUEUE}"
+                memory: $${EVAL_MEMORY}
+<% endif %><% endfor %>
+<% endfor %>
+
+    # ─── eval-bfcl-ck<N>, the 27th evaluation ───────────────────────────────
+    # Tool calling, against ground truth, at test_categories all — the same breadth
+    # full-eval uses. A DIFFERENT question from eval-transfer, and neither
+    # substitutes for the other: on build bb779f1f every divergence metric improved
+    # while this one sat at 0.000 (0/400).
+    #
+    # Read the README's note before comparing a number here to the recorded
+    # baseline: BFCL 0.000 on this pair has twice been a tool-FORMAT failure rather
+    # than a capability one.
+<% if "bfcl" in CATS %>
+<% for N in CKPT_LADDER.split(",") %>
+    eval-bfcl-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        model:
+          binding: export-$${N}.hf_model
+      outputs:
+        # A single result FILE, chosen by the step from what the BFCL harness
+        # produced.
+        bfcl_results:
+          type: dataset
+          uri: "env://$${BFCL_OUTPUT_DIR}/$${EXPERIMENT}-ckpt_$${N}/$${BFCL_EVAL_NAME}"
+      steps:
+        # No image_id override anywhere in this target: the step runs its own
+        # harness image, not the distillation one.
+        - step_uri: space://steps/bfcl-eval
+          config:
+            poll_interval_seconds: $${EVAL_STATUS_POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            bfcl_config:
+              model_path: "{{ bindings.model.binding.path }}"
+              model_id: "$${BFCL_MODEL_ID}"
+              experiment: "$${EXPERIMENT}-ckpt_$${N}"
+              eval_name: "$${BFCL_EVAL_NAME}"
+              test_categories: "$${BFCL_TEST_CATEGORIES}"
+              num_gpus_generate: $${BFCL_NUM_GPUS}
+              num_gpus_evaluate: $${BFCL_NUM_GPUS}
+              gpu_memory_utilization: "$${BFCL_GPU_MEMORY_UTILIZATION}"
+              # The step appends experiment and eval_name to this.
+              output_dir: "$${BFCL_OUTPUT_DIR}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${BFCL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${EVAL_QUEUE}"
+                memory: $${GPU_MEMORY}
+<% endfor %>
+<% endif %>
+
+    # ═══ AGGREGATION ════════════════════════════════════════════════════════
+    # Two CSVs per rung, then one table across all of them. The per-rung exporters
+    # exist because each eval kind writes its results in its own layout, and each
+    # is gated on that rung's own evals — so rung 1000's CSV is written while rung
+    # 5000 is still evaluating, and a preempted eval only delays its own rung.
+<% if SAGE_NAMES %>
+<% for N in CKPT_LADDER.split(",") %>
+    export-sage-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<% for name in SAGE_NAMES %>
+        gate_$${name | replace("-", "_")}:
+          binding: eval-$${name}-ck$${N}.sage_eval_results
+<% endfor %>
+      outputs:
+        sage_export_csv:
+          type: dataset
+          uri: "env://$${SAGE_RESULTS_DIR}/$${EXPERIMENT}/ckpt_$${N}-sage.csv"
+      steps:
+        - step_uri: space://steps/sage-export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            sage_export_config:
+              experiment: "$${EXPERIMENT}-ckpt_$${N}"
+              export_stack: "$${EXPORT_STACK}"
+              input_dir: "$${SAGE_OUTPUT_DIR}"
+              # ckpt_<N>-sage.csv, and the <N> has to stay NUMERIC: the combined
+              # roll-up derives each column key with re.search(r"ckpt_(\d+)") and
+              # files a non-matching name under column ckpt_-1.
+              output_csv: "$${SAGE_RESULTS_DIR}/$${EXPERIMENT}/ckpt_$${N}-sage.csv"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${EXPORT_QUEUE}"
+                memory: $${EXPORT_MEMORY}
+<% endfor %>
+<% endif %>
+<% if "bfcl" in CATS %>
+<% for N in CKPT_LADDER.split(",") %>
+    export-bfcl-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        gate_bfcl:
+          binding: eval-bfcl-ck$${N}.bfcl_results
+      outputs:
+        bfcl_export_csv:
+          type: dataset
+          uri: "env://$${BFCL_RESULTS_DIR}/$${EXPERIMENT}/ckpt_$${N}-bfcl.csv"
+      steps:
+        - step_uri: space://steps/bfcl-export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            bfcl_export_config:
+              experiment: "$${EXPERIMENT}-ckpt_$${N}"
+              eval_name: "$${BFCL_EVAL_NAME}"
+              input_dir: "$${BFCL_OUTPUT_DIR}"
+              output_csv: "$${BFCL_RESULTS_DIR}/$${EXPERIMENT}/ckpt_$${N}-bfcl.csv"
+              filter: "$${BFCL_FILTER}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${EXPORT_QUEUE}"
+                memory: $${EXPORT_MEMORY}
+<% endfor %>
+<% endif %>
+
+    # ─── export-combined, THE single output file ─────────────────────────────
+    # One benchmark x checkpoint table: rows are benchmarks (the sage CSV's model +
+    # metric, plus one BFCL-<experiment> row per rung's BFCL eval), columns are
+    # ckpt_1000 ... ckpt_8150. Each row therefore reads left to right as one
+    # metric's trajectory across the epoch, which is the whole deliverable — the
+    # question "which checkpoint" is answered by scanning a row, not by opening
+    # nine result trees.
+    #
+    # It does NOT re-scan a sage result tree. sage cannot take a "/" in an
+    # experiment name, so the per-rung result dirs are siblings rather than a
+    # nestable tree; the step pivots the per-rung CSVs that the gates below already
+    # guarantee exist. Either eval kind alone is fine — it errors only if BOTH
+    # yield no CSVs.
+    #
+    # Gated on EVERY per-rung CSV, so it is the last target in the build and its
+    # completion means the epoch has been fully measured.
+    export-combined:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<% for N in CKPT_LADDER.split(",") %>
+<% if SAGE_NAMES %>
+        gate_sage_$${N}:
+          binding: export-sage-ck$${N}.sage_export_csv
+<% endif %>
+<% if "bfcl" in CATS %>
+        gate_bfcl_$${N}:
+          binding: export-bfcl-ck$${N}.bfcl_export_csv
+<% endif %>
+<% endfor %>
+      outputs:
+        combined_csv:
+          type: dataset
+          uri: "env://$${SAGE_RESULTS_DIR}/$${EXPERIMENT}/combined.csv"
+      steps:
+        - step_uri: space://steps/combined-export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            combined_export_config:
+              # Empty on the side that did not run, so the step skips it rather
+              # than globbing a directory nothing wrote.
+<% if SAGE_NAMES %>
+              sage_input_dir: "$${SAGE_RESULTS_DIR}/$${EXPERIMENT}"
+<% else %>
+              sage_input_dir: ""
+<% endif %>
+<% if "bfcl" in CATS %>
+              bfcl_input_dir: "$${BFCL_RESULTS_DIR}/$${EXPERIMENT}"
+<% else %>
+              bfcl_input_dir: ""
+<% endif %>
+              output_csv: "$${SAGE_RESULTS_DIR}/$${EXPERIMENT}/combined.csv"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${EXPORT_QUEUE}"
+                memory: $${EXPORT_MEMORY}

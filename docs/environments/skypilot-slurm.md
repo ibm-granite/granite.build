@@ -46,6 +46,51 @@ gbserver-managed block for the same alias is **overwritten** (so a stale or re-k
 (`SkypilotConfigCollisionError`) — gbserver never clobbers user-owned entries.
 See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_configs--cloud_config--aws_credentials).
 
+#### Multiple login nodes (`HostName` list)
+
+`HostName` may be a single value (above) **or** a list of interchangeable candidate login hostnames
+sharing one `Host` block — the fit for a cluster reached through several equivalent login nodes:
+
+```yaml
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-docker
+        HostName:                     # Candidate login nodes for this one cluster.
+          - login1.cluster.example.com
+          - login2.cluster.example.com
+        User: root
+        IdentityFile: ~/.ssh/slurm_docker_key
+```
+
+At launch gbserver picks one candidate and writes it as a normal scalar `HostName`. The pick is
+**sticky**: a candidate already written for this cluster in `~/.<cloud>/config` (for example by a
+parallel launch that just failed over to a healthy node) is kept, so a failover is not undone by a
+fresh random choice; only when nothing is written yet — or the written node is no longer a candidate —
+is one chosen at random (spreading load across the login nodes). The `Host` alias stays fixed (it must
+equal `cluster:`), so all candidates share this block's `User`/`Port`/`IdentityFile`/etc. A list of
+*different* clusters still uses separate `Host` blocks with distinct aliases.
+
+The candidates are also a **failover pool**. There is no up-front reachability probe (an earlier probe
+held a login-node SSH slot waiting on slow banners and starved the control SSH SkyPilot opens next, so
+a healthy cluster failed the launch). Instead, if provisioning fails with a transient SSH
+control-plane error — a late banner, a wedged session, a key-exchange reset (`ValueError: Failed to
+get partitions for cluster …`, `Connection timed out during banner exchange`, and the like) — gbserver
+rewrites `~/.<cloud>/config` to the *next* candidate before the launch is retried, so a single wedged
+login node is skipped rather than failing the build. Capacity failures (`Failed to acquire resources
+in <partition>`) do **not** trigger failover — any login node would hit them alike — and neither do SSH
+*auth* rejections, which never succeed on retry. Failover reuses the ordinary provision retry budget
+(`GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS`); when the candidates are exhausted (or there is only one)
+the genuine error surfaces, so a true outage is never hidden.
+
+> **Failover is launch-time only.** The rotation happens *while provisioning*. Once a cluster is up,
+> SkyPilot has pinned the chosen login node into the cluster handle, so its status polling, log
+> streaming, and teardown all stay on that node — unlike the native-LSF SSH tunnel (see
+> [lsf.md](lsf.md)), which re-selects a reachable node per operation. If the pinned node fails
+> *after* provisioning, that operation fails against it; the next *launch* re-selects (and, being
+> sticky, prefers the node already written unless it is rotated off). When the infra names no cluster
+> (a bare `slurm`/`lsf` infra) but the environment declares exactly one host for that cloud, that host
+> is the unambiguous launch target, so its candidates still fail over.
+
 > **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.slurm/config` self-heals,
 > SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key
 > — so a changed `IdentityFile`/`IdentityKey` can be masked by a live connection until its
@@ -55,17 +100,6 @@ See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_conf
 > re-authentication with the current key. This is a **test-only** toggle (manually set, unconditional
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
-
-> **Slow login nodes and the pre-launch probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`).** Before an
-> HPC launch gbserver can run a trivial `echo` over SSH to name a wedged login node up front, rather
-> than leaving you SkyPilot's opaque `ValueError: Failed to get partitions for cluster …`. On a node
-> slow to send its SSH banner this backfires: the probe holds a session for up to its timeout
-> (default 30s), and where SSH slots are scarce that starves the control connection SkyPilot opens
-> next for `scontrol show partitions -o`. The symptom is `Connection timed out during banner
-> exchange` from the probe *and* the launch, once per provision retry — a diagnostic causing the
-> failure it reports. Set `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` to disable it (our deployments
-> do; the skip is logged). Costs no error handling: genuine blips are still retried as transient and
-> the API server's traceback is still surfaced.
 
 ### `cluster` / `zone`
 

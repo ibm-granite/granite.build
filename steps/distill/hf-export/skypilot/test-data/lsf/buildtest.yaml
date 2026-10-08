@@ -1,0 +1,38 @@
+# YAML-driven spec for test_skypilot_lsf_distill_hf_export.py (located by the test/ <->
+# test-data/ helper, so the pairing holds in both test modes; see steps/README.md).
+#
+# Runs distill-hf-export against a REAL trainer output dir on /proj, proving the port's
+# launch path end to end: the shared distillation package delivered from the /proj
+# checkout, a named checkpoint selected out of nine, the DeepSpeed resume state left
+# behind, padding_side normalised, and the result loaded before being published.
+targets:
+  - export
+target_expectations:
+  - target_name: export
+    # One workload. The env:// input pull and output push are shared-FS no-ops, so both
+    # register off their URI strings with no extra step.
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+    expected_steps:
+      - metadata_matches:
+          distill_code_commit: "^[0-9a-f]{40}$"
+          distill_code_source: "^(filesystem|git)$"
+          distill_code_dirty: "^[0-9]+$"
+        config:
+          export_config:
+            # Pin the three settings whose wrong value ships a broken release rather than
+            # failing the run: left padding corrupts batched non-generative use, an
+            # unverified export can be missing a file.
+            padding_side: "right"
+            verify: true
+            # true in THIS fixture only — see build.yaml for the two kinds of entry a real
+            # multi-node checkpoint carries that the ported classifier does not know. The
+            # step's own default stays false, which test_step_template.py asserts.
+            allow_unknown: true
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+timeout_minutes: 60

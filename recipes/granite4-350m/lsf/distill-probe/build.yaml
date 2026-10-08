@@ -1,0 +1,99 @@
+######
+# distill-probe — the three cheap questions that gate the whole distillation family.
+#
+# Each is answered inside the distillation image in about two minutes, and none
+# trains anything. Run this BEFORE distill-smoke, and distill-smoke before stage 1.
+#
+#   load-student   Does granite-4.0-350m load at all in this image, with FA2 and
+#                  with eager attention?
+#   tokenizer      Does the SFT checkpoint's declared tokenizer_class actually change
+#                  how text segments?
+#   tokenizer-fit  Which segmentation do this checkpoint's weights prefer, by NLL
+#                  per byte?
+#
+# Every target runs the distill-probe step, which holds the probes and the reasoning
+# behind each (steps/distill/probe/skypilot/src/distill_probe.py). Nothing is
+# produced; the answer is the PROBE VERDICT line in the log.
+#
+# Run:
+#   gb build start -f recipes/granite4-350m/lsf/distill-probe/build.yaml --space <space>
+#
+# Then read the logs as the README describes: the PROBE lines are in SkyPilot's
+# run.log, not in `gb build log`.
+######
+granite.build:
+  name: distill-probe
+  # No retries. A probe that needed a retry has already told you something, and a
+  # silently-retried transient would hide exactly the flakiness worth seeing.
+  retries:
+    max_retries: 0
+  targets:
+
+    # ─── load-student ───────────────────────────────────────────────────────
+    load-student:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      steps:
+        - step_uri: space://steps/distill/probe
+          config:
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                accelerators: "H100:1"
+                memory: 256
+            probe_config:
+              probe: load-student
+              checkpoint: "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+
+    # ─── tokenizer ──────────────────────────────────────────────────────────
+    tokenizer:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      steps:
+        - step_uri: space://steps/distill/probe
+          config:
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: 2
+            launcher_config:
+              image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                memory: 32
+            probe_config:
+              probe: tokenizer
+              checkpoint: "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+
+    # ─── tokenizer-fit ──────────────────────────────────────────────────────
+    # `tokenizer` shows whether the two segmentations disagree; this says which one
+    # the weights want, i.e. whether pinning tokenizer_class is a FIX or a REGRESSION.
+    tokenizer-fit:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      steps:
+        - step_uri: space://steps/distill/probe
+          config:
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                accelerators: "H100:1"
+                memory: 256
+            probe_config:
+              probe: tokenizer-fit
+              checkpoint: "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+              corpus: "/proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+              rows: 200

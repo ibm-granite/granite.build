@@ -213,16 +213,24 @@ environment, not on a fixed schema.
 
 | Field                    | Used by                  | Notes |
 |--------------------------|--------------------------|-------|
-| `num_nodes`              | k8s, lsf, runpod           | Number of nodes. |
+| `num_nodes`              | k8s, lsf, runpod, skypilot  | Number of nodes. |
 | `num_gpus_per_node`      | k8s, lsf, runpod           | GPUs per node. |
 | `num_cpus_per_node`      | docker, k8s, skypilot      | CPU cores per node. |
 | `total_memory_per_node`  | docker, k8s, skypilot      | Memory per node, e.g. `"4Gi"`, `"32Gi"`. |
 
-For **skypilot** the launch path consumes only `num_cpus_per_node` and
+For **skypilot** the launch path consumes `num_cpus_per_node` and
 `total_memory_per_node`, folding them into `sky.Resources` as a low-precedence
-floor (values under `launcher_config.resources` override them). GPU/accelerator
-selection and node count are supplied via `launcher_config.resources` on the step
-(e.g. `accelerators: "A100:8"`), not via `num_gpus_per_node`/`num_nodes`.
+floor (values under `launcher_config.resources` override them), plus `num_nodes`,
+which becomes `sky.Task(num_nodes=...)`. GPU/accelerator selection is supplied via
+`launcher_config.resources` on the step (e.g. `accelerators: "A100:8"`), not via
+`num_gpus_per_node` — and note that accelerators are **per node**, so
+`accelerators: "H100:8"` with `num_nodes: 2` requests 16 GPUs in total.
+
+`num_nodes` may also be overridden by `launcher_config.num_nodes` (in the step or
+in build.yaml), which wins over `compute_config`. Do **not** place it under
+`launcher_config.resources`: `num_nodes` is a `sky.Task` field rather than a
+`sky.Resources` one, so SkyPilot drops it there without an error. gbserver logs a
+warning if it finds one, but the run proceeds single-node.
 
 For **lsf**, an unset `num_gpus_per_node` defaults to **1** GPU, unlike k8s which
 defaults to `0`. A non-GPU step (e.g. a pull/push step) must therefore set
@@ -285,6 +293,7 @@ Available variables:
 | Variable          | What it is |
 |-------------------|------------|
 | `run_metadata.*`  | Per-run identifiers (`targetsteprun_id`, `build_id`, etc.). |
+| `unique_hash`     | Output `uri` only. Hash of the artifact event that triggers the push, so each push of an output gets a new value, including a workload step retry; a push step retry keeps it. A build retry that reuses a target keeps its old URI. Keep a prefix (e.g. `hf://huggingface.co/datasets/my-org/eval_{{ unique_hash }}`): the hash may start with a digit. Unlike `{{ target_hash }}`, which retries reuse. |
 | `space.variables.*` | Variables defined in the space's `space.yaml`. |
 | `binding.*`       | Resolved upstream artifact info for a bound input. `binding.path` is the filesystem location (filesystem-backed outputs); `binding.state` is the verbatim value of a `mem://` output. Use whichever the upstream output's scheme produces. |
 | `bindings.*`      | Map of all bound inputs by name (`bindings.<name>.binding.path` / `.state`); use when a target has more than one bound input. |

@@ -1,0 +1,1099 @@
+######
+# distill-onpolicy-v2 — ON-POLICY GOLD for the granite4-350m pair, continuing from
+# distill-stage1-v2's chosen checkpoint. BlueVela (SkyPilot / LSF).
+#
+# WRITTEN, NOT YET RUN. STUDENT_MODEL has no usable default: on-policy continues from a
+# good off-policy checkpoint, and which rung of stage 1 v2's ladder that is is decided
+# from its entropy curve, its transfer metrics and its generation check. Set it, then
+# run the smoke tier, then this. The README says what to set it to.
+#
+# WHAT ON-POLICY CHANGES, AND WHY IT IS WORTH A SEPARATE RECIPE
+#
+# At lmbda 0 the teacher only ever scores the corpus's own tokens — text somebody else
+# wrote, which is where an already-SFT'd student was already strong. That is exactly
+# where build df8512e0 found no headroom: initial JSD 0.0825 against a ln2 ceiling, two
+# thirds of the realisable gain gone by step 509, and 7,640 steps of nothing left to
+# learn. On-policy puts the student on its OWN distribution — including the degenerate
+# regions it wanders into — which is where teacher correction has something to say.
+#
+# The cost is a second allocation and a different failure surface:
+#
+#   * The STUDENT is served under vLLM, not the teacher. The teacher only ever does a
+#     forward pass, inside the training job. Serving the teacher here is not an error
+#     that crashes; it is a DIFFERENT ALGORITHM that runs to completion and reports a
+#     plausible loss.
+#   * The student must not be allowed to emit an immediate EOS. An empty completion is
+#     a rollout the teacher then scores as if it were one, and the run collapses into
+#     scoring nothing. MIN_COMPLETION_LENGTH sets a floor, and it has to be set on BOTH
+#     sides — the trainer's copy bounds what it asks for, the server's copy is where
+#     the sampling decision is actually taken.
+#   * LSF SERVICE clusters never autostop, so teardown is a target, not a courtesy.
+#     It is gated on the trainer's checkpoint, which a crashed trainer never emits,
+#     which is why the server also carries its own lifetime ceiling.
+#
+# THE TOPOLOGY IS THE ONE THAT HAS ACTUALLY RUN
+#
+# An EXTERNAL server in its own allocation, its URL arriving through a mem:// binding —
+# recipes/granite4-gold/lsf/gold-onpolicy-smoke's shape, which synced all 362 parameter
+# tensors across two allocations in build 9973e766. NOT the in-allocation split that
+# vllm_num_servers alone selects: in that path the step passes no --vllm_server_host, so
+# the trainer looks for a server that is running on a different node.
+#
+# mem:// and not env:// for that URL: the payload is a URL, and env:// runs it through
+# filesystem-path normalisation, mangling http://host:8001 into /http:/host:8001.
+#
+# TWO VARIANTS, ONE RECIPE
+#
+# Constant lmbda (the default, LMBDA_SCHEDULE constant) mixes on- and off-policy at a
+# fixed ratio throughout. A linear ramp (LMBDA_SCHEDULE linear, LMBDA_INIT 0.0) starts
+# off-policy where the corpus signal is and moves on-policy as the student's own
+# distribution becomes the interesting one. The ramp has NEVER RUN in this pipeline —
+# lmbda_schedule is a trainer key this repo had not previously exposed — so treat it as
+# untested plumbing and smoke it first.
+#
+# Everything else is distill-stage1-v2: the step-bounded horizon and the checkpoint
+# ladder with an export, a transfer eval and a generation check per rung. NOT its CE
+# anchor and NOT its entropy guard — the completed CE sweep retired both, and CE_COEF and
+# ENTROPY_GUARD_DROP_FRAC are 0 here as they are there.
+#
+# That is worth stating rather than inheriting quietly, because the anchor's rationale
+# was strongest in exactly this regime: on-policy training on a student's own output is
+# where a collapse could feed itself, and the sweep was run off-policy, so it says
+# nothing about that. What it does say is that non-zero CE costs capability in ordered
+# amounts and that the collapse it prevented damaged nothing off-policy. So this starts
+# where the evidence is — at zero — and CE_COEF is one --param plus a patched CODE_DIR
+# away if the on-policy entropy curve argues otherwise.
+#
+# Run:
+#   gb build start -f recipes/granite4-350m/lsf/distill-onpolicy-v2/build.yaml \
+#     --space <space> --param STUDENT_MODEL=<stage1-v2 export dir>
+######
+granite.build:
+  name: distill-350m-onpolicy-v2
+  # A retry is here because of a MEASURED cluster fault, not as general
+  # insurance. Builds 7853d33b and b5f030cd lost three GPU targets to
+  # `RuntimeError: CUDA unknown error` raised inside torch at cuda_init, every
+  # one of them on host p2-r03-n1 — 3 runs, 3 failures on that host, against 0
+  # failures across several hundred runs on every other host in the logs. The
+  # node takes the allocation and cannot initialise CUDA.
+  #
+  # Nothing in a build.yaml can steer LSF away from a host (see README for the
+  # bsub exclusion, which lives in ~/.sky/config.yaml), so the recipe's only
+  # lever is to run the target again and land somewhere else. target_reuse_enabled
+  # means a retry re-runs the FAILED target and reuses what already succeeded, so
+  # a fault three targets deep does not re-train.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+<% if not CORPUS_DIR | string | trim %>
+    # Skipped entirely when CORPUS_DIR is set -- see parameters.yaml.
+    # ─── sources ────────────────────────────────────────────────────────────
+    # Build ONE corpus file from the three SFT splits, because three things are
+    # true at once and no single one of them is optional:
+    #
+    #   1. prep takes ONE path. prep_corpus.py:294 refuses a directory outright --
+    #      "Pass the .jsonl itself, or an HF dataset id" -- so there is no glob and
+    #      no list form to hand it three files with.
+    #
+    #   2. THE ROWS ARE SPELLED `conversations`, NOT `messages`. prep reads
+    #      record.get("messages") (prep_corpus.py:367) and returns `no_messages`
+    #      otherwise. Handed these files unchanged it would drop all 5,081,504 rows
+    #      and raise PrepError. This rename is the single most load-bearing line in
+    #      the target.
+    #
+    #   3. The splits are wildly unequal -- general 84.86%, tools 13.98%, rag 1.17%
+    #      -- and prep's max_examples stops after N KEPT rows IN INPUT ORDER. A
+    #      plain concatenation plus max_examples would therefore yield a subset of
+    #      pure `general` with no tools and no rag in it, silently. Sampling
+    #      proportionally HERE, and shuffling, is what makes a subset representative
+    #      rather than just short.
+    #
+    # Reservoir sampling per split, seeded, so the selection is reproducible from
+    # SHUFFLE_SEED alone and memory is bounded by the sample rather than the corpus.
+    # Two passes: one to count, one to select, because the per-split quota cannot be
+    # computed until the totals are known.
+    sources:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Lineage. Three declared inputs mean the corpus's provenance is recorded as
+        # three artifacts rather than as a path inside a shell script.
+        source_general:
+          uri: "env://$${SOURCE_GENERAL}"
+          type: dataset
+        source_tools:
+          uri: "env://$${SOURCE_TOOLS}"
+          type: dataset
+        source_rag:
+          uri: "env://$${SOURCE_RAG}"
+          type: dataset
+      outputs:
+        corpus_source:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-sources
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${SOURCES_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SOURCES_MEMORY}
+            sources_config:
+              # Order names the per-split RNG streams; reordering changes the selection.
+              sources:
+                - "$${SOURCE_GENERAL}"
+                - "$${SOURCE_TOOLS}"
+                - "$${SOURCE_RAG}"
+              target_rows: $${TARGET_ROWS}
+              shuffle_seed: $${SHUFFLE_SEED}
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/sources"
+<% endif %>
+
+    # ─── align ──────────────────────────────────────────────────────────────
+    # Re-embeds the base student onto the teacher's tokenizer and emits the
+    # tokenizer artifacts the rest of the pipeline reads. Cheap relative to
+    # everything after it, and everything after it is wrong without it.
+    align:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Recorded as lineage inputs. env:// means "already on a filesystem this
+        # environment can reach", so the pull is a no-op: these add input
+        # artifacts and no extra step. A path passed only to a step's config
+        # would run fine and record nothing.
+        teacher_model:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
+        student_model:
+          uri: "env://$${STUDENT_MODEL}"
+          type: model
+      outputs:
+        # All three declared. An undeclared output makes the resolver drop the
+        # NEWARTIFACT event and the target completes with no output AND no error.
+        retagged_student:
+          uri: "env://{{ binding.path }}"
+          type: model
+        teacher_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+        student_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/tokenizer-align
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            align_config:
+              teacher_model: "$${TEACHER_MODEL}"
+              student_model: "$${STUDENT_MODEL}"
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
+              # Not optional for this pipeline: without a chat template carrying
+              # generation markers, prep cannot build assistant masks and the
+              # trainers fail deep inside sft.py. Relative to the step's code_dir.
+              chat_template: "$${CHAT_TEMPLATE}"
+              # FALSE for this pair, and it is the difference between this recipe
+              # running and aborting. The knob gates whether the TEACHER's tokenizer
+              # and the retagged student's must carry ChatML turn tokens. granite 4.0
+              # and 4.1 carry start_of_role/end_of_role and no im_start anywhere, so
+              # the upstream default fails align stage 1 of 4 on a granite-4.1
+              # teacher. False is only safe BECAUSE CHAT_TEMPLATE is granite-native:
+              # false with a ChatML template would align cleanly and then have the
+              # teacher score a format it has never seen. The turn boundary is still
+              # checked — align stage 4 of 4 derives the masking contract from the
+              # installed template and fails if it cannot.
+              require_chatml: $${REQUIRE_CHATML}
+              verify: true
+              dry_run: false
+
+<% if not CORPUS_DIR | string | trim %>
+    # Skipped entirely when CORPUS_DIR is set; corpus-pin-check runs instead.
+    # ─── corpus ─────────────────────────────────────────────────────────────
+    corpus:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The tokenizer that DEFINES this corpus, and the ordering edge that
+        # guarantees it exists before this target starts.
+        tokenizer:
+          binding: align.retagged_student
+        source_dataset:
+          binding: sources.corpus_source
+      outputs:
+        # The FILE, not out_dir: the trainers dispatch on the .jsonl suffix and
+        # find the manifest as a sibling of it. eval.jsonl is deliberately NOT an
+        # output — it exists only when eval_fraction is above zero, and a
+        # declared-but-absent output is a resolver failure.
+        corpus:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-prep
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            corpus_config:
+              dataset: "{{ bindings.source_dataset.binding.path }}"
+              tokenizer: "{{ bindings.tokenizer.binding.path }}"
+              # ABSOLUTE, and that is forced rather than chosen: the two eval
+              # targets have to name eval.jsonl and cannot compose it from their
+              # own workdir, because every target run gets its OWN
+              # GB_BUILD_WORKDIR. A shared absolute root is what makes one
+              # target's output nameable by another.
+              #
+              # BUILD_SUBDIR is what keeps that root shared WITHIN a build and
+              # distinct BETWEEN builds. It defaults to the build id, and it is
+              # not cosmetic: gbserver refuses to register an artifact whose URI
+              # another build in the space already registered, and a target whose
+              # artifact was refused still reports SUCCESS with an EMPTY output
+              # list. On a retry or a restart, reuse then propagates no binding
+              # from that target, every downstream consumer waits forever for an
+              # input that will never arrive, and the build reports SUCCESS having
+              # skipped them. Build b5f030cd did exactly that. See README.
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus"
+              # Must equal both trainers' max_length and both evals'. Four steps
+              # measure lengths and they have to agree about the budget, which is
+              # why this is one parameter and not four.
+              max_length: $${MAX_LENGTH}
+              think_policy: "$${THINK_POLICY}"
+              # last_message, and this couples to the eval step: the divergence
+              # is measured over the FINAL assistant turn, so a corpus prepared
+              # with a different boundary would be scored on a different span
+              # than it trained on.
+              completion_boundary: "last_message"
+              # Above zero on purpose: eval-transfer measures the held-out split,
+              # and at zero that split does not exist.
+              eval_fraction: $${EVAL_FRACTION}
+              max_examples: $${MAX_EXAMPLES}
+              # The schema the reference corpus carries. Costs nothing and makes a
+              # row traceable back through the manifest.
+              emit_row_id: true
+              # KEEP, against the step's own default of drop. The step defaults to
+              # dropping rows with a non-empty documents field because "granite's
+              # chat template does not render documents" — but the granite 4.x
+              # template this pipeline installs DOES render them, into the system
+              # turn via documents_system_message_prefix. Dropping them here would
+              # silently discard grounded rows for a reason that is not true of this
+              # template.
+              documents_policy: "$${DOCUMENTS_POLICY}"
+              seed: $${SEED}
+<% else %>
+    # ─── corpus-pin-check (only when CORPUS_DIR is set) ─────────────────────
+    # The corpus is DEFINED by the retagged tokenizer and by the prep policies: the
+    # rows were rendered through that chat template, the assistant masks were built
+    # with that tokenizer, and 5,908 rows were dropped for exceeding THAT max_length.
+    # A pin taken from a run that differed in any of those trains on a corpus this
+    # build does not describe, and every metric downstream would still look normal.
+    #
+    # So this target exists to turn that into a loud failure, and to do it BEFORE the
+    # 2-node H100 allocation is held. It is CPU-only and reads one JSON file, so the
+    # cost of having it is seconds; the cost of not having it is a run.
+    #
+    # Every consumer of the pinned corpus binds this target's output, which is what
+    # makes the check an ordering edge rather than a suggestion.
+    corpus-pin-check:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Declared so the pinned corpus appears in this build's lineage at all: with
+        # `sources` and `corpus` gone, this is the only place it is named as an input.
+        pinned_corpus:
+          uri: "env://$${CORPUS_DIR.rstrip('/')}/train.jsonl"
+          type: dataset
+        # The tokenizer the manifest has to agree with, and the ordering edge that
+        # guarantees align has run before the comparison is made.
+        tokenizer:
+          binding: align.retagged_student
+      outputs:
+        pin_check:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/corpus-pin-check
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            pin_check_config:
+              corpus_dir: "$${CORPUS_DIR.rstrip('/')}"
+              teacher_model: "$${TEACHER_MODEL}"
+              max_length: $${MAX_LENGTH}
+              think_policy: "$${THINK_POLICY}"
+              documents_policy: "$${DOCUMENTS_POLICY}"
+              eval_fraction: $${EVAL_FRACTION}
+              tokenizer_dir: "{{ bindings.tokenizer.binding.path }}"
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus-pin"
+
+<% endif %>
+
+<% if INCLUDE_SFT | string | lower in ("true", "yes", "1", "on") %>
+    # ─── train-sft (switched on) ────────────────────────────────────────────
+    # A plain-SFT pass over the same corpus, with no teacher in the loop. GOLD
+    # then continues from this checkpoint. The step's ZeRO-3 config sets
+    # zero3_save_16bit_model and sft.py calls save_model on the output directory,
+    # so the registered checkpoint is HF-native and loadable as a student init —
+    # which is why no export is needed between here and GOLD.
+    train-sft:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: align.retagged_student
+<% if CORPUS_DIR | string | trim %>
+        # Pinned: read DIRECTLY, because `corpus` was not rendered and a binding
+        # naming it would block this target on a producer that does not exist.
+        corpus:
+          uri: "env://$${CORPUS_DIR.rstrip('/')}/train.jsonl"
+          type: dataset
+        # The ordering edge the binding used to provide, now carrying the manifest
+        # comparison with it: nothing reads a pinned corpus before it is checked.
+        corpus_pin:
+          binding: corpus-pin-check.pin_check
+<% else %>
+        corpus:
+          binding: corpus.corpus
+<% endif %>
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/sft
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${SFT_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:$${SFT_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            workload:
+              # MUST match the allocation above: run-sft.sh asserts this against
+              # the GPUs visible in the container, because a mismatch trains at a
+              # different effective batch size than the config says. More than one
+              # node is refused by the script.
+              gpus_per_node: $${SFT_NUM_GPUS}
+              nodes: 1
+            sft_config:
+              student_model_path: "{{ bindings.student.binding.path }}"
+              corpus_path: "{{ bindings.corpus.binding.path }}"
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/train-sft"
+              response_template: "$${RESPONSE_TEMPLATE}"
+              max_length: $${MAX_LENGTH}
+              per_device_train_batch_size: $${SFT_PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${SFT_GRADIENT_ACCUMULATION_STEPS}
+              learning_rate: "$${SFT_LEARNING_RATE}"
+              num_train_epochs: $${SFT_NUM_TRAIN_EPOCHS}
+              # Checkpoint on the first step, so publication is exercised rather
+              # than assumed on a run this short.
+              save_steps: 1
+              seed: $${SEED}
+              # LEFT AT THE DEFAULT (-1, the whole corpus). max_dataset_size and
+              # corpus max_examples are NOT interchangeable ways to make a run
+              # small: sft.py compares its kept-row count against PREP's manifest
+              # and raises ManifestDrift on any shortfall, because the only
+              # shortfall it knows how to cause is a row whose tokenization
+              # produced no prompt — a chat-template or tokenizer mismatch. Shrink
+              # the CORPUS instead, so the two counts agree by construction.
+              max_dataset_size: -1
+              # logging_steps is not a contract key; it reaches the trainer through
+              # extra_config_yaml, the documented escape hatch for the long tail of
+              # CustomSFTConfig. At the step's default of 10 a run this short logs
+              # nothing and there is no loss trajectory to read.
+              extra_config_yaml: "logging_steps: 1"
+              # EMPTY is what makes this a plain-SFT pass. With a logits directory
+              # the step becomes a forward-KL distillation arm of its own, and the
+              # pipeline would distil twice rather than warm-start once.
+              precomputed_logits_dir: ""
+<% endif %>
+
+    # ─── vllm-server ────────────────────────────────────────────────────────
+    # Serves the STUDENT for on-policy rollout, in its own single-node allocation.
+    #
+    # The model is a BINDING, not a parameter: the copy being served and the copy being
+    # trained have to be the same weights, and binding it to align.retagged_student is
+    # what makes that structural rather than a convention two parameters happen to
+    # agree on. (align on an already-aligned export is a no-op — build b2d37592 showed
+    # reuse_in_place=100352 moved=0 for this pair — but it is still what pins
+    # tokenizer_class and installs the generation-marked template.)
+    vllm-server:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: align.retagged_student
+      outputs:
+        # mem://, NOT env://: the payload is a URL. See the header.
+        vllm_url:
+          uri: "mem://distill-onpolicy-v2-vllm"
+        # For teardown: LSF SERVICE clusters never autostop and never get a
+        # terminal-status cleanup, so without this the allocation is held until
+        # someone runs `sky down` by hand.
+        cluster_name:
+          uri: "mem://distill-onpolicy-v2-vllm-cluster"
+      steps:
+        - step_uri: space://steps/distill/vllm-server
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${VLLM_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:$${VLLM_NUM_GPUS}"
+                memory: $${GPU_MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+            code_config:
+              # The step's own public pin, restated. CODE_DIR is empty by default, so the
+              # step clones github.com/laminair/gb-steps-distillation at `ref` below --
+              # the same trainer every other distillation recipe here runs. This block
+              # used to point at a local patched checkout, because the CE anchor and the
+              # collapse guard need trainer fields that commit does not define; both are
+              # off now, nothing patch-gated renders, and the override is gone.
+              #
+              # Every key is restated rather than overriding code_dir alone, so this block
+              # does not depend on how a partial config override merges.
+              #
+              # To re-arm CE_COEF or the guard, build a patched checkout once on a node
+              # that can reach github.com and pass it as CODE_DIR (with CODE_EXPECT_REF):
+              #   git clone https://github.com/laminair/gb-steps-distillation.git $CODE_DIR
+              #   git -C $CODE_DIR checkout a5d59bc45524a8d75706e20d44ae1a254f273f23
+              #   cd $CODE_DIR/src/gb_steps_post_training/distillation
+              #   patch -p2 -F3 < <this repo>/steps/distill/gold/skypilot/patches/ce_anchor_and_entropy_guard.diff
+              #   git -C $CODE_DIR commit -am "ce anchor and entropy guard"
+              code_dir: "$${CODE_DIR}"
+              expect_ref: "$${CODE_EXPECT_REF}"
+              repo: "https://github.com/laminair/gb-steps-distillation.git"
+              ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+              workdir: "distill-code"
+              token_secret: ""
+              python: "/stage/.venv/bin/python"
+              setup_command: ""
+            vllm_config:
+              model_path: "{{ bindings.student.binding.path }}"
+              port: $${VLLM_PORT}
+              # Must be >= the trainer's max_length, or a prompt the trainer accepts
+              # is one the server refuses mid-run.
+              max_model_len: $${MAX_LENGTH}
+              # The floor, on the side where sampling actually happens. The trainer's
+              # own min_completion_length does not travel with a served request.
+              min_completion_length: $${MIN_COMPLETION_LENGTH}
+              health_timeout_seconds: $${VLLM_HEALTH_TIMEOUT_SECONDS}
+              # The server's own ceiling. teardown is gated on train-gold.checkpoint,
+              # which a crashed trainer never emits, so without this a trainer failure
+              # strands 8 H100s — as it did in build d77546a9.
+              max_lifetime_seconds: $${VLLM_MAX_LIFETIME_SECONDS}
+
+    # ─── train-gold ─────────────────────────────────────────────────────────
+    # The distillation itself. Off-policy at lmbda 0.0: every rank trains on the
+    # fixed corpus and there is no vLLM server to coordinate.
+    #
+    # This is the target v2 exists to change. Everything here except the five keys
+    # under "the anchor and the instruments" is what build df8512e0 ran.
+    train-gold:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The ordering primitive AND the health gate: this binding resolves only once
+        # the server answers /health, so this target cannot start early.
+        vllm:
+          binding: vllm-server.vllm_url
+        # The student GOLD starts from: the SFT checkpoint when that arm is on,
+        # the aligned student otherwise. One binding either way, so the recorded
+        # lineage and the trainer's argument cannot disagree about which model
+        # was loaded.
+<% if INCLUDE_SFT | string | lower in ("true", "yes", "1", "on") %>
+        student:
+          binding: train-sft.checkpoint
+<% else %>
+        student:
+          binding: align.retagged_student
+<% endif %>
+<% if CORPUS_DIR | string | trim %>
+        # Pinned: read DIRECTLY, because `corpus` was not rendered and a binding
+        # naming it would block this target on a producer that does not exist.
+        corpus:
+          uri: "env://$${CORPUS_DIR.rstrip('/')}/train.jsonl"
+          type: dataset
+        # The ordering edge the binding used to provide, now carrying the manifest
+        # comparison with it: nothing reads a pinned corpus before it is checked.
+        corpus_pin:
+          binding: corpus-pin-check.pin_check
+<% else %>
+        corpus:
+          binding: corpus.corpus
+<% endif %>
+        teacher_model:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
+      outputs:
+        # GB_BUILD_WORKDIR/checkpoints/<run_name>_node<N>, registered by rank 0.
+        # The node count in that path comes from the allocation, not from a
+        # parameter, so it always describes the run that produced it.
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/gold
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: $${GOLD_NUM_NODES}
+              num_gpus_per_node: $${GOLD_NUM_GPUS}
+            launcher_config:
+              # Overrides the step's own image (gbserver prefers a build.yaml
+              # image_id over the launcher's).
+              image_id: "$${IMAGE_ID}"
+              resources:
+                # accelerators is PER NODE; memory is host memory per node, and
+                # it has to be stated — the LSF provisioner defaults to 16G and a
+                # host-memory kill presents as a cross-node NCCL hang.
+                accelerators: "H100:$${GOLD_NUM_GPUS}"
+                memory: $${GPU_MEMORY}
+                cluster: "$${CLUSTER}"
+                # For the LSF cloud, SkyPilot's zone is the queue name.
+                zone: "$${QUEUE}"
+            code_config:
+              # The step's own public pin, restated. CODE_DIR is empty by default, so the
+              # step clones github.com/laminair/gb-steps-distillation at `ref` below --
+              # the same trainer every other distillation recipe here runs. This block
+              # used to point at a local patched checkout, because the CE anchor and the
+              # collapse guard need trainer fields that commit does not define; both are
+              # off now, nothing patch-gated renders, and the override is gone.
+              #
+              # Every key is restated rather than overriding code_dir alone, so this block
+              # does not depend on how a partial config override merges.
+              #
+              # To re-arm CE_COEF or the guard, build a patched checkout once on a node
+              # that can reach github.com and pass it as CODE_DIR (with CODE_EXPECT_REF):
+              #   git clone https://github.com/laminair/gb-steps-distillation.git $CODE_DIR
+              #   git -C $CODE_DIR checkout a5d59bc45524a8d75706e20d44ae1a254f273f23
+              #   cd $CODE_DIR/src/gb_steps_post_training/distillation
+              #   patch -p2 -F3 < <this repo>/steps/distill/gold/skypilot/patches/ce_anchor_and_entropy_guard.diff
+              #   git -C $CODE_DIR commit -am "ce anchor and entropy guard"
+              code_dir: "$${CODE_DIR}"
+              expect_ref: "$${CODE_EXPECT_REF}"
+              repo: "https://github.com/laminair/gb-steps-distillation.git"
+              ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+              workdir: "distill-code"
+              token_secret: ""
+              python: "/stage/.venv/bin/python"
+              setup_command: ""
+            gold_config:
+              run_name: "$${RUN_NAME}"
+              ds_config: "$${DS_CONFIG}"
+              model_name_or_path: "{{ bindings.student.binding.path }}"
+              # A path, never a hub id: this teacher is not publicly fetchable.
+              teacher_model_name_or_path: "$${TEACHER_MODEL}"
+              dataset_name: "{{ bindings.corpus.binding.path }}"
+              num_train_epochs: $${GOLD_NUM_TRAIN_EPOCHS}
+              # Caps the run by optimizer steps, and here that IS the point rather
+              # than a smoke-scale shortcut: the objective had ~12% of headroom and
+              # two-thirds of the realisable gain was gone by step 509, so an
+              # epoch-bounded run spends 75% of its wall clock past the point where
+              # anything is left to learn. When set, this overrides num_train_epochs
+              # in the trainer.
+              max_steps: $${GOLD_MAX_STEPS}
+              learning_rate: $${GOLD_LEARNING_RATE}
+              min_lr: $${GOLD_MIN_LR}
+              warmup_ratio: $${WARMUP_RATIO}
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              per_device_train_batch_size: $${GOLD_PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${GOLD_GRADIENT_ACCUMULATION_STEPS}
+              max_length: $${MAX_LENGTH}
+              max_completion_length: $${MAX_COMPLETION_LENGTH}
+              gradient_checkpointing: true
+              save_strategy: "steps"
+              save_steps: $${GOLD_SAVE_STEPS}
+              save_total_limit: $${GOLD_SAVE_TOTAL_LIMIT}
+              logging_steps: 1
+              dataset_num_proc: $${DATASET_NUM_PROC}
+              temperature: $${TEMPERATURE}
+              lmbda: $${LMBDA}
+              beta: $${BETA}
+              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
+
+              # ── the anchor and the guard, both off ──────────────────────────
+              # All six are patch-gated: they need trainer fields the step's public pin
+              # does not define, and render_gold_config.py emits each one only when it is
+              # non-default. At the zeroed defaults in parameters.yaml nothing here
+              # reaches the config, which is exactly what lets this recipe run on that
+              # public pin — and what makes its objective df8512e0's, unanchored.
+              #
+              # Setting any of them non-zero requires CODE_DIR at a patched checkout. See
+              # CE_COEF in parameters.yaml for the sweep that retired them.
+              ce_coef: $${CE_COEF}
+              log_student_entropy: $${LOG_STUDENT_ENTROPY}
+              entropy_guard_drop_frac: $${ENTROPY_GUARD_DROP_FRAC}
+              entropy_guard_baseline_steps: $${ENTROPY_GUARD_BASELINE_STEPS}
+              entropy_guard_patience: $${ENTROPY_GUARD_PATIENCE}
+              entropy_guard_action: "$${ENTROPY_GUARD_ACTION}"
+
+              response_template: "$${RESPONSE_TEMPLATE}"
+              nccl_debug: "$${NCCL_DEBUG}"
+              nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
+              nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
+              nccl_enable_monitoring: true
+              # ── on-policy ───────────────────────────────────────────────────
+              # The address arrives at RUN TIME through the mem:// binding above, so
+              # it cannot be templated as a parameter. Its presence is what selects
+              # the external-server path over the in-allocation split that
+              # vllm_num_servers alone would pick.
+              vllm_server_url: "{{ bindings.vllm.binding.state }}"
+              vllm_mode: "$${VLLM_MODE}"
+              vllm_sync_frequency: $${VLLM_SYNC_FREQUENCY}
+              # 1 external server. The renderer refuses a URL with this at 0 (the
+              # on-policy keys would not be emitted and the run would train
+              # off-policy while a server sat idle), and refuses lmbda 0 with a URL
+              # (the server would be allocated and never used).
+              vllm_num_servers: 1
+              top_p: $${TOP_P}
+              use_sampled_opd_loss: $${USE_SAMPLED_OPD_LOSS}
+              last_message_only: $${LAST_MESSAGE_ONLY}
+              clip_alpha: $${CLIP_ALPHA}
+              opd_importance_sampling: $${OPD_IMPORTANCE_SAMPLING}
+              # Constant, or linear to ramp from LMBDA_INIT up to LMBDA. The ramp has
+              # never run in this pipeline.
+              lmbda_schedule: "$${LMBDA_SCHEDULE}"
+              lmbda_init: $${LMBDA_INIT}
+              # The generation floor, trainer side. Also set on the server above;
+              # both are required and they are not the same setting.
+              min_completion_length: $${MIN_COMPLETION_LENGTH}
+
+    # ─── export-<N>, one per checkpoint in CKPT_LADDER ──────────────────────
+    # A selector, not a converter: the trainer's ZeRO-3 config sets
+    # zero3_save_16bit_model, so each checkpoint is already HF-native safetensors.
+    #
+    # stage 1 exported one model — "the last one" — which is exactly the assumption
+    # that failed. Its best checkpoint was almost certainly early, and by the time
+    # anyone knew that, save_total_limit had deleted it. Here every ladder rung is
+    # exported and measured, and which one ships is decided from the readings.
+    # ~679 M each after pruning, CPU-only, so four of them cost no GPU time.
+<% for N in CKPT_LADDER.split(",") %>
+    export-$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        train_output:
+          binding: train-gold.checkpoint
+        # Bound so the export can assert the tokenizer it ships is the one the run
+        # actually trained with, rather than whatever happened to be copied into the
+        # checkpoint directory.
+        expected_tokenizer:
+          binding: align.retagged_student
+      outputs:
+        hf_model:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/hf-export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${EXPORT_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${EXPORT_MEMORY}
+            export_config:
+              train_output_dir: "{{ bindings.train_output.binding.path }}"
+              dest: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/export-$${N}"
+              # Named explicitly, never left empty. Empty means "highest step
+              # number", which for a guard-stopped run is whatever step the guard
+              # happened to fire on — a moving target across the two arms.
+              checkpoint: "checkpoint-$${N}"
+              padding_side: "right"
+              chat_template_thinking: "$${CHAT_TEMPLATE_THINKING}"
+              # TRUE, and forced rather than lax. HF Trainer writes one
+              # rng_state_<rank>.pth per rank for a distributed run, while the
+              # ported classifier's PRUNE_KNOWN carries only the single-process
+              # "rng_state.pth" — it was validated against a 1-GPU checkpoint. So
+              # every checkpoint this pipeline produces contains files it cannot
+              # classify, and with false the export refuses AFTER the training run
+              # has been paid for. export_manifest.json still records exactly what
+              # was dropped. The fix is one line upstream.
+              allow_unknown: true
+              verify: true
+              expect_tokenizer_from: "{{ bindings.expected_tokenizer.binding.path }}"
+<% endfor %>
+
+    # ─── eval-transfer-baseline ─────────────────────────────────────────────
+    # The t=0 read, and not optional decoration: a divergence with no baseline is
+    # a number without a direction. This measures the aligned student BEFORE any
+    # training, against the same teacher on the same held-out split.
+    #
+    # It depends only on align and corpus, so it runs concurrently with training
+    # rather than after it.
+    eval-transfer-baseline:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: align.retagged_student
+        # For the ORDERING EDGE, not for the path: eval.jsonl is not a declared
+        # artifact, so the corpus below is composed from the same root the corpus
+        # came from -- CORPUS_DIR when pinned, this build's own subdir otherwise.
+        # The upstream edge is what still guarantees this
+        # target cannot start before the split exists.
+<% if CORPUS_DIR | string | trim %>
+        # Pinned: read DIRECTLY, because `corpus` was not rendered and a binding
+        # naming it would block this target on a producer that does not exist.
+        corpus:
+          uri: "env://$${CORPUS_DIR.rstrip('/')}/train.jsonl"
+          type: dataset
+        # The ordering edge the binding used to provide, now carrying the manifest
+        # comparison with it: nothing reads a pinned corpus before it is checked.
+        corpus_pin:
+          binding: corpus-pin-check.pin_check
+<% else %>
+        corpus:
+          binding: corpus.corpus
+<% endif %>
+      outputs:
+        eval_metrics:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/eval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${EVAL_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                # Real GPU work: a forward pass through each of two models.
+                accelerators: "H100:$${EVAL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            eval_config:
+              student_model: "{{ bindings.student.binding.path }}"
+              teacher_model: "$${TEACHER_MODEL}"
+<% if CORPUS_DIR | string | trim %>
+              corpus: "$${CORPUS_DIR.rstrip('/')}/eval.jsonl"
+<% else %>
+              corpus: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus/eval.jsonl"
+<% endif %>
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-transfer-baseline"
+              metrics: "$${EVAL_METRICS}"
+              max_samples: $${EVAL_MAX_SAMPLES}
+              seed: $${SEED}
+              # Same budget as prep and as training: a smaller value here scores
+              # truncated completions and reports the result as the divergence.
+              max_length: $${MAX_LENGTH}
+              max_incomplete_fraction: $${MAX_INCOMPLETE_FRACTION}
+              batch_size: $${EVAL_BATCH_SIZE}
+              dtype: "$${EVAL_DTYPE}"
+              # False, and it should stay false on this pairing: the retag exists
+              # precisely so the two tokenizers agree on ids.
+              allow_tokenizer_mismatch: false
+
+    # ─── eval-transfer-<N>, one per checkpoint ──────────────────────────────
+    # The post-training reads. Same step, same teacher, same corpus, same budget as
+    # the baseline — everything except the student is held fixed, which is the only
+    # way the numbers are comparable to each other and to the t=0 column.
+    #
+    # metrics carries entropy for a reason that is no longer theoretical: at 256
+    # samples this is the only place the 42% entropy drop was visible on the last
+    # run, and it was visible only after training had finished. Per-checkpoint, it
+    # becomes a curve, and the curve is what says where the model turned.
+    #
+    # Minutes on one GPU each, so all four together cost less than a single
+    # full-eval — which is why full-eval is gated on these rather than run beside
+    # them.
+<% for N in CKPT_LADDER.split(",") %>
+    eval-transfer-$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: export-$${N}.hf_model
+<% if CORPUS_DIR | string | trim %>
+        # Pinned: read DIRECTLY, because `corpus` was not rendered and a binding
+        # naming it would block this target on a producer that does not exist.
+        corpus:
+          uri: "env://$${CORPUS_DIR.rstrip('/')}/train.jsonl"
+          type: dataset
+        # The ordering edge the binding used to provide, now carrying the manifest
+        # comparison with it: nothing reads a pinned corpus before it is checked.
+        corpus_pin:
+          binding: corpus-pin-check.pin_check
+<% else %>
+        corpus:
+          binding: corpus.corpus
+<% endif %>
+      outputs:
+        eval_metrics:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/eval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${EVAL_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:$${EVAL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            eval_config:
+              student_model: "{{ bindings.student.binding.path }}"
+              teacher_model: "$${TEACHER_MODEL}"
+<% if CORPUS_DIR | string | trim %>
+              corpus: "$${CORPUS_DIR.rstrip('/')}/eval.jsonl"
+<% else %>
+              corpus: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus/eval.jsonl"
+<% endif %>
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-transfer-$${N}"
+              metrics: "$${EVAL_METRICS}"
+              max_samples: $${EVAL_MAX_SAMPLES}
+              seed: $${SEED}
+              max_length: $${MAX_LENGTH}
+              max_incomplete_fraction: $${MAX_INCOMPLETE_FRACTION}
+              batch_size: $${EVAL_BATCH_SIZE}
+              dtype: "$${EVAL_DTYPE}"
+              allow_tokenizer_mismatch: false
+<% endfor %>
+
+    # ─── gen-smoke ──────────────────────────────────────────────────────────
+    # Does the model still write text? Nothing upstream asks that.
+    #
+    # df8512e0's collapse was invisible to every metric the pipeline computed during
+    # training, and the transfer evals that could see it ran at the end. What it was
+    # NOT invisible to is a handful of greedy completions: the distilled model emits
+    # "// (true)" fifty times and stops. Measured degeneracy was 20.8% on Java and
+    # 30.9% on Shell against a 0.4% / 6.7% baseline. That is one GPU-minute of
+    # evidence, and it arrived only after ~4 GPU-h of eval had been spent confirming
+    # a result already visible in the first sample.
+    #
+    # One target for the whole ladder rather than one per rung: the model is 350m, so
+    # loading four of them serially on one GPU is still minutes.
+    #
+    # It FAILS the target only when the LAST rung is degenerate, because that is the
+    # rung a downstream consumer would otherwise pick up. An early rung above
+    # threshold is a finding to read in the table, not a reason to fail a build whose
+    # later checkpoints may be fine.
+    gen-smoke:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<% for N in CKPT_LADDER.split(",") %>
+        export_$${N}:
+          binding: export-$${N}.hf_model
+<% endfor %>
+      outputs:
+        repetition_report:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/gen-smoke
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:1"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            gen_smoke_config:
+              # One entry per rung, in ladder order; the last is the one the gate judges.
+              rungs:
+<% for N in CKPT_LADDER.split(",") %>
+                - "$${N}:$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/export-$${N}"
+<% endfor %>
+              max_repetition: $${GEN_SMOKE_MAX_REPETITION}
+              new_tokens: $${GEN_SMOKE_NEW_TOKENS}
+              gate_final_rung: true
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/gen-smoke"
+
+    # ─── eval-bfcl-baseline, then eval-bfcl-<N> per rung ────────────────────
+    # Capability, against ground truth. A DIFFERENT question from eval-transfer,
+    # and neither substitutes for the other: a student can move toward the
+    # teacher's distribution while losing tool-calling accuracy, and the transfer
+    # metric cannot see that. Wired directly rather than wrapped by distill-eval,
+    # so its own artifacts stay its own — and it runs in its own image, so no
+    # image_id override here.
+    #
+    # ONE PER RUNG, PLUS A BASELINE, and the two failed builds are the argument.
+    # bb779f1f bound this to the last rung only, as a plumbing check. What came back
+    # was accuracy 0.000 (0/400) at step 2,000 — with no baseline to compare it
+    # against and no reading at any earlier step, so it could not say whether the
+    # capability was lost by step 25 or step 1,999, nor whether the starting student
+    # could do the task at all. Every divergence metric in that build improved while
+    # this one sat at zero, which is precisely the failure eval-transfer cannot see.
+    # A ladder of divergence readings next to a single capability reading measures
+    # the wrong thing carefully.
+    #
+    # ~10 min each on 1 H100 at BFCL_TEST_CATEGORIES simple, and they are independent,
+    # so the eight of them cost about what one did in wall-clock.
+    eval-bfcl-baseline:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The aligned student, untrained. A capability number with no baseline is a
+        # number without a direction — the same reason eval-transfer-baseline exists.
+        model:
+          binding: align.retagged_student
+      outputs:
+        # A single result FILE, chosen by the step from what the BFCL harness
+        # produced.
+        bfcl_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/bfcl-eval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            bfcl_config:
+              model_path: "{{ bindings.model.binding.path }}"
+              model_id: "$${BFCL_MODEL_ID}"
+              experiment: "$${RUN_NAME}-baseline"
+              eval_name: "$${BFCL_EVAL_NAME}"
+              test_categories: "$${BFCL_TEST_CATEGORIES}"
+              num_gpus_generate: $${BFCL_NUM_GPUS}
+              num_gpus_evaluate: $${BFCL_NUM_GPUS}
+              gpu_memory_utilization: "$${BFCL_GPU_MEMORY_UTILIZATION}"
+              # The step appends experiment and eval_name to this, so the results
+              # land under the run directory with everything else.
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-bfcl-baseline"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${BFCL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+
+    # ─── teardown ───────────────────────────────────────────────────────────
+    # Not optional. LSF SERVICE clusters never auto-stop, so without this the
+    # server's GPUs stay held after training finishes.
+    #
+    # Gated on the trainer's checkpoint, which means a CRASHED trainer never triggers
+    # it — gbserver's schema has no on-failure semantics. That is what
+    # VLLM_MAX_LIFETIME_SECONDS above is the backstop for.
+    teardown:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # `trained` is the ordering primitive and nothing else: the trainer emits
+        # checkpoint as its final log line, so this target runs after training ends.
+        trained:
+          binding: train-gold.checkpoint
+        vllm_cluster:
+          binding: vllm-server.cluster_name
+      steps:
+        - step_uri: space://steps/skypilot-teardown
+          config:
+            teardown_config:
+              # A LIST, even with one entry.
+              cluster_names:
+                - "{{ bindings.vllm_cluster.binding.state }}"
+
+<% for N in CKPT_LADDER.split(",") %>
+    eval-bfcl-$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        model:
+          binding: export-$${N}.hf_model
+      outputs:
+        # A single result FILE, chosen by the step from what the BFCL harness
+        # produced.
+        bfcl_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/bfcl-eval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            bfcl_config:
+              model_path: "{{ bindings.model.binding.path }}"
+              model_id: "$${BFCL_MODEL_ID}"
+              experiment: "$${RUN_NAME}-ck$${N}"
+              eval_name: "$${BFCL_EVAL_NAME}"
+              test_categories: "$${BFCL_TEST_CATEGORIES}"
+              num_gpus_generate: $${BFCL_NUM_GPUS}
+              num_gpus_evaluate: $${BFCL_NUM_GPUS}
+              gpu_memory_utilization: "$${BFCL_GPU_MEMORY_UTILIZATION}"
+              # The step appends experiment and eval_name to this, so the results
+              # land under the run directory with everything else.
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-bfcl-$${N}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${BFCL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+
+    # ─── teardown ───────────────────────────────────────────────────────────
+    # Not optional. LSF SERVICE clusters never auto-stop, so without this the
+    # server's GPUs stay held after training finishes.
+    #
+    # Gated on the trainer's checkpoint, which means a CRASHED trainer never triggers
+    # it — gbserver's schema has no on-failure semantics. That is what
+    # VLLM_MAX_LIFETIME_SECONDS above is the backstop for.
+    teardown:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # `trained` is the ordering primitive and nothing else: the trainer emits
+        # checkpoint as its final log line, so this target runs after training ends.
+        trained:
+          binding: train-gold.checkpoint
+        vllm_cluster:
+          binding: vllm-server.cluster_name
+      steps:
+        - step_uri: space://steps/skypilot-teardown
+          config:
+            teardown_config:
+              # A LIST, even with one entry.
+              cluster_names:
+                - "{{ bindings.vllm_cluster.binding.state }}"
+<% endfor %>

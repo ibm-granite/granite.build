@@ -56,14 +56,19 @@
 #   IMAGE_TAG   image tag               (default: git short SHA, else "latest")
 #   STEP_ENV    step's environment segment      (default: this Makefile's dir name)
 #   PUBLISH_STEP_DIR  where `publish-step` renders the step (default: the env-nested
-#                     assets path configurations/assets/environments/<env>/steps/<name>)
-#   PUBLISH_TEST_DIR  where `publish-step` copies build tests (default: test/steps/<name>/<env>)
-#   PUBLISH_TESTDATA_DIR  where `publish-step` copies fixtures (default: test-data/steps/<name>/<env>)
+#                     assets path configurations/assets/environments/<env>/steps/<path>)
+#   PUBLISH_TEST_DIR  where `publish-step` copies build tests (default: test/steps/<path>/<env>)
+#   PUBLISH_TESTDATA_DIR  where `publish-step` copies fixtures (default: test-data/steps/<path>/<env>)
+# where <path> is STEP_PATH — the step's dir relative to the enclosing steps/,
+# minus the trailing <env> segment. For a flat step (steps/<name>/<env>) it equals
+# STEP_NAME; for a nested step (steps/<a>/<b>/<env>) it is <a>/<b>, preserving the
+# authoring nesting end-to-end (published tree, tests, and the step URI). See the
+# STEP_PATH derivation below.
 #
 # The rendered $(SPACE_DIR)/ directory (named "space" by default) is a
 # self-contained Granite.build Space. Point a build test / build.yaml at it via
 #   space_uri: <path to steps/byoc/skypilot/space>
-# and reference the step by the stable URI  step_uri: space://steps/$(STEP_NAME)
+# and reference the step by the stable URI  step_uri: space://steps/$(STEP_PATH)
 # — everything else (environments, monitors, other steps) resolves through the
 # generated space.yaml's base_uris chain to $(SPACE_BASE_URI).
 
@@ -121,9 +126,9 @@ endif
 
 # Name of the generated Space directory, created as ./$(SPACE_DIR) next to the
 # Makefile and referenced from a build test/build.yaml by `space_uri` plus
-# `space://steps/$(STEP_NAME)`. It is a self-contained Space: a generated
+# `space://steps/$(STEP_PATH)`. It is a self-contained Space: a generated
 # space.yaml (whose base_uris chain to $(SPACE_BASE_URI)) plus
-# steps/$(STEP_NAME)/step.yaml and the bundled src/. Overridable on the command
+# steps/$(STEP_PATH)/step.yaml and the bundled src/. Overridable on the command
 # line or in the including Makefile.
 SPACE_DIR  ?= space
 # `name:` written into the generated space.yaml. Defaults to the step name.
@@ -184,7 +189,7 @@ SPACE_BASE_URI ?= file://../$(STEP_TO_ROOT)/configurations/assets
 
 # ---- Publish (render into the committed assets tree + copy build tests) ------
 # `make publish-step` promotes a step from this authoring dir into the repo's shared,
-# committed assets so builds can reference it by space://steps/$(STEP_NAME), and
+# committed assets so builds can reference it by space://steps/$(STEP_PATH), and
 # copies the step's per-cluster build tests into the top-level test/steps/ tree so
 # they are discoverable/runnable from VSCode (Mode 2 — against the published step).
 #
@@ -197,23 +202,47 @@ STEP_ENV         ?= $(notdir $(CURDIR))
 # Repo root as an absolute path (COMMON_MK_DIR = steps/, so `..` is the root),
 # reused below and by the publish guard that refuses to rm -rf broad paths.
 REPO_ROOT        := $(abspath $(COMMON_MK_DIR)..)
+
+# STEP_PATH is the step's identity path RELATIVE to the enclosing steps/ dir,
+# with the trailing environment segment dropped: it preserves any authoring
+# nesting so a step at steps/<a>/<b>/<env> publishes to .../steps/<a>/<b> and is
+# referenced by space://steps/<a>/<b>. For the common flat layout
+# (steps/<name>/<env>) STEP_PATH == STEP_NAME, so output is byte-identical.
+#   STEP_ROOT = the enclosing steps/ dir (COMMON_MK_DIR points at it: it is the
+#               `../..`-style include path, one `..` per authoring level, so
+#               $(abspath) lands on steps/ regardless of nesting depth).
+#   STEP_REL  = CURDIR relative to steps/  (e.g. byoc/skypilot | distill/foo/skypilot).
+#   STEP_PATH = STEP_REL with the final <env> segment removed (byoc | distill/foo).
+# STEP_PATH is structural — derived from CURDIR, independent of any STEP_ENV
+# override — so it stays correct when check-published re-invokes publish-step.
+STEP_ROOT        := $(abspath $(COMMON_MK_DIR))
+STEP_REL         := $(patsubst $(STEP_ROOT)/%,%,$(CURDIR))
+STEP_PATH        := $(patsubst %/,%,$(dir $(STEP_REL)))
+
 ASSETS_DIR       ?= $(REPO_ROOT)/configurations/assets
-PUBLISH_STEP_DIR ?= $(ASSETS_DIR)/environments/$(STEP_ENV)/steps/$(STEP_NAME)
+PUBLISH_STEP_DIR ?= $(ASSETS_DIR)/environments/$(STEP_ENV)/steps/$(STEP_PATH)
 # The copied build tests and their fixtures follow the repo's parallel
 # test/ <-> test-data/ convention (resolved by libgbtest.get_test_data_dir_for):
-# the per-cluster test dir lands under test/steps/<name>/<env>/<cluster>/ and its
-# fixtures under the mirrored test-data/steps/<name>/<env>/<cluster>/. The step's
+# the per-cluster test dir lands under test/steps/<path>/<env>/<cluster>/ and its
+# fixtures under the mirrored test-data/steps/<path>/<env>/<cluster>/. The step's
 # own `test/<cluster>/` nesting is flattened away on copy so the published layout
 # matches the top-level convention (test/<path> mirrors test-data/<path>).
-PUBLISH_TEST_DIR     ?= $(REPO_ROOT)/test/steps/$(STEP_NAME)/$(STEP_ENV)
-PUBLISH_TESTDATA_DIR ?= $(REPO_ROOT)/test-data/steps/$(STEP_NAME)/$(STEP_ENV)
+PUBLISH_TEST_DIR     ?= $(REPO_ROOT)/test/steps/$(STEP_PATH)/$(STEP_ENV)
+PUBLISH_TESTDATA_DIR ?= $(REPO_ROOT)/test-data/steps/$(STEP_PATH)/$(STEP_ENV)
 # space_uri written into each copied buildtest.yaml so the Mode-2 (published) test
 # resolves the step through the shared space configurations/spaces/local (which
 # chains to configurations/assets). It is RELATIVE to the copied file's own dir,
-# test-data/steps/<step>/<env>/<cluster>/ — always five single-name segments
-# below the repo root — so it stays portable (no absolute checkout path is baked
-# in) and from_yaml resolves it against the yaml's directory (see build/space.py).
-MODE2_SPACE_URI  ?= ../../../../../configurations/spaces/local
+# test-data/steps/<path>/<env>/<cluster>/, and must climb back to the repo root
+# before descending into configurations/. That depth tracks STEP_PATH's nesting:
+# N segments in STEP_PATH -> N+4 dirs deep (test-data, steps, <path…>, <env>,
+# <cluster>), so the `../` count is derived rather than hardcoded. A flat step
+# (STEP_PATH == one segment) yields the historical 5×`../`; distill/foo yields 6.
+# from_yaml resolves it against the yaml's directory (see build/space.py).
+empty :=
+space := $(empty) $(empty)
+MODE2_PARENTS := test-data steps $(subst /, ,$(STEP_PATH)) $(STEP_ENV) cluster
+MODE2_DOTDOT  := $(subst $(space),,$(foreach s,$(MODE2_PARENTS),../))
+MODE2_SPACE_URI  ?= $(MODE2_DOTDOT)configurations/spaces/local
 
 # publish-step refuses to publish a custom-image step until its IMAGE_REF exists on
 # the registry — a step.yaml/build test referencing an unpublished image is broken
@@ -314,12 +343,14 @@ define write-gbignore
 endef
 
 # guard-publish-paths — fail fast before `publish-step` runs any rm -rf. The publish
-# destinations are absolute paths built from STEP_NAME/STEP_ENV; a stray empty
-# override (e.g. `make publish-step STEP_ENV=`) would collapse one to a broad path
-# like the repo root. Refuse unless STEP_NAME/STEP_ENV are set and each of the
-# three publish dirs is non-empty and neither `/` nor the repo root itself.
+# destinations are absolute paths built from STEP_PATH/STEP_ENV; a stray empty
+# override (e.g. `make publish-step STEP_ENV=`) or a mis-derived STEP_PATH would
+# collapse one to a broad path like the repo root. Refuse unless STEP_NAME,
+# STEP_PATH and STEP_ENV are set and each of the three publish dirs is non-empty
+# and neither `/` nor the repo root itself.
 define guard-publish-paths
 	@test -n "$(strip $(STEP_NAME))" || { echo "[publish-step] refusing: STEP_NAME is empty"; exit 1; }
+	@test -n "$(strip $(STEP_PATH))" || { echo "[publish-step] refusing: STEP_PATH is empty"; exit 1; }
 	@test -n "$(strip $(STEP_ENV))"  || { echo "[publish-step] refusing: STEP_ENV is empty"; exit 1; }
 	@for d in "$(PUBLISH_STEP_DIR)" "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"; do \
 		case "$$d" in \
@@ -357,29 +388,31 @@ endef
 # ---- Render Space ----------------------------------------------------------
 
 # Render a self-contained Space into $(SPACE_DIR)/:
-#   $(SPACE_DIR)/steps/$(STEP_NAME)/step.yaml   (+ bundled src/)
-#   $(SPACE_DIR)/steps/$(STEP_NAME)/.gbignore   (skip Jinja for **/*.md + src/)
+#   $(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml   (+ bundled src/)
+#   $(SPACE_DIR)/steps/$(STEP_PATH)/.gbignore   (skip Jinja for **/*.md + src/)
 #   $(SPACE_DIR)/space.yaml                       (base_uris -> $(SPACE_BASE_URI))
 # step-template.yaml is rendered substituting ONLY ${IMAGE_REF} so runtime Jinja
 # ({{ ... }}) and shell expansions (${VAR}, $(cmd)) in the run/setup blocks pass
 # through untouched (see render-step-template above). The generated space.yaml's
-# own directory is the first base_uri, so `space://steps/$(STEP_NAME)` resolves
-# here and everything else falls through to $(SPACE_BASE_URI).
+# own directory is the first base_uri, so `space://steps/$(STEP_PATH)` resolves
+# here and everything else falls through to $(SPACE_BASE_URI). STEP_PATH (not the
+# slash-free STEP_NAME) is used for the steps/ tree so a nested step's identity is
+# preserved locally exactly as it will be once published.
 space:
-	@mkdir -p $(SPACE_DIR)/steps/$(STEP_NAME)
-	$(call render-step-template,$(SPACE_DIR)/steps/$(STEP_NAME)/step.yaml)
+	@mkdir -p $(SPACE_DIR)/steps/$(STEP_PATH)
+	$(call render-step-template,$(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml)
 	@if [ -d "$(SRC_DIR)" ] && [ -n "$$(ls -A $(SRC_DIR) 2>/dev/null)" ]; then \
-		rm -rf "$(SPACE_DIR)/steps/$(STEP_NAME)/$(SRC_DIR)"; \
-		cp -R "$(SRC_DIR)" "$(SPACE_DIR)/steps/$(STEP_NAME)/$(SRC_DIR)"; \
-		echo "[$(STEP_NAME)] bundled $(SRC_DIR)/ into $(SPACE_DIR)/steps/$(STEP_NAME)/"; \
+		rm -rf "$(SPACE_DIR)/steps/$(STEP_PATH)/$(SRC_DIR)"; \
+		cp -R "$(SRC_DIR)" "$(SPACE_DIR)/steps/$(STEP_PATH)/$(SRC_DIR)"; \
+		echo "[$(STEP_NAME)] bundled $(SRC_DIR)/ into $(SPACE_DIR)/steps/$(STEP_PATH)/"; \
 	fi
-	$(call write-gbignore,$(SPACE_DIR)/steps/$(STEP_NAME))
+	$(call write-gbignore,$(SPACE_DIR)/steps/$(STEP_PATH))
 	@printf 'name: %s\nsecret_manager:\n  type: local\n  config: {}\nbase_uris:\n  - %s\n' \
 		"$(SPACE_NAME)" "$(SPACE_BASE_URI)" > $(SPACE_DIR)/space.yaml
 	@if [ -n "$(DEFAULT_ENVIRONMENT)" ]; then \
 		printf 'variables:\n  DEFAULT_ENVIRONMENT: %s\n' "$(DEFAULT_ENVIRONMENT)" >> $(SPACE_DIR)/space.yaml; \
 	fi
-	@echo "[$(STEP_NAME)] wrote Space $(SPACE_DIR)/ (step space://steps/$(STEP_NAME); base_uri $(SPACE_BASE_URI); image_ref='$(IMAGE_REF)')"
+	@echo "[$(STEP_NAME)] wrote Space $(SPACE_DIR)/ (step space://steps/$(STEP_PATH); base_uri $(SPACE_BASE_URI); image_ref='$(IMAGE_REF)')"
 
 # ---- Publish ---------------------------------------------------------------
 
@@ -398,8 +431,9 @@ space:
 # contain {{ ... }} examples and src scripts must not be templated (see write-gbignore).
 #
 # The step's own `test/<cluster>/` nesting is flattened on copy (the inner `test`
-# segment is dropped) so the published test lands at test/steps/<name>/<env>/<cluster>/
-# and its fixtures at the mirrored test-data/steps/<name>/<env>/<cluster>/. The test
+# segment is dropped) so the published test lands at test/steps/<path>/<env>/<cluster>/
+# and its fixtures at the mirrored test-data/steps/<path>/<env>/<cluster>/ (<path> is
+# STEP_PATH, preserving any authoring nesting — flat steps keep <path> == <name>). The test
 # locates its fixtures with libgbtest.get_test_data_dir_for(__file__), which maps a
 # `test/`-rooted path to the parallel `test-data/` one — so the SAME test file
 # resolves in both homes (Mode 1 co-located beside the step, Mode 2 here).
@@ -467,11 +501,23 @@ publish-step:
 # the re-render so drift-checking stays offline (it never queries the registry — the
 # image-existence guard applies only to a real `make publish-step`). Exit 0 = in sync
 # (or nothing published yet); exit 1 = drift, so re-run `make publish-step` and commit it.
+#
+# A MISSING side is compared against an empty directory, not /dev/null. Git cannot hold an
+# empty directory, so a step with no per-cluster build tests has no committed test/steps/
+# or test-data/steps/ tree at all — while `publish-step` always mkdir -p's those two. The
+# obvious `diff -r /dev/null <dir>` does not mean "compare against nothing": diff looks for
+# a file named `null` INSIDE the directory, fails to find it, and exits 2. That read as
+# DRIFT for every such step, telling the developer to re-publish artifacts that were already
+# in sync and cannot be committed (measured on distill-logit-precompute, whose test/ has no
+# per-cluster subdir: `diff: .../test/null: No such file or directory` -> DRIFT). An empty
+# scratch dir compares correctly in both directions: silent when both sides are empty, and a
+# real added-files report when only one side has content.
 check-published:
 	@if [ ! -f "$(PUBLISH_STEP_DIR)/step.yaml" ]; then \
 		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR); nothing to check."; exit 0; \
 	fi; \
 	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	empty="$$tmp/.empty"; mkdir -p "$$empty"; \
 	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" | head -1); \
 	$(MAKE) --no-print-directory publish-step \
 		PUBLISH_STEP_DIR="$$tmp/step" PUBLISH_TEST_DIR="$$tmp/test" \
@@ -480,7 +526,8 @@ check-published:
 	rc=0; \
 	for pair in "$(PUBLISH_STEP_DIR):$$tmp/step" "$(PUBLISH_TEST_DIR):$$tmp/test" "$(PUBLISH_TESTDATA_DIR):$$tmp/testdata"; do \
 		committed=$${pair%:*}; fresh=$${pair##*:}; \
-		[ -e "$$committed" ] || committed=/dev/null; \
+		[ -e "$$committed" ] || committed="$$empty"; \
+		[ -e "$$fresh" ] || fresh="$$empty"; \
 		diff -r -x '__pycache__' -x '*.pyc' "$$committed" "$$fresh" || rc=1; \
 	done; \
 	if [ $$rc = 0 ]; then echo "[$(STEP_NAME)] OK: committed artifacts match current source."; \

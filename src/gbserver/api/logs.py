@@ -167,8 +167,12 @@ def logquery(request: Request, query: Item) -> LogqueryResponse:
         )
 
 
-@logs_api.post("/logquery/server/{build_id}")  # type: ignore[no-redef]
-def logquery(request: Request, build_id: str, query: Item) -> LogqueryResponse:
+@logs_api.post(  # type: ignore[no-redef]
+    "/logquery/server/{build_id}", response_model=LogqueryResponse
+)
+def logquery(
+    request: Request, build_id: str, query: Item
+) -> LogqueryResponse | JSONResponse:
     log_server_manager = None
     try:
         log_server_manager = get_log_server_manager()
@@ -186,8 +190,11 @@ def logquery(request: Request, build_id: str, query: Item) -> LogqueryResponse:
     # override below entirely, re-opening the path/body smuggling bypass.
     json_object = _require_dict_json_object(query)
 
-    """ Set query model name to 'gbserver-build-runner' """
-    query.queryDef.queryParams.metadata["subsystemName"] = ["gbserver-build-runner"]
+    # Set query model name to 'gbserver-build-runner'. queryParams is guaranteed
+    # non-None here: _require_dict_json_object above raises when it is None.
+    query_params = query.queryDef.queryParams
+    assert query_params is not None
+    query_params.metadata["subsystemName"] = ["gbserver-build-runner"]
 
     has_access = build_id_access_check(username, build_id)
 

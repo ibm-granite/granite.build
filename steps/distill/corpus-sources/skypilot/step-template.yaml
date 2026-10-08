@@ -1,0 +1,71 @@
+######
+# corpus-sources — build ONE prep-ready corpus file from several raw SFT splits.
+#
+# Was an inline `command` target copied verbatim into five granite4-350m recipes. The
+# logic, and the measurements behind it, live in src/build_sources.py; this file only
+# passes the configuration through.
+#
+# CPU-only and stdlib-only. It needs no trainer source, which is why it carries none of
+# the distill-* steps' code_config / source-delivery contract.
+######
+name: corpus-sources
+version: 1.0.0
+type: data_processing
+config:
+  sources_config:
+    # The raw splits, as .jsonl paths visible from the compute node. Each split's RNG
+    # stream is seeded from shuffle_seed and the file's NAME, so reordering the list
+    # keeps the selection; two splits with the same file name share a stream.
+    sources: []
+    # Rows to keep across all splits. 0, or anything >= the corpus, keeps every row.
+    target_rows: 0
+    shuffle_seed: 0
+    # Where train.jsonl is written. A relative path lands under GB_BUILD_WORKDIR.
+    output_dir: "sources"
+    python: "/stage/.venv/bin/python"
+
+outputs:
+  required:
+    corpus_source:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+    default_launcher: sources
+    launchers:
+      sources:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          # Cloud-agnostic: the build supplies cpus/memory via
+          # config.compute_config and config.launcher_config.resources.
+          resources: {}
+          file_mounts:
+            src: src
+          # The sources go into an array, one append per entry, and NOT into a
+          # backslash-continued argument list: a Jinja block tag leaves a blank line
+          # where it stood, and a blank line after a `\` ends the command (build
+          # bb779f1f). Blank lines BETWEEN array appends are inert.
+          run: |
+            set -euo pipefail
+            echo "=== corpus-sources on $(hostname) ==="
+            WORK="${GB_BUILD_WORKDIR:-$PWD}"
+            OUT_DIR="{{ config.sources_config.output_dir }}"
+            case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
+            mkdir -p "$OUT_DIR"
+            SOURCES=()
+            {% for source in config.sources_config.sources %}
+            SOURCES+=("{{ source }}")
+            {% endfor %}
+            "{{ config.sources_config.python }}" ./src/build_sources.py \
+              "$OUT_DIR/train.jsonl" \
+              "{{ config.sources_config.target_rows }}" \
+              "{{ config.sources_config.shuffle_seed }}" \
+              "${SOURCES[@]}"
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot

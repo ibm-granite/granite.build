@@ -1,13 +1,13 @@
 ---
 description: Format, lint, review, and create or update a PR targeting main
-argument-hint: "Optional fork issue number (e.g., 42)"
+argument-hint: "Optional issue number (e.g., 42)"
 ---
 
 # PR for granite.build
 
 You are helping a developer create or update a pull request in the upstream repo (`ibm-granite/granite.build`) targeting the `main` branch. Follow these steps in order, stopping if any step fails.
 
-Fork issue number (if provided): $ARGUMENTS
+Issue number (if provided): $ARGUMENTS
 
 ## Step 0: Detect worktree context
 
@@ -21,7 +21,7 @@ Fork issue number (if provided): $ARGUMENTS
    ```
    BRANCH=$(git branch --show-current)
    ```
-   If `$BRANCH` matches the pattern `issue-<N>-*`, extract `<N>` as the fork issue number. Inform the user:
+   If `$BRANCH` matches the pattern `issue-<N>-*`, extract `<N>` as the issue number. Inform the user:
    > Auto-detected issue #N from branch name `<branch>`
 
 3. Derive the fork owner:
@@ -62,7 +62,7 @@ Only check files that will be in the PR — those changed between `upstream/main
 
 ## Step 4: Code review
 
-1. Use the `superpowers:requesting-code-review` skill to review the changes that will be in the PR
+1. Run the `/code-review` skill on the changes that will be in the PR
 2. Review the diff between the current branch and `upstream/main`:
    ```
    git diff upstream/main...HEAD
@@ -85,9 +85,8 @@ Only check files that will be in the PR — those changed between `upstream/main
 3. The PR title should be concise (under 70 characters)
 4. The PR body should include:
    - A summary section with bullet points describing the changes
-   - If a fork issue number was provided ($ARGUMENTS), include: `Closes ibm-granite/granite.build#<N>`
+   - If an issue number was provided ($ARGUMENTS), include: `Closes ibm-granite/granite.build#<N>`
    - A test plan section
-   - The standard footer: `Generated with [Claude Code](https://claude.com/claude-code)`
 5. Return the PR URL to the user
 
 ### If an existing PR WAS found in Step 1:
@@ -104,7 +103,7 @@ Only check files that will be in the PR — those changed between `upstream/main
 If running inside a worktree, remind the user:
 
 > **Next steps after the PR is merged:**
-> Use `/pr-post-merge` to clean up — it will close the fork issue, update the local branch, and delete the issue branch. Then remove the worktree:
+> Use `/pr-post-merge` to clean up — it will close the issue, update the local branch, and delete the issue branch. Then remove the worktree:
 > ```
 > cd <main-working-tree>
 > git worktree remove <worktree-path>

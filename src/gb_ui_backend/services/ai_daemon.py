@@ -506,7 +506,7 @@ class AIDaemon:
         )
 
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error("Analysis error (gbserver): %s", result)
                 continue
             if result.error:
@@ -606,7 +606,7 @@ class AIDaemon:
         # Persist results — each in its own session so one failure doesn't
         # abort the transaction and block the rest of the batch.
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error("Analysis worker exception: %s", result)
                 continue
             if result.error:
@@ -630,7 +630,7 @@ class AIDaemon:
         failed_results = [
             r
             for r in results
-            if not isinstance(r, Exception)
+            if not isinstance(r, BaseException)
             and not r.error
             and r.analysis_type == "failure"
             and r.root_cause
@@ -695,7 +695,9 @@ class AIDaemon:
                     phase2_prompt = format_phase2_prompt(
                         root_cause=r.root_cause or "",
                         error_messages=r.error_messages or [],
-                        error_categories=[r.error_category_1, r.error_category_2],
+                        error_categories=[
+                            c for c in (r.error_category_1, r.error_category_2) if c
+                        ],
                         knowledge_base=kb,
                     )
                     system = get_system_prompt("solution_search")
@@ -860,7 +862,7 @@ async def run_custom_categorization(
             )
         )
         for res in results:
-            if isinstance(res, Exception):
+            if isinstance(res, BaseException):
                 continue
             build_id, category = res
             await session.execute(
