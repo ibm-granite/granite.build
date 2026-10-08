@@ -1,7 +1,7 @@
 # granite / eval-granite42
 
 Scores one checkpoint on the Granite **Granite 4.2** suite on BlueVela. Each benchmark
-runs its own step (`space://steps/eval/granite-<benchmark>`), so a failure or a rerun stays
+runs its own step (`space://steps/eval/<benchmark>`), so a failure or a rerun stays
 local to that benchmark. This file is the full suite; to run a subset, name targets
 (see [Running](#running)); to build another recipe, copy the targets you need (see
 [How a benchmark is wired](#how-a-benchmark-is-wired)).
@@ -46,7 +46,7 @@ inside generation (`terminal-bench-2.1`: the agent's container is the test;
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-retail   # (2) same step in both
+        - step_uri: space://steps/eval/tau3-retail   # (2) same step in both
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -86,7 +86,7 @@ inside generation (`terminal-bench-2.1`: the agent's container is the test;
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-retail
+        - step_uri: space://steps/eval/tau3-retail
           config:
             # ... poll intervals and granite_config exactly as above, but:
             granite_config:
@@ -149,19 +149,19 @@ model itself, and the score job serves nothing, so it refuses them.
 ### Adding a benchmark
 
 1. The benchmark must exist in granite-evals (`granite-evals list`) and its image be pushed.
-2. Its step: `steps/granite-<bench>/skypilot/` (copy a sibling with the same image
+2. Its step: `steps/eval/<bench>/skypilot/` (copy a sibling with the same image
    family). Edit `step-template.yaml` only, then render and check, from the step dir:
 
    ```bash
-   cd steps/granite-<bench>/skypilot
+   cd steps/eval/<bench>/skypilot
    make publish-step PUBLISH_REQUIRE_IMAGE=false IMAGE_REF=<the image ref>
    make check-published   # the committed step.yaml/README.md match the template
    make test VENV_DIR=<a venv with granite.build installed>   # contract test
    ```
 
    `publish-step` renders to
-   `configurations/assets/environments/skypilot/steps/granite-<bench>/`, which is what
-   `space://steps/eval/granite-<bench>` resolves to. Commit both. A stale published step is
+   `configurations/assets/environments/skypilot/steps/eval/<bench>/`, which is what
+   `space://steps/eval/<bench>` resolves to. Commit both. A stale published step is
    the one that runs, so run `check-published` after every template change.
 3. Its targets: copy a pair (or a single target) above, rename, point `step_uri`,
    `output_dir` and the image param at the new benchmark, add `<BENCH>_WORKERS` /

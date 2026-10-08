@@ -15,7 +15,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-swebench-verified
+        - step_uri: space://steps/eval/swebench-verified
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -48,7 +48,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-swebench-verified
+        - step_uri: space://steps/eval/swebench-verified
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -78,7 +78,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-swebench-pro
+        - step_uri: space://steps/eval/swebench-pro
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -111,7 +111,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-swebench-pro
+        - step_uri: space://steps/eval/swebench-pro
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -141,7 +141,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-swebench-multilingual
+        - step_uri: space://steps/eval/swebench-multilingual
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -176,7 +176,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-swebench-multilingual
+        - step_uri: space://steps/eval/swebench-multilingual
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -208,7 +208,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-terminal-bench-2.1
+        - step_uri: space://steps/eval/terminal-bench-2.1
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -238,7 +238,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-airline
+        - step_uri: space://steps/eval/tau3-airline
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -278,7 +278,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-airline
+        - step_uri: space://steps/eval/tau3-airline
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -315,7 +315,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-banking-knowledge
+        - step_uri: space://steps/eval/tau3-banking-knowledge
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -355,7 +355,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-banking-knowledge
+        - step_uri: space://steps/eval/tau3-banking-knowledge
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -392,7 +392,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-retail
+        - step_uri: space://steps/eval/tau3-retail
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -432,7 +432,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-retail
+        - step_uri: space://steps/eval/tau3-retail
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -469,7 +469,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-telecom
+        - step_uri: space://steps/eval/tau3-telecom
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -509,7 +509,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-tau3-telecom
+        - step_uri: space://steps/eval/tau3-telecom
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -546,7 +546,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-bfcl-v4
+        - step_uri: space://steps/eval/bfcl-v4
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -577,7 +577,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-bfcl-v4
+        - step_uri: space://steps/eval/bfcl-v4
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -605,7 +605,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-gdpval
+        - step_uri: space://steps/eval/gdpval
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -638,7 +638,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-gdpval
+        - step_uri: space://steps/eval/gdpval
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -675,7 +675,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-browsecomp
+        - step_uri: space://steps/eval/browsecomp
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -707,7 +707,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-browsecomp
+        - step_uri: space://steps/eval/browsecomp
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -743,7 +743,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-mcpatlas
+        - step_uri: space://steps/eval/mcpatlas
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -775,7 +775,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-mcpatlas
+        - step_uri: space://steps/eval/mcpatlas
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -811,7 +811,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-aime25
+        - step_uri: space://steps/eval/aime25
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -843,7 +843,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-aime25
+        - step_uri: space://steps/eval/aime25
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -872,7 +872,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-hmmt-feb25
+        - step_uri: space://steps/eval/hmmt-feb25
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -904,7 +904,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-hmmt-feb25
+        - step_uri: space://steps/eval/hmmt-feb25
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -933,7 +933,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-gpqa
+        - step_uri: space://steps/eval/gpqa
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -969,7 +969,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-gpqa
+        - step_uri: space://steps/eval/gpqa
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1002,7 +1002,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-omniscience
+        - step_uri: space://steps/eval/omniscience
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1034,7 +1034,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-omniscience
+        - step_uri: space://steps/eval/omniscience
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1070,7 +1070,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-livecodebench-v6
+        - step_uri: space://steps/eval/livecodebench-v6
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1102,7 +1102,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-livecodebench-v6
+        - step_uri: space://steps/eval/livecodebench-v6
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1131,7 +1131,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-scicode
+        - step_uri: space://steps/eval/scicode
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1163,7 +1163,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-scicode
+        - step_uri: space://steps/eval/scicode
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1192,7 +1192,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-hle
+        - step_uri: space://steps/eval/hle
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1228,7 +1228,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-hle
+        - step_uri: space://steps/eval/hle
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1265,7 +1265,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-hle-tools
+        - step_uri: space://steps/eval/hle-tools
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1301,7 +1301,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-hle-tools
+        - step_uri: space://steps/eval/hle-tools
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1338,7 +1338,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-critpt
+        - step_uri: space://steps/eval/critpt
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1370,7 +1370,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-critpt
+        - step_uri: space://steps/eval/critpt
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1403,7 +1403,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-critpt-tools
+        - step_uri: space://steps/eval/critpt-tools
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1435,7 +1435,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-critpt-tools
+        - step_uri: space://steps/eval/critpt-tools
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1468,7 +1468,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-mmlu-pro
+        - step_uri: space://steps/eval/mmlu-pro
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1500,7 +1500,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-mmlu-pro
+        - step_uri: space://steps/eval/mmlu-pro
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1529,7 +1529,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-mmlu-prox-lite
+        - step_uri: space://steps/eval/mmlu-prox-lite
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1558,7 +1558,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-arena-hard-v2
+        - step_uri: space://steps/eval/arena-hard-v2
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1590,7 +1590,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-arena-hard-v2
+        - step_uri: space://steps/eval/arena-hard-v2
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1626,7 +1626,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ifbench
+        - step_uri: space://steps/eval/ifbench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1658,7 +1658,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ifbench
+        - step_uri: space://steps/eval/ifbench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1687,7 +1687,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-multi-challenge
+        - step_uri: space://steps/eval/multi-challenge
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1719,7 +1719,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-multi-challenge
+        - step_uri: space://steps/eval/multi-challenge
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1755,7 +1755,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-fortress-adversity
+        - step_uri: space://steps/eval/fortress-adversity
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1787,7 +1787,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-fortress-adversity
+        - step_uri: space://steps/eval/fortress-adversity
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1823,7 +1823,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-fortress-benign
+        - step_uri: space://steps/eval/fortress-benign
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1855,7 +1855,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-fortress-benign
+        - step_uri: space://steps/eval/fortress-benign
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1891,7 +1891,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-strongreject
+        - step_uri: space://steps/eval/strongreject
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1923,7 +1923,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-strongreject
+        - step_uri: space://steps/eval/strongreject
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1959,7 +1959,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-wmt24pp
+        - step_uri: space://steps/eval/wmt24pp
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -1991,7 +1991,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-wmt24pp
+        - step_uri: space://steps/eval/wmt24pp
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2024,7 +2024,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-aa-lcr
+        - step_uri: space://steps/eval/aa-lcr
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2057,7 +2057,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-aa-lcr
+        - step_uri: space://steps/eval/aa-lcr
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2094,7 +2094,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-1m
+        - step_uri: space://steps/eval/ruler-1m
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2127,7 +2127,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-1m
+        - step_uri: space://steps/eval/ruler-1m
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2157,7 +2157,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-512k
+        - step_uri: space://steps/eval/ruler-512k
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2190,7 +2190,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-512k
+        - step_uri: space://steps/eval/ruler-512k
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2220,7 +2220,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-256k
+        - step_uri: space://steps/eval/ruler-256k
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2253,7 +2253,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-256k
+        - step_uri: space://steps/eval/ruler-256k
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2283,7 +2283,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-128k
+        - step_uri: space://steps/eval/ruler-128k
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2316,7 +2316,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-128k
+        - step_uri: space://steps/eval/ruler-128k
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2346,7 +2346,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-64k
+        - step_uri: space://steps/eval/ruler-64k
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2379,7 +2379,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-ruler-64k
+        - step_uri: space://steps/eval/ruler-64k
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2409,7 +2409,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-profbench
+        - step_uri: space://steps/eval/profbench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2442,7 +2442,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-profbench
+        - step_uri: space://steps/eval/profbench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2479,7 +2479,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-omniscience-hallucination
+        - step_uri: space://steps/eval/omniscience-hallucination
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -2511,7 +2511,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/granite-omniscience-hallucination
+        - step_uri: space://steps/eval/omniscience-hallucination
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
