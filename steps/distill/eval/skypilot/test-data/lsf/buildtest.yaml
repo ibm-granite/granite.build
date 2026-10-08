@@ -1,0 +1,55 @@
+# YAML-driven spec for test_skypilot_lsf_distill_eval.py (located by the test/ <->
+# test-data/ helper, so the pairing holds in both test modes; see steps/README.md).
+#
+# Runs align -> corpus -> eval-transfer-baseline on the SkyPilot LSF/BlueVela environment.
+# Three targets because this step's two data inputs are both produced by the pipeline: the
+# student must be a retagged model whose tokenizer agrees with the teacher's, and the corpus
+# must be an EVAL SPLIT that corpus-prep writes.
+#
+# What only a real run can show: that both models loaded on a GPU, that the tokenizer
+# consistency check passed rather than being waived, and that all four metrics came back
+# from ONE forward pass over the corpus.
+targets:
+  - align
+  - corpus
+  - eval-transfer-baseline
+target_expectations:
+  # The first two are prerequisites, not the subject; their own step tests assert their
+  # internals. Here they only have to succeed and hand over their artifacts.
+  - target_name: align
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 3
+    jobstats_count: 1
+  - target_name: corpus
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+  - target_name: eval-transfer-baseline
+    # Two bound inputs (the student, and the corpus as an ordering edge), one fileset out.
+    step_count: 1
+    input_artifact_count: 2
+    output_artifact_count: 1
+    jobstats_count: 1
+    expected_steps:
+      - metadata_matches:
+          distill_code_commit: "^[0-9a-f]{40}$"
+          distill_code_source: "^(filesystem|git)$"
+          distill_code_dirty: "^[0-9]+$"
+        config:
+          eval_config:
+            # Pin the settings whose wrong value produces a NUMBER THAT MEANS NOTHING
+            # rather than a failure: a waived tokenizer check measures across token ids
+            # that denote different tokens to each model, and a max_length below the
+            # corpus's would score records on a prefix of their answers while leaving
+            # n_samples untouched.
+            allow_tokenizer_mismatch: false
+            max_length: 4096
+            metrics: "jsd,kld,rkld,entropy"
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# Three sequential LSF allocations, one of them holding a GPU.
+timeout_minutes: 90

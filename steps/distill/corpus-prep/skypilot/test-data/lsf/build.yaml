@@ -1,0 +1,89 @@
+granite.build:
+  name: distill-corpus-prep-smoke
+  # Smoke build for the distill-corpus-prep step on BlueVela (SkyPilot / LSF).
+  #
+  # TWO targets, and that is forced rather than chosen. This step measures the completion
+  # boundary by rendering with return_assistant_tokens_mask=True, which needs a chat
+  # template carrying a real `{% generation %}` block tag. MEASURED on this cluster: none
+  # of the 13 hand-built /proj overlay directories has one (they mention
+  # add_generation_prompt, which is a different thing), while distill-tokenizer-align's
+  # own output has four. A single-target fixture pointed at any existing overlay fails
+  # with "every one of N rendered conversations produced an EMPTY assistant mask" — the
+  # step refusing correctly, since GOLD would otherwise die at sft.py:909 after loading
+  # the model and starting vLLM.
+  #
+  # So the align target is not scaffolding here; it is the only source of a usable
+  # tokenizer. It also makes this fixture prove the cross-target binding.
+  targets:
+    align:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        retagged_student:
+          uri: "env://{{ binding.path }}"
+          type: model
+        teacher_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+        student_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/tokenizer-align
+          config:
+            poll_interval_seconds: 20
+            log_retrieval_interval_seconds: 20
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: 1
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                memory: 32
+            align_config:
+              teacher_model: "/proj/granite-build/g4os/models/granite-4.2-3b-nothink"
+              # A RAW, un-retagged base student: tokenizer_class GPT2Tokenizer, no chat
+              # template, so the retag has real work to do.
+              student_model: "/proj/granite-build/g4os/granite-4.0-1b-base-prerelease-castlerock-final"
+              out_dir: "align"
+
+    corpus:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        # The tokenizer that DEFINES this corpus, and the ordering edge that guarantees it
+        # exists before this target starts.
+        tokenizer:
+          binding: align.retagged_student
+      outputs:
+        # The FILE, not out_dir: the trainer dispatches on the .jsonl suffix and finds the
+        # manifest as a sibling of it.
+        corpus:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-prep
+          config:
+            poll_interval_seconds: 20
+            log_retrieval_interval_seconds: 20
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: 1
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                memory: 32
+            corpus_config:
+              # A think-filtered conversation JSONL — the same slice the gold smoke recipe
+              # trains on, so the schema is known-good.
+              dataset: "/proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+              tokenizer: "{{ bindings.tokenizer.binding.path }}"
+              out_dir: "corpus-smoke"
+              # Same budget the gold smoke recipe trains at, so this corpus would be
+              # usable by it.
+              max_length: 4096
+              # Prove the wiring, not build a corpus.
+              max_examples: 64
+              # A real split, so the manifest records one — without declaring eval.jsonl as
+              # an output, which would be a resolver failure whenever eval_fraction is 0.
+              eval_fraction: 0.1

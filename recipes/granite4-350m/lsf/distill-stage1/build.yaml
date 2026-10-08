@@ -1,0 +1,656 @@
+######
+# distill-stage1 — off-policy GOLD for the granite4-350m pair, one epoch of the SFT
+# mixture, on BlueVela (SkyPilot / LSF).
+#
+# SUPERSEDED BY distill-stage1-v2. This ran as build df8512e0 and produced a model worse
+# on every one of the 30+ benchmarks measured (HumanEval 40.85 -> 0.61, MultiPL-E Java
+# 21.05 -> 0.00). Nothing here is broken: the objective has no ground-truth term, the
+# student had already nearly satisfied it, and one epoch gave entropy reduction 7,640
+# steps to be the only descent direction left. It is kept as the record of what ran.
+# Run ../distill-stage1-v2 instead.
+#
+# The header below is the smoke recipe's, which this file was copied from and which was
+# never rewritten -- the three things it says this recipe exists to clear are real and
+# were cleared, but they were cleared by distill-smoke, at 64 rows.
+#
+# This is recipes/granite4-gold-distillation/lsf/distill-pipeline-smoke retargeted from the
+# 4.1-3b/4.2-30b reference pair to OUR pair: the granite-4.0-350m SFT checkpoint as
+# student, granite-4.1-3b as teacher. It exists to clear three things that the
+# reference pair never exercised, for minutes rather than for a four-hour stage-1
+# run. All three are named in the README:
+#
+#   1. align's teacher gate. Upstream demands ChatML of the teacher, and no granite
+#      4.x model has <|im_start|> at all. REQUIRE_CHATML false is the knob added for
+#      this; a true here aborts in align stage 1 of 4.
+#   2. the teacher's own tokenizer. Both models declare GPT2Tokenizer over a trained
+#      Sequence[Split,ByteLevel] pre_tokenizer, so unlike the reference pair the
+#      TEACHER mis-segments too and TEACHER_MODEL must be a pinned copy.
+#   3. the student's architecture. granitemoehybrid makes transformers fetch the
+#      mamba-ssm kernel, whose cached build cannot import under this image's
+#      transformers. Run the load probe in the README before this recipe.
+#
+# Seven targets, eight with the SFT arm switched on, and the ordering is not a
+# style choice — each edge exists because the downstream step cannot be correct
+# without the upstream artifact:
+#
+#   align  -> corpus   the corpus must be measured with the tokenizer that will
+#                      train. Lengths and the assistant-mask check are counted in
+#                      tokens, and prep needs align's chat template to locate
+#                      assistant spans at all.
+#   align  -> train    the student is the RETAGGED student, not the raw checkpoint.
+#                      For THIS pair the retag's transplant is close to an identity
+#                      map, because the two tokenizer.json files are byte-identical
+#                      — but align is still what pins tokenizer_class and installs
+#                      the generation-marked chat template, and those are what the
+#                      rest of the pipeline depends on. See the README.
+#   corpus -> train    plus the manifest the trainers' row-count guard reads.
+#   train  -> export   selects a checkpoint and makes it HF-native.
+#   export -> eval-*   both post-training reads measure the exported model.
+#   align  -> eval-transfer-baseline   the t=0 read, taken BEFORE training, which
+#                      is what gives the post-training number a direction.
+#
+# The SFT arm (INCLUDE_SFT) is a SWITCH, not a separate recipe: with it on, a
+# plain-SFT pass runs between align and GOLD and GOLD continues from the SFT
+# checkpoint rather than from the aligned student. With it off the two targets
+# below that mention it disappear entirely, which they must — a binding naming a
+# target that is not in the build is a validation failure.
+#
+# Values come from parameters.yaml beside this file; the comments explaining WHY
+# each value is what it is live there.
+#
+# Two templating layers meet in this file. Build parameters are resolved by the
+# CLI before submission, from parameters.yaml; step and binding templates are
+# resolved by the server, per step. The CLI renders this file IN FULL, comments
+# included, and a YAML comment is not a Jinja comment — so the comments here name
+# parameters bare (WORKDIR_ROOT, not the marker form) and carry no block tags.
+#
+# Run (parameters.yaml is picked up automatically because it sits next to this file):
+#   gb build start -f recipes/granite4-350m/lsf/distill-stage1/build.yaml --space <space>
+#
+# The SFT arm stays OFF here and in stage 1. The student already IS an SFT
+# checkpoint — two epochs of it — and its eval row is the baseline this work is
+# measured against, so re-running SFT would replace the control with a different
+# model. See the README.
+######
+granite.build:
+  name: distill-350m-stage1
+  # A retry is here because of a MEASURED cluster fault, not as general
+  # insurance. Builds 7853d33b and b5f030cd lost three GPU targets to
+  # `RuntimeError: CUDA unknown error` raised inside torch at cuda_init, every
+  # one of them on host p2-r03-n1 — 3 runs, 3 failures on that host, against 0
+  # failures across several hundred runs on every other host in the logs. The
+  # node takes the allocation and cannot initialise CUDA.
+  #
+  # Nothing in a build.yaml can steer LSF away from a host (see README for the
+  # bsub exclusion, which lives in ~/.sky/config.yaml), so the recipe's only
+  # lever is to run the target again and land somewhere else. target_reuse_enabled
+  # means a retry re-runs the FAILED target and reuses what already succeeded, so
+  # a fault three targets deep does not re-train.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+    # ─── sources ────────────────────────────────────────────────────────────
+    # Build ONE corpus file from the three SFT splits, because three things are
+    # true at once and no single one of them is optional:
+    #
+    #   1. prep takes ONE path. prep_corpus.py:294 refuses a directory outright --
+    #      "Pass the .jsonl itself, or an HF dataset id" -- so there is no glob and
+    #      no list form to hand it three files with.
+    #
+    #   2. THE ROWS ARE SPELLED `conversations`, NOT `messages`. prep reads
+    #      record.get("messages") (prep_corpus.py:367) and returns `no_messages`
+    #      otherwise. Handed these files unchanged it would drop all 5,081,504 rows
+    #      and raise PrepError. This rename is the single most load-bearing line in
+    #      the target.
+    #
+    #   3. The splits are wildly unequal -- general 84.86%, tools 13.98%, rag 1.17%
+    #      -- and prep's max_examples stops after N KEPT rows IN INPUT ORDER. A
+    #      plain concatenation plus max_examples would therefore yield a subset of
+    #      pure `general` with no tools and no rag in it, silently. Sampling
+    #      proportionally HERE, and shuffling, is what makes a subset representative
+    #      rather than just short.
+    #
+    # Reservoir sampling per split, seeded, so the selection is reproducible from
+    # SHUFFLE_SEED alone and memory is bounded by the sample rather than the corpus.
+    # Two passes: one to count, one to select, because the per-split quota cannot be
+    # computed until the totals are known.
+    sources:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Lineage. Three declared inputs mean the corpus's provenance is recorded as
+        # three artifacts rather than as a path inside a shell script.
+        source_general:
+          uri: "env://$${SOURCE_GENERAL}"
+          type: dataset
+        source_tools:
+          uri: "env://$${SOURCE_TOOLS}"
+          type: dataset
+        source_rag:
+          uri: "env://$${SOURCE_RAG}"
+          type: dataset
+      outputs:
+        corpus_source:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-sources
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${SOURCES_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SOURCES_MEMORY}
+            sources_config:
+              # Order names the per-split RNG streams; reordering changes the selection.
+              sources:
+                - "$${SOURCE_GENERAL}"
+                - "$${SOURCE_TOOLS}"
+                - "$${SOURCE_RAG}"
+              target_rows: $${TARGET_ROWS}
+              shuffle_seed: $${SHUFFLE_SEED}
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/sources"
+
+    # ─── align ──────────────────────────────────────────────────────────────
+    # Re-embeds the base student onto the teacher's tokenizer and emits the
+    # tokenizer artifacts the rest of the pipeline reads. Cheap relative to
+    # everything after it, and everything after it is wrong without it.
+    align:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Recorded as lineage inputs. env:// means "already on a filesystem this
+        # environment can reach", so the pull is a no-op: these add input
+        # artifacts and no extra step. A path passed only to a step's config
+        # would run fine and record nothing.
+        teacher_model:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
+        student_model:
+          uri: "env://$${STUDENT_MODEL}"
+          type: model
+      outputs:
+        # All three declared. An undeclared output makes the resolver drop the
+        # NEWARTIFACT event and the target completes with no output AND no error.
+        retagged_student:
+          uri: "env://{{ binding.path }}"
+          type: model
+        teacher_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+        student_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/tokenizer-align
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            align_config:
+              teacher_model: "$${TEACHER_MODEL}"
+              student_model: "$${STUDENT_MODEL}"
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
+              # Not optional for this pipeline: without a chat template carrying
+              # generation markers, prep cannot build assistant masks and the
+              # trainers fail deep inside sft.py. Relative to the step's code_dir.
+              chat_template: "$${CHAT_TEMPLATE}"
+              # FALSE for this pair, and it is the difference between this recipe
+              # running and aborting. The knob gates whether the TEACHER's tokenizer
+              # and the retagged student's must carry ChatML turn tokens. granite 4.0
+              # and 4.1 carry start_of_role/end_of_role and no im_start anywhere, so
+              # the upstream default fails align stage 1 of 4 on a granite-4.1
+              # teacher. False is only safe BECAUSE CHAT_TEMPLATE is granite-native:
+              # false with a ChatML template would align cleanly and then have the
+              # teacher score a format it has never seen. The turn boundary is still
+              # checked — align stage 4 of 4 derives the masking contract from the
+              # installed template and fails if it cannot.
+              require_chatml: $${REQUIRE_CHATML}
+              verify: true
+              dry_run: false
+
+    # ─── corpus ─────────────────────────────────────────────────────────────
+    corpus:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The tokenizer that DEFINES this corpus, and the ordering edge that
+        # guarantees it exists before this target starts.
+        tokenizer:
+          binding: align.retagged_student
+        source_dataset:
+          binding: sources.corpus_source
+      outputs:
+        # The FILE, not out_dir: the trainers dispatch on the .jsonl suffix and
+        # find the manifest as a sibling of it. eval.jsonl is deliberately NOT an
+        # output — it exists only when eval_fraction is above zero, and a
+        # declared-but-absent output is a resolver failure.
+        corpus:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-prep
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            corpus_config:
+              dataset: "{{ bindings.source_dataset.binding.path }}"
+              tokenizer: "{{ bindings.tokenizer.binding.path }}"
+              # ABSOLUTE, and that is forced rather than chosen: the two eval
+              # targets have to name eval.jsonl and cannot compose it from their
+              # own workdir, because every target run gets its OWN
+              # GB_BUILD_WORKDIR. A shared absolute root is what makes one
+              # target's output nameable by another.
+              #
+              # BUILD_SUBDIR is what keeps that root shared WITHIN a build and
+              # distinct BETWEEN builds. It defaults to the build id, and it is
+              # not cosmetic: gbserver refuses to register an artifact whose URI
+              # another build in the space already registered, and a target whose
+              # artifact was refused still reports SUCCESS with an EMPTY output
+              # list. On a retry or a restart, reuse then propagates no binding
+              # from that target, every downstream consumer waits forever for an
+              # input that will never arrive, and the build reports SUCCESS having
+              # skipped them. Build b5f030cd did exactly that. See README.
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus"
+              # Must equal both trainers' max_length and both evals'. Four steps
+              # measure lengths and they have to agree about the budget, which is
+              # why this is one parameter and not four.
+              max_length: $${MAX_LENGTH}
+              think_policy: "$${THINK_POLICY}"
+              # last_message, and this couples to the eval step: the divergence
+              # is measured over the FINAL assistant turn, so a corpus prepared
+              # with a different boundary would be scored on a different span
+              # than it trained on.
+              completion_boundary: "last_message"
+              # Above zero on purpose: eval-transfer measures the held-out split,
+              # and at zero that split does not exist.
+              eval_fraction: $${EVAL_FRACTION}
+              max_examples: $${MAX_EXAMPLES}
+              # The schema the reference corpus carries. Costs nothing and makes a
+              # row traceable back through the manifest.
+              emit_row_id: true
+              # KEEP, against the step's own default of drop. The step defaults to
+              # dropping rows with a non-empty documents field because "granite's
+              # chat template does not render documents" — but the granite 4.x
+              # template this pipeline installs DOES render them, into the system
+              # turn via documents_system_message_prefix. Dropping them here would
+              # silently discard grounded rows for a reason that is not true of this
+              # template.
+              documents_policy: "$${DOCUMENTS_POLICY}"
+              seed: $${SEED}
+
+<% if INCLUDE_SFT | string | lower in ("true", "yes", "1", "on") %>
+    # ─── train-sft (switched on) ────────────────────────────────────────────
+    # A plain-SFT pass over the same corpus, with no teacher in the loop. GOLD
+    # then continues from this checkpoint. The step's ZeRO-3 config sets
+    # zero3_save_16bit_model and sft.py calls save_model on the output directory,
+    # so the registered checkpoint is HF-native and loadable as a student init —
+    # which is why no export is needed between here and GOLD.
+    train-sft:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: align.retagged_student
+        corpus:
+          binding: corpus.corpus
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/sft
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${SFT_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:$${SFT_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            workload:
+              # MUST match the allocation above: run-sft.sh asserts this against
+              # the GPUs visible in the container, because a mismatch trains at a
+              # different effective batch size than the config says. More than one
+              # node is refused by the script.
+              gpus_per_node: $${SFT_NUM_GPUS}
+              nodes: 1
+            sft_config:
+              student_model_path: "{{ bindings.student.binding.path }}"
+              corpus_path: "{{ bindings.corpus.binding.path }}"
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/train-sft"
+              response_template: "$${RESPONSE_TEMPLATE}"
+              max_length: $${MAX_LENGTH}
+              per_device_train_batch_size: $${SFT_PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${SFT_GRADIENT_ACCUMULATION_STEPS}
+              learning_rate: "$${SFT_LEARNING_RATE}"
+              num_train_epochs: $${SFT_NUM_TRAIN_EPOCHS}
+              # Checkpoint on the first step, so publication is exercised rather
+              # than assumed on a run this short.
+              save_steps: 1
+              seed: $${SEED}
+              # LEFT AT THE DEFAULT (-1, the whole corpus). max_dataset_size and
+              # corpus max_examples are NOT interchangeable ways to make a run
+              # small: sft.py compares its kept-row count against PREP's manifest
+              # and raises ManifestDrift on any shortfall, because the only
+              # shortfall it knows how to cause is a row whose tokenization
+              # produced no prompt — a chat-template or tokenizer mismatch. Shrink
+              # the CORPUS instead, so the two counts agree by construction.
+              max_dataset_size: -1
+              # logging_steps is not a contract key; it reaches the trainer through
+              # extra_config_yaml, the documented escape hatch for the long tail of
+              # CustomSFTConfig. At the step's default of 10 a run this short logs
+              # nothing and there is no loss trajectory to read.
+              extra_config_yaml: "logging_steps: 1"
+              # EMPTY is what makes this a plain-SFT pass. With a logits directory
+              # the step becomes a forward-KL distillation arm of its own, and the
+              # pipeline would distil twice rather than warm-start once.
+              precomputed_logits_dir: ""
+<% endif %>
+
+    # ─── train-gold ─────────────────────────────────────────────────────────
+    # The distillation itself. Off-policy at lmbda 0.0: every rank trains on the
+    # fixed corpus and there is no vLLM server to coordinate.
+    train-gold:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The student GOLD starts from: the SFT checkpoint when that arm is on,
+        # the aligned student otherwise. One binding either way, so the recorded
+        # lineage and the trainer's argument cannot disagree about which model
+        # was loaded.
+<% if INCLUDE_SFT | string | lower in ("true", "yes", "1", "on") %>
+        student:
+          binding: train-sft.checkpoint
+<% else %>
+        student:
+          binding: align.retagged_student
+<% endif %>
+        corpus:
+          binding: corpus.corpus
+        teacher_model:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
+      outputs:
+        # GB_BUILD_WORKDIR/checkpoints/<run_name>_node<N>, registered by rank 0.
+        # The node count in that path comes from the allocation, not from a
+        # parameter, so it always describes the run that produced it.
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/gold
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: $${GOLD_NUM_NODES}
+              num_gpus_per_node: $${GOLD_NUM_GPUS}
+            launcher_config:
+              # Overrides the step's own image (gbserver prefers a build.yaml
+              # image_id over the launcher's).
+              image_id: "$${IMAGE_ID}"
+              resources:
+                # accelerators is PER NODE; memory is host memory per node, and
+                # it has to be stated — the LSF provisioner defaults to 16G and a
+                # host-memory kill presents as a cross-node NCCL hang.
+                accelerators: "H100:$${GOLD_NUM_GPUS}"
+                memory: $${GPU_MEMORY}
+                cluster: "$${CLUSTER}"
+                # For the LSF cloud, SkyPilot's zone is the queue name.
+                zone: "$${QUEUE}"
+            gold_config:
+              run_name: "$${RUN_NAME}"
+              ds_config: "$${DS_CONFIG}"
+              model_name_or_path: "{{ bindings.student.binding.path }}"
+              # A path, never a hub id: this teacher is not publicly fetchable.
+              teacher_model_name_or_path: "$${TEACHER_MODEL}"
+              dataset_name: "{{ bindings.corpus.binding.path }}"
+              num_train_epochs: $${GOLD_NUM_TRAIN_EPOCHS}
+              # Caps the run by optimizer steps rather than epochs, which is what
+              # makes this a smoke run rather than a short training run.
+              max_steps: $${GOLD_MAX_STEPS}
+              learning_rate: $${GOLD_LEARNING_RATE}
+              min_lr: $${GOLD_MIN_LR}
+              warmup_ratio: $${WARMUP_RATIO}
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              per_device_train_batch_size: $${GOLD_PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${GOLD_GRADIENT_ACCUMULATION_STEPS}
+              max_length: $${MAX_LENGTH}
+              max_completion_length: $${MAX_COMPLETION_LENGTH}
+              gradient_checkpointing: true
+              save_strategy: "steps"
+              save_steps: $${GOLD_SAVE_STEPS}
+              save_total_limit: $${GOLD_SAVE_TOTAL_LIMIT}
+              logging_steps: 1
+              dataset_num_proc: $${DATASET_NUM_PROC}
+              temperature: $${TEMPERATURE}
+              lmbda: $${LMBDA}
+              beta: $${BETA}
+              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
+              response_template: "$${RESPONSE_TEMPLATE}"
+              nccl_debug: "$${NCCL_DEBUG}"
+              nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
+              nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
+              nccl_enable_monitoring: true
+              vllm_num_servers: 0
+
+    # ─── export ─────────────────────────────────────────────────────────────
+    # A selector, not a converter: the trainer's ZeRO-3 config sets
+    # zero3_save_16bit_model, so the checkpoint is already HF-native
+    # safetensors. This target picks one, checks it, and names it as the
+    # recipe's model.
+    export:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        train_output:
+          binding: train-gold.checkpoint
+        # Bound so the export can assert the tokenizer it ships is the one the
+        # run actually trained with, rather than whatever happened to be copied
+        # into the checkpoint directory.
+        expected_tokenizer:
+          binding: align.retagged_student
+      outputs:
+        hf_model:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/hf-export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${EXPORT_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${EXPORT_MEMORY}
+            export_config:
+              train_output_dir: "{{ bindings.train_output.binding.path }}"
+              dest: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/export"
+              # Empty selects the highest step number. Pin it per run to export
+              # an earlier checkpoint.
+              checkpoint: "$${EXPORT_CHECKPOINT}"
+              padding_side: "right"
+              chat_template_thinking: "$${CHAT_TEMPLATE_THINKING}"
+              # TRUE, and forced rather than lax. HF Trainer writes one
+              # rng_state_<rank>.pth per rank for a distributed run, while the
+              # ported classifier's PRUNE_KNOWN carries only the single-process
+              # "rng_state.pth" — it was validated against a 1-GPU checkpoint. So
+              # every checkpoint this pipeline produces contains files it cannot
+              # classify, and with false the export refuses AFTER the training run
+              # has been paid for. export_manifest.json still records exactly what
+              # was dropped. The fix is one line upstream.
+              allow_unknown: true
+              verify: true
+              expect_tokenizer_from: "{{ bindings.expected_tokenizer.binding.path }}"
+
+    # ─── eval-transfer-baseline ─────────────────────────────────────────────
+    # The t=0 read, and not optional decoration: a divergence with no baseline is
+    # a number without a direction. This measures the aligned student BEFORE any
+    # training, against the same teacher on the same held-out split.
+    #
+    # It depends only on align and corpus, so it runs concurrently with training
+    # rather than after it.
+    eval-transfer-baseline:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: align.retagged_student
+        # Bound for the ORDERING EDGE, not for the path: eval.jsonl is not a
+        # declared artifact, so the corpus below is composed from the same root
+        # the corpus target was given. The binding is what still guarantees this
+        # target cannot start before the split exists.
+        corpus:
+          binding: corpus.corpus
+      outputs:
+        eval_metrics:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/eval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${EVAL_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                # Real GPU work: a forward pass through each of two models.
+                accelerators: "H100:$${EVAL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            eval_config:
+              student_model: "{{ bindings.student.binding.path }}"
+              teacher_model: "$${TEACHER_MODEL}"
+              corpus: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus/eval.jsonl"
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-transfer-baseline"
+              metrics: "$${EVAL_METRICS}"
+              max_samples: $${EVAL_MAX_SAMPLES}
+              seed: $${SEED}
+              # Same budget as prep and as training: a smaller value here scores
+              # truncated completions and reports the result as the divergence.
+              max_length: $${MAX_LENGTH}
+              max_incomplete_fraction: $${MAX_INCOMPLETE_FRACTION}
+              batch_size: $${EVAL_BATCH_SIZE}
+              dtype: "$${EVAL_DTYPE}"
+              # False, and it should stay false on this pairing: the retag exists
+              # precisely so the two tokenizers agree on ids.
+              allow_tokenizer_mismatch: false
+
+    # ─── eval-transfer ──────────────────────────────────────────────────────
+    # The post-training read. Same step, same teacher, same corpus, same budget
+    # as the baseline — everything except the student is held fixed, which is the
+    # only way the two numbers are comparable.
+    eval-transfer:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          binding: export.hf_model
+        corpus:
+          binding: corpus.corpus
+      outputs:
+        eval_metrics:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/eval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${EVAL_NUM_GPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "H100:$${EVAL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+            eval_config:
+              student_model: "{{ bindings.student.binding.path }}"
+              teacher_model: "$${TEACHER_MODEL}"
+              corpus: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus/eval.jsonl"
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-transfer"
+              metrics: "$${EVAL_METRICS}"
+              max_samples: $${EVAL_MAX_SAMPLES}
+              seed: $${SEED}
+              max_length: $${MAX_LENGTH}
+              max_incomplete_fraction: $${MAX_INCOMPLETE_FRACTION}
+              batch_size: $${EVAL_BATCH_SIZE}
+              dtype: "$${EVAL_DTYPE}"
+              allow_tokenizer_mismatch: false
+
+    # ─── eval-bfcl ──────────────────────────────────────────────────────────
+    # Capability, against ground truth. A DIFFERENT question from eval-transfer,
+    # and neither substitutes for the other: a student can move toward the
+    # teacher's distribution while losing tool-calling accuracy, and the transfer
+    # metric cannot see that. Wired directly rather than wrapped by distill-eval,
+    # so its own artifacts stay its own — and it runs in its own image, so no
+    # image_id override here.
+    eval-bfcl:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        model:
+          binding: export.hf_model
+      outputs:
+        # A single result FILE, chosen by the step from what the BFCL harness
+        # produced.
+        bfcl_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/bfcl-eval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            bfcl_config:
+              model_path: "{{ bindings.model.binding.path }}"
+              model_id: "$${BFCL_MODEL_ID}"
+              experiment: "$${RUN_NAME}"
+              eval_name: "$${BFCL_EVAL_NAME}"
+              test_categories: "$${BFCL_TEST_CATEGORIES}"
+              num_gpus_generate: $${BFCL_NUM_GPUS}
+              num_gpus_evaluate: $${BFCL_NUM_GPUS}
+              gpu_memory_utilization: "$${BFCL_GPU_MEMORY_UTILIZATION}"
+              # The step appends experiment and eval_name to this, so the results
+              # land under the run directory with everything else.
+              output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-bfcl"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${BFCL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}

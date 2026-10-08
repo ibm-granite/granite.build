@@ -10,6 +10,7 @@ import asyncio
 import concurrent.futures
 import functools
 import glob
+import importlib.util
 import json
 import os
 import re
@@ -422,6 +423,15 @@ _SSH_HPC_CLOUDS = ("slurm", "lsf")
 # _SSH_HPC_CLOUDS: this tracks one capability, not HPC-ness. Observed on SLURM
 # (BlueVela); LSF included because it also has autostop forced off.
 _CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
+
+
+# How long, and how often, to wait for the cleanup VM's reap job to finish.
+# sky.launch's stream_and_get returns (job_id, handle) once the job is
+# submitted, NOT when it completes, so the reap is still running when we start
+# polling. The timeout is the default; a provider may extend it via
+# cleanup_timeout_s() (EFS access-point mode builds efs-utils first).
+_CLEANUP_STATUS_POLL_INTERVAL_S = 5.0
+_CLEANUP_STATUS_TIMEOUT_S = 300.0
 
 
 def _cpus_floor(cloud: str, n: int) -> Union[int, str]:
@@ -1248,22 +1258,33 @@ def _compose_step_prologue(providers, resolved, workdir_mount, build_workdir):
     for p in providers:
         prologue += p.mount_prologue(dns_override=(resolved or {}).get(p.mount_point))
     if build_workdir and workdir_mount is not None:
-        mount_root = shlex.quote(workdir_mount.mount_point)
-        prologue += (
-            'mkdir -p "$GB_LOCAL_SCRATCH"\n'
-            # Create the per-run tree world-writable ATOMICALLY (umask 000 in a
-            # subshell, so mkdir -p makes every new level 0777 with no 0755 gap) —
-            # a concurrent different-uid step in the same build can then create its
-            # own per-run dir immediately. The guarded chmod walk below adds the
-            # sticky bit (1777) and fixes any pre-existing level.
-            '(umask 000 && mkdir -p "$GB_BUILD_WORKDIR")\n'
-            '__gb_d="$GB_BUILD_WORKDIR"\n'
-            f'while [ "$__gb_d" != {mount_root} ] && [ "$__gb_d" != "/" ]; do\n'
-            '  chmod 1777 "$__gb_d" 2>/dev/null || true\n'
-            '  __gb_d="$(dirname "$__gb_d")"\n'
-            "done\n"
-            'cd "$GB_BUILD_WORKDIR"\n'
-        )
+        if workdir_mount.efs is not None and workdir_mount.efs.access_point_id:
+            # Access-point mount: the AP pins a fixed PosixUser (uid/gid) and owns
+            # the (operator-provisioned) RootDirectory, so every step runs as the
+            # same uid and a plain mkdir -p suffices — no 1777 bootstrap / chmod
+            # walk, and no world-writable window.
+            prologue += (
+                'mkdir -p "$GB_LOCAL_SCRATCH"\n'
+                'mkdir -p "$GB_BUILD_WORKDIR"\n'
+                'cd "$GB_BUILD_WORKDIR"\n'
+            )
+        else:
+            mount_root = shlex.quote(workdir_mount.mount_point)
+            prologue += (
+                'mkdir -p "$GB_LOCAL_SCRATCH"\n'
+                # Create the per-run tree world-writable ATOMICALLY (umask 000 in a
+                # subshell, so mkdir -p makes every new level 0777 with no 0755 gap) —
+                # a concurrent different-uid step in the same build can then create its
+                # own per-run dir immediately. The guarded chmod walk below adds the
+                # sticky bit (1777) and fixes any pre-existing level.
+                '(umask 000 && mkdir -p "$GB_BUILD_WORKDIR")\n'
+                '__gb_d="$GB_BUILD_WORKDIR"\n'
+                f'while [ "$__gb_d" != {mount_root} ] && [ "$__gb_d" != "/" ]; do\n'
+                '  chmod 1777 "$__gb_d" 2>/dev/null || true\n'
+                '  __gb_d="$(dirname "$__gb_d")"\n'
+                "done\n"
+                'cd "$GB_BUILD_WORKDIR"\n'
+            )
     return prologue
 
 
@@ -1334,6 +1355,116 @@ def aws_credentials_present() -> bool:
         os.environ.get("AWS_SECRET_ACCESS_KEY")
     )
     return has_key_pair or bool(os.environ.get("AWS_PROFILE"))
+
+
+def _num_nodes_from_configs(
+    compute_config: Dict,
+    launcher_config: Dict,
+    config: Dict,
+    cloud: str = "",
+) -> int:
+    """Resolve the node count for a ``sky.Task``.
+
+    ``num_nodes`` is a ``sky.Task`` field, not a ``sky.Resources`` one, so it
+    is resolved separately from the resource layers and is NOT read from
+    ``resources``. Precedence mirrors the cpus/memory layering (last wins):
+
+    1. ``config.compute_config.num_nodes`` — the portable surface. This key
+       already exists for k8s/lsf/runpod, so one build.yaml expresses a
+       multi-node request across environments.
+    2. ``launcher_config.num_nodes``
+    3. ``config.launcher_config.num_nodes`` (from build.yaml)
+
+    A ``num_nodes`` placed under ``resources`` is dropped by
+    ``sky.Resources``, silently, so it is warned about here rather than left
+    to fail as a single-node run that looks successful.
+
+    :param compute_config: The step's raw ``compute_config`` dict.
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config (its ``launcher_config`` wins).
+    :param cloud: Normalized target cloud, used only for the preflight check.
+    :returns: Node count, at least 1.
+    :raises ValueError: If a ``num_nodes`` is not an integer >= 1.
+    """
+    num_nodes = 1
+    for source in (
+        compute_config,
+        launcher_config,
+        config.get("launcher_config", {}) or {},
+    ):
+        value = (source or {}).get("num_nodes")
+        if value is None:
+            continue
+        # Fail fast rather than fall back to one node: a bad value (an
+        # unsubstituted parameter, say) would otherwise run single-node and
+        # report success, the outcome this resolver exists to prevent.
+        # int() truncates a float, so 2.5 would quietly become 2: accept a
+        # float only when it is already whole (YAML's `2.0`).
+        try:
+            parsed = int(value)
+            if isinstance(value, float) and parsed != value:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"num_nodes={value!r} is not an integer; set compute_config."
+                "num_nodes to a whole number of nodes >= 1."
+            ) from None
+        if parsed < 1:
+            raise ValueError(f"num_nodes={parsed} is invalid; it must be >= 1.")
+        num_nodes = parsed
+
+    # `or {}` on every layer: a present-but-null `resources:` key returns None
+    # from .get(), not the default.
+    misplaced = (launcher_config.get("resources") or {}).get("num_nodes") or (
+        (config.get("launcher_config") or {}).get("resources") or {}
+    ).get("num_nodes")
+    if misplaced is not None:
+        logger.warning(
+            "launcher_config.resources.num_nodes=%r is ignored: num_nodes is a "
+            "sky.Task field, not a sky.Resources one, and SkyPilot drops it "
+            "without error. Set compute_config.num_nodes instead. "
+            "Using num_nodes=%d.",
+            misplaced,
+            num_nodes,
+        )
+
+    if num_nodes > 1:
+        _check_multinode_supported(cloud, num_nodes)
+    return num_nodes
+
+
+def _check_multinode_supported(cloud: str, num_nodes: int) -> None:
+    """Fail fast when the installed SkyPilot cannot run multi-node on LSF.
+
+    LSF multi-node needs the driver-side task executor
+    (``sky.skylet.executor.lsf``). An older SkyPilot accepts ``num_nodes``,
+    allocates every node, then runs the task exactly once with
+    ``SKYPILOT_NUM_NODES=1`` — a build that reports success while having
+    trained on a fraction of the data it was given. Raising here turns the
+    worst available failure mode into a startup error.
+
+    :param cloud: Normalized target cloud.
+    :param num_nodes: Requested node count.
+    :raises RuntimeError: If the LSF multi-node executor is missing.
+    """
+    if cloud != "lsf":
+        return
+    # find_spec imports the parent package, so on a SkyPilot without
+    # sky.skylet.executor at all it raises instead of returning None. That is
+    # the oldest build this check exists for, so treat it as missing.
+    try:
+        spec = importlib.util.find_spec("sky.skylet.executor.lsf")
+    except ModuleNotFoundError:
+        spec = None
+    if spec is not None:
+        return
+    raise RuntimeError(
+        f"num_nodes={num_nodes} requested on the lsf cloud, but the installed "
+        "SkyPilot predates LSF multi-node support (sky.skylet.executor.lsf is "
+        "missing). Such a run would allocate every node and then execute the "
+        "task once, on one node, reporting success. Pin a SkyPilot build with "
+        "LSF multi-node support (>= gb-sky-v2-multinode)."
+    )
 
 
 # Sentinel distinguishing "shared_filesystem providers not yet computed" from a
@@ -2103,7 +2234,28 @@ class Skypilot(Environment):
                 idle_minutes_to_autostop=0,
                 down=True,
             )
-            await asyncio.to_thread(sky.stream_and_get, request_id)
+            launch_result = await asyncio.to_thread(sky.stream_and_get, request_id)
+            # stream_and_get returns (job_id, handle) once the reap job is
+            # SUBMITTED, not when it finishes, and never raises on a non-zero
+            # reap exit -- that only shows as a non-SUCCEEDED job status. Wait for
+            # the job to reach a terminal state so a reap that mounted but failed
+            # (a failed rm, or mount.efs missing in AP mode) is surfaced below as
+            # an ORPHANED tree instead of dropped silently.
+            job_id = launch_result[0] if isinstance(launch_result, tuple) else None
+            if job_id is not None:
+                budget = provider.cleanup_timeout_s() if provider is not None else None
+                final = await self._await_cleanup_job_status(
+                    cluster_name,
+                    job_id,
+                    workdir,
+                    setup_id,
+                    budget if budget is not None else _CLEANUP_STATUS_TIMEOUT_S,
+                )
+                if final is not None and final != sky.JobStatus.SUCCEEDED:
+                    raise RuntimeError(
+                        f"cleanup job {job_id} ended {final.value} (reap script "
+                        "exited non-zero); per-run tree may be only partly removed"
+                    )
         except Exception as e:  # don't fail a finished build for cleanup
             # Make an orphaned per-run tree visible so it can be reaped (see the
             # teardown notes in docs/environments/skypilot-aws.md). For OSError,
@@ -2132,6 +2284,58 @@ class Skypilot(Environment):
             cloud_group = (str(self._get_cloud()).split("/", 1)[0] or "").lower()
             if cloud_group in _CLOUDS_NEEDING_MANUAL_TEARDOWN:
                 await self._teardown(cluster_name)
+
+    async def _await_cleanup_job_status(
+        self: Self,
+        cluster_name: str,
+        job_id: int,
+        workdir: str,
+        setup_id: str,
+        timeout_s: float,
+    ) -> Optional["sky.JobStatus"]:
+        """Poll the cleanup VM's reap job until it reaches a terminal state.
+
+        Returns the terminal ``sky.JobStatus`` or ``None`` when the outcome
+        cannot be confirmed -- the ``down=True`` autodown can remove the cluster
+        before or during polling, and the reap can outlast ``timeout_s``.
+        ``None`` is not a failure: only a confirmed non-SUCCEEDED terminal status
+        orphans the tree. A timeout is still logged as a WARNING naming the
+        tree, since the reap may never finish.
+        """
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                status_req = await asyncio.to_thread(
+                    lambda: sky.job_status(cluster_name, job_ids=[job_id])
+                )
+                statuses = await asyncio.to_thread(sky.get, status_req)
+            except Exception as status_err:
+                logger.info(
+                    "teardown_skypilot: cleanup job %s status unconfirmable on "
+                    "%s (likely already autodowned): %s",
+                    job_id,
+                    cluster_name,
+                    status_err,
+                )
+                return None
+            status = statuses.get(job_id) if statuses else None
+            if status is None:
+                return None
+            if status.is_terminal():
+                return status  # SUCCEEDED or a FAILED*/CANCELLED
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "teardown_skypilot: cleanup job %s still %s after %ss; reap "
+                    "unconfirmed, the per-run tree at %s may be orphaned "
+                    "(setup_id=%s). This does NOT affect the build outcome.",
+                    job_id,
+                    status.value,
+                    timeout_s,
+                    workdir,
+                    setup_id,
+                )
+                return None
+            await asyncio.sleep(_CLEANUP_STATUS_POLL_INTERVAL_S)
 
     async def _deprovision_ephemeral(
         self: Self, provisioned: list, run_meta: Dict, setup_id: str
@@ -2316,7 +2520,7 @@ class Skypilot(Environment):
         config = kwargs.get("config") or {}
         run_metadata = kwargs.get("run_metadata") or {}
         launcher_envs = launcher_config.get("envs", {})
-        config_envs = config.get("launcher_config", {}).get("envs", {})
+        config_envs = (config.get("launcher_config") or {}).get("envs", {})
         builtins = self._skypilot_builtin_env(
             kwargs.get("launch_id", ""),
             kwargs.get("cluster_name", ""),
@@ -2447,9 +2651,11 @@ class Skypilot(Environment):
                 build_id=run_metadata.get("build_id", "") or "",
                 build_config_name=run_metadata.get("build_config_name", "") or "",
             )
-            cloud = (
-                launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
-            )
+            # `or {}` on every layer: a present-but-null `resources:` or
+            # `launcher_config:` key returns None from .get(), not the default.
+            cloud = (launcher_config.get("resources") or {}).get(
+                "cloud"
+            ) or self._get_cloud()
             idle_minutes = launcher_config.get(
                 "idle_minutes_to_autostop", self._get_idle_minutes()
             )
@@ -2459,8 +2665,8 @@ class Skypilot(Environment):
             # the target cloud can be resolved before the floor is layered in.
             compute_config = config.get("compute_config", {}) or {}
             override_res = {
-                **launcher_config.get("resources", {}),
-                **config.get("launcher_config", {}).get("resources", {}),
+                **(launcher_config.get("resources") or {}),
+                **((config.get("launcher_config") or {}).get("resources") or {}),
             }
 
             # Build infra string: supports 'cloud/cluster/partition' format
@@ -2530,6 +2736,13 @@ class Skypilot(Environment):
                 **override_res,
             }
 
+            # num_nodes is a sky.Task field, not a sky.Resources one, so it is
+            # resolved separately from res_config above (a num_nodes key placed
+            # under resources: is silently dropped by sky.Resources).
+            num_nodes = _num_nodes_from_configs(
+                compute_config, launcher_config, config, cloud=cloud_group
+            )
+
             # Build cluster config overrides (docker run_options, etc.)
             # SkyPilot's top-level `config:` section maps to
             # _cluster_config_overrides on sky.Resources.
@@ -2586,7 +2799,7 @@ class Skypilot(Environment):
             # `command` step renders image_id to "" when no image is given, and
             # sky.Resources expects None (bare node) rather than an empty string.
             image_id = (
-                config.get("launcher_config", {}).get("image_id")
+                (config.get("launcher_config") or {}).get("image_id")
                 or launcher_config.get("image_id")
             ) or None
 
@@ -2602,6 +2815,15 @@ class Skypilot(Environment):
             # them, pin the needed dup-tolerant ones (not --net=host) here.
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
+
+            logger.info(
+                "SkyPilot resources: accelerators=%s, num_nodes=%d, image_id=%s, "
+                "cluster_config_overrides=%s",
+                res_config.get("accelerators"),
+                num_nodes,
+                image_id,
+                cluster_config_overrides or None,
+            )
 
             resources = sky.Resources(
                 infra=infra,
@@ -2752,6 +2974,7 @@ class Skypilot(Environment):
                 run=run_script,
                 envs=env_vars if env_vars else None,
                 resources=resources,
+                num_nodes=num_nodes,
             )
 
             # Attach the file/storage mounts computed above (may originate in the
@@ -2762,11 +2985,13 @@ class Skypilot(Environment):
                 task.set_storage_mounts(storage_mounts)
 
             logger.info(
-                "Launching SkyPilot cluster: name=%s target=%s step=%s cloud=%s resources=%s",
+                "Launching SkyPilot cluster: name=%s target=%s step=%s cloud=%s "
+                "num_nodes=%d resources=%s",
                 cluster_name,
                 run_metadata.get("target_name", "") if run_metadata else "",
                 run_metadata.get("targetstep_uri", "") if run_metadata else "",
                 cloud,
+                num_nodes,
                 res_config,
             )
 

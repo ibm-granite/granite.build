@@ -501,11 +501,23 @@ publish-step:
 # the re-render so drift-checking stays offline (it never queries the registry — the
 # image-existence guard applies only to a real `make publish-step`). Exit 0 = in sync
 # (or nothing published yet); exit 1 = drift, so re-run `make publish-step` and commit it.
+#
+# A MISSING side is compared against an empty directory, not /dev/null. Git cannot hold an
+# empty directory, so a step with no per-cluster build tests has no committed test/steps/
+# or test-data/steps/ tree at all — while `publish-step` always mkdir -p's those two. The
+# obvious `diff -r /dev/null <dir>` does not mean "compare against nothing": diff looks for
+# a file named `null` INSIDE the directory, fails to find it, and exits 2. That read as
+# DRIFT for every such step, telling the developer to re-publish artifacts that were already
+# in sync and cannot be committed (measured on distill-logit-precompute, whose test/ has no
+# per-cluster subdir: `diff: .../test/null: No such file or directory` -> DRIFT). An empty
+# scratch dir compares correctly in both directions: silent when both sides are empty, and a
+# real added-files report when only one side has content.
 check-published:
 	@if [ ! -f "$(PUBLISH_STEP_DIR)/step.yaml" ]; then \
 		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR); nothing to check."; exit 0; \
 	fi; \
 	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	empty="$$tmp/.empty"; mkdir -p "$$empty"; \
 	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" | head -1); \
 	$(MAKE) --no-print-directory publish-step \
 		PUBLISH_STEP_DIR="$$tmp/step" PUBLISH_TEST_DIR="$$tmp/test" \
@@ -514,7 +526,8 @@ check-published:
 	rc=0; \
 	for pair in "$(PUBLISH_STEP_DIR):$$tmp/step" "$(PUBLISH_TEST_DIR):$$tmp/test" "$(PUBLISH_TESTDATA_DIR):$$tmp/testdata"; do \
 		committed=$${pair%:*}; fresh=$${pair##*:}; \
-		[ -e "$$committed" ] || committed=/dev/null; \
+		[ -e "$$committed" ] || committed="$$empty"; \
+		[ -e "$$fresh" ] || fresh="$$empty"; \
 		diff -r -x '__pycache__' -x '*.pyc' "$$committed" "$$fresh" || rc=1; \
 	done; \
 	if [ $$rc = 0 ]; then echo "[$(STEP_NAME)] OK: committed artifacts match current source."; \

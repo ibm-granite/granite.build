@@ -1,0 +1,113 @@
+.section {
+  padding: 0 0 1.5rem;
+}
+
+.sectionHeading {
+  background-color: var(--cds-layer-accent, #f4f4f4);
+  padding: 0.5rem 1rem;
+  margin: 0 0 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+// Fixed 4-column grid: every label/value pair lines up on the same axis
+// regardless of how long the neighbouring values are (flex + `flex-basis`
+// let short values collapse and long ones push their row out of alignment).
+.fieldGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1.25rem 1rem;
+  padding: 0 1rem;
+}
+
+@media (max-width: 42rem) {
+  .fieldGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.fieldGroup {
+  min-width: 0;
+}
+
+.fieldLabelRow {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+
+  // Carbon's default 0.5rem label margin leaves the value floating away from
+  // the label it belongs to once the fields sit on a grid.
+  label {
+    margin-bottom: 0.25rem;
+  }
+}
+
+.fieldValue {
+  display: block;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8125rem;
+  overflow-wrap: break-word;
+}
+
+// Hyperparameters get one full-width row each, so their Strategy/Default/Values
+// columns share the same axis down the whole section.
+.tunerParamList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0 1rem;
+}
+
+// One step lighter than `.sectionHeading` (which uses `--cds-layer-accent`), so
+// the rows read as content under the heading rather than as more headings.
+.tunerParam {
+  background: var(--cds-layer-01, #f4f4f4);
+  padding: 0.75rem 1rem;
+}
+
+.tunerParamTitle {
+  margin: 0 0 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.tunerParamGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem 1rem;
+}
+
+// Value lists are the longest cell, so let them run into the unused 4th column
+// instead of wrapping inside a quarter-width one.
+.tunerParamValues {
+  grid-column: 3 / -1;
+}
+
+@media (max-width: 42rem) {
+  .tunerParamGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tunerParamValues {
+    grid-column: 1 / -1;
+  }
+}
+
+.subField {
+  min-width: 0;
+
+  label {
+    display: block;
+    margin-bottom: 0.25rem;
+  }
+}
+
+.tooltipTrigger {
+  background: none;
+  border: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--cds-icon-secondary, #525252);
+}

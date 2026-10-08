@@ -1,0 +1,32 @@
+# BUILD CONTEXT for bfcl-eval, whose context is THIS directory (Makefile: `docker build
+# -f Dockerfile .`), not the repo root -- every COPY here reads pyproject.toml, uv.lock or
+# src/, and nothing from outside.
+#
+# MEASURED, not assumed: on 2026-08-26 this context was 7.9 GiB across 72,046 files (8.2 GB of it steps/bfcl-eval/.venv), against a
+# 64 MiB ceiling, because `make test` here leaves a full virtualenv behind and there was nothing to exclude it. `.gitignore` does not apply -- the builder is not git.
+#
+# A DENY-LIST here, an ALLOWLIST at the repo root, and the asymmetry is deliberate: this
+# directory is meant to ship whole (pyproject.toml, src/ and test/ ARE the step), so the thing
+# to name is build detritus. The repo root gets the opposite treatment because there the
+# default is 60 GB of data and only a named handful of files belongs in an image. See the long
+# comment in ../../.dockerignore.
+#
+# `__pycache__` is not housekeeping here: `COPY src/ /opt/bfcl-eval/` would otherwise
+# put this account's .pyc files into the image, where a stale one shadowing an edited .py is a
+# genuinely confusing failure. This step has none on disk today; the rule is here so the first `make test` does not add one to an image.
+#
+# Verified by scripts/bluevela/checks/docker-context.sh, which resolves every COPY against
+# these rules and FAILS if one of them would arrive empty -- the failure mode a deny-list can
+# still cause, and the one `docker build` would not catch, because the build stays green and
+# the image dies later.
+.venv
+.venv/**
+__pycache__
+__pycache__/**
+**/__pycache__
+**/__pycache__/**
+*.pyc
+.pytest_cache
+.pytest_cache/**
+*.egg-info
+*.egg-info/**

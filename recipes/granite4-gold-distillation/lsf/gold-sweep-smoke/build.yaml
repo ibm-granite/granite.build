@@ -1,0 +1,113 @@
+######
+# gold-sweep-smoke — GOLD knowledge distillation for BlueVela (SkyPilot / LSF).
+#
+# The minutes-long gate for gold-sweep-100. Same SHAPE — step-bounded, one node, the
+# real prepped corpus and retagged student — with only the cost shrunk.
+#
+# One target. Values come from parameters.yaml beside this file; the comments
+# explaining WHY each value is what it is live there.
+#
+# This build.yaml is IDENTICAL to its sibling gold-sweep-100/build.yaml apart from the
+# build and target name — the two recipes are one arm at two scales and differ
+# only in parameters.yaml. test_gold_sweep_recipe.py asserts that equivalence, so
+# the pair cannot drift.
+#
+# Run (parameters.yaml is picked up automatically because it sits next to this file):
+#   gb build start -f recipes/granite4-gold-distillation/lsf/gold-sweep-smoke/build.yaml --space <space>
+#
+# Explicitly, or with a different parameter set:
+#   gb build start -f recipes/granite4-gold-distillation/lsf/gold-sweep-smoke/build.yaml \
+#     --parameters-path recipes/granite4-gold-distillation/lsf/gold-sweep-smoke/parameters.yaml \
+#     --space <space>
+######
+granite.build:
+  name: gold-sweep-smoke
+  targets:
+    gold-sweep-smoke:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      # The teacher, the student and the dataset, recorded as lineage inputs. These
+      # are what make the three appear as this target's inputs in `gb build status`
+      # and as OpenLineage inputs[] where a lineage provider is configured — lineage
+      # is built from the target's input artifacts, not from step config, so a path
+      # passed only to gold_config below would run fine and record nothing.
+      #
+      # env:// means "already on a filesystem this environment can reach": the pull is
+      # a no-op, so these add three input artifacts and no extra step. `type` is what
+      # gives each one a lineage artifact type.
+      inputs:
+        teacher_model:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
+        student_model:
+          uri: "env://$${STUDENT_MODEL}"
+          type: model
+        training_dataset:
+          uri: "env://$${TRAINING_DATASET}"
+          type: dataset
+      outputs:
+        # $GB_BUILD_WORKDIR/checkpoints/<run_name>_node<N>, registered by rank 0. The
+        # node count in that path comes from the allocation, not from a parameter, so
+        # it always describes the run that produced it.
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/gold
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+            launcher_config:
+              # Overrides the step's own image (gbserver prefers a build.yaml
+              # image_id over the launcher's).
+              image_id: "$${IMAGE_ID}"
+              resources:
+                # accelerators is PER NODE; memory is host memory per node.
+                accelerators: "$${ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                # For the LSF cloud, SkyPilot's zone is the queue name.
+                zone: "$${QUEUE}"
+            gold_config:
+              run_name: "$${RUN_NAME}"
+              ds_config: "$${DS_CONFIG}"
+              # The same three parameters the inputs above declare, so the lineage
+              # record and the trainer's arguments cannot disagree.
+              model_name_or_path: "$${STUDENT_MODEL}"
+              teacher_model_name_or_path: "$${TEACHER_MODEL}"
+              dataset_name: "$${TRAINING_DATASET}"
+              num_train_epochs: $${NUM_TRAIN_EPOCHS}
+              # Caps the run by optimizer steps rather than epochs, which is what a
+              # corpus too large to epoch through needs. 0 omits the key entirely.
+              max_steps: $${MAX_STEPS}
+              learning_rate: $${LEARNING_RATE}
+              min_lr: $${MIN_LR}
+              warmup_ratio: $${WARMUP_RATIO}
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              per_device_train_batch_size: $${PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${GRADIENT_ACCUMULATION_STEPS}
+              max_length: $${MAX_LENGTH}
+              max_completion_length: $${MAX_COMPLETION_LENGTH}
+              gradient_checkpointing: $${GRADIENT_CHECKPOINTING}
+              save_strategy: "$${SAVE_STRATEGY}"
+              save_steps: $${SAVE_STEPS}
+              save_total_limit: $${SAVE_TOTAL_LIMIT}
+              logging_steps: $${LOGGING_STEPS}
+              dataset_num_proc: $${DATASET_NUM_PROC}
+              temperature: $${TEMPERATURE}
+              lmbda: $${LMBDA}
+              beta: $${BETA}
+              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
+              response_template: "$${RESPONSE_TEMPLATE}"
+              nccl_debug: "$${NCCL_DEBUG}"
+              nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
+              nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
+              nccl_enable_monitoring: $${NCCL_ENABLE_MONITORING}
+              vllm_num_servers: $${VLLM_NUM_SERVERS}
+              top_p: $${TOP_P}
+              use_sampled_opd_loss: $${USE_SAMPLED_OPD_LOSS}
+              last_message_only: $${LAST_MESSAGE_ONLY}
+              clip_alpha: $${CLIP_ALPHA}
+              opd_importance_sampling: $${OPD_IMPORTANCE_SAMPLING}

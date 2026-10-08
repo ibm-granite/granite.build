@@ -83,6 +83,7 @@ jobs:
     needs: trigger-check
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
@@ -98,6 +99,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           make quick-tests-setup
+
+      # Same preload as ci.yml, restore only: this workflow runs PR code with
+      # main's cache scope, so saving here would let a PR poison main's entry.
+      - name: Restore cached Docker images
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/ci-docker-images
+          key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
+
+      - name: Load Docker images (pull with retry on cache miss)
+        run: scripts/ci-docker-images.sh load
 
       - name: Run tests (standalone + thirdparty)
         run: make quick-tests
@@ -118,6 +130,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[standalone,docker,dev]"
+
+      # Same preload, restore only (see the test job).
+      - name: Restore cached Docker images
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/ci-docker-images
+          key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
+
+      - name: Load Docker images (pull with retry on cache miss)
+        run: scripts/ci-docker-images.sh load
 
       - name: Build CPU test image
         run: |

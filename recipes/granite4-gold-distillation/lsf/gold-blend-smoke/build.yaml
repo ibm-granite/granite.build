@@ -1,0 +1,189 @@
+######
+# gold-blend-smoke — on-policy-blended GOLD distillation (lmbda 0.3) for BlueVela
+# (SkyPilot / LSF), with vLLM as a SEPARATE target rather than nodes carved out of
+# the trainer's allocation.
+#
+# Same three-target shape as gold-onpolicy-smoke (which proved this shape works:
+# build 9973e766 synced all 362 parameter tensors over NCCL across two LSF
+# allocations). This recipe swaps in the shared-path granite-4.2-30b/granite-4.1-3b
+# pair that gold-smoke already proved end to end (build 86ccd562, off-policy,
+# loss 0.282, checkpoint saved) and sets lmbda to 0.3 — the blended arm, where the
+# student generates 30% of the time and trains on the fixed corpus the rest.
+#
+# THREE TARGETS, and the ordering between them is implicit — there is no depends_on
+# key. A target starts when ALL its input bindings resolve:
+#
+#   vllm-server ──vllm_url──> train ──checkpoint──> teardown
+#        └────────────────cluster_name───────────────┘
+#
+# vllm-server has no inputs, so it starts immediately. train waits for vllm_url,
+# which vllm-server publishes only AFTER /health answers — so the graph is the
+# health gate. teardown waits for the checkpoint, which the trainer emits as its
+# last log line, and for the cluster name.
+#
+# STUDENT_MODEL should be a good off-policy checkpoint for a real blend run (see
+# gold-onpolicy-smoke's README, "What a real on-policy run would change"), not the
+# base retagged student this smoke defaults to — pass one via
+# --param STUDENT_MODEL=<checkpoint path> once gold-smoke (or a longer off-policy
+# run) has produced one.
+#
+# Run (parameters.yaml is picked up automatically because it sits next to this file):
+#   gb build start -f recipes/granite4-gold-distillation/lsf/gold-blend-smoke/build.yaml --space <space>
+######
+granite.build:
+  name: gold-blend-smoke
+  targets:
+
+    # ── The server ────────────────────────────────────────────────────────────
+    vllm-server:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      outputs:
+        # mem://, NOT env://. The payload is a URL, and env:// would run it through
+        # filesystem-path normalisation and mangle http://host:8001 into
+        # /http:/host:8001. The mem:// store keys this URI to the producer's
+        # verbatim binding["state"], which the consumer reads as
+        # {{ bindings.<x>.binding.state }}. No `type` and no store_push: nothing
+        # is transferred.
+        vllm_url:
+          uri: "mem://gold-blend-vllm"
+        # For teardown. LSF SERVICE clusters never autostop (the provisioner
+        # refuses idle_minutes_to_autostop for SSH/HPC clouds) and never get a
+        # terminal-status cleanup, so without this the allocation is held until
+        # someone runs `sky down` by hand.
+        cluster_name:
+          uri: "mem://gold-blend-vllm-cluster"
+      steps:
+        - step_uri: space://steps/distill/vllm-server
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${VLLM_NUM_GPUS_PER_NODE}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "$${VLLM_ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+            vllm_config:
+              # The STUDENT. On-policy/blended GOLD has the student generate and
+              # the teacher score those generations, so serving the teacher here
+              # would be a different algorithm that still runs and still reports
+              # a loss.
+              model_path: "$${STUDENT_MODEL}"
+              port: $${VLLM_PORT}
+              # Must be >= the trainer's max_length, or a prompt the trainer
+              # accepts is one the server refuses mid-run.
+              max_model_len: $${MAX_LENGTH}
+              health_timeout_seconds: $${VLLM_HEALTH_TIMEOUT_SECONDS}
+              # The server's own ceiling on holding its node. teardown is gated on
+              # train.checkpoint, which a crashed trainer never emits, so without
+              # this a trainer failure strands the allocation.
+              max_lifetime_seconds: $${VLLM_MAX_LIFETIME_SECONDS}
+
+    # ── The trainer ───────────────────────────────────────────────────────────
+    train:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The ordering primitive AND the health gate: this binding resolves only
+        # once the server answers /health, so this target cannot start early.
+        vllm:
+          binding: vllm-server.vllm_url
+        # The teacher, student and dataset as lineage inputs. env:// means "already
+        # on a filesystem this environment can reach", so the pull is a no-op and
+        # these add three input artifacts and no extra step.
+        teacher_model:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
+        student_model:
+          uri: "env://$${STUDENT_MODEL}"
+          type: model
+        training_dataset:
+          uri: "env://$${TRAINING_DATASET}"
+          type: dataset
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/gold
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+            gold_config:
+              run_name: "$${RUN_NAME}"
+              ds_config: "$${DS_CONFIG}"
+              model_name_or_path: "$${STUDENT_MODEL}"
+              teacher_model_name_or_path: "$${TEACHER_MODEL}"
+              dataset_name: "$${TRAINING_DATASET}"
+              max_steps: $${MAX_STEPS}
+              num_train_epochs: $${NUM_TRAIN_EPOCHS}
+              learning_rate: $${LEARNING_RATE}
+              min_lr: $${MIN_LR}
+              warmup_ratio: $${WARMUP_RATIO}
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              per_device_train_batch_size: $${PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${GRADIENT_ACCUMULATION_STEPS}
+              max_length: $${MAX_LENGTH}
+              max_completion_length: $${MAX_COMPLETION_LENGTH}
+              gradient_checkpointing: $${GRADIENT_CHECKPOINTING}
+              save_strategy: "$${SAVE_STRATEGY}"
+              save_steps: $${SAVE_STEPS}
+              save_total_limit: $${SAVE_TOTAL_LIMIT}
+              logging_steps: $${LOGGING_STEPS}
+              dataset_num_proc: $${DATASET_NUM_PROC}
+              temperature: $${TEMPERATURE}
+              lmbda: $${LMBDA}
+              beta: $${BETA}
+              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
+              response_template: "$${RESPONSE_TEMPLATE}"
+              nccl_debug: "$${NCCL_DEBUG}"
+              nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
+              nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
+              nccl_enable_monitoring: $${NCCL_ENABLE_MONITORING}
+              # The external server. Setting this makes EVERY node in this
+              # allocation a trainer and hands the address to gold.py on its
+              # command line; it is what distinguishes this recipe from the
+              # in-allocation split that vllm_num_servers alone selects.
+              vllm_server_url: "{{ bindings.vllm.binding.state }}"
+              vllm_mode: "$${VLLM_MODE}"
+              vllm_sync_frequency: $${VLLM_SYNC_FREQUENCY}
+              # Counts EXTERNAL servers here, so it no longer competes with the
+              # trainer for nodes. It must still be >= 1: it is what makes the
+              # renderer emit the on-policy config block at all.
+              vllm_num_servers: $${VLLM_NUM_SERVERS}
+              top_p: $${TOP_P}
+              use_sampled_opd_loss: $${USE_SAMPLED_OPD_LOSS}
+              last_message_only: $${LAST_MESSAGE_ONLY}
+              clip_alpha: $${CLIP_ALPHA}
+              opd_importance_sampling: $${OPD_IMPORTANCE_SAMPLING}
+
+    # ── The reaper ────────────────────────────────────────────────────────────
+    teardown:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # `gate` is the ordering primitive and nothing else: the trainer emits
+        # checkpoint as its final log line, so this target runs after training
+        # ends. The name carries no special meaning.
+        gate:
+          binding: train.checkpoint
+        vllm_cluster:
+          binding: vllm-server.cluster_name
+      steps:
+        - step_uri: space://steps/skypilot-teardown
+          config:
+            teardown_config:
+              cluster_names:
+                - "{{ bindings.vllm_cluster.binding.state }}"

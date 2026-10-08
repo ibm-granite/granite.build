@@ -107,6 +107,42 @@ _ENV_YAML = (
     / "environment.yaml"
 )
 
+_PLACEHOLDER_AP_ID = "fsap-0abc123"
+_AP_ENV_YAML = (
+    get_test_data_dir_for(__file__)
+    / "shared-fs-ap"
+    / "space"
+    / "environments"
+    / "skypilot"
+    / "aws-shared-fs-ap"
+    / "environment.yaml"
+)
+
+
+def _fixture_ships_placeholder_ap() -> bool:
+    """True while the AP fixture still ships the placeholder fsid or access point."""
+    try:
+        data = yaml.safe_load(_AP_ENV_YAML.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return True
+    efs = (((data.get("config") or {}).get("shared_filesystem") or {}).get("efs")) or {}
+    return (
+        efs.get("file_system_id", _PLACEHOLDER_EFS_FS_ID) == _PLACEHOLDER_EFS_FS_ID
+        or efs.get("access_point_id", _PLACEHOLDER_AP_ID) == _PLACEHOLDER_AP_ID
+    )
+
+
+_skip_placeholder_ap = pytest.mark.skipif(
+    _fixture_ships_placeholder_ap(),
+    reason=(
+        "AP fixture still ships placeholder ids "
+        f"({_PLACEHOLDER_EFS_FS_ID}/{_PLACEHOLDER_AP_ID}); set shared_filesystem.efs "
+        f"file_system_id + access_point_id in {_AP_ENV_YAML} to a real BYO EFS and "
+        "a per-space access point (PosixUser + RootDirectory) to run the "
+        "containerized AP probe (see docs/environments/skypilot-aws.md)."
+    ),
+)
+
 
 def _aws_credentials_available() -> bool:
     """True if AWS credentials look configured (env vars or ~/.aws/credentials)."""
@@ -283,6 +319,30 @@ class TestSkypilotAwsSharedFsContainerized(AbstractYamlBuildRunnerTest):
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
         return get_test_data_dir_for(__file__) / "shared-fs" / "containerized"
+
+
+@_skip_placeholder_ap
+class TestSkypilotAwsSharedFsAccessPointContainerized(AbstractYamlBuildRunnerTest):
+    """BYO EFS mounted through a per-space access point (#396), producer -> consumer.
+
+    Both ``command`` steps run in an image that bundles amazon-efs-utils
+    (``mount.efs``), so each mounts the EFS in-container with
+    ``mount -t efs -o accesspoint=<fsap>,tls`` and creates the per-run tree WITHOUT
+    the 1777 bootstrap (the AP's PosixUser pins the uid/gid). The producer writes
+    ``probe.txt`` into ``$GB_BUILD_WORKDIR``; the consumer -- on a SEPARATE EC2
+    instance -- reads it back under ``set -eu`` and prints its owner. SUCCESS proves
+    the per-run workdir crossed instances through the access point.
+
+    The target has no inputs/outputs, so no hidden pull/push steps are queued
+    (those run on images without ``mount.efs`` and would fail fast under an access
+    point; a documented limitation). Hence no HF token gate, mirroring
+    :class:`TestSkypilotAwsEphemeralEfs`; it self-skips while the AP fixture ships
+    placeholder ids.
+    """
+
+    def _get_yaml_spec_dir(self) -> Path:
+        """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
+        return get_test_data_dir_for(__file__) / "shared-fs-ap" / "containerized"
 
 
 class TestSkypilotAwsEphemeralEfs(AbstractYamlBuildRunnerTest):

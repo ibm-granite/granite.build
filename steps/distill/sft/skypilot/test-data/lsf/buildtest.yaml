@@ -1,0 +1,56 @@
+# YAML-driven spec for test_skypilot_lsf_distill_sft.py (located by the test/ <->
+# test-data/ helper; see steps/README.md).
+#
+# Runs align -> corpus -> train-sft. Three targets because this step's two inputs are both
+# produced by the pipeline: the student must be the RETAGGED model, and the corpus must be
+# built with that tokenizer.
+#
+# What only a real run can show: that the trainer starts under accelerate + DeepSpeed ZeRO-3
+# on this image (trl 0.26.2, whose private import_utils attributes sft.py monkeypatches),
+# that gpus_per_node matched the allocation, that the response template's trailing newline
+# survived the trip, and that a checkpoint registered.
+targets:
+  - align
+  - corpus
+  - train-sft
+target_expectations:
+  - target_name: align
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 3
+    jobstats_count: 1
+  - target_name: corpus
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+  - target_name: train-sft
+    # Two bound inputs (student, corpus), one model out.
+    step_count: 1
+    input_artifact_count: 2
+    output_artifact_count: 1
+    jobstats_count: 1
+    expected_steps:
+      - metadata_matches:
+          distill_code_commit: "^[0-9a-f]{40}$"
+          distill_code_source: "^(filesystem|git)$"
+          distill_code_dirty: "^[0-9]+$"
+        config:
+          sft_config:
+            # EMPTY is what makes this the control rather than a forward-KL distillation arm
+            # wearing the same step's name.
+            precomputed_logits_dir: ""
+            # The corpus's own budget: a larger value trains on records the corpus was not
+            # filtered for, and nothing downstream re-checks lengths.
+            max_length: 4096
+          workload:
+            # Asserted against the visible GPUs by the script; pinned here so a fixture that
+            # drifts from its allocation fails the test rather than the run.
+            gpus_per_node: 1
+            nodes: 1
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# Three sequential LSF allocations, the last holding a GPU for a short training run.
+timeout_minutes: 90

@@ -68,6 +68,7 @@ from gbserver.environment.skypilot import (
     _abort_shielded_request,
     _build_skypilot_mounts,
     _get_step_skypilot_config,
+    _num_nodes_from_configs,
     _run_sky_verb_off_loop,
     _sky_submit_to_thread,
 )
@@ -216,6 +217,16 @@ class Skypilot_managed(Environment):
                 job_name=job_name,
             )
 
+            # num_nodes resolution is shared with the unmanaged launcher: it is
+            # a sky.Task field, so a num_nodes under resources: is dropped
+            # silently by sky.Resources and is warned about instead.
+            num_nodes = _num_nodes_from_configs(
+                config.get("compute_config", {}) or {},
+                launcher_config,
+                config,
+                cloud=(str(cloud).split("/", 1)[0] or "").lower(),
+            )
+
             # Build sky.Task
             task = sky.Task(
                 name=job_name,
@@ -223,6 +234,7 @@ class Skypilot_managed(Environment):
                 run=launcher_config.get("run", ""),
                 envs=env_vars if env_vars else None,
                 resources=resources,
+                num_nodes=num_nodes,
             )
 
             # Handle file_mounts (may be in launcher config or step config).

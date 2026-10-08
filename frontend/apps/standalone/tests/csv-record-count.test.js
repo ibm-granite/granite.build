@@ -1,0 +1,262 @@
+/**
+ * Regression tests for dataset record parsing and counting.
+ *
+ * Three related defects:
+ *
+ * 1. parseCsv() split the file on '\n' BEFORE quote-aware field parsing, so a
+ *    quoted field containing a newline (common in instruction datasets, where
+ *    an `output`/`response` column holds a multi-line answer) was sheared into
+ *    several records and every continuation fragment was misaligned against the
+ *    headers — silently corrupting the preview, the column metadata, the
+ *    AI-mapping samples and the record count.
+ *
+ * 2. The >5MB counting path counted physical LINES (header row included),
+ *    while the <=5MB path counted parseCsv() records. A 6MB CSV therefore
+ *    reported N+1 where a 4MB one reported N.
+ *
+ * 3. For a pretty-printed .json array, line counting is not even the right
+ *    unit: 1,000 objects over ~7,000 lines reported ~7,000 records, which is
+ *    what the wizard displayed and what the train/validation split maths used.
+ *
+ * Usage: node --test tests/csv-record-count.test.js
+ */
+
+const { describe, it } = require('node:test')
+const assert = require('node:assert/strict')
+
+const {
+  parseCsv,
+  parseCsvLine,
+  countRecordsInBlob,
+  createCsvScanState,
+  scanCsvChunk,
+  MAX_CSV_RECORD_CHARS,
+} = require('../../../packages/ui-core/lib/autotunex/file-parser.ts')
+
+// A quoted value spanning three physical lines, plus a doubled ("") escape.
+const MULTILINE_CSV = [
+  'instruction,output',
+  '"Summarise this","Line one',
+  'Line two',
+  'Line three"',
+  '"Quote me","He said ""hello"" twice"',
+].join('\n')
+
+describe('parseCsv — newlines inside quoted fields', () => {
+  it('keeps a multi-line quoted value in a single record', () => {
+    const rows = parseCsv(MULTILINE_CSV)
+    assert.equal(rows.length, 2, 'two data records, not five sheared fragments')
+    assert.equal(rows[0].instruction, 'Summarise this')
+    assert.equal(rows[0].output, 'Line one\nLine two\nLine three')
+  })
+
+  it('does not misalign the columns of the following record', () => {
+    const rows = parseCsv(MULTILINE_CSV)
+    assert.equal(rows[1].instruction, 'Quote me')
+    assert.equal(rows[1].output, 'He said "hello" twice')
+  })
+
+  it('reports every header key on every row', () => {
+    for (const row of parseCsv(MULTILINE_CSV)) {
+      assert.deepEqual(Object.keys(row), ['instruction', 'output'])
+    }
+  })
+
+  it('still honours maxLines, counted in records not lines', () => {
+    assert.equal(parseCsv(MULTILINE_CSV, 1).length, 1)
+  })
+
+  it('handles CRLF line endings', () => {
+    const rows = parseCsv('a,b\r\n1,2\r\n3,4')
+    assert.equal(rows.length, 2)
+    assert.deepEqual(rows[0], { a: '1', b: '2' })
+    assert.deepEqual(rows[1], { a: '3', b: '4' })
+  })
+
+  it('returns [] for empty content', () => {
+    assert.deepEqual(parseCsv(''), [])
+  })
+})
+
+describe('parseCsv — an unbalanced quote must not swallow the rest of the file', () => {
+  // Regression guard for the fix to the fix. Tracking quote state as raw parity
+  // meant one stray quote in an UNQUOTED field opened a region that never closed,
+  // collapsing every later record into one: a 6-record file reported 3, and the
+  // scanner accumulated the whole remainder into a single string, defeating the
+  // streaming it exists for. A quote only opens a field at a field start.
+  const STRAY = [
+    'a,b',
+    'x1,ok',
+    'x2,ok',
+    'x3,He said "hi',
+    'x4,ok',
+    'x5,ok',
+    'x6,ok',
+  ].join('\n')
+
+  it('keeps every following record separate', () => {
+    assert.equal(parseCsv(STRAY).length, 6)
+  })
+
+  it('keeps the stray quote in the affected field and does not shift columns', () => {
+    const rows = parseCsv(STRAY)
+    assert.equal(rows[3].a, 'x4', 'record after the stray quote is still its own row')
+    assert.equal(rows[3].b, 'ok')
+    assert.equal(rows[5].a, 'x6')
+  })
+
+  it('counts the same 6 records when streaming', async () => {
+    assert.equal(await countRecordsInBlob(new Blob([STRAY]), 'd.csv'), 6)
+  })
+
+  it('still treats a quote at a field start as opening a quoted field', () => {
+    // The stray-quote rule must not break legitimate quoting.
+    const rows = parseCsv('a,b\nx,"multi\nline"\ny,plain')
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0].b, 'multi\nline')
+    assert.equal(rows[1].a, 'y')
+  })
+})
+
+describe('scanCsvChunk — record boundaries across chunk boundaries', () => {
+  // The streaming counter feeds arbitrary chunks, so a quoted newline (or a ""
+  // escape) can straddle a chunk edge. Quote state must carry in the state obj.
+  it('carries quote state across two chunks', () => {
+    const state = createCsvScanState()
+    const records = []
+    scanCsvChunk('a,b\n"one', state, (r) => records.push(r))
+    scanCsvChunk('\ntwo",x\n', state, (r) => records.push(r))
+    assert.deepEqual(records, ['a,b', '"one\ntwo",x'])
+  })
+
+  it('treats a "" escape split across chunks as still-quoted', () => {
+    const state = createCsvScanState()
+    const records = []
+    scanCsvChunk('h\n"a"', state, (r) => records.push(r))
+    scanCsvChunk('"b\nc"\n', state, (r) => records.push(r))
+    assert.deepEqual(records, ['h', '"a""b\nc"'])
+  })
+})
+
+const blob = (text) => new Blob([text])
+
+describe('countRecordsInBlob — CSV', () => {
+  it('excludes the header row', async () => {
+    assert.equal(await countRecordsInBlob(blob('a,b\n1,2\n3,4\n'), 'd.csv'), 2)
+  })
+
+  it('counts a multi-line quoted record once', async () => {
+    assert.equal(await countRecordsInBlob(blob(MULTILINE_CSV), 'd.csv'), 2)
+  })
+
+  it('agrees with parseCsv().length — the two paths must not diverge', async () => {
+    for (const text of [MULTILINE_CSV, 'a,b\n1,2\n3,4\n', 'only,headers\n', 'a,b\n1,2\n\n3,4\n']) {
+      assert.equal(
+        await countRecordsInBlob(blob(text), 'd.csv'),
+        parseCsv(text).length,
+        `count must match parse for: ${JSON.stringify(text.slice(0, 30))}`
+      )
+    }
+  })
+
+  it('reports 0, not -1, for an empty file', async () => {
+    assert.equal(await countRecordsInBlob(blob(''), 'd.csv'), 0)
+  })
+
+  // A blank interior line is not a record. The streaming tally always skipped it
+  // while parseCsv emitted a row for it, so an all-empty junk record was
+  // previewed and uploaded, and `totalRecords` -- which drives the
+  // train/validation split maths -- came back one lower than what was sent.
+  it('ignores a blank interior line, and parseCsv agrees', async () => {
+    const text = 'a,b\n1,2\n\n3,4\n'
+    assert.equal(await countRecordsInBlob(blob(text), 'd.csv'), 2)
+    assert.equal(parseCsv(text).length, 2)
+    assert.deepEqual(parseCsv(text), [{ a: '1', b: '2' }, { a: '3', b: '4' }])
+  })
+})
+
+describe('countRecordsInBlob — JSONL', () => {
+  it('counts valid JSON objects and skips invalid lines', async () => {
+    const text = '{"a":1}\n{"a":2}\nnot json\n\n{"a":3}\n'
+    assert.equal(await countRecordsInBlob(blob(text), 'd.jsonl'), 3)
+  })
+
+  it('is unaffected by quote characters inside the JSON', async () => {
+    // The CSV scanner must not be applied to JSONL: a quoted string would
+    // otherwise toggle quote state and merge two records into one.
+    const text = '{"t":"a \\"quoted\\" word"}\n{"t":"another"}\n'
+    assert.equal(await countRecordsInBlob(blob(text), 'd.jsonl'), 2)
+  })
+})
+
+describe('countRecordsInBlob — JSON array', () => {
+  it('counts array entries, not lines, for a pretty-printed file', async () => {
+    const rows = Array.from({ length: 25 }, (_, i) => ({ id: i, text: 'x' }))
+    const pretty = JSON.stringify(rows, null, 2)
+    assert.ok(pretty.split('\n').length > 100, 'fixture must be many lines per entry')
+    assert.equal(await countRecordsInBlob(blob(pretty), 'd.json'), 25)
+  })
+})
+
+describe('parseCsvLine — a quote only opens a field at the field start', () => {
+  it('treats a mid-field quote as literal and keeps the field count', () => {
+    // Previously the quote opened a quoted region, so the following comma looked
+    // quoted and the record collapsed from 4 fields to 2 (dropping the quote).
+    const fields = parseCsvLine('x3,He said "hi, there,ok')
+    assert.equal(fields.length, 4)
+    assert.deepEqual(fields, ['x3', 'He said "hi', 'there', 'ok'])
+  })
+
+  it('still strips a properly quoted field and its escapes', () => {
+    assert.deepEqual(parseCsvLine('"a,b","he said ""hi""",c'), ['a,b', 'he said "hi"', 'c'])
+  })
+
+  it('tolerates padding before an opening quote', () => {
+    // `a, "b,c"` — a space after the comma must not stop the quote from opening,
+    // or the embedded comma would split the field.
+    assert.deepEqual(parseCsvLine('a, "b,c"'), ['a', 'b,c'])
+  })
+
+  it('keeps an empty trailing field', () => {
+    assert.deepEqual(parseCsvLine('a,b,'), ['a', 'b', ''])
+  })
+
+  // Trimming every field, quoted ones included, silently rewrote training data:
+  // an SFT `output` whose leading/trailing whitespace is deliberately quoted was
+  // stripped before upload. Unquoted padding must still go (`a, b`).
+  it('preserves whitespace inside a quoted field', () => {
+    assert.deepEqual(parseCsvLine('"Q","  Answer:  "'), ['Q', '  Answer:  '])
+    assert.deepEqual(parseCsv('instruction,output\n"Q","  Answer:  "')[0], {
+      instruction: 'Q',
+      output: '  Answer:  ',
+    })
+  })
+
+  it('still trims an unquoted field, and padding around a quoted one', () => {
+    assert.deepEqual(parseCsvLine('a, b'), ['a', 'b'])
+    assert.deepEqual(parseCsvLine('a, "b" '), ['a', 'b'])
+  })
+})
+
+describe('scanCsvChunk — padding before an opening quote', () => {
+  it('protects newlines in a padded quoted field, agreeing with parseCsvLine', () => {
+    const rows = parseCsv('a,b\nx, "multi\nline"\ny,plain')
+    assert.equal(rows.length, 2, 'the padded quoted field must not split the record')
+    assert.equal(rows[0].b, 'multi\nline')
+  })
+})
+
+describe('scanCsvChunk — unterminated quoted field is bounded', () => {
+  it('throws a descriptive error instead of buffering the whole file', () => {
+    // An opening quote that never closes previously accumulated the remainder of
+    // the file into one string, defeating the streaming and risking OOM.
+    const runaway = 'h\n"' + 'x'.repeat(MAX_CSV_RECORD_CHARS + 1)
+    assert.throws(() => parseCsv(runaway), /Unterminated quoted field/)
+  })
+
+  it('does not fire for a large but well-formed file', () => {
+    const rows = ['a,b']
+    for (let i = 0; i < 20000; i++) rows.push(`v${i},"quoted ${i}"`)
+    assert.equal(parseCsv(rows.join('\n')).length, 20000)
+  })
+})

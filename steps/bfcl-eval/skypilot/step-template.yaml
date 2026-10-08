@@ -1,0 +1,208 @@
+name: bfcl-eval
+version: 1.0.0
+# Scores a model's TOOL CALLING against ground truth with the Berkeley Function
+# Calling Leaderboard harness, and registers the score file as an artifact.
+#
+# WHY THIS EXISTS AS A SOURCE STEP. A step.yaml for this name is already committed at
+# configurations/assets/environments/skypilot/lsf/ibm-bluevela/steps/bfcl-eval/, and the
+# distill pipeline's last target binds to it — but that asset has no authoring directory
+# here, and its image is us.icr.io/cil15-shared-registry/bfcl-py311:0.02, which is
+# IBM-internal and not pullable from outside. This step is the PUBLIC replacement: the
+# same config surface, a Dockerfile anyone can build (python-slim + a uv lockfile), and
+# the harness pinned in uv.lock rather than baked into an opaque tag.
+#
+# WHAT IT DOES NOT ANSWER, and why distill-eval exists beside it: BFCL scores the student
+# against GROUND TRUTH ("is it right?"). It structurally cannot say whether the student
+# moved toward the TEACHER, which is a distance between two distributions. A recipe wires
+# both; they are not substitutes in either direction.
+#
+# CUSTOM, for the reason distill-eval's template gives at length: there is no EVAL member
+# in gbcommon's StepType enum (DATA_PROCESSING/DATA_GENERATION/TRAINING/TUNING/CUSTOM, a
+# StrEnum, so the values are lowercase), `type` is a free string so inventing one is easy,
+# and distill-eval's rule is not to. The legacy asset above says EVAL; that is the one
+# thing from it deliberately NOT carried over.
+#
+# Note the branch is not uniform on this: steps/eval/skypilot also says EVAL. This step
+# follows distill-eval, which is the one that reasoned about it — steps/eval predates that
+# and is left alone here rather than changed under cover of an unrelated step.
+type: custom
+config:
+  bfcl_config:
+    # The checkpoint to score, as a LOCAL PATH: normally distill-hf-export's `hf_model`.
+    # vLLM serves it directly from disk, so a hub id would need a fetch this step does
+    # not perform. Required — run-bfcl.sh refuses an empty value rather than defaulting.
+    model_path: ""
+    # Which bfcl_eval HANDLER formats the prompts and parses the replies. NOT cosmetic
+    # and NOT defaulted: the handler decides how tool calls are extracted from raw
+    # output, so a wrong id here produces a plausible score for the wrong parser rather
+    # than an error. src/bfcl-shim registers real Granite-4 checkpoint ids that upstream's
+    # MODEL_CONFIG_MAPPING lacks, so this can name the actual checkpoint instead of
+    # borrowing an unrelated size's entry. Required; run-bfcl.sh exits if it is empty.
+    model_id: ""
+    # Two LABELS, used only to build the output path below ("<output_dir>/<experiment>/
+    # <eval_name>"). eval_name does NOT select a benchmark version: the harness version is
+    # whatever uv.lock pins (bfcl-eval 2026.3.23 today), so renaming this changes a
+    # directory, not what is measured.
+    experiment: ""
+    eval_name: "bfclv4"
+    # Comma-separated BFCL category names, or "all". Resolved by the harness.
+    test_categories: "all"
+    # Tensor-parallel size of the vLLM server run-bfcl.sh starts. Must not exceed the
+    # accelerators the build requests in launcher_config.resources.
+    num_gpus_generate: 1
+    # Accepted for config-surface compatibility with the legacy asset, and CURRENTLY
+    # UNUSED: today's bfcl_eval scores already-generated responses on CPU and its
+    # `evaluate` subcommand takes no GPU flag (run-bfcl.sh says so where it logs the
+    # value). Left in the surface so a recipe written against the legacy step still
+    # validates, rather than silently dropping a key someone set on purpose.
+    num_gpus_evaluate: 1
+    # A STRING, as the legacy asset had it: vLLM takes a float, and YAML 0.9 round-trips
+    # through Jinja as "0.9" anyway.
+    gpu_memory_utilization: "0.9"
+    # Relative values resolve against $GB_BUILD_WORKDIR (absolutised in `run` below,
+    # because the artifact marker's path may be read from another host).
+    output_dir: "output"
+    # COST KNOB: run this fraction (0-1) of each category's ids instead of the full
+    # ~4000-entry corpus, for a directional read. Empty runs everything. Sampling is by
+    # whole scenario for the memory categories, and it makes `evaluate` run with
+    # --partial-eval, so a sampled run scores what it generated instead of raising on
+    # every id it skipped. sample_seed alone determines WHICH ids, so two runs with the
+    # same fraction and seed are comparable.
+    sample_fraction: ""
+    sample_seed: "42"
+    # Where the HF cache lives, when the harness has to resolve anything from the Hub.
+    # Empty leaves the image's own default alone.
+    #
+    # Under bfcl_config rather than the framework's `config.workload` section, which is
+    # parsed as StepConfigWorkloadSection (src/gbserver/types/environment/environment.py)
+    # — a typed model with path/args/workspace_dir/output_dir/python_env and no room for
+    # this. Pydantic IGNORES an unknown key there rather than rejecting it, so a knob put
+    # in that section disappears without a word. The legacy asset's `workload.cwd: "."`
+    # is exactly that: a setting that has never had any effect.
+    hf_home: ""
+# REQUIRED, where the legacy asset said optional. The step cannot succeed without a score
+# file: when the harness leaves none, `run` prints the directory listing and exits 1 (see
+# below). So "declared but absent" is not a state a successful run can reach, and required
+# is the honest declaration — an undeclared or wrongly-optional output is how a target
+# completes green with nothing registered.
+#
+# DATASET, matching what the pipeline's eval-bfcl target declares for this binding. It is
+# one score .json, not a tree.
+outputs:
+  required:
+    bfcl_results:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    # NO `subtypes` restriction, unlike the ported distill-* steps. Those read a checkout
+    # from /proj and so are LSF-only; everything this step needs is inside its own image,
+    # and the GPU comes from the build's launcher_config. Same position as steps/eval.
+    default_launcher: bfcl
+    launchers:
+      bfcl:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Rendered at `make space` / `make publish-step` time: IMAGE_REF is the
+          # published, fully qualified reference (see steps/common.mk). run-bfcl.sh and
+          # its helpers live inside this image, built from ./Dockerfile.
+          image_id: "docker:${IMAGE_REF}"
+          # Cloud-agnostic: the build supplies accelerators/memory via
+          # config.launcher_config.resources, so one step serves a sampled smoke run on
+          # one GPU and a full corpus on eight.
+          resources: {}
+          run: |
+            set -e
+            set -o pipefail
+            echo "=== bfcl-eval on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+
+            # vLLM refuses to start inside an initialised torch.distributed environment,
+            # and a recipe reaches this target right after training targets whose
+            # launcher exported these. Carried over from the legacy asset, where it was
+            # load-bearing. Unsetting a name that was never set is a no-op, so this is
+            # safe when the target runs first.
+            unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
+
+            HF_HOME_VALUE="{{ config.bfcl_config.hf_home }}"
+            if [ -n "$HF_HOME_VALUE" ]; then
+              export HF_HOME="$HF_HOME_VALUE"
+              mkdir -p "$HF_HOME"
+            fi
+
+            # ABSOLUTISED HERE, before anything below uses it: a relative env:// URI is
+            # rejected at config load, and the monitor may hand this path to the store
+            # from another host.
+            OUTPUT_DIR="{{ config.bfcl_config.output_dir }}/{{ config.bfcl_config.experiment }}/{{ config.bfcl_config.eval_name }}"
+            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
+            mkdir -p "$OUTPUT_DIR"
+
+            bash /opt/bfcl-eval/run-bfcl.sh \
+              --model-path "{{ config.bfcl_config.model_path }}" \
+              --model-id "{{ config.bfcl_config.model_id }}" \
+              --test-categories "{{ config.bfcl_config.test_categories }}" \
+              --num-gpus-generate {{ config.bfcl_config.num_gpus_generate }} \
+              --num-gpus-evaluate {{ config.bfcl_config.num_gpus_evaluate }} \
+              --gpu-memory-utilization "{{ config.bfcl_config.gpu_memory_utilization }}" \
+              --output-dir "$OUTPUT_DIR" \
+              {% if config.bfcl_config.sample_fraction %}--sample-fraction "{{ config.bfcl_config.sample_fraction }}" --sample-seed "{{ config.bfcl_config.sample_seed }}"{% endif %} \
+              2>&1 | tee "${OUTPUT_DIR}/bfcl.log"
+
+            # WHICH FILE IS THE RESULT. The harness writes a score/ tree with one json
+            # per category plus a summary, so the step chooses rather than guessing: the
+            # newest file under score/. Auditable on purpose — when there is more than
+            # one candidate the list is printed, instead of silently taking whatever
+            # `find` returned first.
+            #
+            # Counted with `wc -l` over a temp file rather than a bash array, because
+            # bash's array-length syntax puts an open-brace immediately before a hash and
+            # Jinja reads that pair as the start of a comment: the template then fails to
+            # render with "Missing end of comment tag". `|| true` on the pipeline keeps a
+            # missing score/ directory on the diagnostic path below instead of aborting
+            # here under `set -e -o pipefail` with nothing printed.
+            CANDIDATES_FILE="${OUTPUT_DIR}/.bfcl-candidates.list"
+            find "$OUTPUT_DIR/score" -type f -name '*.json' -printf '%T@ %p\n' 2>/dev/null \
+              | sort -nr | awk '{print $2}' > "$CANDIDATES_FILE" || true
+            CANDIDATE_COUNT=$(wc -l < "$CANDIDATES_FILE")
+            if [ "$CANDIDATE_COUNT" -eq 0 ]; then
+              echo "bfcl-eval: FATAL: no score file under ${OUTPUT_DIR}/score." >&2
+              echo "           The harness generated responses but scored nothing, or" >&2
+              echo "           failed before scoring. Contents of the output tree:" >&2
+              find "$OUTPUT_DIR" -maxdepth 3 -type f | head -20 >&2
+              exit 1
+            fi
+            if [ "$CANDIDATE_COUNT" -gt 1 ]; then
+              echo "bfcl-eval: multiple score candidates; using the newest. Candidates:"
+              sed 's/^/  /' "$CANDIDATES_FILE"
+            fi
+            RESULT_FILE=$(head -n 1 "$CANDIDATES_FILE")
+            rm -f "$CANDIDATES_FILE"
+            # Registered by the STEP, not the workload: the path is known here, which
+            # keeps run-bfcl.sh free of any Granite.build convention (it is also run
+            # standalone, outside any build). Exactly one marker for exactly one id.
+            echo "GB_ARTIFACT_ID:bfcl_results GB_ARTIFACT_PATH:${RESULT_FILE}"
+    monitors:
+      skypilot_monitor:
+        # Artifact/binding convention from the shipped library, with `periodic` retrieval
+        # for the reason distill-gold and distill-eval override it: generation over a full
+        # BFCL corpus runs for hours, and under the default on_completion mode a stalled
+        # run looks exactly like a slow one. 900s matches the legacy asset's poll.
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
+          # Phase banners, so the build shows WHERE a long run is. Every alternative below
+          # is a line run-bfcl.sh actually prints (the legacy asset's regex matched none of
+          # them: it was written for a different script).
+          extra_event_configs:
+            - event_type: WORKLOAD_STATUS_EVENT
+              line_regex: "run-bfcl: (starting standalone vLLM server|vLLM server is ready|sampling |generating responses|evaluating responses|done)"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"
+                - field_name: message
+                  field_regex: ".+"

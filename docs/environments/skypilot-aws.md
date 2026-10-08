@@ -216,6 +216,104 @@ cross-deletion. Two steps that *rewrite the same file* as different uids still n
 > cross-*deletion*, not cross-read/write. That is a shared-scratch model appropriate for a single trusted
 > team/space. For stronger isolation, provision the EFS with **access points** (`PosixUser` +
 > `RootDirectory` per space), which also removes the `chmod` bootstrap entirely.
+>
+> This `1777` shared-scratch model applies only to mounts without an
+> `access_point_id`. Configure a per-space EFS access point (see
+> "Per-space isolation with EFS access points" below) to give each space its own
+> uid/gid-pinned root with no world-writable bootstrap. An access point alone does
+> not *enforce* the boundary: a client that can reach a mount target can still
+> mount the filesystem root over NFS or name another space's access point. See the
+> enforcement note in that section.
+
+### Per-space isolation with EFS access points (recommended for multi-tenant BYO)
+
+By default a BYO EFS mount uses a world-writable, sticky (`1777`) per-run tree so
+cross-uid, cross-instance steps can create their workdirs. On a filesystem shared
+by many builds that is a shared-scratch trust model: every build can read and
+write every other build's per-run tree (the sticky bit only blocks cross-deletion).
+
+To isolate each space, provision one **EFS access point** per space and name it in
+that space's `environment.yaml`:
+
+1. Create an access point on the shared filesystem with a fixed `PosixUser`
+   (a uid/gid dedicated to the space), a per-space `RootDirectory` (e.g.
+   `/spaces/<space>`), and `CreationInfo` (owner uid/gid + `0700`/`0770`
+   permissions) so EFS auto-creates the root owned by that uid/gid:
+
+   ```
+   aws efs create-access-point \
+     --file-system-id fs-0abc123 \
+     --posix-user Uid=<uid>,Gid=<gid> \
+     --root-directory 'Path=/spaces/<space>,CreationInfo={OwnerUid=<uid>,OwnerGid=<gid>,Permissions=0770}' \
+     --tags Key=space,Value=<space>
+   ```
+
+2. Put the returned `AccessPointId` in the space's `environment.yaml`:
+
+   ```yaml
+   shared_filesystem:
+     provider: efs
+     mount_point: /mnt/gb-shared
+     efs:
+       file_system_id: fs-0abc123
+       region: us-east-1
+       access_point_id: fsap-0abc123
+       tls: true
+   ```
+
+**Requirements and behavior**
+
+- The worker host/image MUST ship `amazon-efs-utils` (`mount.efs`): access points
+  are mounted with `mount -t efs -o accesspoint=<id>,tls`, and plain `nfs4` cannot
+  select an access point. If `mount.efs` is absent the step fails fast with a clear
+  message (there is no `nfs4`/cleartext fallback). Containerized steps therefore
+  need an image that bundles `amazon-efs-utils`.
+- The access point's fixed `PosixUser` pins a stable uid/gid across steps and
+  instances, so gbserver no longer applies the `chmod 1777` bootstrap or per-run
+  chmod walk for that mount.
+- IAM: creating/managing access points is an operator action
+  (`elasticfilesystem:CreateAccessPoint`/`DeleteAccessPoint`/`DescribeAccessPoints`);
+  gbserver needs no AWS permissions for BYO access points — it only mounts through
+  the configured id.
+- `access_point_id` is BYO-only; it is rejected for `provision: ephemeral`
+  (ephemeral EFS is single-tenant and needs no access point). It must also match
+  the AWS `fsap-<hex>` format (lowercase hex), or validation rejects it.
+- `tls` must stay `true` (the default). amazon-efs-utils refuses `accesspoint`
+  without `tls`, so validation rejects `tls: false` together with
+  `access_point_id`.
+- Teardown: the throwaway cleanup VM that reaps the per-run tree runs SkyPilot's
+  default image, which has no `mount.efs`. For an access-point mount gbserver
+  therefore installs amazon-efs-utils v1.35.2 on that VM before reaping: built
+  from `github.com/aws/efs-utils` on apt hosts (the clone must resolve to the
+  pinned v1.35.2 commit, or the reap aborts before building), or via `yum
+  install amazon-efs-utils` otherwise. That VM needs outbound access to the
+  distro mirrors and `github.com`. This applies to the gbserver-owned cleanup VM
+  only; worker steps never auto-install.
+- **Not yet supported: hidden pull/push steps.** buildrunner auto-queues hidden
+  steps for non-environment inputs/outputs (e.g. `hf://` → hfpull/hfpush,
+  `s3://` → s3pull/s3push). These run on images without `mount.efs` (the bare
+  default image, or `amazon/aws-cli`), so with an access point on the workdir
+  mount they fail fast. Until that is addressed
+  ([#458](https://github.com/ibm-granite/granite.build/issues/458)), use access
+  points only for builds whose steps all run in an image that bundles
+  amazon-efs-utils.
+- **Enforcing the boundary.** An access point pins the uid/gid and the root
+  directory for clients that mount *through it*. By itself it does not stop a
+  client that can reach a mount target from mounting the filesystem root over
+  NFS, or from naming another space's access point. gbserver mounts without IAM
+  authorization today (no `-o iam`), so limit who can reach the filesystem:
+  - restrict the mount targets' security group to NFS (TCP 2049) from the build
+    workers' security group only. This keeps hosts outside the build fleet from
+    mounting the filesystem, but not other spaces' builds on the same fleet;
+  - keep each space's `environment.yaml` operator-controlled, so a space cannot
+    point itself at another space's access point.
+
+  AWS documents the `elasticfilesystem:AccessPointArn` file-system-policy
+  condition (allow `ClientMount`/`ClientWrite` only through a given access point)
+  for IAM-authorized clients. Enforcing per-space access with a file-system
+  policy therefore needs IAM mount authorization (`-o iam`) with per-space roles,
+  which gbserver does not emit yet
+  ([#458](https://github.com/ibm-granite/granite.build/issues/458)).
 
 ### Containerized steps
 
@@ -260,9 +358,12 @@ it when the default placement might pick an AZ without one.
 - **What teardown reaps.** Teardown runs **per target-run**: gbserver `rm -rf`'s that run's per-run dir,
   then does a best-effort `rmdir` of the now-empty `runs/` and `builds/<build_id>/` parents — a parent
   is removed **only if it is now empty** (never a build-completion `rm -rf` of the whole build tree), so
-  concurrent runs under the same build are left intact. Retries get a fresh dir. Crashes or killed
-  servers can still orphan trees, and `hf_cache/` is intentionally **not** reaped (it is a shared
-  cache), so it grows unbounded.
+  concurrent runs under the same build are left intact. Teardown waits for the reap job to finish
+  (up to 5 min, or 10 min for access-point mounts, which build amazon-efs-utils first) so a failed
+  reap is logged as an `ORPHANED` tree; the build status is already final by then. A reap still running
+  at the limit logs a `WARNING` that the tree may be orphaned. Retries get a fresh dir. Crashes or
+  killed servers can still orphan trees, and `hf_cache/` is intentionally **not** reaped (it is a
+  shared cache), so it grows unbounded.
 - **Operator hygiene.** Run a **TTL sweeper** over `builds/<id>/` for crash-orphans, cap per-space
   usage, and **monitor `hf_cache/`** size — none of these are automatic.
 - **Cost.** Empty ≈ $0, but Elastic throughput bills **per byte moved** (~$0.03/GB read, ~$0.06/GB

@@ -1,0 +1,153 @@
+.header {
+  margin-bottom: 1rem;
+}
+
+// Field rows reproduce the geometry of Carbon's flex grid, which the source
+// AutoTuneX form uses. There, a `Row` cancels its columns' 1rem side padding
+// with -1rem margins, so N equal columns render as N equal tracks separated by
+// 2rem gutters with no padding at the row's outer edges. `repeat(N, minmax(0,
+// 1fr))` + `gap: 2rem` produces exactly that, and `minmax(0, 1fr)` stops a wide
+// input from pushing its track past its share.
+//
+// Per-item `flex-basis` was used here before and is what made the layout
+// diverge: basis values wrap to whatever count fits the container (4-up in the
+// generic sections instead of 2-up) and let each wrapped line size its columns
+// independently, so fields never line up between rows.
+
+/**
+ * Hyperparameter row. The source opens with two `<Column sm={1}>` and then
+ * either two more `sm={1}` (uniform strategy: min/max) or a single `sm={2}`
+ * (choice strategy: values). Carbon's `sm` grid is 4 columns wide, so that is
+ * 25% / 25% / 25% / 25%, or 25% / 25% / 50%.
+ */
+.hyperparamRow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2rem;
+  align-items: start;
+}
+
+/** The "Values" cell: `sm={2}` in the source, i.e. half the row. */
+.hyperparamValues {
+  grid-column: span 2;
+}
+
+@media (max-width: 42rem) {
+  .hyperparamRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.modeRow {
+  margin-bottom: 1rem;
+  align-items: flex-end;
+}
+
+.sectionSwitcherRow {
+  margin-bottom: 1rem;
+}
+
+// Layout mirrors the source AutoTuneX form exactly: plain block flow with a
+// FIXED-height inner scroll region — deliberately not a flex chain.
+//
+// A flex chain that grows the scroll region to fill the tile was tried and
+// reverted: it consumes every spare pixel, leaving the tile zero headroom, and it
+// diverged from the source for no benefit. The fixed 336px below reproduces the
+// source's slack (~584px of content against the tile's max-height).
+
+// `position: relative` is load-bearing, not cosmetic. Carbon renders
+// screen-reader-only `.cds--visually-hidden` spans (e.g. TextInput's counter
+// alert) as `position: absolute`. Without a positioned ancestor here, their
+// containing block becomes the enclosing `.configPreviewTile` (which is
+// `position: relative`), so this element's `overflow` cannot clip them: one such
+// span sits ~924px down inside the scrolled hyperparameter list and drags the
+// *tile's* scrollHeight out to meet it. The tile then scrolls, carrying the mode
+// toggle, tab switcher and tuner dropdown out of view. Making this a containing
+// block keeps those spans clipped here, where they belong.
+/** Section body that scrolls itself (General, generic Advanced sections). */
+.main {
+  position: relative;
+  max-height: 400px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/**
+ * Section body for the tuner sections, left completely unconstrained (the source
+ * passes no style at all here). The pinned "Tuner type" / "RL Algorithm type"
+ * dropdown then sits in normal flow above `.configSection`, which is the only
+ * thing that scrolls.
+ */
+.mainNoScroll {
+  max-height: none;
+  overflow: visible;
+}
+
+.configSection {
+  background-color: var(--cds-layer, #fff);
+  border-radius: 5px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  // See the note above `.main`: required so Carbon's absolutely-positioned
+  // visually-hidden spans are clipped by this scroll region instead of escaping
+  // to the tile and making it scrollable.
+  position: relative;
+  max-height: 336px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.hyperparamsSection {
+  padding: 1rem;
+}
+
+.hyperparamsSection h5 {
+  margin: 0 0 0.5rem;
+}
+
+.configItem {
+  margin-bottom: 0.5rem;
+  padding: 0.5rem 0;
+}
+
+/**
+ * The hyperparameter's name, which acts as a heading over the
+ * Strategy / Default / Values group beneath it. Carbon React computes
+ * `.cds--label`'s bottom margin to 0 here, so the name ends up butted straight
+ * against the "Strategy" label with no gap at all; the source form renders
+ * roughly 0.75rem of separation. Selected through `.configItem` so the two-class
+ * specificity beats Carbon's own `.cds--label` regardless of stylesheet order.
+ */
+.configItem > .paramLabel {
+  margin-bottom: 0.75rem;
+}
+
+/**
+ * 1rem inset from the enclosing section card's edges for the generic advanced
+ * sections. The source puts this padding on each field (`.input-container`),
+ * which cannot be reused per-cell here: as a grid cell it stacks on the grid's
+ * own 2rem row gap and adds 2rem of dead space to every row boundary. Hoisting
+ * it to the container keeps the same inset while leaving the row rhythm to the
+ * gap alone — the spacing the General tab uses, which is the agreed reference.
+ */
+.genericSectionInset {
+  padding: 1rem;
+}
+
+.centeredHint {
+  height: 300px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.centeredHint p {
+  color: var(--cds-text-secondary, #525252);
+  font-size: 0.875rem;
+}
+
+.hpoDisabledNote {
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+  margin: 0 0 0.75rem;
+}

@@ -1,0 +1,312 @@
+name: vllm-server
+version: 1.0.0
+# Serve a model under vLLM as a long-lived SERVICE, and publish its URL so a
+# training target can reach it.
+#
+# WHY THIS EXISTS. On-policy GOLD needs vLLM serving the student while trainers
+# train against it. distill-gold can already do that by carving the LAST N nodes
+# out of its own allocation, which is what the reference launcher does — but that
+# shape has three problems the launcher solves in bash and a step cannot: the
+# server's address is only known at run time, the trainer must wait on the
+# server's /health before starting, and nothing tears the server down afterwards.
+#
+# Splitting the server into its own target dissolves all three. The address
+# travels as a mem:// binding; a consumer target does not dispatch until every
+# input binding resolves, so publishing the URL only after /health passes makes
+# the dependency graph itself the health gate; and a teardown target gated on the
+# trainer's checkpoint downs the cluster.
+#
+# The trainer pushes updated student weights to the server over NCCL, not HTTP
+# (the reference launcher's VLLM_NCCL_COORDINATOR_PORT), so a separate target means
+# a NCCL process group spanning two LSF allocations. Build 9973e766 (recipe
+# gold-onpolicy-smoke) showed that works: all 362 parameter tensors synced across
+# the two allocations, and the teardown target ended the server.
+#
+# Division of labour, as in distill-gold: SkyPilot's LSF provisioner owns bsub,
+# enroot and the node topology; deps come from the image; the server code (now
+# gb_steps_post_training.distillation.run_vllm_serve) comes from the same public
+# source-of-truth clone every ported distillation step uses.
+type: SERVICE
+config:
+  code_config:
+    # Same mechanism and same pin as the ported distillation steps: an
+    # unauthenticated HTTPS clone of the public source repo at run time. See
+    # distill-gold's step-template.yaml for the full rationale.
+    code_dir: ""
+    expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    repo: "https://github.com/laminair/gb-steps-distillation.git"
+    ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    workdir: "distill-code"
+    token_secret: ""
+    python: "/stage/.venv/bin/python"
+    setup_command: ""
+  vllm_config:
+    # ── Code and model ──────────────────────────────────────────────────────
+    # The model to serve. For on-policy GOLD this is the STUDENT, not the teacher:
+    # the student generates and the teacher scores those generations, so serving
+    # the teacher here would be a different algorithm that still runs.
+    model_path: ""
+    # ── Serving ─────────────────────────────────────────────────────────────
+    # The reference launcher's VLLM_API_PORT.
+    port: 8001
+    # vLLM's --max-model-len. Must be >= the trainer's max_length, or a prompt the
+    # trainer accepts is one the server refuses mid-run.
+    max_model_len: 16384
+    gpu_memory_utilization: 0.9
+    tensor_parallel_size: 1
+    # Empty => one rank per GPU on this node, from the allocation rather than from
+    # a parameter, so it always describes the node it got.
+    data_parallel_size: ""
+    # ── Bring-up ────────────────────────────────────────────────────────────
+    # How long to wait for /health before giving up. The reference launcher allows
+    # 1800s: a cold multi-GB load plus CUDA graph capture is minutes, and on a
+    # shared filesystem the first read is the slow one.
+    # Minimum tokens the student must generate before EOS is allowed, enforced on
+    # THIS side of the on-policy loop. 0 = off.
+    #
+    # It has to be set here as well as on the trainer, and that is not redundancy:
+    # distill-gold's min_completion_length only bounds what the TRAINER asks for, while
+    # the sampling decision is taken in this process. trl's vllm_serve has no
+    # min_tokens field, so run_vllm_serve.py monkey-patches SamplingParams from
+    # GOLD_MIN_TOKENS, which this step exports from the value below. Left at 0 while
+    # the trainer sets a floor, the student is free to emit an immediate EOS and the
+    # run collapses into empty completions the teacher then scores as if they were
+    # rollouts.
+    min_completion_length: 0
+    health_timeout_seconds: 1800
+    health_poll_seconds: 10
+    # Ceiling on how long this SERVICE will hold its allocation once healthy.
+    # 0 (default) = no ceiling: hold until the teardown target downs the cluster,
+    # which is the behaviour every existing recipe relies on for multi-hour runs.
+    #
+    # Set it when a leak would be expensive. Teardown targets are gated on the
+    # CONSUMER's output artifact (`binding: <train>.checkpoint`), which a failed
+    # consumer never emits, and gbserver's schema has no on-failure semantics — so
+    # a crashed trainer strands this server. LSF SERVICE clusters never autostop
+    # either (skypilot.py:1817 passes autostop=None for the SSH/HPC clouds), so
+    # nothing underneath reclaims it. Build d77546a9 held 8 H100s that way until
+    # they were downed by hand. This is the backstop, not the normal path.
+    max_lifetime_seconds: 0
+outputs:
+  optional:
+    # The URL, as a mem:// binding. mem:// and NOT env://: env:// would run the
+    # value through filesystem-path normalisation and mangle http://host:8001 to
+    # /http:/host:8001, which is the bug recipes/granite4-350m/lsf/bcb-server
+    # still demonstrates.
+    vllm_url:
+      type: dataset
+    # For the teardown target: LSF SERVICE clusters never autostop and never get a
+    # terminal-status cleanup, so without this the allocation leaks.
+    cluster_name:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    # The LSF topology contract and the SM90 image are both LSF/BlueVela specific.
+    subtypes:
+      - lsf
+    default_launcher: vllm
+    launchers:
+      vllm:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          resources: {}
+          envs:
+            HF_HOME: /opt/hf-cache
+            # From the reference launcher, which is the only configuration that has
+            # served this model successfully.
+            VLLM_ATTENTION_BACKEND: FLASH_ATTN
+            PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+            OMP_NUM_THREADS: "8"
+          run: |
+            set -u
+
+            # The image's venv is not on PATH by default; the dispatcher runs this
+            # with `bash <file>` (non-login), so this export sticks.
+            export PATH=/stage/.venv/bin:$PATH
+            PYBIN=/stage/.venv/bin/python
+
+            # Minimal source delivery: an unauthenticated HTTPS clone of the public
+            # repo, same mechanism as the ported distillation steps (see
+            # distill-gold's step-template.yaml for the full rationale on why this
+            # replaced a /proj checkout). Simplified here since this step has no
+            # filesystem-checkout fallback to support.
+            CODE_DIR="${GB_BUILD_WORKDIR:-$PWD}/{{ config.code_config.workdir }}"
+            REPO="{{ config.code_config.repo }}"
+            REF="{{ config.code_config.ref }}"
+            rm -rf "$CODE_DIR"
+            git clone --quiet "$REPO" "$CODE_DIR"
+            if [ -n "$REF" ]; then
+              git -C "$CODE_DIR" checkout --quiet "$REF"
+            fi
+            export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
+            # run_vllm_serve.py reads this and raises SamplingParams.min_tokens to it
+            # for every request, which is the only place a floor can be applied: the
+            # trainer's own min_completion_length does not travel with a served
+            # request.
+            export GOLD_MIN_TOKENS="{{ config.vllm_config.min_completion_length | default(0) }}"
+            # And refuse if the delivered server cannot act on it. This export is the whole
+            # mechanism -- there is no other place a floor can be applied -- so against a
+            # revision of run_vllm_serve that does not read the variable it is a no-op that
+            # LOOKS configured: the step logs the floor, the server ignores it, and the run
+            # collapses into immediate-EOS completions the teacher scores as rollouts. At the
+            # pin this step defaults to (a5d59bc4) the handling is absent, which is why this
+            # is a check and not a comment. Grepped rather than imported: run_vllm_serve
+            # execs a server at import time, so asking Python would start one.
+            if [ "$GOLD_MIN_TOKENS" != "0" ]; then
+              SERVE_SRC="$CODE_DIR/src/gb_steps_post_training/distillation/run_vllm_serve.py"
+              if ! grep -q "GOLD_MIN_TOKENS" "$SERVE_SRC" 2>/dev/null; then
+                echo "vllm-server: FATAL: vllm_config.min_completion_length is $GOLD_MIN_TOKENS," >&2
+                echo "  but the delivered $SERVE_SRC does not read GOLD_MIN_TOKENS, so the floor" >&2
+                echo "  would silently never reach SamplingParams.min_tokens and the student could" >&2
+                echo "  emit an immediate EOS on every rollout." >&2
+                echo "  Either point code_config at a checkout whose run_vllm_serve honours it, or" >&2
+                echo "  set min_completion_length 0 and accept that there is no floor." >&2
+                exit 1
+              fi
+            fi
+
+            GPUS="${NUM_GPUS_PER_NODE:-8}"
+            PORT="{{ config.vllm_config.port }}"
+            DP="{{ config.vllm_config.data_parallel_size }}"
+            [ -n "$DP" ] || DP="$GPUS"
+
+            # vLLM binds an AF_UNIX socket at $VLLM_RPC_BASE_PATH/<uuid4>, and
+            # defaults it to TMPDIR. AF_UNIX paths are capped at 108 bytes and
+            # ZeroMQ refuses anything over 107 — the reference launcher measured a
+            # default TMPDIR yielding 111, failing AFTER the engine had started
+            # loading. Keep this short and per-job.
+            export VLLM_RPC_BASE_PATH="/tmp/vllm-${USER:-gb}-${LSB_JOBID:-nojob}"
+            export TMPDIR="$VLLM_RPC_BASE_PATH"
+            mkdir -p "$VLLM_RPC_BASE_PATH"
+
+            # Surface the SkyPilot cluster name for the teardown target, in the
+            # shipped monitor's generic ARTIFACT_STATE form so this step needs no
+            # scrape rule of its own. GB_SKYPILOT_CLUSTER_NAME is injected by
+            # launch_skypilot. Its OWN log line, separate from the URL marker
+            # below: get_events_from_log_line reassigns log_line after a matching
+            # config, so two markers must never share a line.
+            echo "GB_ARTIFACT_ID:cluster_name GB_ARTIFACT_STATE:${GB_SKYPILOT_CLUSTER_NAME:-unknown}"
+
+            # The address to advertise. A hostname is not enough: the consumer is
+            # in a DIFFERENT allocation, so this must resolve from there. Prefer
+            # the IP, resolved the way distill-gold resolves MASTER_ADDR (/etc/hosts,
+            # then getent), because that is the validated path on this cluster.
+            HOST="$(hostname)"
+            ADDR="$(grep -w "$HOST" /etc/hosts 2>/dev/null | awk '{print $1; exit}')"
+            if [ -z "$ADDR" ]; then
+              ADDR="$(getent ahostsv4 "$HOST" 2>/dev/null | awk '{print $1; exit}')"
+            fi
+            [ -n "$ADDR" ] || ADDR="$HOST"
+            echo "vllm-server: serving on $ADDR:$PORT ($DP-way data parallel over $GPUS GPU(s))"
+
+            # Background, NOT exec: the URL must be published only once the server
+            # answers /health, and an exec'd process cannot echo afterwards.
+            # Publishing on start instead would defeat the whole design — the
+            # trainer would dispatch and race a multi-minute model load.
+            "$PYBIN" -m gb_steps_post_training.distillation.run_vllm_serve \
+              --port "$PORT" \
+              --model "{{ config.vllm_config.model_path }}" \
+              --gpu-memory-utilization {{ config.vllm_config.gpu_memory_utilization }} \
+              --tensor-parallel-size {{ config.vllm_config.tensor_parallel_size }} \
+              --data-parallel-size "$DP" \
+              --log_level warning \
+              --max-model-len {{ config.vllm_config.max_model_len }} &
+            SERVER_PID=$!
+
+            # Wait for readiness, with a death check. Unlike the reference
+            # launcher, whose pid was a local blaunch rather than the remote
+            # python, SERVER_PID here is a direct child — so `kill -0` is
+            # authoritative and no log-scraping heuristic is needed.
+            DEADLINE=$(( $(date +%s) + {{ config.vllm_config.health_timeout_seconds }} ))
+            while :; do
+              if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+                # `|| RC=$?`, not `; RC=$?`: the launcher runs this block under
+                # `set -eu`, so a bare failing wait would exit before the report.
+                RC=0; wait "$SERVER_PID" || RC=$?
+                echo "vllm-server: FATAL: server exited with $RC before becoming healthy" >&2
+                exit 1
+              fi
+              if "$PYBIN" -c "
+            import sys, urllib.request
+            try:
+                urllib.request.urlopen('http://127.0.0.1:$PORT/health/', timeout=5)
+            except Exception:
+                sys.exit(1)
+            " 2>/dev/null; then
+                break
+              fi
+              if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+                echo "vllm-server: FATAL: not healthy after {{ config.vllm_config.health_timeout_seconds }}s" >&2
+                kill "$SERVER_PID" 2>/dev/null || true
+                exit 1
+              fi
+              sleep {{ config.vllm_config.health_poll_seconds }}
+            done
+
+            # Healthy. Publishing the URL now is what makes the dependency graph
+            # the health gate: the consumer target cannot dispatch until this
+            # binding resolves. Matched by the shipped skypilot monitor's generic
+            # ARTIFACT_STATE rule, so this step needs no scrape config of its own.
+            echo "vllm-server: healthy after $(( $(date +%s) - (DEADLINE - {{ config.vllm_config.health_timeout_seconds }}) ))s"
+            echo "GB_ARTIFACT_ID:vllm_url GB_ARTIFACT_STATE:http://${ADDR}:${PORT}"
+
+            # Hold the allocation for the server's lifetime. It never returns on
+            # its own; the teardown target is what normally ends it.
+            #
+            # MAX_LIFETIME > 0 arms a watchdog so a stranded server (consumer
+            # crashed => teardown never eligible) releases its node instead of
+            # holding it indefinitely. The watchdog is killed on the normal path,
+            # so it costs a sleeping subshell and nothing else.
+            MAX_LIFETIME={{ config.vllm_config.max_lifetime_seconds }}
+            REAPED_FLAG="$(mktemp -u)"
+            if [ "$MAX_LIFETIME" -gt 0 ]; then
+              echo "vllm-server: lifetime cap ${MAX_LIFETIME}s armed"
+              (
+                sleep "$MAX_LIFETIME"
+                if kill -0 "$SERVER_PID" 2>/dev/null; then
+                  : > "$REAPED_FLAG"
+                  kill "$SERVER_PID" 2>/dev/null || true
+                fi
+              ) &
+              WATCHDOG_PID=$!
+              RC=0; wait "$SERVER_PID" || RC=$?
+              kill "$WATCHDOG_PID" 2>/dev/null || true
+              if [ -f "$REAPED_FLAG" ]; then
+                rm -f "$REAPED_FLAG"
+                echo "vllm-server: FATAL: lifetime cap of ${MAX_LIFETIME}s reached; releasing the allocation. Nothing tore this server down in time — check whether the consumer target failed." >&2
+                exit 1
+              fi
+              exit "$RC"
+            else
+              wait "$SERVER_PID"
+            fi
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"
+          log_retrieval:
+            # PERIODIC, not the service default startup_window. A window has to be
+            # guessed, and once it closes the scrape never fires again — so a cold
+            # load slower than the guess means the URL binding never publishes and
+            # the consumer target never dispatches, with no error anywhere. This
+            # server's load time depends on model size and shared-filesystem
+            # weather, which is exactly what cannot be guessed.
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(15) }}"
+          # extra_event_configs, NOT event_configs: resolve_monitor_config rejects
+          # an overlay that sets event_configs on a ref, because lists replace
+          # wholesale and doing so would drop the referenced monitor's generic
+          # artifact rules — the very rules both markers above rely on.
+          extra_event_configs:
+            - event_type: WORKLOAD_STATUS_EVENT
+              # Its own line, shared with no artifact marker.
+              line_regex: "vllm-server: healthy after .+"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"

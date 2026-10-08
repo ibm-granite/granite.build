@@ -1,0 +1,156 @@
+granite.build:
+  name: distill-eval-smoke
+  # Smoke build for the distill-eval step on BlueVela (SkyPilot / LSF).
+  #
+  # THREE targets, because this step's two data inputs are both produced by the pipeline
+  # and neither can be faked from anything already on /proj:
+  #   - the student must be a retagged model whose tokenizer AGREES WITH THE TEACHER'S,
+  #     which is what align produces (and allow_tokenizer_mismatch stays false, so a
+  #     mismatch is refused rather than measured);
+  #   - the corpus must be an EVAL SPLIT, which corpus-prep writes beside train.jsonl —
+  #     and corpus-prep itself needs align's chat template to locate assistant spans at
+  #     all (measured: no pre-existing /proj overlay carries a {% generation %} tag).
+  #
+  # The chain also means this fixture exercises the real bindings rather than paths typed
+  # by hand.
+  targets:
+    align:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        retagged_student:
+          uri: "env://{{ binding.path }}"
+          type: model
+        teacher_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+        student_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/tokenizer-align
+          config:
+            poll_interval_seconds: 20
+            log_retrieval_interval_seconds: 20
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: 1
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                memory: 32
+            align_config:
+              teacher_model: "/proj/granite-build/g4os/models/granite-4.2-3b-nothink"
+              # DENSE (granite / GraniteForCausalLM), and that matters for the eval
+              # target downstream rather than for align itself. The only genuinely
+              # un-retagged base model on this cluster,
+              # granite-4.0-1b-base-prerelease-castlerock-final, is granitemoehybrid —
+              # and a hybrid model makes transformers lazily load
+              # kernels-community/mamba-ssm, whose cached build imports
+              # GreedySearchDecoderOnlyOutput and so cannot import under this image's
+              # transformers 5.8.0 (measured, build 96868683). Every model this pipeline
+              # actually uses (granite-4.1-3b-base, granite-4.2-30b) is dense, which is
+              # why the real training runs never hit it.
+              #
+              # The retag is therefore near-a-no-op here (this student is already aligned
+              # to the 4.2 tokenizer). That is fine for THIS fixture, whose subject is the
+              # eval target: what it needs is a dense, tokenizer-matched student carrying
+              # a chat template with {% generation %} markers, which align installs.
+              # distill-tokenizer-align's OWN fixture keeps the hybrid student on purpose,
+              # because that is what exercises a real retag (transplant=12, mean_init=4) —
+              # and align never instantiates the model, so no kernel is requested there.
+              student_model: "/proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
+              out_dir: "align"
+
+    corpus:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        tokenizer:
+          binding: align.retagged_student
+      outputs:
+        corpus:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-prep
+          config:
+            poll_interval_seconds: 20
+            log_retrieval_interval_seconds: 20
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: 1
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "normal"
+                memory: 32
+            corpus_config:
+              dataset: "/proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+              tokenizer: "{{ bindings.tokenizer.binding.path }}"
+              # ABSOLUTE, and not the usual relative-to-workdir value, because the eval
+              # target below has to name eval.jsonl and CANNOT compose that path itself:
+              # every target run gets its OWN $GB_BUILD_WORKDIR (.../runs/<targetrun-id>/),
+              # so a path built from the eval target's workdir would point at the wrong
+              # directory. eval.jsonl is also deliberately not a declared artifact, so
+              # there is no binding to carry it. A shared absolute root is what upstream's
+              # recipe uses for the same reason.
+              #
+              # Re-running this fixture is therefore a resume case rather than a fresh one:
+              # corpus-prep's expectation is keyed on the tokenizer IDENTITY (not its path),
+              # so a second run with the same pair reports SKIP and republishes the corpus.
+              # That is correct behaviour and worth exercising.
+              out_dir: "/proj/granite-build/g4os/gbtest/distill-eval-smoke/corpus"
+              max_length: 4096
+              max_examples: 64
+              # Must be > 0, or there is no eval split for the target below to measure on.
+              eval_fraction: 0.25
+
+    eval-transfer-baseline:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        # The t=0 read: the retagged student BEFORE any training. A divergence with no
+        # baseline is a number without a direction.
+        student:
+          binding: align.retagged_student
+        # Bound for the ORDERING EDGE, not for the path. eval.jsonl is deliberately not a
+        # declared artifact of corpus-prep (it exists only when eval_fraction > 0, and a
+        # declared-but-absent output is a resolver failure), so the corpus path below is
+        # composed from the same out_dir that target used. The binding is what still
+        # guarantees this target cannot start before the split exists.
+        corpus:
+          binding: corpus.corpus
+      outputs:
+        eval_metrics:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/distill/eval
+          config:
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              resources:
+                # Real GPU work: a forward pass through each of two models.
+                accelerators: "H100:1"
+                cluster: "bluevela"
+                zone: "normal"
+                memory: 64
+            eval_config:
+              student_model: "{{ bindings.student.binding.path }}"
+              # The same teacher the student was retagged onto, so the two tokenizers
+              # agree on token ids and the divergence is measured rather than merely
+              # computed.
+              teacher_model: "/proj/granite-build/g4os/models/granite-4.2-3b-nothink"
+              corpus: "/proj/granite-build/g4os/gbtest/distill-eval-smoke/corpus/eval.jsonl"
+              output_dir: "eval-baseline"
+              # All four in one forward pass. entropy alone would not exercise the
+              # teacher-dependent reductions, which are the point of the step.
+              metrics: "jsd,kld,rkld,entropy"
+              # Prove the wiring, not produce a publishable measurement.
+              max_samples: 8
+              # Matches the corpus above and the gold smoke recipe's training budget, so a
+              # record is not scored on a prefix of its answer.
+              max_length: 4096

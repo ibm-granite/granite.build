@@ -1,0 +1,62 @@
+# YAML-driven spec for test_skypilot_lsf_bfcl_eval.py (located by the test/ <-> test-data/
+# helper, so the pairing holds in both test modes; see steps/README.md).
+#
+# Runs a single target on the SkyPilot LSF/BlueVela environment: serve a 3B granite
+# checkpoint with vLLM, generate the BFCL `simple` category against it, score the result,
+# and register the score file.
+#
+# ⚠️ NEVER EXECUTED. No image has been built for this step and no GPU was available to the
+# authoring account (README.md, "The image has never been built or pushed"). The offline
+# suite covers the config contract, the flag surface, the artifact contract and `bash -n`
+# of the run block; none of that can show what only a cluster shows.
+#
+# What only a real run can show:
+#   - that the image starts at all under SkyPilot's docker runtime, which runs apt-get
+#     INSIDE the container during setup (the reason the base must stay Debian/Ubuntu);
+#   - that the vLLM server came up within run-bfcl.sh's readiness window and was actually
+#     serving the checkpoint at model_path;
+#   - that model_id resolved to a real handler — a wrong id parses tool calls with the
+#     wrong grammar and reports a plausible number rather than failing;
+#   - that the harness left exactly one score file where the step looks for it, so the
+#     newest-under-score/ choice picked the intended file rather than a stale sibling;
+#   - that the GB_ARTIFACT_ID line was read and the dataset registered.
+targets:
+  - eval-bfcl
+target_expectations:
+  - target_name: eval-bfcl
+    step_count: 1
+    # No `inputs:` in build.yaml: the model is a literal /proj path, not an artifact.
+    input_artifact_count: 0
+    # The score .json. REQUIRED in the step template, so a green run with nothing
+    # registered is not a reachable state — this count is the assertion that holds that.
+    output_artifact_count: 1
+    jobstats_count: 1
+    expected_steps:
+      # No metadata_matches here, unlike the distill-* fixtures. Those assert
+      # distill_code_commit / _source / _dirty, which their shared source-delivery block
+      # emits from a /proj checkout. This step carries no such block — its code is baked
+      # into the image — so there is no commit metadata to match, and asserting an absent
+      # key would fail for a reason that has nothing to do with the step.
+      - config:
+          bfcl_config:
+            # The two settings whose wrong value yields a NUMBER THAT MEANS NOTHING rather
+            # than a failure: model_id picks the parser (wrong parser, plausible score),
+            # and test_categories decides what was actually generated and scored, so a
+            # score compared against a differently-scoped run is not a comparison.
+            model_id: "ibm-granite/granite-4.2-3b"
+            test_categories: "simple"
+            # `sample_fraction: ""` is equally load-bearing (empty is what makes
+            # test_categories bind during generate — see build.yaml) but is NOT pinned
+            # here: whether this matcher treats an empty string as a value or as absent is
+            # unverified, and a fixture that fails on the matcher instead of on the step
+            # costs a GPU allocation to diagnose. The offline suite asserts the template's
+            # empty default directly. If the first real run is being debugged anyway, this
+            # is worth settling and adding.
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# One LSF allocation holding one GPU, but a generous window: queue wait, then a vLLM
+# server start that run-bfcl.sh itself allows up to 900s to become ready (VLLM_READY_TIMEOUT_S),
+# then generation over a whole BFCL category and a CPU scoring pass.
+timeout_minutes: 90
