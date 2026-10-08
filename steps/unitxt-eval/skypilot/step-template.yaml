@@ -1,8 +1,10 @@
 name: unitxt-eval
 version: 1.0.0
-# Runs a unitxt evaluation with the `unitxt-evaluate` CLI and registers its output
-# directory as an artifact. The CLI is used as a black box: the step installs unitxt,
-# passes the configured arguments through, and registers what the CLI wrote.
+# Runs a unitxt evaluation of the bound `model` input with the `unitxt-evaluate` CLI
+# (`--model hf`, a local Hugging Face checkpoint) and registers its output directory
+# as an artifact. The CLI is used as a black box: the step installs unitxt and the
+# packages its hf mode needs, passes the configured arguments through, and registers
+# what the CLI wrote.
 #
 # `custom` rather than EVAL: there is no EVAL member in StepType (see bfcl-eval's
 # step-template.yaml for the longer note).
@@ -13,34 +15,53 @@ config:
     # "card=cards.mmlu_pro.engineering", a benchmark such as "benchmarks.tool_calling",
     # or several joined with "+". REQUIRED.
     tasks: ""
-    # Inference backend, passed as --model: "hf" (local transformers) or
-    # "cross_provider" (a remote model; its credentials come from the build's
-    # launcher_config.envs).
-    model: "cross_provider"
-    # Passed as --model_args. Names the model directly, so the step declares no model
-    # input: "model_name=<id>" for cross_provider (e.g. llama-3-1-8b-instruct),
-    # "pretrained=<hf id>" for hf. REQUIRED.
+    # Extra --model_args, as comma-separated key=value pairs (e.g.
+    # "torch_dtype=bfloat16,device=cuda"). The step always passes
+    # pretrained=<the bound `model` input> first and appends these, so they must not
+    # name `pretrained` themselves, and the JSON form of --model_args is not accepted.
     model_args: ""
+    # Passed as --batch_size (inference batch size for hf).
+    batch_size: 1
     # Instances per task, passed as --limit. 0 (the default) passes no --limit, so
     # every instance is evaluated.
     limit: 0
     # Directory the CLI writes into (--output_path), registered as the `results`
     # artifact. Relative paths resolve in the step's working directory.
     output_path: "output"
+    # Passes --trust_remote_code. Catalog cards that filter their HF dataset with a
+    # code expression (cards.mmlu_pro.* among them) refuse to load without it.
+    trust_remote_code: true
     # unitxt release installed in setup. Ignored when `unitxt_image` is set.
     unitxt_version: "1.26.10"
+    # Installed alongside unitxt, which does not depend on them: hf mode needs torch,
+    # transformers and accelerate, and the CLI's score summary needs tabulate.
+    # Unpinned, so the node's index picks versions; pin here (e.g. "torch==2.8.0") or
+    # point pip_index_url at a CUDA wheel index to match the node's driver. Ignored
+    # when `unitxt_image` is set.
+    hf_packages: ["torch", "transformers", "accelerate", "tabulate"]
     pip_index_url: "https://pypi.org/simple"
-    # Container image that already provides unitxt-evaluate. Setting it skips the
-    # venv and install entirely (dpk's `dpk_image` pattern). Empty => bare node.
+    # Container image that already provides unitxt-evaluate and hf_packages. Setting
+    # it skips the venv and install entirely (dpk's `dpk_image` pattern). Empty =>
+    # bare node.
     unitxt_image: ""
+  # GPUs are not read from here: request them in the build's
+  # launcher_config.resources (e.g. accelerators: "A10G:1"). Memory is the floor
+  # for loading the checkpoint on cloud catalogs (ignored on slurm/lsf).
   compute_config:
     num_gpus_per_node: 0
-    total_memory_per_node: "4Gi"
+    total_memory_per_node: "16Gi"
 
-# The model is named in unitxt_config.model_args rather than bound as an input, so
-# there is no fixed input name to declare.
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind `model` fails validation before anything is queued. The run block
+# reads it as {{ bindings.model.binding.path }}; for an hf:// URI the SkyPilot
+# launcher downloads it into that path ahead of setup. allow_unknown stays true so a
+# recipe can bind extra inputs purely to order targets.
 inputs:
   allow_unknown: true
+  required:
+    model:
+      type: model
+      accept: [uri, binding]
 outputs:
   optional:
     results:
@@ -80,6 +101,7 @@ environment_configs:
             . ./venv/bin/activate
             uv pip install --index-url '{{ q(config.unitxt_config.pip_index_url) }}' \
               'unitxt=={{ q(config.unitxt_config.unitxt_version) }}'
+              {%- for pkg in config.unitxt_config.hf_packages %} '{{ q(pkg) }}'{% endfor %}
             {%- endif %}
           # run starts in the same working directory as setup, so ./venv is relative.
           run: |
@@ -87,25 +109,40 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {%- if config.unitxt_config.model is defined %}
+            # The model used to be named in config (`model` + `model_args`). It is now
+            # the bound `model` input, so refuse the old key rather than ignore it.
+            echo "unitxt-eval: ERROR unitxt_config.model is no longer read; bind the target's 'model' input instead (see USAGE.md)." >&2
+            exit 1
+            {%- endif %}
             {%- if not config.unitxt_config.unitxt_image %}
             . ./venv/bin/activate
             {%- endif %}
             TASKS='{{ q(config.unitxt_config.tasks) }}'
-            MODEL_ARGS='{{ q(config.unitxt_config.model_args) }}'
+            MODEL_PATH='{{ q(bindings.model.binding.path) }}'
+            EXTRA_ARGS='{{ q(config.unitxt_config.model_args) }}'
             if [ -z "$TASKS" ]; then
               echo "unitxt-eval: ERROR unitxt_config.tasks is required." >&2; exit 1
             fi
-            if [ -z "$MODEL_ARGS" ]; then
-              echo "unitxt-eval: ERROR unitxt_config.model_args is required." >&2; exit 1
-            fi
+            case "$EXTRA_ARGS" in
+              *pretrained*)
+                echo "unitxt-eval: ERROR unitxt_config.model_args must not set pretrained; the step passes the bound 'model' input." >&2; exit 1 ;;
+              "{"*)
+                echo "unitxt-eval: ERROR unitxt_config.model_args must be key=value pairs, not JSON." >&2; exit 1 ;;
+            esac
+            MODEL_ARGS="pretrained=${MODEL_PATH}${EXTRA_ARGS:+,$EXTRA_ARGS}"
             OUTPUT_DIR='{{ q(config.unitxt_config.output_path) }}'
             mkdir -p "$OUTPUT_DIR"
             # Absolute, because the server reads the artifact marker off-node.
             OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
             unitxt-evaluate \
               --tasks "$TASKS" \
-              --model '{{ q(config.unitxt_config.model) }}' \
+              --model hf \
               --model_args "$MODEL_ARGS" \
+              --batch_size '{{ q(config.unitxt_config.batch_size) }}' \
+              {%- if config.unitxt_config.trust_remote_code %}
+              --trust_remote_code \
+              {%- endif %}
               {%- if config.unitxt_config.limit %}
               --limit '{{ q(config.unitxt_config.limit) }}' \
               {%- endif %}
