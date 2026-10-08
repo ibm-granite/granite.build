@@ -33,14 +33,22 @@ config:
     trust_remote_code: true
     # unitxt release installed in setup. Ignored when `unitxt_image` is set.
     unitxt_version: "1.26.10"
-    # Installed alongside unitxt, which does not depend on them: hf mode needs torch,
-    # transformers and accelerate, and the CLI's score summary needs tabulate.
-    # Unpinned, so the node's index picks versions; pin here (e.g. "torch==2.8.0") or
-    # point pip_index_url at a CUDA wheel index to match the node's driver. Ignored
-    # when `unitxt_image` is set.
-    hf_packages: ["torch", "transformers", "accelerate", "tabulate"]
+    # hf mode needs torch, which unitxt does not depend on. It is installed on its
+    # own, BEFORE everything else, so it can come from a different index: set
+    # torch_index_url to a PyTorch wheel index to pick the build, e.g.
+    # https://download.pytorch.org/whl/cpu on a CPU-only node or .../whl/cu128 to
+    # match a node's CUDA driver. Empty => pip_index_url (PyPI's default Linux
+    # wheel, which bundles CUDA). Pin the version in torch_package, e.g.
+    # "torch==2.8.0". Ignored when `unitxt_image` is set.
+    torch_package: "torch"
+    torch_index_url: ""
+    # Installed with unitxt, after torch, from pip_index_url: hf mode also needs
+    # transformers and accelerate, and the CLI's score summary needs tabulate. The
+    # torch already installed satisfies their torch requirement, so it is kept.
+    # Ignored when `unitxt_image` is set.
+    hf_packages: ["transformers", "accelerate", "tabulate"]
     pip_index_url: "https://pypi.org/simple"
-    # Container image that already provides unitxt-evaluate and hf_packages. Setting
+    # Container image that already provides unitxt-evaluate, torch and hf_packages. Setting
     # it skips the venv and install entirely (dpk's `dpk_image` pattern). Empty =>
     # bare node.
     unitxt_image: ""
@@ -96,9 +104,15 @@ environment_configs:
             if ! pip install --quiet --no-cache-dir --break-system-packages uv 2>/dev/null; then
               pip install --quiet --no-cache-dir uv
             fi
-            export UV_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-cache"
+            # The launcher starts setup in $GB_BUILD_WORKDIR, so the cache stays inside
+            # the build's own workdir. (Not $GB_SHARED_WORKDIR, as dpk uses: sharing it
+            # across builds is a possible optimization, deferred so the step does not
+            # write outside its build.)
+            export UV_CACHE_DIR="$PWD/.uv-cache"
             uv venv ./venv
             . ./venv/bin/activate
+            uv pip install --index-url '{{ q(config.unitxt_config.torch_index_url or config.unitxt_config.pip_index_url) }}' \
+              '{{ q(config.unitxt_config.torch_package) }}'
             uv pip install --index-url '{{ q(config.unitxt_config.pip_index_url) }}' \
               'unitxt=={{ q(config.unitxt_config.unitxt_version) }}'
               {%- for pkg in config.unitxt_config.hf_packages %} '{{ q(pkg) }}'{% endfor %}

@@ -293,7 +293,9 @@ class TestEscaping:
             _opt(argv, "--model_args") == f"pretrained={_MODEL_PATH},revision=o'brien"
         )
 
-    @pytest.mark.parametrize("field", ["pip_index_url", "unitxt_version"])
+    @pytest.mark.parametrize(
+        "field", ["pip_index_url", "unitxt_version", "torch_package", "torch_index_url"]
+    )
     def test_setup_values_are_escaped(self, launcher, defaults, field):
         rendered = _render(launcher["setup"], _cfg(defaults, **{field: "a'b"}))
         assert _bash_ok(rendered)
@@ -313,19 +315,44 @@ class TestImageSelection:
         cfg = _cfg(defaults, unitxt_image="quay.io/org/unitxt:1.26.10")
         assert _render(launcher["image_id"], cfg) == "docker:quay.io/org/unitxt:1.26.10"
 
-    def test_bare_node_installs_unitxt_and_the_hf_packages(self, launcher, defaults):
+    def test_bare_node_installs_torch_then_unitxt_and_the_hf_packages(
+        self, launcher, defaults
+    ):
         setup = _render(launcher["setup"], _cfg(defaults))
         assert "uv venv ./venv" in setup
-        assert (
-            "'unitxt==1.26.10' 'torch' 'transformers' 'accelerate' 'tabulate'" in setup
+        torch = "uv pip install --index-url 'https://pypi.org/simple' \\\n  'torch'"
+        rest = (
+            "uv pip install --index-url 'https://pypi.org/simple' \\\n"
+            "  'unitxt==1.26.10' 'transformers' 'accelerate' 'tabulate'"
         )
+        assert torch in setup and rest in setup
+        assert setup.index(torch) < setup.index(rest)
         assert ". ./venv/bin/activate" in _render(launcher["run"], _cfg(defaults))
 
-    def test_hf_packages_can_be_pinned(self, launcher, defaults):
-        cfg = _cfg(defaults, hf_packages=["torch==2.8.0", "transformers"])
+    def test_torch_index_url_applies_only_to_torch(self, launcher, defaults):
+        cpu = "https://download.pytorch.org/whl/cpu"
+        setup = _render(launcher["setup"], _cfg(defaults, torch_index_url=cpu))
+        assert f"uv pip install --index-url '{cpu}' \\\n  'torch'" in setup
+        assert (
+            "uv pip install --index-url 'https://pypi.org/simple' \\\n"
+            "  'unitxt==1.26.10'" in setup
+        )
+
+    def test_torch_and_hf_packages_can_be_pinned(self, launcher, defaults):
+        cfg = _cfg(
+            defaults, torch_package="torch==2.8.0", hf_packages=["transformers==5.0"]
+        )
         setup = _render(launcher["setup"], cfg)
-        assert "'unitxt==1.26.10' 'torch==2.8.0' 'transformers'" in setup
+        assert "'torch==2.8.0'" in setup
+        assert "'unitxt==1.26.10' 'transformers==5.0'" in setup
         assert "accelerate" not in setup
+
+    def test_uv_cache_stays_in_the_build_workdir(self, launcher, defaults):
+        """The launcher cds into $GB_BUILD_WORKDIR first, so $PWD is inside it."""
+        setup = _render(launcher["setup"], _cfg(defaults))
+        assert 'export UV_CACHE_DIR="$PWD/.uv-cache"' in setup
+        code = [l for l in setup.splitlines() if not l.lstrip().startswith("#")]
+        assert not any("GB_SHARED_WORKDIR" in l for l in code)
 
     def test_image_mode_skips_venv_and_install(self, launcher, defaults):
         cfg = _cfg(defaults, unitxt_image="quay.io/org/unitxt:1")
@@ -342,6 +369,7 @@ class TestRenderedShellIsValid:
             {"model_args": ""},
             {"trust_remote_code": False},
             {"hf_packages": []},
+            {"torch_index_url": "https://download.pytorch.org/whl/cpu"},
             {"unitxt_image": "quay.io/org/unitxt:1"},
         ],
     )
