@@ -16,24 +16,28 @@
 
 """get_by_where must stay retried.
 
-The tenacity @retry lives on the private BaseSQLItemStorage._get_by_where_with_retry
-rather than on the public get_by_where (so mypy accepts the SQLite storages'
-mixin, see that method's docstring). These tests pin down that a call through the
-public method -- including the SQLite mixin's locked override -- still retries a
-transient failure, so a refactor that drops the retry is caught.
+The tenacity @retry lives on a private helper rather than on the public
+get_by_where (so mypy accepts the SQLite storages' mixin, see get_by_where's
+docstring). These tests pin down that a call through the public method --
+including the SQLite mixin's locked override -- still retries a transient
+failure, so a refactor that drops the retry is caught.
+
+Backoff is skipped by patching ``tenacity.nap.time.sleep``, the sleep tenacity
+documents as the one to mock in tests, rather than reaching into the decorated
+function's Retrying object. (Patching ``tenacity.nap.sleep`` itself would not
+work: Retrying binds it as a default argument at import time.)
 """
 
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy.exc import OperationalError
-from tenacity import wait_none
 
-from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_space import StoredSpace
 
-_RETRYING = BaseSQLItemStorage.__dict__["_get_by_where_with_retry"].retry
+# tenacity's default sleep strategy calls time.sleep via the tenacity.nap module.
+_TENACITY_SLEEP = "tenacity.nap.time.sleep"
 
 
 @pytest.fixture
@@ -61,17 +65,19 @@ def _fail_then_succeed(storage, failures):
 
 def test_get_by_where_retries_transient_failure(space_storage):
     patcher, calls = _fail_then_succeed(space_storage, failures=2)
-    with patcher, patch.object(_RETRYING, "wait", wait_none()):
+    with patcher, patch(_TENACITY_SLEEP) as sleep:
         items = space_storage.get_by_where({"name": "s1"})
 
     assert [s.name for s in items] == ["s1"]
     assert calls["n"] == 3  # two failures, then success
+    assert sleep.call_count == 2  # one backoff per failure
 
 
 def test_get_by_where_gives_up_after_the_attempt_limit(space_storage):
     patcher, calls = _fail_then_succeed(space_storage, failures=100)
-    with patcher, patch.object(_RETRYING, "wait", wait_none()):
+    with patcher, patch(_TENACITY_SLEEP) as sleep:
         with pytest.raises(OperationalError):
             space_storage.get_by_where({"name": "s1"})
 
     assert calls["n"] == 10  # stop_after_attempt(10), then re-raised
+    assert sleep.call_count == 9  # no backoff after the final attempt
