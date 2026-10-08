@@ -1,0 +1,46 @@
+# skypilot/aws environment for the gated BYO EFS access-point build test (#396).
+#
+# Identical to the shared-fs fixture, plus efs.access_point_id. Ships PLACEHOLDER
+# ids (file_system_id fs-0abc123, access_point_id fsap-0abc123) so the test
+# self-skips (cloud-free read) until an operator points it at a real EFS + a
+# per-space access point (PosixUser + RootDirectory + CreationInfo). The worker
+# image must ship amazon-efs-utils (mount.efs); see docs/environments/skypilot-aws.md.
+name: skypilot-aws-shared-fs-ap-e2e
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  idle_minutes_to_autostop: 5
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  shared_workdir: /mnt/gb-shared/gbroot
+  shared_filesystem:
+    provider: efs
+    mount_point: /mnt/gb-shared
+    efs:
+      file_system_id: fs-0abc123
+      region: us-east-1
+      access_point_id: fsap-0abc123
+      tls: true
+assetstores:
+  - store_uri: space://assetstores/s3/
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}

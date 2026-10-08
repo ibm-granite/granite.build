@@ -595,6 +595,19 @@ def test_efs_cleanup_zone_from_config():
     assert p.cleanup_zone() == "us-east-1a"
 
 
+def test_efs_cleanup_timeout_longer_for_access_point():
+    # AP-mode reap builds amazon-efs-utils on the cleanup VM before mounting, so
+    # it gets a longer wait budget than the teardown default.
+    assert _ap_provider().cleanup_timeout_s() == 600.0
+
+
+def test_efs_cleanup_timeout_default_without_access_point():
+    p = EfsProvider(
+        "/mnt/gb-shared", EfsConfig(file_system_id="fs-1", region="us-east-1")
+    )
+    assert p.cleanup_timeout_s() is None
+
+
 # --- Task 4: build_providers returns one provider per mount (#404) ---
 
 
@@ -657,6 +670,8 @@ _ROOT = pathlib.Path(__file__).resolve().parents[3]  # repo root
         "environments/skypilot/aws-multi/environment.yaml",
         "test-data/integration/ibm/buildrunner/skypilot/aws/multi-ephemeral-efs/"
         "space/environments/skypilot/aws-multi-ephemeral/environment.yaml",
+        "test-data/integration/ibm/buildrunner/skypilot/aws/shared-fs-ap/space/"
+        "environments/skypilot/aws-shared-fs-ap/environment.yaml",
     ],
 )
 def test_example_env_fixtures_validate(rel):
@@ -664,3 +679,177 @@ def test_example_env_fixtures_validate(rel):
 
     data = yaml.safe_load((_ROOT / rel).read_text())
     EnvironmentConfig.model_validate(data)  # must not raise
+
+
+# --- #396: BYO EFS access_point_id ---
+
+
+def test_access_point_valid_byo():
+    cfg = EfsConfig(
+        file_system_id="fs-1", region="us-east-1", access_point_id="fsap-abc"
+    )
+    assert cfg.access_point_id == "fsap-abc"
+    assert cfg.provision == "byo"
+
+
+def test_access_point_defaults_none():
+    cfg = EfsConfig(file_system_id="fs-1", region="us-east-1")
+    assert cfg.access_point_id is None
+
+
+def test_access_point_requires_file_system_id():
+    # A dns_name-only mount cannot select an access point.
+    with pytest.raises(ValueError, match="access_point_id requires file_system_id"):
+        EfsConfig(
+            dns_name="fs-1.efs.us-east-1.amazonaws.com", access_point_id="fsap-abc"
+        )
+
+
+def test_access_point_rejected_for_ephemeral():
+    with pytest.raises(ValueError, match="access_point_id.*ephemeral"):
+        EfsConfig(provision="ephemeral", region="us-east-1", access_point_id="fsap-abc")
+
+
+def test_access_point_mount_uses_accesspoint_and_fails_fast_without_efs_utils():
+    p = EfsProvider(
+        "/mnt/gb-shared",
+        EfsConfig(
+            file_system_id="fs-0abc",
+            region="us-east-1",
+            access_point_id="fsap-123",
+            tls=True,
+        ),
+    )
+    sh = p.mount_prologue()
+    assert "mount -t efs -o accesspoint=fsap-123,tls fs-0abc:/" in sh
+    assert "command -v mount.efs" in sh
+    # No nfs4 fallback and no cleartext under access-point mode: fail fast.
+    assert "mount -t nfs4" not in sh
+    assert "WITHOUT encryption" not in sh
+    assert "exit 1" in sh
+    _bash_ok(sh)
+
+
+def test_access_point_rejects_tls_false():
+    # amazon-efs-utils refuses `-o accesspoint=...` without `tls`, so reject the
+    # combination at config time rather than emit a mount line that always fails.
+    with pytest.raises(ValueError, match="requires tls"):
+        EfsConfig(
+            file_system_id="fs-1",
+            region="us-east-1",
+            access_point_id="fsap-0abc123",
+            tls=False,
+        )
+
+
+@pytest.mark.parametrize("ap", ["fsap-0abc123", "fsap-0123456789abcdef0"])
+def test_access_point_id_format_accepted(ap):
+    cfg = EfsConfig(file_system_id="fs-1", region="us-east-1", access_point_id=ap)
+    assert cfg.access_point_id == ap
+
+
+@pytest.mark.parametrize("ap", ["fs-0abc123", "FSAP-0ABC", "fsap-0abc123;reboot"])
+def test_access_point_id_format_rejected(ap):
+    with pytest.raises(ValueError):
+        EfsConfig(file_system_id="fs-1", region="us-east-1", access_point_id=ap)
+
+
+def test_access_point_transit_note_is_none():
+    # Access-point mode has no cleartext fallback (it fails fast instead), so the
+    # "may be unencrypted nfs4" note does not apply.
+    p = EfsProvider(
+        "/mnt/x",
+        EfsConfig(
+            file_system_id="fs-1",
+            region="us-east-1",
+            access_point_id="fsap-1",
+            tls=True,
+        ),
+    )
+    assert p.transit_encryption_note() is None
+
+
+def _ap_provider():
+    return EfsProvider(
+        "/mnt/gb-shared",
+        EfsConfig(
+            file_system_id="fs-0abc123",
+            region="us-east-1",
+            access_point_id="fsap-0abc123",
+        ),
+    )
+
+
+def test_access_point_cleanup_script_installs_efs_utils_before_mount():
+    # The teardown VM runs SkyPilot's default image (no mount.efs), so in AP mode
+    # the gbserver-owned cleanup script installs amazon-efs-utils first.
+    sh = _ap_provider().cleanup_run_script("/mnt/gb-shared/gbroot/builds/b/runs/r")
+    clone = "git clone --depth 1 --branch v1.35.2 https://github.com/aws/efs-utils"
+    assert clone in sh
+    assert sh.startswith("set -eu\n")
+    assert sh.index(clone) < sh.index("accesspoint=fsap-0abc123,tls")
+    assert sh.index(clone) < sh.index("rm -rf ")
+    # Every efs-utils apt-get call waits for the dpkg lock instead of aborting.
+    apt_lines = [ln for ln in sh.splitlines() if "noninteractive apt-get" in ln]
+    assert len(apt_lines) == 3
+    assert all("-o DPkg::Lock::Timeout=120" in ln for ln in apt_lines)
+    _bash_ok(sh)
+
+
+_EFS_UTILS_PINNED_SHA = "0fdb5b0af469737f5730c5bdca91d9846f042247"
+
+
+def test_access_point_cleanup_script_verifies_pinned_commit_before_build():
+    # A tag can be moved, so the clone is checked against a pinned commit before
+    # build-deb.sh runs as root.
+    sh = _ap_provider().cleanup_run_script("/mnt/gb-shared/gbroot/builds/b/runs/r")
+    assert _EFS_UTILS_PINNED_SHA in sh
+    assert sh.index(_EFS_UTILS_PINNED_SHA) < sh.index("build-deb.sh")
+
+
+@pytest.mark.parametrize(
+    "head_sha, expected_rc",
+    [(_EFS_UTILS_PINNED_SHA, 0), ("1111111111111111111111111111111111111111", 1)],
+)
+def test_efs_utils_commit_check_aborts_on_mismatch(tmp_path, head_sha, expected_rc):
+    from gbserver.environment.shared_fs.efs import _VERIFY_EFS_UTILS_COMMIT
+
+    fake_git = tmp_path / "git"
+    fake_git.write_text(f"#!/bin/sh\necho {head_sha}\n")
+    fake_git.chmod(0o755)
+    proc = subprocess.run(
+        ["bash", "-c", f'set -eu\n__gb_efs="{tmp_path}"\n{_VERIFY_EFS_UTILS_COMMIT}'],
+        env={"PATH": f"{tmp_path}:/usr/bin:/bin"},
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode == expected_rc, proc.stderr
+    if expected_rc:
+        assert "pinned commit" in proc.stderr
+
+
+def test_non_access_point_cleanup_script_has_no_efs_utils_install():
+    p = EfsProvider(
+        "/mnt/gb-shared", EfsConfig(file_system_id="fs-0abc", region="us-east-1")
+    )
+    sh = p.cleanup_run_script("/mnt/gb-shared/gbroot/builds/b/runs/r")
+    assert "git clone" not in sh
+    assert "github.com/aws/efs-utils" not in sh
+    assert "build-deb.sh" not in sh
+    assert sh == "set -eu\n" + p.mount_prologue() + (
+        "rm -rf '/mnt/gb-shared/gbroot/builds/b/runs/r'\n"
+        "rmdir --ignore-fail-on-non-empty "
+        "\"$(dirname '/mnt/gb-shared/gbroot/builds/b/runs/r')\" 2>/dev/null || true\n"
+        "rmdir --ignore-fail-on-non-empty "
+        '"$(dirname "$(dirname \'/mnt/gb-shared/gbroot/builds/b/runs/r\')")" '
+        "2>/dev/null || true\n"
+    )
+
+
+def test_access_point_worker_prologue_never_installs_efs_utils():
+    # Worker steps fail fast when mount.efs is missing; they never auto-install.
+    sh = _ap_provider().mount_prologue()
+    assert "git clone" not in sh
+    assert "github.com/aws/efs-utils" not in sh
+    assert "build-deb.sh" not in sh
+    assert "yum install -y -q amazon-efs-utils" not in sh

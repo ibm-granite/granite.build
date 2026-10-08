@@ -3,7 +3,7 @@
 import os
 from typing import List, Literal, Optional
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from gbserver.types.config import Config
 
@@ -30,6 +30,9 @@ class EfsConfig(Config):
     vpc_id: Optional[str] = None
     subnets: Optional[List[str]] = None
     security_group_id: Optional[str] = None
+    # AWS access-point ids are ``fsap-<hex>``; the id is interpolated into the
+    # mount command line, so reject anything else (e.g. shell metacharacters).
+    access_point_id: Optional[str] = Field(default=None, pattern=r"^fsap-[0-9a-f]+$")
 
     @model_validator(mode="after")
     def _require_target(self) -> "EfsConfig":
@@ -57,6 +60,24 @@ class EfsConfig(Config):
                 raise ValueError(
                     "efs: 'region' is required with 'file_system_id' (to derive the "
                     "nfs4-fallback DNS name); or set 'dns_name' explicitly"
+                )
+        if self.access_point_id:
+            if self.provision == "ephemeral":
+                raise ValueError(
+                    "efs: access_point_id is not supported for provision "
+                    "'ephemeral' (ephemeral EFS is single-tenant and needs no "
+                    "access point)"
+                )
+            if not self.file_system_id:
+                raise ValueError(
+                    "efs: access_point_id requires file_system_id (an access "
+                    "point names a specific filesystem; a dns_name-only mount "
+                    "cannot select one)"
+                )
+            if not self.tls:
+                raise ValueError(
+                    "efs: access_point_id requires tls: true (amazon-efs-utils refuses "
+                    "to mount via an access point without tls)"
                 )
         if (
             self.cleanup_zone

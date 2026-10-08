@@ -31,6 +31,50 @@ _INSTALL_NFS = (
 )
 
 
+# amazon-efs-utils release built on the teardown VM. Pinned to v1.35.2 because it
+# is the last pure-Python/stunnel release; v2+ needs a Rust toolchain to build.
+# Tags can be moved, so the clone must also resolve to this exact commit before
+# build-deb.sh runs as root.
+_EFS_UTILS_VERSION = "v1.35.2"
+_EFS_UTILS_COMMIT = "0fdb5b0af469737f5730c5bdca91d9846f042247"
+_VERIFY_EFS_UTILS_COMMIT = (
+    f'if [ "$(git -C "$__gb_efs" rev-parse HEAD)" != "{_EFS_UTILS_COMMIT}" ]; then\n'
+    f'  echo "shared_filesystem: efs-utils {_EFS_UTILS_VERSION} is not the pinned '
+    f'commit {_EFS_UTILS_COMMIT}; refusing to build it" >&2; exit 1\n'
+    "fi\n"
+)
+# Install amazon-efs-utils (mount.efs) if absent. For the gbserver-owned teardown
+# cleanup VM ONLY: that throwaway VM runs SkyPilot's default image (no mount.efs),
+# and an access-point mount cannot fall back to nfs4. Worker steps NEVER
+# auto-install -- their access-point mount fails fast when mount.efs is missing.
+# apt hosts build the .deb from github.com/aws/efs-utils (Ubuntu ships no
+# amazon-efs-utils package); yum hosts (Amazon Linux) install the distro package.
+# The installs wait up to 120s for the dpkg lock rather than abort the reap if
+# something else on a freshly booted VM still holds it.
+_APT_GET = "$SUDO env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120"
+_INSTALL_EFS_UTILS = (
+    "if ! command -v mount.efs >/dev/null 2>&1; then\n"
+    "  if command -v apt-get >/dev/null 2>&1; then\n"
+    f"    {_APT_GET} update -qq\n"
+    f"    {_APT_GET} install -y -qq git "
+    "ca-certificates binutils build-essential debhelper dh-make nfs-common "
+    "stunnel4 python3\n"
+    '    __gb_efs="$(mktemp -d)"\n'
+    f"    git clone --depth 1 --branch {_EFS_UTILS_VERSION} "
+    'https://github.com/aws/efs-utils "$__gb_efs"\n'
+    f"{_VERIFY_EFS_UTILS_COMMIT}"
+    '    (cd "$__gb_efs" && $SUDO ./build-deb.sh)\n'
+    f"    {_APT_GET} install -y -qq "
+    '"$__gb_efs"/build/amazon-efs-utils*.deb\n'
+    "  else\n"
+    "    $SUDO yum install -y -q amazon-efs-utils\n"
+    "  fi\n"
+    "fi\n"
+)
+# Teardown wait budget for an access-point reap (see cleanup_timeout_s).
+_AP_CLEANUP_TIMEOUT_S = 600.0
+
+
 class EfsProvider(SharedFilesystemProvider):
     def __init__(self, mount_point: str, cfg: EfsConfig) -> None:
         super().__init__(mount_point)
@@ -60,6 +104,32 @@ class EfsProvider(SharedFilesystemProvider):
         fsid = self.cfg.file_system_id
         if fsid is None and self.cfg.provision == "ephemeral":
             fsid = dns.split(".", 1)[0]
+        if self.cfg.access_point_id:
+            if fsid is None:
+                # Validation guarantees file_system_id for a BYO access-point
+                # mount; guard here so mypy can narrow and to fail clearly if a
+                # future caller bypasses validation.
+                raise ValueError(
+                    "shared_filesystem: access_point_id at "
+                    f"{self.mount_point} requires file_system_id"
+                )
+            # Access-point mount: mount.efs requires tls with accesspoint (it
+            # refuses `-o accesspoint` alone), and validation enforces `tls: true`
+            # for access-point configs, so tls is always emitted here.
+            opts = f"accesspoint={self.cfg.access_point_id},tls"
+            ap_cmd = (
+                f"$SUDO mount -t efs -o {opts} {shlex.quote(fsid + ':/')} {mp_quoted}"
+            )
+            ap_fail = (
+                f'echo "shared_filesystem: access_point_id set at '
+                f"{self.mount_point} but amazon-efs-utils (mount.efs) is absent; "
+                'cannot mount via an access point" >&2; exit 1'
+            )
+            # No nfs4 fallback: nfs4 cannot select an access point.
+            return (
+                f"if command -v mount.efs >/dev/null 2>&1; then {ap_cmd}; "
+                f"else {ap_fail}; fi"
+            )
         efs_cmd = (
             f"$SUDO mount -t efs{tls} {shlex.quote(fsid + ':/')} {mp_quoted}"
             if fsid
@@ -97,6 +167,10 @@ class EfsProvider(SharedFilesystemProvider):
         return (
             f"{_SUDO_SETUP}"
             f"{_INSTALL_NFS}\n"
+            # An existing mount at mount_point is trusted as-is, so the mount
+            # stays idempotent across steps on a host. With access_point_id, a
+            # pre-existing mount of the filesystem ROOT there (made out of band,
+            # not by gbserver) would bypass the access point.
             f"if ! mountpoint -q {mp}; then\n"
             f"  $SUDO mkdir -p {mp}\n"
             f"  {self._mount_line(mp, dns_override)} || {{ {fail}; }}\n"
@@ -113,6 +187,9 @@ class EfsProvider(SharedFilesystemProvider):
             # (|| exit 1) before any rm if the mount fails; `set -eu` is
             # defense-in-depth so nothing runs after a silent failure.
             "set -eu\n"
+            # Access-point mounts need mount.efs (no nfs4 fallback), which the
+            # default-image teardown VM lacks: install it first (teardown only).
+            + (_SUDO_SETUP + _INSTALL_EFS_UTILS if self.cfg.access_point_id else "")
             + self.mount_prologue()
             + f"rm -rf {pr}\n"
             + f'rmdir --ignore-fail-on-non-empty "$(dirname {pr})" 2>/dev/null || true\n'
@@ -154,7 +231,17 @@ class EfsProvider(SharedFilesystemProvider):
     def cleanup_zone(self) -> Optional[str]:
         return self.cfg.cleanup_zone
 
+    def cleanup_timeout_s(self) -> Optional[float]:
+        # An access-point reap first builds amazon-efs-utils on the cleanup VM
+        # (apt installs that may wait on the dpkg lock, plus a .deb build), so
+        # give it more than the teardown default before reporting it unconfirmed.
+        return _AP_CLEANUP_TIMEOUT_S if self.cfg.access_point_id else None
+
     def transit_encryption_note(self) -> Optional[str]:
+        if self.cfg.access_point_id:
+            # No cleartext fallback under access-point mode (mount fails fast if
+            # amazon-efs-utils is missing), so there is nothing to warn about.
+            return None
         if not self.cfg.tls:
             return None
         return (
