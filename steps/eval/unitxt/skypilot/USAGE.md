@@ -36,9 +36,11 @@ steps:
 | `trust_remote_code` | bool | optional (default `true`) | Passes `--trust_remote_code`. Cards that filter their dataset with a code expression, including `cards.mmlu_pro.*`, refuse to load without it. |
 | `output_path` | string | optional (default `output`) | Directory the CLI writes into (`--output_path`). Relative paths resolve in the step's working directory. |
 | `unitxt_version` | string | optional (default `1.26.10`) | unitxt release installed at setup. Ignored when `unitxt_image` is set. |
-| `hf_packages` | list | optional (default `[torch, transformers, accelerate, tabulate]`) | Installed alongside unitxt, which doesn't depend on them. Unpinned by default; pin entries (e.g. `torch==2.8.0`) to match the node's CUDA driver. Ignored when `unitxt_image` is set. |
+| `torch_package` | string | optional (default `torch`) | torch, which `hf` mode needs and unitxt doesn't depend on. Installed first, on its own. Pin it here, e.g. `torch==2.8.0`. Ignored when `unitxt_image` is set. |
+| `torch_index_url` | string | optional (default: `pip_index_url`) | Index for torch only, to pick the build: `https://download.pytorch.org/whl/cpu` on a CPU-only node, or a `.../whl/cuXXX` index to match the node's CUDA driver. PyPI's default Linux wheel bundles CUDA. |
+| `hf_packages` | list | optional (default `[transformers, accelerate, tabulate]`) | Installed with unitxt, after torch. `hf` mode needs transformers and accelerate; the CLI's score summary needs tabulate. Pin entries as needed. Ignored when `unitxt_image` is set. |
 | `pip_index_url` | string | optional | Package index for the install. |
-| `unitxt_image` | string | optional | A container image that already provides `unitxt-evaluate` and `hf_packages`. Skips the install. |
+| `unitxt_image` | string | optional | A container image that already provides `unitxt-evaluate`, torch and `hf_packages`. Skips the install. |
 
 `unitxt_config.model` is no longer read. The step refuses it, so bind the `model`
 input instead.
@@ -80,9 +82,9 @@ To run another benchmark, change only `tasks`, e.g.
 ## Notes and limitations
 
 - **GPUs come from `launcher_config.resources`**, not from `compute_config`.
-- **The first setup on a node is slow.** `hf_packages` includes torch (several GB
-  with CUDA). The uv cache sits under `$GB_SHARED_WORKDIR` when there is one, so a
-  shared filesystem downloads it once.
+- **Setup installs torch on every run.** That's several GB with CUDA. The uv cache
+  is kept inside the build's own workdir, so nothing is shared between builds yet.
+  `unitxt_image` avoids the install entirely.
 - **Datasets load at run time**, so the node needs internet access. Gated
   datasets also need `HF_TOKEN`.
 - **Remote models** (`unitxt-evaluate --model cross_provider`) aren't supported by
