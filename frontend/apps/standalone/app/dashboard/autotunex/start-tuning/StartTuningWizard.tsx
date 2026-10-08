@@ -292,11 +292,15 @@ export function StartTuningWizard() {
       case 1: {
         const requiredCols = getRequiredColumnsFromTypes(selectedAlgorithm, datasetTypes ?? {})
         // The HF form's own gate (canImport) already checked name, mapping and the
-        // validation choice, so a draft is enough. A frozen import is enough only
-        // when its mapping still covers the currently selected algorithm's required
-        // columns -- DPO and KTO share the offline_rl goal, so switching between them
-        // fires no reset and would otherwise let a stale mapping through.
-        if (hfDraft !== null) return true
+        // validation choice. A draft or a frozen import is enough only when its
+        // mapping still covers the currently selected algorithm's required columns
+        // -- DPO and KTO share the offline_rl goal, so switching between them fires
+        // no reset and would otherwise let a stale mapping through. The draft needs
+        // the check too: nothing clears it when Step 1 unmounts, so after a Next it
+        // still holds the mapping canImport passed for the previous algorithm.
+        if (hfDraft !== null) {
+          return hfMissingRequiredColumns(hfDraft.payload.column_mapping, requiredCols).length === 0
+        }
         if (pendingHfImport !== null) {
           return hfMissingRequiredColumns(pendingHfImport.payload.column_mapping, requiredCols).length === 0
         }
