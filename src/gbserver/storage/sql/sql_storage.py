@@ -886,6 +886,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(10),
+        retry=retry_if_not_exception_type(ValueError),
         reraise=True,
     )
     def _get_by_where_with_retry(
@@ -895,8 +896,9 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     ) -> list[BASE_ITEM_TYPE]:
         """Run get_by_where's query, retrying failures with exponential backoff.
 
-        Retries any exception up to 10 attempts, waiting 1-30 seconds (randomized
-        exponential) between them, then re-raises the last one. After the base
+        Retries any exception except ValueError (a deterministic bad-argument
+        error) up to 10 attempts, waiting 1-30 seconds (randomized exponential)
+        between them, then re-raises the last one. After the base
         query, dict ``where`` values for exact_liked_list_columns are post-filtered
         to exact list-member matches.
 
@@ -908,8 +910,8 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             list[BASE_ITEM_TYPE]: The matching items.
 
         Raises:
-            ValueError: If ``where`` is neither a string, a dict, nor None (after
-                the retries, since every exception is retried).
+            ValueError: If ``where`` is neither a string, a dict, nor None. Raised
+                on the first attempt; it is not retried.
             sqlalchemy.exc.SQLAlchemyError: If the query fails on every attempt.
         """
         items = super().get_by_where(where, query_control=query_control)

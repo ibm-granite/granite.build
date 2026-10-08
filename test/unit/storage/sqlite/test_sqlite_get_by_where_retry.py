@@ -20,7 +20,9 @@ The tenacity @retry lives on a private helper rather than on the public
 get_by_where (so mypy accepts the SQLite storages' mixin, see get_by_where's
 docstring). These tests pin down that a call through the public method --
 including the SQLite mixin's locked override -- still retries a transient
-failure, so a refactor that drops the retry is caught.
+failure, so a refactor that drops the retry is caught. They also pin the retry
+boundary (a deterministic ValueError is not retried) and that the
+exact_liked_list_columns post-filter still applies on a retried call.
 
 Backoff is skipped by patching ``tenacity.nap.time.sleep``, the sleep tenacity
 documents as the one to mock in tests, rather than reaching into the decorated
@@ -33,8 +35,10 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy.exc import OperationalError
 
+from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_space import StoredSpace
+from gbserver.types.artifact import ArtifactType
 
 # tenacity's default sleep strategy calls time.sleep via the tenacity.nap module.
 _TENACITY_SLEEP = "tenacity.nap.time.sleep"
@@ -47,6 +51,25 @@ def space_storage():
     )
     storage.add(StoredSpace(name="s1", git_repo_uri="file:///s1"))
     return storage
+
+
+@pytest.fixture
+def artifact_registry():
+    """Registry with tags ["a"] and ["ab"]; a %a% LIKE on tags matches both."""
+    registry = SqliteStorageFactory().create_artifact_registry(
+        table_name="test_get_by_where_retry_artifacts"
+    )
+    for name, tags in (("exact", ["a"]), ("superset", ["ab"])):
+        registry.add(
+            ArtifactRegistration(
+                type=ArtifactType.MODEL,
+                uri=f"https://example.com/{name}",
+                username="me",
+                space_name="space",
+                tags=tags,
+            )
+        )
+    return registry
 
 
 def _fail_then_succeed(storage, failures):
@@ -81,3 +104,21 @@ def test_get_by_where_gives_up_after_the_attempt_limit(space_storage):
 
     assert calls["n"] == 10  # stop_after_attempt(10), then re-raised
     assert sleep.call_count == 9  # no backoff after the final attempt
+
+
+def test_get_by_where_does_not_retry_value_error(space_storage):
+    with patch(_TENACITY_SLEEP) as sleep:
+        with pytest.raises(ValueError):
+            space_storage.get_by_where(42)  # type: ignore[arg-type]
+
+    assert sleep.call_count == 0  # surfaced on the first attempt, no backoff
+
+
+def test_get_by_where_post_filters_exact_tags_after_retry(artifact_registry):
+    patcher, calls = _fail_then_succeed(artifact_registry, failures=1)
+    with patcher, patch(_TENACITY_SLEEP) as sleep:
+        items = artifact_registry.get_by_where({"tags": ["a"]})
+
+    assert [a.uri for a in items] == ["https://example.com/exact"]
+    assert calls["n"] == 2  # one failure, then success
+    assert sleep.call_count == 1
