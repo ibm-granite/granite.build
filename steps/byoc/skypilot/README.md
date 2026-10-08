@@ -88,9 +88,10 @@ cloud_config: { workspaces: { default: { aws: { profile: gb-skypilot } } } }
 ```
 
 Selecting an explicit profile **disables the ambient `AWS_*` env-var provider**, so
-provisioning uses the materialized profile, not your shell. Standalone: seed those
-secret names (base64) into `~/.granite.build/space_secrets/`; shared: the
-server-managed secret store supplies them. Full runbook:
+provisioning uses the materialized profile, not your shell. Standalone: store those
+secrets with `gb secret create <NAME> --value <v> --space <space>` (each space has its own
+directory under `~/.granite.build/space_secrets/`; files placed directly there are not
+read); shared: the server-managed secret store supplies them. Full runbook:
 [docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md).
 
 Also required for the launch itself to succeed (not part of the skip gate):

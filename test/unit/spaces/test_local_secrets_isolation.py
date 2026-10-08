@@ -54,6 +54,21 @@ def test_same_yaml_name_different_space_rejected(tmp_path):
         check_local_secrets_collision(_stored("team-b", b), [_stored("team-a", a)])
 
 
+@pytest.mark.parametrize("yaml_name", ['""', "''"])
+def test_default_local_secrets_without_name_rejected(tmp_path, yaml_name):
+    # space.yaml's name defaults to "" -- there is no directory to key on, so
+    # every build in the space would fail; refuse it once, at registration.
+    uri = _space(tmp_path, "a", yaml_name)
+    with pytest.raises(LocalSecretsCollisionError, match="no `name:`"):
+        check_local_secrets_collision(_stored("team-a", uri), [])
+
+
+def test_explicit_secrets_dir_without_name_allowed(tmp_path):
+    explicit = "secret_manager:\n  type: local\n  config:\n    secrets_dir: /x\n"
+    uri = _space(tmp_path, "a", '""', explicit)
+    check_local_secrets_collision(_stored("team-a", uri), [])
+
+
 def test_aliases_of_the_same_space_allowed(tmp_path):
     uri = _space(tmp_path, "a", "public")
     check_local_secrets_collision(_stored("local", uri), [_stored("public", uri)])

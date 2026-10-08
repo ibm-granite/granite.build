@@ -18,7 +18,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, List, Optional, Self, Tuple
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, unquote, urlparse
 
 import yaml
 
@@ -54,6 +54,7 @@ class SpaceURI(URI):
             uri_suffix = uristr.removeprefix(GBSPACE_SCHEME + "://")
         elif uristr.startswith(SPACE_SCHEME):
             uri_suffix = uristr.removeprefix(SPACE_SCHEME + "://")
+        SpaceURI._reject_parent_segments(uri_suffix, uristr)
         # Tier 1: for `space://steps/<name>` with an active env, first honor the
         # space's own root step (`base_uris[0]/steps/<name>`, highest priority),
         # then the env-co-located ancestor-walk (nearest-wins), bounded by the
@@ -90,9 +91,59 @@ class SpaceURI(URI):
             resolved.append_path(uri_suffix)
             if not resolved.exists():
                 continue
+            if not SpaceURI._inside_file_base(base_uri, resolved):
+                continue
             if after is None or SpaceURI._fallback_steps_ok(base_uri, after):
                 return resolved  # type: ignore[return-value]
         raise ValueError(f"Unresolvable space uri : {uristr}")
+
+    @staticmethod
+    def _reject_parent_segments(uri_suffix: str, uristr: str) -> None:
+        """Refuse a space URI whose path climbs with ``..``.
+
+        Every tier joins the suffix onto a base (tier 3 verbatim, via
+        append_path), so ``space://../../home/gbserver/.kube`` would leave the
+        space. Checked after percent-decoding, since ``%2E%2E`` is decoded later
+        by the URI handlers (e.g. a git ``#subdirectory=`` via parse_qs).
+
+        Args:
+            uri_suffix: The URI with its ``space://``/``gb://`` scheme removed.
+            uristr: The full URI, for the error message.
+
+        Raises:
+            ValueError: If any ``/``-separated segment of the decoded suffix is
+                ``..`` (prefixed "Unresolvable space uri", like other failures).
+        """
+        decoded = unquote(uri_suffix)
+        if ".." in decoded.replace("\\", "/").split("/"):
+            raise ValueError(
+                f"Unresolvable space uri : {uristr} ('..' path segments are not"
+                " allowed)"
+            )
+
+    @staticmethod
+    def _inside_file_base(base_uri: str, resolved: URI) -> bool:
+        """Return whether a tier-3 result stays inside its ``file:`` base.
+
+        ``..`` is already rejected, but a symlink inside a local space can still
+        point outside it. Non-``file:`` bases are not checked here (a git base's
+        ``#subdirectory=`` is contained by GitURI itself).
+
+        Args:
+            base_uri: The base_uri the result was resolved against.
+            resolved: The resolved URI.
+
+        Returns:
+            bool: False only for a ``file:`` result outside a ``file:`` base.
+        """
+        base = urlparse(base_uri)
+        if base.scheme != "file" or resolved.uri is None:
+            return True
+        if resolved.uri.scheme != "file":
+            return True
+        return (
+            Path(resolved.uri.path).resolve().is_relative_to(Path(base.path).resolve())
+        )
 
     @staticmethod
     def _steps_suffix(uri_suffix: str) -> Optional[str]:

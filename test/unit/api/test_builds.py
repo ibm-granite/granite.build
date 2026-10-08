@@ -193,6 +193,33 @@ def test_submit_build_allows_admin_impersonation():
     assert resp.build_id
 
 
+def _oversized_zip_b64() -> str:
+    import base64
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("build.yaml", b"0" * 1000)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_submit_build_rejects_oversized_archive_413():
+    """Archive caps apply at submit, so an oversized build is never stored."""
+    added = []
+    req = _submit_req(ATTACKER)
+    req.build_archive = _oversized_zip_b64()
+    with (
+        _patched_storage() as get_storage,
+        patch.object(builds_module, "MAX_ZIP_UNCOMPRESSED_BYTES", 100),
+    ):
+        get_storage.return_value.build_storage.add = added.append
+        with pytest.raises(HTTPException) as exc:
+            submit_build(_fake_request(ATTACKER, f"{ATTACKER}@example.com"), req)
+    assert exc.value.status_code == 413
+    assert added == []
+
+
 # ------------------------------------------------------------------ validate_build
 
 _NO_OP_VALIDATION = patch.object(
@@ -273,6 +300,19 @@ def test_validate_build_rejects_non_member_via_space_name():
                 _validate_req(ATTACKER, space_name=SPACE),
             )
         assert exc.value.status_code == 401
+
+
+def test_validate_build_rejects_oversized_archive_413():
+    req = _validate_req(ATTACKER, space_uri="git://example/space.git")
+    req.build_archive = _oversized_zip_b64()
+    with (
+        _patched_storage(),
+        _NO_OP_VALIDATION,
+        patch.object(builds_module, "MAX_ZIP_UNCOMPRESSED_BYTES", 100),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            validate_build(_fake_request(ATTACKER, f"{ATTACKER}@example.com"), req)
+    assert exc.value.status_code == 413
 
 
 def test_validate_build_allows_admin_impersonation_via_space_name():

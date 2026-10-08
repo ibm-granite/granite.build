@@ -41,6 +41,7 @@ import asyncio
 import re
 import shlex
 import time
+import weakref
 from pathlib import PurePosixPath
 from typing import AsyncIterator, Dict, List, Optional, Tuple, Union
 from urllib.parse import quote
@@ -416,6 +417,25 @@ async def run_list(
 # releases the GIL (concurrent=True), and over-long patterns are refused.
 _REGEX_FILTER_MAX_LEN = 512
 _REGEX_FILTER_TIMEOUT_S = 5.0
+# At most this many filters run at once. Each can hold a worker thread for up to
+# _REGEX_FILTER_TIMEOUT_S, and they share asyncio's default executor with every
+# other to_thread caller; further requests wait here, on the event loop, instead.
+_REGEX_FILTER_MAX_CONCURRENT = 4
+# One semaphore per event loop: an asyncio.Semaphore binds to the first loop that
+# waits on it, and tests (or other threads) may run several loops.
+_REGEX_FILTER_SEMAPHORES: (
+    "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]"
+) = weakref.WeakKeyDictionary()
+
+
+def _regex_filter_semaphore() -> asyncio.Semaphore:
+    """Return the running event loop's regex-filter concurrency semaphore."""
+    loop = asyncio.get_running_loop()
+    semaphore = _REGEX_FILTER_SEMAPHORES.get(loop)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(_REGEX_FILTER_MAX_CONCURRENT)
+        _REGEX_FILTER_SEMAPHORES[loop] = semaphore
+    return semaphore
 
 
 def _compile_user_regex(pattern: str) -> "regex_lib.Pattern[str]":
@@ -475,6 +495,8 @@ async def _filter_entries_by_regex(
 ) -> List[FileEntry]:
     """Filter a listing by a user-supplied regex without blocking the event loop.
 
+    At most _REGEX_FILTER_MAX_CONCURRENT filters run at once; others wait.
+
     Args:
         entries: The listing to filter.
         pattern: The regex from the request.
@@ -488,9 +510,10 @@ async def _filter_entries_by_regex(
     """
     rx = _compile_user_regex(pattern)
     try:
-        return await asyncio.to_thread(
-            _search_paths, rx, entries, _REGEX_FILTER_TIMEOUT_S
-        )
+        async with _regex_filter_semaphore():
+            return await asyncio.to_thread(
+                _search_paths, rx, entries, _REGEX_FILTER_TIMEOUT_S
+            )
     except TimeoutError as e:
         raise RemoteFileBadRequest(
             "regex took too long to evaluate; simplify the pattern"

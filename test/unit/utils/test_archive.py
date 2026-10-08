@@ -174,3 +174,48 @@ class TestCheckTarSafeStopsEarly:
     def test_within_caps_passes(self):
         with self._open([("a", 1), ("b", 1)]) as tar:
             check_tar_safe(tar, max_entries=2, max_uncompressed_bytes=2)
+
+
+class TestCheckArchiveBytesSafe:
+    """Submit-time check: the caps apply to a zip or tar without extracting it,
+    so an oversized build is refused at POST /builds/ instead of being stored
+    and failing later in the runner. Bytes that are neither zip nor tar are left
+    for the runner to reject, as before."""
+
+    def test_zip_within_caps(self):
+        from gbcommon.utils.archive_safety import check_archive_bytes_safe
+
+        blob = _make_zip({"build.yaml": b"x"}).fp.getvalue()  # type: ignore[union-attr]
+        check_archive_bytes_safe(blob)
+
+    def test_zip_over_size_cap(self):
+        from gbcommon.utils.archive_safety import (
+            ArchiveLimitError,
+            check_archive_bytes_safe,
+        )
+
+        blob = _make_zip({"big": b"0" * 1000}).fp.getvalue()  # type: ignore[union-attr]
+        with pytest.raises(ArchiveLimitError, match="uncompressed size too large"):
+            check_archive_bytes_safe(blob, max_uncompressed_bytes=100)
+
+    def test_tar_over_entry_cap(self):
+        from gbcommon.utils.archive_safety import (
+            ArchiveLimitError,
+            check_archive_bytes_safe,
+        )
+
+        infos = [tarfile.TarInfo(f"f{i}") for i in range(10)]
+        blob = _make_tar(infos, {i.name: b"x" for i in infos})
+        with pytest.raises(ArchiveLimitError, match="too many entries"):
+            check_archive_bytes_safe(blob, max_entries=5)
+
+    def test_non_archive_bytes_pass_through(self):
+        from gbcommon.utils.archive_safety import check_archive_bytes_safe
+
+        check_archive_bytes_safe(b"test")
+
+    def test_tar_check_reexported_from_gbserver(self):
+        from gbcommon.utils import archive_safety
+        from gbserver.utils import archive
+
+        assert archive.check_tar_safe is archive_safety.check_tar_safe

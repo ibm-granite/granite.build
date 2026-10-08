@@ -279,6 +279,35 @@ class TestEventSubscribeEndpoint:
         assert response.status_code == 403
         assert "does not have access" in response.json()["detail"]
 
+    @patch(
+        "gbserver.api.event_subscribe.confirm_existing_item_write_access",
+        side_effect=HTTPException(status_code=400, detail="Can not determine user id!"),
+    )
+    @patch("gbserver.api.event_subscribe.get_admin_storage")
+    def test_subscribe_keeps_non_401_auth_errors(self, mock_get_storage, _mock_access):
+        """Only the 'not the owner' 401 becomes 403; other errors keep their status."""
+        build_id = "build-400"
+        mock_storage = MagicMock()
+        mock_storage.build_storage.get_by_uuid.return_value = StoredBuild(
+            uuid=build_id,
+            name="test-build",
+            space_name="test-space",
+            source_uri="",
+            username="other-user",
+            build_archive="",
+            status="running",
+        )
+        mock_get_storage.return_value = mock_storage
+
+        client = TestClient(_make_app())
+        response = client.post(
+            f"/api/v1/builds/{build_id}/events/subscribe",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+        assert response.status_code == 400
+        assert "Can not determine user id" in response.json()["detail"]
+
     @patch("gbserver.api.event_subscribe.get_admin_storage")
     def test_subscribe_to_finished_build_returns_409(self, mock_get_storage):
         """Subscribing to a finished build returns 409 Conflict."""

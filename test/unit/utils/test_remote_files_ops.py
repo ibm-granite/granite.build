@@ -391,3 +391,37 @@ def test_stat_list_slow_regex_times_out_without_blocking_loop():
         ticks = asyncio.run(scenario())
     # The loop kept running other tasks while the regex was being evaluated.
     assert ticks >= 5
+
+
+def test_regex_filters_share_a_bounded_number_of_threads():
+    # Each filter may hold a worker thread for up to _REGEX_FILTER_TIMEOUT_S;
+    # without a bound, many slow ones would exhaust the default executor shared
+    # by every other asyncio.to_thread caller.
+    import threading
+    import time
+
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def slow_search(rx, entries, timeout_s):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return entries
+
+    async def scenario():
+        await asyncio.gather(*[rfo._filter_entries_by_regex([], "x") for _ in range(6)])
+
+    with (
+        patch.object(rfo, "_search_paths", side_effect=slow_search),
+        patch.object(rfo, "_REGEX_FILTER_MAX_CONCURRENT", 2),
+    ):
+        asyncio.run(scenario())
+        # A second event loop gets its own semaphore (no cross-loop binding).
+        asyncio.run(scenario())
+    assert peak == 2

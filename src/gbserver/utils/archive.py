@@ -25,6 +25,7 @@ from typing import Optional
 from gbcommon.utils.archive_safety import (
     MAX_ZIP_ENTRIES,
     MAX_ZIP_UNCOMPRESSED_BYTES,
+    check_tar_safe,
     check_zip_safe,
 )
 from gbserver.types.constants import DEFAULT_DIR_PERMS
@@ -32,47 +33,12 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# check_zip_safe and its two limits now live in gbcommon, which is shipped by
-# distributions that do not include gbserver (granite-build-analytics packages
+# check_zip_safe, check_tar_safe and their two limits live in gbcommon, which is
+# shipped by distributions that do not include gbserver (granite-build-analytics packages
 # gb_ui_backend + gbcommon). The import above is what keeps them importable from
 # here, so existing `from gbserver.utils.archive import check_zip_safe` call
 # sites are unaffected -- no re-assignment is needed for that, and the two that
 # used to sit here were self-assignments that did nothing.
-
-
-def check_tar_safe(
-    tar: tarfile.TarFile,
-    max_entries: int = MAX_ZIP_ENTRIES,
-    max_uncompressed_bytes: int = MAX_ZIP_UNCOMPRESSED_BYTES,
-) -> None:
-    """Guard against tar-bomb archives before extracting any member.
-
-    The tar counterpart of ``check_zip_safe``, using the same default caps.
-
-    Args:
-        tar: An open, seekable (non-stream mode) tar archive.
-        max_entries: Maximum number of members allowed.
-        max_uncompressed_bytes: Maximum total declared size of all members.
-
-    Raises:
-        ValueError: If the archive has more members, or more total
-            uncompressed size, than the given caps.
-    """
-    # Iterate rather than getmembers(): a tar has no central index, so headers
-    # are read one by one, and stopping at the first member past a cap keeps an
-    # oversized archive from loading every header before it is rejected.
-    count = 0
-    total_size = 0
-    for member in tar:
-        count += 1
-        total_size += member.size
-        if count > max_entries:
-            raise ValueError(f"archive has too many entries (more than {max_entries})")
-        if total_size > max_uncompressed_bytes:
-            raise ValueError(
-                f"archive uncompressed size too large "
-                f"(more than {max_uncompressed_bytes} bytes)"
-            )
 
 
 def _extract_zip(

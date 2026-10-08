@@ -134,8 +134,9 @@ def check_local_secrets_collision(
 
     Raises:
         LocalSecretsCollisionError: If the candidate uses the default local
-            secret store and a different registered space uses it under the
-            same space.yaml name.
+            secret store and either has no space.yaml ``name:`` (there would be
+            no directory to key on, so every build in it would fail) or a
+            different registered space uses it under the same space.yaml name.
         ValueError: If the candidate's own space.yaml cannot be loaded.
     """
     key = default_local_secrets_key(
@@ -143,6 +144,13 @@ def check_local_secrets_collision(
     )
     if key is None:
         return
+    if not key:
+        raise LocalSecretsCollisionError(
+            f"space '{candidate.name}' ({candidate.git_repo_uri}) uses the default"
+            " local secret store but its space.yaml has no `name:`, which names"
+            " that store's directory; add a unique `name:` or set an explicit"
+            " secret_manager.config.secrets_dir"
+        )
     for other in registered:
         if other.git_repo_uri == candidate.git_repo_uri:
             continue

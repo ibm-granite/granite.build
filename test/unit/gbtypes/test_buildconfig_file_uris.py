@@ -199,3 +199,52 @@ def test_jinja_comment_or_block_before_scheme_rejected(uri):
     # prefix would hide a file: URI until it is rendered at run time.
     assert len(_file_uri_errors(_config(input_uri=uri))) == 1
     assert len(_file_uri_errors(_config(output_uri=uri))) == 1
+
+
+# ------------------------------------------------------------------ step.yaml URIs
+#
+# step.yaml can come from the user's own git repo, so its validator_uri and
+# monitor refs get the same hosted file: rule as build.yaml URIs.
+
+
+@pytest.mark.usefixtures("hosted")
+@pytest.mark.parametrize("uri", ["file:///home/gbserver/.kube", "validators/x"])
+def test_reject_host_file_uri_outside_standalone(uri):
+    with pytest.raises(ValueError, match="validator_uri"):
+        buildconfig_module.reject_host_file_uri(uri, "validator_uri")
+
+
+@pytest.mark.usefixtures("hosted")
+def test_reject_host_file_uri_allows_space_uris():
+    buildconfig_module.reject_host_file_uri("space://monitors/bash", "monitor ref")
+
+
+def test_reject_host_file_uri_allows_file_in_standalone():
+    with patch.object(buildconfig_module, "is_standalone", return_value=True):
+        buildconfig_module.reject_host_file_uri("file:///x", "monitor ref")
+
+
+@pytest.mark.usefixtures("hosted")
+def test_validator_uri_checked_before_sync():
+    from gbserver.asset.asset import Asset
+    from gbserver.types.validation import GBValidatorConfig
+    from gbserver.validators.custom_code_validator import CustomCodeGBValidator
+
+    config = GBValidatorConfig(
+        type="custom_code", config={"validator_uri": "file:///home/gbserver/.kube"}
+    )
+    with patch.object(Asset, "sync") as sync:
+        with pytest.raises(ValueError, match="validator_uri"):
+            CustomCodeGBValidator(config)
+    sync.assert_not_called()
+
+
+@pytest.mark.usefixtures("hosted")
+def test_monitor_ref_checked_before_sync():
+    from gbserver.asset.asset import Asset
+    from gbserver.build import targetsteprun
+
+    with patch.object(Asset, "sync") as sync:
+        with pytest.raises(ValueError, match="monitor ref"):
+            targetsteprun._load_monitor_file("file:///home/gbserver/.kube")
+    sync.assert_not_called()

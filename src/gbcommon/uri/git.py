@@ -306,6 +306,12 @@ class GitURI(URI):
         If possible returns the path to an existing clone from the cache.
         Otherwise we clone the repo and cache the location.
         If force is True then this always clones the repo.
+
+        Returns None if the repo or the ``#subdirectory=`` does not exist.
+
+        Raises:
+            ValueError: If the ``#subdirectory=`` (after percent-decoding and
+                resolving symlinks) points outside the cloned repository.
         """
         assert self.uri is not None, "self.uri is None"
         subdirectory = (
@@ -319,6 +325,15 @@ class GitURI(URI):
         final_path = repo_cache_path
         if subdirectory:
             final_path = repo_cache_path / subdirectory
+            # `repo / "/abs"` is `/abs`, parse_qs has already decoded `%2E%2E` to
+            # `..`, and the repo may hold a symlink pointing anywhere -- so check
+            # the fully resolved path, or a step/environment URI could copy
+            # server files (e.g. ~/.kube) into the step and on to compute.
+            if not final_path.resolve().is_relative_to(repo_cache_path.resolve()):
+                raise ValueError(
+                    f"subdirectory {subdirectory!r} resolves outside the repository"
+                    f" of {self.uri.geturl()}"
+                )
             if not final_path.exists():
                 logger.debug(
                     "Subdirectory '%s' not found in repository '%s'",

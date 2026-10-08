@@ -19,7 +19,6 @@ The step.
 """
 
 import glob
-import os
 import shutil
 import tempfile
 import threading
@@ -29,7 +28,10 @@ from typing import Optional, Self, Union
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.build.entity import Entity
-from gbserver.types.constants import is_debug_mode
+from gbserver.types.constants import (
+    CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_DIR,
+    is_debug_mode,
+)
 from gbserver.types.stepconfig import StepConfig
 from gbserver.utils.filesystem import find_files_shallowest_first
 from gbserver.utils.logger import get_logger
@@ -114,9 +116,7 @@ class Step(Entity):
             )
             self._thread_local.step_fallback_used = True
             self.step_fallback_used = True
-            default_path = (
-                Path(os.path.abspath(__file__)).parent.parent / "builtins/steps/gbstep"
-            )
+            default_path = CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_DIR
 
             builtin_default = default_path / STEP_DEFAULT_FILE_NAME
             assert (

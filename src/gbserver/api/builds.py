@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import base64
+import binascii
 import io
 import zipfile
 from enum import StrEnum, auto
@@ -24,6 +25,12 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, model_validator
 
+from gbcommon.utils.archive_safety import (
+    MAX_ZIP_ENTRIES,
+    MAX_ZIP_UNCOMPRESSED_BYTES,
+    ArchiveLimitError,
+    check_archive_bytes_safe,
+)
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import (
     NO_ACCESSIBLE_SPACE,
@@ -304,6 +311,8 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
         request, username_on_target=req.username, space_name=stored_space.name
     )
 
+    _confirm_build_archive_within_limits(req.build_archive)
+
     stored_build = StoredBuild.create(
         name=req.name,
         space_name=stored_space.name,
@@ -322,6 +331,37 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     return BuildSubmitResponse(
         build_id=stored_build.uuid,
     )
+
+
+def _confirm_build_archive_within_limits(build_archive: str) -> None:
+    """Refuse an uploaded build archive over the entry/size caps, at submit time.
+
+    The same caps are enforced again when a runner extracts the archive; checking
+    here keeps an oversized build from being stored as PENDING and failing later.
+    Content that is not valid base64, or not a zip/tar, is left for extraction
+    to reject (as before).
+
+    Args:
+        build_archive: The base64-encoded archive from the request.
+
+    Raises:
+        HTTPException: (413) if the archive exceeds MAX_ZIP_ENTRIES entries or
+            MAX_ZIP_UNCOMPRESSED_BYTES uncompressed bytes.
+    """
+    try:
+        raw = base64.b64decode(build_archive)
+    except (binascii.Error, ValueError):
+        return
+    try:
+        check_archive_bytes_safe(
+            raw,
+            max_entries=MAX_ZIP_ENTRIES,
+            max_uncompressed_bytes=MAX_ZIP_UNCOMPRESSED_BYTES,
+        )
+    except ArchiveLimitError as e:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e)
+        ) from e
 
 
 @builds_api.post("/restart")
@@ -434,6 +474,8 @@ def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"User {user_id} cannot validate a build as {req.username}",
             )
+
+    _confirm_build_archive_within_limits(req.build_archive)
 
     errors = BuildValidation.validate_build_archive(
         build_archive=req.build_archive,

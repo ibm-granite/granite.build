@@ -91,6 +91,8 @@ async def subscribe_build_events(build_id: str, request: Request) -> SubscribeRe
             request, username_on_target=build.username, space_name=build.space_name
         )
     except HTTPException as exc:
+        if exc.status_code != status.HTTP_401_UNAUTHORIZED:
+            raise  # e.g. 400 "Can not determine user id!" keeps its status
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"User {user.login} does not have access to build {build_id}.",

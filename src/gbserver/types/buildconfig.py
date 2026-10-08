@@ -46,6 +46,30 @@ BUILD_FILENAME = "build.yaml"
 BUILD_RUN_YAML_FILENAME = "run.yaml"
 
 
+def reject_host_file_uri(uri: Optional[str], field: str) -> None:
+    """Refuse a step.yaml URI naming a file on the gbserver host, unless STANDALONE.
+
+    The step.yaml counterpart of BuildConfig's build.yaml ``file:`` check: a step
+    can come from the user's own git repo, so its ``validator_uri`` or monitor
+    ``ref`` could otherwise name e.g. ``file:///home/gbserver/.kube`` and have it
+    synced into the step. These are resolved with a ``file`` default scheme, so
+    a bare path counts too. ``space://`` refs are allowed (they resolve through
+    the space's admin-controlled base_uris, contained by SpaceURI).
+
+    Args:
+        uri: The URI as written in step.yaml.
+        field: The field it came from, used in the error message.
+
+    Raises:
+        ValueError: If the server is not STANDALONE and the URI is, or may render
+            to, a ``file:`` URI.
+    """
+    if not is_standalone() and _may_be_file_uri(uri, FILE_SCHEME):
+        raise ValueError(
+            f"{field} '{uri}': file: URIs are only allowed on a standalone server"
+        )
+
+
 def _may_be_file_uri(uri: Optional[str], default_scheme: str) -> bool:
     """Return True if a build.yaml URI is, or may render to, a ``file:`` URI.
 

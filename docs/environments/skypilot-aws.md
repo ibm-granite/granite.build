@@ -558,11 +558,16 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
    `gb-skypilot` profile from the `GB_AWS_*` secrets at launch, so the *same* `environment.yaml`
    also works in a server deployment (where the server-managed store supplies them):
 
+   Seed them for the **test's own space**: each test space reads `space_secrets/<its space.yaml
+   name>/`, not `public/`. For example, the ephemeral EFS test space is named
+   `ephemeral-efs-e2e` (see `name:` in its `space/space.yaml`). Set `SPACE_NAME` and run once per
+   test space:
+
    ```bash
-   mkdir -p ~/.granite.build/space_secrets/public
-   python3 - <<'PY'
+   SPACE_NAME=ephemeral-efs-e2e python3 - <<'PY'
    import os, base64, json, pathlib
-   d = pathlib.Path.home() / ".granite.build" / "space_secrets" / "public"; d.mkdir(parents=True, exist_ok=True)
+   d = pathlib.Path.home() / ".granite.build" / "space_secrets" / os.environ["SPACE_NAME"]
+   d.mkdir(parents=True, exist_ok=True)
    enc = lambda v: base64.b64encode(v.encode()).decode()
    p = d / "aws.json"
    p.write_text(json.dumps({
