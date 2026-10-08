@@ -50,9 +50,7 @@ def defaults(template) -> dict:
 
 @pytest.fixture(scope="module")
 def launcher(template) -> dict:
-    return template["environment_configs"]["Skypilot"]["launchers"]["unitxt"][
-        "config"
-    ]
+    return template["environment_configs"]["Skypilot"]["launchers"]["unitxt"]["config"]
 
 
 # Where the launcher puts the bound `model` input (an hf:// URI is downloaded here).
