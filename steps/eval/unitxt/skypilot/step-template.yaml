@@ -1,4 +1,4 @@
-name: unitxt-eval
+name: unitxt
 version: 1.0.0
 # Runs a unitxt evaluation of the bound `model` input with the `unitxt-evaluate` CLI
 # (`--model hf`, a local Hugging Face checkpoint) and registers its output directory
@@ -70,9 +70,9 @@ outputs:
 environment_configs:
   Skypilot:
     # No `subtypes:` restriction: resolves on all four SkyPilot endpoints.
-    default_launcher: unitxt-eval
+    default_launcher: unitxt
     launchers:
-      unitxt-eval:
+      unitxt:
         type: skypilot
         monitors:
           - skypilot_monitor
@@ -112,7 +112,7 @@ environment_configs:
             {%- if config.unitxt_config.model is defined %}
             # The model used to be named in config (`model` + `model_args`). It is now
             # the bound `model` input, so refuse the old key rather than ignore it.
-            echo "unitxt-eval: ERROR unitxt_config.model is no longer read; bind the target's 'model' input instead (see USAGE.md)." >&2
+            echo "eval/unitxt: ERROR unitxt_config.model is no longer read; bind the target's 'model' input instead (see USAGE.md)." >&2
             exit 1
             {%- endif %}
             {%- if not config.unitxt_config.unitxt_image %}
@@ -122,13 +122,13 @@ environment_configs:
             MODEL_PATH='{{ q(bindings.model.binding.path) }}'
             EXTRA_ARGS='{{ q(config.unitxt_config.model_args) }}'
             if [ -z "$TASKS" ]; then
-              echo "unitxt-eval: ERROR unitxt_config.tasks is required." >&2; exit 1
+              echo "eval/unitxt: ERROR unitxt_config.tasks is required." >&2; exit 1
             fi
             case "$EXTRA_ARGS" in
               *pretrained*)
-                echo "unitxt-eval: ERROR unitxt_config.model_args must not set pretrained; the step passes the bound 'model' input." >&2; exit 1 ;;
+                echo "eval/unitxt: ERROR unitxt_config.model_args must not set pretrained; the step passes the bound 'model' input." >&2; exit 1 ;;
               "{"*)
-                echo "unitxt-eval: ERROR unitxt_config.model_args must be key=value pairs, not JSON." >&2; exit 1 ;;
+                echo "eval/unitxt: ERROR unitxt_config.model_args must be key=value pairs, not JSON." >&2; exit 1 ;;
             esac
             MODEL_ARGS="pretrained=${MODEL_PATH}${EXTRA_ARGS:+,$EXTRA_ARGS}"
             OUTPUT_DIR='{{ q(config.unitxt_config.output_path) }}'
