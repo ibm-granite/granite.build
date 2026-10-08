@@ -873,7 +873,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(10),
-        retry=retry_if_not_exception_type(ValueError),
+        retry=retry_if_not_exception_type(ValueError, NotImplementedError),
         reraise=True,
     )
     def _get_by_where_with_retry(
