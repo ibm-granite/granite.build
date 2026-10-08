@@ -21,6 +21,12 @@ shared Makefile conventions; see [steps/README.md](../../../README.md).
 - `test/test_unitxt_step_render.py`: Mode-1 render tests. They execute the
   rendered `run` block with a stub `unitxt-evaluate` on `PATH`, so they need no
   unitxt install, network or cluster.
+- `test/slurm-cpu/` + `test-data/slurm-cpu/`: a build test on the local Docker
+  SLURM cluster, modelled on dpk's `slurm-tok`. It evaluates the public
+  `SmolLM2-135M-Instruct` (the bound `model` input) on 2 instances with the CPU
+  torch build: a plumbing check, not a meaningful score. It skips itself unless
+  `make slurm-setup` has brought the cluster up, and runs only in the extended
+  suite. Its step/input counts are uncalibrated until the first green run.
 
 ## Building, testing and publishing
 
@@ -32,9 +38,11 @@ make -C steps/eval/unitxt/skypilot publish-step  # promote into configurations/ 
 
 ## Status
 
-First cut for granite.build issue #235. Not yet published to `configurations/`,
-and there is no per-cluster build test yet. Planned follow-ups:
+First cut for granite.build issue #235. Not yet published to `configurations/`.
+The only per-cluster build test is the CPU `slurm-cpu` one, and it hasn't been run
+on a cluster yet. Planned follow-ups:
 
-- An AWS build test (`test/aws-*/`), then SLURM, Kubernetes and LSF.
+- A GPU build test against bluevela/slurm, in the IBM test tree. Then Kubernetes,
+  LSF and AWS.
 - Remote models (`--model cross_provider`), probably as a separate value input.
 - Handling for reasoning models such as granite-4.2 (`--chat_template_kwargs`).
