@@ -18,11 +18,19 @@ from gbcommon.types.gbenvconfig import is_standalone
 logger = logging.getLogger(__name__)
 
 
-def _response_detail(response) -> str:
+def _response_detail(response) -> Any:
+    """``detail`` (else ``error``) of a gbserver error body.
+
+    Tolerates a non-JSON body (e.g. an HTML page from a proxy) so the caller still
+    raises GBServerHTTPError rather than a JSON decode error.
+    """
     try:
-        return response.json().get("detail", "")
+        body = response.json()
     except ValueError:
-        return ""
+        return response.reason or ""
+    if isinstance(body, dict):
+        return body.get("detail") or body.get("error", "")
+    return body
 
 
 def gb_server_request(
@@ -73,12 +81,7 @@ def gb_server_request(
             )
 
     if 400 <= response.status_code < 600:
-        detail = (
-            response.json().get("detail")
-            if response.json().get("detail")
-            else response.json().get("error", "")
-        )
-        raise gbserver_http_error(response.status_code, detail)
+        raise gbserver_http_error(response.status_code, _response_detail(response))
 
     data_obj = response.json()
 
@@ -570,9 +573,7 @@ def gbserver_put(token: str, url: str, payload: Any):
     }
     response = requests.put(url, headers=headers, json=payload)
     if 400 <= response.status_code < 600:
-        raise gbserver_http_error(
-            response.status_code, response.json().get("detail", "")
-        )
+        raise gbserver_http_error(response.status_code, _response_detail(response))
 
     data_obj = response.json()
 
@@ -586,9 +587,7 @@ def gbserver_post(token: str, url: str, payload: Any):
     }
     response = requests.post(url, headers=headers, json=payload)
     if 400 <= response.status_code < 600:
-        raise gbserver_http_error(
-            response.status_code, response.json().get("detail", "")
-        )
+        raise gbserver_http_error(response.status_code, _response_detail(response))
 
     data_obj = response.json()
 
@@ -603,9 +602,7 @@ def gbserver_get(token: str, url: str):
     response = requests.get(url, headers=headers)
 
     if 400 <= response.status_code < 600:
-        raise gbserver_http_error(
-            response.status_code, response.json().get("detail", "")
-        )
+        raise gbserver_http_error(response.status_code, _response_detail(response))
 
     data_obj = response.json()
 

@@ -47,14 +47,35 @@ HEAVY_PACKAGES = [
     "starlette",
 ]
 
+# Optional dependencies that may be absent: an eager ``try: import`` of one is
+# silent when it's missing, so the probe records import *attempts* to catch it
+# either way. lakehouse (dmf-lib) alone costs over a second (pandas, numpy).
+OPTIONAL_PACKAGES = ["lakehouse"]
+
 COMMANDS_DIR = Path(__file__).parents[3] / "src" / "gbcli" / "commands"
 
 _PROBE = """
 import importlib, json, sys
-for name in sys.argv[2:]:
+
+heavy, optional = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+attempted = set()
+
+
+class _RecordAttempts:
+    # Observes only: returning None lets the normal finders resolve (or fail).
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        top = name.partition(".")[0]
+        if top in optional:
+            attempted.add(top)
+        return None
+
+
+sys.meta_path.insert(0, _RecordAttempts)
+for name in sys.argv[3:]:
     importlib.import_module(name)
-heavy = json.loads(sys.argv[1])
-print(json.dumps(sorted(m for m in heavy if m in sys.modules)))
+loaded = {m for m in heavy if m in sys.modules} | attempted
+print(json.dumps(sorted(loaded)))
 """
 
 
@@ -65,7 +86,14 @@ def _command_modules() -> list[str]:
 def test_command_modules_do_not_import_heavy_packages():
     modules = ["gbcli.cli", "gbcli.client", *_command_modules()]
     proc = subprocess.run(
-        [sys.executable, "-c", _PROBE, json.dumps(HEAVY_PACKAGES), *modules],
+        [
+            sys.executable,
+            "-c",
+            _PROBE,
+            json.dumps(HEAVY_PACKAGES),
+            json.dumps(OPTIONAL_PACKAGES),
+            *modules,
+        ],
         capture_output=True,
         text=True,
         timeout=120,

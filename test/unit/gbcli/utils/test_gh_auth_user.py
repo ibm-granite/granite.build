@@ -133,7 +133,7 @@ class TestReloginHint:
         (tmp_path / "credentials").write_text(creds)
         with (
             patch(
-                "gbcli.utils.gbcredentials.get_local_gb_config",
+                "gbcli.utils.cli_config.get_local_gb_config",
                 return_value=str(tmp_path),
             ),
             patch("gbcommon.types.gbenvconfig.is_standalone", return_value=False),
@@ -144,3 +144,46 @@ class TestReloginHint:
     def test_standalone_points_at_gbserver_login(self):
         with patch("gbcommon.types.gbenvconfig.is_standalone", return_value=True):
             assert "'gb auth login --gbserver'" in gbserver_errors.relogin_hint()
+
+    def test_corrupt_credentials_fall_back_without_exiting(self, tmp_path):
+        """GBCredentials() would sys.exit() on bad TOML; building an error must not."""
+        (tmp_path / "credentials").write_text("[user\nnot toml")
+        with (
+            patch(
+                "gbcli.utils.cli_config.get_local_gb_config", return_value=str(tmp_path)
+            ),
+            patch("gbcommon.types.gbenvconfig.is_standalone", return_value=False),
+        ):
+            assert "'gb auth login'" in gbserver_errors.relogin_hint()
+
+
+class TestGBServerRequestErrors:
+    """gb_server_request raises GBServerHTTPError for any 4xx/5xx body."""
+
+    def _response(self, status, json_value=None, json_error=False, reason="Bad"):
+        resp = MagicMock(status_code=status, reason=reason)
+        if json_error:
+            resp.json.side_effect = ValueError("not json")
+        else:
+            resp.json.return_value = json_value
+        return resp
+
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            ({"json_value": {"detail": "nope"}}, "nope"),
+            ({"json_value": {"error": "boom"}}, "boom"),
+            ({"json_error": True, "reason": "Bad Gateway"}, "Bad Gateway"),
+        ],
+    )
+    def test_error_detail(self, kwargs, expected):
+        from gbcli.utils import gbserver
+
+        with patch(
+            "gbcli.utils.gbserver.requests.get",
+            return_value=self._response(502, **kwargs),
+        ):
+            with pytest.raises(GBServerHTTPError) as exc:
+                gbserver.gb_server_request("tok", "http://x", "get", None, None)
+        assert exc.value.status_code == 502
+        assert exc.value.detail == expected

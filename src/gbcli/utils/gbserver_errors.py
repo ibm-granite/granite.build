@@ -4,6 +4,7 @@ Owned by gbcli (rather than reusing fastapi's ``HTTPException``) so the CLI does
 not import the web framework at startup.
 """
 
+import os
 from typing import Any
 
 _RELOGIN_COMMANDS = {
@@ -19,19 +20,20 @@ def relogin_hint() -> str:
     Bare ``gb auth login`` is the GitHub flow (and makes GitHub the default), so an
     IBMid or API-key user must be pointed at their own flow instead.
     """
-    provider = "github"
-    try:
-        from gbcli.utils.gbcredentials import GBCredentials
-        from gbcommon.types.gbenvconfig import is_standalone
+    from gbcli.utils.cli_config import get_local_gb_config
+    from gbcli.utils.gbcredentials import GBTomlConfig
+    from gbcommon.types.gbenvconfig import is_standalone
 
-        if is_standalone():
-            provider = "apikey"
-        else:
-            provider = (
-                GBCredentials().get("default_provider", section="user") or "github"
-            )
-    except Exception:  # credentials unreadable: fall back to the GitHub flow
-        pass
+    if is_standalone():
+        provider = "apikey"
+    else:
+        # GBTomlConfig, not GBCredentials: the latter sys.exit()s on a corrupt file,
+        # which must not happen while merely building an error (e.g. in gbmcp).
+        try:
+            creds = GBTomlConfig(os.path.join(get_local_gb_config(), "credentials"))
+            provider = creds.get("default_provider", section="user") or "github"
+        except (KeyError, OSError, ValueError):  # no GB_CONFIG, unreadable, bad TOML
+            provider = "github"
     command = _RELOGIN_COMMANDS.get(provider, _RELOGIN_COMMANDS["github"])
     return f"Run '{command}' to re-authenticate."
 
