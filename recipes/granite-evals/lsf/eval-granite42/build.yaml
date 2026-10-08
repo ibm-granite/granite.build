@@ -1,0 +1,1536 @@
+granite.build:
+  name: granite-eval-granite42
+  # Granite Granite 4.2 suite, all reading the same checkpoint. Each benchmark is two
+  # targets on one output dir: `<bench>-generate` holds the GPU only while the model
+  # generates, and `<bench>` grades that output on CPUs (sandboxes, verifiers, paid
+  # judges) with no vLLM, so no GPU sits idle. `<bench>` binds the generate target's
+  # output, so selecting it runs both. terminal-bench-2.1 and mmlu-prox-lite grade
+  # inside generation and stay one GPU target. The full list and bring-up status is
+  # `granite-evals list --suite granite42`.
+  targets:
+    swebench-verified-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/swebench-verified
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-verified"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${SWEBENCH_WORKERS}"
+              dataset: "$${SWEBENCH_DATASET}"
+              options: "$${SWEBENCH_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    swebench-verified:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: swebench-verified-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/swebench-verified
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-verified"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${SWEBENCH_WORKERS}"
+              dataset: "$${SWEBENCH_DATASET}"
+              options: "$${SWEBENCH_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    swebench-pro-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/swebench-pro
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-pro"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${SWEBENCH_PRO_WORKERS}"
+              dataset: "$${SWEBENCH_PRO_DATASET}"
+              options: "$${SWEBENCH_PRO_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    swebench-pro:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: swebench-pro-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/swebench-pro
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-pro"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${SWEBENCH_PRO_WORKERS}"
+              dataset: "$${SWEBENCH_PRO_DATASET}"
+              options: "$${SWEBENCH_PRO_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    swebench-multilingual-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/swebench-multilingual
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-multilingual"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${SWEBENCH_ML_WORKERS}"
+              dataset: "$${SWEBENCH_ML_DATASET}"
+              options: "$${SWEBENCH_ML_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              envs:
+                GRANITE_EVALS_MAVEN_MIRROR: "$${MAVEN_MIRROR}"
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    swebench-multilingual:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: swebench-multilingual-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/swebench-multilingual
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/swebench-multilingual"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${SWEBENCH_ML_WORKERS}"
+              dataset: "$${SWEBENCH_ML_DATASET}"
+              options: "$${SWEBENCH_ML_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              envs:
+                GRANITE_EVALS_MAVEN_MIRROR: "$${MAVEN_MIRROR}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    terminal-bench-2.1:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/terminal-bench-2.1
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/terminal-bench-2.1"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TBENCH_WORKERS}"
+              dataset: "$${TBENCH_DATASET}"
+              options: "$${TBENCH_OPTIONS}"
+              phase: "all"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    birdbench-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/birdbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_BIRD}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/birdbench"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${BIRDBENCH_WORKERS}"
+              options: "$${BIRDBENCH_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    birdbench:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: birdbench-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/birdbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_BIRD}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/birdbench"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${BIRDBENCH_WORKERS}"
+              options: "$${BIRDBENCH_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-bench-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-bench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-bench"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_USER_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-bench:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-bench-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-bench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-bench"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-airline-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-airline
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-airline"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_USER_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-airline:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-airline-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-airline
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-airline"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-banking-knowledge-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-banking-knowledge
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-banking-knowledge"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_USER_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-banking-knowledge:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-banking-knowledge-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-banking-knowledge
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-banking-knowledge"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-retail-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-retail
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-retail"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_USER_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-retail:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-retail-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-retail
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-retail"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    tau3-telecom-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-telecom
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-telecom"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_USER_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    tau3-telecom:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: tau3-telecom-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/tau3-telecom
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_TAU}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/tau3-telecom"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${TAU_WORKERS}"
+              dataset: "$${TAU_DATASET}"
+              options: "$${TAU_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    bfcl-v4-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/bfcl-v4
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_BFCL}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/bfcl-v4"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              workers: "$${BFCL_WORKERS}"
+              options: "$${BFCL_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    bfcl-v4:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: bfcl-v4-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/bfcl-v4
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_BFCL}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/bfcl-v4"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              workers: "$${BFCL_WORKERS}"
+              options: "$${BFCL_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    gdpval-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/gdpval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/gdpval"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${GDPVAL_WORKERS}"
+              dataset: "$${GDPVAL_DATASET}"
+              options: "$${GDPVAL_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    gdpval:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: gdpval-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/gdpval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/gdpval"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${GDPVAL_WORKERS}"
+              dataset: "$${GDPVAL_DATASET}"
+              options: "$${GDPVAL_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    profbench-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/profbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/profbench"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${PROFBENCH_WORKERS}"
+              dataset: "$${PROFBENCH_DATASET}"
+              options: "$${PROFBENCH_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    profbench:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: profbench-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/profbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/profbench"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${PROFBENCH_WORKERS}"
+              dataset: "$${PROFBENCH_DATASET}"
+              options: "$${PROFBENCH_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    aime25-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/aime25
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/aime25"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${AIME25_WORKERS}"
+              options: "$${AIME25_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    aime25:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: aime25-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/aime25
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/aime25"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${AIME25_WORKERS}"
+              options: "$${AIME25_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    hmmt-feb25-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/hmmt-feb25
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/hmmt-feb25"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${HMMT_FEB25_WORKERS}"
+              options: "$${HMMT_FEB25_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    hmmt-feb25:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: hmmt-feb25-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/hmmt-feb25
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/hmmt-feb25"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${HMMT_FEB25_WORKERS}"
+              options: "$${HMMT_FEB25_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    gpqa-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/gpqa
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/gpqa"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${GPQA_WORKERS}"
+              options: "$${GPQA_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: HF_TOKEN
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    gpqa:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: gpqa-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/gpqa
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/gpqa"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${GPQA_WORKERS}"
+              options: "$${GPQA_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: HF_TOKEN
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    livecodebench-v6-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/livecodebench-v6
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/livecodebench-v6"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${LIVECODEBENCH_WORKERS}"
+              options: "$${LIVECODEBENCH_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    livecodebench-v6:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: livecodebench-v6-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/livecodebench-v6
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/livecodebench-v6"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${LIVECODEBENCH_WORKERS}"
+              options: "$${LIVECODEBENCH_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    scicode-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/scicode
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/scicode"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${SCICODE_WORKERS}"
+              options: "$${SCICODE_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    scicode:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: scicode-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/scicode
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/scicode"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${SCICODE_WORKERS}"
+              options: "$${SCICODE_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    mmlu-pro-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/mmlu-pro
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/mmlu-pro"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${MMLU_PRO_WORKERS}"
+              options: "$${MMLU_PRO_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    mmlu-pro:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: mmlu-pro-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/mmlu-pro
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/mmlu-pro"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${MMLU_PRO_WORKERS}"
+              options: "$${MMLU_PRO_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    mmlu-prox-lite:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/mmlu-prox-lite
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_LMEVAL}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/mmlu-prox-lite"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${MMLU_PROX_LITE_WORKERS}"
+              options: "$${MMLU_PROX_LITE_OPTIONS}"
+              phase: "all"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    arena-hard-v2-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/arena-hard-v2
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/arena-hard-v2"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${ARENA_HARD_V2_WORKERS}"
+              options: "$${ARENA_HARD_V2_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    arena-hard-v2:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: arena-hard-v2-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/arena-hard-v2
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/arena-hard-v2"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${ARENA_HARD_V2_WORKERS}"
+              options: "$${ARENA_HARD_V2_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            launcher_config:
+              envs:
+                GRANITE_EVALS_SPEND_LEDGER: "$${SPEND_LEDGER}"
+                GRANITE_EVALS_SPEND_BUDGET_USD: "$${SPEND_BUDGET_USD}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    ifbench-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/ifbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_IFBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ifbench"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${IFBENCH_WORKERS}"
+              options: "$${IFBENCH_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    ifbench:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: ifbench-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/ifbench
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_IFBENCH}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ifbench"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${IFBENCH_WORKERS}"
+              options: "$${IFBENCH_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    ruler-128k-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/ruler-128k
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ruler-128k"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${RULER_WORKERS}"
+              options: "$${RULER_OPTIONS} $${RULER_128K_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              max_model_len: "131072"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    ruler-128k:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: ruler-128k-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/ruler-128k
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ruler-128k"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${RULER_WORKERS}"
+              options: "$${RULER_OPTIONS} $${RULER_128K_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              max_model_len: "131072"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
+    ruler-64k-generate:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/ruler-64k
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ruler-64k"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${RULER_WORKERS}"
+              options: "$${RULER_OPTIONS}"
+              phase: "generate"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              max_model_len: "131072"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    ruler-64k:
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        generation:
+          binding: ruler-64k-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/ruler-64k
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            granite_config:
+              image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
+              model_path: "$${MODEL_PATH}"
+              served_model_name: "$${SERVED_MODEL_NAME}"
+              output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/ruler-64k"
+              limit: "$${GRANITE_EVALS_LIMIT}"
+              repeats: "$${GRANITE_EVALS_REPEATS}"
+              workers: "$${RULER_WORKERS}"
+              options: "$${RULER_OPTIONS}"
+              phase: "score"
+              tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+              max_model_len: "131072"
+              hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
