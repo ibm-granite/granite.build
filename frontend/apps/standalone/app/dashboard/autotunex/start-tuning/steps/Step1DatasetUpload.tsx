@@ -212,8 +212,11 @@ export function Step1DatasetUpload({
   // file overwrote the new file's columns, format and mapping, and the launch then
   // uploaded file B naming file A's columns.
   const uploadTokenRef = useRef(0)
-  // A frozen HF import reopens on its own tab; Upload is otherwise the default.
-  const [dataSource, setDataSource] = useState<DataSource>(pendingHfImport ? 'hf' : 'upload')
+  // A frozen HF import reopens on its own tab, and so does a repo picked but not
+  // yet frozen (the wizard keeps the selection across Back) unless a file or saved
+  // dataset has since been chosen. Upload is otherwise the default.
+  const reopenOnHf = pendingHfImport !== null || (hfRepoId !== null && !uploadedFile && !existingDatasetId)
+  const [dataSource, setDataSource] = useState<DataSource>(reopenOnHf ? 'hf' : 'upload')
 
   const [isAiSuggesting, setIsAiSuggesting] = useState(false)
   const [aiSuggestion, setAiSuggestion] = useState<{ confidence: number; reasoning: string; algorithm: string } | null>(null)
@@ -238,7 +241,7 @@ export function Step1DatasetUpload({
   // limits are unknown, and a flow that cannot state its own bounds should not
   // open. retry: false for the same reason the tab is hidden -- one clear failure
   // beats a slower one.
-  const { data: appConfig } = useQuery({
+  const { data: appConfig, isPending: appConfigPending } = useQuery({
     queryKey: ['autotunex', 'appConfig'],
     queryFn: getAppConfig,
     retry: false,
@@ -255,10 +258,12 @@ export function Step1DatasetUpload({
   // The saved-dataset list and the HF flag both arrive asynchronously, so a source
   // can disappear after being selected.
   useEffect(() => {
-    // A frozen import stays on its own tab even before HF/existing-datasets resolve.
+    // A frozen import stays on its own tab even before HF/existing-datasets resolve,
+    // and a reopened unfrozen pick stays there until the HF flag has resolved.
     if (pendingHfImport) return
+    if (dataSource === 'hf' && appConfigPending) return
     if (!availableSources.includes(dataSource)) setDataSource('upload')
-  }, [availableSources, dataSource, pendingHfImport])
+  }, [availableSources, dataSource, pendingHfImport, appConfigPending])
   const { data: datasetTypes = {} } = useQuery({
     queryKey: ['autotunex', 'datasetTypes'],
     queryFn: getAutotuneDatasetTypes,
