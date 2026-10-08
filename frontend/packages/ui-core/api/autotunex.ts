@@ -298,9 +298,8 @@ export async function getAppConfig(): Promise<AppConfig> {
 }
 
 // ── HuggingFace dataset import ────────────────────────────────────────────────
-// Unlike getHFModels/getHFModelCard above, these are the AutoTuneX service's own
-// endpoints, so they go through the proxied `client` rather than bare axios at
-// huggingface.co.
+// Like getHFModels/getHFModelCard above, these go through the proxied `client`:
+// AutoTuneX talks to HuggingFace server-side.
 
 export async function searchHfDatasets(query: string, limit = 20): Promise<string[]> {
   const { data } = await client.get<string[]>('/datasets/hf/search', { params: { query, limit } })
