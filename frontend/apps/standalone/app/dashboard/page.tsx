@@ -152,11 +152,11 @@ function MyBuildsTile() {
 }
 // ── AutoTuneX tiles ─────────────────────────────────────────────────────
 
-// A build counts as model-customisation activity under any of these tags. This
-// tile stays tag-based on purpose: it's a system-wide aggregate (the three
-// listBuilds calls below, deduped by uuid), and asking the authoritative
-// per-build endpoint instead would mean one request per build rather than three
-// total. The build page itself no longer uses tags — it asks
+// A build counts as model-customisation activity when it carries this tag. This
+// tile stays tag-based on purpose: it's a system-wide aggregate (one listBuilds
+// call per tag below), and asking the authoritative per-build endpoint instead
+// would mean one request per build rather than one per tag. The build page
+// itself no longer uses tags — it asks
 // GET /jobs/by-build-id — so the two can legitimately disagree when an operator
 // customises AutoTuneX's `gb_tags` setting, with this tile being the one that
 // undercounts.
@@ -165,7 +165,8 @@ const MODEL_CUSTOMISATION_TAGS = [
 ];
 
 // The gbserver tags filter is AND-only, so one tag per request, then dedupe by
-// uuid (a build carrying two spellings would otherwise be counted twice).
+// uuid (with more than one tag listed, a build carrying two would otherwise be
+// counted twice).
 async function fetchModelCustomisationStats() {
   const results = await Promise.all(
     MODEL_CUSTOMISATION_TAGS.map((tag) => listBuilds({ tags: [tag] })),
