@@ -24,10 +24,14 @@ failure, so a refactor that drops the retry is caught. They also pin the retry
 boundary (a deterministic ValueError is not retried) and that the
 exact_liked_list_columns post-filter still applies on a retried call.
 
-Backoff is skipped by patching ``tenacity.nap.time.sleep``, the sleep tenacity
-documents as the one to mock in tests, rather than reaching into the decorated
-function's Retrying object. (Patching ``tenacity.nap.sleep`` itself would not
-work: Retrying binds it as a default argument at import time.)
+Backoff is skipped by replacing ``tenacity.nap.time``, the module reference
+through which tenacity's default sleep (``tenacity.nap.sleep``, documented as the
+one to mock in tests) looks up ``time.sleep``. This keeps the patch inside
+tenacity: the process-wide ``time.sleep`` -- used by other threads, filelock, and
+the autouse ``_mock_time`` fixture in mock mode -- is untouched, so the sleep
+counts are exact. It also avoids reaching into the decorated function's Retrying
+object. (Patching ``tenacity.nap.sleep`` itself would not work: Retrying binds it
+as a default argument at import time.)
 """
 
 from unittest.mock import patch
@@ -40,8 +44,9 @@ from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.artifact import ArtifactType
 
-# tenacity's default sleep strategy calls time.sleep via the tenacity.nap module.
-_TENACITY_SLEEP = "tenacity.nap.time.sleep"
+# Patch only tenacity's reference to the time module, so the global time.sleep
+# (and any other thread using it) is untouched.
+_TENACITY_TIME = "tenacity.nap.time"
 
 
 @pytest.fixture
@@ -88,37 +93,37 @@ def _fail_then_succeed(storage, failures):
 
 def test_get_by_where_retries_transient_failure(space_storage):
     patcher, calls = _fail_then_succeed(space_storage, failures=2)
-    with patcher, patch(_TENACITY_SLEEP) as sleep:
+    with patcher, patch(_TENACITY_TIME) as fake_time:
         items = space_storage.get_by_where({"name": "s1"})
 
     assert [s.name for s in items] == ["s1"]
     assert calls["n"] == 3  # two failures, then success
-    assert sleep.call_count == 2  # one backoff per failure
+    assert fake_time.sleep.call_count == 2  # one backoff per failure
 
 
 def test_get_by_where_gives_up_after_the_attempt_limit(space_storage):
     patcher, calls = _fail_then_succeed(space_storage, failures=100)
-    with patcher, patch(_TENACITY_SLEEP) as sleep:
+    with patcher, patch(_TENACITY_TIME) as fake_time:
         with pytest.raises(OperationalError):
             space_storage.get_by_where({"name": "s1"})
 
     assert calls["n"] == 10  # stop_after_attempt(10), then re-raised
-    assert sleep.call_count == 9  # no backoff after the final attempt
+    assert fake_time.sleep.call_count == 9  # no backoff after the final attempt
 
 
 def test_get_by_where_does_not_retry_value_error(space_storage):
-    with patch(_TENACITY_SLEEP) as sleep:
+    with patch(_TENACITY_TIME) as fake_time:
         with pytest.raises(ValueError):
             space_storage.get_by_where(42)  # type: ignore[arg-type]
 
-    assert sleep.call_count == 0  # surfaced on the first attempt, no backoff
+    assert fake_time.sleep.call_count == 0  # surfaced on the first attempt, no backoff
 
 
 def test_get_by_where_post_filters_exact_tags_after_retry(artifact_registry):
     patcher, calls = _fail_then_succeed(artifact_registry, failures=1)
-    with patcher, patch(_TENACITY_SLEEP) as sleep:
+    with patcher, patch(_TENACITY_TIME) as fake_time:
         items = artifact_registry.get_by_where({"tags": ["a"]})
 
     assert [a.uri for a in items] == ["https://example.com/exact"]
     assert calls["n"] == 2  # one failure, then success
-    assert sleep.call_count == 1
+    assert fake_time.sleep.call_count == 1
