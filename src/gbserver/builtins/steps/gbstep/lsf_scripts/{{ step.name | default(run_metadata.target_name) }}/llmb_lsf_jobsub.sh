@@ -95,12 +95,22 @@ exit 0
 {%- endif %}
 {#- Resource flags to bsub #}
 {%- set bsub_num_nodes_flag = '' %}
+{%- set bsub_span_flag = '' %}
 {%- set bsub_cpu_memory_flag = '' %}
 {%- set bsub_gpus_flag = '' %}
 {#- Check and set the flags #}
 {%- if is_managed %}
 {#- Nodes #}
 {%- set bsub_num_nodes_flag = '-n "${LLMB_LSF_NUM_NODES}"' %}
+{#- `-n` counts SLOTS, not hosts, so -n on its own lets LSF pack every task
+    onto a single host. span[ptile=1] pins one slot per host, which makes the
+    slot count equal the node count and also makes `blaunch` (which launches
+    one task per allocated slot) spawn exactly one task per node.
+    Emitted only for num_nodes > 1: at -n 1 it is a no-op, and omitting it
+    keeps the single-node scheduling path byte-identical to before. #}
+{%- if num_nodes > 1 %}
+{%- set bsub_span_flag = '-R "span[ptile=1]"' %}
+{%- endif %}
 {#- CPUs and memory #}
 {%- set bsub_cpu_memory_flag = '-R "rusage[mem=${LLMB_LSF_MEMORY_SIZE},cpu=${LLMB_LSF_NUM_CPUS}]"' %}
 {#- GPUs #}
@@ -227,6 +237,9 @@ echo "${LLMB_LSF_JOB_NAME}: submitting job using wrapper around script ${LLMB_LS
     -e "${LLMB_LSF_LOG_FILE_STDERR}" \
     {%- if bsub_num_nodes_flag != '' %}
     {{ bsub_num_nodes_flag }} \
+    {%- endif %}
+    {%- if bsub_span_flag != '' %}
+    {{ bsub_span_flag }} \
     {%- endif %}
     {%- if bsub_cpu_memory_flag != '' %}
     {{ bsub_cpu_memory_flag }} \
