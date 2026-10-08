@@ -861,25 +861,12 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         where: str | dict | None = None,
         query_control: Optional[QueryControl] = None,
     ) -> list[BASE_ITEM_TYPE]:
-        """Override the super-class method to add support for like-style queries on the exact_liked_columns.
+        """Delegate to the retried _get_by_where_with_retry; see it for full docs.
 
-        Retried via _get_by_where_with_retry. The @retry decorator is kept off this
-        public method on purpose: tenacity (>= 9.2) types a decorated function as a
-        ``_RetryDecorated`` protocol rather than a plain method, so mypy would reject
-        subclasses that combine this class with a mixin defining a plain
-        ``get_by_where`` (e.g. the SQLite storages' SqliteStorageOverrides).
-
-        Args:
-            where: A SQL where-clause string or a column->value dict, or None for all.
-            query_control: Optional pagination/sorting control.
-
-        Returns:
-            list[BASE_ITEM_TYPE]: The matching items.
-
-        Raises:
-            ValueError: If ``where`` is neither a string, a dict, nor None.
-            sqlalchemy.exc.SQLAlchemyError: If the query still fails after the
-                retries in _get_by_where_with_retry are exhausted.
+        The @retry decorator sits on the helper, not here, so mixins (e.g. the
+        SQLite storages' SqliteStorageOverrides) can override this plain method:
+        tenacity >= 9.2 types a decorated function as ``_RetryDecorated``, which
+        mypy rejects as an override of a plain method.
         """
         return self._get_by_where_with_retry(where, query_control)
 
@@ -912,7 +899,13 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         Raises:
             ValueError: If ``where`` is neither a string, a dict, nor None. Raised
                 on the first attempt; it is not retried.
-            sqlalchemy.exc.SQLAlchemyError: If the query fails on every attempt.
+            Exception: Whatever the last attempt raised, unchanged
+                (``reraise=True``), if every attempt fails. Typically a
+                sqlalchemy.exc.SQLAlchemyError from the query, but any other
+                error is retried and re-raised the same way, including
+                NotImplementedError for a string ``where``, the Exception for a
+                non-str/list exact_liked_list_columns value, and AssertionError
+                from the list post-filter.
         """
         items = super().get_by_where(where, query_control=query_control)
         if isinstance(where, dict):
