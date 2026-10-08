@@ -235,11 +235,13 @@ The flow uses these endpoints, plus two impersonation endpoints documented below
 | ------------------- | ------ | ------------------------------------------------------------------------ |
 | `/auth/login`       | GET    | Starts an authorization-code + PKCE (`S256`) flow; redirects to the IdP. |
 | `/auth/callback`    | GET    | Exchanges the code server-side, mints the httpOnly session cookie, then redirects (`302`) to `AUTOTUNEX_PUBLIC_BASE_URL`. |
-| `/auth/me`          | GET    | Reports the current principal (the `Principal` body below).               |
+| `/auth/me`          | GET    | Reports the current principal (the `Principal` body below). Also served at `/api/v1/auth/me`. |
 | `/auth/logout`      | POST   | Clears the session cookie and the `autotunex_assume` impersonation overlay (and returns the IdP logout endpoint, if set); requires authentication. |
 
 Every `/auth/*` route — the four above and the two impersonation endpoints below —
-is mounted at the service **root**, outside the `/api/v1` resource prefix.
+is mounted at the service **root**, outside the `/api/v1` resource prefix. The one
+exception is `GET /api/v1/auth/me`, a prefixed alias of `/auth/me` (same response)
+for UIs that can only reach `/api/v1/*`; only `/me` is duplicated.
 
 During `/auth/login` the `state` and PKCE verifier live in a short-lived signed,
 httpOnly `oauth_flow` cookie (a 5-minute TTL) — never server memory — so the flow
@@ -369,7 +371,7 @@ included, not just a `"session"` login.
 | Endpoint                 | Method | Purpose                                                              |
 | ------------------------ | ------ | -------------------------------------------------------------------- |
 | `/auth/assume/{user_id}` | POST   | Admin only — begin acting as `user_id`'s data-owner identity.        |
-| `/auth/unassume`         | POST   | Drop the overlay, restoring the caller's own identity (idempotent).  |
+| `/auth/unassume`         | POST   | Drop the overlay, restoring the caller's own identity (idempotent); requires authentication (any caller, not admin-gated — `401` without a credential). |
 
 Admin gating is enforced on the **real** caller (resolved by `get_principal`),
 never the effective/assumed identity, so an admin cannot chain one impersonation

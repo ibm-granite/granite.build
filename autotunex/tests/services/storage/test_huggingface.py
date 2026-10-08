@@ -26,7 +26,7 @@ GB_ENV = "AUTOTUNEX_STORAGE_TEST_GB"
 HF_ENV = "AUTOTUNEX_STORAGE_TEST_HF"
 PUSH_STDOUT = (
     "pushed artifact 11111111-1111-1111-1111-111111111111 "
-    "to hf://huggingface.co/datasets/ibm-research/finance_0f55c1a6"
+    "to hf://huggingface.co/datasets/example-org/finance_0f55c1a6"
 )
 
 
@@ -101,7 +101,7 @@ async def test_persist_authenticates_then_pushes_and_parses_refs(
     # only the two canonical files are staged for the push — not the leftover.
     assert pushed_names == ["finance_train.jsonl", "finance_validation.jsonl"]
     assert artifact_id == UUID("11111111-1111-1111-1111-111111111111")
-    assert artifact_url == "hf://huggingface.co/datasets/ibm-research/finance_0f55c1a6"
+    assert artifact_url == "hf://huggingface.co/datasets/example-org/finance_0f55c1a6"
 
 
 async def test_persist_passes_the_configured_tag_to_the_push(
@@ -374,7 +374,7 @@ async def test_persist_unparseable_push_output_maps_to_push_failed(
         )
 
 
-VALID_URL = "hf://huggingface.co/datasets/ibm-research/finance_0f55c1a6"
+VALID_URL = "hf://huggingface.co/datasets/example-org/finance_0f55c1a6"
 
 
 def _viewer_client(handler: object) -> httpx.AsyncClient:
@@ -542,7 +542,7 @@ async def test_preview_empty_when_repo_belongs_to_other_dataset(
         dataset_id=DATASET_ID,
         name="finance",
         data_format="jsonl",
-        artifact_url="hf://huggingface.co/datasets/ibm-research/finance_deadbeef",
+        artifact_url="hf://huggingface.co/datasets/example-org/finance_deadbeef",
         rows=10,
     )
 

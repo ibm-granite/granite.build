@@ -72,11 +72,11 @@ async def test_upsert_task_persists_artifact_id_and_uri(
         GbTaskType.TUNING,
         status=RunStatus.COMPLETED,
         artifact_id=artifact_id,
-        artifact_uri="hf://huggingface.co/models/ibm-research/autotunex_x",
+        artifact_uri="hf://huggingface.co/models/example-org/autotunex_x",
     )
 
     assert updated.artifact_id == artifact_id
-    assert updated.artifact_uri == "hf://huggingface.co/models/ibm-research/autotunex_x"
+    assert updated.artifact_uri == "hf://huggingface.co/models/example-org/autotunex_x"
 
 
 async def test_upsert_task_none_artifact_on_update_does_not_clobber(

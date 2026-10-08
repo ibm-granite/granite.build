@@ -145,6 +145,7 @@ Optional in this mode:
 | --- | --- | --- |
 | `AUTOTUNEX_JOB_TRAINER_REF` | `main` | Branch/tag/commit of the trainer repo to check out. Not part of the fail-fast set. |
 | `AUTOTUNEX_JOB_CALLBACK_URL` | unset | The api-bridge base URL the build reports its logs and metrics to. Emitted into the start command as `--autotunex_server_url` **only when set**. |
+| `AUTOTUNEX_HF_IMPORT_NAMESPACES` | `[]` | Allowlisted HuggingFace namespaces (JSON list); a `huggingface`-source model in one is bound as an `hf://` `base_model` input artifact, which gbserver pulls with the space's credentials, instead of being passed by name. |
 
 ```
 AUTOTUNEX_JOB_BACKEND=llmb
@@ -247,6 +248,7 @@ Optional in this mode:
 | --- | --- | --- |
 | `AUTOTUNEX_JOB_TRAINER_REF` | `main` | Branch/tag/commit of the trainer repo to check out. |
 | `AUTOTUNEX_JOB_CALLBACK_URL` | unset | The api-bridge base URL the build reports its logs and metrics to. Like the `custom_code` spec, emitted as `--autotunex_server_url` **only when set**. |
+| `AUTOTUNEX_HF_IMPORT_NAMESPACES` | `[]` | Allowlisted HuggingFace namespaces (JSON list); a `huggingface`-source model in one is bound as an `hf://` `base_model` input artifact, which gbserver pulls with the space's credentials, instead of being passed by name. |
 
 The remaining `AUTOTUNEX_LSF_*` knobs (accelerators, queue, memory, CPUs and memory
 per node, venv path, CUDA home, poll interval) are optional and documented in

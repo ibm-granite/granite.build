@@ -13,11 +13,14 @@ none of these — it is a different execution shape.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import yaml
 
+from autotunex.core.constants import HF_MODEL_URI_PREFIX
 from autotunex.services.launch.protocols import LaunchContext
+from autotunex.services.storage.hf_hub import is_allowlisted
 
 REWARD_FUNCTION_PATH = "/tmp/reward_function.py"
 """In-container path the injected reward function is written to, and the value
@@ -25,6 +28,26 @@ REWARD_FUNCTION_PATH = "/tmp/reward_function.py"
 
 _DATASET_BINDING = "{{ bindings.dataset_files.binding.path }}"
 """Granite-build runtime binding that resolves to the mounted dataset directory."""
+
+_BASE_MODEL_BINDING = "{{ bindings.base_model.binding.path }}"
+"""Where gbserver mounts a base model bound as the ``base_model`` input."""
+
+
+def base_model_uri(ctx: LaunchContext, namespaces: Sequence[str]) -> str | None:
+    """The ``hf://`` input to bind ``ctx.model`` as, or ``None`` to pass it by name.
+
+    Only a HuggingFace model whose owner is in ``namespaces`` (the
+    ``hf_import_namespaces`` allowlist) is bound. The tuning workload has no HF
+    token, so a private model named on the command line 401s inside the job
+    (probe build 4cdbbe7e); as an input artifact gbserver pulls it with the
+    space's credentials instead. Every other model keeps the by-name path, so its
+    download behaviour is unchanged. Same owner rule as ``hf_hub.token_for``
+    (:func:`~autotunex.services.storage.hf_hub.is_allowlisted`), which also refuses
+    anything but ``owner/name``, since gbserver reads a third segment as a revision.
+    """
+    if ctx.model_source != "huggingface" or not is_allowlisted(ctx.model, namespaces):
+        return None
+    return f"{HF_MODEL_URI_PREFIX}{ctx.model}"
 
 
 class BlockStringDumper(yaml.SafeDumper):
@@ -82,7 +105,14 @@ def inject_reward_function(config_data: dict[str, Any], ctx: LaunchContext) -> d
 
 
 def start_command(
-    ctx: LaunchContext, *, config_file: str, callback_url: str | None, cuda_home: str
+    ctx: LaunchContext,
+    *,
+    config_file: str,
+    callback_url: str | None,
+    cuda_home: str,
+    model_at_root: bool = False,
+    keep_diagnostics: bool = False,
+    bind_base_model: bool = False,
 ) -> str:
     """Build the container's ``main.py`` invocation, a faithful port of build_start_cmd.
 
@@ -91,13 +121,22 @@ def start_command(
     ``--autotunex_server_url`` are conditional. ``cuda_home`` is the only value that
     differs between the custom_code (``/usr/local/cuda-13.0``) and LSF
     (``/opt/share/cuda-12.9``) builders — every other flag is identical.
+
+    ``model_at_root`` appends fm-tune's ``--model_at_root`` (the saved model is moved
+    to the root of ``$OUTPUT_PATH``, everything else deleted), and with it
+    ``keep_diagnostics`` appends ``--keep_diagnostics`` (everything else is moved into
+    ``diagnostics/`` instead). Only the custom_code builder, whose output is uploaded
+    as the model repo, sets it.
+
+    ``bind_base_model`` points ``--model_name_or_path`` at the ``base_model`` input's
+    mount instead of naming ``ctx.model`` (see :func:`base_model_uri`).
     """
     flags = [
         "python main.py",
         f"--config_file {config_file}",
         f"--train_file {_DATASET_BINDING}/{ctx.dataset_name}_train.{ctx.data_format}",
         f"--validation_file {_DATASET_BINDING}/{ctx.dataset_name}_validation.{ctx.data_format}",
-        f"--model_name_or_path {ctx.model}",
+        f"--model_name_or_path {_BASE_MODEL_BINDING if bind_base_model else ctx.model}",
     ]
     if ctx.tuning_type:
         flags.append(f"--tuning_algo {ctx.tuning_type}")
@@ -107,6 +146,10 @@ def start_command(
     flags.append("--output_dir $OUTPUT_PATH")
     flags.append(f"--output_model_name {ctx.experiment_name}")
     flags.append("--cleanup --save_history")
+    if model_at_root:
+        flags.append("--model_at_root")
+        if keep_diagnostics:
+            flags.append("--keep_diagnostics")
     if not ctx.autotune:
         flags.append("--no_autotune")
     flags.append(f"--job_id {ctx.job_id}")

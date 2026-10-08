@@ -153,7 +153,7 @@ _REAL_FAILED_BUILD = {
                 "output_artifacts": [
                     {
                         "uuid": "d4affa76-52a8-4f57-bd5b-db49470fed5f",
-                        "uri": "hf://huggingface.co/models/ibm-research/autotunex_a69082b7",
+                        "uri": "hf://huggingface.co/models/example-org/autotunex_a69082b7",
                         "status": "failed",
                     }
                 ],
@@ -176,7 +176,7 @@ def test_output_artifact_ref_reads_first_target_first_output_artifact() -> None:
 
     assert output_artifact_ref(detail) == {
         "artifact_id": "d4affa76-52a8-4f57-bd5b-db49470fed5f",
-        "uri": "hf://huggingface.co/models/ibm-research/autotunex_a69082b7",
+        "uri": "hf://huggingface.co/models/example-org/autotunex_a69082b7",
     }
 
 

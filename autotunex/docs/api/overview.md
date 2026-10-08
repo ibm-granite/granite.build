@@ -27,12 +27,17 @@ Three health endpoints are mounted at the **root**, outside the prefix:
 `GET /health`, `GET /health/live` (liveness alias), and `GET /health/ready`
 (DB-gated readiness; `503` when the database is unreachable).
 
+The `/auth/*` endpoints are also mounted at the root, outside the prefix — except
+`GET /api/v1/auth/me`, a prefixed alias of `/auth/me` for UIs that can only reach
+`/api/v1/*` (see [authentication.md](authentication.md)). The optional `/mcp`
+mount, when enabled, is at the root too.
+
 ```bash
 curl https://api.example.com/health
 ```
 
 ```json
-{ "status": "ok", "service": "AutoTuneX API", "version": "0.3.5" }
+{ "status": "ok", "service": "AutoTuneX API", "version": "0.4.0" }
 ```
 
 `GET /health` never touches the database — it is a liveness probe, not a
@@ -47,7 +52,7 @@ curl https://api.example.com/health/live
 ```
 
 ```json
-{ "status": "ok", "service": "AutoTuneX API", "version": "0.3.5" }
+{ "status": "ok", "service": "AutoTuneX API", "version": "0.4.0" }
 ```
 
 `GET /health/ready` is the readiness half, and the one health endpoint that
@@ -84,7 +89,8 @@ interactive docs are at `/docs`.
 
 `GET /api/v1/app-config` is the one *prefixed* endpoint that likewise needs no
 credential: it returns non-sensitive, backend-defined values the web UI reads at
-boot (the dataset upload size cap and the client-side gzip/preview thresholds),
+boot (the dataset upload size cap, the client-side gzip/preview thresholds, plus
+the HF-import availability flag and byte/row caps under `hf_import`),
 none of which are user data.
 
 ## Interactive documentation
@@ -115,9 +121,9 @@ and how to configure the accepted providers.
 
 ## Pagination
 
-The resource-collection endpoints — `GET /jobs`, `GET /configurations`,
-`GET /datasets`, and `GET /users` — return a page, not a bare array. Two query
-parameters control the window:
+The resource-collection endpoints — `GET /jobs`, `GET /jobs/tuned-models`,
+`GET /configurations`, `GET /datasets`, and `GET /users` — return a page, not a
+bare array. Two query parameters control the window:
 
 | Parameter | Type | Range        | Default | Meaning                          |
 | --------- | ---- | ------------ | ------- | -------------------------------- |
@@ -168,6 +174,9 @@ Three kinds of endpoint deliberately do not follow that shape:
 - **Some sub-resources return a bare array**, with no window at all:
   `GET /jobs/{id}/result-report` returns a list of output-asset records, and
   `GET /jobs/{id}/gb-logs` returns a list of log lines (oldest-first).
+  `GET /datasets/hf/search` and `GET /hf/models/search` return a bare array of
+  repo id strings, taking a `limit` (int, 1–100, default 20) but no `offset`, and
+  `GET /hf/models/card` returns plain text, not JSON.
 
 ## Ownership scoping
 
@@ -290,7 +299,7 @@ server-side, never returned.
 | ----- | --------------------- | ------------------------------------------------------------------------------- |
 | `200` | OK                    | A successful `GET`, or a `PATCH`/`PUT` that returns the updated resource.        |
 | `201` | Created               | A `POST` that creates a resource (a job, configuration, or dataset record).      |
-| `202` | Accepted              | A dataset upload — the file is processed off the request, so success is polled.  |
+| `202` | Accepted              | A dataset upload or HuggingFace import — the file is processed off the request, so success is polled. |
 | `204` | No Content            | A successful `DELETE`.                                                            |
 | `400` | Bad Request           | A malformed request, e.g. presenting two credentials at once.                    |
 | `401` | Unauthorized          | No credential, or a credential that failed to verify.                            |

@@ -15,8 +15,8 @@ ones each have their own virtualenv, while Caddy is a static binary lifted from
 its official image. The proxy owns the exposed `:8080` and dials gbserver over
 loopback, so gbserver sees a `127.0.0.1` peer for every caller — which is what
 its standalone auth requires (see [`Caddyfile`](Caddyfile)).
-granite.build is built from the fork branch
-`feat/autotunex-endpoint-migration` via its public **standalone** path (no
+granite.build is built from the `main` branch of
+`ibm-granite/granite.build` (override `GB_REPO`/`GB_REF`) via its public **standalone** path (no
 internal Artifactory). AutoTuneX submits builds to the co-located gbserver
 through the `llmb` CLI (`AUTOTUNEX_JOB_BACKEND=llmb`, `GB_ENVIRONMENT=standalone`).
 
@@ -73,11 +73,24 @@ docker run --rm \
 Then open `http://localhost:8000/autotune` (AutoTuneX) and
 `http://localhost:8080` (granite.build).
 
+### Optional: require login for the granite.build dashboard
+
+[`Caddyfile.session`](Caddyfile.session) is an opt-in alternative to the default
+`Caddyfile`. It sends anyone without an AutoTuneX login session to `/auth/login`
+before serving the dashboard on `:8080`, then returns them to the page they asked for.
+The image does not use it unless you mount it over the baked-in config
+(`-v ./docker/aio/Caddyfile.session:/etc/caddy/Caddyfile:ro`). It also needs
+`AUTOTUNEX_AUTH_PROVIDERS=["session"]` with an OIDC provider configured,
+`AUTOTUNEX_PUBLIC_BASE_URL=http://localhost:8080`, and both
+`AUTOTUNEX_GB_SERVER_URL` and `GBSERVER_HOST` set to `http://127.0.0.1:8090`;
+the file's header explains why.
+
 ## Optional: the autotune training core (`local` backend)
 
-By default AutoTuneX installs the `mysql` extra only and reaches gbserver through
-the `llmb` CLI — a lean image. To also install the autotune training core, used by
-the in-process `local` job backend, enable the opt-in build arg. The core is
+By default AutoTuneX installs the database extras only (`mysql` + `postgres`) and
+reaches gbserver through the `llmb` CLI — a lean image. To also install the
+autotune training core, used by the in-process `local` job backend, enable the
+opt-in build arg. The core is
 vendored in-tree at `src/fm-tune` (already COPYed into the build context) and is
 installed from `src/fm-tune[core,mlx]` — no credentials and no private repo fetch
 are needed.

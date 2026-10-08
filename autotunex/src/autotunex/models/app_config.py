@@ -16,12 +16,21 @@ class DatasetUploadConfig(BaseModel):
     client_parquet_preview_max_bytes: int
 
 
+class HfImportConfig(BaseModel):
+    """HuggingFace-import knobs and availability the frontend renders against."""
+
+    available: bool
+    max_bytes: int
+    max_rows: int
+
+
 class AppConfigResponse(BaseModel):
     """Extensible, read-only app configuration surface for the frontend.
 
-    Grouped by domain (``dataset_upload`` today) so a future domain's knobs
+    Grouped by domain (``dataset_upload``, ``hf_import`` today) so a future domain's knobs
     can be added as a new group without breaking existing readers — the
     frontend reads each group by key, not a flat, ever-growing field list.
     """
 
     dataset_upload: DatasetUploadConfig
+    hf_import: HfImportConfig

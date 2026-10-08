@@ -33,6 +33,7 @@ from autotunex.api.routers import (
     dataset_intelligence,
     datasets,
     health,
+    hf_models,
     jobs,
     reward_functions,
     users,
@@ -41,10 +42,14 @@ from autotunex.core.auth.registry import build_authenticator, build_id_token_ver
 from autotunex.core.config import Settings, get_settings
 from autotunex.core.logging import configure_logging, get_logger
 from autotunex.db.session import create_schema, get_engine, get_session_factory
+from autotunex.services import hf_import_service
 from autotunex.services.reconcile.loop import ReconcileLoop
 from autotunex.services.reconcile.registry import get_build_status_reader
 
 logger = get_logger(__name__)
+
+_HF_IMPORT_DRAIN_SECONDS = 5.0
+"""Shutdown grace period for an in-flight HuggingFace import; see :func:`lifespan`."""
 
 DESCRIPTION = """
 Automated fine-tuning and hyperparameter optimization for large language models.
@@ -105,6 +110,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # login flow open rather than failing fast, so the number is stated here
     # instead of inherited invisibly from the library default.
     app.state.http_client = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
+    # A second, distinctly-timed client for the HuggingFace dataset viewer
+    # (datasets-server.huggingface.co), following the http_client convention
+    # above: its own explicit timeout, stated here rather than inherited from
+    # a library default. Preview is the wizard's most-repeated of the four HF
+    # import routes, so this stays pooled (opened once, reused, closed once)
+    # rather than opened per request — the same reasoning that keeps
+    # http_client itself shared. Unlike reconcile_http_client below, it is not
+    # gated to a job backend: HF import's own availability gate
+    # (Settings.hf_import_available) is a request-time 503, not a startup
+    # condition, so this client is unconditional, matching get_hf_http_client's
+    # unconditional read of app.state.http_client.
+    app.state.hf_viewer_http_client = httpx.AsyncClient(timeout=settings.hf_viewer_timeout_seconds)
     # The reconcile loop advances jobs.status from the cluster (off the read
     # path). It exists only for the llmb backend; the none backend has no
     # launcher and nothing to reconcile.
@@ -132,7 +149,43 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await reconcile_task
     if app.state.reconcile_http_client is not None:
         await app.state.reconcile_http_client.aclose()
+    # A HuggingFace import still streaming (via app.state.http_client, closed
+    # right below) would otherwise raise mid-fetch into a client that no
+    # longer works, then hit set_status on an engine already disposed a line
+    # later. So give one a brief grace period to reach its own `except
+    # Exception` cleanup -- asyncio.CancelledError is a BaseException, which
+    # that clause would not catch -- and only then cancel what is left.
+    #
+    # The cancel is not optional: asyncio.wait does NOT cancel on timeout, so
+    # without it a timed-out wait falls through to aclose()/dispose() with live
+    # tasks regardless, which is the very state this block exists to prevent.
+    # And the bound is deliberately short rather than
+    # dataset_processing_timeout_seconds (an hour by default): a container
+    # orchestrator SIGKILLs at its own grace period, typically 30s, so an
+    # hour-long wait can never complete the fetch it was meant to protect and
+    # would only turn every ordinary shutdown into a hang. A cancelled import
+    # leaves its dataset in `importing` -- the same state a SIGKILL leaves --
+    # so it is logged rather than passed over in silence. That row cannot be
+    # repaired in place: `POST /datasets/{id}/upload` refuses a non-terminal
+    # status, and a fresh import of the same repo collides on
+    # UNIQUE (user_id, name), so the only way out is to delete it and import
+    # again. The same is true of an `uploading` row a shutdown interrupts.
+    if hf_import_service._background_tasks:
+        _, unfinished = await asyncio.wait(
+            set(hf_import_service._background_tasks), timeout=_HF_IMPORT_DRAIN_SECONDS
+        )
+        if unfinished:
+            logger.warning(
+                "Cancelling %d in-flight HuggingFace import(s) at shutdown; "
+                "their datasets stay in 'importing' and must be deleted and "
+                "imported again.",
+                len(unfinished),
+            )
+            for task in unfinished:
+                task.cancel()
+            await asyncio.gather(*unfinished, return_exceptions=True)
     await app.state.http_client.aclose()
+    await app.state.hf_viewer_http_client.aclose()
     await get_engine().dispose()
 
 
@@ -229,6 +282,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # protect themselves through their own `PrincipalDep` parameters instead of
     # a router-level attachment.
     app.include_router(auth.router)
+    app.include_router(auth.api_router, prefix=settings.api_prefix)
     app.include_router(
         jobs.router, prefix=settings.api_prefix, dependencies=[Depends(get_principal)]
     )
@@ -237,6 +291,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.include_router(
         datasets.router, prefix=settings.api_prefix, dependencies=[Depends(get_principal)]
+    )
+    app.include_router(
+        hf_models.router, prefix=settings.api_prefix, dependencies=[Depends(get_principal)]
     )
     app.include_router(
         dataset_intelligence.router,

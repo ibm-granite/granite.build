@@ -309,6 +309,36 @@ class TrialRepository(Protocol):
         ...
 
 
+class TunedModelRepository(Protocol):
+    """Reads completed jobs whose output can be the base model of a new job.
+
+    Deliberately separate from :class:`JobRepository`: that Protocol has several
+    hand-written test fakes, and this read has one consumer
+    (:class:`~autotunex.services.tuned_models.TunedModelService`). The SQLAlchemy
+    job repository implements both.
+    """
+
+    async def tuned_models(
+        self,
+        *,
+        namespaces: Sequence[str],
+        limit: int,
+        offset: int,
+        owner_id: UUID | None = None,
+        q: str | None = None,
+    ) -> tuple[Sequence[tuple[JobTable, str | None, str]], int]:
+        """Return one page of ``(job, finished_at, tuning_artifact_uri)`` rows plus the total.
+
+        A row is eligible when the job is ``completed``, its TUNING task's
+        artifact is ``hf://huggingface.co/models/<ns>/<name>`` with ``<ns>`` in
+        ``namespaces``, and it produced full weights (online RL, or a
+        ``tuning_type`` of ``sft``/``none``). An empty ``namespaces`` returns
+        nothing. Newest first, like the job list; ``total`` always agrees with
+        the filter the page used.
+        """
+        ...
+
+
 class ResultRepository(Protocol):
     """Write operations for a trial's one-to-one result row.
 
@@ -492,9 +522,10 @@ class DatasetRepository(Protocol):
     domain exceptions: ``UNIQUE (user_id, name)`` →
     :class:`~autotunex.core.exceptions.DatasetNameConflictError`, and
     ``jobs.dataset_id``'s ``ON DELETE RESTRICT`` →
-    :class:`~autotunex.core.exceptions.DatasetInUseError`. ``set_status`` and
-    ``set_upload_result`` are the runner's two write-backs; they are separate
-    from ``update`` because they touch server-owned columns a client never sends.
+    :class:`~autotunex.core.exceptions.DatasetInUseError`. ``set_status``,
+    ``set_upload_result`` and ``set_hf_provenance`` are dedicated write-backs;
+    they are separate from ``update`` because they touch server-owned columns a
+    client never sends.
     """
 
     async def get(
@@ -581,6 +612,24 @@ class DatasetRepository(Protocol):
         """
         ...
 
+    async def set_hf_provenance(
+        self,
+        dataset_id: UUID,
+        *,
+        repo_id: str,
+        revision: str,
+        config: str,
+        split: str,
+        provenance: dict[str, Any],
+    ) -> None:
+        """Record a HuggingFace import's source columns and provenance blob.
+
+        Also refreshes the ``Computed`` ``train_file``/``validation_file``
+        columns on the in-memory row after the write, for the same reason
+        :meth:`set_status` does — preserve that in any implementation.
+        """
+        ...
+
     async def set_upload_result(
         self,
         dataset_id: UUID,
@@ -596,6 +645,7 @@ class DatasetRepository(Protocol):
     ) -> None:
         """Record a completed upload's record counts, sizes and artifact refs.
 
+        Clear HF provenance unless completing the initial ``importing`` handoff.
         Also refreshes the ``Computed`` ``train_file``/``validation_file``
         columns on the in-memory row after the write, for the same reason
         :meth:`set_status` does — preserve that in any implementation.

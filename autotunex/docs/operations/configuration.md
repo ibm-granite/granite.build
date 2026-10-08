@@ -16,10 +16,10 @@ A few rules hold everywhere:
   override values in `.env`. Copy `.env.example` to `.env` to start — its values are the
   defaults documented here, and they work as-is for local development.
 - **List and map settings are JSON, not comma-separated.** Fields such as
-  `AUTOTUNEX_AUTH_PROVIDERS`, `AUTOTUNEX_API_KEYS`, `AUTOTUNEX_OIDC_ALGORITHMS`, and
-  `AUTOTUNEX_CORS_ALLOW_ORIGINS` are parsed as JSON. Write `["disabled"]`, not
-  `disabled` — a bare value crashes at startup with a parse error. Keep the brackets and
-  quotes.
+  `AUTOTUNEX_AUTH_PROVIDERS`, `AUTOTUNEX_API_KEYS`, `AUTOTUNEX_OIDC_ALGORITHMS`,
+  `AUTOTUNEX_CORS_ALLOW_ORIGINS`, and `AUTOTUNEX_HF_IMPORT_NAMESPACES` are parsed as JSON.
+  Write `["disabled"]`, not `disabled` — a bare value crashes at startup with a parse
+  error. Keep the brackets and quotes.
 - **Secrets belong in the environment or a secret store, never in a committed file.**
   Tokens and secrets — the value of the variable named by `AUTOTUNEX_GB_TOKEN_ENV`
   (`GB_TOKEN` by default), the one named by `AUTOTUNEX_HF_TOKEN_ENV` (`HF_TOKEN`), your
@@ -134,6 +134,10 @@ migrations.
 | `AUTOTUNEX_HF_VIEWER_BASE_URL` | Base URL of the HuggingFace dataset-viewer service; the client appends `/splits` (subset/readiness discovery) then `/rows`. Override to point at a mirror. | `https://datasets-server.huggingface.co` |
 | `AUTOTUNEX_HF_VIEWER_TIMEOUT_SECONDS` | Per-call HTTP timeout for one viewer fetch. Must be > 0. | `2.5` |
 | `AUTOTUNEX_HF_HUB_BASE_URL` | HuggingFace Hub API base URL used to list/download a job's output-model files (result-report endpoint). | `https://huggingface.co` |
+| `AUTOTUNEX_HF_IMPORT_ENABLED` | Enable importing a HuggingFace dataset as a tuning dataset (`POST /api/v1/datasets/hf/import`). Separate from `AUTOTUNEX_HF_PREVIEW_ENABLED` on purpose: import reaches out to arbitrary third-party repos. Necessary but not sufficient — import is available only when this is on **and** dataset storage resolves to a local `file://` locator (the same-host bash standalone build) or to `huggingface` outside standalone; every other shape (including standalone + LSF) is refused with a 503. The effective gate is surfaced as `hf_import.available` on `GET /api/v1/app-config`. | `true` |
+| `AUTOTUNEX_HF_IMPORT_NAMESPACES` | JSON list of HuggingFace namespaces whose private repos may be fetched with the server's HF token; empty means the token is never sent (public repos only). It also decides the `/hf/models` search/card scope; which completed tuning outputs `GET /api/v1/jobs/tuned-models` lists; and private-model binding: a `huggingface`-source model in an allowlisted namespace is bound as an `hf://` `base_model` input artifact (pulled by gbserver with the space's credentials) instead of being passed by name — `custom_code` and LSF builds only. Because of that binding it changes the launch YAML even on a deployment without dataset import. | `[]` |
+| `AUTOTUNEX_HF_IMPORT_MAX_BYTES` | One download budget for the whole import (train and validation splits combined), enforced as the bytes arrive; a HEAD of each selected split's first shard refuses an impossible selection up front. Must be ≥ 1. | `5368709120` (5 GiB) |
+| `AUTOTUNEX_HF_IMPORT_MAX_ROWS` | Truncate an imported dataset to this many rows per selected split (bounded ingest, not a refusal; the truncation is recorded). Must be ≥ 1. | `50000` |
 
 ## LLM intelligence (optional)
 
@@ -205,6 +209,7 @@ mode, and the environment variable named by `AUTOTUNEX_GB_TOKEN_ENV` must be pre
 | `AUTOTUNEX_JOB_TRAINER_REF` | Branch, tag, or commit of the trainer repo to check out. | `main` |
 | `AUTOTUNEX_JOB_OUTPUT_URI_ROOT` | Root URI for run artifacts; each run's output is written under a subpath. **Required** in this mode. | *(unset)* |
 | `AUTOTUNEX_JOB_CALLBACK_URL` | The api-bridge / callback base URL the build reports to. The `custom_code` and LSF start commands emit it as `--autotunex_server_url` **only when it is set**; the local-`bash` variant always emits it, with a default (see that table below). | *(unset)* |
+| `AUTOTUNEX_KEEP_DIAGNOSTICS` | The `custom_code` start command always passes fm-tune `--model_at_root`, so the uploaded output (the HF model repo) holds only the model files, at its root. Set to `true` to also pass `--keep_diagnostics`, which keeps fm-tune's other artifacts (logs, results, training leftovers) under `diagnostics/` in that output instead of deleting them. Not used by the LSF or local-`bash` variants. | `false` |
 | `AUTOTUNEX_GB_SERVER_URL` | Base URL of the build server the reconcile loop polls for job status, e.g. `https://gb.example.com`. **Required** whenever `job_backend=llmb` (all three variants) — without it, accepted jobs sit `pending` forever. | *(unset)* |
 | `AUTOTUNEX_GB_TOKEN_ENV` | **Name** of the environment variable holding the build-server auth token. The token **value** is read at the subprocess/request boundary and never loaded into settings. Set the named variable (`GB_TOKEN` by default) in the environment. | `GB_TOKEN` |
 | `AUTOTUNEX_JOB_SPEC_DIR` | Directory the generated `build.yaml` is written to, one per job at `<dir>/<job_id>/build.yaml`. Relative paths resolve against the working directory. The spec is kept after submission (including on failure) so it can be inspected or replayed. | `tmp` |

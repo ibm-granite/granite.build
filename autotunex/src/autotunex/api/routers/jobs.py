@@ -26,11 +26,19 @@ from autotunex.api.deps import (
     OnDemandReconcilerDep,
     RewardToolsServiceDep,
     TrialServiceDep,
+    TunedModelServiceDep,
 )
 from autotunex.models.asset import AssetSummary
 from autotunex.models.common import DataScope, Page, ProblemDetail
 from autotunex.models.estimation import EstimateUsagesRequest, EstimateUsagesResponse
-from autotunex.models.job import JobCreate, JobDetail, JobRead, JobShape, JobSummary
+from autotunex.models.job import (
+    JobCreate,
+    JobDetail,
+    JobRead,
+    JobShape,
+    JobSummary,
+    TunedModelSummary,
+)
 from autotunex.models.log import LogPage
 from autotunex.models.metric import MetricPage
 from autotunex.models.reward import GenerateTestSolutionsRequest, GenerateTestSolutionsResponse
@@ -64,16 +72,23 @@ def _content_disposition(filename: str) -> str:
     "/estimate-usages",
     summary="Estimate resource usage for a tuning run",
     responses={
+        HTTPStatus.FORBIDDEN: _PROBLEM_RESPONSE,
         HTTPStatus.NOT_FOUND: _PROBLEM_RESPONSE,
         HTTPStatus.UNPROCESSABLE_ENTITY: _PROBLEM_RESPONSE,
         **_AUTH_RESPONSES,
     },
 )
 async def estimate_usages(
-    body: EstimateUsagesRequest, service: EstimationServiceDep
+    body: EstimateUsagesRequest,
+    service: EstimationServiceDep,
+    scope: DataScope = Query(default=DataScope.OWN),
 ) -> EstimateUsagesResponse:
-    """Estimate GPU/CPU memory and GPU count for a saved or inline configuration."""
-    return await service.estimate(body)
+    """Estimate GPU/CPU memory and GPU count for a saved or inline configuration.
+
+    A tuned model (``GET /jobs/tuned-models``) is sized by its base model;
+    pass the same ``scope`` it was listed under to resolve another owner's.
+    """
+    return await service.estimate(body, scope=scope)
 
 
 @router.post(
@@ -90,6 +105,27 @@ async def generate_test_solutions(
 ) -> GenerateTestSolutionsResponse:
     """LLM-generate one sample solution per prompt to seed reward test cases."""
     return await service.generate_test_solutions(body)
+
+
+@router.get(
+    "/tuned-models",
+    summary="Search tuned models usable as a base model",
+    responses={HTTPStatus.FORBIDDEN: _PROBLEM_RESPONSE, **_AUTH_RESPONSES},
+)
+async def list_tuned_models(
+    service: TunedModelServiceDep,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    scope: DataScope = Query(default=DataScope.OWN),
+    q: str | None = Query(default=None, description="Case-insensitive substring filter"),
+) -> Page[TunedModelSummary]:
+    """Return completed, full-weight, HF-hosted outputs a new job can tune further.
+
+    Declared above ``GET /{job_id}``: FastAPI matches in declaration order, and
+    below it ``tuned-models`` would be parsed as a job id and fail with 422.
+    Submit an item's ``repo_id`` as ``model`` with its ``model_source``.
+    """
+    return await service.search(limit=limit, offset=offset, scope=scope, q=q)
 
 
 @router.get(

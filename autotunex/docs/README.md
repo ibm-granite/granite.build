@@ -38,13 +38,16 @@ quick front door; the pages here go deeper.
 - **[Authentication testing](authentication-testing.md)** — a runbook for exercising each
   auth provider against a running server.
 - **[Jobs API](api/jobs.md)** — submit, list, read, cancel, delete and reconcile jobs, page
-  their trials, read their logs and per-step training metrics, and download result reports.
+  their trials, read their logs and per-step training metrics, download result reports,
+  estimate resource usage, search tuned models, and generate online-RL reward test solutions.
 - **[Reward functions API](api/reward-functions.md)** — validate a user-supplied
   online-RL reward function: static analysis plus an optional sandboxed test run.
 - **[Configurations API](api/configurations.md)** — full CRUD for reusable tuning
   configurations.
-- **[Datasets API](api/datasets.md)** — dataset CRUD, file upload, and the
-  LLM-backed dataset-intelligence helpers.
+- **[Datasets API](api/datasets.md)** — dataset CRUD, file upload, HuggingFace import,
+  and the LLM-backed dataset-intelligence helpers.
+- **[HuggingFace models API](api/hf-models.md)** — server-side model search and model
+  cards for picking a base model, including private repos in allowlisted namespaces.
 - **[Users API](api/users.md)** — admin-only user management and self-service metadata.
 - **[Chat API](api/chat.md)** — the conversational chat endpoints.
 - **[MCP server](api/mcp.md)** — the Model Context Protocol server reference.

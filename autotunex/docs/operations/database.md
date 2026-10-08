@@ -125,7 +125,8 @@ The revisions form a single linear chain from the baseline to the current head:
 | `c628b830e8a3` | Adds the `jobs` reward-function columns. |
 | `0a2caef2a185` | Widens `trials.id` and `results.trial_id` to `VARCHAR(16)`. |
 | `f09bd54b61b7` | Adds the `training_metrics` table, keyset-indexed for the read path. |
-| `a3c71d94e5b2` | Adds nullable `users.last_login_at`, backfilled from `updated_at` where the row was written after creation (**modifies data**; **current head**). |
+| `a3c71d94e5b2` | Adds nullable `users.last_login_at`, backfilled from `updated_at` where the row was written after creation (**modifies data**). |
+| `dd4511a46fc5` | Adds nullable `datasets.hf_repo_id`, `hf_revision`, `hf_config`, `hf_split`, and `hf_provenance` (plain `add_column`, schema-only; **current head**). |
 
 ## Fresh or empty database (local dev, tests, CI)
 
@@ -169,14 +170,15 @@ Two things to know about these steps:
   does its seed `users` row (id `00000000-0000-0000-0000-000000000000`, `role='system'`) —
   an adopted database keeps only the users it already has.
 - **`alembic upgrade head` then applies the later revisions** — beginning with
-  `78f6bb7de0df` and continuing through the current head (`a3c71d94e5b2`). The first of
+  `78f6bb7de0df` and continuing through the current head (`dd4511a46fc5`). The first of
   these, `78f6bb7de0df`, **modifies data**: it copies every existing `jobs.precision`
   value into `config_snapshot['precision']` (a JSON field) and then drops the `precision`
   column. Nothing is lost — its `downgrade()` re-adds the column (as nullable) and restores
-  the values out of the snapshot, so the change is reversible in both directions. The head
-  revision, `a3c71d94e5b2`, backfills too — it copies `users.last_login_at` out of
-  `updated_at` where the row was written after creation — but only forwards: its
-  `downgrade()` drops the column and the recorded login times with it.
+  the values out of the snapshot, so the change is reversible in both directions. The last
+  data-modifying revision, `a3c71d94e5b2`, backfills too — it copies
+  `users.last_login_at` out of `updated_at` where the row was written after creation —
+  but only forwards: its `downgrade()` drops the column and the recorded login times
+  with it.
 
 > **Caveat — trial-id widths.** This stamp-then-upgrade path holds only for a deployment
 > whose trial ids match the baseline's `VARCHAR(10)`. `0a2caef2a185` widens `trials.id` and

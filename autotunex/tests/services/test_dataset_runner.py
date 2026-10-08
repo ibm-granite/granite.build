@@ -151,6 +151,58 @@ async def test_process_marks_ready_and_records_counts(engine: AsyncEngine, tmp_p
     assert refreshed.train_records == 3
 
 
+@pytest.mark.parametrize("initial_import", [False, True])
+async def test_successful_replacement_clears_provenance_but_initial_import_keeps_it(
+    engine: AsyncEngine, tmp_path: Path, initial_import: bool
+) -> None:
+    factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    dataset_id = await _seed_dataset(factory)
+    provenance = {"column_mapping": {"input": "instruction"}, "train_retained_rows": 50_000}
+    async with factory() as session:
+        repository = SqlAlchemyDatasetRepository(session)
+        await repository.set_hf_provenance(
+            dataset_id,
+            repo_id="o/r",
+            revision="a" * 40,
+            config="default",
+            split="train",
+            provenance=provenance,
+        )
+        await repository.set_status(
+            dataset_id, DatasetStatus.IMPORTING if initial_import else DatasetStatus.UPLOADING
+        )
+    staging = tmp_path / ".staging"
+    runner = InProcessDatasetUploadRunner(
+        session_factory=factory, storage=FakeStorageBackend(), staging_dir=staging
+    )
+
+    await runner.process(
+        dataset_id,
+        name="ds",
+        data_format="jsonl",
+        train=_stage_jsonl(staging, dataset_id, rows=1),
+        validation=None,
+        validation_percentage=None,
+        column_mapping=None,
+    )
+
+    async with factory() as session:
+        dataset = await SqlAlchemyDatasetRepository(session).get(dataset_id)
+        assert dataset is not None
+        assert dataset.status == DatasetStatus.READY
+        assert dataset.train_records == 1
+        expected = (
+            ("o/r", "a" * 40, "default", "train", provenance) if initial_import else (None,) * 5
+        )
+        assert (
+            dataset.hf_repo_id,
+            dataset.hf_revision,
+            dataset.hf_config,
+            dataset.hf_split,
+            dataset.hf_provenance,
+        ) == expected
+
+
 async def test_process_normalizes_a_json_array_before_counting_and_remapping(
     engine: AsyncEngine, tmp_path: Path
 ) -> None:

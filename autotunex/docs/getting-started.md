@@ -72,8 +72,11 @@ curl -s http://127.0.0.1:8000/health
 ```
 
 ```json
-{ "status": "ok", "service": "AutoTuneX API", "version": "0.3.5" }
+{ "status": "ok", "service": "AutoTuneX API", "version": "0.4.0" }
 ```
+
+`/health/live` is an alias of it; `/health/ready` checks the database and
+returns `503` when it is unreachable.
 
 ## Default mode: standalone, no authentication
 
@@ -93,7 +96,9 @@ which logs a loud startup warning.
 
 The versioned API is mounted under **`/api/v1`** by default. That prefix is
 configurable through the `AUTOTUNEX_API_PREFIX` setting; this guide assumes the
-default. Health (`/health`) and the auth routes (`/auth/*`) sit outside it.
+default. Health (`/health`) and the auth routes (`/auth/*`) sit outside it
+(except `GET /api/v1/auth/me`, a prefixed alias of `/auth/me` for UIs that can
+only reach `/api/v1/*`).
 
 ## A guided walkthrough
 
@@ -193,6 +198,11 @@ yet.
   "validation_file_size": null,
   "artifact_id": null,
   "artifact_url": null,
+  "hf_repo_id": null,
+  "hf_revision": null,
+  "hf_config": null,
+  "hf_split": null,
+  "hf_provenance": null,
   "associated_jobs": [],
   "created_at": "2026-08-11T10:01:00Z",
   "updated_at": "2026-08-11T10:01:00Z",
@@ -237,6 +247,11 @@ processed off-request.
   "validation_file_size": null,
   "artifact_id": null,
   "artifact_url": null,
+  "hf_repo_id": null,
+  "hf_revision": null,
+  "hf_config": null,
+  "hf_split": null,
+  "hf_provenance": null,
   "associated_jobs": [],
   "created_at": "2026-08-11T10:01:00Z",
   "updated_at": "2026-08-11T10:02:00Z",

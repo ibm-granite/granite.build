@@ -89,7 +89,7 @@ _ARTIFACT_RAW: dict[str, Any] = {
                 "output_artifacts": [
                     {
                         "uuid": "d4affa76-52a8-4f57-bd5b-db49470fed5f",
-                        "uri": "hf://huggingface.co/models/ibm-research/autotunex_a69082b7",
+                        "uri": "hf://huggingface.co/models/example-org/autotunex_a69082b7",
                     }
                 ],
                 "steps": [],
@@ -195,7 +195,7 @@ async def test_reconcile_populates_artifact_from_output_artifacts(engine: AsyncE
     assert read.status == RunStatus.ERROR
     task = await _task_of(factory, job_id)
     assert str(task.artifact_id) == "d4affa76-52a8-4f57-bd5b-db49470fed5f"
-    assert task.artifact_uri == "hf://huggingface.co/models/ibm-research/autotunex_a69082b7"
+    assert task.artifact_uri == "hf://huggingface.co/models/example-org/autotunex_a69082b7"
 
 
 async def test_reconcile_forces_status_bypassing_the_state_machine(engine: AsyncEngine) -> None:

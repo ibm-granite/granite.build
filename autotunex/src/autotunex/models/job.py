@@ -68,6 +68,16 @@ Online-RL tuners score generated rollouts with a reward function; offline-RL
 (``dpo``/``kto``) and SFT do not. Compared case-insensitively at submit time.
 """
 
+FULL_WEIGHT_TUNING_TYPES: frozenset[str] = frozenset({"sft", "none"})
+"""``tuning_type`` values whose output is a full model rather than a PEFT adapter.
+
+fm-tune maps ``sft``/``none`` to no PEFT config, so the trainer saves full
+weights; every other tuning algorithm saves adapter files only, and fm-tune has
+no merge step. Online RL (:data:`ONLINE_RL_TUNER_TYPES`) is full weights
+regardless of ``tuning_type``, because fm-tune forces ``tuning_algo="none"``
+for it. Compared case-insensitively.
+"""
+
 _NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
@@ -158,6 +168,31 @@ class JobSummary(BaseModel):
             "last-modified time, not a completion time."
         ),
     )
+
+
+class TunedModelSummary(BaseModel):
+    """A completed job's full-weight output that can seed a new tuning job.
+
+    Returned by ``GET /jobs/tuned-models``. ``repo_id`` is exactly what a client
+    submits as ``JobCreate.model``, with ``model_source`` — always
+    ``huggingface``, since only HF-hosted outputs are listed — so the client
+    never decides the source itself. See
+    ``docs/superpowers/specs/2026-09-26-tuned-model-search-design.md``.
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    job_id: UUID
+    repo_id: str = Field(description="HF model repo id (owner/name); submit it as `model`.")
+    model_source: Literal["huggingface"] = "huggingface"
+    experiment_name: str
+    base_model: str = Field(description="The model this job tuned, from jobs.model.")
+    tuning_type: str | None = None
+    rl_tuner_type: str | None = None
+    finished_at: str | None = Field(
+        default=None, description="Latest gb_tasks.updated_at, as on JobSummary."
+    )
+    user: str = Field(description="Owner's email, from users.email.")
 
 
 class JobDetail(JobSummary):

@@ -38,7 +38,7 @@ def _both_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
 # preview-only fallback.
 
 HF_HOSTED_ID = UUID("10d94a61-0000-4000-8000-000000000000")
-HF_HOSTED_URL = f"hf://huggingface.co/datasets/ibm-research/eli5-test_{str(HF_HOSTED_ID)[:8]}"
+HF_HOSTED_URL = f"hf://huggingface.co/datasets/example-org/eli5-test_{str(HF_HOSTED_ID)[:8]}"
 
 
 def _local_primary(backend: object, *, emit_file_uri: bool) -> None:
@@ -221,3 +221,46 @@ async def test_auto_standalone_previews_an_hf_hosted_dataset_from_the_viewer(
     )
 
     assert preview.train == [{"text": "hello"}]
+
+
+@pytest.mark.parametrize(
+    ("backend", "gb_environment", "lsf_cluster", "llmb"),
+    [
+        ("local", "standalone", None, True),
+        ("local", "prod", None, True),
+        ("huggingface", "prod", None, True),
+        ("huggingface", "standalone", "lsf-a", True),
+        ("auto", "standalone", None, True),
+        ("auto", "standalone", "lsf-a", True),
+        ("auto", "prod", None, True),
+        ("auto", "prod", None, False),
+    ],
+)
+def test_backend_matches_resolved_dataset_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    gb_environment: str,
+    lsf_cluster: str | None,
+    llmb: bool,
+) -> None:
+    """The backend built is the one Settings.resolved_dataset_storage names.
+
+    hf_import_available gates on that property, so a drift here would open import
+    where the launch cannot read the result.
+    """
+    _both_tokens(monkeypatch)
+    monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}" if llmb else None)
+    settings = make_settings(
+        dataset_storage_backend=backend,  # type: ignore[arg-type]
+        gb_environment=gb_environment,
+        lsf_cluster=lsf_cluster,
+    )
+
+    built = get_storage_backend(settings)
+
+    expected = settings.resolved_dataset_storage
+    assert isinstance(built, PreviewFallbackStorageBackend)
+    if expected == "huggingface":
+        assert isinstance(built._primary, HuggingFaceStorageBackend)
+    else:
+        _local_primary(built, emit_file_uri=expected == "local_file_uri")

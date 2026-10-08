@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import cast
 
 import httpx
@@ -14,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from autotunex.core.auth.disabled import DisabledAuthenticator
 from autotunex.core.auth.oidc import OidcBearerVerifier
 from autotunex.main import create_app
+from autotunex.services import hf_import_service
 from autotunex.services.reconcile.loop import ReconcileLoop
 from tests.conftest import make_settings
 
@@ -247,3 +250,73 @@ async def test_lifespan_does_not_start_the_loop_for_the_none_backend(
 
     async with app.router.lifespan_context(app):
         assert app.state.reconcile_loop is None
+
+
+async def test_lifespan_drains_a_pending_hf_import_before_closing_its_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pending HuggingFace import must finish before ``lifespan`` closes its client.
+
+    ``lifespan`` would otherwise close ``app.state.http_client`` out from under it.
+    Mirrors ``test_the_app_opens_and_closes_an_http_client_across_its_lifespan``'s own
+    double-monkeypatch of ``get_settings``/``get_engine``, but roots a task on
+    ``hf_import_service._background_tasks`` (the same set ``import_dataset`` adds to)
+    before shutdown starts. The task records whether ``http_client`` was still open
+    when it woke up; a ``lifespan`` that closed the client immediately after ``yield``
+    -- the pre-fix behavior -- would race this sleep and the client would already be
+    closed by the time the task checks.
+    """
+    monkeypatch.setattr("autotunex.main.get_settings", lambda: make_settings())
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    monkeypatch.setattr("autotunex.main.get_engine", lambda: engine)
+    app = create_app(make_settings())
+    observed_client_open: bool | None = None
+
+    async def _pending_import() -> None:
+        nonlocal observed_client_open
+        await asyncio.sleep(0.05)
+        observed_client_open = not app.state.http_client.is_closed
+
+    async with app.router.lifespan_context(app):
+        task = asyncio.create_task(_pending_import())
+        hf_import_service._background_tasks.add(task)
+        task.add_done_callback(hf_import_service._background_tasks.discard)
+
+    assert task.done()
+    assert observed_client_open is True
+    assert hf_import_service._background_tasks == set()
+
+
+async def test_lifespan_cancels_a_stuck_hf_import_rather_than_hanging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown gives an import a brief grace period, then cancels what is left.
+
+    The drain used to be bounded by ``dataset_processing_timeout_seconds`` (an hour
+    by default), so a SIGTERM arriving mid-fetch held lifespan open far past any
+    orchestrator's grace period -- which SIGKILLs at ~30s, so the wait could never
+    finish the fetch it was meant to protect. And ``asyncio.wait`` does not cancel
+    on timeout, so the old code fell through to ``aclose()``/``dispose()`` with the
+    task still live regardless: exactly the state the drain exists to prevent.
+    """
+    monkeypatch.setattr("autotunex.main.get_settings", lambda: make_settings())
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    monkeypatch.setattr("autotunex.main.get_engine", lambda: engine)
+    monkeypatch.setattr("autotunex.main._HF_IMPORT_DRAIN_SECONDS", 0.01)
+    app = create_app(make_settings())
+
+    async def _stuck_import() -> None:
+        await asyncio.sleep(3600)
+
+    started = time.monotonic()
+    async with app.router.lifespan_context(app):
+        task = asyncio.create_task(_stuck_import())
+        hf_import_service._background_tasks.add(task)
+        task.add_done_callback(hf_import_service._background_tasks.discard)
+    elapsed = time.monotonic() - started
+
+    assert task.cancelled()
+    # Everything else in this lifespan is in-memory, so the only thing that could
+    # spend real time here is the drain itself.
+    assert elapsed < 2.0
+    assert hf_import_service._background_tasks == set()

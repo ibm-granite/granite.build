@@ -39,6 +39,35 @@ featureFlags.subscribe((flags) => {
 		localStorage.setItem(FEATURE_FLAGS_KEY, JSON.stringify(flags));
 	}
 });
+
+// ---- Home view (persisted to localStorage) ----
+// Which of the homepage's tabbed views is showing; `null` is the Start (landing)
+// view. Shared rather than local to `+page.svelte` because the header's product
+// name and its "About" link have to send a caller home while they may already be
+// on `/`: a same-URL `goto` never re-mounts the page, so clearing only the
+// persisted copy left the live view untouched until the next reload.
+const HOME_VIEW_KEY = 'view';
+
+export type HomeView = 'tunings' | 'settings' | 'user';
+
+export const HOME_VIEWS: HomeView[] = ['tunings', 'settings', 'user'];
+
+function loadHomeView(): HomeView | null {
+	if (typeof localStorage === 'undefined') return null;
+	const stored = localStorage.getItem(HOME_VIEW_KEY);
+	// Absent or unrecognised falls back to the landing view rather than rendering
+	// an empty content switcher.
+	return HOME_VIEWS.includes(stored as HomeView) ? (stored as HomeView) : null;
+}
+
+export const homeView = writable<HomeView | null>(loadHomeView());
+
+homeView.subscribe((value) => {
+	if (typeof localStorage === 'undefined') return;
+	if (value === null) localStorage.removeItem(HOME_VIEW_KEY);
+	else localStorage.setItem(HOME_VIEW_KEY, value);
+});
+
 export const openTuning = writable({ id: null });
 export const isAuthenticated = writable(false);
 export const currentUser = writable<{
