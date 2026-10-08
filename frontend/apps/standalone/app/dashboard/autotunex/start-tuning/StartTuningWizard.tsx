@@ -875,7 +875,7 @@ export function StartTuningWizard() {
           <h3>Configure {goalHeading}</h3>
           <p className={styles.wizardSubtitle}>Follow the steps to configure and launch your fine-tuning job</p>
         </div>
-        <Button kind="ghost" size="sm" renderIcon={Close} iconDescription="Close wizard" hasIconOnly onClick={() => router.push('/dashboard/autotunex')} />
+        <Button kind="ghost" size="sm" renderIcon={Close} iconDescription="Close wizard" hasIconOnly onClick={() => router.push('/dashboard/autotunex')} disabled={isLaunching} />
       </div>
 
       {breadcrumbItems.length > 0 && (
@@ -1086,7 +1086,7 @@ export function StartTuningWizard() {
       )}
 
       <div className={styles.wizardFooter}>
-        <Button kind="tertiary" onClick={() => router.push('/dashboard/autotunex')}>Cancel</Button>
+        <Button kind="tertiary" onClick={() => router.push('/dashboard/autotunex')} disabled={isLaunching}>Cancel</Button>
         {currentStep > 0 && (
           <Button kind="secondary" renderIcon={ArrowLeft} onClick={handleBack} disabled={isLaunching}>Back</Button>
         )}
