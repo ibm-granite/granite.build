@@ -161,9 +161,7 @@ function MyBuildsTile() {
 // customises AutoTuneX's `gb_tags` setting, with this tile being the one that
 // undercounts.
 const MODEL_CUSTOMISATION_TAGS = [
-  "model-customization",
-  "model-customisation",
-  "autotunex",
+  "model-customization"
 ];
 
 // The gbserver tags filter is AND-only, so one tag per request, then dedupe by
