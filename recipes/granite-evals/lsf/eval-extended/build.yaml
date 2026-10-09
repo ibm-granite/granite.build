@@ -15,11 +15,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/swebench-verified
+        - step_uri: space://steps/eval/swebench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "swebench-verified"
               image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -48,11 +49,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/swebench-verified
+        - step_uri: space://steps/eval/swebench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "swebench-verified"
               image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -78,11 +80,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/swebench-pro
+        - step_uri: space://steps/eval/swebench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "swebench-pro"
               image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -111,11 +114,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/swebench-pro
+        - step_uri: space://steps/eval/swebench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "swebench-pro"
               image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -141,11 +145,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/swebench-multilingual
+        - step_uri: space://steps/eval/swebench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "swebench-multilingual"
               image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -176,11 +181,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/swebench-multilingual
+        - step_uri: space://steps/eval/swebench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "swebench-multilingual"
               image: "$${GRANITE_EVALS_IMAGE_SWEBENCH}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -208,11 +214,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/terminal-bench-2.1
+        - step_uri: space://steps/eval/tbench
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "terminal-bench-2.1"
               image: "$${GRANITE_EVALS_IMAGE_TBENCH}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -238,11 +245,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/tau3-airline
+        - step_uri: space://steps/eval/tau
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "tau3-airline"
               image: "$${GRANITE_EVALS_IMAGE_TAU}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -278,11 +286,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/tau3-airline
+        - step_uri: space://steps/eval/tau
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "tau3-airline"
               image: "$${GRANITE_EVALS_IMAGE_TAU}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -315,11 +324,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/tau3-banking-knowledge
+        - step_uri: space://steps/eval/tau
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "tau3-banking-knowledge"
               image: "$${GRANITE_EVALS_IMAGE_TAU}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -355,11 +365,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/tau3-banking-knowledge
+        - step_uri: space://steps/eval/tau
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "tau3-banking-knowledge"
               image: "$${GRANITE_EVALS_IMAGE_TAU}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -392,11 +403,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/tau3-retail
+        - step_uri: space://steps/eval/tau
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "tau3-retail"
               image: "$${GRANITE_EVALS_IMAGE_TAU}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -432,11 +444,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/tau3-retail
+        - step_uri: space://steps/eval/tau
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "tau3-retail"
               image: "$${GRANITE_EVALS_IMAGE_TAU}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -469,11 +482,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/tau3-telecom
+        - step_uri: space://steps/eval/tau
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "tau3-telecom"
               image: "$${GRANITE_EVALS_IMAGE_TAU}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -509,11 +523,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/tau3-telecom
+        - step_uri: space://steps/eval/tau
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "tau3-telecom"
               image: "$${GRANITE_EVALS_IMAGE_TAU}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -546,11 +561,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/bfcl-v4
+        - step_uri: space://steps/eval/bfcl
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "bfcl-v4"
               image: "$${GRANITE_EVALS_IMAGE_BFCL}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -577,11 +593,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/bfcl-v4
+        - step_uri: space://steps/eval/bfcl
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "bfcl-v4"
               image: "$${GRANITE_EVALS_IMAGE_BFCL}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -605,11 +622,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/gdpval
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "gdpval"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -622,6 +640,7 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -638,11 +657,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/gdpval
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "gdpval"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -655,6 +675,7 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             skypilot:
               secrets:
                 secret_names_to_use_as_env_variable:
@@ -675,11 +696,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/browsecomp
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "browsecomp"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -707,11 +729,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/browsecomp
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "browsecomp"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -743,11 +766,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/mcpatlas
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "mcpatlas"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -759,6 +783,7 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -775,11 +800,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/mcpatlas
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "mcpatlas"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -791,6 +817,7 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             skypilot:
               secrets:
                 secret_names_to_use_as_env_variable:
@@ -811,11 +838,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/aime25
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "aime25"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -843,11 +871,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/aime25
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "aime25"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -872,11 +901,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/hmmt-feb25
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "hmmt-feb25"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -904,11 +934,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/hmmt-feb25
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "hmmt-feb25"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -933,11 +964,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/gpqa
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "gpqa"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -969,11 +1001,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/gpqa
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "gpqa"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1002,11 +1035,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/omniscience
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "omniscience"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1034,11 +1068,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/omniscience
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "omniscience"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1070,11 +1105,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/livecodebench-v6
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "livecodebench-v6"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1086,6 +1122,7 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -1102,11 +1139,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/livecodebench-v6
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "livecodebench-v6"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1118,6 +1156,7 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
@@ -1131,11 +1170,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/scicode
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "scicode"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1147,6 +1187,7 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -1163,11 +1204,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/scicode
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "scicode"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1179,6 +1221,7 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
@@ -1192,11 +1235,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/hle
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "hle"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1228,11 +1272,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/hle
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "hle"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1265,11 +1310,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/hle-tools
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "hle-tools"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1281,6 +1327,7 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             skypilot:
               secrets:
                 secret_names_to_use_as_env_variable:
@@ -1301,11 +1348,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/hle-tools
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "hle-tools"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1317,6 +1365,7 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             skypilot:
               secrets:
                 secret_names_to_use_as_env_variable:
@@ -1338,11 +1387,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/critpt
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "critpt"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1370,11 +1420,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/critpt
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "critpt"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1403,11 +1454,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/critpt-tools
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "critpt-tools"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1419,6 +1471,7 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -1435,11 +1488,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/critpt-tools
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "critpt-tools"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1451,6 +1505,7 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             skypilot:
               secrets:
                 secret_names_to_use_as_env_variable:
@@ -1468,11 +1523,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/mmlu-pro
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "mmlu-pro"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1500,11 +1556,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/mmlu-pro
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "mmlu-pro"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1529,11 +1586,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/mmlu-prox-lite
+        - step_uri: space://steps/eval/lmeval
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "mmlu-prox-lite"
               image: "$${GRANITE_EVALS_IMAGE_LMEVAL}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1558,11 +1616,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/arena-hard-v2
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "arena-hard-v2"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1590,11 +1649,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/arena-hard-v2
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "arena-hard-v2"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1631,6 +1691,7 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ifbench"
               image: "$${GRANITE_EVALS_IMAGE_IFBENCH}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1663,6 +1724,7 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ifbench"
               image: "$${GRANITE_EVALS_IMAGE_IFBENCH}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1687,11 +1749,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/multi-challenge
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "multi-challenge"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1719,11 +1782,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/multi-challenge
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "multi-challenge"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1755,11 +1819,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/fortress-adversity
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "fortress-adversity"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1787,11 +1852,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/fortress-adversity
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "fortress-adversity"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1823,11 +1889,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/fortress-benign
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "fortress-benign"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1855,11 +1922,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/fortress-benign
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "fortress-benign"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1891,11 +1959,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/strongreject
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "strongreject"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1923,11 +1992,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/strongreject
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "strongreject"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1959,11 +2029,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/wmt24pp
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "wmt24pp"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -1991,11 +2062,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/wmt24pp
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "wmt24pp"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2024,11 +2096,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/aa-lcr
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "aa-lcr"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2057,11 +2130,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/aa-lcr
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "aa-lcr"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2094,11 +2168,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-1m
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-1m"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2111,6 +2186,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "1048576"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -2127,11 +2203,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-1m
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-1m"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2144,6 +2221,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "1048576"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
@@ -2157,11 +2235,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-512k
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-512k"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2174,6 +2253,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "524288"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -2190,11 +2270,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-512k
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-512k"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2207,6 +2288,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "524288"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
@@ -2220,11 +2302,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-256k
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-256k"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2237,6 +2320,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "262144"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -2253,11 +2337,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-256k
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-256k"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2270,6 +2355,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "262144"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
@@ -2283,11 +2369,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-128k
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-128k"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2300,6 +2387,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "131072"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -2316,11 +2404,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-128k
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-128k"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2333,6 +2422,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "131072"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
@@ -2346,11 +2436,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-64k
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-64k"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2363,6 +2454,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "131072"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -2379,11 +2471,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/ruler-64k
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "ruler-64k"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2396,6 +2489,7 @@ granite.build:
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               max_model_len: "131072"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
@@ -2409,11 +2503,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/profbench
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "profbench"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2426,6 +2521,7 @@ granite.build:
               phase: "generate"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             launcher_config:
               resources:
                 accelerators: "H100:$${TENSOR_PARALLEL_SIZE}"
@@ -2442,11 +2538,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/profbench
+        - step_uri: space://steps/eval/judged
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "profbench"
               image: "$${GRANITE_EVALS_IMAGE_JUDGED}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2459,6 +2556,7 @@ granite.build:
               phase: "score"
               tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
               hf_home: "$${HF_HOME}"
+              sandbox_cache: "$${GRANITE_EVALS_SANDBOX_CACHE}"
             skypilot:
               secrets:
                 secret_names_to_use_as_env_variable:
@@ -2479,11 +2577,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/omniscience-hallucination
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "omniscience-hallucination"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"
@@ -2511,11 +2610,12 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/eval/omniscience-hallucination
+        - step_uri: space://steps/eval/nemoskills
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             granite_config:
+              benchmark: "omniscience-hallucination"
               image: "$${GRANITE_EVALS_IMAGE_NEMOSKILLS}"
               model_path: "$${MODEL_PATH}"
               served_model_name: "$${SERVED_MODEL_NAME}"

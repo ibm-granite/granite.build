@@ -10,6 +10,12 @@ SERVED_MODEL_NAME: ""
 RUN_NAME: "granite-4.2-3b"
 OUTPUT_ROOT: "/proj/granite-build/g4os/granite/runs"
 HF_HOME: "/proj/granite-build/g4os/granite/hf-home"
+# Shared enroot squashfs cache. Set explicitly (not every step's own default) on every
+# benchmark below that sandboxes, since the nemoskills and judged family steps now
+# cover several benchmarks each and no longer have one unambiguous per-benchmark
+# default: livecodebench-v6, ruler-64k, ruler-128k and scicode (nemoskills), gdpval
+# and profbench (judged). swebench always sandboxes; tau never does.
+GRANITE_EVALS_SANDBOX_CACHE: "/proj/granite-build/g4os/granite/enroot-cache"
 
 # ─── Images (granite-evals, `make publish-image EXTRA=<family>`) ────────
 GRANITE_EVALS_IMAGE_BFCL: "us.icr.io/cil15-shared-registry/granite-evals-bfcl:ae58961"

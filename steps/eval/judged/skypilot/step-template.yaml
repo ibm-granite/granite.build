@@ -92,9 +92,11 @@ config:
     tensor_parallel_size: "1"
     gpu_memory_utilization: "0.9"
     max_model_len: ""
-    # Where the agent's sandbox image (python:3.13-bookworm by default) is imported to
-    # as squashfs. On a shared filesystem, every job after the first reuses it.
-    sandbox_cache: "/proj/granite-build/g4os/granite/enroot-cache"
+    # Where a sandboxed benchmark's agent image (python:3.13-bookworm by default, for
+    # gdpval) is imported to as squashfs; on a shared filesystem, every job after the
+    # first reuses it. Only gdpval, mcpatlas and profbench in this family sandbox; set
+    # this for those, leave empty (skips the setup below) for the rest.
+    sandbox_cache: ""
     # Empty leaves the image's HF cache default alone.
     hf_home: ""
 outputs:
