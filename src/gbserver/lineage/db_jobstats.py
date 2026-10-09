@@ -305,6 +305,14 @@ class DBLineageStore(ILineageStore):
                 "target_run_uuid": target_run_uuid,
                 "extra_tags": list(extra_tags or []),
             },
+            # The same set the index rows carry, derived once here so a tag search
+            # over this table and a tag filter over the rows agree.
+            tags=job_tags(
+                job,
+                build_id=build_id,
+                target_run_uuid=target_run_uuid,
+                extra_tags=extra_tags,
+            ),
         )
 
     def _add_job(
@@ -313,6 +321,7 @@ class DBLineageStore(ILineageStore):
         build_id: str,
         target_run_uuid: str,
         entry: Optional[dict] = None,
+        tags: Optional[List[str]] = None,
     ) -> None:
         """Store one job record, merging into one another writer already stored.
 
@@ -357,6 +366,7 @@ class DBLineageStore(ILineageStore):
             return
         if entry is not None:
             job.attributes[ENTRY_ATTRIBUTE] = entry
+        job.tags = sorted(set(tags or []))
         try:
             result = upsert_job(storage, job)
             if result == ADDED or entry is None:
@@ -370,6 +380,12 @@ class DBLineageStore(ILineageStore):
                 attributes = dict(stored.attributes or {})
                 attributes[ENTRY_ATTRIBUTE] = merged
                 fields["attributes"] = attributes
+            # Tags accumulate with the events they came from: a second entry for
+            # the same execution can carry tags the first did not, and a search
+            # must find the job by either.
+            all_tags = sorted(set(stored.tags or []) | set(job.tags))
+            if all_tags != sorted(set(stored.tags or [])):
+                fields["tags"] = all_tags
             if fields or result == UPDATED:
                 fields["recorded_at"] = utc_now_iso()
                 storage.update_fields(stored.uuid, fields)

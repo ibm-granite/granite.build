@@ -59,6 +59,7 @@ def job(
     status: str = "SUCCEEDED",
     started_at: str = "2026-01-01 00:00:00",
     source_system: str = "granite.build",
+    tags: list | None = None,
     **kwargs,
 ) -> StoredLineageJob:
     """A job record, with its blob assembled the way the sink assembles it."""
@@ -78,6 +79,7 @@ def job(
         owner=owner,
         status=status,
         started_at=started_at,
+        tags=list(tags or []),
         attributes=attributes,
     )
 
@@ -382,8 +384,8 @@ class TestSchema:
         assert "input" not in columns
         assert "output" not in columns
 
-    def test_no_tags_column_yet(self, storage):
-        """Tags are deliberately out of scope for this table for now."""
+    def test_tags_is_a_promoted_column(self, storage):
+        """Tags are promoted so a tag search is a SQL filter, not a blob scan."""
         storage.add(job())
         columns = {
             name
@@ -391,4 +393,89 @@ class TestSchema:
                 storage, f"PRAGMA table_info('{storage.table_name}')"
             )
         }
-        assert "tags" not in columns
+        assert "tags" in columns
+
+    def test_tags_are_stored_comma_joined_and_sorted(self, storage):
+        """The gb_builds/gb_artifacts form, which the %like% filter relies on."""
+        storage.add(job(job_id="tagged", tags=["b=2", "a=1"]))
+        (row,) = self._query_schema(
+            storage,
+            f"SELECT tags FROM {storage.table_name} WHERE job_id = 'tagged'",  # nosec
+        )
+        assert row[0] == "a=1,b=2"
+        # The item keeps its list; only the column is joined.
+        assert storage.get_job("tagged").tags == ["b=2", "a=1"]
+
+
+class TestTagSearch:
+    """``search_by_tags`` answers what W&B's ``{"tags": {"$in": [...]}}`` answers.
+
+    The distinction that matters: ``any_of`` is a DISJUNCTION. The storage layer's
+    generic list-column filter is an AND, so a search for two tags no single job
+    carries would return nothing -- which is the wrong answer to "jobs tagged X or
+    Y", and would make ``POST /lineage/search`` mean different things per provider.
+    """
+
+    @pytest.fixture(name="tagged")
+    def tagged_fixture(self, storage):
+        storage.add(job(job_id="J1", tags=["team=nlp", "build_id=B1"]))
+        storage.add(job(job_id="J2", tags=["team=vision", "build_id=B2"]))
+        storage.add(job(job_id="J3", tags=["team=nlp", "build_id=B3", "phase=eval"]))
+        return storage
+
+    def test_any_of_is_a_disjunction(self, tagged):
+        """The regression guard: an AND implementation returns 0 here."""
+        total, page = tagged.search_by_tags(["team=nlp", "team=vision"])
+        assert total == 3
+        assert {j.job_id for j in page} == {"J1", "J2", "J3"}
+
+    def test_any_of_with_one_tag(self, tagged):
+        total, page = tagged.search_by_tags(["team=vision"])
+        assert (total, [j.job_id for j in page]) == (1, ["J2"])
+
+    def test_all_of_is_a_conjunction(self, tagged):
+        total, page = tagged.search_by_tags([], all_of=["team=nlp", "phase=eval"])
+        assert (total, [j.job_id for j in page]) == (1, ["J3"])
+
+    def test_all_of_that_no_job_satisfies(self, tagged):
+        assert tagged.search_by_tags([], all_of=["team=nlp", "team=vision"])[0] == 0
+
+    def test_any_of_and_all_of_combine(self, tagged):
+        total, page = tagged.search_by_tags(["team=nlp"], all_of=["phase=eval"])
+        assert (total, [j.job_id for j in page]) == (1, ["J3"])
+
+    def test_no_tags_matches_every_job(self, tagged):
+        """An empty tag list is what the route's "match everything" means."""
+        assert tagged.search_by_tags([])[0] == 3
+
+    def test_a_prefix_is_not_a_match(self, tagged):
+        """LIKE over the joined column over-matches; the exact re-check catches it.
+
+        ``%team=nlp%`` also hits ``team=nlp-eval`` in SQL, so a result that skipped
+        the per-item check would report a job the caller did not ask for.
+        """
+        tagged.add(job(job_id="J4", tags=["team=nlp-eval"]))
+        total, page = tagged.search_by_tags(["team=nlp"])
+        assert "J4" not in {j.job_id for j in page}
+        assert total == 2
+
+    def test_an_unknown_tag_matches_nothing(self, tagged):
+        assert tagged.search_by_tags(["team=nope"]) == (0, [])
+
+    def test_the_total_counts_matches_not_the_page(self, tagged):
+        """So a caller can page: the page is capped, the total is not."""
+        total, page = tagged.search_by_tags([], limit=2)
+        assert total == 3
+        assert len(page) == 2
+
+    def test_paging_walks_the_whole_match_set(self, tagged):
+        seen = []
+        for offset in (0, 2):
+            seen += [
+                j.job_id for j in tagged.search_by_tags([], limit=2, offset=offset)[1]
+            ]
+        assert sorted(seen) == ["J1", "J2", "J3"]
+
+    def test_an_empty_tag_string_is_ignored(self, tagged):
+        """Otherwise a blank would LIKE-match every row and widen the search."""
+        assert tagged.search_by_tags(["", "team=vision"])[0] == 1

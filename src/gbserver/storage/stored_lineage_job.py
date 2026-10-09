@@ -57,12 +57,17 @@ row table's URIs) and why 256 is treated as the ceiling. ``job_namespace`` is
 ``gb_targets`` spells it. It is never rewritten to UTC here, and nothing in this
 module touches ``gb_targets``.
 
-There is deliberately no ``tags`` column: a job's tags live on its index rows, in
-``attributes.job.tags`` (see :mod:`gbserver.storage.lineage_row_storage`). There is no
-authorization logic anywhere in this module.
+``tags`` is a promoted column, stored as the comma-joined sorted set the
+``gb_builds`` and ``gb_artifacts`` tables already use for theirs. The same tags
+also ride on each of the job's index rows under ``attributes.job.tags`` (see
+:mod:`gbserver.storage.lineage_row_storage`); they are duplicated on purpose,
+because the two tables answer different questions -- the rows' copy labels an
+edge, this one is what a tag *search* filters on, and ``POST /lineage/search``
+has no index row in hand when it runs. There is no authorization logic anywhere
+in this module.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from pydantic import Field
 
@@ -94,6 +99,12 @@ class StoredLineageJob(BaseStoredItem):
             write time. Distinct from :attr:`started_at` (the source's form, never
             rewritten): this is our clock, and the basis for a future
             high-water-mark incremental import.
+        tags: the job's tags as ``k=v`` strings (or a bare key), the set
+            :func:`gbserver.lineage.db_jobstats.job_tags` derives. Queryable: it is
+            promoted to a column so a tag search is a SQL filter rather than a scan
+            of a JSON blob. Stored comma-joined and sorted, following
+            ``gb_builds``; a tag containing a comma would therefore split, which is
+            why only ``k=v`` and bare keys are written.
         attributes: everything a response carries and no query filters on -- the
             light job detail (name, type, category, completion time), the
             originating system's ids, and the four large payloads this table exists
@@ -116,6 +127,10 @@ class StoredLineageJob(BaseStoredItem):
     recorded_at: str = Field(
         default_factory=utc_now_iso,
         description="UTC ISO-8601 time this index wrote the record",
+    )
+    tags: List[str] = Field(
+        default_factory=list,
+        description='Tags as "k=v" strings; promoted to a column for tag search',
     )
 
     attributes: Dict[str, Any] = Field(

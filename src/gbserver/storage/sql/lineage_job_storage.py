@@ -16,6 +16,10 @@
 
 """SQL storage implementation for lineage job records."""
 
+from typing import List, Optional, Tuple
+
+from sqlalchemy import and_, or_
+
 from gbserver.storage.lineage_job_storage import (
     BaseLineageJobStorage,
     ILineageJobStorage,
@@ -87,5 +91,81 @@ class SQLLineageJobStorage(
         # silently rather than loudly. That is why the promoted columns are held to
         # the inferred 256-char width instead of being widened.
         kwargs["unique_columns"] = {"job_id": None}
+        # Tags are stored as "tag1,tag2,tag3", so the generic where-clause path
+        # narrows with %like% in SQL and then re-checks exact membership in Python
+        # -- the same handling gb_artifacts and gb_builds use for theirs. Declared
+        # here so a caller passing {"tags": [...]} cannot silently get the
+        # column == [list] degradation instead of a filter.
+        kwargs["exact_liked_list_columns"] = {"tags": "tags"}
         kwargs["default_pagination_sort_by_column"] = "recorded_at"
         super().__init__(**kwargs)
+
+    def _ensure_table(self) -> bool:
+        """Initialize the model if needed; whether the table exists to query.
+
+        ``__initialize_storage`` is name-mangled private, so this replicates it
+        through the protected API, as the row storage and ``SQLSpaceUserStorage``
+        do.
+        """
+        if self._sql_alchemy_model is None:
+            sample = self._convert_item_to_row_dict(self._get_sample_item())
+            self._create_or_adjust_schema_item_dict(sample)
+        return self._does_table_exist()
+
+    def search_by_tags(
+        self,
+        any_of: List[str],
+        all_of: Optional[List[str]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Tuple[int, List[StoredLineageJob]]:
+        """Match tags in SQL: a disjunction for ``any_of``, conjunction for ``all_of``.
+
+        Not ``get_by_where``'s list handling, which chains one filter per value and
+        is therefore an AND. ``any_of`` has to be an OR to mean what W&B's ``$in``
+        means, so the clauses are built here: ``or_()`` over ``any_of``, chained
+        ``and_()`` over ``all_of``.
+
+        ``LIKE`` over the joined column over-matches -- ``%team=nlp%`` also hits
+        ``team=nlp-eval`` -- so SQL only narrows the candidates, and each one is
+        re-checked against its own tag list here. The total counts the re-checked
+        set, which is why it is computed here rather than taken from SQL.
+
+        SQL selects ids, not whole rows, and the page is hydrated through
+        :meth:`get_jobs`: the same path every other read uses, so a record comes
+        back built the one way rather than two.
+        """
+        wanted_any = [tag for tag in any_of if tag]
+        wanted_all = [tag for tag in (all_of or []) if tag]
+        if not self._ensure_table():
+            return 0, []
+        model = self._sql_alchemy_model
+        assert model is not None
+        column = model.tags
+
+        conditions = [column.like(f"%{tag}%") for tag in wanted_all]
+        if wanted_any:
+            conditions.append(or_(*(column.like(f"%{tag}%") for tag in wanted_any)))
+
+        session = self._get_session_without_retry()
+        try:
+            query = session.query(model.job_id, model.tags)
+            if conditions:
+                query = query.filter(and_(*conditions))
+            candidates = query.order_by(model.recorded_at.desc()).all()
+        finally:
+            session.close()
+
+        exact_any, exact_all = set(wanted_any), set(wanted_all)
+        job_ids = []
+        for job_id, joined in candidates:
+            tags = {tag for tag in (joined or "").split(",") if tag}
+            if not exact_all <= tags:
+                continue
+            if exact_any and exact_any.isdisjoint(tags):
+                continue
+            job_ids.append(job_id)
+
+        page = job_ids[offset : offset + limit]
+        by_id = self.get_jobs_by_id(page)
+        return len(job_ids), [by_id[j] for j in page if j in by_id]

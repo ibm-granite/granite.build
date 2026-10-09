@@ -22,7 +22,7 @@ so the batched :meth:`BaseLineageJobStorage.get_jobs` is the one that matters: a
 graph walk resolves all of a level's jobs in one query rather than one per row.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from gbserver.storage.storage import BaseItemStorage, IItemStorage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
@@ -46,6 +46,28 @@ class ILineageJobStorage(IItemStorage[StoredLineageJob]):
 
     def has_job(self, job_id: str) -> bool:
         """Whether a job record is already stored for ``job_id``."""
+        raise NotImplementedError
+
+    def search_by_tags(
+        self,
+        any_of: List[str],
+        all_of: Optional[List[str]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Tuple[int, List[StoredLineageJob]]:
+        """Jobs carrying ANY of ``any_of`` and ALL of ``all_of``, and the total.
+
+        ``any_of`` is a disjunction, matching W&B's ``{"tags": {"$in": [...]}}``,
+        so ``POST /lineage/search`` means the same thing against either provider.
+        That distinction is the whole point of the two arguments: the storage
+        layer's generic list-column filter is an AND, which would answer "jobs
+        tagged X *and* Y" where the caller asked for "X *or* Y" -- silently
+        returning nothing for two tags no single job carries.
+
+        An empty ``any_of`` matches every job, which is what the route's empty tag
+        list means. The total counts all matches, not the page, so a caller can
+        page; ``offset``/``limit`` select the page.
+        """
         raise NotImplementedError
 
 
@@ -74,6 +96,12 @@ class BaseLineageJobStorage(BaseItemStorage[StoredLineageJob], ILineageJobStorag
         *silently* to ``column == [list]`` -- a meaningless predicate that returns
         plausible but wrong rows with no error. Keeping the promoted set all-text
         makes that failure unreachable rather than merely avoided by convention.
+
+        ``tags`` is a list on the item and must therefore be joined, not passed
+        through: that same degradation is exactly what an unjoined list would hit.
+        It is stored comma-joined and sorted, the form ``gb_builds`` and
+        ``gb_artifacts`` already use, so a ``%like%`` filter plus an exact
+        membership check answers a tag query (see ``exact_liked_list_columns``).
         """
         fields_to_include = {
             "job_id",
@@ -84,7 +112,9 @@ class BaseLineageJobStorage(BaseItemStorage[StoredLineageJob], ILineageJobStorag
             "started_at",
             "recorded_at",
         }
-        return item.model_dump(include=fields_to_include)
+        values = item.model_dump(include=fields_to_include)
+        values["tags"] = ",".join(sorted(item.tags or []))
+        return values
 
     @classmethod
     def _get_sample_item(cls) -> StoredLineageJob:
@@ -102,6 +132,7 @@ class BaseLineageJobStorage(BaseItemStorage[StoredLineageJob], ILineageJobStorag
             status="SUCCEEDED",
             started_at="2026-01-01 00:00:00",
             recorded_at="2000-01-01T00:00:00.000000+00:00",
+            tags=["sample-key=sample-value"],
         )
 
     def get_job(self, job_id: str) -> Optional[StoredLineageJob]:
@@ -160,3 +191,31 @@ class BaseLineageJobStorage(BaseItemStorage[StoredLineageJob], ILineageJobStorag
         if not job_id:
             return False
         return bool(self.get_by_where({"job_id": job_id}))
+
+    def search_by_tags(
+        self,
+        any_of: List[str],
+        all_of: Optional[List[str]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Tuple[int, List[StoredLineageJob]]:
+        """Paged fallback: filter in Python. The SQL backend overrides this.
+
+        Reads the table a page at a time and matches on the item's own ``tags``
+        list, so it needs no dialect support and cannot disagree with the SQL
+        override about what a match is -- both compare whole ``k=v`` strings
+        against the list, never a substring of the joined column.
+        """
+        wanted_any = {tag for tag in any_of if tag}
+        wanted_all = {tag for tag in (all_of or []) if tag}
+        matched: List[StoredLineageJob] = []
+        for page in self.get_paged():
+            for job in page:
+                tags = set(job.tags or [])
+                if not wanted_all <= tags:
+                    continue
+                if wanted_any and wanted_any.isdisjoint(tags):
+                    continue
+                matched.append(job)
+        matched.sort(key=lambda job: job.recorded_at, reverse=True)
+        return len(matched), matched[offset : offset + limit]
