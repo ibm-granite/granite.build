@@ -324,8 +324,10 @@ def _normalize_file(candidate: str, parsed) -> str:
         return ""
     if not path.startswith("/"):
         # Relative: cannot be absolutized purely. Keep the spelling verbatim
-        # rather than resolving against an ambient cwd.
-        return urlunparse((FILE_SCHEME, parsed.netloc or "", path, "", "", ""))
+        # rather than resolving against an ambient cwd. Not rebuilt through
+        # urlunparse: newer patch releases (e.g. 3.11.17) turn ``file:x`` into
+        # ``file:///x``, which would make it absolute.
+        return candidate
 
     trailing = path.endswith("/") and path != "/"
     collapsed = _collapse_slashes(path)
