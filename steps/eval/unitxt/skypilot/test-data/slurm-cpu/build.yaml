@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-slurm-unitxt-cpu
+  name: skypilot-slurm-unitxt-cpu-test
   # eval/unitxt on the local Docker SLURM cluster (via SkyPilot), CPU only.
   #
   # A PLUMBING test, not an evaluation: a 135M model on 2 instances scores ~0, and
@@ -11,7 +11,11 @@ granite.build:
   #      PyPI, with the CPU torch kept.
   #   3. `unitxt-evaluate --model hf --trust_remote_code` completes on
   #      cards.mmlu_pro.engineering (which refuses to load without that flag).
-  #   4. The output directory is registered as `results` from the marker.
+  #   4. The output directory is registered as `results` from the marker, and the
+  #      queued hfpush uploads it to a Hugging Face dataset.
+  #
+  # HF_TOKEN: the model pull needs none (it's public), but the results push needs
+  # write access to the ibm-research org. The nightly extended suite supplies it.
   #
   # Memory: the local cluster's nodes advertise RealMemory=1024. Measured outside
   # the cluster, this run peaks at ~560 MiB RSS in bf16 (~900 MiB in fp32), hence
@@ -22,11 +26,15 @@ granite.build:
       environment_uri: space://environments/skypilot/slurm
       inputs:
         model:
-          # Public, ~270 MB in bf16 safetensors, so no HF_TOKEN is needed.
+          # Public, ~270 MB in bf16 safetensors, so the pull needs no token.
           uri: hf:///models/HuggingFaceTB/SmolLM2-135M-Instruct
       outputs:
         results:
-          uri: "env:///results"
+          # A real hf:// output, so buildrunner queues an hfpush for the directory
+          # the step registers. The `test_` prefix lets scripts/rm_hf_repos.py
+          # (--pattern '^test_') clean these up; the short hash of the registered
+          # path gives each build its own dataset.
+          uri: hf://huggingface.co/datasets/ibm-research/test_unitxt-results_{{ binding.path | short_hash }}
           type: dataset
       steps:
         - step_uri: space://steps/eval/unitxt
