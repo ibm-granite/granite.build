@@ -16,14 +16,25 @@ steps:
 
 ## Inputs and outputs
 
-- **Inputs:** `model` (**required**, `type: model`, a `uri` or a `binding`). Give a
-  Hugging Face model as `uri: hf:///models/<org>/<name>`, which the SkyPilot
-  launcher downloads before setup, or bind the checkpoint another target produced.
-  The step passes its path to the CLI as `--model_args pretrained=<path>`. A target
-  that doesn't bind `model` fails build validation before anything is queued.
-- **Outputs:** `outputs.optional.results` (`type: dataset`) is the whole
-  `output_path` directory, registered by the step after the CLI succeeds. The CLI
-  names its file `<UTC timestamp>_evaluation_results.json`.
+### Inputs
+
+The step declares one required input, read as `{{ bindings.model.binding.path }}`:
+
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `model` | yes | model | `uri: hf:///models/<org>/<name>` (the SkyPilot launcher downloads it before setup), or a `binding` to the checkpoint another target produced |
+
+The step passes the path to the CLI as `--model_args pretrained=<path>`. A target that
+doesn't bind `model` fails build validation before anything is queued.
+`unitxt_config.model`, and `pretrained=` inside `unitxt_config.model_args`, are not
+read; a target that still sets either fails at run time with a message naming the
+input to bind instead.
+
+### Outputs
+
+| Output | Type | What it is |
+|---|---|---|
+| `results` | `dataset` | The whole `output_path` directory, registered by the step after the CLI succeeds. The CLI names its file `<UTC timestamp>_evaluation_results.json`. |
 
 ## Config contract (`unitxt_config`)
 
