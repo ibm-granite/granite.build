@@ -26,7 +26,10 @@ instead. It is generated from the sources here by the shared Makefile convention
 - `test/slurm-cpu/` + `test-data/slurm-cpu/`: a build test on the local Docker
   SLURM cluster, modelled on dpk's `slurm-tok`. It evaluates the public
   `SmolLM2-135M-Instruct` (the bound `model` input) on 2 instances with the CPU
-  torch build: a plumbing check, not a meaningful score. It skips itself unless
+  torch build: a plumbing check, not a meaningful score. Its `results` output goes to
+  a `test_`-prefixed Hugging Face dataset in the ibm-research org (cleaned up by
+  `scripts/rm_hf_repos.py`), so the queued hfpush needs an `HF_TOKEN` with write access
+  there; the nightly extended suite has one. It skips itself unless
   `make slurm-setup` has brought the cluster up. Like other build tests it needs
   `GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live` (which `make extended-tests` sets; the
   step's own `make test` doesn't, so the storage fixtures refuse to run):
