@@ -1,6 +1,6 @@
-name: ifbench
+name: lmeval
 version: 0.1.0
-# Granite benchmark: IFBench (prompt), pass@1 loose / strict accuracy.
+# Granite benchmark: MMLU-ProX lite (IBM), exact match (custom-extract).
 #
 # ONE STEP PER GRANITE_EVALS IMAGE FAMILY. `granite_config.benchmark` selects which
 # benchmark in this family to run; every steps/eval/*/ template has the same shape
@@ -15,28 +15,27 @@ version: 0.1.0
 # Dockerfile and common.mk treats it as a non-image step; the image is chosen at run
 # time from granite_config.image, the byoc way.
 #
-# WHAT RUNS. `granite-evals run ifbench` serves model_path with vLLM inside the
-# job and runs NVIDIA NeMo-Skills' own ifbench pipeline against it, locally (no Slurm,
-# no NeMo-Run): its data preparation (allenai/IFBench test file, pinned by commit and
-# sha256), prompt, generation, IFBench's own strict/loose verifiers (at the IFBench
-# commit ns pins, baked into the image) and ns's `if` metrics. The value is the
-# prompt-level loose accuracy; details.metrics adds prompt-level strict and the
-# instruction-level loose and strict accuracies. Writes one results.json (schema: granite_evals/results.py).
+# WHAT RUNS. `granite-evals run mmlu-prox-lite` serves model_path with vLLM inside the
+# job and runs lm-evaluation-harness's own mmlu_prox_lite_<lang>_<subject> tasks
+# (5-shot CoT, custom-extract regex, exact_match) against it in chat mode
+# (local-chat-completions, apply_chat_template, fewshot_as_multiturn), over the 11
+# Granite languages MMLU-ProX has, on li-lab/MMLU-ProX-Lite at a pinned commit.
+# The value is the mean over languages. Writes one results.json
+# (schema: granite_evals/results.py).
 #
-# PHASES. So that no job holds an idle GPU, recipes run this step twice on one
-# output_dir: phase generate on a GPU (vLLM + the model's work only) and phase score
-# on CPU (grading, no vLLM; it refuses to generate). phase all does both in one job.
+# PHASES. This benchmark scores inside generation, so it runs as one GPU job
+# (phase: all); see the sibling granite-* steps for the generate/score split.
 #
 # CUSTOM, not EVAL: gbcommon's StepType has no EVAL member.
 type: custom
 config:
   granite_config:
-    # The benchmark id passed to `granite-evals run`. Required, e.g. "ifbench".
+    # The benchmark id passed to `granite-evals run`. Required, e.g. "mmlu-prox-lite".
     # See `granite-evals list` for this family's benchmark ids.
     benchmark: ""
-    # The granite-evals image for this benchmark family (`make image EXTRA=ifbench` in
+    # The granite-evals image for this benchmark family (`make image EXTRA=lmeval` in
     # granite-evals), pinned by its commit tag; results.json records the versions inside.
-    # Recipes set it once, as the GRANITE_EVALS_IMAGE_IFBENCH parameter.
+    # Recipes set it once, as the GRANITE_EVALS_IMAGE_LMEVAL parameter.
     image: ""
     # The checkpoint to score, as a LOCAL PATH (normally a distill-hf-export `hf_model`
     # or an hfpull binding). Required.
@@ -45,26 +44,30 @@ config:
     served_model_name: ""
     # Relative values resolve against $GB_BUILD_WORKDIR.
     output_dir: "output"
-    # SMOKE KNOB: score only the first N examples (in the order of the pinned prepared
-    # data, so two smoke runs are comparable). Empty = all 300 prompts.
+    # SMOKE KNOB: score only the first N examples, an example being one question in one
+    # language, ordered by (question_id, language), so a small N covers every language
+    # and two smoke runs are comparable. Empty = all 11 x 588.
     limit: ""
-    # Independent generations per example (avg-of-k). Empty = benchmark default (1).
+    # Repeats of the whole run. Empty = benchmark default (1).
     repeats: ""
-    # Concurrent requests to vLLM (NeMo-Skills max_concurrent_requests).
+    # Concurrent requests to vLLM (lm-eval num_concurrent).
     workers: "64"
-    # Dataset: empty = allenai/IFBench data/IFBench_test.jsonl at a fixed commit (pinned
-    # in granite-evals). A prepared .jsonl or a directory holding <split>.jsonl overrides it.
+    # Dataset: empty = upstream `li-lab/MMLU-ProX-Lite` at a fixed commit (pinned in
+    # granite-evals). A hub id or local copy with the same per-language configs overrides it.
     dataset: ""
     dataset_revision: ""
     # Space-separated key=value benchmark options passed as --option, e.g.
-    # "temperature=0.6 max_tokens=32768" (unset sampling = the checkpoint's generation_config),
-    # "ns.<key>=<value>" (any NeMo-Skills generation override). No answers=gold:
-    # IFBench has no reference responses.
+    # "languages=all" (or a comma list; default: the 11 Granite languages),
+    # "temperature=0.6 top_p=0.95 max_tokens=16384" (default: the Granite 4.2 card's
+    # thinking-mode 1.0 / 0.95 / 8192),
+    # "stop=none" or "stop=%3C/s%3E,Q:" (percent-encoded, comma-separated, at most 4;
+    # default "task": the task's own stop strings),
+    # "thinking=off" (chat_template_kwargs.enable_thinking=false),
+    # "answers=gold" (reference answers through the same extraction and scoring;
+    # model_path may be "none", no GPU needed).
     options: ""
-    # all | generate | score. "generate" serves the model and saves its outputs
-    # (generation.json, the granite_generation artifact); "score" serves nothing and
-    # grades them on CPU in the same output_dir (results.json). Recipes run
-    # generate on a GPU target and score on a CPU-only target bound to it.
+    # "all" only: this benchmark scores inside generation, so it cannot be split into
+    # a GPU and a CPU job (the key exists because every granite step shares one contract).
     phase: "all"
     # vLLM.
     tensor_parallel_size: "1"

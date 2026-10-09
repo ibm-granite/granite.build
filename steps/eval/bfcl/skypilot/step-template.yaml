@@ -1,6 +1,6 @@
-name: ifbench
+name: bfcl
 version: 0.1.0
-# Granite benchmark: IFBench (prompt), pass@1 loose / strict accuracy.
+# Granite benchmark: BFCL v4, overall_accuracy (BFCL's own "Overall Acc").
 #
 # ONE STEP PER GRANITE_EVALS IMAGE FAMILY. `granite_config.benchmark` selects which
 # benchmark in this family to run; every steps/eval/*/ template has the same shape
@@ -15,13 +15,11 @@ version: 0.1.0
 # Dockerfile and common.mk treats it as a non-image step; the image is chosen at run
 # time from granite_config.image, the byoc way.
 #
-# WHAT RUNS. `granite-evals run ifbench` serves model_path with vLLM inside the
-# job and runs NVIDIA NeMo-Skills' own ifbench pipeline against it, locally (no Slurm,
-# no NeMo-Run): its data preparation (allenai/IFBench test file, pinned by commit and
-# sha256), prompt, generation, IFBench's own strict/loose verifiers (at the IFBench
-# commit ns pins, baked into the image) and ns's `if` metrics. The value is the
-# prompt-level loose accuracy; details.metrics adds prompt-level strict and the
-# instruction-level loose and strict accuracies. Writes one results.json (schema: granite_evals/results.py).
+# WHAT RUNS. `granite-evals run bfcl-v4` serves model_path with vLLM inside the job and
+# runs the pinned bfcl-eval package against it in function-calling mode over all 22
+# BFCL v4 scoring categories (web search through IBM's search MCP server instead of
+# SerpAPI), scores with bfcl-eval's checkers, and writes one results.json (schema:
+# granite_evals/results.py). No sandboxes; sandbox_cache is unused.
 #
 # PHASES. So that no job holds an idle GPU, recipes run this step twice on one
 # output_dir: phase generate on a GPU (vLLM + the model's work only) and phase score
@@ -31,12 +29,12 @@ version: 0.1.0
 type: custom
 config:
   granite_config:
-    # The benchmark id passed to `granite-evals run`. Required, e.g. "ifbench".
+    # The benchmark id passed to `granite-evals run`. Required, e.g. "bfcl-v4".
     # See `granite-evals list` for this family's benchmark ids.
     benchmark: ""
-    # The granite-evals image for this benchmark family (`make image EXTRA=ifbench` in
+    # The granite-evals image for this benchmark family (`make image EXTRA=bfcl` in
     # granite-evals), pinned by its commit tag; results.json records the versions inside.
-    # Recipes set it once, as the GRANITE_EVALS_IMAGE_IFBENCH parameter.
+    # Recipes set it once, as the GRANITE_EVALS_IMAGE_BFCL parameter.
     image: ""
     # The checkpoint to score, as a LOCAL PATH (normally a distill-hf-export `hf_model`
     # or an hfpull binding). Required.
@@ -45,21 +43,19 @@ config:
     served_model_name: ""
     # Relative values resolve against $GB_BUILD_WORKDIR.
     output_dir: "output"
-    # SMOKE KNOB: score only the first N examples (in the order of the pinned prepared
-    # data, so two smoke runs are comparable). Empty = all 300 prompts.
+    # SMOKE KNOB: score only the first N entries of EVERY category (in BFCL's order;
+    # memory entries bring their prerequisite conversations). Empty = all 4,441.
     limit: ""
-    # Independent generations per example (avg-of-k). Empty = benchmark default (1).
+    # BFCL v4 is a single run. Empty = benchmark default (1).
     repeats: ""
-    # Concurrent requests to vLLM (NeMo-Skills max_concurrent_requests).
-    workers: "64"
-    # Dataset: empty = allenai/IFBench data/IFBench_test.jsonl at a fixed commit (pinned
-    # in granite-evals). A prepared .jsonl or a directory holding <split>.jsonl overrides it.
+    # Concurrent BFCL test entries (BFCL's --num-threads).
+    workers: "8"
+    # Dataset: the data ships inside the pinned bfcl-eval package, so there is
+    # nothing to override; keep empty.
     dataset: ""
     dataset_revision: ""
     # Space-separated key=value benchmark options passed as --option, e.g.
-    # "temperature=0.6 max_tokens=32768" (unset sampling = the checkpoint's generation_config),
-    # "ns.<key>=<value>" (any NeMo-Skills generation override). No answers=gold:
-    # IFBench has no reference responses.
+    # "categories=simple_python,web_search temperature=0.6 search_mcp_url=https://...".
     options: ""
     # all | generate | score. "generate" serves the model and saves its outputs
     # (generation.json, the granite_generation artifact); "score" serves nothing and
@@ -70,8 +66,8 @@ config:
     tensor_parallel_size: "1"
     gpu_memory_utilization: "0.9"
     max_model_len: ""
-    # Shared enroot squashfs cache, only for benchmarks that sandbox. This one doesn't.
-    sandbox_cache: ""
+    # Unused by BFCL (no sandboxes); kept so every granite step has one config contract.
+    sandbox_cache: "/proj/granite-build/g4os/granite/enroot-cache"
     # Empty leaves the image's HF cache default alone.
     hf_home: ""
 outputs:

@@ -2,10 +2,12 @@ name: ifbench
 version: 0.1.0
 # Granite benchmark: IFBench (prompt), pass@1 loose / strict accuracy.
 #
-# ONE STEP PER GRANITE_EVALS BENCHMARK. Every steps/eval/*/ template has the same shape and
-# differs only in `name`, the BENCHMARK id passed to granite-evals, and its defaults;
-# skypilot/test/test_step_template.py holds them to that. Recipes (recipes/granite-evals/...) choose
-# which benchmarks a model family is scored on.
+# ONE STEP PER GRANITE_EVALS IMAGE FAMILY. `granite_config.benchmark` selects which
+# benchmark in this family to run; every steps/eval/*/ template has the same shape
+# and differs only in `name`, the family's image env var, and its defaults.
+# skypilot/test/test_step_template.py holds them to that. Recipes
+# (recipes/granite-evals/...) choose which benchmarks a model family is scored on
+# and set `benchmark` per target.
 #
 # THE CODE LIVES OUTSIDE THIS REPO. The benchmark runtime is the granite-evals project
 # (github.com/laminair/granite-evals), shipped as a prebuilt image per benchmark family
@@ -29,6 +31,9 @@ version: 0.1.0
 type: custom
 config:
   granite_config:
+    # The benchmark id passed to `granite-evals run`. Required, e.g. "ifbench".
+    # See `granite-evals list` for this family's benchmark ids.
+    benchmark: ""
     # The granite-evals image for this benchmark family (`make image EXTRA=ifbench` in
     # granite-evals), pinned by its commit tag; results.json records the versions inside.
     # Recipes set it once, as the GRANITE_EVALS_IMAGE_IFBENCH parameter.
@@ -92,7 +97,7 @@ environment_configs:
           run: |
             set -e
             set -o pipefail
-            BENCHMARK=ifbench
+            BENCHMARK="{{ config.granite_config.benchmark }}"
             echo "=== granite $BENCHMARK on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
             # vLLM refuses to start inside an initialised torch.distributed env.
@@ -158,7 +163,7 @@ environment_configs:
             interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
           extra_event_configs:
             - event_type: WORKLOAD_STATUS_EVENT
-              line_regex: "(vLLM ready at|ifbench: \\d+ examples|ifbench repeat \\d+: |granite-evals: ifbench =|granite-evals: \\S+ generated)"
+              line_regex: "(vLLM ready at|granite-evals: {{ config.granite_config.benchmark }} =|granite-evals: \\S+ generated)"
               event_fields:
                 - field_name: status
                   field_value_template: "RUNNING"

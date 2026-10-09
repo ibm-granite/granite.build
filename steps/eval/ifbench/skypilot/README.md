@@ -21,6 +21,7 @@ steps:
 
 | Field | Default | Purpose |
 |---|---|---|
+| `benchmark` | `""` (required) | The benchmark id passed to `granite-evals run`. Currently only `ifbench` exists in this family; see `granite-evals list`. |
 | `image` | `""` (required) | granite-evals ifbench image, pinned by tag (`GRANITE_EVALS_IMAGE_IFBENCH`). |
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |

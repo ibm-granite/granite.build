@@ -1,10 +1,14 @@
-name: ifbench
+name: swebench
 version: 0.1.0
-# Granite benchmark: IFBench (prompt), pass@1 loose / strict accuracy.
+# The granite-evals "swebench" image family: SWE-bench variants, each graded with the
+# swebench harness in its own enroot sandbox per instance. `granite_config.benchmark`
+# selects which one; see `granite-evals list` for the current set. As of this writing:
+#   swebench-verified      SWE Bench Verified, pass@1 resolve rate
+#   swebench-pro           SWE Bench Pro (V2 public set), pass@1 resolve rate
+#   swebench-multilingual  SWE Bench Multilingual, pass@1 resolve rate
 #
-# ONE STEP PER GRANITE_EVALS IMAGE FAMILY. `granite_config.benchmark` selects which
-# benchmark in this family to run; every steps/eval/*/ template has the same shape
-# and differs only in `name`, the family's image env var, and its defaults.
+# ONE STEP PER GRANITE_EVALS IMAGE FAMILY. Every steps/eval/*/ template has the same
+# shape and differs only in `name`, the family's image env var, and its defaults.
 # skypilot/test/test_step_template.py holds them to that. Recipes
 # (recipes/granite-evals/...) choose which benchmarks a model family is scored on
 # and set `benchmark` per target.
@@ -15,13 +19,10 @@ version: 0.1.0
 # Dockerfile and common.mk treats it as a non-image step; the image is chosen at run
 # time from granite_config.image, the byoc way.
 #
-# WHAT RUNS. `granite-evals run ifbench` serves model_path with vLLM inside the
-# job and runs NVIDIA NeMo-Skills' own ifbench pipeline against it, locally (no Slurm,
-# no NeMo-Run): its data preparation (allenai/IFBench test file, pinned by commit and
-# sha256), prompt, generation, IFBench's own strict/loose verifiers (at the IFBench
-# commit ns pins, baked into the image) and ns's `if` metrics. The value is the
-# prompt-level loose accuracy; details.metrics adds prompt-level strict and the
-# instruction-level loose and strict accuracies. Writes one results.json (schema: granite_evals/results.py).
+# WHAT RUNS. `granite-evals run <benchmark>` serves model_path with vLLM inside the
+# job, drives mini-swe-agent against it in one enroot sandbox per instance, grades
+# each patch in a fresh sandbox with the swebench harness, and writes one results.json
+# (schema: granite_evals/results.py).
 #
 # PHASES. So that no job holds an idle GPU, recipes run this step twice on one
 # output_dir: phase generate on a GPU (vLLM + the model's work only) and phase score
@@ -31,12 +32,12 @@ version: 0.1.0
 type: custom
 config:
   granite_config:
-    # The benchmark id passed to `granite-evals run`. Required, e.g. "ifbench".
+    # The benchmark id passed to `granite-evals run`. Required, e.g. "swebench-verified".
     # See `granite-evals list` for this family's benchmark ids.
     benchmark: ""
-    # The granite-evals image for this benchmark family (`make image EXTRA=ifbench` in
+    # The granite-evals image for this benchmark family (`make image EXTRA=swebench` in
     # granite-evals), pinned by its commit tag; results.json records the versions inside.
-    # Recipes set it once, as the GRANITE_EVALS_IMAGE_IFBENCH parameter.
+    # Recipes set it once, as the GRANITE_EVALS_IMAGE_SWEBENCH parameter.
     image: ""
     # The checkpoint to score, as a LOCAL PATH (normally a distill-hf-export `hf_model`
     # or an hfpull binding). Required.
@@ -45,21 +46,22 @@ config:
     served_model_name: ""
     # Relative values resolve against $GB_BUILD_WORKDIR.
     output_dir: "output"
-    # SMOKE KNOB: score only the first N examples (in the order of the pinned prepared
-    # data, so two smoke runs are comparable). Empty = all 300 prompts.
+    # SMOKE KNOB: score only the first N instances (sorted by instance_id, so two smoke
+    # runs are comparable). Empty = the benchmark's full set (e.g. 500 for
+    # swebench-verified; see `granite-evals list` for the others).
     limit: ""
-    # Independent generations per example (avg-of-k). Empty = benchmark default (1).
+    # pass@1[avg-of-k]: independent agent runs per instance. Empty = benchmark default (1).
     repeats: ""
-    # Concurrent requests to vLLM (NeMo-Skills max_concurrent_requests).
-    workers: "64"
-    # Dataset: empty = allenai/IFBench data/IFBench_test.jsonl at a fixed commit (pinned
-    # in granite-evals). A prepared .jsonl or a directory holding <split>.jsonl overrides it.
+    # Instances worked on concurrently (agent sandboxes + requests to vLLM).
+    workers: "8"
+    # Dataset: empty = the upstream dataset and commit this benchmark pins in
+    # granite-evals (e.g. SWE-bench/SWE-bench_Verified for swebench-verified). A hub id
+    # or local path overrides it.
     dataset: ""
     dataset_revision: ""
     # Space-separated key=value benchmark options passed as --option, e.g.
-    # "temperature=0.6 max_tokens=32768" (unset sampling = the checkpoint's generation_config),
-    # "ns.<key>=<value>" (any NeMo-Skills generation override). No answers=gold:
-    # IFBench has no reference responses.
+    # "step_limit=100 temperature=0.6" or "patch=gold" (grade the reference patches:
+    # checks images + sandbox + grading without a model; model_path may be "none").
     options: ""
     # all | generate | score. "generate" serves the model and saves its outputs
     # (generation.json, the granite_generation artifact); "score" serves nothing and
@@ -70,8 +72,9 @@ config:
     tensor_parallel_size: "1"
     gpu_memory_utilization: "0.9"
     max_model_len: ""
-    # Shared enroot squashfs cache, only for benchmarks that sandbox. This one doesn't.
-    sandbox_cache: ""
+    # Where SWE-bench instance images are imported to as squashfs. On a shared
+    # filesystem, every job after the first reuses them instead of pulling again.
+    sandbox_cache: "/proj/granite-build/g4os/granite/enroot-cache"
     # Empty leaves the image's HF cache default alone.
     hf_home: ""
 outputs:
