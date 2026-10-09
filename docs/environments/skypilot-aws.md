@@ -15,9 +15,9 @@ API-provisioned and reached through AWS credentials.
 
 ### Credentials: `aws_credentials`
 
-SkyPilot's API server uses boto3, which reads `~/.aws/credentials`. Inline credential profiles and
-gbserver materializes that file (INI, mode `0600`) at launch; SkyPilot then uploads the file to the
-provisioned nodes so they can reach S3.
+SkyPilot's API server uses boto3, which reads `~/.aws/credentials`. You declare inline credential
+profiles via `aws_credentials`, and gbserver materializes that file (INI, mode `0600`) at launch;
+SkyPilot then uploads the file to the provisioned nodes so they can reach S3.
 
 ```yaml
 config:
@@ -643,21 +643,10 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 1. **Give the build its launch credentials.** The committed `environment.yaml` selects the
    `gb-skypilot` profile, so your key pair needs to reach that profile. Pick one path:
 
-   **A — simplest (local/standalone): add the profile to `~/.aws/credentials` by hand.**
-
-   ```ini
-   [gb-skypilot]
-   aws_access_key_id = AKIA...
-   aws_secret_access_key = ...
-   ```
-
-   gbserver leaves an existing `gb-skypilot` profile as-is (the `GB_AWS_*` secrets are lenient
-   when absent) and SkyPilot reads it. Do **not** *also* seed the secret store (path B) with
-   different values — a mismatch raises `SkypilotConfigCollisionError`.
-
-   **B — portable (standalone *and* shared): seed the secret store.** gbserver materializes the
+   **A — recommended (standalone *and* shared): seed the secret store.** gbserver materializes the
    `gb-skypilot` profile from the `GB_AWS_*` secrets at launch, so the *same* `environment.yaml`
-   also works in a server deployment (where the server-managed store supplies them):
+   works unchanged in a server deployment (where the server-managed store supplies them) — nothing
+   is hand-edited in `~/.aws`.
 
    Seed them for the **test's own space**: each test space reads `space_secrets/<its space.yaml
    name>/`, not `public/`. For example, the ephemeral EFS test space is named
@@ -677,6 +666,18 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
    }, indent=2)); p.chmod(0o600)
    PY
    ```
+
+   **B — quick local shortcut (standalone only): add the profile to `~/.aws/credentials` by hand.**
+
+   ```ini
+   [gb-skypilot]
+   aws_access_key_id = AKIA...
+   aws_secret_access_key = ...
+   ```
+
+   gbserver leaves an existing `gb-skypilot` profile as-is (the `GB_AWS_*` secrets are lenient
+   when absent) and SkyPilot reads it. Do **not** *also* seed the secret store (path A) with
+   different values — a mismatch raises `SkypilotConfigCollisionError`.
 
 2. **Set the skip-gate** so the test runs instead of self-skipping — export **either**
    `AWS_PROFILE=gb-skypilot` **or** the `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` pair. A bare
