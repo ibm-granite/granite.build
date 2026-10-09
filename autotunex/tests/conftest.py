@@ -62,6 +62,7 @@ def make_settings(
     dataset_storage_dir: Path | None = None,
     gb_environment: str | None = None,
     lsf_cluster: str | None = None,
+    hf_import_enabled: bool = True,
     llm_base_url: str | None = None,
     llm_api_key: str | None = None,
     llm_model: str | None = None,
@@ -167,6 +168,8 @@ def make_settings(
             exported ``GB_ENVIRONMENT`` cannot leak into a test.
         lsf_cluster: SkyPilot/LSF cluster name. Defaults to ``None`` (the
             same-host bash path); set it to select the remote LSF variant.
+        hf_import_enabled: Whether HuggingFace dataset import is enabled.
+            Defaults to ``True``, matching ``Settings``'s own default.
         llm_base_url: OpenAI-compatible gateway base URL, for the LLM
             intelligence feature. Defaults to ``None``, matching ``Settings``'s
             own default (feature disabled).
@@ -222,6 +225,7 @@ def make_settings(
         ),
         gb_environment=gb_environment,
         lsf_cluster=lsf_cluster,
+        hf_import_enabled=hf_import_enabled,
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
         llm_model=llm_model,

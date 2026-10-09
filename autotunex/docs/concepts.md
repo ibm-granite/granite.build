@@ -70,16 +70,21 @@ empty  →  uploading  →  ready
                   ↘
                    error
 
+empty  →  importing  →  ready  (a HuggingFace import)
+                  ↘
+                   error
+
 ready  →  uploading            (a re-upload)
 error  →  uploading            (a re-upload)
 ```
 
-The lifecycle is not one-way: a `ready` or `error` dataset can be uploaded again, re-entering `uploading`. The only status that refuses a new upload is `uploading` itself — an in-flight upload has to finish first.
+The lifecycle is not one-way: a `ready` or `error` dataset can be uploaded again, re-entering `uploading`. `uploading` and `importing` refuse a new upload — an in-flight upload has to finish first.
 
 | Status | Meaning |
 | --- | --- |
 | `empty` | Created, but no data uploaded yet. |
 | `uploading` | A file upload is in progress. |
+| `importing` | The HuggingFace-import counterpart of `uploading`: `POST /datasets/hf/import` is fetching the repo's parquet snapshot. |
 | `ready` | Data is present and usable — a job may reference it. |
 | `error` | The upload failed. |
 

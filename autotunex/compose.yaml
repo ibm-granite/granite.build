@@ -35,7 +35,7 @@ services:
       dockerfile: Dockerfile.aio
       # args:
       #   PUBLIC_AUTOTUNEX_API_URL: ""             # set only if the API is fronted elsewhere
-      #   GB_REF: feat/autotunex-endpoint-migration
+      #   GB_REF: stable                           # pin granite.build to a tag instead of tracking main
       #   INSTALL_AUTOTUNE_CORE: "1"               # also install the vendored fm-tune core (src/fm-tune[core,mlx], local backend)
     image: autotunex-aio:local
     ports:
@@ -52,6 +52,39 @@ services:
       # - ./mysql-ca.pem:/certs/mysql-ca.pem:ro
     restart: unless-stopped
 
+  # GPU build of the same image: an nvidia/cuda base plus the fm-tune [full]
+  # extras (verl/vLLM, flash-attn, deepspeed). Run with:
+  #   docker compose --profile cuda up --build
+  cuda:
+    # Behind a profile, like `aio`, so a bare `up` never pulls the multi-GB CUDA
+    # base or tries to reserve a GPU on a machine that has none.
+    profiles: ["cuda"]
+    build:
+      context: .
+      args:
+        DEVICE: cuda
+      # CUDA_BASE overrides the CUDA version; keep an Ubuntu whose system python
+      # is 3.12, because the pinned flash-attn wheel is cp312-only.
+      #   CUDA_BASE: nvidia/cuda:12.8.0-devel-ubuntu24.04
+    image: autotunex:cuda
+    ports:
+      - "8000:8000"
+    # A volume of its own: sharing one SQLite file with the `autotunex` service
+    # would mean two containers writing the same database.
+    volumes:
+      - autotunex-cuda-data:/data
+    # Compose's device reservation. Podman passes GPUs through with CDI instead:
+    #   podman run --device nvidia.com/gpu=all ...
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
 volumes:
   autotunex-data:
   aio-data:
+  autotunex-cuda-data:

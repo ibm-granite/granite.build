@@ -56,6 +56,16 @@ def test_defaults_are_standalone_with_no_narrowing() -> None:
     assert settings.standalone_role == "admin"
 
 
+def test_keep_diagnostics_defaults_off_and_reads_its_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert Settings(_env_file=None, environment="test").keep_diagnostics is False
+
+    monkeypatch.setenv("AUTOTUNEX_KEEP_DIAGNOSTICS", "1")
+
+    assert Settings(_env_file=None, environment="test").keep_diagnostics is True
+
+
 def test_gb_tags_defaults_to_autotunex() -> None:
     settings = Settings(_env_file=None, environment="test")
 

@@ -511,6 +511,14 @@ HPO control:
                              artifacts (final_checkpoints/, outputs/,
                              train_results/, data_cache/) after final training
                              instead of deleting them. Useful for debugging
+  --model_at_root            After a successful run, move the model files up
+                             to {output_dir}/ itself and delete everything
+                             else there. For jobs whose whole output_dir is
+                             uploaded as the model (e.g. a HF repo). Rewrites
+                             the entire output_dir; off by default
+  --keep_diagnostics         With --model_at_root, move the other artifacts
+                             into {output_dir}/diagnostics/ instead of deleting
+                             them (or set FMTUNE_KEEP_DIAGNOSTICS=1)
   --cleanup                  Remove the ray_results/ folder after training
   --save_history             Write HPO trial history to
                              {output_dir}/results/{run_name}_trials.csv
@@ -588,6 +596,12 @@ Notes:
   linger.
 - `logs/` is **not** cleaned automatically — delete it manually if you don't
   need the per-trial HF Trainer logs.
+- With `--model_at_root`, a successful run ends with the model files directly
+  in `{output_dir}/` and nothing else, or with everything else under
+  `{output_dir}/diagnostics/` when `--keep_diagnostics` /
+  `FMTUNE_KEEP_DIAGNOSTICS=1` is set. A failed run is left as described above.
+  If the model can't be moved (none found, or the move fails), the run exits
+  with code 1.
 
 
 ## Package Structure

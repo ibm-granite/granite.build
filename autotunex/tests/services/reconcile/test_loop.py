@@ -95,7 +95,7 @@ def _state_with_output_artifact() -> BuildState:
                     "output_artifacts": [
                         {
                             "uuid": "d4affa76-52a8-4f57-bd5b-db49470fed5f",
-                            "uri": "hf://huggingface.co/models/ibm-research/autotunex_a69082b7",
+                            "uri": "hf://huggingface.co/models/example-org/autotunex_a69082b7",
                         }
                     ],
                     "steps": [],
@@ -315,7 +315,7 @@ async def test_terminal_populates_artifact_id_and_uri_from_output_artifacts(
     assert task is not None
     assert task.status == RunStatus.ERROR  # failed build, artifact still recorded
     assert str(task.artifact_id) == "d4affa76-52a8-4f57-bd5b-db49470fed5f"
-    assert task.artifact_uri == "hf://huggingface.co/models/ibm-research/autotunex_a69082b7"
+    assert task.artifact_uri == "hf://huggingface.co/models/example-org/autotunex_a69082b7"
 
 
 async def test_reconcile_never_modifies_trials(engine: AsyncEngine) -> None:

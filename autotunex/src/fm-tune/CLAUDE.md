@@ -77,7 +77,7 @@ All drivers follow the same contract:
 ```python
 def train_driver_*_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # 1. Pop sections: training_config, training_rl_config, tuner_flags, tune_config
-    # 2. Separate tunable params (tuner_flags[k]=True) from fixed (False)
+    # 2. Split sampled params: PEFT kwargs (tuner_flags[k]=True) vs Trainer kwargs (False)
     # 3. Load model, datasets, build trainer
     # 4. Train
     # 5. Report: tune.report({"loss": ..., "train_loss": ..., "done": True, ...})
@@ -91,14 +91,15 @@ YAML configs define hyperparameter search spaces. Each param has:
 - `strategy` — sampling method (choice, uniform, loguniform)
 - `values` — discrete choices or range bounds
 - `default` — value used when `--no_autotune`
-- `for_tuner` — if true, param is tuned by HPO; if false, fixed to default
+- `for_tuner` — where the value goes, not whether it is swept: `true` → PEFT adapter config (`peft_kwargs`, e.g. LoRA `r`), `false` → HF/TRL `TrainingArguments` (`train_kwargs`, e.g. `learning_rate`). Every param in a search space is sampled either way (`get_strategy` ignores the flag); to fix one, give it a single value. The verl driver ignores the flag and passes every sampled param to verl.
 
 ### Checkpointing Pattern
 
 - **HPO trials**: `save_strategy="epoch"`, `save_total_limit=1` (minimal, just enough for metrics reporting)
 - **Final training**: `load_best_model_at_end=True`, `metric_for_best_model="eval_loss"`, `save_total_limit=3`
-- **verl driver**: Custom `_select_best_checkpoint()` using `_InMemoryMetricsLogger`
+- **verl driver**: Saves the last checkpoint via `_last_hf_model_dir()` (skips `global_step_*` dirs whose `actor/` verl's `max_actor_ckpt_to_keep` rotation deleted; no validation runs, so there is no reliable "best" to pick). `_InMemoryMetricsLogger` collects per-step metrics (both in `autotune/callbacks/verl_metrics.py`, verl/torch-free so they test on any platform). The in-memory logger also forwards each step to a `VerlStepReporter`, which writes one `training_metrics` row (`loss`=`actor/pg_loss`, `grad_norm`, `learning_rate`=`actor/lr`, rest in `extra`) and one `[AutoTune] verl step N: …` trial-log line.
 - After model save, `checkpoint-*` dirs (or `global_step_*` for verl) are cleaned up
+- **`--model_at_root`** (off by default; AutotuneX passes it): `main.py`'s `finally` calls `utils.promote_model_to_root()` only after a successful run — moves `<output_dir>/<model_name>/` (or `models/<model_name>/`) contents to `<output_dir>/` and deletes everything else, or moves it into `diagnostics/` with `--keep_diagnostics` / `FMTUNE_KEEP_DIAGNOSTICS=1`. Needed because granite.build uploads the whole `output_dir` as the HF repo.
 - **Final-training resume**: `fit_best_config()` writes the resolved config to `final_checkpoints/final_config.json` before training. On success the whole `final_checkpoints/` dir (config + checkpoints) is removed; an interrupted run leaves both behind so a later `--resume_from_checkpoint` can read the config, skip HPO, and resume from the last `checkpoint-*`.
 
 ### verl Integration (driver_multi_verl.py)
@@ -106,6 +107,7 @@ YAML configs define hyperparameter search spaces. Each param has:
 The verl driver is the most complex. Key details:
 
 - **Config**: Loads verl defaults via `hydra.compose("ppo_trainer")`, merges fm-tune overrides via `OmegaConf.merge()`. Must call `OmegaConf.set_struct(cfg, False)` first.
+- **Overrides live in a pure module**: `autotune/trainers/verl_overrides.py::build_verl_overrides` maps a trial's sampled values to verl keys and returns a plain dict; `build_verl_config` only merges it onto verl's defaults. `rollout_n`, `rollout_temperature`, `kl_coef` and DAPO's `overlong_*` fall back from the sampled `train_kwargs` to the fixed `training_rl_config` via `_pick`; `learning_rate`, batch size, `clip_range` and entropy come from `train_kwargs` only, so keep them in the search space. It imports no torch/verl/hydra/omegaconf, so `tests/test_verl_overrides.py` runs on macOS and fails when a param in the `autotune.yaml` online-RL search space isn't wired (or listed as pending).
 - **Colocated GPU pools**: Actor, critic, ref, and vLLM rollout share the same GPUs.
 - **Memory optimizations**: `gpu_memory_utilization=0.3`, `enable_sleep_mode=True`, `free_cache_engine=True`, ref model `param_offload=True`, gradient checkpointing always on.
 - **Hybrid model detection**: Auto-detects Mamba/SSM architectures and forces `enforce_eager=True`.
@@ -123,6 +125,8 @@ Each entry has a one-line symptom and the fix.
 - **verl placement groups**: Survive actor death. Must call `ray.util.remove_placement_group()` explicitly between trials — see "verl Worker Cleanup" below.
 - **verl 0.7.1 packaging**: `router/` subpackage under `verl/experimental/reward_loop/` is missing from PyPI for both 0.7.1 and 0.8.0.dev0. Workaround: copy `naive_router.py` and `inner_sglang_router.py` from the GitHub repo into the installed package and add an `__init__.py`.
 - **verl reward model `rollout.name`**: verl's default `reward/reward.yaml` has `name: ???` (OmegaConf mandatory). Must set `reward.reward_model.rollout.name = "vllm"` explicitly along with `tensor_model_parallel_size`, `enforce_eager`, `gpu_memory_utilization`, `max_model_len`, `enable_sleep_mode`, `free_cache_engine`.
+- **DAPO overlong penalty location**: verl 0.7.1's `"dapo"` reward manager (reward loop) reads `reward.reward_kwargs.overlong_buffer_cfg` **and** `reward.reward_kwargs.max_resp_len`, and asserts `max_resp_len >= overlong_buffer_cfg.len`. Nothing reads `algorithm.overlong_buffer_cfg`. `build_verl_overrides` writes both keys and raises a `ValueError` if `overlong_buffer_len` exceeds `max_response_length`. Don't sweep `overlong_*`: the penalty is added to `critic/score/mean`, which is the HPO loss, so a sweep ranks trials on differently shaped rewards and favours the weakest penalty. They live in `training_rl_config` (guarded by `tests/test_verl_overrides.py`).
+- **verl PPO clip bounds**: verl 0.7.1's policy loss clips with `actor.clip_ratio_low` / `clip_ratio_high` (both default `0.2`) and falls back to `clip_ratio` only when they are `None`, so writing `clip_ratio` alone does nothing. `build_verl_overrides` writes all three from `clip_range`.
 - **HF `load_best_model_at_end` requirements**: When set to `True`, requires `eval_strategy == save_strategy`, `save_steps % eval_steps == 0` (if `"steps"`), `metric_for_best_model` (e.g. `"eval_loss"`), and `greater_is_better` (`False` for loss). `trainer.save_model()` then saves the best checkpoint, not the last.
 - **Ray Data + pandas 3.x**: Pandas 3.0 removed `SettingWithCopyWarning`; Ray Data 2.54's pandas `BlockAccessor` still references it, so any `map_batches(..., batch_format="pandas")` crashes. Fix: use `batch_format="numpy"` (the default) and convert inside the UDF if pandas is needed.
 - **Ray Data object-store sizing**: Client-side `ray.init(object_store_memory=...)` does NOT resize an existing remote cluster's object store. Size it on cluster bringup (`--object-store-memory` to `ray start`, or `RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION=0.5` before `ray start`). Local clusters: `autotune/cluster.py::start_local_ray_cluster` already sets 0.5.

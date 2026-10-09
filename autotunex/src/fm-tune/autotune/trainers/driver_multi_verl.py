@@ -100,8 +100,16 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Rol
 from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker, CriticWorker
 
 # Local
+from autotune.callbacks.verl_metrics import (
+    VerlStepReporter,
+    _InMemoryMetricsLogger,
+    _last_hf_model_dir,
+    set_active_reporter,
+)
+from autotune.trainers.verl_overrides import build_verl_overrides
 from autotune.utils import (
     extract_tokenizer_kwargs,
+    final_checkpoints_dir,
     get_tokenizer,
     remove_dir,
     set_seed,
@@ -202,281 +210,28 @@ def build_verl_config(
     dataset_size: int = 0,
 ) -> OmegaConf:
     """
-    Construct a verl-compatible OmegaConf config.
-
-    Adapts settings based on tensor parallelism degree:
-      - TP=1: no gradient checkpointing, CUDA graphs enabled, higher vLLM memory
-      - TP>1: gradient checkpointing enabled, eager mode (no CUDA graphs), lower vLLM memory
+    Construct a verl-compatible OmegaConf config: verl's defaults with
+    fm-tune's overrides (see ``autotune.trainers.verl_overrides``) merged on top.
     """
-    model_name_or_path = training_config.get("model_name_or_path")
-    precision = "bf16"
-    output_dir = training_config.get("output_dir")
-    dtype = "bfloat16" if precision in ["bf16", "fp16"] else "float32"
-
-    # Extract training hyperparams
-    lr = train_kwargs.get("learning_rate")
-    batch_size = train_kwargs.get("per_device_train_batch_size")
-    num_train_epochs = train_kwargs.get("num_train_epochs")
-    clip_range = train_kwargs.get("clip_range")
-    entropy_coeff = train_kwargs.get("entropy_coeff", 0.0) or 0.0
-    kl_coef = train_kwargs.get("kl_coef", 0.001) or 0.001
-
-    # Extract verl-specific parameters
-    max_prompt_length = training_rl_config.get("max_prompt_length")
-    max_response_length = training_rl_config.get("max_response_length")
-    rollout_temperature = training_rl_config.get("rollout_temperature")
-    rollout_top_p = training_rl_config.get("rollout_top_p")
-    rollout_n = training_rl_config.get("rollout_n")
-    gpu_memory_utilization = training_rl_config.get("gpu_memory_utilization")
-
-    # Reward function config
-    reward_function_path = training_rl_config.get("reward_function_path", None)
-    reward_function_name = training_rl_config.get("reward_function_name", "compute_score")
-
-    # Detect hybrid (Mamba/SSM) architectures — these require enforce_eager
-    # because CUDA graph capture is incompatible with stateful Mamba layers.
-    is_hybrid_model = False
-    # try:
-    #     from transformers import AutoConfig
-    #     _hf_cfg = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
-    #     _arch = getattr(_hf_cfg, "architectures", []) or []
-    #     _model_type = getattr(_hf_cfg, "model_type", "")
-    #     is_hybrid_model = any(
-    #         kw in a.lower() for a in _arch for kw in ("hybrid", "mamba", "rwkv", "ssm")
-    #     ) or any(
-    #         kw in _model_type.lower() for kw in ("hybrid", "mamba", "rwkv", "ssm")
-    #     )
-    #     if is_hybrid_model:
-    #         print(f"[AutoTune] Detected hybrid/SSM architecture: {_arch} — forcing eager mode")
-    # except Exception:
-    #     pass
-
-    # Derive adaptive settings from TP and architecture
-    is_large_model = tensor_model_parallel_size > 1
-    # Always enable gradient checkpointing — with colocated pools the actor,
-    # critic, ref, and vLLM engine all share the same GPUs, so activation
-    # memory savings matter even for small models.
-    enable_gradient_checkpointing = True
-    enforce_eager = is_large_model or is_hybrid_model
-
-    # Log resolved parameters
-    logger.info(
-        "[AutoTune] build_verl_config parameters:\n"
-        f"  train_kwargs:          {json.dumps({k: str(v) for k, v in train_kwargs.items()}, indent=4)}\n"
-        f"  model:                 {model_name_or_path}\n"
-        f"  lr:                    {lr}\n"
-        f"  batch_size:            {batch_size}\n"
-        f"  num_train_epochs:      {num_train_epochs}\n"
-        f"  clip_range:            {clip_range}\n"
-        f"  entropy_coeff:         {entropy_coeff}\n"
-        f"  kl_coef:               {kl_coef}\n"
-        f"  max_prompt_length:     {max_prompt_length}\n"
-        f"  max_response_length:   {max_response_length}\n"
-        f"  rollout_temperature:   {rollout_temperature}\n"
-        f"  rollout_top_p:         {rollout_top_p}\n"
-        f"  rollout_n:             {rollout_n}\n"
-        f"  gpu_memory_util:       {gpu_memory_utilization}\n"
-        f"  num_workers:           {num_workers}\n"
-        f"  tensor_parallel_size:  {tensor_model_parallel_size}\n"
-        f"  grad_checkpointing:   {enable_gradient_checkpointing}\n"
-        f"  enforce_eager:         {enforce_eager}\n"
-        f"  rl_algorithm:          {rl_algorithm}\n"
-        f"  reward_function_path:  {reward_function_path}\n"
-        f"  reward_function_name:  {reward_function_name}"
+    overrides = build_verl_overrides(
+        training_config=training_config,
+        training_rl_config=training_rl_config,
+        train_kwargs=train_kwargs,
+        train_file=train_file,
+        eval_file=eval_file,
+        num_workers=num_workers,
+        rl_algorithm=rl_algorithm,
+        tensor_model_parallel_size=tensor_model_parallel_size,
+        hpo_search=hpo_search,
+        dataset_size=dataset_size,
     )
-
-    # Determine reward manager name
-    reward_manager_name = "dapo" if rl_algorithm == "dapo" else "naive"
-
-    # Set rollout n based on algorithm
-    if rl_algorithm in ("grpo", "dapo"):
-        effective_rollout_n = rollout_n if rollout_n else 5
-    else:
-        effective_rollout_n = 1
-
-    # With colocated pools, all GPUs are shared — batch size uses full count
-    actor_gpus = num_workers
-    total_batch_size = batch_size * actor_gpus
-
-    # vLLM memory utilization — keep low for colocated pools where actor,
-    # critic, ref, and vLLM all share the same GPUs.  For RL rollouts with
-    # max_model_len = max_prompt_length + max_response_length (typically
-    # 1-4K tokens), 0.3 is sufficient KV cache.
-    if gpu_memory_utilization:
-        vllm_gpu_mem = gpu_memory_utilization
-    elif is_large_model:
-        vllm_gpu_mem = 0.25
-    else:
-        vllm_gpu_mem = 0.3
-
-    # Checkpoint frequency — disable during HPO, enable for final training
-    if hpo_search:
-        save_freq = -1
-        max_actor_ckpt_to_keep = None
-        max_critic_ckpt_to_keep = None
-    else:
-        steps_per_epoch = max(1, dataset_size // total_batch_size) if dataset_size > 0 else 1
-        total_steps = steps_per_epoch * num_train_epochs
-        if num_train_epochs > 1:
-            save_freq = steps_per_epoch  # every epoch
-        else:
-            save_freq = max(1, total_steps // 5)  # ~5 checkpoints
-        # Keep 3 most recent checkpoints — after training we select the
-        # best one based on reward/loss metrics.
-        max_actor_ckpt_to_keep = 3
-        max_critic_ckpt_to_keep = 3
-        logger.info(
-            f"[AutoTune] Checkpointing: save_freq={save_freq}, "
-            f"steps_per_epoch={steps_per_epoch}, total_steps={total_steps}"
-        )
 
     # Load verl's full default config
     cfg = _load_verl_default_config()
 
-    # Build overrides
-    overrides = OmegaConf.create(
-        {
-            "data": {
-                "train_files": train_file,
-                "val_files": eval_file,
-                "train_batch_size": total_batch_size,
-                "val_batch_size": total_batch_size,
-                "max_prompt_length": max_prompt_length,
-                "max_response_length": max_response_length,
-                "reward_fn_key": "data_source",
-                "shuffle": True,
-                "dataloader_num_workers": 0,
-            },
-            "actor_rollout_ref": {
-                "model": {
-                    "path": model_name_or_path,
-                    "enable_gradient_checkpointing": enable_gradient_checkpointing,
-                },
-                "actor": {
-                    "ppo_micro_batch_size_per_gpu": batch_size,
-                    "ppo_mini_batch_size": total_batch_size,
-                    "optim": {
-                        "lr": lr,
-                    },
-                    "clip_ratio": clip_range if clip_range is not None else 0.2,
-                    "entropy_coeff": float(entropy_coeff),
-                    "use_kl_loss": False,
-                    "ppo_epochs": 1,
-                    "fsdp_config": {
-                        "dtype": dtype,
-                    },
-                    "checkpoint": {
-                        "save_contents": ["model", "hf_model"],
-                        "load_contents": ["model"],
-                    },
-                },
-                "rollout": {
-                    "name": "vllm",
-                    "gpu_memory_utilization": vllm_gpu_mem,
-                    "max_model_len": max_prompt_length + max_response_length,
-                    "temperature": rollout_temperature,
-                    "top_p": rollout_top_p,
-                    "n": effective_rollout_n,
-                    "tensor_model_parallel_size": tensor_model_parallel_size,
-                    "enforce_eager": enforce_eager,
-                    "log_prob_micro_batch_size_per_gpu": batch_size,
-                    # Free vLLM GPU memory (model weights + KV cache) when not
-                    # generating rollouts, so the actor/critic training phases
-                    # have more headroom on the colocated GPUs.
-                    "enable_sleep_mode": True,
-                    "free_cache_engine": True,
-                },
-                "ref": {
-                    "log_prob_micro_batch_size_per_gpu": batch_size,
-                    "fsdp_config": {
-                        "dtype": dtype,
-                        # Offload ref model params to CPU — it only runs forward
-                        # passes for KL divergence and doesn't need to stay on GPU.
-                        "param_offload": True,
-                    },
-                },
-            },
-            "critic": {
-                "enable": True,
-                "model": {
-                    "path": model_name_or_path,
-                    "tokenizer_path": model_name_or_path,
-                    "enable_gradient_checkpointing": enable_gradient_checkpointing,
-                    "fsdp_config": {
-                        "dtype": dtype,
-                    },
-                },
-                "optim": {
-                    "lr": lr,
-                },
-                "ppo_micro_batch_size_per_gpu": batch_size,
-                "ppo_mini_batch_size": total_batch_size,
-                "ppo_epochs": 1,
-                "cliprange_value": 0.5,
-            },
-            "reward": {
-                "custom_reward_function": {
-                    "path": reward_function_path or None,
-                    "name": reward_function_name,
-                },
-                "reward_manager": {
-                    "name": reward_manager_name,
-                },
-                "reward_model": {
-                    "enable": False,
-                },
-            },
-            "algorithm": {
-                "adv_estimator": "gae",
-                "use_kl_in_reward": False,
-                "kl_penalty": "kl",
-                "kl_ctrl": {
-                    "kl_coef": kl_coef,
-                },
-                "gamma": 1.0,
-                "lam": 0.95,
-            },
-            "trainer": {
-                "device": "cuda",
-                "n_gpus_per_node": num_workers,
-                "nnodes": 1,
-                "total_epochs": num_train_epochs,
-                "total_training_steps": None,
-                "save_freq": save_freq,
-                "max_actor_ckpt_to_keep": max_actor_ckpt_to_keep,
-                "max_critic_ckpt_to_keep": max_critic_ckpt_to_keep,
-                "test_freq": -1,
-                "project_name": "fm-tune-verl",
-                "experiment_name": "online_rl",
-                "default_local_dir": output_dir,
-                "logger": ["console"],
-                "val_before_train": False,
-            },
-        }
-    )
-
     # Merge overrides on top of defaults
     OmegaConf.set_struct(cfg, False)
-    cfg = OmegaConf.merge(cfg, overrides)
-
-    # DAPO-specific overlong buffer
-    if rl_algorithm == "dapo":
-        overlong_buffer_len = train_kwargs.get("overlong_buffer_len", 256)
-        overlong_penalty_factor = train_kwargs.get("overlong_penalty_factor", 1.0)
-        cfg.algorithm.overlong_buffer_cfg = {
-            "enable": True,
-            "len": overlong_buffer_len,
-            "penalty_factor": overlong_penalty_factor,
-            "log": False,
-        }
-
-    logger.info(
-        f"[AutoTune] VERL config: actor_gpus={actor_gpus}, "
-        f"total_batch_size={total_batch_size}, vllm_gpu_mem={vllm_gpu_mem}, "
-        f"TP={tensor_model_parallel_size}, "
-        f"gradient_checkpointing={enable_gradient_checkpointing}, "
-        f"enforce_eager={enforce_eager}"
-    )
+    cfg = OmegaConf.merge(cfg, OmegaConf.create(overrides))
 
     return cfg
 
@@ -522,94 +277,6 @@ def build_resource_pool_manager(
         resource_pool_spec=resource_pool_spec,
         mapping=role_mapping,
     )
-
-
-# --- In-memory metrics logger (same as driver_multi_verl.py) ---
-
-
-class _InMemoryMetricsLogger:
-    """In-memory logger that captures verl's per-step metrics without file I/O."""
-
-    _all_steps = []
-
-    def __init__(self):
-        _InMemoryMetricsLogger._all_steps = []
-
-    def log(self, data, step):
-        clean = {"_step": step}
-        for k, v in data.items():
-            if isinstance(v, torch.Tensor):
-                clean[k] = v.item() if v.numel() == 1 else v.tolist()
-            elif hasattr(v, "item"):
-                clean[k] = v.item()
-            else:
-                clean[k] = v
-        _InMemoryMetricsLogger._all_steps.append(clean)
-
-    def finish(self):
-        pass
-
-    @classmethod
-    def collect(cls, rl_algorithm: str) -> Dict[str, Any]:
-        """Aggregate captured metrics into a flat dict for fm-tune."""
-        result = {}
-        all_steps = cls._all_steps
-
-        if not all_steps:
-            return result
-
-        last = all_steps[-1]
-
-        # Reward metrics (last step)
-        result["reward_mean"] = last.get("critic/score/mean", float("nan"))
-        result["reward_max"] = last.get("critic/score/max", float("nan"))
-        result["reward_min"] = last.get("critic/score/min", float("nan"))
-
-        # Actor metrics (average)
-        actor_losses = [s["actor/ppo_loss"] for s in all_steps if "actor/ppo_loss" in s]
-        pg_losses = [s["actor/pg_loss"] for s in all_steps if "actor/pg_loss" in s]
-        entropies = [s["actor/entropy"] for s in all_steps if "actor/entropy" in s]
-
-        result["actor_loss"] = sum(actor_losses) / len(actor_losses) if actor_losses else float("nan")
-        result["pg_loss"] = sum(pg_losses) / len(pg_losses) if pg_losses else float("nan")
-        result["actor_entropy"] = sum(entropies) / len(entropies) if entropies else float("nan")
-
-        # KL divergence
-        kl_values = [s["actor/kl_loss"] for s in all_steps if "actor/kl_loss" in s]
-        kl_reward = [s["actor/reward_kl_penalty"] for s in all_steps if "actor/reward_kl_penalty" in s]
-        if kl_values:
-            result["kl_divergence"] = sum(kl_values) / len(kl_values)
-        elif kl_reward:
-            result["kl_divergence"] = sum(kl_reward) / len(kl_reward)
-        else:
-            result["kl_divergence"] = float("nan")
-
-        # Response length (last step)
-        result["response_length_mean"] = last.get("response_length/mean", float("nan"))
-        result["response_length_clip_ratio"] = last.get("response_length/clip_ratio", float("nan"))
-
-        # Advantage metrics (last step)
-        result["advantages_mean"] = last.get("critic/advantages/mean", float("nan"))
-        result["returns_mean"] = last.get("critic/returns/mean", float("nan"))
-
-        # PPO-specific critic metrics
-        if rl_algorithm == "ppo":
-            critic_losses = [s["critic/loss"] for s in all_steps if "critic/loss" in s]
-            result["critic_loss"] = sum(critic_losses) / len(critic_losses) if critic_losses else float("nan")
-            result["critic_values_mean"] = last.get("critic/values/mean", float("nan"))
-            result["critic_vf_explained_var"] = last.get("critic/vf_explained_var", float("nan"))
-
-        # Training progress
-        result["global_steps"] = last.get("training/global_step", 0)
-        result["epoch"] = last.get("training/epoch", 0)
-        result["total_steps_logged"] = len(all_steps)
-
-        # Throughput
-        result["tokens_per_second"] = last.get("perf/overall_tokens_per_second", float("nan"))
-
-        logger.info(f"[AutoTune] Collected {len(all_steps)} training steps from in-memory metrics logger")
-
-        return result
 
 
 def _install_metrics_logger():
@@ -680,81 +347,6 @@ def _cleanup_verl_workers(trainer):
         logger.info("[AutoTune] No verl workers to clean up")
 
 
-def _select_best_checkpoint(ckpt_dirs, all_steps):
-    """Select the checkpoint corresponding to the best training step.
-
-    Picks the step with the highest mean reward (``critic/score/mean``).
-    Falls back to lowest actor PPO loss, then to the last checkpoint.
-
-    Args:
-        ckpt_dirs: Sorted list of ``global_step_*`` directory paths.
-        all_steps: List of per-step metric dicts from _InMemoryMetricsLogger
-                   (each dict contains a ``_step`` key).
-
-    Returns:
-        Path to the best checkpoint directory.
-    """
-    if not ckpt_dirs:
-        return None
-
-    # Parse step numbers from checkpoint dir names
-    def _step_from_dir(d):
-        base = os.path.basename(d)
-        try:
-            return int(base.split("global_step_")[-1])
-        except (ValueError, IndexError):
-            return -1
-
-    ckpt_steps = {_step_from_dir(d): d for d in ckpt_dirs}
-
-    if not all_steps:
-        logger.info("[AutoTune] No in-memory metrics — using last checkpoint")
-        return ckpt_dirs[-1]
-
-    # Find the step with the best metric
-    best_step = None
-    best_value = None
-    metric_name = None
-
-    # Try reward first (higher is better)
-    for entry in all_steps:
-        reward = entry.get("critic/score/mean")
-        if reward is not None and not (isinstance(reward, float) and math.isnan(reward)):
-            if best_value is None or reward > best_value:
-                best_value = reward
-                best_step = entry.get("_step")
-                metric_name = "critic/score/mean"
-
-    # Fall back to actor loss (lower is better)
-    if best_step is None:
-        for entry in all_steps:
-            loss = entry.get("actor/ppo_loss")
-            if loss is not None and not (isinstance(loss, float) and math.isnan(loss)):
-                if best_value is None or loss < best_value:
-                    best_value = loss
-                    best_step = entry.get("_step")
-                    metric_name = "actor/ppo_loss"
-
-    if best_step is None:
-        logger.info("[AutoTune] No valid metrics found — using last checkpoint")
-        return ckpt_dirs[-1]
-
-    # Find the checkpoint dir whose step is closest to (and <=) the best step
-    available_steps = sorted(ckpt_steps.keys())
-    selected_step = available_steps[-1]  # default to last
-    for s in reversed(available_steps):
-        if s <= best_step:
-            selected_step = s
-            break
-
-    selected_dir = ckpt_steps[selected_step]
-    logger.info(
-        f"[AutoTune] Best checkpoint: step {selected_step} "
-        f"({metric_name}={best_value:.4f}, best training step={best_step})"
-    )
-    return selected_dir
-
-
 # --- Main driver ---
 
 
@@ -786,7 +378,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Get the training config
     training_config = local_config.pop("training_config")
     training_rl_config = local_config.pop("training_rl_config")
-    tuner_flags = local_config.pop("tuner_flags")
+    local_config.pop("tuner_flags")
     local_config.pop("tune_config")
 
     # Get all required parameters
@@ -807,8 +399,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     set_seed(seed)
 
-    # Get tuner params
-    train_kwargs = {k: v for k, v in local_config.items() if tuner_flags[k] is True}
+    # Get tuner params. Every sampled param is a verl training param: for_tuner
+    # marks PEFT-adapter params in the SFT drivers and does not apply to online RL.
+    train_kwargs = dict(local_config)
     train_kwargs["num_train_epochs"] = num_train_epochs
 
     logger.info(f"[AutoTune] Training args: {train_kwargs}")
@@ -879,19 +472,15 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     elif rl_algorithm == "grpo":
         logger.info(f"[AutoTune] Configuring GRPO (TP={tensor_model_parallel_size})")
         verl_config.algorithm.adv_estimator = "grpo"
-        rollout_n = training_config.get("rollout_n", 5)
-        verl_config.actor_rollout_ref.rollout.n = rollout_n
         verl_config.critic.enable = False
-        logger.info(f"[AutoTune] GRPO rollout_n: {rollout_n}")
+        logger.info(f"[AutoTune] GRPO rollout_n: {verl_config.actor_rollout_ref.rollout.n}")
 
     elif rl_algorithm == "dapo":
         logger.info(f"[AutoTune] Configuring DAPO (TP={tensor_model_parallel_size})")
         verl_config.algorithm.adv_estimator = "grpo"
         verl_config.algorithm.norm_adv_by_std_in_grpo = False
-        rollout_n = training_config.get("rollout_n", 16)
-        verl_config.actor_rollout_ref.rollout.n = rollout_n
         verl_config.critic.enable = False
-        logger.info(f"[AutoTune] DAPO rollout_n: {rollout_n}")
+        logger.info(f"[AutoTune] DAPO rollout_n: {verl_config.actor_rollout_ref.rollout.n}")
     else:
         raise ValueError(f"Unknown RL algorithm: {rl_algorithm}. Supported: ppo, grpo, dapo.")
 
@@ -980,6 +569,17 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("[AutoTune] Starting training...")
     metrics = {}
 
+    # One training_metrics row + one trial-log line per verl step. Registered
+    # immediately before the try so the finally below always releases it.
+    # verl iterates train_dataloader once per epoch, so its length is the true
+    # steps-per-epoch (the save_freq estimate above can differ via drop_last).
+    try:
+        steps_per_epoch = len(trainer.train_dataloader)
+    except (AttributeError, TypeError):
+        steps_per_epoch = None  # rows fall back to verl's integer epoch
+    reporter = VerlStepReporter(trial_id=trial_id, steps_per_epoch=steps_per_epoch)
+    set_active_reporter(reporter)
+
     try:
         trainer.init_workers()
         trainer.fit()
@@ -988,6 +588,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         logger.error(f"[AutoTune] Training failed (trial {trial_id}): {e}", exc_info=True)
         raise  # Let Ray Tune mark trial as ERRORED
     finally:
+        # Never raises, so it cannot mask the re-raise above or skip the cleanup.
+        set_active_reporter(None)
+        reporter.close()
         # Kill verl's Ray actor workers (vLLM server, FSDP workers, etc.)
         # so the next HPO trial can start cleanly without stale processes
         # holding GPU memory or shared memory segments.
@@ -1000,10 +603,10 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     train_loss = metrics.get("actor_loss", float("nan"))
     kl_divergence = metrics.get("kl_divergence", float("nan"))
 
+    # No pg_loss fallback: it is on a different scale from -reward, so trials
+    # ranked by one would not be comparable with trials ranked by the other.
     if not math.isnan(reward_mean):
         loss = -reward_mean
-    elif not math.isnan(train_loss):
-        loss = train_loss
     else:
         loss = 10000.0
 
@@ -1060,25 +663,21 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         json.dump(_sanitize_for_json(result), f, indent=2)
     logger.info(f"[AutoTune] Results saved to: {filename}")
 
-    # Save model — pick the best checkpoint based on reward/loss metrics
+    # Save model from the last checkpoint
     if hpo_search is False and save_model_flag is True:
         model_name = training_config.get("output_model_name")
         output_model_path = output_dir  # os.path.join(output_dir, "models")
         output_model_id = os.path.join(output_model_path, model_name)
 
         verl_ckpt_base = verl_config.trainer.default_local_dir
-        ckpt_dirs = sorted(glob.glob(os.path.join(verl_ckpt_base, "global_step_*")))
+        ckpt_dirs = glob.glob(os.path.join(verl_ckpt_base, "global_step_*"))
 
-        # Select the best checkpoint using in-memory metrics
-        best_ckpt = _select_best_checkpoint(ckpt_dirs, _InMemoryMetricsLogger._all_steps)
-
-        hf_model_src = None
-        if best_ckpt is not None:
-            candidate = os.path.join(best_ckpt, "actor", "huggingface")
-            if os.path.isdir(candidate):
-                hf_model_src = candidate
-            else:
-                logger.warning(f"[AutoTune] HF model dir not found at {candidate}")
+        # Save the last checkpoint. There is no validation (test_freq=-1), and
+        # one training batch's reward is too noisy to pick a "best" step by;
+        # verl's rotation always keeps the latest. Future: to select a real best
+        # checkpoint, validate every save (test_freq=save_freq) on a held-out
+        # split and pick by val reward, keeping best + latest.
+        hf_model_src = _last_hf_model_dir(ckpt_dirs)
 
         if hf_model_src is not None:
             remove_dir(output_model_id)
@@ -1086,14 +685,31 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             tokenizer.save_pretrained(output_model_id)
             logger.info(f"[AutoTune] Model saved to: {output_model_id}")
         else:
-            logger.warning("[AutoTune] No verl checkpoint found — model not saved")
+            logger.warning(
+                f"[AutoTune] None of the {len(ckpt_dirs)} verl checkpoint(s) in {verl_ckpt_base} "
+                "has an actor/huggingface model — model not saved"
+            )
 
-        # Clean up verl checkpoints (global_step_* dirs) to free disk space.
-        # The final model has already been copied to output_model_id above.
-        for ckpt_dir in ckpt_dirs:
-            remove_dir(ckpt_dir)
-        if ckpt_dirs:
-            logger.info(f"[AutoTune] Cleaned up {len(ckpt_dirs)} verl checkpoint(s) from {verl_ckpt_base}")
+        # Clean up the training artifacts unless --keep_checkpoints is set
+        # (debug), matching the HF/TRL drivers: the verl checkpoints
+        # (global_step_* dirs), the final_checkpoints dir (holds
+        # final_config.json), the per-trial outputs dir, and verl's checkpoint
+        # tracker file written next to the global_step_* dirs. Only after a
+        # saved model: an unsaved run keeps them for debugging.
+        keep_checkpoints = training_config.get("keep_checkpoints", False)
+        if hf_model_src is not None and not keep_checkpoints:
+            for ckpt_dir in ckpt_dirs:
+                remove_dir(ckpt_dir)
+            if ckpt_dirs:
+                logger.info(f"[AutoTune] Cleaned up {len(ckpt_dirs)} verl checkpoint(s) from {verl_ckpt_base}")
+            shutil.rmtree(final_checkpoints_dir(output_dir), ignore_errors=True)
+            shutil.rmtree(os.path.join(output_dir, "outputs"), ignore_errors=True)
+            tracker_file = os.path.join(verl_ckpt_base, "latest_checkpointed_iteration.txt")
+            if os.path.isfile(tracker_file):
+                os.remove(tracker_file)
+            logger.info(f"[AutoTune] Cleaned up final_checkpoints/, outputs/ and verl tracker file in {output_dir}")
+        elif keep_checkpoints:
+            logger.info("[AutoTune] --keep_checkpoints set; skipping artifact cleanup")
 
     # Return trial result
     trial_result = {

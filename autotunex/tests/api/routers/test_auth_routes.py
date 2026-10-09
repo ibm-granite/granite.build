@@ -796,6 +796,27 @@ async def test_me_reports_the_authenticated_principal(
     assert response.json()["email"] == "dev@example.com"
 
 
+async def test_api_prefixed_me_requires_authentication(bff_client: AsyncClient) -> None:
+    """The ``/api/v1`` copy must not be a way around ``/auth/me``'s own check."""
+    response = await bff_client.get(f"{API}/auth/me")
+
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+async def test_api_prefixed_me_reports_the_same_principal_as_auth_me(
+    bff_client: AsyncClient, as_principal: Callable[[Principal], None]
+) -> None:
+    """A UI that can only reach ``/api/v1/*`` reads ``is_admin`` here to pick its scope."""
+    as_principal(Principal(email="admin@example.com", provider="session", is_admin=True))
+
+    prefixed = await bff_client.get(f"{API}/auth/me")
+    root = await bff_client.get("/auth/me")
+
+    assert prefixed.status_code == HTTPStatus.OK
+    assert prefixed.json()["is_admin"] is True
+    assert prefixed.json() == root.json()
+
+
 async def test_a_real_session_cookie_authenticates_the_rest_of_the_api(
     bff_client: AsyncClient,
 ) -> None:

@@ -334,7 +334,8 @@ suite drives these endpoints over `https://testserver`.
 - **No CSRF tokens.** Every mutating endpoint relies on `samesite=lax` alone:
   `POST /jobs`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/reconcile` and
   `DELETE /jobs/{id}`; the full configuration and dataset CRUD, including `PUT`,
-  `DELETE` and `POST /datasets/{id}/upload`; `PATCH /users/{id}`;
+  `DELETE` and `POST /datasets/{id}/upload`; `POST /datasets/hf/import`;
+  `PATCH /users/{id}`;
   `POST /auth/assume/{user_id}` and `POST /auth/unassume`; `POST /auth/logout`;
   and `POST /chat` / `POST /chat/stream`, whose tool registry can create a
   configuration and launch a job. Double-submit tokens across all mutating

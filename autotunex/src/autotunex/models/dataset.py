@@ -15,12 +15,27 @@ caller-settable-``artifact_url`` hole.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from autotunex.models.status import DatasetStatus, RunStatus
+
+
+def _reject_path_separators(value: str) -> str:
+    """Forbid traversal characters in a name that becomes a filesystem path segment."""
+    if any(sep in value for sep in ("/", "\\")) or ".." in value:
+        raise ValueError("name must not contain '/', '\\\\', or '..'")
+    return value
+
+
+DatasetName = Annotated[
+    str, Field(min_length=1, max_length=255), AfterValidator(_reject_path_separators)
+]
+"""A dataset name: also used by :class:`~autotunex.models.hf_import.HfImportRequest`,
+since both become filesystem path segments and must reject traversal the same way.
+"""
 
 
 class DatasetCreate(BaseModel):
@@ -37,17 +52,9 @@ class DatasetCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=255)
+    name: DatasetName
     description: str | None = Field(default=None)
     data_format: str = Field(default="jsonl")
-
-    @field_validator("name")
-    @classmethod
-    def _reject_path_separators(cls, value: str) -> str:
-        """Names become filesystem path segments; forbid traversal characters."""
-        if any(sep in value for sep in ("/", "\\")) or ".." in value:
-            raise ValueError("name must not contain '/', '\\\\', or '..'")
-        return value
 
 
 class DatasetJobRef(BaseModel):
@@ -107,6 +114,11 @@ class DatasetRead(BaseModel):
     validation_file_size: int | None = None
     artifact_id: str | None = None
     artifact_url: str | None = None
+    hf_repo_id: str | None = None
+    hf_revision: str | None = None
+    hf_config: str | None = None
+    hf_split: str | None = None
+    hf_provenance: dict[str, Any] | None = None
     associated_jobs: list[DatasetJobRef] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

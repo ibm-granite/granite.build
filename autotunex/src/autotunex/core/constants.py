@@ -22,3 +22,13 @@ shared tier), but writable only by the system user itself or an admin via
 that render system rows; all four must agree, which is why this is a fixed
 constant, not a setting.
 """
+
+HF_MODEL_URI_PREFIX: Final[str] = "hf://huggingface.co/models/"
+"""The locator prefix of a HuggingFace *model* repo, as gbserver reports it.
+
+A custom_code job's TUNING task records its output as
+``hf://huggingface.co/models/<owner>/<name>``. The tuned-model query filters on
+this prefix per allowlisted owner and the mapper strips it to recover
+``owner/name``, so both must agree — hence one constant here rather than a
+literal in each. ``services/launch/_shared.base_model_uri`` builds its binding from it too.
+"""
