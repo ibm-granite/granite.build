@@ -100,57 +100,7 @@
   }
 }
 
-/* ── Step details side panel ─────────────────────────────────────────────── */
-
-.stepSidePanel {
-  /* A flex sibling of .graphArea (not an overlay) so it shrinks the graph when
-     it opens. 33rem ≈ 528px, inside the 480–560px target. */
-  flex: 0 0 33rem;
-  max-width: 90%;
-  min-height: 0;
-  overflow: hidden;
-  background: var(--cds-layer-01);
-  border-left: 1px solid var(--cds-border-subtle-01);
-  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
-  display: flex;
-  flex-direction: column;
-  animation: stepSidePanelSlideIn 150ms ease-out;
-}
-
-@keyframes stepSidePanelSlideIn {
-  from { transform: translateX(100%); }
-  to { transform: translateX(0); }
-}
-
-.stepSidePanelHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 1.25rem 1rem 1rem 1.5rem;
-  border-bottom: 1px solid var(--cds-border-subtle-01);
-  flex-shrink: 0;
-}
-
-.stepSidePanelIdentity {
-  min-width: 0;
-}
-
-.stepSidePanelHeading {
-  font-size: 1.25rem;
-  font-weight: 600;
-  line-height: 1.25;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.stepSidePanelSubtitle {
-  margin-top: 0.125rem;
-  font-family: var(--cds-code-01-font-family, monospace);
-  font-size: 0.75rem;
-  color: var(--cds-text-secondary);
-  overflow-wrap: anywhere;
-}
+/* ── Meta passed into the shared drawer ──────────────────────────────────── */
 
 /* The one prominent status in the drawer — per-step badges only appear when a
    target has more than one step. */
@@ -164,12 +114,6 @@
   margin-top: 0.25rem;
   font-size: 0.75rem;
   color: var(--cds-text-secondary);
-}
-
-.stepSidePanelBody {
-  flex: 1;
-  overflow-y: auto;
-  padding: 1.5rem;
 }
 
 /* ── Step details panel ──────────────────────────────────────────────────── */
