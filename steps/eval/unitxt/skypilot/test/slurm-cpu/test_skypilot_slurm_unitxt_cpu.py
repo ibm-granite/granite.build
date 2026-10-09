@@ -27,7 +27,7 @@ on a real cluster:
 * the output directory is registered as ``results`` from the artifact marker.
 
 GPU evaluation is not covered here: the local cluster has no GPUs. A GPU test
-against bluevela/slurm belongs in the IBM test tree.
+against an internal GPU SLURM cluster belongs under ``test/integration/ibm/``.
 
 The model and the dataset are public, so no HF_TOKEN is needed.
 
