@@ -425,7 +425,10 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             GroupedEdge(i, o, len(jobs), last, sample)
             for (i, o), (jobs, last, sample) in groups.items()
         ]
-        edges.sort(key=lambda edge: (edge.last_recorded_at, edge.input, edge.output), reverse=True)
+        edges.sort(
+            key=lambda edge: (edge.last_recorded_at, edge.input, edge.output),
+            reverse=True,
+        )
         return edges[:limit] if limit is not None else edges
 
     def get_recent_job_ids(self, limit: int, offset: int) -> Tuple[List[str], int]:

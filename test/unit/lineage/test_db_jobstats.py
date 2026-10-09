@@ -38,8 +38,10 @@ from gbserver.lineage.attributes import (
     origin_id,
     origin_system,
 )
-from gbserver.lineage.db_jobstats import DBLineageStore, _row_from_draft
+from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.decompose import LineageRowDraft
+from gbserver.lineage.row_indexing import LineageRowIndexer
+from gbserver.lineage.row_indexing import row_from_draft as _row_from_draft
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 
 pytestmark = pytest.mark.skipif(
@@ -55,9 +57,45 @@ def rows_fixture():
     return SqliteStorageFactory().create_lineage_row_storage(table_name=table)
 
 
+@pytest.fixture(name="jobs")
+def jobs_fixture():
+    table = f"t_jobs_{uuid_module.uuid4().hex[:8]}"
+    return SqliteStorageFactory().create_lineage_job_storage(table_name=table)
+
+
 @pytest.fixture(name="sink")
-def sink_fixture(rows):
-    return DBLineageStore(storage=rows)
+def sink_fixture(jobs):
+    """The store, which records into gb_lineage_job and nothing else."""
+    return DBLineageStore(job_storage=jobs)
+
+
+@pytest.fixture(name="indexer")
+def indexer_fixture(rows):
+    """The index writer, which owns gb_lineage_index. See row_indexing."""
+    return LineageRowIndexer(storage=rows)
+
+
+@pytest.fixture(name="write_job")
+def write_job_fixture(sink, indexer, jobs):
+    """Record a job entry, then derive its index rows -- the full write path.
+
+    The store and the index are separate now (the store owns gb_lineage_job, the
+    indexer owns gb_lineage_index), so a test that asserts on *rows* has to run
+    both halves. This is what the indexer loop does per job, in order.
+    """
+
+    def run(job_entry, **kwargs):
+        from gbserver.lineage.db_jobstats import _normalized_job
+
+        sink._write_job(job_entry, **kwargs)
+        # Normalize to find the id, because the entry arrives in either shape: a
+        # flat ``job_id`` from the shared builders, or OpenLineage's nested
+        # ``job_details.job_id``. This is the same lift the store itself does.
+        record = jobs.get_job(_normalized_job(job_entry)["job_id"])
+        if record is not None:
+            indexer.index_job_record(record)
+
+    return run
 
 
 def job(job_id: str, sources: list, targets: list, **metadata) -> dict:
@@ -81,16 +119,16 @@ LH_MODEL = "lh://prod/ns/models/mdl_tbl/trained/v1"
 class TestDecomposition:
     """One job entry becomes max(N, M) rows sharing a job_id."""
 
-    def test_one_input_one_output_is_one_row(self, sink, rows):
-        sink._write_job(
+    def test_one_input_one_output_is_one_row(self, write_job, rows):
+        write_job(
             job("J1", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)]),
             build_id="BLD",
             target_run_uuid="TR",
         )
         assert len(rows.get_rows_by_job("J1")) == 1
 
-    def test_two_inputs_one_output_is_two_rows(self, sink, rows):
-        sink._write_job(
+    def test_two_inputs_one_output_is_two_rows(self, write_job, rows):
+        write_job(
             job(
                 "J1",
                 [artifact("i1", LH_TABLE), artifact("i2", "s3://b/i2")],
@@ -101,7 +139,7 @@ class TestDecomposition:
         )
         assert len(rows.get_rows_by_job("J1")) == 2
 
-    def test_many_inputs_and_many_outputs_records_nothing(self, sink, rows):
+    def test_many_inputs_and_many_outputs_records_nothing(self, write_job, rows):
         """The guard refuses this job, and _write_job skips rather than raises.
 
         No producer emits the shape -- wandb_jobstats writes one event per output
@@ -112,7 +150,7 @@ class TestDecomposition:
         two run nodes. Refusing is the honest outcome; the warning carries the
         reason so the loss is diagnosable.
         """
-        sink._write_job(
+        write_job(
             job(
                 "J1",
                 [artifact("i1", LH_TABLE), artifact("i2", "s3://b/i2")],
@@ -123,16 +161,16 @@ class TestDecomposition:
         )
         assert [r for pg in rows.get_paged() for r in pg] == []
 
-    def test_a_malformed_job_is_skipped_not_raised(self, sink, rows):
+    def test_a_malformed_job_is_skipped_not_raised(self, write_job, rows):
         """A job the guard cannot rescue is logged and skipped, not fatal.
 
         One unrecordable entry must not abort the rest of a build's scan.
         """
-        sink._write_job(job("J1", [], []), build_id="BLD", target_run_uuid="TR")
+        write_job(job("J1", [], []), build_id="BLD", target_run_uuid="TR")
         assert [r for pg in rows.get_paged() for r in pg] == []
 
-    def test_every_row_of_a_job_shares_its_job_id(self, sink, rows):
-        sink._write_job(
+    def test_every_row_of_a_job_shares_its_job_id(self, write_job, rows):
+        write_job(
             job(
                 "J1",
                 [artifact("i1", LH_TABLE), artifact("i2", "s3://b/i2")],
@@ -143,8 +181,8 @@ class TestDecomposition:
         )
         assert {r.job_id for r in rows.get_rows_by_job("J1")} == {"J1"}
 
-    def test_a_creation_records_a_terminal_source(self, sink, rows):
-        sink._write_job(
+    def test_a_creation_records_a_terminal_source(self, write_job, rows):
+        write_job(
             job("J1", [], [artifact("b", LH_MODEL)]),
             build_id="BLD",
             target_run_uuid="TR",
@@ -153,8 +191,8 @@ class TestDecomposition:
         assert len(stored) == 1
         assert stored[0].is_creation()
 
-    def test_a_deletion_records_a_terminal_target(self, sink, rows):
-        sink._write_job(
+    def test_a_deletion_records_a_terminal_target(self, write_job, rows):
+        write_job(
             job("J1", [artifact("a", LH_TABLE)], []),
             build_id="BLD",
             target_run_uuid="TR",
@@ -163,9 +201,9 @@ class TestDecomposition:
         assert len(stored) == 1
         assert stored[0].is_deletion()
 
-    def test_an_undecomposable_job_is_skipped_not_raised(self, sink, rows):
+    def test_an_undecomposable_job_is_skipped_not_raised(self, write_job, rows):
         # One unrecordable entry must not abort the rest of a build's lineage.
-        sink._write_job(
+        write_job(
             job("", [artifact("a", LH_TABLE)], []),
             build_id="BLD",
             target_run_uuid="TR",
@@ -176,22 +214,22 @@ class TestDecomposition:
 class TestIdempotence:
     """Re-ingesting the same lineage must not duplicate rows."""
 
-    def test_writing_the_same_job_twice_does_not_duplicate(self, sink, rows):
+    def test_writing_the_same_job_twice_does_not_duplicate(self, write_job, rows):
         entry = job("J1", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
         for _ in range(2):
-            sink._write_job(
+            write_job(
                 entry,
                 build_id="BLD",
                 target_run_uuid="TR",
             )
         assert len(rows.get_rows_by_job("J1")) == 1
 
-    def test_a_creation_row_is_not_duplicated_either(self, sink, rows):
+    def test_a_creation_row_is_not_duplicated_either(self, write_job, rows):
         # The least visible case: terminal endpoints are stored as "" rather than
         # NULL precisely so the unique index still catches them.
         entry = job("J1", [], [artifact("b", LH_MODEL)])
         for _ in range(2):
-            sink._write_job(
+            write_job(
                 entry,
                 build_id="BLD",
                 target_run_uuid="TR",
@@ -239,27 +277,27 @@ class TestDedupByPresence:
         # must invoke the callback -- the reconciler is what fails closed on it.
         # Without the callback this silently duplicates work instead of skipping.
         class Failing:
-            def get_recorded_target_runs(self, target_run_uuids):
+            def get_jobs_by_id(self, job_ids):
                 raise RuntimeError("db is down")
 
         seen = []
-        sink = DBLineageStore(storage=Failing())
+        sink = DBLineageStore(job_storage=Failing())
         result = sink.filter_unrecorded({"t1"}, on_query_error=seen.append)
         assert result == {"t1"}
         assert len(seen) == 1
 
     def test_a_query_failure_without_a_callback_still_does_not_raise(self):
         class Failing:
-            def get_recorded_target_runs(self, target_run_uuids):
+            def get_jobs_by_id(self, job_ids):
                 raise RuntimeError("db is down")
 
-        assert DBLineageStore(storage=Failing()).filter_unrecorded({"t1"}) == {"t1"}
+        assert DBLineageStore(job_storage=Failing()).filter_unrecorded({"t1"}) == {"t1"}
 
 
 class TestReleaseCounts:
-    """release_id is a build_id; the UNIT is rows, not W&B runs."""
+    """release_id is a build_id; the UNIT is jobs, which is W&B's run shape."""
 
-    def test_counts_rows_for_a_build(self, sink):
+    def test_counts_one_job_per_execution_not_one_per_edge(self, sink):
         sink._write_job(
             job(
                 "J1",
@@ -269,9 +307,10 @@ class TestReleaseCounts:
             build_id="BLD",
             target_run_uuid="TR",
         )
-        # Two inputs x one output = 2 rows. W&B would report 1 run (one per
-        # output), which is exactly the shape mismatch the docstring warns about.
-        assert sink.count_release_ids("BLD") == 2
+        # One execution, so 1 -- and W&B reports 1 run too (one per output), so a
+        # caller's expected_count is comparable. This used to count index rows
+        # (2 inputs x 1 output = 2), which could never match that.
+        assert sink.count_release_ids("BLD") == 1
 
     def test_narrows_by_target_run(self, sink):
         for target_run in ("t1", "t2"):
@@ -372,7 +411,6 @@ class TestRowContents:
             LineageRowDraft(job_id="J1", input="lh://prod/ns/tables/t"),
             build_id="",
             target_run_uuid="",
-            source_system="lakehouse",
         )
         assert row.attributes["retrieve"] == {"job_id": "J1"}
         assert origin_id(row.attributes, "build_id") == ""
@@ -418,13 +456,13 @@ class TestRowContents:
         )
         assert "completed_at" not in job_detail(row.attributes)
 
-    def test_the_endpoints_are_the_normalized_uris(self, sink, rows):
+    def test_the_endpoints_are_the_normalized_uris(self, write_job, rows):
         """The URI is the identity, so it is normalized on the way in.
 
         ``hf:///org/repo`` and the browser URL for the same repo must converge, or
         one artifact becomes two disconnected halves of a graph.
         """
-        sink._write_job(
+        write_job(
             job(
                 "J1",
                 [artifact("a", "s3://bkt/raw")],
@@ -437,7 +475,7 @@ class TestRowContents:
         assert stored.input == "s3://bkt/raw"
         assert stored.output == "https://huggingface.co/org/repo"
 
-    def test_alternative_spellings_are_kept_in_the_blob(self, sink, rows):
+    def test_alternative_spellings_are_kept_in_the_blob(self, write_job, rows):
         """The forms normalization folds away are remembered, not lost.
 
         The canonical URI is the column; every other recorded spelling -- the raw
@@ -450,7 +488,7 @@ class TestRowContents:
             "gb-artifact-uri": lh_raw,
             "uri_aliases": ["s3://bkt/models/trained/"],
         }
-        sink._write_job(
+        write_job(
             job("J1", [artifact("a", "hf:///org/repo")], [target]),
             build_id="BLD",
             target_run_uuid="TR",
@@ -464,8 +502,8 @@ class TestRowContents:
             "s3://bkt/models/trained/",
         ]
 
-    def test_a_canonical_spelling_has_no_alternatives(self, sink, rows):
-        sink._write_job(
+    def test_a_canonical_spelling_has_no_alternatives(self, write_job, rows):
+        write_job(
             job("J1", [artifact("a", "s3://bkt/raw")], [artifact("b", LH_TABLE)]),
             build_id="BLD",
             target_run_uuid="TR",
@@ -474,8 +512,8 @@ class TestRowContents:
         assert ALT_URIS not in stored.attributes[INPUT]
         assert ALT_URIS not in stored.attributes[OUTPUT]
 
-    def test_carried_metadata_survives(self, sink, rows):
-        sink._write_job(
+    def test_carried_metadata_survives(self, write_job, rows):
+        write_job(
             job(
                 "J1",
                 [artifact("a", LH_TABLE)],
@@ -601,11 +639,11 @@ class TestNamespacePropagation:
 
         assert "job_namespace" not in _normalized_job({"job_details": {"job_id": "T"}})
 
-    def test_the_namespace_reaches_the_stored_row(self, sink, rows):
+    def test_the_namespace_reaches_the_stored_row(self, write_job, rows):
         """End to end: the blob's job group carries it, so the graph can authorize."""
         from gbserver.lineage.attributes import job_detail
 
-        sink._write_job(
+        write_job(
             {
                 "sources": [artifact("a", LH_TABLE)],
                 "targets": [artifact("b", LH_MODEL)],
@@ -626,14 +664,13 @@ class TestJobTags:
     def tagged_sink_fixture(self, rows):
         suffix = uuid_module.uuid4().hex[:8]
         factory = SqliteStorageFactory()
-        # Tags live on the rows' ``attributes.job.tags``; the row storage answers them.
+        # Tags live on the rows' ``attributes.job.tags``; the row storage answers
+        # them. The store records the job, the indexer derives the tagged rows, so
+        # both halves are kept here and _write runs them in order.
         self.tags = rows
-        return DBLineageStore(
-            storage=rows,
-            job_storage=factory.create_lineage_job_storage(
-                table_name=f"t_job_{suffix}"
-            ),
-        )
+        self.jobs = factory.create_lineage_job_storage(table_name=f"t_job_{suffix}")
+        self.indexer = LineageRowIndexer(storage=rows)
+        return DBLineageStore(job_storage=self.jobs)
 
     def _write(self, sink, job_id, target_run, extra_tags=None, facet_tags=None):
         entry = job(job_id, [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
@@ -645,6 +682,9 @@ class TestJobTags:
             target_run_uuid=target_run,
             extra_tags=extra_tags,
         )
+        record = self.jobs.get_job(job_id)
+        if record is not None:
+            self.indexer.index_job_record(record)
 
     def test_ids_facets_and_extra_tags_are_stored(self, tagged_sink):
         self._write(
@@ -680,16 +720,19 @@ class TestJobTags:
         assert self.tags.get_job_ids_by_tags(["team=nlp"]) == {"J1"}
         assert self.tags.get_job_ids_by_tags(["build_id=BLD"]) == {"J1", "J2"}
 
-    def test_release_count_matches_the_scan(self, tagged_sink, rows):
+    def test_release_count_counts_jobs_not_rows(self, tagged_sink):
+        """The unit is one job per execution -- W&B's run shape, so comparable.
+
+        It used to count index rows (one per input/output pair), which could never
+        equal a caller's W&B-shaped expected_count. Each job here has 1 input and
+        1 output, so rows and jobs would agree; the narrowed counts below are what
+        distinguishes them.
+        """
         self._write(tagged_sink, "J1", "t1")
         self._write(tagged_sink, "J2", "t2")
-        untagged = DBLineageStore(storage=rows)
-        for target in (None, "t1", "t2", "t3"):
-            assert tagged_sink.count_release_ids(
-                "BLD", target_id=target
-            ) == untagged.count_release_ids("BLD", target_id=target)
         assert tagged_sink.count_release_ids("BLD") == 2
         assert tagged_sink.count_release_ids("BLD", target_id="t1") == 1
+        assert tagged_sink.count_release_ids("BLD", target_id="t3") == 0
 
     def test_the_read_service_lists_jobs_by_tag(self, tagged_sink, rows):
         from gbserver.lineage.db_service import DBLineageService
@@ -743,14 +786,12 @@ class TestJobsTouchingInSQL:
     a row count would overstate it.
     """
 
-    def _write(self, sink, job_id, sources, targets):
-        sink._write_job(
-            job(job_id, sources, targets), build_id="BLD", target_run_uuid=job_id
-        )
+    def _write(self, write_job, job_id, sources, targets):
+        write_job(job(job_id, sources, targets), build_id="BLD", target_run_uuid=job_id)
 
-    def test_a_job_repeating_an_artifact_counts_once(self, sink, rows):
+    def test_a_job_repeating_an_artifact_counts_once(self, write_job, rows):
         self._write(
-            sink,
+            write_job,
             "J1",
             [artifact("i1", LH_TABLE), artifact("i2", "s3://b/i2")],
             [artifact("o1", LH_MODEL)],
@@ -759,10 +800,16 @@ class TestJobsTouchingInSQL:
         assert rows.count_jobs_touching(LH_MODEL) == 1
         assert rows.get_job_ids_touching(LH_MODEL, limit=10, offset=0) == ["J1"]
 
-    def test_self_loop_counts_only_in_place_rewrites_in_sql(self, sink, rows):
-        self._write(sink, "S1", [artifact("t", LH_TABLE)], [artifact("t", LH_TABLE)])
-        self._write(sink, "S2", [artifact("t", LH_TABLE)], [artifact("t", LH_TABLE)])
-        self._write(sink, "X", [artifact("t", LH_TABLE)], [artifact("o", LH_MODEL)])
+    def test_self_loop_counts_only_in_place_rewrites_in_sql(self, write_job, rows):
+        self._write(
+            write_job, "S1", [artifact("t", LH_TABLE)], [artifact("t", LH_TABLE)]
+        )
+        self._write(
+            write_job, "S2", [artifact("t", LH_TABLE)], [artifact("t", LH_TABLE)]
+        )
+        self._write(
+            write_job, "X", [artifact("t", LH_TABLE)], [artifact("o", LH_MODEL)]
+        )
         assert rows.count_jobs_touching(LH_TABLE) == 3
         assert rows.count_jobs_touching(LH_TABLE, self_loop=True) == 2
         assert rows.get_job_ids_touching(LH_TABLE, 10, 0, self_loop=True) == [
@@ -778,19 +825,25 @@ class TestJobsTouchingInSQL:
             "X"
         }
 
-    def test_both_directions_are_counted_and_paged(self, sink, rows):
+    def test_both_directions_are_counted_and_paged(self, write_job, rows):
         for i in range(5):
             self._write(
-                sink, f"J{i}", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)]
+                write_job, f"J{i}", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)]
             )
-        self._write(sink, "K", [artifact("b", LH_MODEL)], [artifact("c", "s3://b/c")])
+        self._write(
+            write_job, "K", [artifact("b", LH_MODEL)], [artifact("c", "s3://b/c")]
+        )
         assert rows.count_jobs_touching(LH_MODEL) == 6
         pages = [rows.get_job_ids_touching(LH_MODEL, limit=4, offset=o) for o in (0, 4)]
         assert pages == [["J0", "J1", "J2", "J3"], ["J4", "K"]]
 
-    def test_filtering_a_job_set_by_artifact(self, sink, rows):
-        self._write(sink, "J1", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
-        self._write(sink, "J2", [artifact("b", LH_MODEL)], [artifact("c", "s3://b/c")])
+    def test_filtering_a_job_set_by_artifact(self, write_job, rows):
+        self._write(
+            write_job, "J1", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)]
+        )
+        self._write(
+            write_job, "J2", [artifact("b", LH_MODEL)], [artifact("c", "s3://b/c")]
+        )
         assert rows.filter_jobs_touching(LH_TABLE, ["J1", "J2"]) == {"J1"}
         assert rows.filter_jobs_touching(LH_MODEL, ["J1", "J2", "nope"]) == {"J1", "J2"}
 
@@ -801,34 +854,35 @@ class TestJobsTouchingInSQL:
 
 
 class TestJobRecordBackfill:
-    """Rows written while the job record failed are not "recorded": the next scan
-    must write the record rather than skip on rows alone."""
+    """The job record alone decides whether an execution is recorded.
+
+    It is the only thing this store writes, so presence of a record is the whole
+    answer. Index rows say nothing about it: they are derived afterwards by the
+    indexer, which owns them.
+    """
 
     @staticmethod
-    def _sink(rows, jobs: dict):
+    def _sink(jobs: dict):
         from unittest.mock import MagicMock
 
         job_storage = MagicMock()
         job_storage.get_jobs_by_id.side_effect = lambda ids: {
             i: jobs[i] for i in ids if i in jobs
         }
-        return DBLineageStore(storage=rows, job_storage=job_storage)
+        return DBLineageStore(job_storage=job_storage)
 
-    def test_a_job_with_no_record_is_not_recorded_by_self(self, rows):
-        assert self._sink(rows, {}).recorded_by_self(["J"]) == set()
+    def test_a_job_with_no_record_is_not_recorded_by_self(self):
+        assert self._sink({}).recorded_by_self(["J"]) == set()
 
-    def test_a_job_this_system_recorded_is_recorded_by_self(self, rows):
+    def test_a_job_this_system_recorded_is_recorded_by_self(self):
         from types import SimpleNamespace
 
         from gbserver.lineage.db_jobstats import SOURCE_SYSTEM
 
-        sink = self._sink(rows, {"J": SimpleNamespace(source_system=SOURCE_SYSTEM)})
+        sink = self._sink({"J": SimpleNamespace(source_system=SOURCE_SYSTEM)})
         assert sink.recorded_by_self(["J"]) == {"J"}
 
-    def test_has_job_record_reads_the_job_table(self, rows):
-        sink = self._sink(rows, {"J": object()})
+    def test_has_job_record_reads_the_job_table(self):
+        sink = self._sink({"J": object()})
         assert sink._has_job_record("J")
         assert not sink._has_job_record("OTHER")
-
-    def test_with_no_job_storage_rows_decide(self, sink):
-        assert sink._has_job_record("anything")

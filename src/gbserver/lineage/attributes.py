@@ -549,6 +549,4 @@ def origin_id(attributes: Optional[Dict[str, Any]], key: str) -> str:
     # Slim rows carry them in ``retrieve``; older rows in ``origin.ids``.
     retrieve = attributes.get(RETRIEVE) or {}
     origin = attributes.get(ORIGIN) or {}
-    return str(
-        retrieve.get(key) or (origin.get(ORIGIN_IDS) or {}).get(key) or ""
-    )
+    return str(retrieve.get(key) or (origin.get(ORIGIN_IDS) or {}).get(key) or "")

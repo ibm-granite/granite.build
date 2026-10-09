@@ -29,8 +29,8 @@ import uuid as uuid_module
 import pytest
 
 from gbserver.lineage.attributes import build_attributes
-from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.lineage_row_storage import DOWNSTREAM, UPSTREAM, GroupedEdge
+from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_lineage_row import (
     TERMINAL,
     JobStore,
@@ -263,9 +263,7 @@ class TestSchema:
         """Both directions of the walk, and the per-edge GROUP BY, are index-only."""
         storage.add(row())
         statements = [sql or "" for _, sql in self._index_statements(storage)]
-        assert any(
-            columns in s and "UNIQUE" not in s for s in statements
-        ), statements
+        assert any(columns in s and "UNIQUE" not in s for s in statements), statements
 
     def test_composite_indexes_are_idempotent(self, storage):
         """A schema adjust on an existing table re-runs creation without error."""
@@ -528,7 +526,6 @@ class TestJobStore:
         storage.add(second)
         found = storage.get_by_where({"job_store": JobStore.WANDB.value})
         assert [r.job_id for r in found] == ["A"]
-
 
 
 class TestGroupedEdges:

@@ -34,6 +34,7 @@ from gbcommon.uri.lh import LhURI
 from gbserver.lineage.attributes import origin_id
 from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.db_service import DBLineageService
+from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
@@ -156,6 +157,21 @@ def artifact_ids(graph: dict) -> set:
     return {n["id"] for n in graph["nodes"] if n["node_type"] == "artifact"}
 
 
+def record_and_index(storage, *args, **kwargs):
+    """Run the whole write path: record the jobs, then derive the index rows.
+
+    The store owns ``gb_lineage_job`` and the indexer owns ``gb_lineage_index``, so
+    an end-to-end assertion needs both halves -- in this order, since the rows are
+    derived from the records. This is what the indexer loop does per job.
+    """
+    sink = DBLineageStore(job_storage=storage.lineage_job_storage)
+    sink.add_jobstats_for_build(storage, *args, **kwargs)
+    indexer = LineageRowIndexer(storage=storage.lineage_row_storage)
+    for page in storage.lineage_job_storage.get_paged():
+        indexer.index_job_records(list(page))
+    return sink
+
+
 class TestOneHop:
     """raw table -> [target run] -> trained model."""
 
@@ -171,21 +187,23 @@ class TestOneHop:
             inputs={"raw": self.raw.uuid},
             outputs={"model": [self.model.uuid]},
         )
-        self.sink = DBLineageStore(
-            storage=storage.lineage_row_storage,
-            job_storage=storage.lineage_job_storage,
-        )
+        self.storage = storage
+        self.sink = DBLineageStore(job_storage=storage.lineage_job_storage)
         self.service = DBLineageService(storage=storage.lineage_row_storage)
 
+    def record(self, storage, *args, **kwargs):
+        """Record and index, so assertions can read either table."""
+        return record_and_index(storage, *args, **kwargs)
+
     def test_recording_writes_a_row(self, storage):
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         # The regression guard: an empty index here means the job entries were
         # silently rejected, which is what a nested job_id caused.
         assert len(all_rows(storage)) == 1
 
     def test_recording_writes_one_job_record(self, storage):
         """The job record is written alongside the rows, keyed by the same job_id."""
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         jobs = all_jobs(storage)
         assert len(jobs) == 1
         assert jobs[0].job_id == all_rows(storage)[0].job_id
@@ -199,14 +217,14 @@ class TestOneHop:
         """
         from gbserver.lineage.attributes import payload_detail
 
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         payload = payload_detail(all_jobs(storage)[0].attributes)
         assert payload.get("job_input_params"), payload
 
     def test_the_job_record_scopes_by_space(self, storage):
         """space_name is derived from the namespace's first segment, and the
         namespace itself is kept verbatim so the derivation stays checkable."""
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         job = all_jobs(storage)[0]
         assert job.job_namespace.split("/", 1)[0] == SPACE
         assert job.space_name == SPACE
@@ -214,12 +232,12 @@ class TestOneHop:
 
     def test_re_recording_does_not_duplicate_the_job(self, storage):
         """Idempotent under the unique on job_id, like the rows are under theirs."""
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         assert len(all_jobs(storage)) == 1
 
     def test_the_row_connects_the_two_artifacts(self, storage):
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         row = all_rows(storage)[0]
         assert row.input == normalize_uri(self.raw.uri)
         assert row.output == normalize_uri(self.model.uri)
@@ -231,14 +249,14 @@ class TestOneHop:
         identifier did not encode a scheme. With the URI as the identity the pair
         would be one string stored twice.
         """
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         row = all_rows(storage)[0]
         assert row.input == normalize_uri(self.raw.uri)
         assert row.output == normalize_uri(self.model.uri)
         assert not hasattr(row, "source_uri")
 
     def test_downstream_reaches_the_model(self, storage):
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         graph = self.service.get_artifact_graph(
             artifact_url=self.raw.uri, direction="downstream"
         )
@@ -246,7 +264,7 @@ class TestOneHop:
         assert normalize_uri(self.model.uri) in artifact_ids(graph)
 
     def test_upstream_reaches_the_raw_table(self, storage):
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         graph = self.service.get_artifact_graph(
             artifact_url=self.model.uri, direction="upstream"
         )
@@ -254,7 +272,7 @@ class TestOneHop:
         assert normalize_uri(self.raw.uri) in artifact_ids(graph)
 
     def test_the_served_graph_reports_the_registered_uri(self, storage):
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         graph = self.service.get_artifact_graph(
             artifact_url=self.raw.uri, direction="downstream"
         )
@@ -262,12 +280,12 @@ class TestOneHop:
         assert node["metadata"]["uri"] == self.raw.uri
 
     def test_recording_twice_does_not_duplicate(self, storage):
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         assert len(all_rows(storage)) == 1
 
     def test_a_recorded_target_is_filtered_out(self, storage):
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         assert self.sink.filter_unrecorded({self.output.uuid}) == set()
 
     def test_an_unrecorded_target_is_reported(self, storage):
@@ -279,11 +297,11 @@ class TestOneHop:
         It becomes the 404 the frontend renders as "lineage is not available", so a
         URI that resolves but has no rows must return its own node instead.
         """
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         assert self.service.get_artifact_graph(artifact_url="bogus://x") is None
 
     def test_a_valid_uri_with_no_rows_is_an_empty_graph(self, storage):
-        self.sink.add_jobstats_for_build(storage, self.build.uuid)
+        self.record(storage, self.build.uuid)
         graph = self.service.get_artifact_graph(
             artifact_url="lh://prod/ns/tables/absent"
         )
@@ -313,11 +331,7 @@ class TestFanOutRows:
             outputs={"models": [out_a.uuid, out_b.uuid]},
         )
 
-        sink = DBLineageStore(
-            storage=storage.lineage_row_storage,
-            job_storage=storage.lineage_job_storage,
-        )
-        sink.add_jobstats_for_build(storage, build.uuid)
+        record_and_index(storage, build.uuid)
 
         rows = all_rows(storage)
         assert len(rows) == 4
@@ -343,11 +357,7 @@ class TestFanOutRows:
             outputs={"models": [out_a.uuid]},
         )
 
-        sink = DBLineageStore(
-            storage=storage.lineage_row_storage,
-            job_storage=storage.lineage_job_storage,
-        )
-        sink.add_jobstats_for_build(storage, build.uuid)
+        record_and_index(storage, build.uuid)
 
         service = DBLineageService(storage=storage.lineage_row_storage)
         graph = service.get_artifact_graph(artifact_url=out_a.uri, direction="upstream")
@@ -379,12 +389,8 @@ class TestChainAcrossBuilds:
             storage, build2, inputs={"mid": mid.uuid}, outputs={"final": [final.uuid]}
         )
 
-        sink = DBLineageStore(
-            storage=storage.lineage_row_storage,
-            job_storage=storage.lineage_job_storage,
-        )
-        sink.add_jobstats_for_build(storage, build1.uuid)
-        sink.add_jobstats_for_build(storage, build2.uuid)
+        record_and_index(storage, build1.uuid)
+        record_and_index(storage, build2.uuid)
 
         service = DBLineageService(storage=storage.lineage_row_storage)
         graph = service.get_artifact_graph(
@@ -399,19 +405,13 @@ class TestChainAcrossBuilds:
 
 class TestErrors:
     def test_an_unknown_build_raises(self, storage):
-        sink = DBLineageStore(
-            storage=storage.lineage_row_storage,
-            job_storage=storage.lineage_job_storage,
-        )
+        sink = DBLineageStore(job_storage=storage.lineage_job_storage)
         with pytest.raises(ValueError):
             sink.add_jobstats_for_build(storage, "no-such-build")
 
     def test_a_build_with_no_targets_raises(self, storage):
         # Matches the W&B sink, so the reconciler sees one behaviour either way.
         build = add_build(storage)
-        sink = DBLineageStore(
-            storage=storage.lineage_row_storage,
-            job_storage=storage.lineage_job_storage,
-        )
+        sink = DBLineageStore(job_storage=storage.lineage_job_storage)
         with pytest.raises(ValueError):
             sink.add_jobstats_for_build(storage, build.uuid)

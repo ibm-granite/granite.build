@@ -253,7 +253,7 @@ function groupLabel(key: string): string {
 }
 
 /** `num_gpus_per_node` → `Num gpus per node`. */
-function humanizeKey(key: string): string {
+export function humanizeKey(key: string): string {
   const spaced = key.replace(/[_-]+/g, ' ').trim()
   return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }
@@ -263,7 +263,7 @@ function humanizeKey(key: string): string {
  * strings and null are treated as "no value" and dropped so the UI shows only
  * the keys the step actually set, not blank placeholder rows.
  */
-function hasValue(value: unknown): boolean {
+export function hasValue(value: unknown): boolean {
   if (value === null || value === undefined) return false
   if (typeof value === 'string') return value.trim() !== ''
   return typeof value === 'number' || typeof value === 'boolean'

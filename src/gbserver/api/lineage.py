@@ -31,6 +31,7 @@ from gbserver.lineage.openlineage_models import (
 from gbserver.lineage.openlineage_models import LineageEvent as OpenLineageEvent
 from gbserver.lineage.openlineage_models import (
     LineageGraphResponse,
+    LineageJobDetail,
     LineageJobsResponse,
     LineageNodeRef,
     LineageQueryRequest,
@@ -105,7 +106,7 @@ class BuildJobStatsResponse(BaseModel):
     target_ids: list[str]
 
 
-@lineage_api.get("/build/{build_id}")
+@lineage_api.get("/build/{build_id}", tags=["gb admin"])
 def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse:
     """Get JobStats for all targets in a build.
 
@@ -160,7 +161,7 @@ def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse
     )
 
 
-@lineage_api.get("/target/{target_id}")
+@lineage_api.get("/target/{target_id}", tags=["gb admin"])
 def get_target_jobstats(request: Request, target_id: str) -> TargetJobStatsResponse:
     """Get JobStats for a target run, grouped by output artifact name.
 
@@ -235,14 +236,14 @@ def _get_index_service():
     return _index_service
 
 
-@lineage_api.post("/")
+@lineage_api.post("/", tags=["lineage store"])
 def ingest_lineage_event(event: OpenLineageEvent):
     service = _get_openlineage_service()
     service.emit_event(event.model_dump())
     return {"status": "accepted"}
 
 
-@lineage_api.post("/search")
+@lineage_api.post("/search", tags=["lineage store"])
 def search_lineage_events(request: Request, body: TagSearchRequest):
     """Search lineage runs by tag.
 
@@ -308,7 +309,7 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
     )
 
 
-@lineage_api.post("/artifact")
+@lineage_api.post("/artifact", tags=["lineage store"])
 def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
     """Get the lineage DAG for an artifact, traversing downstream or upstream.
 
@@ -636,3 +637,28 @@ def list_lineage_jobs(
         terminal=terminal,
     )
     return LineageJobsResponse(**result)
+
+
+@lineage_api.get("/jobs/{job_id:path}", tags=["lineage-index"])
+def get_lineage_job_detail(request: Request, job_id: str) -> LineageJobDetail:
+    """One job execution with its full content, from wherever it is stored.
+
+    The listing (``GET /jobs``) carries only what the index rows hold. This follows
+    the rows' ``job_store`` to the job's own store -- the lineage job table, this
+    server's builds and target runs, or W&B -- and returns one shape for all of them.
+
+    404 only when the index has no such job. A store that cannot answer (build not
+    on this server, run deleted, no read access to the build) still returns 200,
+    with ``detail_available`` false and ``detail_error`` saying why. A build's step
+    configs and target run are returned only to callers who may read that build.
+    """
+    detail = _get_index_service().get_job_detail(
+        job_id,
+        authorize_build=lambda build: authorize_build_read_access(request, build),
+    )
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found in the lineage index",
+        )
+    return LineageJobDetail(**detail)

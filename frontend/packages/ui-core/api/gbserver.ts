@@ -709,6 +709,34 @@ export async function getLineageJobs(params: {
   return data
 }
 
+// ── One lineage job with its full content (GET /lineage/jobs/{job_id}) ─────────
+
+// A job from the listing plus what its own store holds: the lineage job table,
+// this server's build and target run, or W&B (`job_store`). `build` and `target`
+// are raw, in the shape GET /builds/{id}/status uses; `detail` holds the large
+// payloads (step configs redacted). When the store could not answer,
+// `detail_available` is false and `detail_error` says why.
+export interface LineageJobDetail extends LineageJobEntry {
+  job_store: 'lineage_job' | 'targets' | 'wandb' | 'other' | string
+  detail: Record<string, unknown>
+  build_id: string | null
+  build: Build | null
+  target: BuildTargetRun | null
+  origin_url: string
+  detail_available: boolean
+  detail_error: string | null
+}
+
+export async function getLineageJobDetail(jobId: string): Promise<LineageJobDetail> {
+  const { data } = await client.get<Record<string, unknown>>(`/lineage/jobs/${encodeURIComponent(jobId)}`)
+  const raw = data as unknown as LineageJobDetail & { build: Record<string, unknown> | null; target: Record<string, unknown> | null }
+  return {
+    ...raw,
+    build: raw.build ? adaptBuild(raw.build) : null,
+    target: raw.target ? adaptTargetRun(raw.target) : null,
+  }
+}
+
 export async function getLineageGraph(params: {
   uri?: string
   job_id?: string

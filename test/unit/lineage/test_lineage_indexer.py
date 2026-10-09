@@ -20,9 +20,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gbserver.storage.stored_lineage_row import JobStore
-
 from gbserver.lineage import indexer as idx
+from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.storage.stored_target_run import StoredTargetRun
 
 
@@ -97,9 +96,10 @@ def _project(monkeypatch):
 )
 @pytest.mark.parametrize("standalone", [True, False])
 def test_source_follows_provider_in_every_mode(standalone, provider, expected):
-    with patch(
-        "gbcommon.types.gbenvconfig.is_standalone", return_value=standalone
-    ), patch.object(idx, "_resolve_lineage_provider", return_value=provider):
+    with (
+        patch("gbcommon.types.gbenvconfig.is_standalone", return_value=standalone),
+        patch.object(idx, "_resolve_lineage_provider", return_value=provider),
+    ):
         assert idx.resolve_indexer_source() == expected
 
 
@@ -159,12 +159,13 @@ def test_lineage_job_indexer_reads_in_order_and_checkpoints():
         _job_record("j1", "2026-01-01T00:00:00.000000+00:00"),
     ]
     storage, kv = _admin_with_jobs(jobs)
-    sink = MagicMock()
-    sink.index_job_records.side_effect = len
-    ix = idx.LineageJobIndexer(sink=sink)
+    # The rows collaborator indexes, not the sink: the index is the indexer's.
+    rows = MagicMock()
+    rows.index_job_records.side_effect = len
+    ix = idx.LineageJobIndexer(sink=MagicMock(), rows=rows)
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
         assert ix.scan_once(storage) == 2
-        (batch,) = [c.args[0] for c in sink.index_job_records.call_args_list]
+        (batch,) = [c.args[0] for c in rows.index_job_records.call_args_list]
         assert [j.job_id for j in batch] == ["j1", "j2"]
         cp = kv["lineage_index_checkpoint:db"]
         assert cp["timestamp"] == "2026-01-02T00:00:00.000000+00:00"
@@ -173,19 +174,22 @@ def test_lineage_job_indexer_reads_in_order_and_checkpoints():
 
 
 def test_db_sink_record_only_then_index_dedups():
+    """The store records; only the indexer writes rows. Both halves, in order."""
     from gbserver.lineage.db_jobstats import DBLineageStore
+    from gbserver.lineage.row_indexing import LineageRowIndexer
 
     rows, jobs = MagicMock(), MagicMock()
     jobs.get_job.return_value = None
-    store = DBLineageStore(storage=rows, job_storage=jobs, index_rows=False)
+    store = DBLineageStore(job_storage=jobs)
     event = _job_record("j1", "x").attributes["entry"]["event"]
-    with patch("gbserver.lineage.db_jobstats.upsert_row") as upsert_row:
+    with patch("gbserver.lineage.row_indexing.upsert_row") as upsert_row:
         store.write_job(event, build_id="b1", target_run_uuid="j1")
+        # The store cannot write a row -- it has no row storage at all now.
         upsert_row.assert_not_called()
         record = jobs.add.call_args.args[0]
-        assert record.attributes["entry"]["event"] == event
+        assert record.attributes["entry"]["events"] == [event]
 
-        reader = DBLineageStore(storage=rows, job_storage=jobs)
+        reader = LineageRowIndexer(storage=rows)
         assert reader.index_job_record(record) is True
         assert reader.index_job_record(record) is True
         # Every pass goes through upsert_row, which merges into an existing row.
@@ -194,13 +198,13 @@ def test_db_sink_record_only_then_index_dedups():
 
 
 def test_index_job_records_bulk_adds_new_and_merges_existing():
-    from gbserver.lineage.db_jobstats import DBLineageStore
+    from gbserver.lineage.row_indexing import LineageRowIndexer
     from gbserver.storage.stored_lineage_row import StoredLineageRow
 
     def row(job_id, inp, out):
-        return StoredLineageRow(
-            job_id=job_id, input=inp, output=out
-        ).model_dump(mode="json", exclude={"uuid"})
+        return StoredLineageRow(job_id=job_id, input=inp, output=out).model_dump(
+            mode="json", exclude={"uuid"}
+        )
 
     new = _job_record("new", "x", entry=False)
     new.attributes["entry"] = {
@@ -211,8 +215,8 @@ def test_index_job_records_bulk_adds_new_and_merges_existing():
 
     rows = MagicMock()
     rows.get_rows_by_jobs.return_value = [MagicMock(job_id="old")]
-    store = DBLineageStore(storage=rows, job_storage=MagicMock())
-    with patch("gbserver.lineage.db_jobstats.upsert_row") as upsert_row:
+    store = LineageRowIndexer(storage=rows)
+    with patch("gbserver.lineage.row_indexing.upsert_row") as upsert_row:
         assert store.index_job_records([new, old]) == 2
     # One bulk add: the duplicate collapsed, the superseded terminal dropped.
     (added,) = rows.add.call_args.args
@@ -222,9 +226,9 @@ def test_index_job_records_bulk_adds_new_and_merges_existing():
 
 
 def test_index_job_record_without_entry_is_skipped():
-    from gbserver.lineage.db_jobstats import DBLineageStore
+    from gbserver.lineage.row_indexing import LineageRowIndexer
 
-    store = DBLineageStore(storage=MagicMock(), job_storage=MagicMock())
+    store = LineageRowIndexer(storage=MagicMock())
     assert store.index_job_record(_job_record("j1", "x", entry=False)) is False
 
 
@@ -427,8 +431,11 @@ def _target(uuid, minutes, build_id="b1", artifacts=True):
 def _target_indexer(targets, indexed=()):
     """Targets are served newest-finished first, as the DB page would."""
     sink = MagicMock()
-    sink.row_storage.has_rows_for_job.side_effect = lambda job_id: job_id in indexed
-    ix = idx.TargetLineageIndexer(sink=sink)
+    # "Already indexed" is a question about the index, which the rows collaborator
+    # owns; the sink only knows its own job table.
+    rows = MagicMock()
+    rows.has_rows_for_job.side_effect = lambda job_id: job_id in indexed
+    ix = idx.TargetLineageIndexer(sink=sink, rows=rows)
     ordered = sorted(targets, key=lambda t: t.finished_at, reverse=True)
     page = patch.object(
         idx,
@@ -476,9 +483,7 @@ def test_target_scan_reads_past_a_page_that_reaches_the_checkpoint():
     """A newer row on a later page (SQLite text order) must still be read."""
     storage = _storage()
     key = idx._checkpoint_key_for_provider("none")
-    storage.kv_pair_storage.set_value(
-        key, {"timestamp": _ts(60), "item_ids": []}
-    )
+    storage.kv_pair_storage.set_value(key, {"timestamp": _ts(60), "item_ids": []})
     ix = idx.TargetLineageIndexer(sink=MagicMock())
     ix._sink.row_storage.has_rows_for_job.return_value = False
     first = [_target(f"old{i}", 0) for i in range(idx._SCAN_PAGE_SIZE)]
@@ -515,7 +520,10 @@ def test_target_seed_by_timestamp_keeps_its_offset():
     ix, _, _ = _target_indexer([])
     with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
         assert ix.seed_if_absent(storage, "2026-01-01T02:05:00+02:00") is True
-    assert _checkpoint(storage, provider="none")["timestamp"] == "2026-01-01T02:05:00+02:00"
+    assert (
+        _checkpoint(storage, provider="none")["timestamp"]
+        == "2026-01-01T02:05:00+02:00"
+    )
 
 
 def test_target_seed_indexes_from_that_instant_inclusive():
@@ -557,7 +565,7 @@ def test_target_seed_naive_timestamp_is_read_as_local():
 def test_db_store_write_job_delegates():
     from gbserver.lineage.db_jobstats import DBLineageStore
 
-    store = DBLineageStore(storage=MagicMock())
+    store = DBLineageStore(job_storage=MagicMock())
     with patch.object(store, "_write_job") as inner:
         store.write_job({"x": 1}, build_id="b", target_run_uuid="t")
     inner.assert_called_once_with(
@@ -570,19 +578,26 @@ def test_db_store_write_job_delegates():
 
 
 def test_each_source_stamps_its_job_store():
-    from gbserver.lineage.db_jobstats import DBLineageStore
+    """job_store names the store to follow for the job's full content.
 
-    rows, jobs = MagicMock(), MagicMock()
+    Stamped by the indexer, which writes the rows -- WANDB when it read the run
+    from W&B, LINEAGE_JOB when it derived the rows from a job record.
+    """
+    from gbserver.lineage.row_indexing import LineageRowIndexer
+
+    rows = MagicMock()
     rows.get_rows_by_job.return_value = []
     rows.get_rows_by_jobs.return_value = []
-    store = DBLineageStore(storage=rows, job_storage=jobs)
+    indexer = LineageRowIndexer(storage=rows)
 
     event = _job_record("j1", "x").attributes["entry"]["event"]
-    store.write_job(event, "b", "t", job_store=JobStore.WANDB)
+    indexer.index_job_entry(
+        event, build_id="b", target_run_uuid="t", job_store=JobStore.WANDB
+    )
     assert {r.args[0].job_store for r in rows.add.call_args_list} == {JobStore.WANDB}
 
     rows.add.reset_mock()
-    store.index_job_record(_job_record("j2", "x"))
+    indexer.index_job_record(_job_record("j2", "x"))
     assert {r.args[0].job_store for r in rows.add.call_args_list} == {
         JobStore.LINEAGE_JOB
     }
@@ -592,6 +607,6 @@ def test_each_source_stamps_its_job_store():
     prebuilt.attributes["entry"] = {
         "rows": [{"job_id": "j3", "input": "a", "output": "b", "job_store": "other"}]
     }
-    store.index_job_records([prebuilt])
+    indexer.index_job_records([prebuilt])
     (added,) = rows.add.call_args.args
     assert [r.job_store for r in added] == [JobStore.LINEAGE_JOB]

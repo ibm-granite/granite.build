@@ -37,21 +37,22 @@ index by identifier in the first place.
 """
 
 import logging
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from gbserver.lineage.attributes import (
     INPUT,
-    OUTPUT,
     JOB_NAMESPACE,
     JOB_OWNER,
     JOB_STARTED_AT,
     JOB_STATUS,
+    OUTPUT,
     endpoint_kind,
     job_detail,
     origin_detail,
     origin_system,
 )
 from gbserver.lineage.graph_builder import build_graph_dict
+from gbserver.lineage.job_detail import fetch_job_detail
 from gbserver.lineage.openlineage_service import LineageService
 from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.lineage.walk import (
@@ -390,6 +391,36 @@ class DBLineageService(LineageService):
         except Exception:
             logger.exception("Lineage job listing failed")
             return empty
+
+    def get_job_detail(
+        self,
+        job_id: str,
+        authorize_build: Callable[[Any], None],
+        admin_storage: Any = None,
+        wandb_runs: Optional[Callable[[str], List[Any]]] = None,
+    ) -> Optional[Dict]:
+        """One job's listing entry plus its full content, or ``None`` if unknown.
+
+        The listing reads the index alone; this follows the rows' ``job_store`` to
+        the job's own store -- see :mod:`gbserver.lineage.job_detail`. One job at a
+        time on purpose: the side panel asks for it when a run is opened, never for
+        a whole page.
+        """
+        rows = self.storage.get_rows_by_job(job_id) if job_id else []
+        if not rows:
+            return None
+        tags = sorted({tag for row in rows for tag in tag_strings(row_tags(row))})
+        if admin_storage is None:
+            from gbserver.storage.singleton_storage import get_admin_storage
+
+            admin_storage = get_admin_storage()
+        return fetch_job_detail(
+            _job_entry(job_id, rows, tags),
+            rows,
+            admin_storage,
+            authorize_build,
+            wandb_runs=wandb_runs,
+        )
 
     def _job_entries(self, job_ids: List[str]) -> List[Dict]:
         """The listing entries for one page, in the page's order.

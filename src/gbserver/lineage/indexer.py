@@ -67,6 +67,7 @@ from gbserver.lineage.lineage_seeding import (
     SEED_FROM_LATEST,
     LineageSeedError,
 )
+from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import JobStore
@@ -101,6 +102,7 @@ def _checkpoint_key_for_provider(provider: str) -> str:
     if provider == LINEAGE_PROVIDER_WANDB:
         return f"{INDEXER_CHECKPOINT_PREFIX}:wandb"
     return INDEXER_CHECKPOINT_PREFIX  # fallback
+
 
 # Attempts at one job before it is skipped. The scan stops at a failing job
 # rather than stepping past it, so without a bound one unreadable job would pin
@@ -151,19 +153,30 @@ def create_indexer(
     source: str,
     monitoring_interval: float = 30.0,
     sink: Optional[DBLineageStore] = None,
+    rows: Optional[LineageRowIndexer] = None,
 ):
     """Build the indexer loop for ``source``, or ``None`` when it has nothing to do.
 
     The returned object has ``start()``, ``stop()``, a ``stop_event`` to block on,
     and ``seed_if_absent()``.
+
+    ``sink`` records job entries into ``gb_lineage_job``; ``rows`` writes the index
+    the indexer owns. See :class:`JobLineageIndexer` for why they are separate.
     """
     sink = sink or DBLineageStore()
+    rows = rows or LineageRowIndexer()
     if source == INDEXER_SOURCE_ADMIN_DB:
-        return TargetLineageIndexer(monitoring_interval=monitoring_interval, sink=sink)
+        return TargetLineageIndexer(
+            monitoring_interval=monitoring_interval, sink=sink, rows=rows
+        )
     if source == INDEXER_SOURCE_LINEAGE_JOB:
-        return LineageJobIndexer(monitoring_interval=monitoring_interval, sink=sink)
+        return LineageJobIndexer(
+            monitoring_interval=monitoring_interval, sink=sink, rows=rows
+        )
     if source == INDEXER_SOURCE_LINEAGE_STORE:
-        return WandBLineageIndexer(monitoring_interval=monitoring_interval, sink=sink)
+        return WandBLineageIndexer(
+            monitoring_interval=monitoring_interval, sink=sink, rows=rows
+        )
     logger.warning("Unknown lineage indexer source %r; not indexing.", source)
     return None
 
@@ -189,6 +202,14 @@ class JobLineageIndexer:
 
     **A pending job stops the scan.** A source may list a job whose lineage is
     not complete yet; advancing past it would skip whatever lands later.
+
+    **Two collaborators, two directions.** Jobs are *read* from whichever source
+    this subclass is for -- ``gb_targets``, ``gb_lineage_job`` or the W&B API --
+    and index rows are *written* through ``self._rows``, which owns
+    ``gb_lineage_index``. The index belongs to the indexer, not to any lineage
+    store: a store answers for its own source only. ``self._sink`` is still the
+    ``db`` store, used to record job entries (the W&B source reads runs and
+    records them as jobs), never to write the index.
     """
 
     _thread_name = "lineage-indexer"
@@ -197,11 +218,13 @@ class JobLineageIndexer:
         self,
         monitoring_interval: float = 30.0,
         sink: Optional[DBLineageStore] = None,
+        rows: Optional[LineageRowIndexer] = None,
     ) -> None:
         self.monitoring_interval = monitoring_interval
         self.stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
         self._sink = sink or DBLineageStore()
+        self._rows = rows or LineageRowIndexer()
         self._failed_attempts: Dict[str, int] = {}
 
     # -- Source (per subclass) -----------------------------------------------
@@ -483,13 +506,23 @@ class TargetLineageIndexer(JobLineageIndexer):
             return False
         # Recorded only if *this* system wrote it: a copy another source imported
         # first still needs granite.build's view merged in. See recorded_by_self.
-        if self._sink.row_storage.has_rows_for_job(
-            job.uuid
-        ) and self._sink.recorded_by_self([job.uuid]):
+        if self._rows.has_rows_for_job(job.uuid) and self._sink.recorded_by_self(
+            [job.uuid]
+        ):
             return False
+        # Two steps, because the store no longer writes the index: it records the
+        # target as a job entry in gb_lineage_job, then the rows are derived from
+        # that record here. Reading the record back (rather than indexing what was
+        # just built in memory) keeps one derivation path for every source -- the
+        # same one the db indexer uses -- so admin-db and db sources cannot drift.
         self._sink.add_jobstats_for_build_target(
             storage, build_id=job.build_id, target_id=job.uuid
         )
+        # Read through the store's own job storage, which is where it just wrote:
+        # that is the table this record lives in, by definition.
+        record = self._sink.job_storage.get_job(job.uuid)
+        if record is not None:
+            self._rows.index_job_record(record)
         return True
 
     def _latest_job(self, storage: SingletonAdminStorage) -> Optional[StoredTargetRun]:
@@ -546,7 +579,7 @@ class LineageJobIndexer(JobLineageIndexer):
         return selected
 
     def _index(self, storage: SingletonAdminStorage, job: StoredLineageJob) -> bool:
-        return self._sink.index_job_record(job)
+        return self._rows.index_job_record(job)
 
     def _scan(
         self,
@@ -566,16 +599,14 @@ class LineageJobIndexer(JobLineageIndexer):
             for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"])
             if mark is None
             or _parse_ts(job.recorded_at) > mark[0]
-            or (
-                _parse_ts(job.recorded_at) == mark[0] and job.job_id not in mark[1]
-            )
+            or (_parse_ts(job.recorded_at) == mark[0] and job.job_id not in mark[1])
         ]
         indexed = 0
         for start in range(0, len(todo), _CHECKPOINT_EVERY):
             if self.stop_event.is_set():
                 break
             batch = todo[start : start + _CHECKPOINT_EVERY]
-            indexed += self._sink.index_job_records(batch)
+            indexed += self._rows.index_job_records(batch)
             last_ts = _parse_ts(batch[-1].recorded_at)
             ids = [j.job_id for j in batch if _parse_ts(j.recorded_at) == last_ts]
             if mark is not None and last_ts == mark[0]:
@@ -681,9 +712,10 @@ class WandBLineageIndexer(JobLineageIndexer):
         self,
         monitoring_interval: float = 30.0,
         sink: Optional[DBLineageStore] = None,
+        rows: Optional[LineageRowIndexer] = None,
         api: Any = None,
     ) -> None:
-        super().__init__(monitoring_interval=monitoring_interval, sink=sink)
+        super().__init__(monitoring_interval=monitoring_interval, sink=sink, rows=rows)
         self._api = api
 
     def _wandb_api(self) -> Any:
@@ -733,12 +765,26 @@ class WandBLineageIndexer(JobLineageIndexer):
         if entry is None:
             return False
         tags = _tags_of(job)
+        build_id = tags.get("build_id", "")
+        target_run_uuid = tags.get("target_id", "")
+        # Record the run as a job entry, then derive its index rows. The rows are
+        # written here, not by the store, and they are stamped WANDB: the run's
+        # full data lives in W&B, which is what a reader of the index follows to
+        # fetch it (see job_detail's per-store dispatch).
         self._sink.write_job(
             entry,
-            build_id=tags.get("build_id", ""),
-            target_run_uuid=tags.get("target_id", ""),
+            build_id=build_id,
+            target_run_uuid=target_run_uuid,
             job_store=JobStore.WANDB,
         )
+        self._rows.index_job_entry(
+            entry,
+            build_id=build_id,
+            target_run_uuid=target_run_uuid,
+            job_store=JobStore.WANDB,
+        )
+        # True regardless: the run was recorded as a job even when it yielded no
+        # edges, so the scan must advance past it rather than retry it forever.
         return True
 
     def _first_run(self, **kwargs: Any) -> Optional[Any]:

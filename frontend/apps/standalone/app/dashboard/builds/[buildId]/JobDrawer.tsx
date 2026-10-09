@@ -4,11 +4,11 @@ import * as React from 'react'
 import { Button, IconButton, InlineLoading, InlineNotification } from '@carbon/react'
 import { Close } from '@carbon/icons-react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { adaptStatus, getBuild, getBuildStatus, getLineageJobs, type LineageJobEntry } from '@granite-build/ui-core/api/gbserver'
+import { adaptStatus, getLineageJobDetail, getLineageJobs, type LineageJobDetail, type LineageJobEntry } from '@granite-build/ui-core/api/gbserver'
 import type { BuildTargetRun } from '@granite-build/ui-core/types'
 import type { IndexElkNode } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import StepDrawer from './StepDrawer'
-import StepDetailsPanel, { ExecutionSummary, Field, Section } from './StepDetailsPanel'
+import StepDetailsPanel, { ExecutionSummary, Field, Section, hasValue, humanizeKey } from './StepDetailsPanel'
 import { stepDrawerSummary, toIsoTimestamp } from './stepDrawerSummary'
 import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
 import styles from './LineagePanel.module.scss'
@@ -29,93 +29,177 @@ const STATUS_ALIASES: Record<string, string> = { successful: 'success', succeede
 const jobStatus = (s: string) => adaptStatus(STATUS_ALIASES[s.toLowerCase()] ?? s)
 
 // The details of a job (run) node that came from the lineage index, shared by the
-// build and artifact lineage panels. The job is read from GET /lineage/jobs; one
-// granite.build ran is shown with the build's own step drawer, anything else with
-// what the index recorded about it.
+// build and artifact lineage panels. The job is read from GET /lineage/jobs/{job_id},
+// which fetches it from the store that holds it; one granite.build ran is shown with
+// the build's own step drawer, anything else with what the index recorded about it.
 export default function JobDrawer(props: Props) {
   // A grouped node stands for every job with the same source and target (an
   // in-place rewrite is the case where both are one artifact), not for its
   // representative: list them all rather than open one.
-  if (typeof props.node.indexNode?.metadata?.run_count === 'number') return <GroupedJobsDrawer {...props} />
+  //
+  // But a group of one is not a group: every self-loop is collapsed regardless of how
+  // many jobs it holds (graph_builder marks it unconditionally, unlike the repeated
+  // A->B grouping which needs two), so a lone in-place rewrite would otherwise render
+  // as a one-row list the user has to expand to reach the job. Show the job itself.
+  const runCount = props.node.indexNode?.metadata?.run_count
+  if (typeof runCount === 'number' && runCount > 1) return <GroupedJobsDrawer {...props} />
+  if (typeof runCount === 'number') return <SingleJobDrawer {...props} soleOfGroup />
   return <SingleJobDrawer {...props} />
 }
 
-function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) {
+function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup }: Props & { soleOfGroup?: boolean }) {
   const meta = node.indexNode?.metadata ?? {}
-  const jobId = str(meta.job_id) ?? (node.indexNode?.id.startsWith('run:') ? node.indexNode.id.slice('run:'.length) : undefined)
-
-  const { data: jobs, isLoading: jobLoading, error: jobError } = useQuery({
-    queryKey: ['lineage-job', jobId],
-    queryFn: () => getLineageJobs({ job_id: jobId!, limit: 1 }),
-    enabled: Boolean(jobId),
-    staleTime: 5 * 60 * 1000,
-    retry: false,
-  })
-  const job = jobs?.jobs[0]
-
-  const buildId = str(meta.gb_build_id)
-    ?? (job ? buildIdOf(job) : undefined)
-  const runId = str(meta.gb_target_run_uuid) ?? jobId
-  const { data: build } = useQuery({
-    queryKey: ['build', buildId],
-    queryFn: () => getBuild(buildId!),
-    enabled: Boolean(buildId),
-    staleTime: 5 * 60 * 1000,
-  })
-  const { data: buildStatus, isLoading: statusLoading } = useQuery({
-    queryKey: ['build-status', buildId],
-    queryFn: () => getBuildStatus(buildId!),
-    enabled: Boolean(buildId),
-    staleTime: 5 * 60 * 1000,
-    retry: false,
-  })
-  const statusTarget = React.useMemo(
-    () => Object.values(buildStatus?.targets ?? {}).find((t) => t.uuid === runId),
-    [buildStatus, runId]
-  )
+  // A collapsed group names its job through representative_job_id; for a group of
+  // one that representative IS the job, so it resolves the same single job.
+  const jobId = str(meta.job_id) ?? str(meta.representative_job_id) ?? (node.indexNode?.id.startsWith('run:') ? node.indexNode.id.slice('run:'.length) : undefined)
+  const { data: job, isLoading, error } = useJobDetail(jobId)
 
   const title = node.title || node.id
+  const buildId = job?.build_id ?? str(meta.gb_build_id) ?? (job ? buildIdOf(job) : undefined)
   // The build's own target run when this server has it; otherwise one rebuilt from
   // what the lineage index captured, so both render through the same drawer.
-  const target = statusTarget ?? (job ? targetFromJob(job, title) : undefined)
-  const fromIndex = !statusTarget && !(buildId && statusLoading)
+  const target = job?.target ?? (job ? targetFromJob(job, title) : undefined)
+  const fromIndex = !job?.target && !isLoading
 
   return (
     <StepDrawer
-      targetName={statusTarget?.target_name ?? title}
+      targetName={job?.target?.target_name ?? title}
       target={target}
-      build={statusTarget ? build : undefined}
+      build={job?.target ? job.build ?? undefined : undefined}
       buildId={buildId}
       onClose={onClose}
       drawerRef={drawerRef}
       closeButtonRef={closeButtonRef}
       // Carbon's inline notification: persistent, in context, and not something
       // to act on, so info, low contrast and no close button.
-      notice={fromIndex && (
+      notice={fromIndex && job && (
         <InlineNotification
           kind="info"
           lowContrast
           hideCloseButton
           title="From the lineage index"
-          // A plain-string subtitle, so it takes the notification's own compact
-          // type; the full build id is in the Build ID field below.
-          subtitle={[
-            buildId
-              ? `Build ${buildId.slice(0, 8)} is not on this server, so its target and step runs are unknown.`
-              : 'Not a granite.build run.',
-            'Showing what the lineage index recorded',
-          ].join(' ') + '.'}
+          // A plain-string subtitle, so it takes the notification's own compact type.
+          subtitle={[job.detail_error ?? 'Not a granite.build run.', 'Showing what the lineage index recorded'].join('. ') + '.'}
         />
       )}
     >
-      {fromIndex && (
-        <>
-          {jobLoading && <InlineLoading description="Loading job…" />}
-          {Boolean(jobError) && <p className={styles.stepMessage}>Failed to load job: {String(jobError)}</p>}
-          <JobIndexSections job={job} target={target} meta={meta} jobId={jobId} buildId={buildId} />
-        </>
+      {isLoading && <InlineLoading description="Loading job…" />}
+      {Boolean(error) && <p className={styles.stepMessage}>Failed to load job: {String(error)}</p>}
+      {soleOfGroup && meta.self_loop === true && (
+        <Section title="Lineage shape">
+          <Field label="Shape">In-place rewrite (reads and writes the same artifact)</Field>
+        </Section>
       )}
+      {fromIndex && <JobIndexSections job={job} target={target} meta={meta} jobId={jobId} buildId={buildId} />}
+      {job && <JobPayloadSections job={job} />}
     </StepDrawer>
+  )
+}
+
+// GET /lineage/jobs/{job_id}: the job with its content from whichever store holds it.
+// Fetched per job and only when it is shown -- a grouped node asks for each row as
+// it is opened, never for the whole page.
+function useJobDetail(jobId: string | undefined) {
+  return useQuery({
+    queryKey: ['lineage-job-detail', jobId],
+    queryFn: () => getLineageJobDetail(jobId!),
+    enabled: Boolean(jobId),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  })
+}
+
+const PAYLOAD_TITLES: Record<string, string> = {
+  job_input_params: 'Input parameters',
+  execution_stats: 'Execution stats',
+  job_output_stats: 'Output stats',
+  source_code_details: 'Source code',
+}
+
+// Keys JobIndexSections already shows as their own rows, so the generic "everything
+// else" renderers below don't repeat them.
+const JOB_KEYS_SHOWN = new Set(['name', 'namespace', 'owner', 'status', 'started_at', 'completed_at'])
+
+/**
+ * Every remaining key of a free-form group, as scalar rows plus a nested block.
+ *
+ * The lineage index is deliberately open: each source writes whatever it recorded
+ * (`category` and `type` from the lakehouse, `release_id` under origin.ids, …), so
+ * nothing is allowlisted -- anything with a value is shown, scalars as rows and
+ * objects/arrays as JSON, the same split StepDetailsPanel's Configuration makes.
+ */
+function DetailRows({ value, skip }: { value: unknown; skip?: Set<string> }) {
+  if (!isPlainObject(value)) return null
+  const entries = Object.entries(value).filter(([k]) => !skip?.has(k))
+  const scalars = entries.filter(([, v]) => isScalarValue(v) && hasValue(v))
+  const nested = entries.filter(([, v]) => !isScalarValue(v) && v != null)
+  return (
+    <>
+      {scalars.map(([k, v]) => <Field key={k} label={humanizeKey(k)}>{String(v)}</Field>)}
+      {nested.map(([k, v]) => <JsonField key={k} label={PAYLOAD_TITLES[k] ?? humanizeKey(k)} value={v} />)}
+    </>
+  )
+}
+
+function isScalarValue(v: unknown): boolean {
+  return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function JsonField({ label, value }: { label: string; value: unknown }) {
+  return (
+    <Field label={label}>
+      <pre className={styles.stepCode} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}>{JSON.stringify(value, null, 2)}</pre>
+    </Field>
+  )
+}
+
+// The large payloads the job's store holds and the index leaves out, plus the
+// origin that recorded it -- which system, and its own identifiers for the job.
+function JobPayloadSections({ job }: { job: LineageJobDetail }) {
+  const entries = Object.entries(job.detail ?? {}).filter(([, v]) => v != null)
+  const origin = isPlainObject(job.origin) ? job.origin : {}
+  const hasOrigin = Object.keys(origin).length > 0 || Boolean(job.origin_url)
+  if (entries.length === 0 && !hasOrigin) return null
+  return (
+    <>
+      {entries.length > 0 && (
+        <Section title="Job content">
+          {entries.map(([key, value]) => (
+            isScalarValue(value)
+              ? <Field key={key} label={PAYLOAD_TITLES[key] ?? humanizeKey(key)}>{String(value)}</Field>
+              : <JsonField key={key} label={PAYLOAD_TITLES[key] ?? humanizeKey(key)} value={value} />
+          ))}
+        </Section>
+      )}
+      {hasOrigin && (
+        <Section title="Origin">
+          {job.origin_url && <Field label="Source"><a href={job.origin_url} target="_blank" rel="noreferrer">{job.origin_url}</a></Field>}
+          <DetailRows value={origin} />
+        </Section>
+      )}
+    </>
+  )
+}
+
+// The body of an opened row of a grouped node; mounted only when the row is open.
+function GroupedJobDetail({ job: entry, target: indexTarget }: { job: LineageJobEntry; target: BuildTargetRun }) {
+  const { data: job, isLoading, error } = useJobDetail(entry.job_id)
+  const target = job?.target ?? indexTarget
+  const buildId = job?.build_id ?? buildIdOf(entry)
+  return (
+    <div style={{ paddingBottom: '1.5rem' }}>
+      {isLoading && <InlineLoading description="Loading job…" />}
+      {Boolean(error) && <p className={styles.stepMessage}>Failed to load job: {String(error)}</p>}
+      <StepDetailsPanel targetName={target.target_name} target={target} buildId={buildId} />
+      <div className={styles.stepExtraSections}>
+        {!job?.target && <JobIndexSections job={job ?? entry} target={target} buildId={buildId} />}
+        {job && <JobPayloadSections job={job} />}
+      </div>
+    </div>
   )
 }
 
@@ -151,6 +235,15 @@ function JobIndexSections({ job, target, meta = {}, jobId, buildId }: {
         {job && <UriField label="Outputs" uris={job.outputs} />}
         {job && <UriField label="Tags" uris={job.tags} />}
       </Section>
+      {/* Whatever else the producer recorded about the job -- its type, category and
+          any key this UI does not know by name. Open by design: see DetailRows. */}
+      {job && (
+        <Section title="Job">
+          <Field label="Source system">{orNA(job.source_system || str(job.origin?.system))}</Field>
+          <Field label="Space">{orNA(job.space_name)}</Field>
+          <DetailRows value={job.job} skip={JOB_KEYS_SHOWN} />
+        </Section>
+      )}
     </>
   )
 }
@@ -264,14 +357,7 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
                     {[target.steps.length > 0 ? subtitle : undefined, summary].filter(Boolean).join(' · ') || NA}
                   </span>
                 </button>
-                {open && (
-                  <div style={{ paddingBottom: '1.5rem' }}>
-                    <StepDetailsPanel targetName={target.target_name} target={target} buildId={buildIdOf(job)} />
-                    <div className={styles.stepExtraSections}>
-                      <JobIndexSections job={job} target={target} buildId={buildIdOf(job)} />
-                    </div>
-                  </div>
-                )}
+                {open && <GroupedJobDetail job={job} target={target} />}
               </li>
             )
           })}

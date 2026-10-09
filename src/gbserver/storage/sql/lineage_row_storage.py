@@ -57,8 +57,13 @@ class SQLLineageRowStorage(
       decomposition regroupable, and it also backs the sink's presence-based dedup,
       run on every scan. The prototype joins and groups on it but leaves it
       unindexed -- a gap corrected here.
-    - ``origin`` says where the job's full content lives (granite.build, db,
-      wandb, other); indexed so a migration or re-import can select by source.
+    - ``job_store`` says which store holds the job's full content (the lineage job
+      table, this server's builds and target runs, W&B, other); indexed so a
+      migration or re-import can select by store, and read per row by the job
+      detail route to know where to fetch from. It replaced an earlier ``origin``
+      column, which named the producing *system* rather than the store to follow;
+      the producing system is still carried in the blob under ``origin.system``,
+      where it is readable but not queryable.
     - ``recorded_at`` is this index's own write time, UTC ISO-8601, and the default
       pagination order. Indexed because it is what a future high-water-mark
       incremental import will range over. Deliberately not in the unique key: it

@@ -14,11 +14,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The sink that writes lineage into the local index.
+"""The ``db`` lineage store: records executions into ``gb_lineage_job``.
 
-The write half of the lineage index: ``DBLineageService`` reads the table, this
-fills it. Same ``ILineageStore`` interface the W&B sink implements, so the
-reconciler and the watcher drive it unchanged.
+One source, this store's own table. That is the ``ILineageStore`` contract --
+each store consults exactly one source, this one its job table, the W&B store the
+W&B API, the no-op store nothing -- and it is why nothing here touches
+``gb_lineage_index``. The index is a *derived* artifact keyed by URI, owned and
+written by the lineage indexer (:mod:`gbserver.lineage.row_indexing`), which
+reads these records back and decomposes them into edges.
+
+Each recorded execution is one job record, with the emitted entry kept verbatim
+under :data:`ENTRY_ATTRIBUTE` so the indexer has something to derive from. The
+write is idempotent under the table's unique index on ``job_id``, so re-recording
+merges rather than duplicating.
 
 **The job entries are not built here.** ``create_jobstats_for_target`` in
 ``wandb_jobstats`` already turns a target run into job entries -- resolving input
@@ -30,54 +38,33 @@ re-deriving it here would fork that logic and let them drift. Only the module
 functions are reused, never ``WandBLineageStore`` itself, so nothing here needs
 ``wandb`` installed or configured.
 
-What this sink adds is the decomposition: one job entry with N inputs and M
-outputs becomes N*M flat rows sharing a ``job_id``. That is lossy only in
-appearance -- ``group_by_job`` recovers which inputs and which outputs an
-execution had -- and it is what makes each row an independently indexable edge.
-
-Dedup is by presence of ``job_id``, not by row count. A job either has
-its rows or it does not. It deliberately does not compare against the reconciler's
-``expected_counts``, which counts one W&B run per output artifact: that number
-never equals an N*M row count, so comparing would report every target as
-unrecorded forever and re-record on every scan.
+Dedup is by presence of ``job_id``, not by count: a record is written whole, so
+there is no partial state for a count to detect. The reconciler's
+``expected_counts`` is therefore accepted and ignored.
 """
 
 import logging
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from gbserver.lineage.attributes import (
-    JOB,
-    JOB_COMPLETED_AT,
-    JOB_NAMESPACE,
-    JOB_OWNER,
-    JOB_STARTED_AT,
-    JOB_STATUS,
-    build_index_attributes,
     build_job_attributes,
-    job_detail,
     origin_id,
 )
 from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.jobstats import ILineageStore
-from gbserver.lineage.merge import UPDATED, rows_to_add, upsert_job, upsert_row
+from gbserver.lineage.merge import ADDED, UPDATED, upsert_job
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
-from gbserver.storage.lineage_row_storage import ILineageRowStorage, tags_to_map
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_lineage_job import StoredLineageJob
-from gbserver.storage.stored_lineage_row import (
-    TERMINAL,
-    JobStore,
-    StoredLineageRow,
-    utc_now_iso,
-)
+from gbserver.storage.stored_lineage_row import JobStore, utc_now_iso
 from gbserver.storage.stored_target_run import StoredTargetRun
 
 logger = logging.getLogger(__name__)
 
-# Longest tag kept. Tags now live in the row blob, so this is no column's width; it
-# only keeps a runaway value out of every row of a job.
+# Longest tag kept. Tags live in a JSON blob, so this is no column's width; it
+# only keeps a runaway value out of a job's record.
 MAX_TAG_LENGTH = 256
 
 
@@ -85,14 +72,15 @@ def is_storable_tag(tag: object) -> bool:
     """Whether ``tag`` is kept: a non-empty string no longer than the limit."""
     return isinstance(tag, str) and 0 < len(tag) <= MAX_TAG_LENGTH
 
-# Names the system that produced a row, so rows this sink derived stay
-# distinguishable from rows an importer supplied. Surfaced on a run node as
+
+# Names the system that produced a job, so what this store recorded stays
+# distinguishable from what an importer supplied. Surfaced on a run node as
 # ``source_system``; an importer passes its own name.
 SOURCE_SYSTEM = "granite.build"
 
 # Key in a job record's ``attributes`` holding the job entry as emitted, so the
-# lineage indexer can decompose it into index rows later. Only the record-only
-# sink (``index_rows=False``, the ``db`` provider) writes it.
+# lineage indexer can decompose it into index rows later. Every record this store
+# writes carries it -- deriving the index is the indexer's only way in.
 ENTRY_ATTRIBUTE = "entry"
 
 
@@ -105,63 +93,34 @@ class DBLineageStore(ILineageStore):
     index, so re-recording is a no-op rather than a duplicate.
 
     Args:
-        storage: the lineage row storage to write. Defaults to the process-wide
-            admin storage, resolved lazily so importing this module does not
-            require a configured database.
-        job_storage: the lineage job storage to write. Resolved the same way, but
-            only when ``storage`` was not given -- see :attr:`job_storage`. Without
-            it the rows are still written; only the job record is skipped.
-        index_rows: write the index rows along with the job record. ``False`` is
-            the ``db`` provider's sink: it records only ``gb_lineage_job``, with the
-            entry kept under :data:`ENTRY_ATTRIBUTE`, and the lineage indexer
-            builds the rows from it later (:meth:`index_job_record`).
+        job_storage: the lineage job storage to write. Defaults to the
+            process-wide admin storage, resolved lazily so importing this module
+            does not require a configured database.
     """
 
     def __init__(
         self,
-        storage: Optional[ILineageRowStorage] = None,
         job_storage: Optional[ILineageJobStorage] = None,
-        index_rows: bool = True,
     ) -> None:
-        self._row_storage = storage
         self._job_storage = job_storage
-        self._index_rows = index_rows
 
     @property
-    def row_storage(self) -> ILineageRowStorage:
-        """The lineage row storage, resolved on first use."""
-        if self._row_storage is None:
-            from gbserver.storage.singleton_storage import get_admin_storage
+    def job_storage(self) -> ILineageJobStorage:
+        """The lineage job storage, resolved on first use.
 
-            self._row_storage = get_admin_storage().lineage_row_storage
-        return self._row_storage
-
-    @property
-    def job_storage(self) -> Optional[ILineageJobStorage]:
-        """The lineage job storage, resolved on first use, or ``None``.
-
-        ``None`` when there is nothing to resolve it from. The rows are what the graph
-        is built from; the job record enriches them, so a caller that supplied only a
-        row storage still records usable lineage rather than failing.
-
-        A caller that passed an explicit ``storage`` and no ``job_storage`` gets
-        ``None`` without the singleton being consulted at all. Reaching for it would
-        open a database connection that caller never asked for -- and, against a
-        configured-but-unreachable backend, block rather than fail.
+        Raises rather than degrading: this table is the store's *only* source, so
+        a missing one leaves nothing to record into and nothing to answer a query
+        from. It used to return ``None`` and log a warning, which was tenable
+        only while the index rows were also written here -- lineage still landed,
+        minus the record's status, owner and step params. With the rows now the
+        indexer's (:mod:`gbserver.lineage.row_indexing`), a silent ``None`` would
+        make every write a no-op and every count zero, which reads as "no lineage
+        yet" rather than as a broken store.
         """
         if self._job_storage is None:
-            if self._row_storage is not None:
-                return None
-
             from gbserver.storage.singleton_storage import get_admin_storage
 
-            try:
-                self._job_storage = get_admin_storage().lineage_job_storage
-            except Exception as exc:
-                # A warning, not debug: rows are still written without it, and a
-                # row with no job record has no status, owner or step params.
-                logger.warning("No lineage job storage available: %s", exc)
-                return None
+            self._job_storage = get_admin_storage().lineage_job_storage
         return self._job_storage
 
     # -- Recording -----------------------------------------------------------
@@ -242,21 +201,20 @@ class DBLineageStore(ILineageStore):
         if not isinstance(target, StoredTargetRun):
             return
 
-        if self.row_storage.has_rows_for_job(target.uuid) and self._has_job_record(
-            target.uuid
-        ):
+        if self._has_job_record(target.uuid):
             # Already recorded. Presence, not count: see the module docstring for
             # why a count comparison would re-record forever.
             #
             # Keyed on target.uuid because that IS the job id of build lineage --
             # the event builder sets ``job_details.job_id = targetrun.uuid``
-            # (``wandb_jobstats.py:274``), so per-job dedup is per-target dedup here
-            # without the index needing a column for a target run.
+            # (``wandb_jobstats.py:274``), so per-job dedup is per-target dedup
+            # here without any table needing a column for a target run.
             #
-            # Rows alone are not enough: a job upsert that failed left rows with no
-            # job record, and skipping on rows would never write it. The rewrite is
-            # idempotent, so the rows merge and only the record is added.
-            logger.debug("Target run %s already has lineage rows", target.uuid)
+            # The job record alone decides, because it is the only thing this
+            # store writes. The index rows are the indexer's, derived from this
+            # record afterwards, so their presence or absence says nothing about
+            # whether *this* store has recorded the target.
+            logger.debug("Target run %s already has a lineage job record", target.uuid)
             return
 
         events, _ = self.create_jobstats_for_target(storage, target, build)
@@ -307,15 +265,26 @@ class DBLineageStore(ILineageStore):
         extra_tags: Optional[List[str]] = None,
         job_store: JobStore = JobStore.TARGETS,
     ) -> None:
-        """Decompose one job entry and add its rows.
+        """Record one job entry into ``gb_lineage_job``.
+
+        The entry is kept verbatim under :data:`ENTRY_ATTRIBUTE` so the lineage
+        indexer can derive the index rows from it later; this store writes no
+        rows itself.
 
         A job that cannot be decomposed is logged and skipped rather than aborting
         the scan: one unrecordable target must not stop the rest of a build's
         lineage from landing. The reason is logged with it -- a bare "skipping"
-        makes lineage loss undiagnosable, and lineage this index misses is not
+        makes lineage loss undiagnosable. The decomposition is discarded here and
+        redone by the indexer; it runs as a *gate*, so an entry that could never
+        become rows is rejected at the door rather than stored to fail on every
+        later scan.
+
+        ``job_store`` is accepted for interface symmetry with :meth:`write_job`
+        and is not stored: where a job's full data lives is a property of the
+        index row, which the indexer sets when it derives one.
         """
         try:
-            drafts = to_lineage_rows(_normalized_job(job))
+            to_lineage_rows(_normalized_job(job))
         except LineageDecomposeError as exc:
             logger.warning(
                 "Job entry could not be decomposed into lineage rows; skipping "
@@ -326,184 +295,17 @@ class DBLineageStore(ILineageStore):
             )
             return
 
-        # The job record first: it holds the metadata the rows no longer carry
-        # (the large payloads, and the three fields promoted to job columns), so it
-        # is written even if every draft below turns out to be unstorable.
-        entry = None
-        if not self._index_rows:
-            entry = {
-                "event": job,
-                "build_id": build_id,
-                "target_run_uuid": target_run_uuid,
-                "extra_tags": list(extra_tags or []),
-            }
         self._add_job(
             _normalized_job(job),
             build_id=build_id,
             target_run_uuid=target_run_uuid,
-            entry=entry,
+            entry={
+                "events": [job],
+                "build_id": build_id,
+                "target_run_uuid": target_run_uuid,
+                "extra_tags": list(extra_tags or []),
+            },
         )
-        if not self._index_rows:
-            # The indexer writes the rows from the record; see index_job_record.
-            return
-        self._write_rows(
-            job,
-            drafts,
-            build_id=build_id,
-            target_run_uuid=target_run_uuid,
-            extra_tags=extra_tags,
-            job_store=job_store,
-        )
-
-    def index_job_record(self, record: StoredLineageJob) -> bool:
-        """Write the index rows for a job record in ``gb_lineage_job``.
-
-        The record's :data:`ENTRY_ATTRIBUTE` is either ``{"event": ...}``, the job
-        entry the ``db`` sink emitted (decomposed here), or ``{"rows": [...]}``,
-        index rows an importer already built.
-
-        The job record itself is not rewritten: it is the source here. Idempotent
-        under the rows' unique indexes, so re-indexing after a checkpoint reset
-        writes nothing new. Returns whether the record carried an entry to index.
-        """
-        entry = (record.attributes or {}).get(ENTRY_ATTRIBUTE) or {}
-        if entry.get("rows"):
-            # Already-built rows, from an importer whose source is one row per
-            # edge (Lakehouse): written as given, nothing to decompose.
-            for data in entry["rows"]:
-                try:
-                    row = StoredLineageRow.model_validate(data)
-                    row.job_store = JobStore.LINEAGE_JOB
-                    _fill_job_from_record(row, record)
-                    upsert_row(self.row_storage, row)
-                except Exception:
-                    logger.debug(
-                        "Lineage row from job record could not be added or merged "
-                        "(job=%s, row=%r)",
-                        record.job_id,
-                        data,
-                        exc_info=True,
-                    )
-            return True
-        job = entry.get("event")
-        if not job:
-            return False
-        build_id = entry.get("build_id") or ""
-        target_run_uuid = entry.get("target_run_uuid") or ""
-        try:
-            drafts = to_lineage_rows(_normalized_job(job))
-        except LineageDecomposeError as exc:
-            logger.warning(
-                "Lineage job record could not be decomposed into rows; skipping "
-                "(job=%s): %s",
-                record.job_id,
-                exc,
-            )
-            return False
-        self._write_rows(
-            job,
-            drafts,
-            build_id=build_id,
-            target_run_uuid=target_run_uuid,
-            extra_tags=entry.get("extra_tags"),
-            job_store=JobStore.LINEAGE_JOB,
-        )
-        return True
-
-    def index_job_records(self, records: List[StoredLineageJob]) -> int:
-        """Batched :meth:`index_job_record`; return how many records had an entry.
-
-        One write per row, each its own commit, made the indexer ~3 ms a row. Here
-        a batch costs one lookup of the rows already stored for its jobs and one
-        bulk add of the new ones. Jobs that already have rows go through
-        :func:`upsert_row` one by one, so the dedup and merge are unchanged, and a
-        bulk add that fails falls back to the same per-row path.
-        """
-        prebuilt: List[StoredLineageRow] = []
-        indexed = 0
-        for record in records:
-            entry = (record.attributes or {}).get(ENTRY_ATTRIBUTE) or {}
-            if not entry.get("rows"):
-                indexed += self.index_job_record(record)
-                continue
-            indexed += 1
-            for data in entry["rows"]:
-                try:
-                    row = StoredLineageRow.model_validate(data)
-                    row.job_store = JobStore.LINEAGE_JOB
-                    _fill_job_from_record(row, record)
-                    prebuilt.append(row)
-                except Exception:
-                    logger.debug(
-                        "Invalid lineage row in job record (job=%s, row=%r)",
-                        record.job_id,
-                        data,
-                        exc_info=True,
-                    )
-        if not prebuilt:
-            return indexed
-
-        stored_jobs = {
-            row.job_id
-            for row in self.row_storage.get_rows_by_jobs(
-                list({row.job_id for row in prebuilt})
-            )
-        }
-        fresh = rows_to_add([row for row in prebuilt if row.job_id not in stored_jobs])
-        merging = [row for row in prebuilt if row.job_id in stored_jobs]
-        if fresh:
-            try:
-                self.row_storage.add(fresh)
-            except Exception:
-                logger.debug(
-                    "Bulk add of %d lineage rows failed; adding one by one",
-                    len(fresh),
-                    exc_info=True,
-                )
-                merging.extend(fresh)
-        for row in merging:
-            try:
-                upsert_row(self.row_storage, row)
-            except Exception:
-                logger.debug(
-                    "Lineage row could not be added or merged "
-                    "(job=%s, input=%r, output=%r)",
-                    row.job_id,
-                    row.input,
-                    row.output,
-                    exc_info=True,
-                )
-        return indexed
-
-    def _write_rows(
-        self,
-        job: dict,
-        drafts,
-        build_id: str,
-        target_run_uuid: str,
-        extra_tags: Optional[List[str]] = None,
-        job_store: JobStore = JobStore.TARGETS,
-    ) -> None:
-        # Tags ride on every row of the job, in ``attributes.job.tags``.
-        tags = job_tags(
-            job,
-            build_id=build_id,
-            target_run_uuid=target_run_uuid,
-            extra_tags=extra_tags,
-        )
-
-        for draft in drafts:
-            if not draft.input and not draft.output:
-                # Both endpoints unidentifiable: the row would be terminal on both
-                # sides, which identifies nothing and would join unrelated jobs.
-                continue
-            self._add_row(
-                draft,
-                build_id=build_id,
-                target_run_uuid=target_run_uuid,
-                tags=tags,
-                job_store=job_store,
-            )
 
     def _add_job(
         self,
@@ -519,13 +321,33 @@ class DBLineageStore(ILineageStore):
         what the stored copy lacks rather than being dropped. See
         :mod:`gbserver.lineage.merge`.
 
-        With ``entry`` (the record-only sink), a merge that changed the record
-        also moves ``recorded_at`` forward: the indexer reads by it, and would
-        otherwise never see what the merge added.
+        With ``entry``, a merge that changed the record also moves ``recorded_at``
+        forward: the indexer reads by it, and would otherwise never see what the
+        merge added.
+
+        **The entry is written over, not merged.** Everything else fills blanks and
+        keeps what is stored (see :func:`merge_attributes`), which is right for
+        provenance that only accrues -- but the entry is a snapshot of the latest
+        emission, and its lists are *values*, not blanks. Merging it would keep the
+        first version forever: re-recording a target with a tag added would store
+        the old tag list, the indexer would derive rows from that, and the new tag
+        would vanish with nothing logged.
+
+        So a changed entry is written over after the merge, and on its own account:
+        the merge reports ``UNCHANGED`` precisely when the entry was the *only*
+        difference, so keying this off ``UPDATED`` would skip the one case it exists
+        for. ``recorded_at`` moves with it, because that is what the indexer reads
+        by -- without it the new entry would sit behind the checkpoint, never
+        re-read, and the index would keep serving rows derived from the old one.
+
+        **The entry's events accumulate.** One execution can emit several entries
+        under a single ``job_id`` -- the builder emits one per output artifact, so a
+        target with two outputs arrives as two calls here -- while the table holds
+        one record per ``job_id``. Replacing the entry would keep only the last
+        event and the index would lose every other output's edges silently. So the
+        events are unioned, and the indexer derives rows from all of them.
         """
         storage = self.job_storage
-        if storage is None:
-            return
         job = _job_from_metadata(
             job_metadata,
             build_id=build_id,
@@ -536,51 +358,30 @@ class DBLineageStore(ILineageStore):
         if entry is not None:
             job.attributes[ENTRY_ATTRIBUTE] = entry
         try:
-            if upsert_job(storage, job) == UPDATED and entry is not None:
-                stored = storage.get_job(job.job_id)
-                if stored is not None:
-                    storage.update_fields(stored.uuid, {"recorded_at": utc_now_iso()})
+            result = upsert_job(storage, job)
+            if result == ADDED or entry is None:
+                return
+            stored = storage.get_job(job.job_id)
+            if stored is None:
+                return
+            merged = _merge_entry((stored.attributes or {}).get(ENTRY_ATTRIBUTE), entry)
+            fields: dict = {}
+            if merged != (stored.attributes or {}).get(ENTRY_ATTRIBUTE):
+                attributes = dict(stored.attributes or {})
+                attributes[ENTRY_ATTRIBUTE] = merged
+                fields["attributes"] = attributes
+            if fields or result == UPDATED:
+                fields["recorded_at"] = utc_now_iso()
+                storage.update_fields(stored.uuid, fields)
         except Exception:
-            # A warning: the rows are written anyway, so this is the only trace of
-            # a job left without its record (the next scan backfills it, see
-            # _has_job_record).
+            # A warning, and the only trace: the record is all this store writes,
+            # so a failure here means the execution went unrecorded entirely and
+            # the index will have nothing to derive from. The next scan retries it
+            # (see _has_job_record), which is why this does not raise.
             logger.warning(
                 "Lineage job could not be added or merged (job=%s)",
                 job.job_id,
                 exc_info=True,
-            )
-
-    def _add_row(
-        self,
-        draft,
-        build_id: str,
-        target_run_uuid: str,
-        tags: Optional[List[str]] = None,
-        job_store: JobStore = JobStore.TARGETS,
-    ) -> None:
-        """Store one decomposed row, merging into the same edge already stored.
-
-        Re-ingest stays idempotent -- a merge that adds nothing writes nothing -- and
-        an edge another source recorded first gains what this one knows. See
-        :mod:`gbserver.lineage.merge`.
-        """
-        row = _row_from_draft(
-            draft,
-            build_id=build_id,
-            target_run_uuid=target_run_uuid,
-            job_store=job_store,
-        )
-        if tags:
-            row.attributes.setdefault("job", {})["tags"] = tags_to_map(tags)
-        try:
-            upsert_row(self.row_storage, row)
-        except Exception:
-            logger.debug(
-                "Lineage row could not be added or merged "
-                "(job=%s, input=%r, output=%r)",
-                row.job_id,
-                row.input,
-                row.output,
             )
 
     # -- Building (delegated, so both sinks agree on what lineage is) --------
@@ -625,75 +426,54 @@ class DBLineageStore(ILineageStore):
     def count_release_ids(
         self, release_id: str, target_id: Optional[str] = None
     ) -> int:
-        """Count the lineage rows recorded for a release.
+        """Count the lineage **jobs** recorded for a release.
 
         ``release_id`` is a ``build_id`` for build lineage and the artifact's uuid
         for a registered artifact -- W&B's convention, kept so the same argument
         works against either sink.
 
-        Neither of those is a column here: the index is keyed by artifact URI and
-        job, and a build id lives in the unqueryable ``attributes`` blob. So this
-        pages and filters in Python. It is only used by W&B-shaped callers (no
-        production caller outside that sink), and a scan is the honest cost of
-        answering a question this schema is not organized around -- as opposed to
-        adding a column that would be blank on every imported row.
+        Counted against ``gb_lineage_job``, this store's only source. Neither id
+        is a column there -- both live in the ``attributes`` blob under
+        ``origin.ids`` -- so this pages and filters in Python. The scan is the
+        honest cost of answering a question this schema is not organized around,
+        as opposed to adding a column that would be blank on every imported row.
+        Measured at ~1s over 323k records, against an occasional caller.
+
+        **The unit is one job per execution**, which is W&B's run shape, so a
+        count computed there is comparable to this one. It used to count index
+        *rows* (one per input/output pair), which never matched: a build with 2
+        inputs and 5 outputs is 5 runs in W&B and was 10 rows here.
 
         Args:
             release_id: the build uuid, or the artifact uuid.
             target_id: optional target run to narrow to.
 
         Returns:
-            How many rows are recorded. ``0`` for an unknown release.
+            How many jobs are recorded. ``0`` for an unknown release.
         """
         if not release_id:
             return 0
 
-        job_ids = self._job_ids_for_release(release_id, target_id)
-        if job_ids:
-            return self.row_storage.count({"job_id": sorted(job_ids)})
-
-        # No tagged job: either the release is unknown, or its rows predate job
-        # tags. Only the scan can tell those apart, so it stays as the fallback.
         matched = 0
-        for page in self.row_storage.get_paged():
-            for row in page:
-                if origin_id(row.attributes, "build_id") != release_id:
+        for page in self.job_storage.get_paged():
+            for job in page:
+                if origin_id(job.attributes, "build_id") != release_id:
                     continue
                 if target_id and (
-                    origin_id(row.attributes, "target_run_uuid") != target_id
+                    origin_id(job.attributes, "target_run_uuid") != target_id
                 ):
                     continue
                 matched += 1
         return matched
 
-    def _job_ids_for_release(
-        self, release_id: str, target_id: Optional[str]
-    ) -> Set[str]:
-        """The jobs tagged with a release (and target), by indexed tag lookup.
-
-        The tags are the ones :func:`job_tags` derives from the same ``ids`` the
-        scan compares, so both answer the same question.
-        """
-        required = [f"target_run_uuid={target_id}"] if target_id else None
-        try:
-            return self.row_storage.get_job_ids_by_tags(
-                [f"build_id={release_id}"], all_of=required
-            )
-        except Exception as exc:
-            logger.debug("Lineage job tag lookup failed: %s", exc)
-            return set()
-
     def does_release_id_exist(
         self, release_id: str, expected_count: int, target_id: Optional[str] = None
     ) -> bool:
-        """Whether a release has exactly ``expected_count`` rows recorded.
+        """Whether a release has exactly ``expected_count`` jobs recorded.
 
-        Kept for interface compatibility. Mind the unit: ``expected_count`` is
-        compared against a ROW count, and W&B creates one run per (target, output
-        artifact) while this sink writes one row per (input, output) pair -- a build
-        with 2 inputs and 5 outputs is 5 runs there and 10 rows here. A count
-        computed in W&B's shape will not match. That same mismatch is why recording
-        dedup is presence-based rather than count-based.
+        ``expected_count`` is the caller's W&B-shaped count (one run per output
+        artifact), and :meth:`count_release_ids` now answers in that same unit, so
+        the comparison is meaningful rather than merely type-correct.
         """
         return self.count_release_ids(release_id, target_id) == expected_count
 
@@ -703,19 +483,21 @@ class DBLineageStore(ILineageStore):
         expected_counts: Optional[dict[str, int]] = None,
         on_query_error: Optional[Callable[[Exception], None]] = None,
     ) -> set[str]:
-        """Return the candidates that have no rows yet.
+        """Return the candidates that have no job record yet.
 
-        ``expected_counts`` is accepted and **ignored**: it counts one W&B run per
-        output artifact, a shape that never equals an N*M row count, so honouring
-        it would mark every target unrecorded forever. Completeness is by presence
-        instead -- a target's rows are written together, so it either has them or
-        it does not.
+        ``expected_counts`` is accepted and **ignored**: completeness is by
+        presence. A job record is written once per execution, whole, so it either
+        exists or it does not -- there is no partial state for a count to detect.
 
         The candidates are target run uuids, and they are looked up as *job* ids,
         which is correct rather than a coincidence: the event builder stamps
         ``job_details.job_id = targetrun.uuid`` (``wandb_jobstats.py:274``), so a
-        target run and its job share one identifier. That is what lets the index
-        drop its ``target_run_uuid`` column without weakening dedup.
+        target run and its job share one identifier. That is what lets dedup work
+        without any table carrying a ``target_run_uuid`` column.
+
+        Resolved by indexed ``job_id`` lookup (``uq_gb_lineage_job_job_id``), which
+        matters: this runs on every watcher tick and is the only thing preventing
+        duplicate records.
 
         Fails **open**, and invokes ``on_query_error``: on a query failure every
         candidate is reported unrecorded. Re-recording is idempotent, so that is
@@ -726,9 +508,7 @@ class DBLineageStore(ILineageStore):
         if not target_ids:
             return set()
         try:
-            recorded = self.recorded_by_self(
-                self.row_storage.get_recorded_jobs(list(target_ids))
-            )
+            recorded = self.recorded_by_self(target_ids)
         except Exception as exc:
             logger.warning("Lineage dedup query failed; treating all as unrecorded")
             if on_query_error is not None:
@@ -737,34 +517,26 @@ class DBLineageStore(ILineageStore):
         return {target_id for target_id in target_ids if target_id not in recorded}
 
     def recorded_by_self(self, job_ids: Iterable[str]) -> Set[str]:
-        """Narrow ``job_ids`` that have rows to those granite.build itself recorded.
+        """Narrow ``job_ids`` to those already holding a job record.
 
         A target run another source imported first -- Lakehouse keeps granite.build
-        runs under ``job_id = targetrun.uuid`` -- has rows, but not this system's
-        view of it: no namespace, which the read path needs to authorize it. Such a
-        job is reported unrecorded so the scan writes it, and the write merges into
-        the imported copy rather than duplicating it.
+        runs under ``job_id = targetrun.uuid`` -- may already be recorded without
+        this system's view of it: no namespace, which the read path needs to
+        authorize it. The write merges into the imported copy rather than
+        duplicating it, so a record's existence is enough to skip re-recording.
 
         Dedup is by job_id alone: if the job record exists, it was already written
         by some source. The merge logic fills in any blanks the first writer missed.
         """
         job_ids = set(job_ids)
-        storage = self.job_storage
-        if storage is None or not job_ids:
+        if not job_ids:
             return job_ids
-        jobs = storage.get_jobs_by_id(list(job_ids))
+        jobs = self.job_storage.get_jobs_by_id(list(job_ids))
         return {job_id for job_id in job_ids if job_id in jobs}
 
     def _has_job_record(self, job_id: str) -> bool:
-        """Whether the job table holds ``job_id``; ``True`` with no job storage.
-
-        With no job storage there is nothing to backfill, so presence of rows
-        decides, as in :meth:`recorded_by_self`.
-        """
-        storage = self.job_storage
-        if storage is None:
-            return True
-        return job_id in storage.get_jobs_by_id([job_id])
+        """Whether the job table holds ``job_id``."""
+        return job_id in self.job_storage.get_jobs_by_id([job_id])
 
     # -- Helpers -------------------------------------------------------------
 
@@ -792,6 +564,42 @@ class DBLineageStore(ILineageStore):
                 f"of the given build ({build.uuid})"
             )
         return build
+
+
+def _entry_events(entry: Optional[dict]) -> List[dict]:
+    """The events an entry carries, in either shape.
+
+    ``events`` is the current one. ``event`` is what records written before the
+    accumulation fix hold, and they are still in the table, so both are read; a
+    record is never rewritten just to change its shape.
+    """
+    if not entry:
+        return []
+    events = entry.get("events")
+    if isinstance(events, list):
+        return [event for event in events if event]
+    single = entry.get("event")
+    return [single] if single else []
+
+
+def _merge_entry(stored: Optional[dict], incoming: dict) -> dict:
+    """Union ``incoming``'s events into ``stored``'s, keeping the newest metadata.
+
+    One ``job_id`` can receive several entries (one per output artifact), so the
+    events accumulate rather than replace -- see :meth:`DBLineageStore._add_job`.
+    An event already present is not duplicated, which is what keeps re-recording
+    idempotent; equality is on the whole event, so a *changed* event is kept
+    alongside rather than silently dropped, and the rows it decomposes to merge
+    under their own unique index.
+    """
+    events = _entry_events(stored)
+    for event in _entry_events(incoming):
+        if event not in events:
+            events.append(event)
+    merged = dict(incoming)
+    merged.pop("event", None)
+    merged["events"] = events
+    return merged
 
 
 def _normalized_job(job: dict) -> dict:
@@ -949,90 +757,5 @@ def _job_from_metadata(
             job_metadata=job_metadata,
             source_system=source_system,
             ids={"build_id": build_id, "target_run_uuid": target_run_uuid},
-        ),
-    )
-
-
-def _fill_job_from_record(row: StoredLineageRow, record: StoredLineageJob) -> None:
-    """Copy the record's job fields onto a prebuilt row's ``job`` group.
-
-    An importer that builds rows itself (Lakehouse) leaves them at ``{name, type,
-    id}``, while the record holds the namespace, owner, status and span. The
-    ``lineage-index`` routes read the index alone, and the access filter reads
-    ``namespace`` off the row, so they are carried here. What the row already
-    says wins; values keep the record's own form.
-    """
-    record_job = job_detail(record.attributes)
-    fill = {
-        JOB_NAMESPACE: record.job_namespace or record_job.get(JOB_NAMESPACE),
-        JOB_OWNER: record.owner or record_job.get(JOB_OWNER),
-        JOB_STATUS: record.status or record_job.get(JOB_STATUS),
-        JOB_STARTED_AT: record.started_at or record_job.get(JOB_STARTED_AT),
-        JOB_COMPLETED_AT: record_job.get(JOB_COMPLETED_AT),
-    }
-    attributes = dict(row.attributes or {})
-    job = dict(attributes.get(JOB) or {})
-    for key, value in fill.items():
-        if value and not job.get(key):
-            job[key] = str(value)
-    attributes[JOB] = job
-    row.attributes = attributes
-
-
-def _row_from_draft(
-    draft,
-    build_id: str,
-    target_run_uuid: str,
-    source_system: str = SOURCE_SYSTEM,
-    job_store: JobStore = JobStore.TARGETS,
-) -> StoredLineageRow:
-    """Turn a decomposed draft into the stored row.
-
-    An empty endpoint stays :data:`TERMINAL` (``""``), not NULL: in SQL, NULL never
-    equals NULL, so NULL endpoints would slip past the unique index and leave
-    creation/deletion rows as the only ones a re-ingest could duplicate.
-
-    Everything that is not ``job_id``/``input``/``output`` goes into the row's
-    ``attributes`` blob, whose shape is defined by
-    :mod:`gbserver.lineage.attributes` -- including the two process ids, which are
-    deliberately not columns: a build and a target run are granite.build's own
-    concepts and are empty for every imported source, so indexing them would index
-    blanks over most of the table.
-
-    Args:
-        draft: the decomposed row.
-        build_id: the build this row came from; empty for lineage with no build.
-        target_run_uuid: the target run this row came from; empty when there is
-            none.
-        source_system: which system produced the job. Not written to the row:
-            the slim shape leaves it on the job record. Kept so callers need not
-            change.
-        job_store: where the job's full data lives; see :class:`JobStore`.
-    """
-    metadata = draft.metadata or {}
-    return StoredLineageRow(
-        job_id=draft.job_id,
-        input=draft.input or TERMINAL,
-        output=draft.output or TERMINAL,
-        job_store=job_store,
-        attributes=build_index_attributes(
-            job_id=draft.job_id,
-            job_name=str(metadata.get("job_name") or ""),
-            job_type=str(metadata.get("job_type") or ""),
-            job_namespace=str(metadata.get("job_namespace") or ""),
-            owner=str(metadata.get("owner") or ""),
-            job_status=str(metadata.get("job_status") or ""),
-            job_started_at=str(metadata.get("job_started_at") or ""),
-            job_completed_at=str(metadata.get("job_completed_at") or ""),
-            input_uri=draft.input or "",
-            input_artifact=draft.input_artifact,
-            output_uri=draft.output or "",
-            output_artifact=draft.output_artifact,
-            retrieve={
-                "build_id": build_id,
-                "target_run_uuid": target_run_uuid,
-            }
-            if build_id or target_run_uuid
-            else {"job_id": draft.job_id},
         ),
     )
