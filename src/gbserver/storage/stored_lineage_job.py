@@ -87,9 +87,6 @@ class StoredLineageJob(BaseStoredItem):
         space_name: space the job ran in, when the source has that notion; ``""``
             otherwise (Lakehouse has no such concept).
         owner: username the execution is attributed to, or ``""`` when unknown.
-        source_system: which system produced this job -- ``granite.build``,
-            ``lakehouse``, ``openlineage``. A column here, unlike in the row table,
-            because a per-job listing is a plausible filter.
         status: job status as the source reported it.
         started_at: start timestamp in the source's own string form; see the module
             docstring.
@@ -112,7 +109,6 @@ class StoredLineageJob(BaseStoredItem):
         default="", description="Space the job ran in; empty if the source has none"
     )
     owner: str = Field(default="", description="Username the job is attributed to")
-    source_system: str = Field(default="", description="Which system produced this job")
     status: str = Field(default="", description="Job status as reported")
     started_at: str = Field(
         default="", description="Start timestamp in the source's own string form"

@@ -30,10 +30,10 @@ So every writer goes through these upserts instead:
   stored is kept, a blank one is filled. Existing wins on a conflict, because a
   conflict between two sources about one execution has no right answer to pick and
   a stable one is better than a flapping one.
-- The one exception is **provenance**. The system that ran the job is the authority
-  on it, so a granite.build write takes ``source_system`` over an imported copy's
-  (see :data:`_SYSTEM_PRECEDENCE`), and the ids each source knew are unioned under
-  ``origin.ids``.
+- The one exception is **provenance** in the attributes blob. The system that ran
+  the job is the authority on it, so a granite.build write takes ``origin.system``
+  over an imported copy's (see :data:`_SYSTEM_PRECEDENCE`), and the ids each source
+  knew are unioned under ``origin.ids``.
 - **tags** live in a row's ``attributes.job.tags`` map, so they merge like any
   other map: tags both sources know are kept once, new ones are added.
 
@@ -44,7 +44,7 @@ creation next to a source that saw what X was made from.
 """
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from gbserver.lineage.attributes import ORIGIN, ORIGIN_IDS, ORIGIN_SYSTEM
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
@@ -126,9 +126,6 @@ def merge_job(existing: StoredLineageJob, incoming: StoredLineageJob) -> Dict[st
             getattr(incoming, column)
         ):
             fields[column] = getattr(incoming, column)
-    system = preferred_system(existing.source_system, incoming.source_system)
-    if system != existing.source_system:
-        fields["source_system"] = system
     attributes = merge_attributes(existing.attributes, incoming.attributes)
     if attributes != existing.attributes:
         fields["attributes"] = attributes
@@ -186,6 +183,32 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
                 storage.update_fields(added.uuid, {"attributes": attributes})
         storage.delete([stored.uuid for stored in stale])
     return ADDED
+
+
+def rows_to_add(rows: List[StoredLineageRow]) -> List[StoredLineageRow]:
+    """The rows of jobs with nothing stored yet, deduplicated for one bulk add.
+
+    The same rules :func:`upsert_row` applies one row at a time, applied within
+    the batch: one row per ``(job_id, input, output)`` (attributes merged), and no
+    terminal row that a real edge of the same job supersedes.
+    """
+    by_key: Dict[Tuple[str, str, str], StoredLineageRow] = {}
+    for row in rows:
+        key = (row.job_id, row.input, row.output)
+        stored = by_key.get(key)
+        if stored is None:
+            by_key[key] = row
+        else:
+            stored.attributes = merge_attributes(stored.attributes, row.attributes)
+    by_job: Dict[str, List[StoredLineageRow]] = {}
+    for row in by_key.values():
+        by_job.setdefault(row.job_id, []).append(row)
+    return [
+        row
+        for job_rows in by_job.values()
+        for row in job_rows
+        if not _superseded(row, [other for other in job_rows if other is not row])
+    ]
 
 
 def prune_superseded(storage: ILineageRowStorage, job_id: str) -> int:

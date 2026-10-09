@@ -68,6 +68,8 @@ from gbserver.lineage.lineage_seeding import (
     LineageSeedError,
 )
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
+from gbserver.storage.stored_lineage_job import StoredLineageJob
+from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.utils.logger import get_logger
 
@@ -75,6 +77,7 @@ logger = get_logger(__name__)
 
 INDEXER_SOURCE_ADMIN_DB = "admin_db"
 INDEXER_SOURCE_LINEAGE_STORE = "lineage_store"
+INDEXER_SOURCE_LINEAGE_JOB = "lineage_job"
 
 # Checkpoint keys are per-source to avoid mixing their different sync semantics.
 # The key is determined by which provider/source is being indexed from.
@@ -106,6 +109,11 @@ _MAX_JOB_ATTEMPTS = 5
 
 _WANDB_PAGE_SIZE = 200
 
+# Checkpoint writes are batched: one per job turned a 300k-record source into 300k
+# gb_kv updates per scan. Losing a batch on a crash only re-reads it, and the
+# re-read is deduplicated by the sink.
+_CHECKPOINT_EVERY = 500
+
 # Config keys WandBLineageService.emit_event copies out of job_details; read back
 # here into the same place. Duplicated rather than imported so this module does
 # not import wandb_service (and so wandb) in admin_db mode.
@@ -124,17 +132,19 @@ _PASSTHROUGH_FACET_KEYS = ("job_input_params", "execution_stats")
 
 
 def resolve_indexer_source() -> str:
-    """Pick the source from how the server was started.
+    """Pick the source from ``GBSERVER_LINEAGE_PROVIDER``, in every mode.
 
-    Standalone reads ``gb_targets`` directly (``admin_db``); every other
-    deployment reads the configured lineage store (``lineage_store``).
-    Deliberately not configurable: the mode already says which one is right.
+    The index is filled from wherever the sink records lineage: ``none`` records
+    nowhere, so ``gb_targets`` (``admin_db``) is read; ``db`` records to
+    ``gb_lineage_job``; ``wandb`` to W&B (``lineage_store``). Standalone only
+    changes the provider's default (``none``), never this mapping.
     """
-    from gbcommon.types.gbenvconfig import is_standalone
-
-    if is_standalone():
-        return INDEXER_SOURCE_ADMIN_DB
-    return INDEXER_SOURCE_LINEAGE_STORE
+    provider = _resolve_lineage_provider()
+    if provider == LINEAGE_PROVIDER_DB:
+        return INDEXER_SOURCE_LINEAGE_JOB
+    if provider == LINEAGE_PROVIDER_WANDB:
+        return INDEXER_SOURCE_LINEAGE_STORE
+    return INDEXER_SOURCE_ADMIN_DB
 
 
 def create_indexer(
@@ -150,22 +160,12 @@ def create_indexer(
     sink = sink or DBLineageStore()
     if source == INDEXER_SOURCE_ADMIN_DB:
         return TargetLineageIndexer(monitoring_interval=monitoring_interval, sink=sink)
-
-    provider = _resolve_lineage_provider()
-    if provider == LINEAGE_PROVIDER_DB:
-        logger.warning(
-            "The configured lineage store is the lineage index itself "
-            "(GBSERVER_LINEAGE_PROVIDER=db): lineage-watch already writes "
-            "gb_lineage_index, so there is nothing to copy. The indexer is a no-op."
-        )
-        return None
-    if provider == LINEAGE_PROVIDER_NONE:
-        logger.info(
-            "No lineage store is configured (GBSERVER_LINEAGE_PROVIDER=none); the "
-            "indexer has nothing to read."
-        )
-        return None
-    return WandBLineageIndexer(monitoring_interval=monitoring_interval, sink=sink)
+    if source == INDEXER_SOURCE_LINEAGE_JOB:
+        return LineageJobIndexer(monitoring_interval=monitoring_interval, sink=sink)
+    if source == INDEXER_SOURCE_LINEAGE_STORE:
+        return WandBLineageIndexer(monitoring_interval=monitoring_interval, sink=sink)
+    logger.warning("Unknown lineage indexer source %r; not indexing.", source)
+    return None
 
 
 def _parse_ts(value: str) -> datetime:
@@ -339,6 +339,23 @@ class JobLineageIndexer:
             else None
         )
         indexed = 0
+        pending: List[Any] = []  # the unwritten mark, as [timestamp, ids]
+        try:
+            indexed = self._scan(storage, checkpoint, mark, pending)
+        finally:
+            if pending:
+                self._write_timestamp(storage, pending[0], pending[1])
+        return indexed
+
+    def _scan(
+        self,
+        storage: SingletonAdminStorage,
+        checkpoint: Optional[dict],
+        mark: Optional[Tuple[datetime, List[str]]],
+        pending: List[Any],
+    ) -> int:
+        indexed = 0
+        unwritten = 0
         for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"]):
             if self.stop_event.is_set():
                 break
@@ -377,8 +394,13 @@ class JobLineageIndexer:
                 ids = mark[1] + [item_id]
             else:
                 ids = [item_id]
-            self._write_timestamp(storage, self._timestamp(job), ids)
+            pending[:] = [self._timestamp(job), ids]
             mark = (job_ts, ids)
+            unwritten += 1
+            if unwritten >= _CHECKPOINT_EVERY:
+                self._write_timestamp(storage, pending[0], pending[1])
+                pending.clear()
+                unwritten = 0
         return indexed
 
     # -- Lifecycle -----------------------------------------------------------
@@ -484,6 +506,98 @@ class TargetLineageIndexer(JobLineageIndexer):
     def _format_timestamp(self, instant: datetime) -> str:
         # Same form as _timestamp: the aware isoformat, offset kept as given.
         return as_aware(instant).isoformat()
+
+
+class LineageJobIndexer(JobLineageIndexer):
+    """``db`` source: ``gb_lineage_job`` records by ``recorded_at``.
+
+    The ``db`` sink records only the job, keeping the emitted entry in its
+    attributes; this turns each record into index rows. ``recorded_at`` is UTC,
+    fixed-width ISO-8601, so ordering by the string is ordering by instant, and the
+    sink moves it forward when a merge changes a record so the change is re-read.
+
+    Every record read is deduplicated by the rows' unique indexes (``upsert_row``),
+    so a reset checkpoint re-reads everything without duplicating or losing rows.
+    """
+
+    _thread_name = "lineage-indexer-db"
+
+    def _job_storage(self, storage: SingletonAdminStorage):
+        return storage.lineage_job_storage
+
+    def _timestamp(self, job: StoredLineageJob) -> str:
+        return job.recorded_at
+
+    def _item_id(self, job: StoredLineageJob) -> str:
+        return job.job_id
+
+    def _jobs_since(
+        self, storage: SingletonAdminStorage, timestamp: Optional[str]
+    ) -> List[StoredLineageJob]:
+        cutoff = _parse_ts(timestamp) if timestamp else None
+        selected = [
+            job
+            for page in self._job_storage(storage).get_paged(page_size=_SCAN_PAGE_SIZE)
+            for job in page
+            if job.recorded_at
+            and (cutoff is None or _parse_ts(job.recorded_at) >= cutoff)
+        ]
+        selected.sort(key=lambda j: (_parse_ts(j.recorded_at), j.job_id))
+        return selected
+
+    def _index(self, storage: SingletonAdminStorage, job: StoredLineageJob) -> bool:
+        return self._sink.index_job_record(job)
+
+    def _scan(
+        self,
+        storage: SingletonAdminStorage,
+        checkpoint: Optional[dict],
+        mark: Optional[Tuple[datetime, List[str]]],
+        pending: List[Any],
+    ) -> int:
+        """Index in batches of ``_CHECKPOINT_EVERY``, checkpointing after each.
+
+        Records are never pending, so the base loop's per-job retry has nothing
+        to wait on; a batch that raises leaves the checkpoint at the last batch
+        written and is re-read, deduplicated, on the next scan.
+        """
+        todo = [
+            job
+            for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"])
+            if mark is None
+            or _parse_ts(job.recorded_at) > mark[0]
+            or (
+                _parse_ts(job.recorded_at) == mark[0] and job.job_id not in mark[1]
+            )
+        ]
+        indexed = 0
+        for start in range(0, len(todo), _CHECKPOINT_EVERY):
+            if self.stop_event.is_set():
+                break
+            batch = todo[start : start + _CHECKPOINT_EVERY]
+            indexed += self._sink.index_job_records(batch)
+            last_ts = _parse_ts(batch[-1].recorded_at)
+            ids = [j.job_id for j in batch if _parse_ts(j.recorded_at) == last_ts]
+            if mark is not None and last_ts == mark[0]:
+                ids = mark[1] + ids
+            self._write_timestamp(storage, batch[-1].recorded_at, ids)
+            mark = (last_ts, ids)
+        return indexed
+
+    def _latest_job(self, storage: SingletonAdminStorage) -> Optional[StoredLineageJob]:
+        latest = None
+        for page in self._job_storage(storage).get_paged(page_size=_SCAN_PAGE_SIZE):
+            for job in page:
+                if job.recorded_at and (
+                    latest is None
+                    or _parse_ts(job.recorded_at) > _parse_ts(latest.recorded_at)
+                ):
+                    latest = job
+        return latest
+
+    def _format_timestamp(self, instant: datetime) -> str:
+        # recorded_at's own form (utc_now_iso).
+        return instant.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _tags_of(run: Any) -> Dict[str, str]:
@@ -623,6 +737,7 @@ class WandBLineageIndexer(JobLineageIndexer):
             entry,
             build_id=tags.get("build_id", ""),
             target_run_uuid=tags.get("target_id", ""),
+            job_store=JobStore.WANDB,
         )
         return True
 

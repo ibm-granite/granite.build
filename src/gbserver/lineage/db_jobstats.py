@@ -46,20 +46,32 @@ import logging
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from gbserver.lineage.attributes import (
-    build_attributes,
+    JOB,
+    JOB_COMPLETED_AT,
+    JOB_NAMESPACE,
+    JOB_OWNER,
+    JOB_STARTED_AT,
+    JOB_STATUS,
+    build_index_attributes,
     build_job_attributes,
+    job_detail,
     origin_id,
 )
 from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.jobstats import ILineageStore
-from gbserver.lineage.merge import upsert_job, upsert_row
+from gbserver.lineage.merge import UPDATED, rows_to_add, upsert_job, upsert_row
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_row_storage import ILineageRowStorage, tags_to_map
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_lineage_job import StoredLineageJob
-from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
+from gbserver.storage.stored_lineage_row import (
+    TERMINAL,
+    JobStore,
+    StoredLineageRow,
+    utc_now_iso,
+)
 from gbserver.storage.stored_target_run import StoredTargetRun
 
 logger = logging.getLogger(__name__)
@@ -78,6 +90,11 @@ def is_storable_tag(tag: object) -> bool:
 # ``source_system``; an importer passes its own name.
 SOURCE_SYSTEM = "granite.build"
 
+# Key in a job record's ``attributes`` holding the job entry as emitted, so the
+# lineage indexer can decompose it into index rows later. Only the record-only
+# sink (``index_rows=False``, the ``db`` provider) writes it.
+ENTRY_ATTRIBUTE = "entry"
+
 
 class DBLineageStore(ILineageStore):
     """Record lineage into the local lineage index.
@@ -94,15 +111,21 @@ class DBLineageStore(ILineageStore):
         job_storage: the lineage job storage to write. Resolved the same way, but
             only when ``storage`` was not given -- see :attr:`job_storage`. Without
             it the rows are still written; only the job record is skipped.
+        index_rows: write the index rows along with the job record. ``False`` is
+            the ``db`` provider's sink: it records only ``gb_lineage_job``, with the
+            entry kept under :data:`ENTRY_ATTRIBUTE`, and the lineage indexer
+            builds the rows from it later (:meth:`index_job_record`).
     """
 
     def __init__(
         self,
         storage: Optional[ILineageRowStorage] = None,
         job_storage: Optional[ILineageJobStorage] = None,
+        index_rows: bool = True,
     ) -> None:
         self._row_storage = storage
         self._job_storage = job_storage
+        self._index_rows = index_rows
 
     @property
     def row_storage(self) -> ILineageRowStorage:
@@ -253,6 +276,7 @@ class DBLineageStore(ILineageStore):
         build_id: str,
         target_run_uuid: str,
         extra_tags: Optional[List[str]] = None,
+        job_store: JobStore = JobStore.OTHER,
     ) -> None:
         """Index one already-built job entry.
 
@@ -264,12 +288,15 @@ class DBLineageStore(ILineageStore):
         Args:
             extra_tags: tags to attach beyond those derived from the entry, e.g. a
                 source's own labels. Free-form; see :func:`job_tags`.
+            job_store: where the entry's full data lives, e.g. ``WANDB`` for an
+                entry read back out of W&B.
         """
         self._write_job(
             job,
             build_id=build_id,
             target_run_uuid=target_run_uuid,
             extra_tags=extra_tags,
+            job_store=job_store,
         )
 
     def _write_job(
@@ -278,6 +305,7 @@ class DBLineageStore(ILineageStore):
         build_id: str,
         target_run_uuid: str,
         extra_tags: Optional[List[str]] = None,
+        job_store: JobStore = JobStore.TARGETS,
     ) -> None:
         """Decompose one job entry and add its rows.
 
@@ -301,11 +329,161 @@ class DBLineageStore(ILineageStore):
         # The job record first: it holds the metadata the rows no longer carry
         # (the large payloads, and the three fields promoted to job columns), so it
         # is written even if every draft below turns out to be unstorable.
+        entry = None
+        if not self._index_rows:
+            entry = {
+                "event": job,
+                "build_id": build_id,
+                "target_run_uuid": target_run_uuid,
+                "extra_tags": list(extra_tags or []),
+            }
         self._add_job(
             _normalized_job(job),
             build_id=build_id,
             target_run_uuid=target_run_uuid,
+            entry=entry,
         )
+        if not self._index_rows:
+            # The indexer writes the rows from the record; see index_job_record.
+            return
+        self._write_rows(
+            job,
+            drafts,
+            build_id=build_id,
+            target_run_uuid=target_run_uuid,
+            extra_tags=extra_tags,
+            job_store=job_store,
+        )
+
+    def index_job_record(self, record: StoredLineageJob) -> bool:
+        """Write the index rows for a job record in ``gb_lineage_job``.
+
+        The record's :data:`ENTRY_ATTRIBUTE` is either ``{"event": ...}``, the job
+        entry the ``db`` sink emitted (decomposed here), or ``{"rows": [...]}``,
+        index rows an importer already built.
+
+        The job record itself is not rewritten: it is the source here. Idempotent
+        under the rows' unique indexes, so re-indexing after a checkpoint reset
+        writes nothing new. Returns whether the record carried an entry to index.
+        """
+        entry = (record.attributes or {}).get(ENTRY_ATTRIBUTE) or {}
+        if entry.get("rows"):
+            # Already-built rows, from an importer whose source is one row per
+            # edge (Lakehouse): written as given, nothing to decompose.
+            for data in entry["rows"]:
+                try:
+                    row = StoredLineageRow.model_validate(data)
+                    row.job_store = JobStore.LINEAGE_JOB
+                    _fill_job_from_record(row, record)
+                    upsert_row(self.row_storage, row)
+                except Exception:
+                    logger.debug(
+                        "Lineage row from job record could not be added or merged "
+                        "(job=%s, row=%r)",
+                        record.job_id,
+                        data,
+                        exc_info=True,
+                    )
+            return True
+        job = entry.get("event")
+        if not job:
+            return False
+        build_id = entry.get("build_id") or ""
+        target_run_uuid = entry.get("target_run_uuid") or ""
+        try:
+            drafts = to_lineage_rows(_normalized_job(job))
+        except LineageDecomposeError as exc:
+            logger.warning(
+                "Lineage job record could not be decomposed into rows; skipping "
+                "(job=%s): %s",
+                record.job_id,
+                exc,
+            )
+            return False
+        self._write_rows(
+            job,
+            drafts,
+            build_id=build_id,
+            target_run_uuid=target_run_uuid,
+            extra_tags=entry.get("extra_tags"),
+            job_store=JobStore.LINEAGE_JOB,
+        )
+        return True
+
+    def index_job_records(self, records: List[StoredLineageJob]) -> int:
+        """Batched :meth:`index_job_record`; return how many records had an entry.
+
+        One write per row, each its own commit, made the indexer ~3 ms a row. Here
+        a batch costs one lookup of the rows already stored for its jobs and one
+        bulk add of the new ones. Jobs that already have rows go through
+        :func:`upsert_row` one by one, so the dedup and merge are unchanged, and a
+        bulk add that fails falls back to the same per-row path.
+        """
+        prebuilt: List[StoredLineageRow] = []
+        indexed = 0
+        for record in records:
+            entry = (record.attributes or {}).get(ENTRY_ATTRIBUTE) or {}
+            if not entry.get("rows"):
+                indexed += self.index_job_record(record)
+                continue
+            indexed += 1
+            for data in entry["rows"]:
+                try:
+                    row = StoredLineageRow.model_validate(data)
+                    row.job_store = JobStore.LINEAGE_JOB
+                    _fill_job_from_record(row, record)
+                    prebuilt.append(row)
+                except Exception:
+                    logger.debug(
+                        "Invalid lineage row in job record (job=%s, row=%r)",
+                        record.job_id,
+                        data,
+                        exc_info=True,
+                    )
+        if not prebuilt:
+            return indexed
+
+        stored_jobs = {
+            row.job_id
+            for row in self.row_storage.get_rows_by_jobs(
+                list({row.job_id for row in prebuilt})
+            )
+        }
+        fresh = rows_to_add([row for row in prebuilt if row.job_id not in stored_jobs])
+        merging = [row for row in prebuilt if row.job_id in stored_jobs]
+        if fresh:
+            try:
+                self.row_storage.add(fresh)
+            except Exception:
+                logger.debug(
+                    "Bulk add of %d lineage rows failed; adding one by one",
+                    len(fresh),
+                    exc_info=True,
+                )
+                merging.extend(fresh)
+        for row in merging:
+            try:
+                upsert_row(self.row_storage, row)
+            except Exception:
+                logger.debug(
+                    "Lineage row could not be added or merged "
+                    "(job=%s, input=%r, output=%r)",
+                    row.job_id,
+                    row.input,
+                    row.output,
+                    exc_info=True,
+                )
+        return indexed
+
+    def _write_rows(
+        self,
+        job: dict,
+        drafts,
+        build_id: str,
+        target_run_uuid: str,
+        extra_tags: Optional[List[str]] = None,
+        job_store: JobStore = JobStore.TARGETS,
+    ) -> None:
         # Tags ride on every row of the job, in ``attributes.job.tags``.
         tags = job_tags(
             job,
@@ -324,6 +502,7 @@ class DBLineageStore(ILineageStore):
                 build_id=build_id,
                 target_run_uuid=target_run_uuid,
                 tags=tags,
+                job_store=job_store,
             )
 
     def _add_job(
@@ -331,6 +510,7 @@ class DBLineageStore(ILineageStore):
         job_metadata: dict,
         build_id: str,
         target_run_uuid: str,
+        entry: Optional[dict] = None,
     ) -> None:
         """Store one job record, merging into one another writer already stored.
 
@@ -338,6 +518,10 @@ class DBLineageStore(ILineageStore):
         Lakehouse importer wrote first, say -- so a collision on ``job_id`` fills
         what the stored copy lacks rather than being dropped. See
         :mod:`gbserver.lineage.merge`.
+
+        With ``entry`` (the record-only sink), a merge that changed the record
+        also moves ``recorded_at`` forward: the indexer reads by it, and would
+        otherwise never see what the merge added.
         """
         storage = self.job_storage
         if storage is None:
@@ -349,8 +533,13 @@ class DBLineageStore(ILineageStore):
         )
         if not job:
             return
+        if entry is not None:
+            job.attributes[ENTRY_ATTRIBUTE] = entry
         try:
-            upsert_job(storage, job)
+            if upsert_job(storage, job) == UPDATED and entry is not None:
+                stored = storage.get_job(job.job_id)
+                if stored is not None:
+                    storage.update_fields(stored.uuid, {"recorded_at": utc_now_iso()})
         except Exception:
             # A warning: the rows are written anyway, so this is the only trace of
             # a job left without its record (the next scan backfills it, see
@@ -367,6 +556,7 @@ class DBLineageStore(ILineageStore):
         build_id: str,
         target_run_uuid: str,
         tags: Optional[List[str]] = None,
+        job_store: JobStore = JobStore.TARGETS,
     ) -> None:
         """Store one decomposed row, merging into the same edge already stored.
 
@@ -378,6 +568,7 @@ class DBLineageStore(ILineageStore):
             draft,
             build_id=build_id,
             target_run_uuid=target_run_uuid,
+            job_store=job_store,
         )
         if tags:
             row.attributes.setdefault("job", {})["tags"] = tags_to_map(tags)
@@ -554,21 +745,15 @@ class DBLineageStore(ILineageStore):
         job is reported unrecorded so the scan writes it, and the write merges into
         the imported copy rather than duplicating it.
 
-        With no job storage there is no provenance to check, so presence decides,
-        as it did before the importer existed.
+        Dedup is by job_id alone: if the job record exists, it was already written
+        by some source. The merge logic fills in any blanks the first writer missed.
         """
         job_ids = set(job_ids)
         storage = self.job_storage
         if storage is None or not job_ids:
             return job_ids
         jobs = storage.get_jobs_by_id(list(job_ids))
-        # A job with rows but no record is NOT recorded: its record write failed,
-        # and reporting it recorded would leave it without one for good.
-        return {
-            job_id
-            for job_id in job_ids
-            if job_id in jobs and jobs[job_id].source_system == SOURCE_SYSTEM
-        }
+        return {job_id for job_id in job_ids if job_id in jobs}
 
     def _has_job_record(self, job_id: str) -> bool:
         """Whether the job table holds ``job_id``; ``True`` with no job storage.
@@ -758,7 +943,6 @@ def _job_from_metadata(
         job_namespace=namespace,
         space_name=space_name,
         owner=str(job_metadata.get("owner") or ""),
-        source_system=source_system,
         status=str(job_metadata.get("job_status") or ""),
         started_at=str(job_metadata.get("job_started_at") or ""),
         attributes=build_job_attributes(
@@ -769,11 +953,38 @@ def _job_from_metadata(
     )
 
 
+def _fill_job_from_record(row: StoredLineageRow, record: StoredLineageJob) -> None:
+    """Copy the record's job fields onto a prebuilt row's ``job`` group.
+
+    An importer that builds rows itself (Lakehouse) leaves them at ``{name, type,
+    id}``, while the record holds the namespace, owner, status and span. The
+    ``lineage-index`` routes read the index alone, and the access filter reads
+    ``namespace`` off the row, so they are carried here. What the row already
+    says wins; values keep the record's own form.
+    """
+    record_job = job_detail(record.attributes)
+    fill = {
+        JOB_NAMESPACE: record.job_namespace or record_job.get(JOB_NAMESPACE),
+        JOB_OWNER: record.owner or record_job.get(JOB_OWNER),
+        JOB_STATUS: record.status or record_job.get(JOB_STATUS),
+        JOB_STARTED_AT: record.started_at or record_job.get(JOB_STARTED_AT),
+        JOB_COMPLETED_AT: record_job.get(JOB_COMPLETED_AT),
+    }
+    attributes = dict(row.attributes or {})
+    job = dict(attributes.get(JOB) or {})
+    for key, value in fill.items():
+        if value and not job.get(key):
+            job[key] = str(value)
+    attributes[JOB] = job
+    row.attributes = attributes
+
+
 def _row_from_draft(
     draft,
     build_id: str,
     target_run_uuid: str,
     source_system: str = SOURCE_SYSTEM,
+    job_store: JobStore = JobStore.TARGETS,
 ) -> StoredLineageRow:
     """Turn a decomposed draft into the stored row.
 
@@ -793,19 +1004,35 @@ def _row_from_draft(
         build_id: the build this row came from; empty for lineage with no build.
         target_run_uuid: the target run this row came from; empty when there is
             none.
-        source_system: which system the row came from. Defaults to this sink's
-            own :data:`SOURCE_SYSTEM`; an importer passes its own name so its rows
-            are distinguishable from the ones the scan derives.
+        source_system: which system produced the job. Not written to the row:
+            the slim shape leaves it on the job record. Kept so callers need not
+            change.
+        job_store: where the job's full data lives; see :class:`JobStore`.
     """
+    metadata = draft.metadata or {}
     return StoredLineageRow(
         job_id=draft.job_id,
         input=draft.input or TERMINAL,
         output=draft.output or TERMINAL,
-        attributes=build_attributes(
-            job_metadata=draft.metadata,
+        job_store=job_store,
+        attributes=build_index_attributes(
+            job_id=draft.job_id,
+            job_name=str(metadata.get("job_name") or ""),
+            job_type=str(metadata.get("job_type") or ""),
+            job_namespace=str(metadata.get("job_namespace") or ""),
+            owner=str(metadata.get("owner") or ""),
+            job_status=str(metadata.get("job_status") or ""),
+            job_started_at=str(metadata.get("job_started_at") or ""),
+            job_completed_at=str(metadata.get("job_completed_at") or ""),
+            input_uri=draft.input or "",
             input_artifact=draft.input_artifact,
+            output_uri=draft.output or "",
             output_artifact=draft.output_artifact,
-            source_system=source_system,
-            ids={"build_id": build_id, "target_run_uuid": target_run_uuid},
+            retrieve={
+                "build_id": build_id,
+                "target_run_uuid": target_run_uuid,
+            }
+            if build_id or target_run_uuid
+            else {"job_id": draft.job_id},
         ),
     )

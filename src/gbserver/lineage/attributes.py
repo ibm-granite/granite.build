@@ -271,6 +271,10 @@ def build_index_attributes(
     job_name: str = "",
     job_type: str = "",
     job_namespace: str = "",
+    owner: str = "",
+    job_status: str = "",
+    job_started_at: str = "",
+    job_completed_at: str = "",
     tags: Optional[Dict[str, str]] = None,
     input_uri: str = "",
     input_artifact: Optional[Dict[str, Any]] = None,
@@ -282,7 +286,10 @@ def build_index_attributes(
 
     ``input``/``output`` are ``{type, name, id, alt_uris, produced_by}`` with ``id``
     the row's normalized URI, omitted for a terminal side. ``job`` is ``{name, type, id, namespace,
-    tags}``; ``namespace`` is display only. ``retrieve`` is whatever the row's
+    owner, status, started_at, completed_at, tags}``. ``namespace`` and ``owner`` are what the
+    access filter reads, so every writer must fill them; ``status``,
+    ``started_at`` and (when the job finished) ``completed_at`` are kept so the graph's run node can show them without a job
+    lookup. ``retrieve`` is whatever the row's
     origin needs to fetch the full job (``{job_id}`` for ``db``). Blank values are
     omitted, as in :func:`build_attributes`.
     """
@@ -310,6 +317,10 @@ def build_index_attributes(
         JOB_TYPE: job_type,
         JOB_ID: job_id,
         JOB_NAMESPACE: job_namespace,
+        JOB_OWNER: owner,
+        JOB_STATUS: job_status,
+        JOB_STARTED_AT: job_started_at,
+        JOB_COMPLETED_AT: job_completed_at,
     }
     job = {key: str(value) for key, value in job.items() if value}
     if tags:
@@ -469,7 +480,9 @@ def endpoint_kind(attributes: Optional[Dict[str, Any]], side: str) -> str:
         attributes: the row's blob.
         side: :data:`INPUT` or :data:`OUTPUT`.
     """
-    return str(((attributes or {}).get(side) or {}).get(KIND, "") or "")
+    endpoint = (attributes or {}).get(side) or {}
+    # Slim rows spell it ``type``; rows written before the slim shape, ``kind``.
+    return str(endpoint.get(NODE_TYPE) or endpoint.get(KIND) or "")
 
 
 def endpoint_name(attributes: Optional[Dict[str, Any]], side: str) -> str:
@@ -532,5 +545,10 @@ def origin_id(attributes: Optional[Dict[str, Any]], key: str) -> str:
     Not queryable -- this reads the blob. A caller filtering many rows on an id is
     doing a scan, and should ask whether the question belongs to this index at all.
     """
-    origin = (attributes or {}).get(ORIGIN) or {}
-    return str((origin.get(ORIGIN_IDS) or {}).get(key, "") or "")
+    attributes = attributes or {}
+    # Slim rows carry them in ``retrieve``; older rows in ``origin.ids``.
+    retrieve = attributes.get(RETRIEVE) or {}
+    origin = attributes.get(ORIGIN) or {}
+    return str(
+        retrieve.get(key) or (origin.get(ORIGIN_IDS) or {}).get(key) or ""
+    )

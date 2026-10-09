@@ -17,7 +17,7 @@
 """SQL storage implementation for lineage rows."""
 
 from contextlib import contextmanager
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 
 from sqlalchemy import and_, cast, distinct, func, or_
 from sqlalchemy.dialects.postgresql import JSONB
@@ -77,14 +77,13 @@ class SQLLineageRowStorage(
     Every indexed column is text. ``get_by_where`` builds an ``IN`` clause only for
     string-typed columns and silently degrades to ``column == [list]`` otherwise, so
     a non-text indexed column is a latent wrong-results bug rather than merely a
-    slow one. ``source_system`` lives in the JSON blob rather than in a column: it is
-    read to label a run node, never to filter one.
+    slow one.
     """
 
     def __init__(self, **kwargs) -> None:
         kwargs["indexed_columns"] = [
             "job_id",
-            "origin",
+            "job_store",
             "recorded_at",
         ]
         # (input, output) serves downstream hops and edge drill-in, (output, input)
@@ -160,7 +159,7 @@ class SQLLineageRowStorage(
         wanted = self._batchable(frontier)
         if not wanted or not self._ensure_table():
             return []
-        session = self._BaseSQLItemStorage__get_session_without_retry()
+        session = self._get_session_without_retry()
         try:
             model = self._sql_alchemy_model
             side = model.input if direction == DOWNSTREAM else model.output
@@ -214,10 +213,30 @@ class SQLLineageRowStorage(
         conditions = [tag(key) == value for key, value in wanted_all]
         if wanted_any:
             conditions.append(or_(*(tag(key) == value for key, value in wanted_any)))
-        session = self._BaseSQLItemStorage__get_session_without_retry()
+        session = self._get_session_without_retry()
         try:
             query = session.query(model.job_id).filter(and_(*conditions)).distinct()
             return {job_id for (job_id,) in query.all() if job_id}
+        finally:
+            session.close()
+
+    def get_recent_job_ids(self, limit: int, offset: int) -> Tuple[List[str], int]:
+        """One page of jobs by newest ``recorded_at``, and their count, in SQL."""
+        if not self._ensure_table():
+            return [], 0
+        session = self._get_session_without_retry()
+        try:
+            model = self._sql_alchemy_model
+            last = func.max(model.recorded_at)
+            page = (
+                session.query(model.job_id)
+                .group_by(model.job_id)
+                .order_by(last.desc(), model.job_id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            total = session.query(func.count(distinct(model.job_id))).scalar()
+            return [job_id for (job_id,) in page.all()], int(total or 0)
         finally:
             session.close()
 
@@ -242,7 +261,7 @@ class SQLLineageRowStorage(
         if not uri or uri == TERMINAL or not self._ensure_table():
             yield None
             return
-        session = self._BaseSQLItemStorage__get_session_without_retry()
+        session = self._get_session_without_retry()
         try:
             model = self._sql_alchemy_model
             pair = endpoint_pair(uri, self_loop, output, terminal)

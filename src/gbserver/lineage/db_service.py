@@ -42,13 +42,14 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 from gbserver.lineage.attributes import (
     INPUT,
     OUTPUT,
-    PAYLOAD_INPUT_PARAMS,
+    JOB_NAMESPACE,
+    JOB_OWNER,
+    JOB_STARTED_AT,
+    JOB_STATUS,
     endpoint_kind,
     job_detail,
     origin_detail,
     origin_system,
-    payload_detail,
-    run_detail,
 )
 from gbserver.lineage.graph_builder import build_graph_dict
 from gbserver.lineage.openlineage_service import LineageService
@@ -59,7 +60,6 @@ from gbserver.lineage.walk import (
     LineageGraph,
     walk_lineage,
 )
-from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_row_storage import (
     TERMINAL_INPUT,
     TERMINAL_OUTPUT,
@@ -68,7 +68,6 @@ from gbserver.storage.lineage_row_storage import (
     tag_strings,
 )
 from gbserver.storage.stored_lineage_row import TERMINAL
-from gbserver.utils.redaction import redact_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -98,16 +97,10 @@ class DBLineageService(LineageService):
         storage: the lineage row storage to read. Defaults to the process-wide
             admin storage, resolved lazily so importing this module does not
             require a configured database.
-        job_storage: the lineage job storage, resolved the same way.
     """
 
-    def __init__(
-        self,
-        storage: Optional[ILineageRowStorage] = None,
-        job_storage: Optional[ILineageJobStorage] = None,
-    ) -> None:
+    def __init__(self, storage: Optional[ILineageRowStorage] = None) -> None:
         self._storage = storage
-        self._job_storage = job_storage
 
     @property
     def storage(self) -> ILineageRowStorage:
@@ -389,7 +382,7 @@ class DBLineageService(LineageService):
                 )
 
             if candidates is None:
-                page, total = self._recent_job_ids(limit, offset)
+                page, total = self.storage.get_recent_job_ids(limit, offset)
             else:
                 ordered = sorted(candidates)
                 page, total = ordered[offset : offset + limit], len(ordered)
@@ -398,37 +391,15 @@ class DBLineageService(LineageService):
             logger.exception("Lineage job listing failed")
             return empty
 
-    def _recent_job_ids(self, limit: int, offset: int) -> Tuple[List[str], int]:
-        """One page of the newest job records, and how many there are.
-
-        Streamed and stopped once the window is filled, so an early page costs an
-        early exit rather than a read of the whole table.
-        """
-        job_storage = self._resolved("_job_storage", "lineage_job_storage")
-        if job_storage is None:
-            return [], 0
-        page: List[str] = []
-        position = 0
-        for chunk in job_storage.get_paged():
-            for job in chunk:
-                if position >= offset:
-                    page.append(job.job_id)
-                position += 1
-                if len(page) >= limit:
-                    return page, int(job_storage.count())
-        return page, int(job_storage.count())
-
     def _job_entries(self, job_ids: List[str]) -> List[Dict]:
         """The listing entries for one page, in the page's order.
 
-        Three batched queries whatever the page size: job records, tags and rows.
-        A job with rows but no record -- rows can precede or outlive it -- still
-        lists, its detail read from the rows instead.
+        One batched query on ``job_id`` whatever the page size. Everything comes
+        from the index rows: the listing reads ``gb_lineage_index`` alone, so the
+        job table's payloads (step configs, stats) are not part of it.
         """
         if not job_ids:
             return []
-        job_storage = self._resolved("_job_storage", "lineage_job_storage")
-        jobs = job_storage.get_jobs_by_id(job_ids) if job_storage else {}
         rows_by_job: Dict[str, List] = {}
         tags_by_job: Dict[str, set] = {}
         for row in self.storage.get_rows_by_jobs(job_ids):
@@ -437,31 +408,11 @@ class DBLineageService(LineageService):
         return [
             _job_entry(
                 job_id,
-                jobs.get(job_id),
                 rows_by_job.get(job_id, []),
                 sorted(tags_by_job.get(job_id, ())),
             )
             for job_id in job_ids
         ]
-
-    def _resolved(self, attr: str, admin_attr: str):
-        """A storage given at construction, else the admin one, else ``None``.
-
-        Only the row storage is required by this service; the job storage
-        serves the job listing alone, so a missing one degrades that
-        listing to detail-less entries rather than failing construction.
-        """
-        if getattr(self, attr) is None:
-            if self._storage is not None:
-                return None
-            from gbserver.storage.singleton_storage import get_admin_storage
-
-            try:
-                setattr(self, attr, getattr(get_admin_storage(), admin_attr))
-            except Exception as exc:
-                logger.debug("No %s available: %s", admin_attr, exc)
-                return None
-        return getattr(self, attr)
 
     def _job_endpoint_uris(self, job_id: str) -> set:
         """Every endpoint of one job execution, as seeds.
@@ -533,42 +484,31 @@ class DBLineageService(LineageService):
         return target_ids
 
 
-def _job_entry(job_id: str, job, rows: List, tags: List[str]) -> Dict:
-    """One entry of the job listing.
+def _job_entry(job_id: str, rows: List, tags: List[str]) -> Dict:
+    """One entry of the job listing, read from the job's index rows.
 
     Job-first: a caller reaching here wants to know which executions matched, and
     what each read and wrote. The endpoints come from the job's own rows, terminals
-    left out, so a self-rewrite shows its artifact on both sides.
+    left out, so a self-rewrite shows its artifact on both sides. Every row of one
+    job carries the same ``job`` group, so the first one speaks for all.
     """
     attributes = rows[0].attributes if rows else {}
-    record = job.attributes if job else {}
-    payload = dict(payload_detail(record))
-    # The step configs. Redacted unconditionally: this listing is readable by any
-    # space member (see payload_detail).
-    input_params = redact_sensitive(payload.pop(PAYLOAD_INPUT_PARAMS, None) or {})
+    job = job_detail(attributes)
+    namespace = str(job.get(JOB_NAMESPACE, "") or "")
     return {
         "job_id": job_id,
-        "job_namespace": job.job_namespace if job else "",
-        "space_name": job.space_name if job else "",
-        "owner": job.owner if job else "",
-        "source_system": (job.source_system if job else "")
-        or origin_system(attributes),
-        "status": job.status if job else "",
-        "started_at": job.started_at if job else "",
+        "job_namespace": namespace,
+        # The space is the namespace's first segment, as the access filter reads it.
+        "space_name": namespace.split("/", 1)[0] if namespace else "",
+        "owner": str(job.get(JOB_OWNER, "") or ""),
+        "source_system": origin_system(attributes),
+        "status": str(job.get(JOB_STATUS, "") or ""),
+        "started_at": str(job.get(JOB_STARTED_AT, "") or ""),
         "tags": tags,
         "inputs": sorted({r.input for r in rows if r.input and r.input != TERMINAL}),
         "outputs": sorted(
             {r.output for r in rows if r.output and r.output != TERMINAL}
         ),
-        # The record's own job group first: it is the one written per execution,
-        # and rows imported without a record still have theirs.
-        "job": job_detail(record) or job_detail(attributes),
-        # Whether the execution has its own record in the job table. Rows can be
-        # imported without one, and then everything above that reads ``job`` is empty.
-        "job_recorded": job is not None,
-        "job_input_params": input_params,
-        # The rest of the record, so nothing it holds is lost on the way out.
-        "payload": payload,
-        "run": run_detail(record),
-        "origin": origin_detail(record) or origin_detail(attributes),
+        "job": job,
+        "origin": origin_detail(attributes),
     }

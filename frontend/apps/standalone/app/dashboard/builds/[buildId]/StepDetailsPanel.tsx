@@ -5,7 +5,7 @@ import { CopyButton, Link } from '@carbon/react'
 import styles from './LineagePanel.module.scss'
 import type { BuildStepRun, BuildTargetRun } from '@granite-build/ui-core/types'
 import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
-import { formatDateTime } from './stepDrawerSummary'
+import { formatDateTime, parseTimestamp } from './stepDrawerSummary'
 
 export { stepDrawerSummary } from './stepDrawerSummary'
 
@@ -14,8 +14,8 @@ const NOT_RECORDED = 'Not recorded'
 /** `10:51:22` — the clock time alone, for the compact Execution row. */
 function formatClock(value: string | undefined): string {
   if (!value) return '—'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
+  const parsed = parseTimestamp(value)
+  if (!parsed) return value
   return parsed.toLocaleTimeString([], { hour12: false })
 }
 

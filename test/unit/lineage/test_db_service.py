@@ -477,6 +477,17 @@ class TestListJobs:
         assert [j["job_id"] for j in result["jobs"]] == ["P1", "P2"]
         assert result["total"] == 2
 
+    def test_output_same_as_uri_lists_self_loops(self):
+        """output=uri is the frontend's shape for a self-loop node's jobs_query."""
+        svc = service(
+            *[row(f"J{i}", A, A) for i in range(3)],
+            row("M", A, C),
+            row("N", B, A),
+        )
+        result = svc.list_jobs(uri=A, output=A)
+        assert [j["job_id"] for j in result["jobs"]] == ["J0", "J1", "J2"]
+        assert result["total"] == 3
+
     def test_terminal_lists_only_the_jobs_with_that_side_empty(self):
         svc = service(
             row("I1", "", B), row("I2", "", B), row("O1", B, ""), row("P", A, B)

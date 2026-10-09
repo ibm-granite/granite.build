@@ -9,7 +9,7 @@ import type { BuildTargetRun } from '@granite-build/ui-core/types'
 import type { IndexElkNode } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import StepDrawer from './StepDrawer'
 import StepDetailsPanel, { ExecutionSummary, Field, Section } from './StepDetailsPanel'
-import { stepDrawerSummary } from './stepDrawerSummary'
+import { stepDrawerSummary, toIsoTimestamp } from './stepDrawerSummary'
 import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
 import styles from './LineagePanel.module.scss'
 
@@ -21,9 +21,9 @@ interface Props {
 }
 
 const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
-// Lineage producers write times either as ISO strings or as epoch milliseconds
-// (the lakehouse does the latter); both come out as ISO.
-const time = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? new Date(v).toISOString() : str(v))
+// Lineage producers write times as ISO strings or as epoch numbers / numeric
+// strings (the lakehouse sends epoch ms); toIsoTimestamp unifies them.
+const time = toIsoTimestamp
 // Other producers' spellings of the build statuses.
 const STATUS_ALIASES: Record<string, string> = { successful: 'success', succeeded: 'success', completed: 'success', failure: 'failed', error: 'failed', canceled: 'cancelled' }
 const jobStatus = (s: string) => adaptStatus(STATUS_ALIASES[s.toLowerCase()] ?? s)
@@ -104,7 +104,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) {
               ? `Build ${buildId.slice(0, 8)} is not on this server, so its target and step runs are unknown.`
               : 'Not a granite.build run.',
             'Showing what the lineage index recorded',
-          ].join(' ') + (job && !job.job_recorded ? '; it has no job record, only lineage rows.' : '.')}
+          ].join(' ') + '.'}
         />
       )}
     >
@@ -147,7 +147,6 @@ function JobIndexSections({ job, target, meta = {}, jobId, buildId }: {
         <CodeField label="Job ID" value={job?.job_id ?? jobId} />
         <Field label="Namespace">{orNA(job?.job_namespace || str(job?.job.namespace) || str(meta.job_namespace))}</Field>
         <Field label="Owner">{orNA(job?.owner || str(job?.job.owner) || str(meta.owner))}</Field>
-        <Field label="Source system">{orNA(job?.source_system || str(meta.source_system))}</Field>
         {job && <UriField label="Inputs" uris={job.inputs} />}
         {job && <UriField label="Outputs" uris={job.outputs} />}
         {job && <UriField label="Tags" uris={job.tags} />}
@@ -158,23 +157,18 @@ function JobIndexSections({ job, target, meta = {}, jobId, buildId }: {
 
 /**
  * A target run rebuilt from a lineage job, for a build this server does not have.
- * The index records one status and span per execution and, for granite.build,
- * each step's definition URI and redacted config -- not a step's own status or
- * timing, which are left unknown rather than borrowed from the job.
+ * The index records one status and span per execution -- no steps, which are
+ * left empty rather than invented.
  */
 function targetFromJob(job: LineageJobEntry, title: string): BuildTargetRun {
   return {
     uuid: job.job_id,
     target_name: title,
     status: jobStatus(job.status || str(job.job.status) || ''),
-    started_at: job.started_at || time(job.job.started_at),
+    started_at: time(job.started_at) || time(job.job.started_at),
     finished_at: time(job.job.completed_at),
-    steps: stepsOf(job.job_input_params).map((step) => ({
-      step_name: str(step.uri)?.split('/').pop() || NA,
-      status: adaptStatus('unknown'),
-      uri: str(step.uri),
-      config: isNonEmptyObject(step.config) ? step.config : undefined,
-    })),
+    // The index records no step definitions; those live in the build's own status.
+    steps: [],
   }
 }
 
@@ -199,13 +193,6 @@ function UriField({ label, uris }: { label: string; uris: string[] }) {
       </ul>
     </Field>
   )
-}
-
-// granite.build records job_input_params as {steps: [{uri, config, config_dir}]};
-// another producer's shape yields no steps.
-function stepsOf(params: Record<string, unknown> | undefined): Record<string, unknown>[] {
-  const steps = params?.steps
-  return Array.isArray(steps) ? steps.filter((s): s is Record<string, unknown> => Boolean(s) && typeof s === 'object') : []
 }
 
 const GROUPED_PAGE = 50
@@ -301,8 +288,4 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
 
 function buildIdOf(job: LineageJobEntry): string | undefined {
   return job.tags.find((t) => t.startsWith('build_id='))?.slice('build_id='.length)
-}
-
-function isNonEmptyObject(v: unknown): v is Record<string, unknown> {
-  return Boolean(v) && typeof v === 'object' && Object.keys(v as object).length > 0
 }

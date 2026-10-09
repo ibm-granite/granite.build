@@ -76,7 +76,6 @@ def job(
         job_namespace=job_namespace,
         space_name=space_name,
         owner=owner,
-        source_system=source_system,
         status=status,
         started_at=started_at,
         attributes=attributes,
@@ -220,7 +219,9 @@ class TestFields:
         assert found.owner == "bob"
         assert found.status == "FAILED"
         assert found.started_at == "2026-02-03 04:05:06"
-        assert found.source_system == "lakehouse"
+        # source_system is now in the row table, not the job table;
+        # it's stored in the attributes blob for provenance tracking
+        assert found.attributes.get("origin", {}).get("system") == "lakehouse"
 
     def test_a_source_without_a_space_stores_empties(self, storage):
         """Lakehouse has no notion of a space or an owner; the columns hold "" rather
@@ -339,7 +340,6 @@ class TestSchema:
             "job_namespace",
             "space_name",
             "owner",
-            "source_system",
             "status",
             "started_at",
         ):

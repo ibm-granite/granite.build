@@ -23,7 +23,7 @@ structure -- especially that terminals do not become nodes and that one job's ro
 converge on one run node.
 """
 
-from gbserver.lineage.attributes import build_attributes
+from gbserver.lineage.attributes import build_attributes, build_index_attributes
 from gbserver.lineage.graph_builder import build_graph_dict
 from gbserver.lineage.walk import LineageGraph
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
@@ -469,3 +469,54 @@ class TestSameEndpointGrouping:
         assert len(runs) == 1
         assert runs[0]["metadata"]["jobs_query"] == {"uri": A, "terminal": "output"}
         assert edge_pairs(result) == {(A, runs[0]["id"])}
+
+
+class TestSlimRows:
+    """Rows in the slim shape (every writer now) draw the same graph as old rows."""
+
+    def _slim(self):
+        return row(
+            "J1",
+            A,
+            B,
+            attributes=build_index_attributes(
+                job_id="J1",
+                job_name="train",
+                job_namespace="space-a/proj",
+                owner="a@x.com",
+                job_status="COMPLETED",
+                job_started_at="t0",
+                job_completed_at="t1",
+                input_uri=A,
+                input_artifact={"artifact_type": "dataset"},
+                output_uri=B,
+                output_artifact={"artifact_type": "model"},
+                retrieve={"build_id": "BLD", "target_run_uuid": "TR"},
+            ),
+        )
+
+    def test_artifact_type_is_read_from_type(self):
+        result = build_graph_dict(graph_of(self._slim()), A)
+        kinds = {n["id"]: n["artifact_type"] for n in nodes_by_type(result, "artifact")}
+        assert kinds == {A: "dataset", B: "model"}
+
+    def test_run_node_carries_auth_fields_status_and_times(self):
+        result = build_graph_dict(graph_of(self._slim()), A)
+        (run,) = nodes_by_type(result, "run")
+        metadata = run["metadata"]
+        assert metadata["job_namespace"] == "space-a/proj"
+        assert metadata["owner"] == "a@x.com"
+        assert metadata["job_status"] == "COMPLETED"
+        assert metadata["job_started_at"] == "t0"
+        assert metadata["job_completed_at"] == "t1"
+        assert metadata["gb_build_id"] == "BLD"
+        assert metadata["gb_target_run_uuid"] == "TR"
+        assert "source_system" not in metadata
+
+    def test_old_rows_still_read(self):
+        old = row("J1", A, B, source_kind="dataset", build_id="BLD")
+        result = build_graph_dict(graph_of(old), A)
+        (run,) = nodes_by_type(result, "run")
+        assert run["metadata"]["gb_build_id"] == "BLD"
+        kinds = {n["id"]: n["artifact_type"] for n in nodes_by_type(result, "artifact")}
+        assert kinds[A] == "dataset"

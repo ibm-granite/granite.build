@@ -36,14 +36,50 @@ export const UNFINISHED_TARGET_STATUSES = new Set([
 ])
 
 /**
+ * Parse a timestamp in any of the spellings lineage producers write: a Date,
+ * epoch seconds / milliseconds / microseconds / nanoseconds (as a number or a
+ * numeric string — the lakehouse sends `"1761010778000"`), or an ISO-ish string
+ * (Python's `2026-08-22 10:51:28.123456+00:00` included). Returns undefined when
+ * the value is empty or not a recognisable time.
+ */
+export function parseTimestamp(value: unknown): Date | undefined {
+  if (value === null || value === undefined || value === '') return undefined
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? undefined : value
+  let epoch: number | undefined
+  if (typeof value === 'number') epoch = value
+  else if (typeof value === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(value)) epoch = Number(value)
+  if (epoch !== undefined) {
+    if (!Number.isFinite(epoch)) return undefined
+    // Pick the unit by magnitude: anything past ~5e11 is too far out to be seconds.
+    const abs = Math.abs(epoch)
+    const ms = abs < 1e11 ? epoch * 1e3 : abs < 1e14 ? epoch : abs < 1e17 ? epoch / 1e3 : epoch / 1e6
+    const d = new Date(ms)
+    return Number.isNaN(d.getTime()) ? undefined : d
+  }
+  if (typeof value !== 'string') return undefined
+  // Python's space separator and >3 fractional digits trip some JS engines.
+  let iso = value.trim().replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T').replace(/(\.\d{3})\d+/, '$1')
+  // A date-time with no zone is UTC (that's what the backend writes); JS would
+  // otherwise read it as the viewer's local time.
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(iso)) iso += 'Z'
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? undefined : d
+}
+
+/** `parseTimestamp` normalised to an ISO string, for fields typed as string. */
+export function toIsoTimestamp(value: unknown): string | undefined {
+  return parseTimestamp(value)?.toISOString() ?? (typeof value === 'string' && value ? value : undefined)
+}
+
+/**
  * `Aug 22, 2026 at 10:51:28 PDT` — the one place a full timestamp is spelled
  * out. The timezone abbreviation is included because the viewer and the build
  * launcher are often in different zones, so a bare wall-clock time is ambiguous.
  */
 export function formatDateTime(value: string | undefined): string | undefined {
   if (!value) return undefined
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
+  const parsed = parseTimestamp(value)
+  if (!parsed) return value
   const date = parsed.toLocaleDateString([], {
     month: 'short',
     day: 'numeric',

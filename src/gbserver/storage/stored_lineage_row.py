@@ -88,16 +88,20 @@ TERMINAL = ""
 MAX_LINEAGE_URI_LENGTH = 512
 
 
-class LineageOrigin(str, Enum):
-    """Where a row's full job content lives; the index itself only carries labels.
+class JobStore(str, Enum):
+    """Where a row's full job data lives; the index itself only carries labels.
+
+    Names the store to look in, not the system that produced the job: a Lakehouse
+    job imported into ``gb_lineage_job`` is ``LINEAGE_JOB``. The key to look it up
+    by is in the row's ``attributes.retrieve``.
 
     A ``str`` enum so the column stays text (see ``_get_column_values``) and a row
     serializes to the plain value.
     """
 
-    GRANITE_BUILD = "granite.build"  # standalone admin DB: gb_targets / builds
-    DB = "db"  # gb_lineage_job
+    LINEAGE_JOB = "lineage_job"  # gb_lineage_job
     WANDB = "wandb"  # a W&B run
+    TARGETS = "targets"  # gb_targets (and its build)
     OTHER = "other"  # an external system; the reference is opaque
 
 
@@ -125,14 +129,15 @@ class StoredLineageRow(BaseStoredItem):
             the job produced none (a deletion).
         attributes: everything else -- artifact kind and name per endpoint, the
             carried job metadata (name, status, owner, timestamps), the space and
-            owner the read path reports, the row's provenance (``source_system``),
-            and any process ids the originating system had (a build, a target run, a
-            pipeline). Lives in the JSON blob,
+            owner the read path reports, and any process ids the originating system
+            had (a build, a target run, a pipeline). Lives in the JSON blob,
             so nothing here is queryable; anything that needs filtering has to
             become a column first, and that is a deliberate bar to clear.
-        origin: where the job's full content lives (:class:`LineageOrigin`). The
-            read path dispatches on it to fetch a job's detail; the row's
-            ``attributes`` only carry what is needed to draw and label the graph.
+        job_store: where the job's full data lives (:class:`JobStore`). The read
+            path dispatches on it to fetch a job's detail; the row's ``attributes``
+            only carry what is needed to draw and label the graph. Which system
+            *produced* the job is not a row column: it is on the job record
+            (``attributes.origin.system``), once per job rather than N*M times.
         recorded_at: when this index wrote the row, UTC ISO-8601, stamped at write
             time. Distinct from the job's ``started_at``, which keeps the source's
             own form: this is *our* clock, not the producer's, and is the basis for
@@ -150,9 +155,9 @@ class StoredLineageRow(BaseStoredItem):
         description="Normalized URI of the output artifact; TERMINAL if none",
     )
 
-    origin: LineageOrigin = Field(
-        default=LineageOrigin.OTHER,
-        description="Where the full job content lives",
+    job_store: JobStore = Field(
+        default=JobStore.OTHER,
+        description="Where the full job data lives",
     )
 
     recorded_at: str = Field(

@@ -33,7 +33,7 @@ from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.lineage_row_storage import DOWNSTREAM, UPSTREAM, GroupedEdge
 from gbserver.storage.stored_lineage_row import (
     TERMINAL,
-    LineageOrigin,
+    JobStore,
     StoredLineageRow,
 )
 
@@ -58,18 +58,19 @@ def row(
 ) -> StoredLineageRow:
     """A row with URI endpoints.
 
-    ``source_system`` is accepted as a keyword for readability and folded into
-    ``attributes``, where it lives: it is not a column, so it is not queryable.
+    ``source_system`` is not a row column; it only seeds ``attributes.origin``.
     """
+    source_system = kwargs.pop("source_system", "granite.build")
     if "attributes" in kwargs:
         attributes = dict(kwargs.pop("attributes") or {})
     else:
-        attributes = build_attributes(
-            source_system=kwargs.pop("source_system", "granite.build"),
-        )
+        attributes = build_attributes(source_system=source_system)
     assert not kwargs, f"unhandled row() keywords: {sorted(kwargs)}"
     return StoredLineageRow(
-        job_id=job_id, input=input, output=output, attributes=attributes
+        job_id=job_id,
+        input=input,
+        output=output,
+        attributes=attributes,
     )
 
 
@@ -250,7 +251,7 @@ class TestSchema:
 
     @pytest.mark.parametrize(
         "column",
-        ["job_id", "origin", "recorded_at"],
+        ["job_id", "job_store", "recorded_at"],
     )
     def test_column_is_indexed(self, storage, column):
         storage.add(row())
@@ -301,11 +302,13 @@ class TestSchema:
                 storage, f"PRAGMA table_info('{storage.table_name}')"
             )
         }
+        # The producer is on the job record, not on every row.
         assert "source_system" not in columns
+        # build_id and target_run_uuid stay in the blob - they're GB-specific
         assert "build_id" not in columns
         assert "target_run_uuid" not in columns
 
-        for column in ("input", "output", "job_id", "origin"):
+        for column in ("input", "output", "job_id", "job_store"):
             assert columns[column].startswith("VARCHAR"), (column, columns[column])
 
         non_text = {
@@ -353,6 +356,7 @@ class TestRoundTrip:
             job_id="J",
             input="lh://prod/ns/models/t/a",
             output="hf://huggingface.co/models/org/b",
+            job_store=JobStore.LINEAGE_JOB,
             attributes={
                 "job_name": "train",
                 "owner": "someone",
@@ -369,6 +373,7 @@ class TestRoundTrip:
 
         assert stored.input == original.input
         assert stored.output == original.output
+        assert stored.job_store == original.job_store
         # Everything else lives in the JSON blob, whole -- including the process
         # ids, which are not columns.
         assert stored.attributes == original.attributes
@@ -401,6 +406,7 @@ class TestRoundTrip:
         """
         storage.add(row(job_id="A", source_system="lh"))
         assert "source_system" not in storage.get_column_names()
+        # and the attributes blob itself is still not queryable
         assert "attributes" not in storage.get_column_names()
 
     def test_terminal_helpers_survive_storage(self, storage):
@@ -500,28 +506,29 @@ class TestUriIsTheIdentity:
             storage.add(row(attributes={"job_name": "two"}))
 
 
-class TestOrigin:
-    """Where a job's full content lives is a column, so the read path can dispatch on it."""
+class TestJobStore:
+    """Where a job's full data lives is a column, so the read path can dispatch on it."""
 
     def test_default_is_other(self, storage):
         storage.add(row())
-        assert storage.get_rows_by_job("J")[0].origin == LineageOrigin.OTHER
+        assert storage.get_rows_by_job("J")[0].job_store == JobStore.OTHER
 
-    @pytest.mark.parametrize("origin", list(LineageOrigin))
-    def test_round_trip(self, storage, origin):
+    @pytest.mark.parametrize("job_store", list(JobStore))
+    def test_round_trip(self, storage, job_store):
         stored = row()
-        stored.origin = origin
+        stored.job_store = job_store
         storage.add(stored)
-        assert storage.get_rows_by_job("J")[0].origin == origin
+        assert storage.get_rows_by_job("J")[0].job_store == job_store
 
     def test_is_queryable(self, storage):
         first, second = row(job_id="A"), row(job_id="B")
-        first.origin = LineageOrigin.WANDB
-        second.origin = LineageOrigin.DB
+        first.job_store = JobStore.WANDB
+        second.job_store = JobStore.LINEAGE_JOB
         storage.add(first)
         storage.add(second)
-        found = storage.get_by_where({"origin": LineageOrigin.WANDB.value})
+        found = storage.get_by_where({"job_store": JobStore.WANDB.value})
         assert [r.job_id for r in found] == ["A"]
+
 
 
 class TestGroupedEdges:

@@ -231,7 +231,9 @@ def get_lineage_store() -> ILineageStore:
         elif provider == LINEAGE_PROVIDER_DB:
             from gbserver.lineage.db_jobstats import DBLineageStore
 
-            __JOBSTATS_STORAGE = DBLineageStore()
+            # Record-only: the lineage indexer builds gb_lineage_index from
+            # gb_lineage_job asynchronously.
+            __JOBSTATS_STORAGE = DBLineageStore(index_rows=False)
         else:
             from gbserver.lineage.wandb_jobstats import WandBLineageStore
 

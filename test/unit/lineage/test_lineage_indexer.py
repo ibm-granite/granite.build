@@ -20,6 +20,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gbserver.storage.stored_lineage_row import JobStore
+
 from gbserver.lineage import indexer as idx
 from gbserver.storage.stored_target_run import StoredTargetRun
 
@@ -85,36 +87,145 @@ def _project(monkeypatch):
 # -- source resolution ------------------------------------------------------
 
 
-def test_source_follows_startup_mode():
-    with patch("gbcommon.types.gbenvconfig.is_standalone", return_value=True):
-        assert idx.resolve_indexer_source() == idx.INDEXER_SOURCE_ADMIN_DB
-    with patch("gbcommon.types.gbenvconfig.is_standalone", return_value=False):
-        assert idx.resolve_indexer_source() == idx.INDEXER_SOURCE_LINEAGE_STORE
+@pytest.mark.parametrize(
+    "provider,expected",
+    [
+        ("none", idx.INDEXER_SOURCE_ADMIN_DB),
+        ("db", idx.INDEXER_SOURCE_LINEAGE_JOB),
+        ("wandb", idx.INDEXER_SOURCE_LINEAGE_STORE),
+    ],
+)
+@pytest.mark.parametrize("standalone", [True, False])
+def test_source_follows_provider_in_every_mode(standalone, provider, expected):
+    with patch(
+        "gbcommon.types.gbenvconfig.is_standalone", return_value=standalone
+    ), patch.object(idx, "_resolve_lineage_provider", return_value=provider):
+        assert idx.resolve_indexer_source() == expected
 
 
 # -- create_indexer ---------------------------------------------------------
 
 
-def test_admin_db_is_target_indexer_not_the_watcher():
+@pytest.mark.parametrize(
+    "source,cls",
+    [
+        (idx.INDEXER_SOURCE_ADMIN_DB, idx.TargetLineageIndexer),
+        (idx.INDEXER_SOURCE_LINEAGE_JOB, idx.LineageJobIndexer),
+        (idx.INDEXER_SOURCE_LINEAGE_STORE, idx.WandBLineageIndexer),
+    ],
+)
+def test_create_indexer_per_source(source, cls):
     sink = MagicMock()
-    ix = idx.create_indexer(idx.INDEXER_SOURCE_ADMIN_DB, sink=sink)
-    assert isinstance(ix, idx.TargetLineageIndexer)
+    ix = idx.create_indexer(source, sink=sink)
+    assert isinstance(ix, cls)
     assert ix._sink is sink
 
 
-@pytest.mark.parametrize("provider", ["db", "none"])
-def test_lineage_store_that_is_index_or_none_is_noop(provider):
-    with patch.object(idx, "_resolve_lineage_provider", return_value=provider):
-        assert (
-            idx.create_indexer(idx.INDEXER_SOURCE_LINEAGE_STORE, sink=MagicMock())
-            is None
-        )
+# -- lineage_job source -----------------------------------------------------
 
 
-def test_lineage_store_wandb_builds_wandb_indexer():
-    with patch.object(idx, "_resolve_lineage_provider", return_value="wandb"):
-        ix = idx.create_indexer(idx.INDEXER_SOURCE_LINEAGE_STORE, sink=MagicMock())
-    assert isinstance(ix, idx.WandBLineageIndexer)
+def _job_record(job_id, recorded_at, entry=True):
+    from gbserver.storage.stored_lineage_job import StoredLineageJob
+
+    attributes = {}
+    if entry:
+        attributes["entry"] = {
+            "event": {
+                "job": {"namespace": "space/build", "name": "t"},
+                "job_details": {"job_id": job_id},
+                "sources": [{"uri": f"s3://bucket/in-{job_id}"}],
+                "targets": [{"uri": f"s3://bucket/out-{job_id}"}],
+            },
+            "build_id": "b1",
+            "target_run_uuid": job_id,
+        }
+    return StoredLineageJob(
+        job_id=job_id, recorded_at=recorded_at, attributes=attributes
+    )
+
+
+def _admin_with_jobs(jobs):
+    kv = {}
+    storage = MagicMock()
+    storage.lineage_job_storage.get_paged.side_effect = lambda **_: iter([list(jobs)])
+    storage.kv_pair_storage.get_value.side_effect = kv.get
+    storage.kv_pair_storage.set_value.side_effect = kv.__setitem__
+    return storage, kv
+
+
+def test_lineage_job_indexer_reads_in_order_and_checkpoints():
+    jobs = [
+        _job_record("j2", "2026-01-02T00:00:00.000000+00:00"),
+        _job_record("j1", "2026-01-01T00:00:00.000000+00:00"),
+    ]
+    storage, kv = _admin_with_jobs(jobs)
+    sink = MagicMock()
+    sink.index_job_records.side_effect = len
+    ix = idx.LineageJobIndexer(sink=sink)
+    with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
+        assert ix.scan_once(storage) == 2
+        (batch,) = [c.args[0] for c in sink.index_job_records.call_args_list]
+        assert [j.job_id for j in batch] == ["j1", "j2"]
+        cp = kv["lineage_index_checkpoint:db"]
+        assert cp["timestamp"] == "2026-01-02T00:00:00.000000+00:00"
+        # Nothing new: nothing re-read.
+        assert ix.scan_once(storage) == 0
+
+
+def test_db_sink_record_only_then_index_dedups():
+    from gbserver.lineage.db_jobstats import DBLineageStore
+
+    rows, jobs = MagicMock(), MagicMock()
+    jobs.get_job.return_value = None
+    store = DBLineageStore(storage=rows, job_storage=jobs, index_rows=False)
+    event = _job_record("j1", "x").attributes["entry"]["event"]
+    with patch("gbserver.lineage.db_jobstats.upsert_row") as upsert_row:
+        store.write_job(event, build_id="b1", target_run_uuid="j1")
+        upsert_row.assert_not_called()
+        record = jobs.add.call_args.args[0]
+        assert record.attributes["entry"]["event"] == event
+
+        reader = DBLineageStore(storage=rows, job_storage=jobs)
+        assert reader.index_job_record(record) is True
+        assert reader.index_job_record(record) is True
+        # Every pass goes through upsert_row, which merges into an existing row.
+        assert upsert_row.call_count == 2
+        jobs.add.assert_called_once()
+
+
+def test_index_job_records_bulk_adds_new_and_merges_existing():
+    from gbserver.lineage.db_jobstats import DBLineageStore
+    from gbserver.storage.stored_lineage_row import StoredLineageRow
+
+    def row(job_id, inp, out):
+        return StoredLineageRow(
+            job_id=job_id, input=inp, output=out
+        ).model_dump(mode="json", exclude={"uuid"})
+
+    new = _job_record("new", "x", entry=False)
+    new.attributes["entry"] = {
+        "rows": [row("new", "a", "b"), row("new", "a", "b"), row("new", "", "b")]
+    }
+    old = _job_record("old", "x", entry=False)
+    old.attributes["entry"] = {"rows": [row("old", "c", "d")]}
+
+    rows = MagicMock()
+    rows.get_rows_by_jobs.return_value = [MagicMock(job_id="old")]
+    store = DBLineageStore(storage=rows, job_storage=MagicMock())
+    with patch("gbserver.lineage.db_jobstats.upsert_row") as upsert_row:
+        assert store.index_job_records([new, old]) == 2
+    # One bulk add: the duplicate collapsed, the superseded terminal dropped.
+    (added,) = rows.add.call_args.args
+    assert [(r.input, r.output) for r in added] == [("a", "b")]
+    # The job that already had rows is merged row by row (dedup).
+    assert [c.args[1].job_id for c in upsert_row.call_args_list] == ["old"]
+
+
+def test_index_job_record_without_entry_is_skipped():
+    from gbserver.lineage.db_jobstats import DBLineageStore
+
+    store = DBLineageStore(storage=MagicMock(), job_storage=MagicMock())
+    assert store.index_job_record(_job_record("j1", "x", entry=False)) is False
 
 
 # -- run conversion ---------------------------------------------------------
@@ -450,5 +561,37 @@ def test_db_store_write_job_delegates():
     with patch.object(store, "_write_job") as inner:
         store.write_job({"x": 1}, build_id="b", target_run_uuid="t")
     inner.assert_called_once_with(
-        {"x": 1}, build_id="b", target_run_uuid="t", extra_tags=None
+        {"x": 1},
+        build_id="b",
+        target_run_uuid="t",
+        extra_tags=None,
+        job_store=JobStore.OTHER,
     )
+
+
+def test_each_source_stamps_its_job_store():
+    from gbserver.lineage.db_jobstats import DBLineageStore
+
+    rows, jobs = MagicMock(), MagicMock()
+    rows.get_rows_by_job.return_value = []
+    rows.get_rows_by_jobs.return_value = []
+    store = DBLineageStore(storage=rows, job_storage=jobs)
+
+    event = _job_record("j1", "x").attributes["entry"]["event"]
+    store.write_job(event, "b", "t", job_store=JobStore.WANDB)
+    assert {r.args[0].job_store for r in rows.add.call_args_list} == {JobStore.WANDB}
+
+    rows.add.reset_mock()
+    store.index_job_record(_job_record("j2", "x"))
+    assert {r.args[0].job_store for r in rows.add.call_args_list} == {
+        JobStore.LINEAGE_JOB
+    }
+
+    rows.add.reset_mock()
+    prebuilt = _job_record("j3", "x", entry=False)
+    prebuilt.attributes["entry"] = {
+        "rows": [{"job_id": "j3", "input": "a", "output": "b", "job_store": "other"}]
+    }
+    store.index_job_records([prebuilt])
+    (added,) = rows.add.call_args.args
+    assert [r.job_store for r in added] == [JobStore.LINEAGE_JOB]

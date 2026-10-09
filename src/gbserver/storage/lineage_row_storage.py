@@ -135,6 +135,10 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         """Return which of ``job_ids`` already have rows."""
         raise NotImplementedError
 
+    def get_recent_job_ids(self, limit: int, offset: int) -> Tuple[List[str], int]:
+        """Return one page of jobs, newest ``recorded_at`` first, and their count."""
+        raise NotImplementedError
+
     def get_job_ids_by_tags(
         self, any_of: List[str], all_of: Optional[List[str]] = None
     ) -> Set[str]:
@@ -188,10 +192,10 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             "job_id",
             "input",
             "output",
-            "origin",
+            "job_store",
             "recorded_at",
         }
-        # mode="json" turns the LineageOrigin enum into its plain string value.
+        # mode="json" turns the JobStore enum into its plain string value.
         return item.model_dump(include=fields_to_include, mode="json")
 
     @classmethod
@@ -423,6 +427,22 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         ]
         edges.sort(key=lambda edge: (edge.last_recorded_at, edge.input, edge.output), reverse=True)
         return edges[:limit] if limit is not None else edges
+
+    def get_recent_job_ids(self, limit: int, offset: int) -> Tuple[List[str], int]:
+        """Return one page of jobs, newest first, and how many jobs there are.
+
+        A job is as recent as its newest row. This fallback reads every row; the
+        SQL backend overrides it with one ``GROUP BY job_id``.
+        """
+        latest: Dict[str, str] = {}
+        for page in self.get_paged():
+            for row in page:
+                if row.job_id:
+                    latest[row.job_id] = max(
+                        latest.get(row.job_id, ""), row.recorded_at or ""
+                    )
+        ordered = sorted(latest, key=lambda j: (latest[j], j), reverse=True)
+        return ordered[offset : offset + limit], len(ordered)
 
     def has_rows_for_job(self, job_id: str) -> bool:
         """Whether any row is already recorded for a job."""

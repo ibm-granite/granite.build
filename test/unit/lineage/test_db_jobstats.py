@@ -342,37 +342,81 @@ class TestRowContents:
         assert row.input == ""
         assert row.is_creation()
 
-    def test_rows_record_the_producing_system(self):
+    def test_rows_carry_the_slim_shape(self):
+        """Producing system lives on the job record, not copied onto every row."""
         row = _row_from_draft(
             LineageRowDraft(job_id="J1", input="lh://prod/ns/tables/t"),
             build_id="BLD",
             target_run_uuid="TR",
         )
-        assert origin_system(row.attributes) == "granite.build"
+        assert "origin" not in row.attributes
+        assert origin_system(row.attributes) == ""
 
-    def test_process_ids_are_carried_in_the_origin_group(self):
+    def test_process_ids_are_carried_in_the_retrieve_group(self):
         """Carried but not indexed: they are empty for every imported source."""
         row = _row_from_draft(
             LineageRowDraft(job_id="J1", input="lh://prod/ns/tables/t"),
             build_id="BLD",
             target_run_uuid="TR",
         )
+        assert row.attributes["retrieve"] == {
+            "build_id": "BLD",
+            "target_run_uuid": "TR",
+        }
         assert origin_id(row.attributes, "build_id") == "BLD"
         assert origin_id(row.attributes, "target_run_uuid") == "TR"
 
     def test_an_importer_carries_no_process_ids(self):
-        """A source with no build concept writes no empty id keys.
-
-        Omitting the group lets a reader tell "not recorded" from "recorded empty".
-        """
+        """A source with no build concept is retrieved by its job id instead."""
         row = _row_from_draft(
             LineageRowDraft(job_id="J1", input="lh://prod/ns/tables/t"),
             build_id="",
             target_run_uuid="",
             source_system="lakehouse",
         )
-        assert "ids" not in row.attributes["origin"]
-        assert origin_system(row.attributes) == "lakehouse"
+        assert row.attributes["retrieve"] == {"job_id": "J1"}
+        assert origin_id(row.attributes, "build_id") == ""
+
+    def test_rows_carry_what_authorization_and_the_run_node_read(self):
+        """namespace and owner gate access; status and timestamps label the node."""
+        row = _row_from_draft(
+            LineageRowDraft(
+                job_id="J1",
+                input="lh://prod/ns/tables/t",
+                metadata={
+                    "job_name": "train",
+                    "job_namespace": "space-a/proj",
+                    "owner": "a@x.com",
+                    "job_status": "COMPLETED",
+                    "job_started_at": "2026-01-01T00:00:00Z",
+                    "job_completed_at": "2026-01-01T01:00:00Z",
+                    "category": "training",
+                },
+            ),
+            build_id="BLD",
+            target_run_uuid="TR",
+        )
+        assert job_detail(row.attributes) == {
+            "name": "train",
+            "id": "J1",
+            "namespace": "space-a/proj",
+            "owner": "a@x.com",
+            "status": "COMPLETED",
+            "started_at": "2026-01-01T00:00:00Z",
+            "completed_at": "2026-01-01T01:00:00Z",
+        }
+
+    def test_an_unfinished_job_has_no_completed_at(self):
+        row = _row_from_draft(
+            LineageRowDraft(
+                job_id="J1",
+                input="lh://prod/ns/tables/t",
+                metadata={"job_status": "RUNNING", "job_started_at": "t0"},
+            ),
+            build_id="",
+            target_run_uuid="",
+        )
+        assert "completed_at" not in job_detail(row.attributes)
 
     def test_the_endpoints_are_the_normalized_uris(self, sink, rows):
         """The URI is the identity, so it is normalized on the way in.
@@ -652,10 +696,7 @@ class TestJobTags:
 
         self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp"])
         self._write(tagged_sink, "J2", "t2", extra_tags=["team=vision"])
-        service = DBLineageService(
-            storage=rows,
-            job_storage=tagged_sink.job_storage,
-        )
+        service = DBLineageService(storage=rows)
         result = service.list_jobs(tags=["build_id=BLD"], required_tags=["team=nlp"])
         assert result["total"] == 1
         assert result["jobs"][0]["job_id"] == "J1"
@@ -673,10 +714,7 @@ class TestJobTags:
 
         self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp"])
         self._write(tagged_sink, "J2", "t2", extra_tags=["team=vision"])
-        service = DBLineageService(
-            storage=rows,
-            job_storage=tagged_sink.job_storage,
-        )
+        service = DBLineageService(storage=rows)
         both = service.list_jobs(uri=LH_TABLE)
         assert [job["job_id"] for job in both["jobs"]] == ["J1", "J2"]
         narrowed = service.list_jobs(uri=LH_TABLE, tags=["team=nlp"])
@@ -692,10 +730,7 @@ class TestJobTags:
 
         self._write(tagged_sink, "J1", "t1")
         self._write(tagged_sink, "J2", "t2")
-        service = DBLineageService(
-            storage=rows,
-            job_storage=tagged_sink.job_storage,
-        )
+        service = DBLineageService(storage=rows)
         result = service.list_jobs()
         assert result["total"] == 2
         assert {job["job_id"] for job in result["jobs"]} == {"J1", "J2"}

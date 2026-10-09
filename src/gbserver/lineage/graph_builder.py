@@ -469,7 +469,10 @@ def _run_node(row: StoredLineageRow, run_id: str) -> dict:
     if target_run_uuid:
         node_metadata.setdefault("gb_target_run_uuid", target_run_uuid)
 
-    node_metadata.setdefault("source_system", origin_system(row.attributes))
+    # Slim rows no longer copy the producing system; it lives on the job record.
+    system = origin_system(row.attributes)
+    if system:
+        node_metadata.setdefault("source_system", system)
 
     return {
         "id": run_id,
