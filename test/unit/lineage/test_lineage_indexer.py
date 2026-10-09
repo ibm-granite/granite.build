@@ -431,10 +431,17 @@ def _target(uuid, minutes, build_id="b1", artifacts=True):
 def _target_indexer(targets, indexed=()):
     """Targets are served newest-finished first, as the DB page would."""
     sink = MagicMock()
+    # The builder is pure; one event per target is enough to drive the loop.
+    sink.create_jobstats_for_target.side_effect = lambda storage, target, build=None: (
+        [{"job_id": target.uuid}],
+        {},
+    )
     # "Already indexed" is a question about the index, which the rows collaborator
-    # owns; the sink only knows its own job table.
+    # owns. Under this source gb_targets IS the job store, so there is no job
+    # record to ask the sink about.
     rows = MagicMock()
     rows.has_rows_for_job.side_effect = lambda job_id: job_id in indexed
+    rows.index_job_entry.return_value = True
     ix = idx.TargetLineageIndexer(sink=sink, rows=rows)
     ordered = sorted(targets, key=lambda t: t.finished_at, reverse=True)
     page = patch.object(
@@ -442,19 +449,19 @@ def _target_indexer(targets, indexed=()):
         "_successful_targets_page",
         side_effect=lambda storage, i: ordered if i == 0 else [],
     )
-    return ix, sink, page
+    return ix, rows, page
 
 
 def test_targets_are_indexed_oldest_first_across_builds():
     storage = _storage()
-    ix, sink, page = _target_indexer(
+    ix, rows, page = _target_indexer(
         [_target("t2", 2, build_id="b2"), _target("t1", 1, build_id="b1")]
     )
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             assert ix.scan_once(storage) == 2
     assert [
-        c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
+        c.kwargs["target_run_uuid"] for c in rows.index_job_entry.call_args_list
     ] == ["t1", "t2"]
     assert _checkpoint(storage, provider="none")["timestamp"] == _ts(2)
 
@@ -464,15 +471,13 @@ def test_targets_behind_the_checkpoint_are_not_read():
     mark = {"timestamp": _ts(60), "item_ids": ["at"], "version": 1}
     key = idx._checkpoint_key_for_provider("none")
     storage.kv_pair_storage.set_value(key, dict(mark))
-    ix, sink, page = _target_indexer(
+    ix, rows, page = _target_indexer(
         [_target("old", 58), _target("at", 60), _target("tie", 60), _target("new", 61)]
     )
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             assert ix.scan_once(storage) == 2
-    ids = [
-        c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
-    ]
+    ids = [c.kwargs["target_run_uuid"] for c in rows.index_job_entry.call_args_list]
     # "at" is listed as done on the mark; "tie" shares its instant and is not.
     assert ids == ["tie", "new"]
     assert _checkpoint(storage, provider="none")["timestamp"] == _ts(61)
@@ -484,8 +489,8 @@ def test_target_scan_reads_past_a_page_that_reaches_the_checkpoint():
     storage = _storage()
     key = idx._checkpoint_key_for_provider("none")
     storage.kv_pair_storage.set_value(key, {"timestamp": _ts(60), "item_ids": []})
-    ix = idx.TargetLineageIndexer(sink=MagicMock())
-    ix._sink.row_storage.has_rows_for_job.return_value = False
+    ix, rows, _ = _target_indexer([])
+    rows.has_rows_for_job.return_value = False
     first = [_target(f"old{i}", 0) for i in range(idx._SCAN_PAGE_SIZE)]
     pages = [first, [_target("missorted", 61)]]
     with patch.object(
@@ -500,14 +505,14 @@ def test_target_scan_reads_past_a_page_that_reaches_the_checkpoint():
 
 def test_already_indexed_and_artifactless_targets_are_not_rewritten():
     storage = _storage()
-    ix, sink, page = _target_indexer(
+    ix, rows, page = _target_indexer(
         [_target("done", 1), _target("empty", 2, artifacts=False), _target("t3", 3)],
         indexed={"done"},
     )
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             assert ix.scan_once(storage) == 1
-    sink.add_jobstats_for_build_target.assert_called_once()
+    rows.index_job_entry.assert_called_once()
     assert _checkpoint(storage, provider="none")["timestamp"] == _ts(3)
 
 
@@ -528,15 +533,13 @@ def test_target_seed_by_timestamp_keeps_its_offset():
 
 def test_target_seed_indexes_from_that_instant_inclusive():
     storage = _storage()
-    ix, sink, page = _target_indexer([_target("t1", 1), _target("t2", 5)])
+    ix, rows, page = _target_indexer([_target("t1", 1), _target("t2", 5)])
     with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
         ix.seed_if_absent(storage, _ts(5))
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             ix.scan_once(storage)
-    indexed = [
-        c.kwargs["target_id"] for c in sink.add_jobstats_for_build_target.call_args_list
-    ]
+    indexed = [c.kwargs["target_run_uuid"] for c in rows.index_job_entry.call_args_list]
     assert "t2" in indexed
 
 

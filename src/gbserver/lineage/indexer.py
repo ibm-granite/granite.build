@@ -181,6 +181,20 @@ def create_indexer(
     return None
 
 
+def _build_tags(storage: SingletonAdminStorage, build_id: str) -> List[str]:
+    """The build's user tags, or none when it cannot be read.
+
+    Tolerant on purpose: the tags label a row, so losing them must not cost the
+    whole execution its place in the index.
+    """
+    try:
+        build = storage.build_storage.get_by_uuid(build_id)
+    except Exception:
+        return []
+    tags = getattr(build, "tags", None)
+    return list(tags) if isinstance(tags, list) else []
+
+
 def _parse_ts(value: str) -> datetime:
     """Parse a checkpoint timestamp; naive is read as local, like ``as_aware``."""
     return as_aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
@@ -504,26 +518,40 @@ class TargetLineageIndexer(JobLineageIndexer):
     def _index(self, storage: SingletonAdminStorage, job: StoredTargetRun) -> bool:
         if not job.input_artifacts and not any(job.output_artifacts.values()):
             return False
-        # Recorded only if *this* system wrote it: a copy another source imported
-        # first still needs granite.build's view merged in. See recorded_by_self.
-        if self._rows.has_rows_for_job(job.uuid) and self._sink.recorded_by_self(
-            [job.uuid]
-        ):
+        if self._rows.has_rows_for_job(job.uuid):
             return False
-        # Two steps, because the store no longer writes the index: it records the
-        # target as a job entry in gb_lineage_job, then the rows are derived from
-        # that record here. Reading the record back (rather than indexing what was
-        # just built in memory) keeps one derivation path for every source -- the
-        # same one the db indexer uses -- so admin-db and db sources cannot drift.
-        self._sink.add_jobstats_for_build_target(
-            storage, build_id=job.build_id, target_id=job.uuid
-        )
-        # Read through the store's own job storage, which is where it just wrote:
-        # that is the table this record lives in, by definition.
-        record = self._sink.job_storage.get_job(job.uuid)
-        if record is not None:
-            self._rows.index_job_record(record)
-        return True
+        # gb_targets IS the job store for this source, so nothing is copied into
+        # gb_lineage_job: the rows are stamped TARGETS and their ``retrieve`` keys
+        # (build_id, target_run_uuid) are what GET /lineage/jobs/{id} follows back
+        # to the target run and its steps -- see job_detail's per-store dispatch.
+        # Writing a job record too would duplicate, under this index's own notion
+        # of a job, data the admin DB already owns and keeps current.
+        try:
+            # Passing no build lets the builder resolve the target's own, and
+            # raise when it is gone: a target whose build vanished has no
+            # provenance to index, and the rows' retrieve keys would point at a
+            # build the detail route cannot fetch.
+            events, _ = self._sink.create_jobstats_for_target(storage, job)
+        except ValueError as exc:
+            logger.warning(
+                "Target run %s could not be built into lineage entries; "
+                "not indexed: %s",
+                job.uuid,
+                exc,
+            )
+            return False
+        indexed = False
+        for event in events:
+            indexed |= self._rows.index_job_entry(
+                event,
+                build_id=job.build_id,
+                target_run_uuid=job.uuid,
+                # The build's own tags are the user's; they are not in the job
+                # entry, which the shared builder shapes for W&B.
+                extra_tags=_build_tags(storage, job.build_id),
+                job_store=JobStore.TARGETS,
+            )
+        return indexed
 
     def _latest_job(self, storage: SingletonAdminStorage) -> Optional[StoredTargetRun]:
         page_index = 0
