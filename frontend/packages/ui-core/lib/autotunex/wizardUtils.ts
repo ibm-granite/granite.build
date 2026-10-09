@@ -2,7 +2,7 @@ import type {
   ColumnMapping,
   ColumnMetadata,
   DatasetFormatType,
-  ModelSource,
+  WizardModelSource,
   ParsedDataRow,
   TuningGoal,
 } from '../../types'
@@ -331,8 +331,10 @@ export function overlayColumnMapping(rows: ParsedDataRow[], mapping: ColumnMappi
  * the value is handed to the tuning runner verbatim as --model_name_or_path, so
  * a relative path would resolve against the runner's working directory rather
  * than against anything the user had in mind.
+ * `tuned_model` needs no extra rule: the picker leaves the model empty until
+ * the pick passes its loadability check.
  */
-export function isModelSelectionValid(source: ModelSource, model: string): boolean {
+export function isModelSelectionValid(source: WizardModelSource, model: string): boolean {
   const trimmed = model.trim()
   if (!trimmed) return false
   if (source === 'custom_path') return trimmed.startsWith('/')

@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   DataTable,
@@ -28,26 +28,30 @@ import {
   Button,
   InlineNotification,
   InlineLoading,
+  Pagination,
 } from '@carbon/react'
 import { ArrowLeft, Compare } from '@carbon/icons-react'
-import { RadarChart } from '@carbon/charts-react'
 import { useQuery } from '@tanstack/react-query'
 import { useChartsTheme } from '../../../hooks/useTheme'
 import { getJobTrials } from '../../../api/autotunex'
-import { listSpaces } from '../../../api/gbserver'
+import { useAutotunexIsAdmin } from '../../../hooks/useAutotunexIsAdmin'
 import { TrialLogViewer } from './TrialLogViewer'
 import { TrialCompare } from './TrialCompare'
 import { TrialProgressSummary } from './TrialProgressSummary'
 import { TrialMetricsCharts } from './TrialMetricsCharts'
 import { TrialMetricsPanel } from './TrialMetricsPanel'
-import { EMPHASIS_THRESHOLD, METRIC_DE_EMPHASIS, trialColorScale } from './trialMetrics'
+import { TrialSearchSpace } from './TrialSearchSpace'
+import { EMPHASIS_THRESHOLD, emphasisColorScale, selectionSlots, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
-import styles from './TrialsTable.module.scss'
-import { bestTrialId, isLowerBetter, jobMetric, rankBestFirst, scoreOn, toFeatureLabel, toRadarData } from './trialsRadar'
+import { formatHyperparamValue, hyperparamColumnLabel, hyperparamColumns } from './trialHyperparams'
+import { bestTrialId, isLowerBetter, jobMetric, primaryMetric, rankBestFirst, scoreOn, toFeatureLabel } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
 
-const HEADERS = [
-  { key: 'created_at', header: 'Created on' },
+// Hyperparameter columns are appended to these at render time. Appended, not
+// inserted: cause-then-effect would read more naturally, but on a wide sweep it
+// pushes Loss and Total time off the right edge — losing the comparison the columns
+// exist for. These four keep their positions and the rest scroll.
+const BASE_HEADERS = [
   { key: 'id', header: 'Trial id' },
   { key: 'status', header: 'Status' },
   { key: 'loss', header: 'Loss' },
@@ -64,12 +68,15 @@ const ACTIVE_STATUSES = new Set(['running', 'pending'])
 // selection would have to draw two curves in the same colour — and ten
 // overlapping curves is already about the limit for reading a line chart.
 //
-// This caps the *selection*, which is a different question from the one
-// EMPHASIS_THRESHOLD answers. That one counts every trial in the job, because
-// colour follows the run and not its rank among the ticked ones, so a job with
-// more trials than this still de-emphasises however few are ticked. Capping the
-// selection does not make those runs distinctly coloured.
+// The cap alone does not keep a selection distinct: in a job past
+// EMPHASIS_THRESHOLD trials the palette wraps and trial 11's home hue is trial 1's.
+// A ticked trial whose home hue is taken borrows a free one instead — see
+// selectionSlots — and because the cap is the palette size, one is always free.
 const MAX_SELECTED = EMPHASIS_THRESHOLD
+
+// Same page sizes as the other AutoTuneX tables. The pager only appears once a job
+// has more trials than the smallest page holds.
+const PAGE_SIZES = [10, 20, 50]
 
 interface Props {
   job: JobDetail
@@ -79,13 +86,15 @@ export function TrialsTable({ job }: Props) {
   const jobId = job.id
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [showCompare, setShowCompare] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZES[0])
   const theme = useChartsTheme()
 
-  // Same cached `['spaces']` query the rest of the detail view uses to pick a
-  // scope — admins read `scope=all` so they can see trials for jobs they don't
+  // Same cached admin check the rest of the detail view uses to pick a scope —
+  // AutoTuneX admins read `scope=all` so they can see trials for jobs they don't
   // own. No extra fetch: React Query dedupes on the shared key.
-  const { data: spaces = [] } = useQuery({ queryKey: ['spaces'], queryFn: listSpaces })
-  const scope = spaces.some((s) => s.is_admin) ? 'all' : 'own'
+  const { isAdmin } = useAutotunexIsAdmin()
+  const scope = isAdmin ? 'all' : 'own'
 
   // Trials come from GET /jobs/{id}/trials — the job detail no longer nests them.
   // No `enabled` gate: a non-HPO job just returns an empty page, and Carbon
@@ -105,16 +114,78 @@ export function TrialsTable({ job }: Props) {
   // charts above and a row's own Metrics tab agree — and so hiding a series in
   // the chart legend never repaints the others. Built here rather than in either
   // consumer because both need the identical map.
-  // Computed once and shared: the palette accents this run, and the compare view
-  // tags it. Reading it twice would let the tag crown a trial the charts colour
-  // as an also-ran if the two ever fell out of step.
+  // Computed once and shared: the emphasis form below keeps this run in colour,
+  // and the compare view tags it. Reading it twice would let the tag crown a trial
+  // the charts colour as an also-ran if the two ever fell out of step.
   const bestId = bestTrialId(trials)
-  const colorScale = useMemo(() => {
-    const ordered = [...trials]
-      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
-      .map((t) => t.id)
-    return trialColorScale(ordered, bestId, theme)
-  }, [trials, bestId, theme])
+  const orderedIds = useMemo(
+    () =>
+      [...trials]
+        .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+        .map((t) => t.id),
+    [trials]
+  )
+  // The ticked trials' slots, sticky across selection changes — see
+  // selectionSlots. The previous result lives in a ref because the next one is
+  // derived from it; recomputing from the selection alone would hand a borrowed
+  // slot back the moment its home freed up, repainting a curve under the reader.
+  // Written during render, which is safe here because the result is a pure
+  // function of (previous, orderedIds, selectedIds): a render React discards
+  // leaves behind only slots the next render with the same selection would pick.
+  const slotsRef = useRef<Record<string, number>>({})
+  const slots = useMemo(() => {
+    slotsRef.current = selectionSlots(orderedIds, selectedIds, slotsRef.current)
+    return slotsRef.current
+  }, [orderedIds, selectedIds])
+  const colorScale = useMemo(() => trialColorScale(orderedIds, theme, slots), [orderedIds, theme, slots])
+  // With nothing ticked and no final run, the charts fall back to drawing every
+  // trial the table lists. Past EMPHASIS_THRESHOLD trials the home hues repeat
+  // there, pairing trials that have nothing to do with each other, so that view
+  // alone greys all but the best. A tick switches back to the full scale, where
+  // selectionSlots keeps the ticked trials distinct.
+  const chartsColorScale = useMemo(
+    () =>
+      selectedIds.length === 0 && trials.length > EMPHASIS_THRESHOLD
+        ? emphasisColorScale(colorScale, bestId, theme)
+        : colorScale,
+    [selectedIds.length, trials.length, colorScale, bestId, theme]
+  )
+
+  // Every top-level hyperparameter on a trial's config, ignoring tuner_flags — see
+  // hyperparamColumns. Empty for a job whose trials carry no top-level
+  // hyperparameters, in which case the table renders exactly as it did before this
+  // feature.
+  const hyperparamKeys = useMemo(() => hyperparamColumns(trials), [trials])
+
+  // The metric the job scores its trials on, and whether smaller is better. Read
+  // through the same accessor and the same predicate `bestTrialId` uses, so the
+  // plot's better-is-up axes cannot disagree with which trial it marks as best.
+  // Decided from the first trial reporting a value, since every trial in a job is
+  // scored on the same metric. A hook, and up here with the others rather than
+  // beside its use below, because the early returns follow.
+  const plotMetric = useMemo(() => {
+    for (const trial of trials) {
+      const primary = primaryMetric(trial)
+      if (primary) return { name: primary.name, lowerIsBetter: isLowerBetter(primary.name) }
+    }
+    return { name: 'loss', lowerIsBetter: true }
+  }, [trials])
+  // The column is keyed `loss` for formatCell and the default sort, but holds the
+  // job's metric, so it is labelled with it: a reward job's 0.91 under "Loss"
+  // read as a bad loss.
+  const metric = jobMetric(trials)
+  const tableHeaders = useMemo(
+    () => [
+      ...BASE_HEADERS.map((h) => (h.key === 'loss' ? { ...h, header: toFeatureLabel(metric) } : h)),
+      ...hyperparamKeys.map((key) => ({ key, header: hyperparamColumnLabel(key) })),
+    ],
+    [hyperparamKeys, metric]
+  )
+
+  // The cell render and the toolbar filter must agree, or search matches text the
+  // cells do not show. Both go through this.
+  const cellText = (key: string, value: unknown) =>
+    hyperparamKeys.includes(key) ? formatHyperparamValue(value) : formatCell(key, value)
 
   if (isLoading) {
     return <InlineLoading description="Loading trials…" />
@@ -201,12 +272,6 @@ export function TrialsTable({ job }: Props) {
     )
   }
 
-  // The column is keyed `loss` for formatCell and the default sort, but holds the
-  // job's metric, so it is labelled with it: a reward job's 0.91 under "Loss"
-  // read as a bad loss.
-  const metric = jobMetric(trials)
-  const headers = HEADERS.map((h) => (h.key === 'loss' ? { ...h, header: toFeatureLabel(metric) } : h))
-
   // Default order: lowest loss first — trials without a loss sink to the end.
   //
   // `isSelected` seeds Carbon's own checkbox state. Carbon reads it off the row
@@ -215,11 +280,11 @@ export function TrialsTable({ job }: Props) {
   // selection across a remount without contesting ownership of it afterwards.
   // That is what lets Back keep the selection: the compare view unmounts this
   // table, so returning mounts a fresh one that would come up unticked.
+
   // Best first on the job's metric -- the same ranking bestTrialId and Compare use.
   const rows = rankBestFirst(trials)
     .map((t) => ({
       id: t.id,
-      created_at: t.created_at,
       status: t.status,
       // The value the ranking used, so the cell and the order agree: a trial with
       // no value on the job's metric shows none, rather than the loss it fell back
@@ -227,37 +292,52 @@ export function TrialsTable({ job }: Props) {
       loss: scoreOn(t, metric) ?? undefined,
       total_time: t.metrics?.total_time,
       isSelected: selectedIds.includes(t.id),
+      // Raw values, not formatted text: Carbon's default comparator does `a - b`
+      // for two numbers (DataTable/tools/sorting.js), so `r: 16` sorts after
+      // `r: 8`; handed strings it would fall back to localeCompare. Same reason
+      // `loss` and `total_time` are raw. Spread last, which is safe because
+      // hyperparamColumns excludes the keys above.
+      ...Object.fromEntries(hyperparamKeys.map((key) => [key, ((t.config ?? {}) as Record<string, unknown>)[key]])),
     }))
 
-  // Only completed trials with metrics can be plotted — the radar needs a full
-  // metric grid, and running/errored trials have no (or partial) metrics.
+  // Only completed trials with metrics can be plotted — running/errored trials
+  // have no (or partial) metrics.
   const plottableTrials = trials.filter(
     (t) => t.status === 'completed' && Object.keys(t.metrics ?? {}).length > 0
   )
   const comparableTrials = plottableTrials.filter((t) => selectedIds.includes(t.id))
-  // Ticked trials draw; the whole run sets the scale they are drawn against.
-  const radarData = toRadarData(comparableTrials, plottableTrials)
-  // One ticked trial is enough to draw, since the scale spans the run and a lone
-  // blob still sits where that trial landed within it. Two axes is Carbon's own
-  // floor: a single-axis radar makes RadarChart reject.
-  const axisCount = new Set(radarData.map((d) => d.feature)).size
-  const canShowRadar = comparableTrials.length >= 1 && axisCount >= 2
+  // The parallel plot draws the ticked trials and nothing else — with no selection
+  // the section is absent. With two or more ticked,
+  // the axes span only those trials: one outlier elsewhere in the run would otherwise
+  // stretch an axis — Loss above all — until every drawn line bunched at one end and
+  // the winner could not be told apart. The cost is that ticking a trial on or off
+  // rescales the axes. One ticked trial keeps the run's scale, since its own scale
+  // has zero width and would pin it to the top of every axis.
+  const parallelTrials = comparableTrials
+  const parallelBounds = parallelTrials.length >= 2 ? parallelTrials : plottableTrials
+
   // The diff-table only needs 2+ completed trials with a score — no axis constraint.
   const canOpenCompare = comparableTrials.length >= 2
   const atSelectionCap = selectedIds.length >= MAX_SELECTED
 
   const trialsById = new Map(trials.map((t) => [t.id, t]))
 
+  // Client-side: every trial is already loaded, and Carbon has sorted and
+  // filtered them by the time they reach the render prop, so a page is a slice of
+  // that. Only the rendered rows are paged — selection, select-all and Cancel still
+  // act on every filtered row, on any page.
+  const showPagination = trials.length > PAGE_SIZES[0]
+
   return (
     <div>
       <TrialProgressSummary job={job} trials={trials} />
-      {/* Table first, radar stacked under it once a plottable trial is ticked, so
-          each one gets the row's full width. `overflowX: 'auto'` keeps a wide
+      {/* Table first, the parallel plot stacked under it once a plottable trial is
+          ticked, so each one gets the row's full width. `overflowX: 'auto'` keeps a wide
           table scrolling inside its own box rather than stretching the page. */}
       <div style={{ overflowX: 'auto' }}>
       <DataTable
         rows={rows}
-        headers={headers}
+        headers={tableHeaders}
         isSortable
         // Carbon's default filter matches String(cell.value), but these cells
         // render formatted text — so "5m 20" would miss the row showing
@@ -269,7 +349,7 @@ export function TrialsTable({ job }: Props) {
           if (!query) return rowIds
           return rowIds.filter((rowId) =>
             headers.some(({ key }) =>
-              formatCell(key, cellsById[getCellId(rowId, key)].value).toLowerCase().includes(query)
+              cellText(key, cellsById[getCellId(rowId, key)].value).toLowerCase().includes(query)
             )
           )
         }}
@@ -281,7 +361,12 @@ export function TrialsTable({ job }: Props) {
                 <TableToolbarSearch
                   persistent
                   placeholder="Search trials…"
-                  onChange={onInputChange}
+                  // Back to the first page, or a search that narrows the rows
+                  // could leave the reader on a page past the last one.
+                  onChange={(e, value) => {
+                    setPage(1)
+                    onInputChange(e, value)
+                  }}
                   aria-label="Search trials"
                 />
                 {trials.length > MAX_SELECTED && (
@@ -394,7 +479,7 @@ export function TrialsTable({ job }: Props) {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {tableRows.map((row) => {
+                {(showPagination ? tableRows.slice((page - 1) * pageSize, page * pageSize) : tableRows).map((row) => {
                   const { key: _k, ...rowProps } = getRowProps({ row })
                   const selectionProps = getSelectionProps({ row })
                   const trial = trialsById.get(row.id)
@@ -415,15 +500,6 @@ export function TrialsTable({ job }: Props) {
                         // palette hues in both themes — worst 3.33:1, on the
                         // light theme's #b28600.
                         //
-                        // Skipped for a de-emphasised run, which is every run but
-                        // the best one past EMPHASIS_THRESHOLD trials. The scale
-                        // hands them all the same grey, so a tint drawn from it
-                        // tells two ticked rows apart no better than Carbon's own
-                        // default does — and white on #a8a8a8 is 2.38:1, under the
-                        // 3:1 non-text minimum and far under the near-black
-                        // default's 19:1. The best run still carries its hue,
-                        // which is the one the charts still colour too.
-                        //
                         // Only while selected: Carbon draws the *unchecked* box's
                         // border from the same token, so applying this
                         // unconditionally would tint every empty checkbox too.
@@ -431,7 +507,7 @@ export function TrialsTable({ job }: Props) {
                         // state because the mirror is what the charts draw, and
                         // matching the charts is the whole point.
                         style={
-                          selectedIds.includes(row.id) && colorScale[row.id] !== METRIC_DE_EMPHASIS[theme]
+                          selectedIds.includes(row.id)
                             ? ({ '--cds-icon-primary': colorScale[row.id] } as CSSProperties)
                             : undefined
                         }
@@ -452,7 +528,7 @@ export function TrialsTable({ job }: Props) {
                           }}
                         />
                         {row.cells.map((cell) => (
-                          <TableCell key={cell.id}>{formatCell(cell.info.header, cell.value)}</TableCell>
+                          <TableCell key={cell.id}>{cellText(cell.info.header, cell.value)}</TableCell>
                         ))}
                       </TableExpandRow>
                       {row.isExpanded && trial && (
@@ -493,29 +569,32 @@ export function TrialsTable({ job }: Props) {
                 })}
               </TableBody>
             </Table>
+            {showPagination && (
+              <Pagination
+                totalItems={tableRows.length}
+                pageSize={pageSize}
+                page={page}
+                pageSizes={PAGE_SIZES}
+                onChange={({ page: p, pageSize: ps }) => {
+                  setPage(p)
+                  setPageSize(ps)
+                }}
+              />
+            )}
           </TableContainer>
         )}
       </DataTable>
       </div>
 
-      {canShowRadar && (
-        <div className={styles.radar} style={{ marginTop: '2rem', height: '420px' }}>
-          <RadarChart
-            data={radarData}
-            options={{
-              title: comparableTrials.length > 1 ? 'Trial comparison' : 'Trial metrics',
-              radar: { axes: { angle: 'feature', value: 'score' } },
-              data: { groupMapsTo: 'product' },
-              // The same map the line charts and the row checkboxes use, so a
-              // trial reads as one colour across all three. Carbon resolves a
-              // radar blob's fill through model.getFillColor, which is what
-              // reads this scale; without it the radar picks its own hues by
-              // group order, so a trial changes colour whenever the selection
-              // does.
-              color: { scale: colorScale },
-              theme,
-              height: '420px',
-            }}
+      {parallelTrials.length > 0 && (
+        <div style={{ marginTop: '2rem' }}>
+          <TrialSearchSpace
+            trials={parallelTrials}
+            boundsFrom={parallelBounds}
+            hyperparamKeys={hyperparamKeys}
+            metric={plotMetric}
+            colorScale={colorScale}
+            bestTrialId={bestId}
           />
         </div>
       )}
@@ -524,7 +603,7 @@ export function TrialsTable({ job }: Props) {
         job={job}
         trials={trials}
         trialsLoaded={!isLoading && !isError}
-        colorScale={colorScale}
+        colorScale={chartsColorScale}
         selectedIds={selectedIds}
         scope={scope}
       />

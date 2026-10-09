@@ -11,6 +11,11 @@ export interface MetricAxisSpec {
   height: string
   /** Log y — required for learning rate, whose values span several decades. */
   logY?: boolean
+  /**
+   * Explicit y domain. Only the log axes need one, and they need it for a reason
+   * Carbon cannot be configured out of — see `logDomain`.
+   */
+  yDomain?: [number, number]
   /** Draw a marker per point. For eval series, which have too few points to read as a line. */
   points?: boolean
 }
@@ -27,7 +32,9 @@ export interface MetricAxisSpec {
  *    runs means landing the pointer on each line in turn.
  *  - `scaleType: LOG` on the left axis for learning rate. Schedules span from
  *    ~1e-9 up to ~5e-6, and on a linear axis the entire warmup flattens onto the
- *    floor — the chart would show nothing but the peak.
+ *    floor — the chart would show nothing but the peak. A log axis then needs an
+ *    explicit `domain`, because Carbon pads a domain linearly whatever the scale
+ *    type and that is worth ~1% of a log plot's height — see `logDomain`.
  *
  * No zoom bar: Carbon's implementation assumes a time x-axis and calls
  * `.getTime()` on each mapped x value, so enabling it against these numeric step
@@ -51,6 +58,10 @@ export function metricChartOptions(spec: MetricAxisSpec): LineChartOptions {
         title: spec.yTitle,
         mapsTo: 'value',
         scaleType: spec.logY ? ScaleTypes.LOG : ScaleTypes.LINEAR,
+        // Omitted rather than passed as undefined: Carbon branches on the key
+        // being present (`if (e.domain)`), and a linear axis wants the domain it
+        // derives itself.
+        ...(spec.yDomain ? { domain: spec.yDomain } : {}),
         // Carbon anchors a linear axis at zero by default, which is wrong for
         // every measure here. Loss sits around 15 and the runs differ by well
         // under one unit, so a zero-based axis squeezes every curve into a flat

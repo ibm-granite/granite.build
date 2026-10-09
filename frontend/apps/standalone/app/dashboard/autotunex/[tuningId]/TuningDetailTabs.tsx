@@ -4,7 +4,7 @@ import { Tabs, TabList, Tab, TabPanels, TabPanel, FormLabel, InlineNotification,
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getConfiguration } from '@granite-build/ui-core/api/autotunex'
-import { listSpaces } from '@granite-build/ui-core/api/gbserver'
+import { useAutotunexIsAdmin } from '@granite-build/ui-core/hooks/useAutotunexIsAdmin'
 import type { JobRead } from '@granite-build/ui-core/types'
 import { TuningLogViewer } from '@granite-build/ui-core/components/autotunex/tunings/TuningLogViewer'
 import { TrialsTable } from '@granite-build/ui-core/components/autotunex/trials/TrialsTable'
@@ -19,14 +19,10 @@ function DetailsPanel({ job }: { job: JobRead }) {
   const [configOpen, setConfigOpen] = useState(false)
   const [datasetOpen, setDatasetOpen] = useState(false)
 
-  // Same "admin of at least one space" gate used by the tunings/settings
-  // tables — admins get `scope=all` so the config modal can resolve a
-  // configuration this viewer doesn't own.
-  const { data: spaces = [] } = useQuery({
-    queryKey: ['spaces'],
-    queryFn: listSpaces,
-  })
-  const isAdmin = spaces.some((s) => s.is_admin)
+  // Same AutoTuneX admin check used by the tunings/settings tables — admins get
+  // `scope=all` so the config modal can resolve a configuration this viewer
+  // doesn't own.
+  const { isAdmin } = useAutotunexIsAdmin()
   // The scope, not `isAdmin`, keys the config query: AutoTuneXPanel on the build
   // page keys the same configuration on its scope, and two different keys for one
   // configuration meant opening the modal in both places fetched it twice.

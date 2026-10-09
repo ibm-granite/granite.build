@@ -4,9 +4,9 @@
  *
  * Dev mode: calls go through the Next.js dev proxy. Standalone builds go through
  * gbserver's same-origin proxy — never at AUTOTUNEX_API_URL directly, which the
- * browser cannot reach without CORS. `getHFModels`/`getHFModelCard` are the two
- * exceptions — they call the public HuggingFace API directly via bare `axios`,
- * not through this backend.
+ * browser cannot reach without CORS. That includes `getHFModels`/`getHFModelCard`:
+ * AutoTuneX queries HuggingFace server-side, so private repos in its allowlisted
+ * namespaces are visible, which a direct browser call never could.
  *
  * Targets AutoTuneX API v0.3.5 (`/api/v1/*`, offset-paginated list envelopes
  * `{items,total,limit,offset}`). `pageQuery`/`toListResult` and the `adaptX()`
@@ -18,13 +18,18 @@
  */
 import type {
   AiMappingSuggestion,
+  AppConfig,
   Configuration,
   ConfigData,
   Dataset,
   DatasetStatus,
   Estimation,
   GbTask,
-  HuggingFaceModel,
+  HfDatasetSplits,
+  HfImportPreview,
+  HfImportRequestPayload,
+  HfPreviewRequestPayload,
+  HfProvenance,
   JobDetail,
   JobRead,
   ListParams,
@@ -38,6 +43,7 @@ import type {
   Resources,
   RewardFunctionValidationResult,
   Trial,
+  TunedModel,
   TuningAsset,
   TuningForm,
   TuningJob,
@@ -51,6 +57,7 @@ import {
   adaptJob,
   adaptSuggestion,
   adaptTrial,
+  adaptTunedModel,
   collectKeysetPages,
   collectPages,
   pageQuery,
@@ -61,7 +68,7 @@ import {
 // keeps working for tests/consumers — the implementations live in
 // `@/api/autotunexAdapters` purely so that leaf module stays free of
 // non-type-only imports (see its header comment for why that matters).
-export { adaptAsset, adaptConfiguration, adaptJob, adaptSuggestion, adaptTrial, collectKeysetPages, collectPages, pageQuery, toListResult }
+export { adaptAsset, adaptConfiguration, adaptJob, adaptSuggestion, adaptTrial, adaptTunedModel, collectKeysetPages, collectPages, pageQuery, toListResult }
 
 // Built through createApiClient so a host's auth headers and 401 hook reach it:
 // gbserver gates the /api/autotunex proxy like every other API path, so a bare axios
@@ -87,18 +94,38 @@ export const AUTOTUNEX_FEATURES = {
 
 // ── HuggingFace models ────────────────────────────────────────────────────────
 
-export async function getHFModels(search = '', limit = 10): Promise<HuggingFaceModel[]> {
-  const params = new URLSearchParams({ search, limit: String(limit), config: 'true' })
-  const { data } = await axios.get<{ models: HuggingFaceModel[] } | HuggingFaceModel[]>(
-    `https://huggingface.co/api/models?${params.toString()}`
-  )
+export async function getHFModels(search: string, limit = 10): Promise<string[]> {
+  const { data } = await client.get<string[]>('/hf/models/search', { params: { query: search, limit } })
   return Array.isArray(data) ? data : []
 }
 
 export async function getHFModelCard(modelId: string): Promise<string> {
-  const { data } = await axios.get<string>(`https://huggingface.co/${modelId}/raw/main/README.md`, {
+  const { data } = await client.get<string>('/hf/models/card', {
+    params: { repo_id: modelId },
     responseType: 'text',
   })
+  return data
+}
+
+// ── Tuned models ──────────────────────────────────────────────────────────────
+// The caller's own completed, full-weight tuning outputs (HF repos in an
+// allowlisted namespace) that a new job can tune further.
+
+export async function getTunedModels(p: ListParams): Promise<ListResult<TunedModel>> {
+  const { data } = await client.get('/jobs/tuned-models', { params: pageQuery(p) })
+  return toListResult(data, adaptTunedModel)
+}
+
+// ── Caller identity ───────────────────────────────────────────────────────────
+
+/**
+ * Who AutoTuneX resolves this caller to. `is_admin` is the flag AutoTuneX itself
+ * checks before honouring `scope=all` (a non-admin gets a 403), so it — not a
+ * gbserver space role — is what decides which scope the UI asks for. Served at
+ * /api/v1/auth/me; the root /auth/me is outside what the proxies forward.
+ */
+export async function getMe(): Promise<{ email: string | null; is_admin: boolean }> {
+  const { data } = await client.get<{ email: string | null; is_admin: boolean }>('/auth/me')
   return data
 }
 
@@ -174,6 +201,11 @@ export function adaptDataset(raw: Record<string, unknown>): Dataset {
     updated_at: raw.updated_at as string,
     data_format: raw.data_format as Dataset['data_format'],
     associated_jobs: (raw.associated_jobs as unknown[]) ?? [],
+    hf_repo_id: raw.hf_repo_id as string | undefined,
+    hf_revision: raw.hf_revision as string | undefined,
+    hf_config: raw.hf_config as string | undefined,
+    hf_split: raw.hf_split as string | undefined,
+    hf_provenance: raw.hf_provenance as HfProvenance | undefined,
     // Coerce json.dumps'd verl fields (prompt/reward_model/extra_info) back to
     // native array/object so downstream consumers — notably the Reward Function
     // step's verl-strict test-case pre-fill — see the declared types. No-op for
@@ -253,6 +285,43 @@ export async function uploadDataset(
   const { data } = await client.post<Record<string, unknown>>(`/datasets/${datasetId}/upload`, fd, {
     onUploadProgress: (e) => onProgress?.(e.total ? Math.round((e.loaded / e.total) * 100) : 0),
   })
+  return adaptDataset(data)
+}
+
+// ── App configuration ─────────────────────────────────────────────────────────
+// Unauthenticated, like /health. The frontend needs the HF ingest limits and the
+// availability flag before (and independent of) any dataset request.
+
+export async function getAppConfig(): Promise<AppConfig> {
+  const { data } = await client.get<AppConfig>('/app-config')
+  return data
+}
+
+// ── HuggingFace dataset import ────────────────────────────────────────────────
+// Like getHFModels/getHFModelCard above, these go through the proxied `client`:
+// AutoTuneX talks to HuggingFace server-side.
+
+export async function searchHfDatasets(query: string, limit = 20): Promise<string[]> {
+  const { data } = await client.get<string[]>('/datasets/hf/search', { params: { query, limit } })
+  return data
+}
+
+export async function getHfSplits(repoId: string): Promise<HfDatasetSplits> {
+  const { data } = await client.get<HfDatasetSplits>('/datasets/hf/splits', {
+    params: { repo_id: repoId },
+  })
+  return data
+}
+
+export async function previewHfDataset(payload: HfPreviewRequestPayload): Promise<HfImportPreview> {
+  const { data } = await client.post<HfImportPreview>('/datasets/hf/preview', payload)
+  return data
+}
+
+// Returns 202 with status "importing"; the caller polls GET /datasets/{id} until
+// it settles, exactly as the multipart upload path does.
+export async function importHfDataset(payload: HfImportRequestPayload): Promise<Dataset> {
+  const { data } = await client.post<Record<string, unknown>>('/datasets/hf/import', payload)
   return adaptDataset(data)
 }
 

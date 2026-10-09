@@ -1,0 +1,123 @@
+.field {
+  margin-bottom: 0.75rem;
+}
+
+.section {
+  margin-top: 1rem;
+}
+
+/* Label above the repo, like the Dataset Name and Config fields under it. Beside
+   it, in Step1DatasetUpload's `120px 1fr` file-row grid, the name got ~150px and
+   an id like "ibm-research/watsonxDocsQA" broke mid-word; stacked, it gets the
+   tile's full width. */
+.fileRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.fileLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.32px;
+  color: var(--cds-text-secondary, #525252);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.subheading {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.32px;
+  color: var(--cds-text-secondary, #525252);
+  margin: 0 0 0.5rem;
+}
+
+/* Same grid as .mappingRow below, so the two column headings line up with the
+   controls they label. */
+.mappingHeader {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+  padding-bottom: 0.375rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Deliberately narrower than Step1DatasetUpload.module.scss's mapping grid
+   (160px 1fr, 1rem gap): this form sits in a 380px column, so 120px 1fr with a
+   tighter 0.75rem gap is intentional here, not a mismatch to "fix" back. */
+.mappingRow {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 0.75rem;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+
+.mappingLabel {
+  font-size: 0.875rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 2rem;
+}
+
+/* No divider above: the Dataset Name input's own underline already separates
+   the two, and a rule under it read as a doubled line. */
+.mappingHeaderRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.aiTagButton {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+// A repo id is longer than a filename, and Carbon's file item will not shrink to
+// fit one. Both elements it can render the name into -- the plain `<p>`, and the
+// tooltip-wrapped `<button>` it swaps in once its own `offsetWidth < scrollWidth`
+// check trips -- carry `white-space: nowrap`, which makes the item's min-content
+// width its full text width. When this row was a `120px 1fr` grid, the item
+// refused its 212px track and kept its intrinsic 316px: the row's content measured
+// 444px inside a 340px tile, so "ibm-research/Wish-Summarization-Llama" ran off
+// the tile edge with no ellipsis, since nothing was clipping it.
+//
+// The row is stacked now, so most ids fit on one line; this still covers ids
+// longer than the tile. Two lines beat the ellipsis Carbon intends here: the tail
+// of a repo id is the dataset name, so it is the half worth reading.
+//
+// `anywhere` for the ids that offer no break opportunity: hyphens and slashes break
+// on their own, but `someorg/onelongunbrokentoken` would still overflow.
+.fileRow :global(.cds--file__selected-file .cds--file-filename),
+.fileRow :global(.cds--file__selected-file .cds--file-filename-button) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  // Carbon renders the long-name variant into a `<button>`, which centres its text
+  // by UA default. On the single line that was never visible; on two it left the
+  // second line ragged against the left-aligned fields under it.
+  text-align: start;
+}
+
+.splitToggleRow {
+  margin-bottom: 1rem;
+}
+
+.toggleLabelRow {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+}

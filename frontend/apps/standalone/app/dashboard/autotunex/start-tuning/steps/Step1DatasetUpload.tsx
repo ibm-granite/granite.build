@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   FileUploaderButton,
@@ -22,19 +22,14 @@ import {
   Tab,
   TabPanels,
   TabPanel,
-  Tooltip,
-  Table,
-  TableHead,
-  TableRow,
-  TableHeader,
-  TableBody,
-  TableCell,
 } from '@carbon/react'
-import { Reset, Information } from '@carbon/icons-react'
+import { Reset } from '@carbon/icons-react'
 import type { ColumnMapping, ColumnMetadata, Dataset, DatasetForm, DatasetFormatType, ParsedDataRow, TuningGoal } from '@granite-build/ui-core/types'
-import { getAutotuneDatasetTypes, getDataset, getDatasets, suggestColumnMappingAI } from '@granite-build/ui-core/api/autotunex'
+import { getAppConfig, getAutotuneDatasetTypes, getDataset, getDatasets, suggestColumnMappingAI } from '@granite-build/ui-core/api/autotunex'
 import { countLinesInFileAsync, processUploadedFileAsync } from '@granite-build/ui-core/lib/autotunex/processUploadedFile'
 import { splitCounts } from '@granite-build/ui-core/lib/autotunex/splitCounts'
+import { aiMappingToColumnMapping, adoptedAlgorithm } from '@granite-build/ui-core/lib/autotunex/aiColumnMapping'
+import { PreviewTable } from '@granite-build/ui-core/components/autotunex/shared/PreviewTable'
 import {
   applyColumnMapping,
   detectDatasetFormat,
@@ -51,11 +46,29 @@ import {
   toUpperCase,
   validateDatasetForGoal,
 } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
+import { InfoTooltip } from './InfoTooltip'
+import { useHfImport } from './useHfImport'
+import { HfImportForm } from './HfImportForm'
+import { HfImportPreview } from './HfImportPreview'
+import { PreviewCropSwitcher, previewCropProps, type CropMode } from './PreviewCropSwitcher'
+import { HfImportSummaryCard } from './HfImportSummaryCard'
+import { truncationNotice, type HfImportSnapshot } from './hfImport'
 import { ALGORITHM_DETAILS, ALGORITHM_TO_DATASET_TYPE } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import styles from './Step1DatasetUpload.module.scss'
 import layoutStyles from '@granite-build/ui-core/components/autotunex/shared/layout.module.scss'
 
 const ACCEPTED_TYPES = ['.jsonl', '.json', '.csv', '.parquet']
+
+// Named rather than indexed: the switcher's third tab is conditional on the
+// backend's hf_import.available, so `selectedIndex === 0 ? upload : existing`
+// arithmetic no longer identifies a source.
+type DataSource = 'upload' | 'existing' | 'hf'
+
+const SOURCE_LABELS: Record<DataSource, string> = {
+  upload: 'Upload',
+  existing: 'Select Existing',
+  hf: 'HuggingFace',
+}
 
 type PreviewHeader = { key: string; header: string }
 
@@ -69,50 +82,14 @@ function buildPreviewData(data: ParsedDataRow[]): { headers: PreviewHeader[]; ro
       if (val === null || val === undefined) {
         processedRow[col] = ''
       } else if (typeof val === 'string') {
-        processedRow[col] = val.length > 120 ? val.substring(0, 120) + '...' : val
+        processedRow[col] = val
       } else {
-        const str = JSON.stringify(val)
-        processedRow[col] = str.length > 120 ? str.substring(0, 120) + '...' : str
+        processedRow[col] = JSON.stringify(val)
       }
     }
     return processedRow
   })
   return { headers, rows }
-}
-
-function PreviewTable({ headers, rows }: { headers: PreviewHeader[]; rows: Record<string, any>[] }) {
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <Table size="sm">
-        <TableHead>
-          <TableRow>
-            {headers.map((h) => (
-              <TableHeader key={h.key}>{h.header}</TableHeader>
-            ))}
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {rows.map((row) => (
-            <TableRow key={row.id}>
-              {headers.map((h) => (
-                <TableCell key={h.key}>{row[h.key]}</TableCell>
-              ))}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
-  )
-}
-
-function InfoTooltip({ label }: { label: string }) {
-  return (
-    <Tooltip label={label}>
-      <button type="button" className={styles.tooltipTrigger} aria-label={label}>
-        <Information size={16} />
-      </button>
-    </Tooltip>
-  )
 }
 
 interface Step1DatasetUploadProps {
@@ -149,6 +126,29 @@ interface Step1DatasetUploadProps {
    * re-uploads, without discarding the chosen configuration.
    */
   onDatasetSplitChanged: () => void
+
+  // The HuggingFace selection, owned by the wizard so it survives this step
+  // unmounting on Back. Forwarded straight into `useHfImport` below.
+  hfRepoId: string | null
+  setHfRepoId: Dispatch<SetStateAction<string | null>>
+  hfConfigName: string
+  setHfConfigName: Dispatch<SetStateAction<string>>
+  hfTrainSplit: string
+  setHfTrainSplit: Dispatch<SetStateAction<string>>
+  hfValidationSplit: string
+  setHfValidationSplit: Dispatch<SetStateAction<string>>
+  hfName: string
+  setHfName: Dispatch<SetStateAction<string>>
+  hfValidationPercentage: number
+  setHfValidationPercentage: Dispatch<SetStateAction<number>>
+
+  /**
+   * The HuggingFace import frozen at the last Next, or null. When set, the HF tab
+   * shows it read-only (HfImportSummaryCard) instead of rebuilding the form.
+   */
+  pendingHfImport: HfImportSnapshot | null
+  /** Reports the import the HF form would send right now, or null. */
+  onHfDraftChange: (snapshot: HfImportSnapshot | null) => void
 }
 
 export function Step1DatasetUpload({
@@ -180,6 +180,20 @@ export function Step1DatasetUpload({
   setSelectedExistingDataset,
   onDatasetChanged,
   onDatasetSplitChanged,
+  hfRepoId,
+  setHfRepoId,
+  hfConfigName,
+  setHfConfigName,
+  hfTrainSplit,
+  setHfTrainSplit,
+  hfValidationSplit,
+  setHfValidationSplit,
+  hfName,
+  setHfName,
+  hfValidationPercentage,
+  setHfValidationPercentage,
+  pendingHfImport,
+  onHfDraftChange,
 }: Step1DatasetUploadProps) {
   const [isProcessing, setIsProcessing] = useState(false)
   const [processingProgress, setProcessingProgress] = useState('')
@@ -190,6 +204,7 @@ export function Step1DatasetUpload({
   const [valPreviewHeaders, setValPreviewHeaders] = useState<PreviewHeader[]>([])
   const [validationRecordCount, setValidationRecordCount] = useState(0)
   const [activePreviewTab, setActivePreviewTab] = useState(0)
+  const [cropMode, setCropMode] = useState<CropMode>('start')
   const [userColumns, setUserColumns] = useState<string[]>([])
   // Increments on every upload, reset and existing-dataset pick, so anything that
   // resolves late can tell whether it still describes the file now selected. The
@@ -197,7 +212,11 @@ export function Step1DatasetUpload({
   // file overwrote the new file's columns, format and mapping, and the launch then
   // uploaded file B naming file A's columns.
   const uploadTokenRef = useRef(0)
-  const [dataSourceIndex, setDataSourceIndex] = useState(0)
+  // A frozen HF import reopens on its own tab, and so does a repo picked but not
+  // yet frozen (the wizard keeps the selection across Back) unless a file or saved
+  // dataset has since been chosen. Upload is otherwise the default.
+  const reopenOnHf = pendingHfImport !== null || (hfRepoId !== null && !uploadedFile && !existingDatasetId)
+  const [dataSource, setDataSource] = useState<DataSource>(reopenOnHf ? 'hf' : 'upload')
 
   const [isAiSuggesting, setIsAiSuggesting] = useState(false)
   const [aiSuggestion, setAiSuggestion] = useState<{ confidence: number; reasoning: string; algorithm: string } | null>(null)
@@ -208,7 +227,43 @@ export function Step1DatasetUpload({
     queryKey: ['autotunex', 'datasets'],
     queryFn: () => getDatasets({ page: 1, pageSize: 100 }),
   })
-  const existingDatasets = existingDatasetsResult?.items ?? []
+  // GET /datasets returns every status. A dataset still uploading or importing has
+  // no rows or preview behind it yet, and an errored one never will, so offering
+  // one sets existingDatasetId with nothing behind it. Pre-existing gap, but a
+  // timed-out or closed-mid-launch HF import leaves an `importing` row behind, so
+  // it stops being theoretical.
+  const existingDatasets = useMemo(
+    () => (existingDatasetsResult?.items ?? []).filter((ds) => ds.status === 'ready'),
+    [existingDatasetsResult]
+  )
+
+  // A failed fetch is treated exactly like unavailable: without it the ingest
+  // limits are unknown, and a flow that cannot state its own bounds should not
+  // open. retry: false for the same reason the tab is hidden -- one clear failure
+  // beats a slower one.
+  const { data: appConfig, isPending: appConfigPending } = useQuery({
+    queryKey: ['autotunex', 'appConfig'],
+    queryFn: getAppConfig,
+    retry: false,
+  })
+  const hfConfig = appConfig?.hf_import?.available ? appConfig.hf_import : undefined
+
+  const availableSources = useMemo<DataSource[]>(() => {
+    const sources: DataSource[] = ['upload']
+    if (existingDatasets.length > 0) sources.push('existing')
+    if (hfConfig) sources.push('hf')
+    return sources
+  }, [existingDatasets.length, hfConfig])
+
+  // The saved-dataset list and the HF flag both arrive asynchronously, so a source
+  // can disappear after being selected.
+  useEffect(() => {
+    // A frozen import stays on its own tab even before HF/existing-datasets resolve,
+    // and a reopened unfrozen pick stays there until the HF flag has resolved.
+    if (pendingHfImport) return
+    if (dataSource === 'hf' && appConfigPending) return
+    if (!availableSources.includes(dataSource)) setDataSource('upload')
+  }, [availableSources, dataSource, pendingHfImport, appConfigPending])
   const { data: datasetTypes = {} } = useQuery({
     queryKey: ['autotunex', 'datasetTypes'],
     queryFn: getAutotuneDatasetTypes,
@@ -225,10 +280,70 @@ export function Step1DatasetUpload({
     [hasDatasetTypes, selectedAlgorithm, datasetTypes]
   )
   const allColumnNames = useMemo(() => allColumns.map((c) => c.name), [allColumns])
+
+  // Every target the user may map, required first -- the HuggingFace form renders
+  // one row per entry, exactly as the Upload path's `sortedColumns` does. The
+  // fallback covers a dataset-types response that has not arrived (or does not
+  // describe this algorithm): `getColumnsFromTypes` returns [] there, and an empty
+  // list would leave the form with no mapping rows and prune every mapping away.
+  const mappableColumns = useMemo(
+    () =>
+      allColumns.length > 0
+        ? [...allColumns].sort((a, b) => Number(b.required) - Number(a.required))
+        : requiredColumns.map((name) => ({ name, desc: '', required: true })),
+    [allColumns, requiredColumns]
+  )
+  const mappableColumnNames = useMemo(() => mappableColumns.map((c) => c.name), [mappableColumns])
   const datasetGoalWarning = useMemo(
     () => (selectedGoal && detectedFormat !== 'unknown' ? validateDatasetForGoal(detectedFormat, selectedGoal) : { valid: true, message: '' }),
     [selectedGoal, detectedFormat]
   )
+  // Above max_rows the server imports the first N rather than refusing. The
+  // frontend cannot know the total in advance -- the preview samples 100 rows -- so
+  // this reads it back out of the provenance the import wrote.
+  const truncationMessage = useMemo(
+    () => (hfConfig ? truncationNotice(selectedExistingDataset?.hf_provenance, hfConfig.max_rows) : null),
+    [selectedExistingDataset, hfConfig]
+  )
+
+  // Owns the transient HuggingFace state -- the previews, the loading flags, the
+  // errors and the AI suggestion. The selection itself (repo, config, splits, name,
+  // validation percentage) is wizard state passed in below, because this step
+  // unmounts on wizard navigation and anything owned here does not survive a trip
+  // to Step 0 and back.
+  //
+  // `active` gates the hook's query and effects, so switching away from the
+  // HuggingFace tab stops new requests from firing. Unlike the modal's
+  // `handleClose` (which also called `resetState()`), nothing already in state is
+  // cleared -- and switching back no longer discards it either: the preselect effect
+  // is keyed on the resolved dataset rather than on the splits response object, so
+  // the refetch the tab round-trip triggers leaves a still-valid selection alone.
+  const hf = useHfImport({
+    active: dataSource === 'hf' && !pendingHfImport,
+    requiredColumns,
+    mappableColumns: mappableColumnNames,
+    selectedAlgorithm,
+    datasetTypes,
+    repoId: hfRepoId,
+    setRepoId: setHfRepoId,
+    config: hfConfigName,
+    setConfig: setHfConfigName,
+    trainSplit: hfTrainSplit,
+    setTrainSplit: setHfTrainSplit,
+    validationSplit: hfValidationSplit,
+    setValidationSplit: setHfValidationSplit,
+    name: hfName,
+    setName: setHfName,
+    validationPercentage: hfValidationPercentage,
+    setValidationPercentage: setHfValidationPercentage,
+  })
+
+  // The wizard freezes this at Next (handleNext); reporting it live is what lets
+  // that happen after this step has unmounted.
+  useEffect(() => {
+    onHfDraftChange(hf.snapshot)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hf.snapshot])
 
   // Heuristic column-mapping suggestion when the algorithm changes (skipped once AI has suggested)
   useEffect(() => {
@@ -346,49 +461,36 @@ export function Step1DatasetUpload({
 
       setAiSuggestion({ confidence: result.confidence, reasoning: result.reasoning ?? '', algorithm: result.tuning_type })
 
-      // Tracks the algorithm this mapping should be filtered against. `setSelectedAlgorithm`
-      // does not update the `selectedAlgorithm` captured by this closure, so reading
-      // that below applied the AI's column mapping against the PREVIOUS algorithm
-      // whenever the AI changed it.
-      let effectiveAlgorithm = selectedAlgorithm
-
-      if (result.tuning_type) {
-        const aiAlgoDetail = ALGORITHM_DETAILS.find((a) => a.id === result.tuning_type)
-        if (!selectedGoal || (aiAlgoDetail && aiAlgoDetail.category === selectedGoal)) {
-          setSelectedAlgorithm(result.tuning_type)
-          // Only when the suggestion is actually adopted.
-          effectiveAlgorithm = result.tuning_type
-        }
-      }
+      // Tracks the algorithm this mapping should be filtered against.
+      // `setSelectedAlgorithm` does not update the `selectedAlgorithm` captured by
+      // this closure, so reading that below would apply the AI's column mapping
+      // against the PREVIOUS algorithm whenever the AI changed it.
+      //
+      // `adoptedAlgorithm` will not adopt a value that does not name a known
+      // algorithm. The endpoint returns a dataset-type key in `tuning_type`, so
+      // today it always returns the current algorithm -- which is the correct
+      // outcome, and no longer depends on `selectedGoal` being non-null to avoid
+      // writing a dataset-type key into the algorithm.
+      const effectiveAlgorithm = adoptedAlgorithm({
+        tuningType: result.tuning_type,
+        current: selectedAlgorithm,
+        selectedGoal,
+        algorithms: ALGORITHM_DETAILS,
+      })
+      if (effectiveAlgorithm !== selectedAlgorithm) setSelectedAlgorithm(effectiveAlgorithm)
 
       if (result.column_mapping) {
-        const newMapping: ColumnMapping = {}
-        const newSuggested = new Set<string>()
-
         const types = hasDatasetTypes ? datasetTypes : await getAutotuneDatasetTypes()
         if (!isCurrent()) return
         const algo = effectiveAlgorithm
         const aiAllCols = hasDatasetTypes || Object.keys(types).length > 0 ? getColumnsFromTypes(algo, types).map((c) => c.name) : getRequiredColumns(algo)
 
         const typeKey = ALGORITHM_TO_DATASET_TYPE[algo]
-        const columnsDict = types[typeKey]?.columns || {}
-        const dictKeyToName: Record<string, string> = {}
-        for (const [key, col] of Object.entries(columnsDict)) dictKeyToName[key] = (col as any).name
-
-        for (const [aiKey, sourceColumn] of Object.entries(result.column_mapping)) {
-          if (!sourceColumn || !colNames.includes(sourceColumn)) continue
-
-          let matchedCol = dictKeyToName[aiKey]
-          if (!matchedCol) {
-            const normalized = aiKey.replace(/_col$/, '')
-            matchedCol = aiAllCols.find((rc) => rc === aiKey || rc === normalized || rc === sourceColumn) || ''
-          }
-
-          if (matchedCol && aiAllCols.includes(matchedCol)) {
-            newMapping[matchedCol] = sourceColumn
-            newSuggested.add(matchedCol)
-          }
-        }
+        const { mapping: newMapping, suggestedFields: newSuggested } = aiMappingToColumnMapping(
+          result.column_mapping,
+          colNames,
+          { targetColumns: aiAllCols, columnsDict: types[typeKey]?.columns || {} }
+        )
 
         if (Object.keys(newMapping).length > 0) {
           setColumnMapping(newMapping)
@@ -419,6 +521,10 @@ export function Step1DatasetUpload({
     setError('')
     setExistingDatasetId(null)
     setSelectedExistingDataset(null)
+    // Picking a file, even one that turns out to be bad, replaces whatever dataset
+    // was previously in play -- including a pending HF import frozen at Next, which
+    // a failed parse below would otherwise leave sitting alongside this new file.
+    onDatasetChanged()
 
     try {
       setUploadedFile(file)
@@ -456,7 +562,6 @@ export function Step1DatasetUpload({
         })
         .catch(() => {})
 
-      onDatasetChanged()
       suggestMappingWithAI(rawData, metadata, uploadToken)
     } catch (err: any) {
       if (uploadTokenRef.current !== uploadToken) return
@@ -631,6 +736,10 @@ export function Step1DatasetUpload({
   const showColumnMapping = uploadedFile && parsedData.length > 0 && userColumns.length > 0 && !existingDatasetId
   const sortedColumns = [...allColumns].sort((a, b) => Number(b.required) - Number(a.required))
 
+  // An existing dataset is already in its final shape -- there is no mapping to show.
+  const previewTableProps = { ...previewCropProps(cropMode), columnMapping: existingDatasetId ? undefined : columnMapping }
+  const cropSwitcher = <PreviewCropSwitcher value={cropMode} onChange={setCropMode} />
+
   return (
     <div className={layoutStyles.rowWrap}>
       <div className={styles.settingsColumn}>
@@ -677,14 +786,20 @@ export function Step1DatasetUpload({
 
             {!uploadedFile && !existingDatasetId && (
               <>
-                {existingDatasets.length > 0 && (
-                  <ContentSwitcher selectedIndex={dataSourceIndex} onChange={({ index }) => setDataSourceIndex(index ?? 0)} style={{ marginBottom: '0.75rem' }}>
-                    <Switch name="upload" text="Upload" />
-                    <Switch name="existing" text="Select Existing" />
+                {availableSources.length > 1 && (
+                  <ContentSwitcher
+                    selectedIndex={availableSources.indexOf(dataSource)}
+                    onChange={({ index }) => setDataSource(availableSources[index ?? 0])}
+                    className={styles.sourceSwitcher}
+                    style={{ marginBottom: '0.75rem' }}
+                  >
+                    {availableSources.map((source) => (
+                      <Switch key={source} name={source} text={SOURCE_LABELS[source]} />
+                    ))}
                   </ContentSwitcher>
                 )}
 
-                {dataSourceIndex === 0 || existingDatasets.length === 0 ? (
+                {dataSource === 'upload' ? (
                   <div className={styles.dropZone}>
                     <FileUploaderDropContainer
                       labelText="Drag and drop a file here or click to upload"
@@ -695,7 +810,7 @@ export function Step1DatasetUpload({
                     />
                     <p className={styles.dropZoneHint}>Accepted formats: .jsonl, .json, .csv, .parquet</p>
                   </div>
-                ) : (
+                ) : dataSource === 'existing' ? (
                   <Select
                     id="existing-dataset-select"
                     labelText=""
@@ -707,7 +822,13 @@ export function Step1DatasetUpload({
                       <SelectItem key={ds.id} value={ds.id} text={`${ds.name} (${(ds.train_records || 0) + (ds.validation_records || 0)} records)`} />
                     ))}
                   </Select>
-                )}
+                ) : pendingHfImport ? (
+                  // No request behind this card, so it renders whether or not
+                  // appConfig (and hfConfig) has resolved yet.
+                  <HfImportSummaryCard snapshot={pendingHfImport} onChange={onDatasetChanged} requiredColumns={requiredColumns} />
+                ) : hfConfig ? (
+                  <HfImportForm hf={hf} mappableColumns={mappableColumns} />
+                ) : null}
               </>
             )}
 
@@ -727,7 +848,7 @@ export function Step1DatasetUpload({
                   Train file
                   <InfoTooltip label="The main dataset used to train the model. This is where the model learns patterns from your data." />
                 </span>
-                <FileUploaderItem name={uploadedFile.name} status="edit" onDelete={clearTrainFile} />
+                <FileUploaderItem name={uploadedFile.name} status="edit" size="sm" onDelete={clearTrainFile} />
               </div>
             ) : null}
 
@@ -738,6 +859,17 @@ export function Step1DatasetUpload({
             {isProcessing && <InlineLoading description={processingProgress || 'Processing...'} style={{ marginTop: '0.5rem' }} />}
 
             {error && <InlineNotification kind="error" title="Error" subtitle={error} style={{ marginTop: '0.5rem' }} />}
+
+            {truncationMessage && (
+              <InlineNotification
+                kind="info"
+                title="Row cap applied"
+                subtitle={truncationMessage}
+                lowContrast
+                hideCloseButton
+                style={{ marginTop: '0.5rem' }}
+              />
+            )}
 
             {/* `datasetGoalWarning.message` was computed and never rendered while
                 `.valid` hard-disabled Next, so a format mismatch was a dead end with
@@ -786,6 +918,7 @@ export function Step1DatasetUpload({
                     <FileUploaderItem
                       name={validationFile.name}
                       status="edit"
+                      size="sm"
                       onDelete={() => {
                         setValidationFile(null)
                         onDatasetSplitChanged()
@@ -877,37 +1010,51 @@ export function Step1DatasetUpload({
       </div>
 
         <div className={styles.previewColumn}>
-          {previewRows.length > 0 && previewHeaders.length > 0 ? (
+          {dataSource === 'hf' && !existingDatasetId && (pendingHfImport || hf.preview) ? (
+            <Tile className={styles.previewTile}>
+              {/* A frozen import shows the samples it was approved against, with no new request. */}
+              <HfImportPreview
+                preview={pendingHfImport ? pendingHfImport.preview : hf.preview}
+                mapping={pendingHfImport ? pendingHfImport.payload.column_mapping : hf.mapping}
+              />
+            </Tile>
+          ) : previewRows.length > 0 && previewHeaders.length > 0 ? (
             <Tile className={styles.previewTile}>
               {valPreviewRows.length > 0 ? (
                 <Tabs selectedIndex={activePreviewTab} onChange={({ selectedIndex }) => setActivePreviewTab(selectedIndex)}>
-                  <TabList aria-label="Dataset preview tabs">
-                    <Tab>{`Train (${trainRecordCount.toLocaleString()})`}</Tab>
-                    <Tab>{`Validation (${validationRecordCount.toLocaleString()})`}</Tab>
-                  </TabList>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+                    <TabList aria-label="Dataset preview tabs">
+                      <Tab>{`Train (${trainRecordCount.toLocaleString()})`}</Tab>
+                      <Tab>{`Validation (${validationRecordCount.toLocaleString()})`}</Tab>
+                    </TabList>
+                    {cropSwitcher}
+                  </div>
                   <TabPanels>
                     <TabPanel style={{ padding: '0.5rem 0' }}>
-                      <PreviewTable headers={previewHeaders} rows={previewRows} />
+                      <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} {...previewTableProps} />
                     </TabPanel>
                     <TabPanel style={{ padding: '0.5rem 0' }}>
-                      <PreviewTable headers={valPreviewHeaders} rows={valPreviewRows} />
+                      <PreviewTable headers={valPreviewHeaders} rows={valPreviewRows} maxRows={15} {...previewTableProps} />
                     </TabPanel>
                   </TabPanels>
                 </Tabs>
               ) : (
                 <>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                    <h6 className={styles.tileHeading} style={{ margin: 0 }}>Data Preview</h6>
-                    <span className={styles.helperTextInline}>
-                      {previewRows.length} of {totalRecords.toLocaleString()} records
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.75rem' }}>
+                      <h6 className={styles.tileHeading} style={{ margin: 0 }}>Data Preview</h6>
+                      <span className={styles.helperTextInline}>
+                        {previewRows.length} of {totalRecords.toLocaleString()} records
+                      </span>
+                    </div>
+                    {cropSwitcher}
                   </div>
                   {isSplitEnabled && uploadedFile && !existingDatasetId && (
-                    <p className={styles.helperTextInline} style={{ marginBottom: '0.75rem' }}>
-                      {`Split: ${trainRecordCount.toLocaleString()} train, ${validationRecordCount.toLocaleString()} validation. The validation records are picked at random when the dataset is created, so they can't be previewed here.`}
+                    <p className={styles.helperTextInline} style={{ marginBottom: '0.5rem' }}>
+                      {`Split: ${trainRecordCount.toLocaleString()} train, ${validationRecordCount.toLocaleString()} validation. Validation records are randomly selected at dataset creation`}
                     </p>
                   )}
-                  <PreviewTable headers={previewHeaders} rows={previewRows} />
+                  <PreviewTable headers={previewHeaders} rows={previewRows} maxRows={15} {...previewTableProps} />
                 </>
               )}
             </Tile>
@@ -959,7 +1106,7 @@ function ExpectedFormatPanel({ selectedAlgorithm, datasetTypes }: { selectedAlgo
         </TabPanels>
       </Tabs>
 
-      <p className={styles.emptyStateHint}>Upload a dataset or select an existing one to get started.</p>
+      <p className={styles.emptyStateHint}>Choose a dataset to get started.</p>
     </Tile>
   )
 }

@@ -14,7 +14,6 @@ import type {
   DatasetFormatType,
   LaunchPhase,
   LaunchPlan,
-  ModelSource,
   ParsedDataRow,
   PendingConfigData,
   PendingConfigUpdate,
@@ -22,10 +21,12 @@ import type {
   TuningForm,
   TuningGoal,
   WizardDraft,
+  WizardModelSource,
 } from '@granite-build/ui-core/types'
 import {
   AUTOTUNEX_FEATURES,
   createDataset,
+  deleteDataset,
   estimateUsage,
   getAutotuneDatasetTypes,
   getConfiguration,
@@ -33,6 +34,7 @@ import {
   getDataset,
   getDatasets,
   getHFModels,
+  importHfDataset,
   startJob,
   updateConfiguration as apiUpdateConfiguration,
   createConfiguration as apiCreateConfiguration,
@@ -40,8 +42,13 @@ import {
 } from '@granite-build/ui-core/api/autotunex'
 import { getRequiredColumnsFromTypes, isModelSelectionValid, normalizeTokenizerListFields, overlayColumnMapping } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
 import { normalizeVerlRows } from '@granite-build/ui-core/lib/autotunex/verlNormalize'
-import { DATASET_READY_TIMEOUT_MS } from '@granite-build/ui-core/lib/autotunex/datasetReady'
+import {
+  DATASET_READY_TIMEOUT_MS,
+  HF_IMPORT_POLL_MS,
+  HF_IMPORT_READY_TIMEOUT_MS,
+} from '@granite-build/ui-core/lib/autotunex/datasetReady'
 import { ALGORITHM_DETAILS, ALGORITHM_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
+import { toWireModelSource } from '../modelSources'
 import { clearDraft, loadDraft, resolveDraft, saveDraft } from './wizardDraft'
 import { firstIncompleteStep } from './launchReadiness'
 import { Step0GetStarted } from './steps/Step0GetStarted'
@@ -49,6 +56,18 @@ import { Step1DatasetUpload } from './steps/Step1DatasetUpload'
 import { Step2Configure } from './steps/Step2Configure'
 import { StepRewardFunction } from './steps/StepRewardFunction'
 import { Step3ReviewLaunch } from './steps/Step3ReviewLaunch'
+import {
+  HF_VALIDATION_PERCENTAGE,
+  hfErrorStatus,
+  hfImportPollOutcome,
+  hfImportPostFailure,
+  hfMissingRequiredColumns,
+  pollStep,
+  problemDetail,
+  suffixWithRevision,
+  type HfImportSnapshot,
+} from './steps/hfImport'
+import { NO_VALIDATION } from './steps/useHfImport'
 import styles from './StartTuningWizard.module.scss'
 
 const DRAFT_DEBOUNCE_MS = 500
@@ -118,7 +137,7 @@ export function StartTuningWizard() {
   const [selectedGoal, setSelectedGoal] = useState<TuningGoal | null>('sft')
   const [selectedAlgorithm, setSelectedAlgorithm] = useState('lora')
   const [selectedModel, setSelectedModel] = useState('ibm-granite/granite-4.0-h-micro')
-  const [modelSource, setModelSource] = useState<ModelSource>('huggingface')
+  const [modelSource, setModelSource] = useState<WizardModelSource>('huggingface')
   const [autotuneEnabled, setAutotuneEnabled] = useState(true)
 
   // Step 1: Dataset
@@ -135,6 +154,24 @@ export function StartTuningWizard() {
   const [validationFile, setValidationFile] = useState<File | null>(null)
   const [isSplitEnabled, setIsSplitEnabled] = useState(true)
   const [columnMapping, setColumnMapping] = useState<ColumnMapping>({})
+
+  // Step 1, HuggingFace import: the chosen selection lives here rather than inside
+  // `useHfImport` because Step 1 unmounts on wizard navigation, so a user who
+  // picked a repo, waited for the probe and then went Back to check something in
+  // Step 0 came back to an empty HuggingFace tab. Only the selection is lifted --
+  // the previews, loading flags, errors and AI suggestion stay in the hook, and
+  // `mapping` stays there too (the probe clears it on remount and the AI re-derives
+  // it).
+  const [hfRepoId, setHfRepoId] = useState<string | null>(null)
+  const [hfConfigName, setHfConfigName] = useState('')
+  const [hfTrainSplit, setHfTrainSplit] = useState('')
+  const [hfValidationSplit, setHfValidationSplit] = useState(NO_VALIDATION)
+  const [hfName, setHfName] = useState('')
+  const [hfValidationPercentage, setHfValidationPercentage] = useState(HF_VALIDATION_PERCENTAGE)
+  // The import the HF form would send right now (reported live by Step 1), and the
+  // one frozen at the last Next. Only the frozen one is ever sent -- at Launch.
+  const [hfDraft, setHfDraft] = useState<HfImportSnapshot | null>(null)
+  const [pendingHfImport, setPendingHfImport] = useState<HfImportSnapshot | null>(null)
 
   // Step 2: Config
   const [selectedConfigId, setSelectedConfigId] = useState<string | null>(null)
@@ -169,6 +206,9 @@ export function StartTuningWizard() {
   // only covers the metadata POST, so a retry after the upload succeeded but the
   // readiness wait failed re-POSTed the same file into a populated record.
   const uploadedDatasetIdRef = useRef<string | null>(null)
+  // The dataset a launch attempt's HF import created. A retry polls it rather than
+  // importing a second copy; cleared when the import fails or the dataset changes.
+  const createdHfDatasetIdRef = useRef<string | null>(null)
   const createdConfigIdRef = useRef<string | null>(null)
 
   const [resourceEstimation, setResourceEstimation] = useState<Resources | null>(null)
@@ -205,6 +245,9 @@ export function StartTuningWizard() {
     setTotalRecords(0)
     setDatasetId(null)
     setExistingDatasetId(null)
+    setPendingHfImport(null)
+    createdHfDatasetIdRef.current = null
+    setHfDraft(null)
     // Cleared alongside `existingDatasetId`: leaving the object behind showed step 1
     // with no dataset while Step1DatasetUpload still read the stale one and rendered
     // null in place of the "Expected Dataset Format" panel.
@@ -247,9 +290,22 @@ export function StartTuningWizard() {
       case 0:
         return selectedGoal !== null && selectedAlgorithm !== '' && isModelSelectionValid(modelSource, selectedModel)
       case 1: {
+        const requiredCols = getRequiredColumnsFromTypes(selectedAlgorithm, datasetTypes ?? {})
+        // The HF form's own gate (canImport) already checked name, mapping and the
+        // validation choice. A draft or a frozen import is enough only when its
+        // mapping still covers the currently selected algorithm's required columns
+        // -- DPO and KTO share the offline_rl goal, so switching between them fires
+        // no reset and would otherwise let a stale mapping through. The draft needs
+        // the check too: nothing clears it when Step 1 unmounts, so after a Next it
+        // still holds the mapping canImport passed for the previous algorithm.
+        if (hfDraft !== null) {
+          return hfMissingRequiredColumns(hfDraft.payload.column_mapping, requiredCols).length === 0
+        }
+        if (pendingHfImport !== null) {
+          return hfMissingRequiredColumns(pendingHfImport.payload.column_mapping, requiredCols).length === 0
+        }
         const hasDataset = existingDatasetId !== null || parsedData.length > 0
         const hasName = datasetForm.name.trim() !== ''
-        const requiredCols = getRequiredColumnsFromTypes(selectedAlgorithm, datasetTypes ?? {})
         // Column mapping applies only to a fresh upload. An existing dataset was
         // already uploaded with its mapping applied, `columnMapping` is unused
         // downstream for it (neither the uploadDataset call nor the preview
@@ -307,6 +363,8 @@ export function StartTuningWizard() {
     datasetTypes,
     isSplitEnabled,
     validationFile,
+    pendingHfImport,
+    hfDraft,
     selectedConfigId,
     pendingNewConfig,
     isEditingConfig,
@@ -447,6 +505,7 @@ export function StartTuningWizard() {
   }
 
   function goToStep(step: number) {
+    if (isLaunching) return
     if (step < 0 || step > lastStepIndex) return
     if (step <= currentStep || completedSteps[step - 1]) {
       setCurrentStep(step)
@@ -469,6 +528,9 @@ export function StartTuningWizard() {
       setCurrentStep(1)
     } else if (currentStep === 1) {
       if (existingDatasetId) setDatasetId(existingDatasetId)
+      // Freeze the HF request only here, never continuously: a returning Step 1
+      // rebuilds its form, and a live freeze would let that replace it unseen.
+      if (hfDraft) setPendingHfImport(hfDraft)
       setCompletedSteps((prev) => prev.map((v, i) => (i === 1 ? true : v)))
       setCurrentStep(2)
     } else if (currentStep === 2) {
@@ -574,6 +636,8 @@ export function StartTuningWizard() {
     // into the dataset record created by a previous, failed attempt.
     createdDatasetIdRef.current = null
     uploadedDatasetIdRef.current = null
+    setPendingHfImport(null)
+    createdHfDatasetIdRef.current = null
     setSelectedConfigId(null)
     setSelectedConfig(null)
     setPendingNewConfig(null)
@@ -610,6 +674,66 @@ export function StartTuningWizard() {
     setResourceEstimation(null)
   }
 
+  /**
+   * Imports the frozen HuggingFace request and returns the ready dataset's id.
+   *
+   * Retry-safe: an id already in `createdHfDatasetIdRef` is polled, never
+   * re-imported. A name collision gets the revision suffix once; an errored import
+   * is deleted so the next attempt is clean; a timed-out one is kept, since it may
+   * still finish. See `hfImportPostFailure` and `hfImportPollOutcome`.
+   */
+  async function importPendingHfDataset(snapshot: HfImportSnapshot): Promise<string> {
+    if (!createdHfDatasetIdRef.current) {
+      let payload = snapshot.payload
+      let retriedName = false
+      for (;;) {
+        try {
+          const created = await importHfDataset(payload)
+          if (!created?.id) throw new Error('Failed to import dataset from HuggingFace.')
+          createdHfDatasetIdRef.current = created.id
+          break
+        } catch (err) {
+          const status = hfErrorStatus(err)
+          if (hfImportPostFailure({ httpStatus: status, retriedName }) === 'suffix-and-retry') {
+            payload = { ...payload, name: suffixWithRevision(payload.name, payload.revision) }
+            retriedName = true
+            continue
+          }
+          throw new Error(
+            status === 409
+              ? `${problemDetail(err, 'A dataset with that name already exists.')} Rename the dataset in Step 1 and launch again.`
+              : problemDetail(err, (err as Error)?.message || 'Import failed.')
+          )
+        }
+      }
+    }
+
+    const id = createdHfDatasetIdRef.current as string
+    const deadline = Date.now() + HF_IMPORT_READY_TIMEOUT_MS
+    for (;;) {
+      // A failed poll is just a poll to retry, as in waitForDatasetReady.
+      let dataset: Dataset | null = null
+      try {
+        dataset = await getDataset(id)
+      } catch {
+        dataset = null
+      }
+      const outcome = hfImportPollOutcome(pollStep({ status: dataset?.status, expired: Date.now() > deadline }))
+      if (outcome === 'proceed') return id
+      if (outcome === 'fail-and-delete') {
+        createdHfDatasetIdRef.current = null
+        await deleteDataset(id).catch(() => undefined)
+        throw new Error(dataset?.status_detail || 'Import failed.')
+      }
+      if (outcome === 'fail-keep-row') {
+        throw new Error(
+          'Import timed out while processing. It may still finish -- launch again to keep waiting.'
+        )
+      }
+      await new Promise((resolve) => setTimeout(resolve, HF_IMPORT_POLL_MS))
+    }
+  }
+
   async function handleLaunch() {
     // Before any side effect: an invalid earlier step otherwise fails the launch
     // server-side only after the dataset has been created and uploaded.
@@ -624,13 +748,21 @@ export function StartTuningWizard() {
     setUploadProgress(0)
     // The same conditions as the branches below.
     setLaunchPlan({
-      uploadDataset: !(datasetId || existingDatasetId) && !!uploadedFile,
+      importHfDataset: !(datasetId || existingDatasetId) && !!pendingHfImport,
+      uploadDataset: !(datasetId || existingDatasetId) && !pendingHfImport && !!uploadedFile,
       updateConfig: !!pendingConfigUpdate && selectedConfigId !== '__pending__',
       createConfig: !!pendingNewConfig && selectedConfigId === '__pending__',
     })
 
     try {
       let finalDatasetId = datasetId || existingDatasetId
+
+      // A HuggingFace dataset is imported only now, at Launch -- never at Step 1.
+      if (!finalDatasetId && pendingHfImport) {
+        setLaunchPhase('importing_dataset')
+        finalDatasetId = await importPendingHfDataset(pendingHfImport)
+        setDatasetId(finalDatasetId)
+      }
 
       if (!finalDatasetId && uploadedFile) {
         setLaunchPhase('creating_dataset')
@@ -703,7 +835,7 @@ export function StartTuningWizard() {
         config_id: finalConfigId!,
         dataset_id: launchDatasetId,
         model: selectedModel.trim(),
-        model_source: modelSource,
+        model_source: toWireModelSource(modelSource),
         experiment_name: experimentName.trim().replace(/\s+/g, '_'),
         autotune: autotuneEnabled,
         // No seed control exists in this wizard's UI — use the API default.
@@ -743,7 +875,7 @@ export function StartTuningWizard() {
           <h3>Configure {goalHeading}</h3>
           <p className={styles.wizardSubtitle}>Follow the steps to configure and launch your fine-tuning job</p>
         </div>
-        <Button kind="ghost" size="sm" renderIcon={Close} iconDescription="Close wizard" hasIconOnly onClick={() => router.push('/dashboard/autotunex')} />
+        <Button kind="ghost" size="sm" renderIcon={Close} iconDescription="Close wizard" hasIconOnly onClick={() => router.push('/dashboard/autotunex')} disabled={isLaunching} />
       </div>
 
       {breadcrumbItems.length > 0 && (
@@ -756,7 +888,7 @@ export function StartTuningWizard() {
                   {isCurrent ? (
                     item.label
                   ) : (
-                    <button type="button" className={styles.breadcrumbButton} onClick={() => goToStep(item.step)}>
+                    <button type="button" className={styles.breadcrumbButton} onClick={() => goToStep(item.step)} disabled={isLaunching}>
                       {item.label}
                     </button>
                   )}
@@ -809,15 +941,15 @@ export function StartTuningWizard() {
           past `lastStepIndex`. Keep this list free of falsy entries. */}
       <ProgressIndicator key={hasRewardStep ? 'with-reward' : 'no-reward'} currentIndex={currentStep} spaceEqually onChange={goToStep}>
         {[
-          <ProgressStep key="get-started" complete={completedSteps[0]} label="Get Started" description="Choose your approach" />,
-          <ProgressStep key="dataset" disabled={!completedSteps[0]} complete={completedSteps[1]} label="Upload Dataset" description="Upload and preview your data" />,
-          <ProgressStep key="configure" disabled={!completedSteps[1]} complete={completedSteps[2]} label="Configure" description="Select or create a configuration" />,
+          <ProgressStep key="get-started" disabled={isLaunching} complete={completedSteps[0]} label="Get Started" description="Choose your approach" />,
+          <ProgressStep key="dataset" disabled={!completedSteps[0] || isLaunching} complete={completedSteps[1]} label="Upload Dataset" description="Upload and preview your data" />,
+          <ProgressStep key="configure" disabled={!completedSteps[1] || isLaunching} complete={completedSteps[2]} label="Configure" description="Select or create a configuration" />,
           ...(hasRewardStep
             ? [
-                <ProgressStep key="reward" disabled={!completedSteps[2]} complete={completedSteps[3]} label="Reward Function" description="Define your reward function" />,
+                <ProgressStep key="reward" disabled={!completedSteps[2] || isLaunching} complete={completedSteps[3]} label="Reward Function" description="Define your reward function" />,
               ]
             : []),
-          <ProgressStep key="review" disabled={!completedSteps[hasRewardStep ? 3 : 2]} complete={completedSteps[hasRewardStep ? 4 : 3]} label="Review & Launch" description="Review and start tuning" />,
+          <ProgressStep key="review" disabled={!completedSteps[hasRewardStep ? 3 : 2] || isLaunching} complete={completedSteps[hasRewardStep ? 4 : 3]} label="Review & Launch" description="Review and start tuning" />,
         ]}
       </ProgressIndicator>
 
@@ -865,6 +997,20 @@ export function StartTuningWizard() {
             setSelectedExistingDataset={setSelectedExistingDataset}
             onDatasetChanged={handleDatasetChanged}
             onDatasetSplitChanged={handleDatasetSplitChanged}
+            hfRepoId={hfRepoId}
+            setHfRepoId={setHfRepoId}
+            hfConfigName={hfConfigName}
+            setHfConfigName={setHfConfigName}
+            hfTrainSplit={hfTrainSplit}
+            setHfTrainSplit={setHfTrainSplit}
+            hfValidationSplit={hfValidationSplit}
+            setHfValidationSplit={setHfValidationSplit}
+            hfName={hfName}
+            setHfName={setHfName}
+            hfValidationPercentage={hfValidationPercentage}
+            setHfValidationPercentage={setHfValidationPercentage}
+            pendingHfImport={pendingHfImport}
+            onHfDraftChange={setHfDraft}
           />
         )}
         {currentStep === 2 && (
@@ -896,7 +1042,13 @@ export function StartTuningWizard() {
             allTestsPassed={allTestsPassed}
             setAllTestsPassed={setAllTestsPassed}
             datasetId={datasetId || existingDatasetId}
-            parsedData={parsedData.length > 0 && !existingDatasetId ? normalizeVerlRows(overlayColumnMapping(parsedData, columnMapping)) : []}
+            parsedData={
+              parsedData.length > 0 && !existingDatasetId
+                ? normalizeVerlRows(overlayColumnMapping(parsedData, columnMapping))
+                : pendingHfImport
+                  ? normalizeVerlRows(pendingHfImport.mappedPreview.mapped_rows)
+                  : []
+            }
           />
         )}
         {currentStep === lastStepIndex && (
@@ -917,12 +1069,14 @@ export function StartTuningWizard() {
             columnMetadata={columnMetadata}
             experimentName={experimentName}
             setExperimentName={setExperimentName}
-            isPendingDataset={!existingDatasetId && !datasetId && !!uploadedFile}
+            isPendingDataset={!existingDatasetId && !datasetId && (!!uploadedFile || !!pendingHfImport)}
+            hfImport={pendingHfImport}
             isPendingConfig={selectedConfigId === '__pending__'}
             launchPhase={launchPhase}
             launchPlan={launchPlan}
             uploadProgress={uploadProgress}
             onEditStep={goToStep}
+            isLaunching={isLaunching}
           />
         )}
       </div>
@@ -932,7 +1086,7 @@ export function StartTuningWizard() {
       )}
 
       <div className={styles.wizardFooter}>
-        <Button kind="tertiary" onClick={() => router.push('/dashboard/autotunex')}>Cancel</Button>
+        <Button kind="tertiary" onClick={() => router.push('/dashboard/autotunex')} disabled={isLaunching}>Cancel</Button>
         {currentStep > 0 && (
           <Button kind="secondary" renderIcon={ArrowLeft} onClick={handleBack} disabled={isLaunching}>Back</Button>
         )}
@@ -943,7 +1097,9 @@ export function StartTuningWizard() {
             {isLaunching ? (
               <InlineLoading
                 description={
-                  launchPhase === 'creating_dataset'
+                  launchPhase === 'importing_dataset'
+                    ? 'Importing from HuggingFace... this can take several minutes'
+                    : launchPhase === 'creating_dataset'
                     ? 'Creating dataset...'
                     : launchPhase === 'uploading_files'
                       ? `Uploading files (${uploadProgress}%)...`
