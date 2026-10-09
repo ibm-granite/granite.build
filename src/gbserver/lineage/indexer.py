@@ -226,6 +226,8 @@ class JobLineageIndexer:
     records them as jobs), never to write the index.
     """
 
+    PROVIDER: Optional[str] = None
+
     _thread_name = "lineage-indexer"
 
     def __init__(
@@ -278,9 +280,12 @@ class JobLineageIndexer:
     # -- Checkpoint ----------------------------------------------------------
 
     def _get_checkpoint_key(self) -> str:
-        """Get the checkpoint key for this indexer's provider."""
-        provider = _resolve_lineage_provider()
-        return _checkpoint_key_for_provider(provider)
+        """Get the checkpoint key for this indexer's provider.
+
+        Keyed off the class, not ``GBSERVER_LINEAGE_PROVIDER``: an indexer reads
+        exactly one source, so its checkpoint cannot depend on the environment.
+        """
+        return _checkpoint_key_for_provider(self.PROVIDER)
 
     def read_checkpoint(self, storage: SingletonAdminStorage) -> Optional[dict]:
         key = self._get_checkpoint_key()
@@ -484,6 +489,8 @@ class TargetLineageIndexer(JobLineageIndexer):
     still advances past them).
     """
 
+    PROVIDER = LINEAGE_PROVIDER_NONE
+
     def _timestamp(self, job: StoredTargetRun) -> str:
         return as_aware(job.finished_at).isoformat()
 
@@ -580,6 +587,8 @@ class LineageJobIndexer(JobLineageIndexer):
     Every record read is deduplicated by the rows' unique indexes (``upsert_row``),
     so a reset checkpoint re-reads everything without duplicating or losing rows.
     """
+
+    PROVIDER = LINEAGE_PROVIDER_DB
 
     _thread_name = "lineage-indexer-db"
 
@@ -733,6 +742,8 @@ class WandBLineageIndexer(JobLineageIndexer):
     rows under the shared job, which is why dedup here is by the sink's unique
     indexes and not by "does this job already have rows".
     """
+
+    PROVIDER = LINEAGE_PROVIDER_WANDB
 
     _thread_name = "lineage-indexer-wandb"
 
