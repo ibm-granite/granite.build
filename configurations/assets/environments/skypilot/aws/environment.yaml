@@ -4,7 +4,10 @@ subtype: aws
 config:
   # Uncomment ONE of the following cloud backends:
 
-  # AWS — provisions EC2 instances directly (requires ~/.aws/credentials)
+  # AWS — provisions EC2 instances directly. No need to hand-author
+  # ~/.aws/credentials: gbserver materializes it at launch from the
+  # aws_credentials block below (see src/gbserver/environment/skypilot_config.py).
+  # You only supply the referenced secrets to the space's secret_manager.
   default_cloud: aws
 
   # Kubernetes — uses existing K8s cluster (requires ~/.kube/config)
