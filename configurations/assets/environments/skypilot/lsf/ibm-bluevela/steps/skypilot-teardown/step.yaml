@@ -11,6 +11,14 @@ config:
     # Cluster names are filled from upstream cluster_name bindings in build.yaml.
     cluster_names: []
 
+# No named inputs: teardown_config.cluster_names is a variable-length list of
+# cluster names (each typically a server target's mem:// `cluster_name`, rendered
+# as {{ bindings.<name>.binding.state }} in the recipe), read by the skypilot_teardown
+# launcher in Python. Recipes also bind the consumer's output (e.g. `trained`) purely
+# to gate the teardown; allow_unknown keeps those valid.
+inputs:
+  allow_unknown: true
+
 environment_configs:
   Skypilot:
     default_launcher: teardown

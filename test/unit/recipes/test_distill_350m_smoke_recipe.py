@@ -151,31 +151,30 @@ class TestThePair:
         that aligns against one teacher and scores against another reports a
         divergence from a model it never trained towards.
 
-        Every consumer reads the RESOLVED BINDING PATH now, not the raw
-        TEACHER_MODEL_URI parameter — that's the whole point of routing it through
-        an input binding rather than a bare path, so the same assertion holds
-        regardless of which uri scheme TEACHER_MODEL_URI names.
+        Every consumer binds the step's declared ``teacher`` input to the
+        same TEACHER_MODEL_URI, and the step reads the RESOLVED path itself — so
+        the same assertion holds regardless of which uri scheme TEACHER_MODEL_URI
+        names, and no step config carries the teacher as a path any more.
         """
-        align_teacher = _config(off, "align")["align_config"]["teacher_model"]
-        assert align_teacher == "{{ bindings.teacher_model.binding.path }}"
-        gold = _config(off, "train-gold")["gold_config"]
-        assert (
-            gold["teacher_model_name_or_path"]
-            == "{{ bindings.teacher_model.binding.path }}"
-        )
-        for target in ("eval-transfer", "eval-transfer-baseline"):
-            assert (
-                _config(off, target)["eval_config"]["teacher_model"]
-                == "{{ bindings.teacher_model.binding.path }}"
-            )
+        teacher_uri = _params()["TEACHER_MODEL_URI"]
+        for target, block, retired in (
+            ("align", "align_config", "teacher_model"),
+            ("train-gold", "gold_config", "teacher_model_name_or_path"),
+            ("eval-transfer", "eval_config", "teacher_model"),
+            ("eval-transfer-baseline", "eval_config", "teacher_model"),
+        ):
+            spec = _targets(off)[target]["inputs"]["teacher"]
+            assert spec["uri"] == teacher_uri, target
+            assert spec["type"] == "model", target
+            assert retired not in _config(off, target)[block], target
 
     def test_lineage_records_the_pair_as_input_artifacts(self, off):
         """Lineage is built from a target's input artifacts, not from step config: a
         path handed only to align_config would run and record nothing."""
         align_inputs = _targets(off)["align"]["inputs"]
         assert set(align_inputs) == {
-            "teacher_model",
-            "student_model",
+            "teacher",
+            "student",
             "chat_template",
         }
         for name, spec in align_inputs.items():
@@ -196,9 +195,7 @@ class TestThePair:
             DATASET_URI="s3://my-bucket/corpora/smoke.jsonl",
         )
         align_inputs = _targets(rendered)["align"]["inputs"]
-        assert (
-            align_inputs["teacher_model"]["uri"] == "hf:///ibm-granite/granite-4.1-3b"
-        )
+        assert align_inputs["teacher"]["uri"] == "hf:///ibm-granite/granite-4.1-3b"
         corpus_inputs = _targets(rendered)["corpus"]["inputs"]
         assert (
             corpus_inputs["source_dataset"]["uri"]
@@ -221,9 +218,9 @@ class TestMarkupFamily:
         scores a format it has never seen. The step cannot catch it — the template is
         a path, and its contents are never compared against the vocabulary.
 
-        align_config.chat_template is now the RESOLVED BINDING PATH (see
-        TestThePair.test_the_teacher_and_student_reach_every_step_that_needs_them for
-        why), so the actual template URI is asserted from CHAT_TEMPLATE_URI instead.
+        The template is the align target's ``chat_template`` input, which the step
+        reads directly (align_config no longer carries it), so the actual template
+        URI is asserted from CHAT_TEMPLATE_URI instead.
         """
         align = _config(off, "align")["align_config"]
         template_uri = _params()["CHAT_TEMPLATE_URI"]

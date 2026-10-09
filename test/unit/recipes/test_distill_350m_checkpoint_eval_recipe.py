@@ -171,9 +171,7 @@ def test_every_export_is_gated_on_its_own_mid_run_checkpoint(built):
     df8512e0 did.
     """
     for rung in _LADDER:
-        binding = _targets(built)[f"export-{rung}"]["inputs"]["checkpoint_dir"][
-            "binding"
-        ]
+        binding = _targets(built)[f"export-{rung}"]["inputs"]["train_output"]["binding"]
         assert binding == f"train-gold.checkpoint_{rung}"
 
 
@@ -215,14 +213,17 @@ def test_each_rung_declares_a_distinct_artifact_uri(built):
     """Nine outputs pointing at one shared parent directory would make nine
     registrations of one URI. gbserver refuses the duplicate, the target still reports
     SUCCESS with an EMPTY output list, and every consumer waits forever -- the
-    b5f030cd mode. Each artifact is therefore the checkpoint dir itself, which is why
-    the export names it as an absolute path."""
+    b5f030cd mode. Each artifact is therefore the checkpoint dir itself (bound as the
+    step's train_output input), which is why the export names that same path as an
+    absolute checkpoint."""
     for rung in _LADDER:
         cfg = _config(built, f"export-{rung}")["export_config"]
-        assert cfg["checkpoint"] == "{{ bindings.checkpoint_dir.binding.path }}"
-        # Never empty: empty means "highest step number", which across nine concurrent
-        # exports of one directory would export the same model nine times.
+        assert cfg["checkpoint"] == "{{ bindings.train_output.binding.path }}"
+        # Never empty: empty means "highest step number" -- a glob for checkpoint-*
+        # UNDER train_output, which here already IS checkpoint-<N>.
         assert cfg["checkpoint"]
+        # The retired key: the step reads train_output from its input.
+        assert "train_output_dir" not in cfg
 
 
 def test_the_watcher_detection_latency_is_bounded_by_both_intervals():

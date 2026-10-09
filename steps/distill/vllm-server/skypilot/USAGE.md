@@ -24,11 +24,9 @@ steps:
 
 The server's fields live under the step's `config.vllm_config`.
 
-### Required
-
-| Field | Type | Purpose |
-|---|---|---|
-| `model_path` | string | The model to serve, passed to vLLM as `--model`. For on-policy GOLD this is the **student**, not the teacher (see [Serving the teacher](#serving-the-teacher-instead-of-the-student)). The default is empty, which vLLM cannot load: the step fails with `server exited with N before becoming healthy`. |
+The model to serve is no longer a config field; it is the required `model` target input —
+see [Inputs](#inputs) below. For on-policy GOLD this is the **student**, not the teacher
+(see [Serving the teacher](#serving-the-teacher-instead-of-the-student)).
 
 ### Optional
 
@@ -77,17 +75,19 @@ and have no effect here.
 
 ### Inputs
 
-The step declares no inputs. It reads only `vllm_config.model_path`. A recipe either
-sets it to a path directly, or declares an input on the target and binds it, e.g. the
-aligned student from the `space://steps/distill/tokenizer-align` step:
+The step declares one required input, read as `{{ bindings.model.binding.path }}`:
+
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `model` | yes | model | the student: `align.retagged_student`, or an SFT target's `checkpoint` |
 
 ```yaml
 inputs:
-  student: {binding: align.retagged_student}
-...
-vllm_config:
-  model_path: "{{ bindings.student.binding.path }}"
+  model: {binding: align.retagged_student}
 ```
+
+`vllm_config.model_path` is no longer read; a target that still sets it fails at run time
+with a message naming the input to bind instead.
 
 ### Outputs
 
@@ -98,7 +98,7 @@ marker, on its own log line, so the step carries no scrape rule of its own.
 
 | Output | Value | Marker | Consumer |
 |---|---|---|---|
-| `vllm_url` | `http://<addr>:<port>`, published **only once `/health` answers** | `GB_ARTIFACT_ID:vllm_url GB_ARTIFACT_STATE:http://<addr>:<port>` | the trainer, e.g. the `space://steps/distill/gold` step's `gold_config.vllm_server_url`, read as `{{ bindings.<name>.binding.state }}` |
+| `vllm_url` | `http://<addr>:<port>`, published **only once `/health` answers** | `GB_ARTIFACT_ID:vllm_url GB_ARTIFACT_STATE:http://<addr>:<port>` | the trainer, e.g. the `space://steps/distill/gold` step's optional `vllm` input, read as `{{ bindings.<name>.binding.state }}` |
 | `cluster_name` | the SkyPilot cluster name (`gb-<id>`, from `GB_SKYPILOT_CLUSTER_NAME`; `unknown` if unset), published at start-up | `GB_ARTIFACT_ID:cluster_name GB_ARTIFACT_STATE:<name>` | the teardown target, via the `space://steps/skypilot-teardown` step's `teardown_config.cluster_names` |
 
 `<addr>` is an IP resolved from `/etc/hosts`, then `getent ahostsv4`, falling back to the
@@ -125,8 +125,8 @@ directory if that is unset). It:
   `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` and `OMP_NUM_THREADS=8`, carried
   from the reference launcher, the only configuration that had served this model.
 
-`model_path` must be a path visible from the server node. The step writes nothing else;
-its results are the two bindings.
+The resolved `model` input path must be visible from the server node. The step writes
+nothing else; its results are the two bindings.
 
 ## Example build.yaml
 
@@ -145,6 +145,10 @@ granite.build:
   targets:
     vllm-server:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        model:
+          uri: "env:///proj/.../student"          # the STUDENT, for on-policy GOLD
+          type: model
       outputs:
         vllm_url:     {uri: "mem://gold-onpolicy-vllm"}
         cluster_name: {uri: "mem://gold-onpolicy-vllm-cluster"}
@@ -155,13 +159,18 @@ granite.build:
             launcher_config:
               resources: {accelerators: "H100:8", cluster: "bluevela", zone: "normal"}
             vllm_config:
-              model_path: /proj/.../student          # the STUDENT, for on-policy GOLD
               max_model_len: 16384                    # >= the trainer's max_length
               health_timeout_seconds: 1800
               max_lifetime_seconds: 18000             # backstop; must outlast the run
     train:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
+        student:
+          uri: "env:///proj/.../student"
+          type: model
+        teacher:
+          uri: "env:///proj/.../teacher"
+          type: model
         vllm: {binding: vllm-server.vllm_url}
       outputs:
         checkpoint:
@@ -171,11 +180,8 @@ granite.build:
         - step_uri: space://steps/distill/gold
           config:
             gold_config:
-              model_name_or_path: /proj/.../student
-              teacher_model_name_or_path: /proj/.../teacher
               max_length: 16384
               # ... the rest of the trainer's config
-              vllm_server_url: "{{ bindings.vllm.binding.state }}"
               vllm_num_servers: 1
     teardown:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
@@ -251,7 +257,7 @@ turns into a RUNNING workload status — then publishes `vllm_url` and waits on 
 server. All failures exit non-zero with a `vllm-server: FATAL:` line on stderr:
 
 - `server exited with <RC> before becoming healthy` — the server process died during
-  bring-up (e.g. an unloadable `model_path`);
+  bring-up (e.g. an unloadable `model` input);
 - `not healthy after <N>s` — `health_timeout_seconds` elapsed; the server is killed;
 - `lifetime cap of <N>s reached; releasing the allocation` — `max_lifetime_seconds` was
   set and nothing tore the server down in time; check whether the consumer target

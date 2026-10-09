@@ -19,17 +19,16 @@ target_expectations:
   # hand over three artifacts.
   - target_name: align
     step_count: 1
-    input_artifact_count: 0
+    input_artifact_count: 2
     output_artifact_count: 3
-    jobstats_count: 1
 
   - target_name: corpus
     # One workload, one output. The env:// pushes and pulls are shared-FS no-ops, so the
-    # bound tokenizer registers as this target's single input off its URI string.
+    # bound tokenizer and the env:// source_dataset register as this target's two inputs
+    # off their URI strings.
     step_count: 1
-    input_artifact_count: 1
+    input_artifact_count: 2
     output_artifact_count: 1
-    jobstats_count: 1
     expected_steps:
       - metadata_matches:
           distill_code_commit: "^[0-9a-f]{40}$"

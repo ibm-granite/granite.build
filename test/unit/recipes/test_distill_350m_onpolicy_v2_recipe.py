@@ -105,17 +105,19 @@ class TestTheServerServesTheStudent:
         weights. A binding makes that structural; two parameters agreeing is a
         convention that survives until someone edits one of them."""
         cfg = _config(on, "vllm-server")["vllm_config"]
-        assert cfg["model_path"] == "{{ bindings.student.binding.path }}"
-        assert _targets(on)["vllm-server"]["inputs"]["student"]["binding"] == (
-            "align.retagged_student"
-        )
+        # The step reads its declared `model` input; the retired config key is gone.
+        assert "model_path" not in cfg
+        assert _targets(on)["vllm-server"]["inputs"]["model"] == {
+            "binding": "align.retagged_student"
+        }
 
     def test_it_is_not_the_teacher(self, on):
         """The silent trap: on-policy has the STUDENT generate and the teacher score
         those generations. Serving the teacher is a different algorithm that runs to
         completion and reports a plausible loss."""
-        cfg = _config(on, "vllm-server")["vllm_config"]
-        assert _params()["TEACHER_MODEL"] not in str(cfg["model_path"])
+        model = _targets(on)["vllm-server"]["inputs"]["model"]
+        assert _params()["TEACHER_MODEL"] not in str(model)
+        assert "uri" not in model
 
     def test_the_server_window_covers_the_trainers_prompts(self, on):
         """A max_model_len below the trainer's max_length means a prompt the trainer
@@ -144,7 +146,12 @@ class TestTheTrainerActuallyUsesTheServer:
         """Its presence is what selects the external-server path over the
         in-allocation split, which passes no --vllm_server_host at all."""
         gold = _config(on, "train-gold")["gold_config"]
-        assert gold["vllm_server_url"] == "{{ bindings.vllm.binding.state }}"
+        # The URL is the step's optional mem:// `vllm` input, read by the step itself;
+        # the retired config key must not come back.
+        assert _targets(on)["train-gold"]["inputs"]["vllm"] == {
+            "binding": "vllm-server.vllm_url"
+        }
+        assert "vllm_server_url" not in gold
         assert gold["vllm_mode"] == "server"
 
     def test_one_external_server_is_declared(self, on):
@@ -511,8 +518,14 @@ class TestTheCorpusPin:
         assert mine["config"]["pin_check_config"].keys() == (
             theirs["config"]["pin_check_config"].keys()
         )
-        for key in ("corpus_dir", "tokenizer_dir"):
-            assert (
-                mine["config"]["pin_check_config"][key]
-                == theirs["config"]["pin_check_config"][key]
-            )
+        assert (
+            mine["config"]["pin_check_config"]["corpus_dir"]
+            == theirs["config"]["pin_check_config"]["corpus_dir"]
+        )
+        # The tokenizer is the step's `tokenizer` input, not config.
+        assert (
+            _targets(pinned)["corpus-pin-check"]["inputs"]["tokenizer"]
+            == other["granite.build"]["targets"]["corpus-pin-check"]["inputs"][
+                "tokenizer"
+            ]
+        )

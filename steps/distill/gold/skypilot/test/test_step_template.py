@@ -21,6 +21,18 @@ import yaml
 _STEP = Path(__file__).resolve().parent.parent / "step-template.yaml"
 
 
+def _bindings(vllm_url=""):
+    """The `bindings` a target binding the required inputs renders with."""
+    bindings = {
+        "student": {"binding": {"path": "/models/student"}},
+        "teacher": {"binding": {"path": "/models/teacher"}},
+        "corpus": {"binding": {"path": "/data/corpus/train.jsonl"}},
+    }
+    if vllm_url:
+        bindings["vllm"] = {"binding": {"state": vllm_url}}
+    return bindings
+
+
 @pytest.fixture(scope="module")
 def step():
     return yaml.safe_load(_STEP.read_text())
@@ -214,11 +226,33 @@ class TestStepDeclaration:
         assert gold["lmbda"] == 0.0
         assert gold["vllm_num_servers"] == 0
 
-    def test_model_and_data_have_no_defaults(self, step):
+    def test_model_and_data_are_required_inputs(self, step):
         """Silently distilling the wrong model is worse than failing to start."""
+        assert set(step["inputs"]["required"]) == {"student", "teacher", "corpus"}
         gold = step["config"]["gold_config"]
         for key in ("model_name_or_path", "teacher_model_name_or_path", "dataset_name"):
-            assert gold[key] == ""
+            assert key not in gold
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "model_name_or_path",
+            "teacher_model_name_or_path",
+            "dataset_name",
+            "vllm_server_url",
+        ],
+    )
+    def test_a_retired_config_key_is_refused(self, step, key):
+        """A recipe still setting an old key would otherwise be ignored silently."""
+        from jinja2 import Template
+
+        script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+            "run"
+        ]
+        config = dict(step["config"])
+        config["gold_config"] = dict(config["gold_config"], **{key: "/old"})
+        rendered = Template(script).render(config=config, bindings=_bindings())
+        assert f"gold_config.{key} is no longer read" in rendered
 
 
 class TestRendererInvocation:
@@ -357,9 +391,11 @@ class TestExternalVllmServer:
     allocations, which no test can answer.
     """
 
-    def test_the_url_is_a_config_key(self, step):
+    def test_the_url_is_an_optional_mem_input(self, step):
+        assert set(step["inputs"]["optional"]) == {"vllm"}
+        assert step["inputs"]["optional"]["vllm"]["accept"] == ["binding"]
         gold = step["config"]["gold_config"]
-        assert gold["vllm_server_url"] == ""
+        assert "vllm_server_url" not in gold
         assert gold["vllm_mode"] == "server"
         assert gold["vllm_sync_frequency"] == 1
 
@@ -382,7 +418,8 @@ class TestExternalVllmServer:
     def test_the_url_is_parsed_at_run_time_not_templated(self, run_script):
         """The address is only known at run time — it arrives through a mem://
         binding — so it must be split in shell, not by Jinja."""
-        assert 'VLLM_URL="{{ config.gold_config.vllm_server_url }}"' in run_script
+        assert "bindings.vllm.binding.state" in run_script
+        assert 'VLLM_URL="{{ vllm_server_url }}"' in run_script
         assert "_hostport" in run_script
 
     @pytest.mark.parametrize(
@@ -607,14 +644,14 @@ class TestPerCheckpointArtifacts:
         # sets nothing would actually get.
         config = dict(step["config"])
 
-        off = Template(script).render(config=config)
+        off = Template(script).render(config=config, bindings=_bindings())
         assert "GB_ARTIFACT_ID:checkpoint_" not in off
         assert "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:" in off
         assert "watch_checkpoints" not in off
         assert "EMITTED_DIR" not in off
 
         config["emit_checkpoint_artifacts"] = True
-        on = Template(script).render(config=config)
+        on = Template(script).render(config=config, bindings=_bindings())
         assert "GB_ARTIFACT_ID:checkpoint_${step}" in on
         # The final marker survives alongside it.
         assert "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:" in on
@@ -707,7 +744,7 @@ class TestResumeFromCheckpointDir:
     _WORLD = 16  # 2 nodes x 8 GPUs, the recipe's topology
 
     @staticmethod
-    def _render(**overrides):
+    def _render(_vllm_url="", **overrides):
         from jinja2 import Template
 
         step = yaml.safe_load(_STEP.read_text())
@@ -716,16 +753,12 @@ class TestResumeFromCheckpointDir:
         ]
         config = dict(step["config"])
         config.update(overrides)
-        return Template(script).render(config=config)
+        return Template(script).render(config=config, bindings=_bindings(_vllm_url))
 
     @classmethod
     def _seed_block(cls, src, vllm_server_url=""):
-        step = yaml.safe_load(_STEP.read_text())
-        gold_config = dict(
-            step["config"]["gold_config"], vllm_server_url=vllm_server_url
-        )
         rendered = cls._render(
-            resume_from_checkpoint_dir=str(src), gold_config=gold_config
+            resume_from_checkpoint_dir=str(src), _vllm_url=vllm_server_url
         )
         start = rendered.index('RESUME_SRC="')
         end = rendered.index("# Rendered per node", start)
@@ -906,7 +939,7 @@ class TestNcclIbHcaOverride:
         ]
         config = dict(step["config"])
         config["gold_config"] = dict(config["gold_config"], nccl_ib_hca=value)
-        return Template(script).render(config=config)
+        return Template(script).render(config=config, bindings=_bindings())
 
     def test_empty_leaves_the_tuning_file_in_charge(self, step, launcher):
         assert step["config"]["gold_config"]["nccl_ib_hca"] == ""
@@ -934,7 +967,7 @@ class TestResumeEmitSeeded:
         ]
         config = dict(step["config"], emit_checkpoint_artifacts=True)
         config.update(overrides)
-        return Template(script).render(config=config)
+        return Template(script).render(config=config, bindings=_bindings())
 
     def _emitted(self, tmp_path, emit_seeded):
         rendered = self._render(

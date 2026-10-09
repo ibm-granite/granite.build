@@ -20,7 +20,7 @@ authorization.
 decode_uri(id=...) is an alternate read path to the same artifact
 read_artifact protects (both load by uuid via get_admin_storage, which
 bypasses row-level security) -- but the two are deliberately NOT at the same
-access level. decode_uri(id=) stays at write access (confirm_space_write_access)
+access level. decode_uri(id=) stays at write access (confirm_existing_item_write_access)
 because it resolves additional metadata (e.g. resource_group_id for hf://
 URIs) not present on the stored object; read_artifact was loosened to member
 access (confirm_space_member_access) because list_artifacts() already returns
@@ -31,11 +31,11 @@ lookups — no DB required. decode_uri's uri= mode never touches storage and
 must stay open to anyone.
 
 test/conftest.py's autouse `_mock_space_access` fixture stubs
-gbserver.api.artifacts.confirm_space_write_access to an unconditional no-op,
+gbserver.api.artifacts.confirm_existing_item_write_access to an unconditional no-op,
 and gbserver.api.utils.is_super_admin to an unconditional True, in mock mode
 (so unrelated tests don't need real space setup) — either of which would make
 every test here trivially pass regardless of the fix under test. `_real_authz`
-restores confirm_space_write_access/has_space_write_access for the
+restores confirm_existing_item_write_access/_has_existing_item_write_access for the
 decode_uri(id=)/register_artifact tests; the read_artifact tests patch
 is_super_admin and space_access_check directly instead, since
 confirm_space_member_access is never stubbed by conftest.
@@ -58,16 +58,20 @@ from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_
 
 from gbserver.api import artifacts as artifacts_module
 from gbserver.api.artifacts import (
+    HFModelRegistrationRequest,
     decode_uri,
     list_artifact_tags,
     list_artifacts,
     read_artifact,
     register_artifact,
+    register_hf_model,
 )
 from gbserver.api.utils import (
-    confirm_space_write_access as _real_confirm_space_write_access,
+    _has_existing_item_write_access as _real_has_existing_item_write_access,
 )
-from gbserver.api.utils import has_space_write_access as _real_has_space_write_access
+from gbserver.api.utils import (
+    confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
+)
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.types.artifact import ArtifactType
 
@@ -78,23 +82,38 @@ ATTACKER = "attacker_a"
 
 @contextmanager
 def _real_authz():
-    """Restore the real confirm_space_write_access AND has_space_write_access.
+    """Restore the real confirm_existing_item_write_access AND
+    _has_existing_item_write_access.
 
     test/conftest.py's autouse `_mock_space_access` fixture stubs both out
-    (confirm_space_write_access to an unconditional no-op, has_space_write_access
-    to an unconditional (True, "standalone")) in mock mode. Restoring only one
+    (confirm_existing_item_write_access to an unconditional no-op,
+    _has_existing_item_write_access to an unconditional (True, "standalone"))
+    in mock mode. Restoring only one
     still leaves the other short-circuiting the real owner/admin decision.
     """
     with (
         patch(
-            "gbserver.api.artifacts.confirm_space_write_access",
-            side_effect=_real_confirm_space_write_access,
+            "gbserver.api.artifacts.confirm_existing_item_write_access",
+            side_effect=_real_confirm_existing_item_write_access,
         ),
         patch(
-            "gbserver.api.utils.has_space_write_access",
-            side_effect=_real_has_space_write_access,
+            "gbserver.api.utils._has_existing_item_write_access",
+            side_effect=_real_has_existing_item_write_access,
         ),
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _space_member():
+    """Make the caller a member of every space by default.
+
+    Adding a new item to a space (confirm_can_add_to_space) requires space
+    membership on top of identity binding. Tests that exercise identity and
+    ownership rules start from a member caller; the non-member tests override
+    this with a nested patch.
+    """
+    with patch("gbserver.api.utils.space_access_check", return_value=True):
         yield
 
 
@@ -270,6 +289,25 @@ def test_register_artifact_allows_self_registration():
     assert resp.registered.username == ATTACKER
 
 
+def test_register_artifact_rejects_non_member_self_registration():
+    """Registering under your own username is not enough: the caller must also
+    belong to the target space (otherwise any user could register artifacts
+    into any space)."""
+    with (
+        _registry_storage(),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            register_artifact(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _new_artifact(ATTACKER),
+            )
+        assert exc.value.status_code == 401
+
+
 def test_register_artifact_allows_admin_impersonation():
     with (
         _registry_storage(),
@@ -282,6 +320,49 @@ def test_register_artifact_allows_admin_impersonation():
             _new_artifact(VICTIM_OWNER),
         )
     assert resp.registered.username == VICTIM_OWNER
+
+
+# ------------------------------------------------------------------ typed register routes
+#
+# /artifacts/hf/* and /artifacts/lh/* go through _create_and_register_artifact,
+# which looks up origin artifacts in the requested space and writes a lineage
+# record before handing off to register_artifact. The add-to-space check must
+# run before either, or a non-member can probe another space's registry and
+# leave lineage records in it even though the registration itself is refused.
+
+
+def _hf_model_req(username: str) -> HFModelRegistrationRequest:
+    return HFModelRegistrationRequest(
+        space_name=VICTIM_SPACE,
+        username=username,
+        organization="team-b",
+        model_id="new-model",
+        origin_uris=["hf://huggingface.co/models/team-b/base-model"],
+    )
+
+
+@pytest.mark.parametrize(
+    "username, is_member",
+    [(ATTACKER, False), (VICTIM_OWNER, True)],
+    ids=["non-member-self", "member-forged-username"],
+)
+def test_typed_register_rejects_before_touching_space(username, is_member):
+    with (
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=is_member),
+        patch.object(artifacts_module, "get_admin_storage") as admin_storage,
+        patch.object(artifacts_module, "get_lineage_store") as lineage_store,
+    ):
+        with pytest.raises(HTTPException) as exc:
+            register_hf_model(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _hf_model_req(username),
+            )
+    assert exc.value.status_code == 401
+    admin_storage.assert_not_called()
+    lineage_store.assert_not_called()
 
 
 # ------------------------------------------------------------------ list_artifacts / list_artifact_tags

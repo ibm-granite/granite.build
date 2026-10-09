@@ -49,11 +49,12 @@ the step sets no resources of its own.
 
 ### Inputs
 
-The step declares no inputs. It reads the files named in `sources_config.sources`
-directly, so they must already be on a filesystem the compute node can reach. Recipes
-also declare each split as an `env://` input of type `dataset` on the target, so the
-corpus's provenance is recorded as artifacts; the pull is a no-op, and the step still
-takes the paths from `sources`:
+The step declares no named inputs (`inputs: {allow_unknown: true}`): its sources are a
+variable-length list, so there is no fixed set of names to declare. It reads the files
+named in `sources_config.sources` directly, so they must already be on a filesystem the
+compute node can reach. Recipes also declare each split as an `env://` input of type
+`dataset` on the target, so the corpus's provenance is recorded as artifacts; the pull is
+a no-op, and the step still takes the paths from `sources`:
 
 ```yaml
 inputs:

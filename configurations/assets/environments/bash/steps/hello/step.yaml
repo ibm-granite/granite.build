@@ -2,6 +2,10 @@ name: hello
 version: v1
 type: custom
 config: {}
+# No named inputs: a smoke-test step with no data inputs.
+inputs:
+  allow_unknown: true
+
 environment_configs:
   Bash:
     launchers:

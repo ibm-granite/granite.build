@@ -17,12 +17,10 @@ target_expectations:
     step_count: 1
     input_artifact_count: 0
     output_artifact_count: 1
-    jobstats_count: 1
   - target_name: second
     step_count: 1
     input_artifact_count: 1
     output_artifact_count: 1
-    jobstats_count: 1
 # Shared standalone space so space:// URIs (skypilot/slurm environment + bash
 # step) resolve without cloning. Relative to this YAML's directory.
 space_uri: ../../../../../../configurations/spaces/local

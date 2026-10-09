@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-bluevela-command-image
+  name: skypilot-bluevela-command-image-test
   # Single command-step target on BlueVela LSF (via Skypilot) that runs the
   # command INSIDE a container image. This exercises the enroot container path
   # (LSF's equivalent of slurm's Pyxis) configured on the bluevela environment

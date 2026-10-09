@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-bluevela-slurm-dpk-tokenize-image
+  name: skypilot-bluevela-slurm-dpk-tokenize-image-test
   # DPK tokenization on BlueVela SLURM (via Skypilot) in IMAGE MODE — the first
   # fixture anywhere to run `dpk` with `dpk_config.dpk_image` set on a real cluster.
   # Modeled on steps/dpk/skypilot/test-data/slurm-tok/build.yaml (local Docker SLURM,
@@ -87,10 +87,9 @@ granite.build:
               # with "No module named 'dpk_tokenization2arrow'" (build d8cd80c0,
               # 2026-09-28). An image for this step must provide PUBLIC DPK.
               dpk_image: us.icr.io/cil15-shared-registry/preprocessing-pipelines/tokenization-python:dpk-1.1.8
-              # A PATH, resolved from this target's own declared input — the byoc
-              # pattern. The step never learns binding NAMES, so it cannot be wrong
-              # about them.
-              input_path: "{{ bindings.docs.binding.path }}"
+              # The dpk step declares `docs` as a named input and reads this
+              # target's `docs` binding directly, so no input_path config line
+              # is set here (the byoc pattern).
               output: tokens
               # Set to the value the step's own rule already derives, so this asserts
               # the override path is READ, not that a different runtime works (weak on

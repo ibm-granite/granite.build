@@ -67,19 +67,9 @@ config:
 
   # ─── Evaluation ───────────────────────────────────────────────────────────────
   eval_config:
-    # Paths, not HF repo ids: the student is a checkpoint this pipeline produced and the
-    # teacher for this pairing is not publicly fetchable.
+    # The student and the teacher are target INPUTS, not config keys — see `inputs:`
+    # below.
     #
-    # distill-hf-export's `hf_model` for a post-training measurement, or
-    # distill-tokenizer-align's `retagged_student` for the t=0 baseline that makes the
-    # post-training number mean something. A divergence with no baseline is a number
-    # without a direction.
-    student_model: ""
-    # OPTIONAL, and the emptiness is meaningful rather than sloppy: with no teacher only
-    # single-model metrics (entropy) are computable, and asking for jsd without one is
-    # REFUSED rather than defaulted. Normally the same teacher the trainer used, so the
-    # divergence is measured against the model that actually taught.
-    teacher_model: ""
     # distill-corpus-prep's corpus — ITS EVAL SPLIT, not the split the student trained on.
     # Measured on training data, a divergence reports how well the student memorised the
     # teacher's outputs on seen inputs: the one thing distillation is guaranteed to
@@ -132,6 +122,32 @@ config:
     # cross-tokenizer experiment may want the number anyway.
     allow_tokenizer_mismatch: false
 
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+#
+# Paths, not HF repo ids: the student is a checkpoint this pipeline produced and the
+# teacher for this pairing is not publicly fetchable.
+inputs:
+  allow_unknown: true
+  required:
+    # distill-hf-export's `hf_model` for a post-training measurement, or
+    # distill-tokenizer-align's `retagged_student` for the t=0 baseline that makes the
+    # post-training number mean something. A divergence with no baseline is a number
+    # without a direction.
+    student:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # OPTIONAL, and the absence is meaningful rather than sloppy: with no teacher only
+    # single-model metrics (entropy) are computable, and asking for jsd without one is
+    # REFUSED rather than defaulted. Normally the same teacher the trainer used, so the
+    # divergence is measured against the model that actually taught.
+    teacher:
+      type: model
+      accept: [uri, binding]
+
 # FILESET, not DATASET: this directory holds metrics.json and per_sample.jsonl, which are a
 # measurement OF a model, not data anything trains on. Both are real members of
 # gbcommon.types.artifact.ArtifactType, so the distinction costs nothing to get right — and
@@ -178,6 +194,19 @@ environment_configs:
             HF_HOME: /opt/hf-cache
           run: |
             echo "=== distill-eval on $(hostname) ==="
+
+            # The models used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("student_model", "teacher_model") if config.eval_config[key] is defined %}
+            echo "distill-eval: FATAL: eval_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
+            # `teacher` is optional, so a target still binding the old input name would
+            # pass validation as an extra input and silently score without a teacher.
+            {% if bindings is defined and "teacher_model" in bindings %}
+            echo "distill-eval: FATAL: the 'teacher_model' input was renamed to 'teacher'; bind 'teacher' instead" >&2
+            exit 1
+            {% endif %}
 
             # --- distill source delivery: BEGIN (identical in all ported steps) ---
             # `set -eu` is already in effect: the launcher prefixes it.
@@ -318,8 +347,8 @@ environment_configs:
             # template echoed it a SECOND time after the script returned, which would
             # register two NEWARTIFACT events for one id.
             PYBIN="$PYBIN" bash ./src/run-eval.sh \
-              --student-model "{{ config.eval_config.student_model }}" \
-              --teacher-model "{{ config.eval_config.teacher_model }}" \
+              --student-model "{{ bindings.student.binding.path }}" \
+              --teacher-model "{{ bindings.teacher.binding.path if bindings.teacher is defined else "" }}" \
               --corpus "{{ config.eval_config.corpus }}" \
               --out-dir "$OUT_DIR" \
               --metrics "{{ config.eval_config.metrics }}" \

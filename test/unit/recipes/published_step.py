@@ -5,9 +5,9 @@ string check on the recipe cannot see a value that lands in the wrong key, or a 
 the template does not iterate. Rendering the target's config through the same template
 the server will use, and running the result, can.
 
-Two template passes, as on the server: the step config is filled first (that is where
-``{{ bindings.<name>.binding.path }}`` resolves), and the launcher's ``run`` is then
-filled from the merged config.
+Two template passes, as on the server: the step config is filled first, and the
+launcher's ``run`` is then filled from the merged config and the same ``bindings``
+(a step reads its declared inputs there, as ``{{ bindings.<name>.binding.path }}``).
 """
 
 import importlib.util
@@ -43,6 +43,8 @@ def render_run(step_path, step_config, *, bindings=None, **config_overrides):
     :param step_path: the step's path under ``steps/``, e.g. ``distill/gen-smoke``.
     :param step_config: the target's ``steps[0].config`` from the rendered recipe.
     :param bindings: ``{name: path}`` for any ``{{ bindings.<name>.binding.path }}``.
+        A value that is a dict is used as the binding itself, so a ``mem://`` input is
+        given as ``{name: {"state": value}}``.
     :param config_overrides: per-section overrides applied last (e.g. a stand-in
         ``python``), as ``{section: {key: value}}``.
     :returns: the filled run script, and the published step dir to run it from (its
@@ -51,14 +53,17 @@ def render_run(step_path, step_config, *, bindings=None, **config_overrides):
     step_dir = _ASSETS / step_path
     step = yaml.safe_load((step_dir / "step.yaml").read_text(encoding="utf-8"))
     data = {
-        "bindings": {k: {"binding": {"path": v}} for k, v in (bindings or {}).items()}
+        "bindings": {
+            k: {"binding": v if isinstance(v, dict) else {"path": v}}
+            for k, v in (bindings or {}).items()
+        }
     }
     config = fill_objtemplate(step_config, data)
     config = _merge(_merge(step["config"], config), config_overrides)
     launchers = step["environment_configs"]["Skypilot"]["launchers"]
     (launcher,) = launchers.values()
     return (
-        fill_template(templ=launcher["config"]["run"], data={"config": config}),
+        fill_template(templ=launcher["config"]["run"], data={"config": config, **data}),
         step_dir,
     )
 

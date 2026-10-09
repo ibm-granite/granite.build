@@ -38,8 +38,12 @@ config:
     wandb_api_key: ""
     logging_steps: "1"
     short_name: "g4-350m-sft-8k"
+# I/O schema, validated against the build.yaml target at build time. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
 inputs:
+  allow_unknown: true
   optional:
+    # The base model to fine-tune. Unbound => sft_config.model_path.
     model:
       type: model
       accept: [uri, binding]
@@ -77,7 +81,9 @@ environment_configs:
           envs:
             SKYPILOT_DOCKER_USERNAME: "AWS"
             SKYPILOT_DOCKER_SERVER: "022767362696.dkr.ecr.us-east-2.amazonaws.com"
-            MODEL_PATH: "{{ config.sft_config.model_path }}"
+            # A bound `model` input wins; sft_config.model_path (an HF id the trainer
+            # downloads itself) is the default when it is not bound.
+            MODEL_PATH: "{{ bindings.model.binding.path if bindings.model is defined else config.sft_config.model_path }}"
             HF_TOKEN: "{{ config.sft_config.hf_token }}"
             TOKENIZED_DATA_PATH: "/data/datasets"
             OUTPUT_DIR: "/output/{{ config.sft_config.build_name }}"

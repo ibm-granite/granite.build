@@ -33,7 +33,6 @@ granite.build:
             dpk_config:
               transform: pii_redactor
               dpk_version: "1.1.8"
-              input_path: "{{ bindings.docs.binding.path }}"
               output: clean
               output_path: /tmp/dpk-pii-output    # matches the `clean` uri path
               args:

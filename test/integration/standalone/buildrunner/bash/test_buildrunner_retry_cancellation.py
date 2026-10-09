@@ -44,7 +44,12 @@ from gbserver.buildwatcher.buildwatcher import BuildWatcher
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.status import Status
 
-pytestmark = pytest.mark.standalone
+# These run the Bash environment in-process, which refuses to start outside
+# STANDALONE; the test suite runs as GB_ENVIRONMENT=DEV.
+pytestmark = [
+    pytest.mark.standalone,
+    pytest.mark.usefixtures("allow_bash_environment"),
+]
 
 _IN_FLIGHT = {
     Status.SUBMITTED,

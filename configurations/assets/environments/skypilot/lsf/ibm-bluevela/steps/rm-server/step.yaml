@@ -11,6 +11,12 @@ config:
     model_path: "/proj/checkpoints/ashishagr/model_downloads/phi4-multilingual"
     idle_timeout: ""
     hf_token: ""
+# No named inputs: this service step serves a model or sandbox named by config
+# (a literal path or image), not by an upstream artifact. allow_unknown lets a
+# recipe bind inputs purely to order this target.
+inputs:
+  allow_unknown: true
+
 outputs:
   optional:
     rm_server_url:

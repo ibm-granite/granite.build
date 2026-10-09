@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-aws-command-2target
+  name: skypilot-aws-command-2target-test
   # Two command-step targets on AWS EC2 (via SkyPilot), both running the generic
   # `command` step BARE (no container image). `first` emits an output path and
   # registers it as artifact `out1`; `second` binds `first.out1` as an input and

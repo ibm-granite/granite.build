@@ -16,6 +16,31 @@ granite.build:
   targets:
     align:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        teacher:
+          uri: "env:///proj/granite-build/g4os/models/granite-4.2-3b-nothink"
+          type: model
+        # DENSE (granite / GraniteForCausalLM), and that matters for the eval
+        # target downstream rather than for align itself. The only genuinely
+        # un-retagged base model on this cluster,
+        # granite-4.0-1b-base-prerelease-castlerock-final, is granitemoehybrid —
+        # and a hybrid model makes transformers lazily load
+        # kernels-community/mamba-ssm, whose cached build imports
+        # GreedySearchDecoderOnlyOutput and so cannot import under this image's
+        # transformers 5.8.0 (measured, build 96868683). Every model this pipeline
+        # actually uses (granite-4.1-3b-base, granite-4.2-30b) is dense, which is
+        # why the real training runs never hit it.
+        #
+        # The retag is therefore near-a-no-op here (this student is already aligned
+        # to the 4.2 tokenizer). That is fine for THIS fixture, whose subject is the
+        # eval target: what it needs is a dense, tokenizer-matched student carrying
+        # a chat template with {% generation %} markers, which align installs.
+        # distill-tokenizer-align's OWN fixture keeps the hybrid student on purpose,
+        # because that is what exercises a real retag (transplant=12, mean_init=4) —
+        # and align never instantiates the model, so no kernel is requested there.
+        student:
+          uri: "env:///proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
+          type: model
       outputs:
         retagged_student:
           uri: "env://{{ binding.path }}"
@@ -40,26 +65,6 @@ granite.build:
                 zone: "normal"
                 memory: 32
             align_config:
-              teacher_model: "/proj/granite-build/g4os/models/granite-4.2-3b-nothink"
-              # DENSE (granite / GraniteForCausalLM), and that matters for the eval
-              # target downstream rather than for align itself. The only genuinely
-              # un-retagged base model on this cluster,
-              # granite-4.0-1b-base-prerelease-castlerock-final, is granitemoehybrid —
-              # and a hybrid model makes transformers lazily load
-              # kernels-community/mamba-ssm, whose cached build imports
-              # GreedySearchDecoderOnlyOutput and so cannot import under this image's
-              # transformers 5.8.0 (measured, build 96868683). Every model this pipeline
-              # actually uses (granite-4.1-3b-base, granite-4.2-30b) is dense, which is
-              # why the real training runs never hit it.
-              #
-              # The retag is therefore near-a-no-op here (this student is already aligned
-              # to the 4.2 tokenizer). That is fine for THIS fixture, whose subject is the
-              # eval target: what it needs is a dense, tokenizer-matched student carrying
-              # a chat template with {% generation %} markers, which align installs.
-              # distill-tokenizer-align's OWN fixture keeps the hybrid student on purpose,
-              # because that is what exercises a real retag (transplant=12, mean_init=4) —
-              # and align never instantiates the model, so no kernel is requested there.
-              student_model: "/proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
               out_dir: "align"
 
     corpus:
@@ -67,6 +72,9 @@ granite.build:
       inputs:
         tokenizer:
           binding: align.retagged_student
+        source_dataset:
+          uri: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+          type: dataset
       outputs:
         corpus:
           uri: "env://{{ binding.path }}"
@@ -85,8 +93,6 @@ granite.build:
                 zone: "normal"
                 memory: 32
             corpus_config:
-              dataset: "/proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
-              tokenizer: "{{ bindings.tokenizer.binding.path }}"
               # ABSOLUTE, and not the usual relative-to-workdir value, because the eval
               # target below has to name eval.jsonl and CANNOT compose that path itself:
               # every target run gets its OWN $GB_BUILD_WORKDIR (.../runs/<targetrun-id>/),
@@ -119,6 +125,12 @@ granite.build:
         # guarantees this target cannot start before the split exists.
         corpus:
           binding: corpus.corpus
+        # The same teacher the student was retagged onto, so the two tokenizers
+        # agree on token ids and the divergence is measured rather than merely
+        # computed.
+        teacher:
+          uri: "env:///proj/granite-build/g4os/models/granite-4.2-3b-nothink"
+          type: model
       outputs:
         eval_metrics:
           uri: "env://{{ binding.path }}"
@@ -139,11 +151,6 @@ granite.build:
                 zone: "normal"
                 memory: 64
             eval_config:
-              student_model: "{{ bindings.student.binding.path }}"
-              # The same teacher the student was retagged onto, so the two tokenizers
-              # agree on token ids and the divergence is measured rather than merely
-              # computed.
-              teacher_model: "/proj/granite-build/g4os/models/granite-4.2-3b-nothink"
               corpus: "/proj/granite-build/g4os/gbtest/distill-eval-smoke/corpus/eval.jsonl"
               output_dir: "eval-baseline"
               # All four in one forward pass. entropy alone would not exercise the

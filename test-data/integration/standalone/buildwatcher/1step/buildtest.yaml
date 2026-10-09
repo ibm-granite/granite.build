@@ -1,0 +1,17 @@
+# Fixture for the standalone BuildWatcher tests
+# (test/integration/standalone/buildwatcher/test_buildwatcher.py).
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+targets:
+  - command
+target_expectations:
+  # One command step; the env:// output registers inline and queues no push step.
+  - target_name: command
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+simulate_step_failure: false
+timeout_minutes: 10
+# Use the shared standalone space at <repo>/configurations/spaces/local so the
+# BuildRunner resolves space:// URIs (the bash environment and the command step)
+# without cloning from GitHub. Relative path resolves against this YAML's directory.
+space_uri: ../../../../../configurations/spaces/local

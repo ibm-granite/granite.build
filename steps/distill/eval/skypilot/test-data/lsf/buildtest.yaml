@@ -18,20 +18,18 @@ target_expectations:
   # internals. Here they only have to succeed and hand over their artifacts.
   - target_name: align
     step_count: 1
-    input_artifact_count: 0
+    input_artifact_count: 2
     output_artifact_count: 3
-    jobstats_count: 1
   - target_name: corpus
-    step_count: 1
-    input_artifact_count: 1
-    output_artifact_count: 1
-    jobstats_count: 1
-  - target_name: eval-transfer-baseline
-    # Two bound inputs (the student, and the corpus as an ordering edge), one fileset out.
     step_count: 1
     input_artifact_count: 2
     output_artifact_count: 1
-    jobstats_count: 1
+  - target_name: eval-transfer-baseline
+    # Three inputs (the bound student, the corpus as an ordering edge, and the env://
+    # teacher), one fileset out.
+    step_count: 1
+    input_artifact_count: 3
+    output_artifact_count: 1
     expected_steps:
       - metadata_matches:
           distill_code_commit: "^[0-9a-f]{40}$"

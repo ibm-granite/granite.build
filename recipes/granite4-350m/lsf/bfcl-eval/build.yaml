@@ -4,7 +4,7 @@ granite.build:
     bfcl-evaluation:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -15,7 +15,6 @@ granite.build:
         - step_uri: space://steps/bfcl-eval
           config:
             bfcl_config:
-              model_path: "$${MODEL_PATH}"
               model_id: "$${MODEL_ID}"
               experiment: "$${EXPERIMENT}"
               eval_name: "$${EVAL_NAME}"

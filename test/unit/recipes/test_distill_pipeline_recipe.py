@@ -171,11 +171,11 @@ def test_gold_continues_from_the_sft_checkpoint_when_the_arm_is_on(on, off):
     assert _targets(off)["train-gold"]["inputs"]["student"]["binding"] == (
         "align.retagged_student"
     )
-    # Either way the trainer reads the path from that one binding, so the two
-    # cannot disagree about which model was loaded.
+    # Either way the step reads the path from that one `student` input, so the two
+    # cannot disagree about which model was loaded — no config key carries it too.
     for rendered in (on, off):
         gold = _config(rendered, "train-gold")["gold_config"]
-        assert gold["model_name_or_path"] == "{{ bindings.student.binding.path }}"
+        assert "model_name_or_path" not in gold
 
 
 def test_the_sft_arm_trains_the_aligned_student_on_the_prepared_corpus(on):
@@ -183,8 +183,9 @@ def test_the_sft_arm_trains_the_aligned_student_on_the_prepared_corpus(on):
     assert sft_target["inputs"]["student"]["binding"] == "align.retagged_student"
     assert sft_target["inputs"]["corpus"]["binding"] == "corpus.corpus"
     sft = _config(on, "train-sft")["sft_config"]
-    assert sft["student_model_path"] == "{{ bindings.student.binding.path }}"
-    assert sft["corpus_path"] == "{{ bindings.corpus.binding.path }}"
+    # The step reads both from its declared inputs; no config key carries them.
+    assert "student_model_path" not in sft
+    assert "corpus_path" not in sft
     # EMPTY is what makes this a plain-SFT pass rather than a forward-KL arm: with
     # a logits directory it would be a distillation run of a different kind, and
     # the recipe would have two treatments and no control.
@@ -274,12 +275,12 @@ def test_the_gpu_targets_are_not_serialised_by_hand(off):
     assert set(targets["eval-transfer-baseline"]["inputs"]) == {
         "student",
         "corpus",
-        "teacher_model",
+        "teacher",
     }
     assert set(targets["eval-transfer"]["inputs"]) == {
         "student",
         "corpus",
-        "teacher_model",
+        "teacher",
     }
     assert set(targets["eval-bfcl"]["inputs"]) == {"model"}
 
@@ -321,13 +322,10 @@ def test_one_teacher_for_the_whole_pipeline(off, on):
     places still runs: it reports a divergence against a model the student never
     trained toward."""
     for rendered in (off, on):
-        teacher = _config(rendered, "align")["align_config"]["teacher_model"]
-        assert (
-            _config(rendered, "train-gold")["gold_config"]["teacher_model_name_or_path"]
-            == teacher
-        )
-        for target in ("eval-transfer-baseline", "eval-transfer"):
-            assert _config(rendered, target)["eval_config"]["teacher_model"] == teacher
+        targets = _targets(rendered)
+        teacher = targets["align"]["inputs"]["teacher"]["uri"]
+        for target in ("train-gold", "eval-transfer-baseline", "eval-transfer"):
+            assert targets[target]["inputs"]["teacher"]["uri"] == teacher, target
 
 
 def test_one_length_budget_for_the_whole_pipeline(on):
@@ -346,10 +344,15 @@ def test_the_two_transfer_evals_differ_only_in_the_student(off):
     the only way the two numbers are comparable at all."""
     baseline = dict(_config(off, "eval-transfer-baseline")["eval_config"])
     trained = dict(_config(off, "eval-transfer")["eval_config"])
-    for key in ("student_model", "output_dir"):
-        baseline.pop(key)
-        trained.pop(key)
+    baseline.pop("output_dir")
+    trained.pop("output_dir")
     assert baseline == trained
+    # The student arrives as the step's `student` input, so the inputs too must
+    # differ in that one entry and no other.
+    baseline_inputs = dict(_targets(off)["eval-transfer-baseline"]["inputs"])
+    trained_inputs = dict(_targets(off)["eval-transfer"]["inputs"])
+    assert baseline_inputs.pop("student") != trained_inputs.pop("student")
+    assert baseline_inputs == trained_inputs
 
 
 def test_the_evals_read_the_split_the_corpus_target_wrote(off):
@@ -374,18 +377,21 @@ def test_the_tokenizer_the_corpus_is_measured_with_is_the_one_that_trains(off):
     prepared against a different tokenizer is filtered against the wrong
     distribution — and prep needs align's chat template to locate assistant spans
     at all."""
-    assert _config(off, "corpus")["corpus_config"]["tokenizer"] == (
-        "{{ bindings.tokenizer.binding.path }}"
+    assert _targets(off)["corpus"]["inputs"]["tokenizer"]["binding"] == (
+        "align.retagged_student"
     )
+    # The step reads it from that input; a config key would be a second source.
+    assert "tokenizer" not in _config(off, "corpus")["corpus_config"]
 
 
 def test_the_export_asserts_the_tokenizer_it_ships(off):
     """Bound so the export checks the tokenizer it publishes is the one the run
     trained with, rather than whatever happened to land in the checkpoint dir."""
     export = _config(off, "export")["export_config"]
-    assert export["expect_tokenizer_from"] == (
-        "{{ bindings.expected_tokenizer.binding.path }}"
+    assert _targets(off)["export"]["inputs"]["expected_tokenizer"]["binding"] == (
+        "align.retagged_student"
     )
+    assert "expect_tokenizer_from" not in export
     assert export["verify"] is True
 
 

@@ -83,11 +83,8 @@ config:
     nodes: 1
 
   sft_config:
-    # The RETAGGED student, for the same reason the distillation arms use it: a control has
-    # to differ from the treatment in the OBJECTIVE only. A control trained on the base
-    # student would also differ in its embedding rows for the control tokens, and the
-    # comparison would be measuring two things at once.
-    student_model_path: ""
+    # The student and the corpus are target INPUTS, not config keys — see `inputs:` below.
+    #
     # Refuse to start when the student's weights have been migrated to tape by GPFS. See
     # src/check_weight_residency.py: metadata only (mmlsattr, else st_blocks arithmetic),
     # never reads contents, refuses on OFFLINE or on a path it cannot stat, warns and
@@ -97,10 +94,6 @@ config:
     check_weight_residency: true
     # Proceed anyway, loudly. For when you know the recall is already under way.
     allow_offline_weights: false
-    # distill-corpus-prep's `corpus`. Text, not tokens — sft.py tokenizes at train time —
-    # but tokenizer-specific anyway, because prep measured its length filter and its
-    # assistant-mask check in tokens.
-    corpus_path: ""
 
     # Relative values resolve against $GB_BUILD_WORKDIR.
     output_dir: "sft"
@@ -201,6 +194,27 @@ config:
     wandb_project: ""
     wandb_run_name: ""
 
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The RETAGGED student, for the same reason the distillation arms use it: a control has
+    # to differ from the treatment in the OBJECTIVE only. A control trained on the base
+    # student would also differ in its embedding rows for the control tokens, and the
+    # comparison would be measuring two things at once.
+    student:
+      type: model
+      accept: [uri, binding]
+    # distill-corpus-prep's `corpus`. Text, not tokens — sft.py tokenizes at train time —
+    # but tokenizer-specific anyway, because prep measured its length filter and its
+    # assistant-mask check in tokens.
+    corpus:
+      type: dataset
+      accept: [uri, binding]
+
 outputs:
   required:
     checkpoint:
@@ -253,6 +267,13 @@ environment_configs:
             OMP_NUM_THREADS: "8"
           run: |
             echo "=== distill-sft on $(hostname) ==="
+
+            # The inputs used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("student_model_path", "corpus_path") if config.sft_config[key] is defined %}
+            echo "distill-sft: FATAL: sft_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
 
             # --- distill source delivery: BEGIN (identical in all ported steps) ---
             # `set -eu` is already in effect: the launcher prefixes it.
@@ -445,12 +466,12 @@ environment_configs:
             {% if config.sft_config.check_weight_residency %}
             "$PYBIN" ./src/check_weight_residency.py \
               {% if config.sft_config.allow_offline_weights %}--allow-offline{% endif %} \
-              "student={{ config.sft_config.student_model_path }}"
+              "student={{ bindings.student.binding.path }}"
             {% endif %}
 
             PYBIN="$PYBIN" bash ./src/run-sft.sh \
-              --student-model-path "{{ config.sft_config.student_model_path }}" \
-              --corpus-path "{{ config.sft_config.corpus_path }}" \
+              --student-model-path "{{ bindings.student.binding.path }}" \
+              --corpus-path "{{ bindings.corpus.binding.path }}" \
               --output-dir "$OUT_DIR" \
               --response-template "$RESPONSE_TEMPLATE" \
               --max-length {{ config.sft_config.max_length }} \

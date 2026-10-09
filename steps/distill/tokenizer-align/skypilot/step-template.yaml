@@ -90,22 +90,17 @@ config:
   # surfaces are equally small, so the flag-drift problem that forced distill-gold
   # to render a YAML file does not exist here. Flags stay flags.
   align_config:
-    # Both are DIRECTORY paths, not HF repo ids: the teacher for this pairing is not
-    # publicly fetchable, and a repo id would put a network fetch inside the step.
+    # The teacher and student models are target INPUTS, not config keys — see
+    # `inputs:` below.
     #
-    # The 4.2 30B teacher. Its tokenizer is the one the student is retagged ONTO.
-    teacher_model: ""
-    # The RAW 4.1 3B base student — the PRE-retag directory. This is the one
-    # directory in the pipeline that genuinely mis-segments, which is exactly why it
-    # is this step's input rather than anything downstream's.
-    student_model: ""
     # Where the three outputs are written, as out_dir/{teacher_overlay,
     # student_overlay,retagged_student}. Relative values are resolved against
     # $GB_BUILD_WORKDIR. The three are NOT separately configurable: that derivation
     # is also what the GB_ARTIFACT_PATH lines are built from, and a second place to
     # configure it would be a second place for declared and written paths to differ.
     out_dir: "align"
-    # The chat template installed on the retagged student. A RELATIVE path is
+    # The chat template installed on the retagged student, used when the target does
+    # not bind the optional `chat_template` input (a bound input wins). A RELATIVE path is
     # resolved against the delivered checkout, which is where the marked-up template
     # lives — upstream defaults this to an in-image /opt path that does not exist in
     # this image, so the default is repointed rather than inherited.
@@ -157,6 +152,31 @@ config:
 #                       the teacher MODEL path on purpose.
 #   student_overlay  -> distill-corpus-prep's trustworthy comparison point when it
 #                       asserts one-tokenizer-per-run. Not consumed by the retag.
+#
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The 4.2 30B teacher, as a DIRECTORY (not an HF repo id: the teacher for this
+    # pairing is not publicly fetchable, and a repo id would put a network fetch
+    # inside the step). Its tokenizer is the one the student is retagged ONTO.
+    teacher:
+      type: model
+      accept: [uri, binding]
+    # The RAW 4.1 3B base student — the PRE-retag directory. This is the one
+    # directory in the pipeline that genuinely mis-segments, which is exactly why it
+    # is this step's input rather than anything downstream's.
+    student:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # A chat template file. Unbound => align_config.chat_template.
+    chat_template:
+      type: fileset
+      accept: [uri, binding]
 outputs:
   required:
     retagged_student:
@@ -197,6 +217,13 @@ environment_configs:
             HF_HOME: /opt/hf-cache
           run: |
             echo "=== distill-tokenizer-align on $(hostname) ==="
+
+            # The models used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("teacher_model", "student_model") if config.align_config[key] is defined %}
+            echo "distill-tokenizer-align: FATAL: align_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
 
             # --- distill source delivery: BEGIN (identical in all ported steps) ---
             # `set -eu` is already in effect: the launcher prefixes it.
@@ -332,15 +359,15 @@ environment_configs:
 
             # A relative chat template is resolved against the delivered checkout,
             # which is where the marked-up template lives.
-            CHAT_TEMPLATE="{{ config.align_config.chat_template }}"
+            CHAT_TEMPLATE="{% if bindings.chat_template is defined %}{{ bindings.chat_template.binding.path }}{% else %}{{ config.align_config.chat_template }}{% endif %}"
             case "$CHAT_TEMPLATE" in
               "" | /*) ;;
               *) CHAT_TEMPLATE="$CODE_DIR/$CHAT_TEMPLATE" ;;
             esac
 
             PYBIN="$PYBIN" bash ./src/run-align.sh \
-              --teacher-model "{{ config.align_config.teacher_model }}" \
-              --student-model "{{ config.align_config.student_model }}" \
+              --teacher-model "{{ bindings.teacher.binding.path }}" \
+              --student-model "{{ bindings.student.binding.path }}" \
               --out-dir "$OUT_DIR" \
               --chat-template "$CHAT_TEMPLATE" \
               --copy-mode "{{ config.align_config.copy_mode }}" \

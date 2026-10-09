@@ -63,7 +63,7 @@ granite.build:
               command: >-
                 set -e;
                 pwd=$(pwd);
-                test -e {{ bindings.hf_input.binding.path }} || { echo "missing hf input: {{ bindings.hf_input.binding.path }}" >&2; exit 1; };
+                test -e "{{ bindings.hf_input.binding.path }}";
                 mkdir -p out out2;
                 echo "slurm-run target on bluevela gpu-mid partition";
                 echo "hf input path: {{ bindings.hf_input.binding.path }}";

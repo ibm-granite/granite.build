@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-bluevela-slurm-dpk-pii-redactor
+  name: skypilot-bluevela-slurm-dpk-pii-redactor-test
   # PII redaction through the shared `dpk` step on BlueVela SLURM (via Skypilot),
   # submitted to the gpu-mid partition. This is the REAL-CLUSTER counterpart of
   # steps/dpk/skypilot/test-data/slurm-pii/build.yaml (local Docker SLURM) and of
@@ -77,10 +77,9 @@ granite.build:
             dpk_config:
               transform: pii_redactor
               dpk_version: "1.1.8"
-              # A PATH, resolved here from this target's own declared input — the
-              # byoc pattern (steps/byoc/skypilot/USAGE.md). The step never learns
-              # binding NAMES, so it cannot be wrong about them.
-              input_path: "{{ bindings.docs.binding.path }}"
+              # The dpk step declares `docs` as a named input and reads this
+              # target's `docs` binding directly, so no input_path config line
+              # is set here (steps/byoc/skypilot/USAGE.md).
               output: clean
               output_path: /tmp/dpk-pii-output    # matches the `clean` uri above
               args:

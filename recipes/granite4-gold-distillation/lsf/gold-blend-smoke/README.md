@@ -20,8 +20,8 @@ samples.
 ## Why `lmbda 0.3` changes the topology, not just the loss
 
 Above `lmbda 0.0`, the trainer needs a vLLM server to generate from — `vllm_num_servers`
-must be `>= 1`, and `vllm_server_url` (a `mem://` binding to `vllm-server`'s published URL)
-is what makes every node in `train`'s allocation a trainer while the server runs on its own,
+must be `>= 1`, and the gold step's `vllm` input (a `mem://` binding to `vllm-server`'s
+published URL) is what makes every node in `train`'s allocation a trainer while the server runs on its own,
 separate allocation. See `gold-onpolicy-smoke/README.md` for the full writeup of why this
 shape (rather than nodes carved out of one allocation) was chosen and how it was verified.
 

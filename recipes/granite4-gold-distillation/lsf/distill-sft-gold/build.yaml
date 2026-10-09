@@ -55,8 +55,8 @@ granite.build:
     # reach (the pull is then a no-op), "hf:///org/repo" to pull fresh from
     # the Hub, or "s3://bucket/key" / "cos://bucket/key" for object storage —
     # see ibm-bluevela's environment.yaml assetstores block for what's wired
-    # in. Whichever scheme wins, align_config below reads the RESOLVED
-    # binding path, never the URI itself.
+    # in. Whichever scheme wins, the step reads the RESOLVED binding path of
+    # its `teacher` / `student` inputs, never the URI itself.
     #
     # CHAT_TEMPLATE is NOT one of these: its default is a path RELATIVE to the
     # ported step's own code checkout, and that default is currently BROKEN
@@ -66,10 +66,10 @@ granite.build:
     align:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        teacher_model:
+        teacher:
           uri: "$${TEACHER_MODEL_URI}"
           type: model
-        student_model:
+        student:
           uri: "$${STUDENT_MODEL_URI}"
           type: model
       outputs:
@@ -97,8 +97,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             align_config:
-              teacher_model: "{{ bindings.teacher_model.binding.path }}"
-              student_model: "{{ bindings.student_model.binding.path }}"
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
               chat_template: "$${CHAT_TEMPLATE}"
               # FALSE: no granite 4.x model carries <|im_start|>, and
@@ -136,8 +134,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             corpus_config:
-              dataset: "{{ bindings.source_dataset.binding.path }}"
-              tokenizer: "{{ bindings.tokenizer.binding.path }}"
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus"
               max_length: $${MAX_LENGTH}
               length_policy: "drop"
@@ -195,8 +191,6 @@ granite.build:
               gpus_per_node: $${SFT_NUM_GPUS}
               nodes: 1
             sft_config:
-              student_model_path: "{{ bindings.student.binding.path }}"
-              corpus_path: "{{ bindings.corpus.binding.path }}"
               output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/train-sft"
               response_template: "$${RESPONSE_TEMPLATE}"
               max_length: $${MAX_LENGTH}
@@ -235,7 +229,7 @@ granite.build:
     vllm-server:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        student_model:
+        model:
           binding: train-sft.checkpoint
       outputs:
         # mem://, NOT env://: the payload is a URL, and env:// would run it
@@ -264,7 +258,6 @@ granite.build:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
             vllm_config:
-              model_path: "{{ bindings.student_model.binding.path }}"
               port: $${VLLM_PORT}
               # Must be >= the trainer's max_length, or a prompt the trainer
               # accepts is one the server refuses mid-run.
@@ -285,7 +278,9 @@ granite.build:
 <% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
         # The ordering primitive AND the health gate: this binding resolves
         # only once the server answers /health, so this target cannot start
-        # early.
+        # early. It is also the step's optional `vllm` input: binding it makes
+        # EVERY node in this allocation a trainer and hands the server address
+        # to gold.py on its command line.
         vllm:
           binding: vllm-server.vllm_url
 <% endif %>
@@ -293,7 +288,7 @@ granite.build:
           binding: train-sft.checkpoint
         corpus:
           binding: corpus.corpus
-        teacher_model:
+        teacher:
           uri: "$${TEACHER_MODEL_URI}"
           type: model
       outputs:
@@ -318,9 +313,6 @@ granite.build:
             gold_config:
               run_name: "$${RUN_NAME}"
               ds_config: "$${DS_CONFIG}"
-              model_name_or_path: "{{ bindings.student.binding.path }}"
-              teacher_model_name_or_path: "{{ bindings.teacher_model.binding.path }}"
-              dataset_name: "{{ bindings.corpus.binding.path }}"
               max_steps: $${MAX_STEPS}
               num_train_epochs: $${NUM_TRAIN_EPOCHS}
               learning_rate: $${LEARNING_RATE}
@@ -347,10 +339,8 @@ granite.build:
               nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
               nccl_enable_monitoring: $${NCCL_ENABLE_MONITORING}
 <% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
-              # The external server. Setting this makes EVERY node in this
-              # allocation a trainer and hands the address to gold.py on its
-              # command line.
-              vllm_server_url: "{{ bindings.vllm.binding.state }}"
+              # The external server's address arrives through the `vllm`
+              # input above, not a config key.
               vllm_mode: "$${VLLM_MODE}"
               vllm_sync_frequency: $${VLLM_SYNC_FREQUENCY}
               # Counts EXTERNAL servers, so it does not compete with the

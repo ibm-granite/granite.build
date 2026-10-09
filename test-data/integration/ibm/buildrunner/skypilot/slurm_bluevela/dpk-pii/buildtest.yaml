@@ -21,7 +21,6 @@ target_expectations:
     step_count: 2              # hfpull(docs) + dpk
     input_artifact_count: 1    # docs
     output_artifact_count: 1   # clean (env://, registered from the step's marker)
-    jobstats_count: 1
     # Pin what this fixture is for: the build named the transform and the step
     # derived its module and pip extra from it. Read from step_storage, so this
     # assertion holds independently of the lineage store.

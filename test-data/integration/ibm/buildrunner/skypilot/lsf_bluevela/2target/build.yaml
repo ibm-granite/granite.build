@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-bluevela-command-2target
+  name: skypilot-bluevela-command-2target-test
   # Two targets on BlueVela LSF (via Skypilot), both running the generic
   # `bash` step. `first` emits an output path and registers it as artifact
   # `out1`; `second` binds `first.out1` as an input and echoes the bound path,

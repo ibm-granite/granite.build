@@ -15,7 +15,6 @@ target_expectations:
     step_count: 1
     input_artifact_count: 3
     output_artifact_count: 1
-    jobstats_count: 1
     expected_steps:
       # The trainer comes from a mutable /proj checkout, so the step records which
       # commit ran. Asserting it here is what keeps that lineage hook honest.
@@ -24,9 +23,8 @@ target_expectations:
         config:
           gold_config:
             run_name: "gold-smoke"
-            # The reference pair: the only two overlays sharing a tokenizer whose
-            # vocabulary carries <|im_start|>, which response_template needs.
-            model_name_or_path: "/proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
+            # The student/teacher pair is no longer config: the step reads it from its
+            # named inputs (student, teacher), counted in input_artifact_count.
             # Pin the two settings whose wrong value corrupts a run silently
             # rather than failing it.
             use_liger_fused_jsd: false

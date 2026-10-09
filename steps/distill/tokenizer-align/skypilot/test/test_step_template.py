@@ -293,11 +293,12 @@ class TestFlagSurface:
 
 
 class TestConfigDefaults:
-    def test_model_paths_are_not_defaulted(self, step):
+    def test_models_are_required_inputs_not_defaults(self, step):
         """A wrong default here trains a plausible, meaningless run."""
+        assert set(step["inputs"]["required"]) == {"teacher", "student"}
         align = step["config"]["align_config"]
-        assert align["teacher_model"] == ""
-        assert align["student_model"] == ""
+        assert "teacher_model" not in align
+        assert "student_model" not in align
 
     def test_verify_defaults_on(self, step):
         """verify() is what catches a resolved backend disagreeing with

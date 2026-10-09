@@ -24,12 +24,12 @@ steps:
 
 All fields in these tables live under the step's `config.sft_config`.
 
-### Required
-
-| Field | Type | Purpose |
-|---|---|---|
-| `student_model_path` | string | Local directory of the **retagged** student, normally the `retagged_student` output of the `space://steps/distill/tokenizer-align` step. Empty, or not a directory, is refused. A control trained on the base student would also differ in its embedding rows for the control tokens, so the comparison would measure two things at once. |
-| `corpus_path` | string | The `corpus` output of the `space://steps/distill/corpus-prep` step (the `train.jsonl` file). Empty, or a path that does not exist, is refused. The student must also be the tokenizer the corpus was built for. |
+The student and the corpus are no longer config fields; they are the required `student`
+and `corpus` target inputs — see [Inputs](#inputs) below. The student must be the
+**retagged** student (empty or a non-directory binding is refused): a control trained on
+the base student would also differ in its embedding rows for the control tokens, so the
+comparison would measure two things at once. The corpus must be the tokenizer the student
+was built for.
 
 ### Optional
 
@@ -112,16 +112,18 @@ required; the defaults clone a public repository unauthenticated.
 
 ### Inputs
 
-The step declares no `inputs:` of its own. The target binds two upstream outputs and passes
-their paths through config:
+The step declares two required inputs, read as `{{ bindings.<name>.binding.path }}`:
 
-- **student** — `align.retagged_student` (the `space://steps/distill/tokenizer-align` step),
-  passed as `student_model_path: "{{ bindings.student.binding.path }}"`;
-- **corpus** — `corpus.corpus` (the `space://steps/distill/corpus-prep` step), passed as
-  `corpus_path: "{{ bindings.corpus.binding.path }}"`.
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `student` | yes | model | `align.retagged_student` (the `space://steps/distill/tokenizer-align` step) |
+| `corpus` | yes | dataset | `corpus.corpus` (the `space://steps/distill/corpus-prep` step) |
 
-For the KD arm, `precomputed_logits_dir` is wired the same way from the
+For the KD arm, `precomputed_logits_dir` stays a config key, wired from the
 `space://steps/distill/logit-precompute` step.
+
+`sft_config.student_model_path` and `sft_config.corpus_path` are no longer read; a target
+that still sets either fails at run time with a message naming the input to bind instead.
 
 ### Outputs
 
@@ -148,8 +150,8 @@ package and `sft.py` come from the delivered checkout, cloned into
   is printed, because the monitor hands the path to the `env://` store, possibly from another
   host, and a relative `env:` URI is rejected at config load.
 - A relative `deepspeed_config` resolves against the delivered checkout (`$CODE_DIR`).
-- `student_model_path`, `corpus_path` and `precomputed_logits_dir` are passed through unchanged,
-  so give them as absolute paths.
+- The resolved `student` and `corpus` input paths, and `precomputed_logits_dir`, are passed
+  through unchanged, so bind/give them as absolute paths.
 - `run-sft.sh` puts its preprocessing cache in `sft-preprocess-cache/` beside `output_dir` (its
   parent directory), so runs writing different output dirs under one parent share it; set
   `SFT_PREPROCESS_CACHE_ROOT` to override.
@@ -181,8 +183,6 @@ The warm-up stage, after align and corpus-prep (their targets as in the
               gpus_per_node: $${NUM_GPUS_PER_NODE}   # must match the allocation
               nodes: 1
             sft_config:
-              student_model_path: "{{ bindings.student.binding.path }}"
-              corpus_path: "{{ bindings.corpus.binding.path }}"
               output_dir: "$${RUN_NAME}/train-sft"
               max_length: $${MAX_LENGTH}             # the corpus's own budget
 ```

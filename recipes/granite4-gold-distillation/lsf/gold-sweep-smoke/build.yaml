@@ -25,23 +25,24 @@ granite.build:
   targets:
     gold-sweep-smoke:
       environment_uri: "$${ENVIRONMENT_URI}"
-      # The teacher, the student and the dataset, recorded as lineage inputs. These
-      # are what make the three appear as this target's inputs in `gb build status`
-      # and as OpenLineage inputs[] where a lineage provider is configured — lineage
-      # is built from the target's input artifacts, not from step config, so a path
-      # passed only to gold_config below would run fine and record nothing.
+      # The teacher, the student and the dataset: the gold step's three required
+      # inputs (`teacher`, `student`, `corpus`), which it reads by their
+      # resolved binding paths — there is no gold_config key for them. Being inputs
+      # is also what makes the three appear in `gb build status` and as OpenLineage
+      # inputs[] where a lineage provider is configured, so the lineage record and
+      # the trainer's arguments cannot disagree.
       #
       # env:// means "already on a filesystem this environment can reach": the pull is
       # a no-op, so these add three input artifacts and no extra step. `type` is what
       # gives each one a lineage artifact type.
       inputs:
-        teacher_model:
+        teacher:
           uri: "env://$${TEACHER_MODEL}"
           type: model
-        student_model:
+        student:
           uri: "env://$${STUDENT_MODEL}"
           type: model
-        training_dataset:
+        corpus:
           uri: "env://$${TRAINING_DATASET}"
           type: dataset
       outputs:
@@ -73,11 +74,6 @@ granite.build:
             gold_config:
               run_name: "$${RUN_NAME}"
               ds_config: "$${DS_CONFIG}"
-              # The same three parameters the inputs above declare, so the lineage
-              # record and the trainer's arguments cannot disagree.
-              model_name_or_path: "$${STUDENT_MODEL}"
-              teacher_model_name_or_path: "$${TEACHER_MODEL}"
-              dataset_name: "$${TRAINING_DATASET}"
               num_train_epochs: $${NUM_TRAIN_EPOCHS}
               # Caps the run by optimizer steps rather than epochs, which is what a
               # corpus too large to epoch through needs. 0 omits the key entirely.

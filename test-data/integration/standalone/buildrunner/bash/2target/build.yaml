@@ -1,5 +1,5 @@
 granite.build:
-  name: mem_2target_bash
+  name: mem_2target_bash-test
   # Two bash targets exercising the mem:// asset store for cross-target
   # output -> input binding on the in-process Bash environment. Unlike env://
   # (a shared-filesystem path), a mem:// URI is an opaque key into the build's

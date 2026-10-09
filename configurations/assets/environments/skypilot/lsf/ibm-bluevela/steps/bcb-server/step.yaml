@@ -9,6 +9,12 @@ config:
     step_contents_in_env: false
   bcb_server_config:
     port: 7860
+# No named inputs: this service step serves a model or sandbox named by config
+# (a literal path or image), not by an upstream artifact. allow_unknown lets a
+# recipe bind inputs purely to order this target.
+inputs:
+  allow_unknown: true
+
 outputs:
   optional:
     bcb_server_url:

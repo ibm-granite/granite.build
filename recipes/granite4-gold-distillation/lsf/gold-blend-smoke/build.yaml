@@ -16,9 +16,9 @@
 #   vllm-server ──vllm_url──> train ──checkpoint──> teardown
 #        └────────────────cluster_name───────────────┘
 #
-# vllm-server has no inputs, so it starts immediately. train waits for vllm_url,
-# which vllm-server publishes only AFTER /health answers — so the graph is the
-# health gate. teardown waits for the checkpoint, which the trainer emits as its
+# vllm-server has no input bindings (its one input is a plain env:// uri), so it
+# starts immediately. train waits for vllm_url, which vllm-server publishes only
+# AFTER /health answers — so the graph is the health gate. teardown waits for the checkpoint, which the trainer emits as its
 # last log line, and for the cluster name.
 #
 # STUDENT_MODEL should be a good off-policy checkpoint for a real blend run (see
@@ -37,6 +37,16 @@ granite.build:
     # ── The server ────────────────────────────────────────────────────────────
     vllm-server:
       environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The STUDENT. On-policy/blended GOLD has the student generate and
+        # the teacher score those generations, so serving the teacher here
+        # would be a different algorithm that still runs and still reports
+        # a loss.
+        # A plain env:// uri, not a binding, so it resolves at once and this
+        # stays a starting target.
+        model:
+          uri: "env://$${STUDENT_MODEL}"
+          type: model
       outputs:
         # mem://, NOT env://. The payload is a URL, and env:// would run it through
         # filesystem-path normalisation and mangle http://host:8001 into
@@ -68,11 +78,6 @@ granite.build:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
             vllm_config:
-              # The STUDENT. On-policy/blended GOLD has the student generate and
-              # the teacher score those generations, so serving the teacher here
-              # would be a different algorithm that still runs and still reports
-              # a loss.
-              model_path: "$${STUDENT_MODEL}"
               port: $${VLLM_PORT}
               # Must be >= the trainer's max_length, or a prompt the trainer
               # accepts is one the server refuses mid-run.
@@ -89,18 +94,23 @@ granite.build:
       inputs:
         # The ordering primitive AND the health gate: this binding resolves only
         # once the server answers /health, so this target cannot start early.
+        # It is also the step's optional `vllm` input: binding it makes EVERY
+        # node in this allocation a trainer and hands the address to gold.py on
+        # its command line; it is what distinguishes this recipe from the
+        # in-allocation split that vllm_num_servers alone selects.
         vllm:
           binding: vllm-server.vllm_url
-        # The teacher, student and dataset as lineage inputs. env:// means "already
-        # on a filesystem this environment can reach", so the pull is a no-op and
-        # these add three input artifacts and no extra step.
-        teacher_model:
+        # The teacher, student and dataset: the step's required inputs, and the
+        # lineage inputs. env:// means "already on a filesystem this environment
+        # can reach", so the pull is a no-op; the step reads each one's resolved
+        # binding path.
+        teacher:
           uri: "env://$${TEACHER_MODEL}"
           type: model
-        student_model:
+        student:
           uri: "env://$${STUDENT_MODEL}"
           type: model
-        training_dataset:
+        corpus:
           uri: "env://$${TRAINING_DATASET}"
           type: dataset
       outputs:
@@ -125,9 +135,6 @@ granite.build:
             gold_config:
               run_name: "$${RUN_NAME}"
               ds_config: "$${DS_CONFIG}"
-              model_name_or_path: "$${STUDENT_MODEL}"
-              teacher_model_name_or_path: "$${TEACHER_MODEL}"
-              dataset_name: "$${TRAINING_DATASET}"
               max_steps: $${MAX_STEPS}
               num_train_epochs: $${NUM_TRAIN_EPOCHS}
               learning_rate: $${LEARNING_RATE}
@@ -153,11 +160,6 @@ granite.build:
               nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
               nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
               nccl_enable_monitoring: $${NCCL_ENABLE_MONITORING}
-              # The external server. Setting this makes EVERY node in this
-              # allocation a trainer and hands the address to gold.py on its
-              # command line; it is what distinguishes this recipe from the
-              # in-allocation split that vllm_num_servers alone selects.
-              vllm_server_url: "{{ bindings.vllm.binding.state }}"
               vllm_mode: "$${VLLM_MODE}"
               vllm_sync_frequency: $${VLLM_SYNC_FREQUENCY}
               # Counts EXTERNAL servers here, so it no longer competes with the

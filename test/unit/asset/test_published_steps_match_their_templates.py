@@ -57,8 +57,10 @@ def _pairs():
     step is covered without being added anywhere.
     """
     found = []
-    for template in sorted(STEPS_DIR.glob("*/*/step-template.yaml")):
-        name = template.parent.parent.name
+    # `**`, not `*/*`: a nested step (steps/distill/gold/skypilot) is published at
+    # steps/distill/gold, and a one-level glob silently skipped all twelve of them.
+    for template in sorted(STEPS_DIR.glob("**/step-template.yaml")):
+        name = template.parent.parent.relative_to(STEPS_DIR).as_posix()
         env = template.parent.name
         asset = ASSETS_DIR / env / "steps" / name / "step.yaml"
         if asset.is_file():

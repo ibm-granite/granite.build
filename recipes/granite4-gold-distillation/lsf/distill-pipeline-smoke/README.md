@@ -43,7 +43,7 @@ file.
 | `align → train-*` | The student is the **retagged** one. Its embedding rows for the control tokens differ from the base model's. |
 | `corpus → train-*` | Plus the manifest the trainers' row-count guard reads. |
 | `train-gold → export` | Selects a checkpoint, prunes it, and verifies it loads. |
-| `align → export` | `expect_tokenizer_from`, so the export asserts the tokenizer it ships is the one that trained rather than whatever landed in the checkpoint directory. |
+| `align → export` | the `expected_tokenizer` input, so the export asserts the tokenizer it ships is the one that trained rather than whatever landed in the checkpoint directory. |
 | `align → eval-transfer-baseline` | The t=0 read, taken **before** training. A divergence with no baseline is a number without a direction. |
 | `export → eval-transfer`, `export → eval-bfcl` | Both post-training reads measure the published model, not a raw checkpoint. |
 

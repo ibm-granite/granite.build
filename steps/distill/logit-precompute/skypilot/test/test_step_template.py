@@ -241,15 +241,20 @@ class TestFlagSurface:
 
 
 class TestConfigDefaults:
-    def test_the_inputs_are_not_defaulted(self, step):
+    def test_the_inputs_are_required_not_defaulted(self, step):
+        assert set(step["inputs"]["required"]) == {
+            "corpus",
+            "teacher",
+            "teacher_tokenizer",
+        }
         cfg = step["config"]["precompute_config"]
-        assert cfg["corpus_path"] == ""
-        assert cfg["teacher_model_path"] == ""
+        assert "corpus_path" not in cfg
+        assert "teacher_model_path" not in cfg
 
-    def test_the_teacher_tokenizer_is_a_separate_key(self, step):
+    def test_the_teacher_tokenizer_is_a_separate_input(self, step):
         """As in the trainer: the tokenizer that defines the index's token ids need not be
         the model directory's own."""
-        assert "teacher_tokenizer_path" in step["config"]["precompute_config"]
+        assert "teacher_tokenizer" in step["inputs"]["required"]
 
     def test_a_partial_precompute_cannot_pass_silently(self, step):
         """The output of a run that skipped most of the corpus still loads, memmaps and

@@ -30,7 +30,6 @@ target_expectations:
     # The score .json. REQUIRED in the step template, so a green run with nothing
     # registered is not a reachable state — this count is the assertion that holds that.
     output_artifact_count: 1
-    jobstats_count: 1
     expected_steps:
       # No metadata_matches here, unlike the distill-* fixtures. Those assert
       # distill_code_commit / _source / _dirty, which their shared source-delivery block

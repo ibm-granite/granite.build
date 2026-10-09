@@ -33,7 +33,9 @@ config:
     output_dir: ""
     checkpoint_state_dir: ""
     # ── external services ──
+    # DEPRECATED: bind the `rm_url` input instead; read only when it is not bound.
     rm_server_url: ""
+    # DEPRECATED: bind the `code_url` input instead; read only when it is not bound.
     code_server_url: ""
     # ── GRPO hyperparameters (single-node defaults) ──
     beta: "0.05"
@@ -95,6 +97,24 @@ config:
     temp_schedule_type: "constant"
     dataset_local_cache_dir: "/proj/granite-build/g4os/data_downloads/"
     torchdynamo_disable: false
+
+# I/O schema, validated against the build.yaml target at build time. Inputs are
+# OPTIONAL during the deprecation window: the run script reads each one through
+# {{ bindings.<name>.binding.<path|state> }} when it is bound, and otherwise falls back
+# to the old config key, with a DEPRECATED warning. allow_unknown stays true so a recipe
+# can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  optional:
+    # The reward-model server URL: the rm-server target's mem:// `rm_server_url`.
+    rm_url:
+      type: fileset
+      accept: [binding]
+    # The code-execution server URL: the code-server target's mem:// `code_server_url`.
+    code_url:
+      type: fileset
+      accept: [binding]
+
 outputs:
   optional:
     checkpoint:
@@ -122,11 +142,29 @@ environment_configs:
             # (matches gbansible's bluevela_rl_job HOME=/stage).
             export HOME=/stage
 
-            {% if config.rl_config.code_server_url %}
-            export CODE_SERVER_URL="{{ config.rl_config.code_server_url }}"
+            # `code_url` is an optional mem:// input; rl_config.code_server_url is the DEPRECATED fallback.
+            {% if bindings.code_url is defined %}
+            export CODE_SERVER_URL="{{ bindings.code_url.binding.state }}"
+            {% if config.rl_config.code_server_url and config.rl_config.code_server_url != bindings.code_url.binding.state %}
+            echo "openinstruct-rl: WARNING: rl_config.code_server_url is ignored because the 'code_url' input is bound" >&2
+            {% elif config.rl_config.code_server_url %}
+            echo "openinstruct-rl: DEPRECATED: rl_config.code_server_url duplicates the bound 'code_url' input; remove it from the recipe" >&2
             {% endif %}
-            {% if config.rl_config.rm_server_url %}
+            {% elif config.rl_config.code_server_url %}
+            export CODE_SERVER_URL="{{ config.rl_config.code_server_url }}"
+            echo "openinstruct-rl: DEPRECATED: rl_config.code_server_url will be removed in a future release; bind the target input 'code_url' instead" >&2
+            {% endif %}
+            # `rm_url` is an optional mem:// input; rl_config.rm_server_url is the DEPRECATED fallback.
+            {% if bindings.rm_url is defined %}
+            export RM_SERVER_URL="{{ bindings.rm_url.binding.state }}"
+            {% if config.rl_config.rm_server_url and config.rl_config.rm_server_url != bindings.rm_url.binding.state %}
+            echo "openinstruct-rl: WARNING: rl_config.rm_server_url is ignored because the 'rm_url' input is bound" >&2
+            {% elif config.rl_config.rm_server_url %}
+            echo "openinstruct-rl: DEPRECATED: rl_config.rm_server_url duplicates the bound 'rm_url' input; remove it from the recipe" >&2
+            {% endif %}
+            {% elif config.rl_config.rm_server_url %}
             export RM_SERVER_URL="{{ config.rl_config.rm_server_url }}"
+            echo "openinstruct-rl: DEPRECATED: rl_config.rm_server_url will be removed in a future release; bind the target input 'rm_url' instead" >&2
             {% endif %}
 
             # The GRPO command is written to a script via a quoted heredoc

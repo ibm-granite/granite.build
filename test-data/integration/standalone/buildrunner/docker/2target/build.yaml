@@ -1,5 +1,5 @@
 granite.build:
-  name: mem_2target_docker
+  name: mem_2target_docker-test
   # Two docker targets exercising the mem:// asset store for cross-target
   # output -> input binding on the Docker environment. The docker `command` step
   # runs `bash -c <command>`, so it can echo the GB_ARTIFACT_STATE marker the

@@ -176,8 +176,9 @@ class TestCorpusConsumesSources:
         assert _targets(off)["corpus"]["inputs"]["source_dataset"] == {
             "binding": "sources.corpus_source"
         }
-        dataset = _config(off, "corpus")["corpus_config"]["dataset"]
-        assert dataset == "{{ bindings.source_dataset.binding.path }}"
+        # The step reads its declared source_dataset input; the retired config key
+        # must not come back.
+        assert "dataset" not in _config(off, "corpus")["corpus_config"]
 
     def test_prep_does_not_cap_the_row_count(self, off):
         """The cap belongs in sources, where it can be applied proportionally.

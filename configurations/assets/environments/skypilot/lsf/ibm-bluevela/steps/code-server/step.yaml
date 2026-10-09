@@ -13,6 +13,12 @@ config:
     container_pythonpath: "/stage"
     container_path: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     idle_timeout: ""
+# No named inputs: this service step serves a model or sandbox named by config
+# (a literal path or image), not by an upstream artifact. allow_unknown lets a
+# recipe bind inputs purely to order this target.
+inputs:
+  allow_unknown: true
+
 outputs:
   optional:
     code_server_url:

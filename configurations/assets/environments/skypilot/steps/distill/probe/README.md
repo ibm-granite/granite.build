@@ -46,10 +46,11 @@ All fields live under the step's `config.probe_config`.
 
 ### Inputs
 
-The step declares no `inputs:`. It reads the `checkpoint` directory and, for
-`tokenizer-fit`, the `corpus` file, both given as plain paths in `probe_config` that
-must be visible on the compute node (for example under `/proj/...` on BlueVela). A
-target that wants to probe an upstream target's output can set either field to
+The step declares no named inputs (`inputs: {allow_unknown: true}`): it is a diagnostic
+run against literal paths, not a pipeline stage. It reads the `checkpoint` directory and,
+for `tokenizer-fit`, the `corpus` file, both given as plain paths in `probe_config` that
+must be visible on the compute node (for example under `/proj/...` on BlueVela). A target
+that wants to probe an upstream target's output can set either field to
 `{{ bindings.<name>.binding.path }}` after declaring the input on the target.
 
 ### Outputs

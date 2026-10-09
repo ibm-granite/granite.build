@@ -118,7 +118,7 @@ NCCL_ENABLE_MONITORING: true
 
 # ─── Topology and resources ───────────────────────────────────────────
 # ONE trainer node, in its own allocation. All 8 of its GPUs train, because the
-# server is elsewhere — that is what vllm_server_url changes.
+# server is elsewhere — that is what binding the trainer's `vllm` input changes.
 NUM_NODES: 1
 NUM_GPUS_PER_NODE: 8
 ACCELERATORS: "H100:8"

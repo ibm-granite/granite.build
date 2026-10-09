@@ -1,0 +1,32 @@
+granite.build:
+  name: bash-buildwatcher-1step
+  # Single bash command target for the standalone BuildWatcher tests
+  # (test/integration/standalone/buildwatcher/test_buildwatcher.py) — the bash
+  # equivalent of the k8s 1step/cpu fixture, with no IBM dependencies.
+  #
+  # env_output is an env:// output: push is a shared-FS no-op, so the command just
+  # emits its path in the GB_ARTIFACT marker to register it (no file needed). The
+  # path is unique per step run so the multi-build test's concurrent builds don't
+  # collide on the artifact registry's unique (uri, space) key; `binding.path`
+  # resolves the uri to that emitted path.
+  targets:
+    command:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      outputs:
+        env_output:
+          uri: "env://{{ binding.path }}"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            command_config:
+              # The leading `sleep 10` keeps the build RUNNING long enough for the
+              # cancel test to observe RUNNING and land its cancel before the
+              # command completes.
+              command: >-
+                set -e;
+                sleep 10;
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-buildwatcher-{{ run_metadata.targetsteprun_id | short_hash }}.txt"
+            compute_config:
+              num_nodes: 1

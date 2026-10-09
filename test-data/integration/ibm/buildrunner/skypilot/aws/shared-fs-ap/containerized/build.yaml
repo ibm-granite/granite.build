@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-aws-shared-fs-ap-probe-containerized
+  name: skypilot-aws-shared-fs-ap-probe-containerized-test
   # Gated BYO EFS access-point (#396) producer -> consumer build. The environment's
   # shared_filesystem mounts a pre-provisioned EFS through a per-space access point
   # (`mount -t efs -o accesspoint=<fsap>,tls`), so every step needs amazon-efs-utils

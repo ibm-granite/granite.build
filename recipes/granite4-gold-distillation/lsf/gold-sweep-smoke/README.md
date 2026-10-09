@@ -89,7 +89,7 @@ Nothing compares this run's loss to anything.
 
 ## Lineage and outputs
 
-Identical in shape to `gold-sweep-100`: three input artifacts (`teacher_model`,
-`student_model`, `training_dataset`) and a `checkpoint` output of type `model` at
+Identical in shape to `gold-sweep-100`: three input artifacts (`teacher`,
+`student`, `corpus`) and a `checkpoint` output of type `model` at
 `$GB_BUILD_WORKDIR/checkpoints/<run_name>_node<N>`, registered by rank 0. That the
 lineage wiring works is itself one of the things this run gates.

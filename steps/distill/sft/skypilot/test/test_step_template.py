@@ -342,10 +342,11 @@ class TestFlagSurface:
 
 
 class TestConfigDefaults:
-    def test_the_inputs_are_not_defaulted(self, step):
+    def test_the_inputs_are_required_not_defaulted(self, step):
+        assert set(step["inputs"]["required"]) == {"student", "corpus"}
         cfg = step["config"]["sft_config"]
-        assert cfg["student_model_path"] == ""
-        assert cfg["corpus_path"] == ""
+        assert "student_model_path" not in cfg
+        assert "corpus_path" not in cfg
 
     def test_this_is_a_control_by_default(self, step):
         """Setting precomputed_logits_dir turns this step from the SFT control into

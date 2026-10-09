@@ -28,12 +28,13 @@ def _write_fixture(tmp_path):
     bt = tmp_path / "buildtest.yaml"
     bt.write_text(
         "build_yaml: ./build.yaml\n"
+        "space_uri: ./space\n"
         "tests: [runner]\n"
         "simulate_step_failure: false\n"
         "targets: [t1]\n"
         "target_expectations:\n"
         "  - {target_name: t1, input_artifact_count: 0, output_artifact_count: 1, "
-        "step_count: -1, jobstats_count: 0}\n"
+        "step_count: -1}\n"
     )
     return bt
 

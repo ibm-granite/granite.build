@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-bluevela-custom-code
+  name: skypilot-bluevela-custom-code-test
   # Single custom_code_skypilot (BYOC) target on BlueVela SLURM (via Skypilot).
   #
   # The step clones a private GHE workload repo, materializes a hash-keyed conda/

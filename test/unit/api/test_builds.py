@@ -22,14 +22,15 @@ unfixed in validate_build during a follow-up audit — validate_build had no
 Request param at all, so it couldn't check identity, and its space_uri path
 bypasses space storage entirely). Both must reject a caller acting under a
 DIFFERENT username unless the caller is a space/super admin explicitly
-impersonating that user — the same confirm_space_write_access gate
+impersonating that user — the same confirm_existing_item_write_access gate
 PUT /builds/{id}/update already applies.
 
 test/conftest.py's autouse `_mock_space_access` fixture stubs both
-confirm_space_write_access (in this module) and has_space_write_access (in
-utils) to an unconditional no-op/pass in mock mode, which would make every
-test here trivially pass regardless of the fix under test. `_real_authz`
-restores both real functions for the duration of each test below.
+confirm_existing_item_write_access (in this module) and
+_has_existing_item_write_access (in utils) to an unconditional no-op/pass in
+mock mode, which would make every test here trivially pass regardless of the
+fix under test. `_real_authz` restores both real functions for the duration
+of each test below.
 """
 
 from contextlib import contextmanager
@@ -65,9 +66,11 @@ from gbserver.api.builds import (
     validate_build,
 )
 from gbserver.api.utils import (
-    confirm_space_write_access as _real_confirm_space_write_access,
+    _has_existing_item_write_access as _real_has_existing_item_write_access,
 )
-from gbserver.api.utils import has_space_write_access as _real_has_space_write_access
+from gbserver.api.utils import (
+    confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
+)
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.status import Status
@@ -79,18 +82,32 @@ ATTACKER = "attacker_a"
 
 @contextmanager
 def _real_authz():
-    """Restore the real confirm_space_write_access AND has_space_write_access,
-    undoing the autouse `_mock_space_access` fixture's unconditional bypass."""
+    """Restore the real confirm_existing_item_write_access AND
+    _has_existing_item_write_access, undoing the autouse `_mock_space_access`
+    fixture's unconditional bypass."""
     with (
         patch(
-            "gbserver.api.builds.confirm_space_write_access",
-            side_effect=_real_confirm_space_write_access,
+            "gbserver.api.builds.confirm_existing_item_write_access",
+            side_effect=_real_confirm_existing_item_write_access,
         ),
         patch(
-            "gbserver.api.utils.has_space_write_access",
-            side_effect=_real_has_space_write_access,
+            "gbserver.api.utils._has_existing_item_write_access",
+            side_effect=_real_has_existing_item_write_access,
         ),
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _space_member():
+    """Make the caller a member of every space by default.
+
+    Adding a new item to a space (confirm_can_add_to_space) requires space
+    membership on top of identity binding. Tests that exercise identity and
+    ownership rules start from a member caller; the non-member tests override
+    this with a nested patch.
+    """
+    with patch("gbserver.api.utils.space_access_check", return_value=True):
         yield
 
 
@@ -144,6 +161,24 @@ def test_submit_build_allows_self_submission():
     assert resp.build_id
 
 
+def test_submit_build_rejects_non_member_self_submission():
+    """Submitting under your own username is not enough: the caller must also
+    belong to the space whose compute and secrets the build will use."""
+    with (
+        _patched_storage(),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            submit_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _submit_req(ATTACKER),
+            )
+        assert exc.value.status_code == 401
+
+
 def test_submit_build_allows_admin_impersonation():
     with (
         _patched_storage(),
@@ -156,6 +191,33 @@ def test_submit_build_allows_admin_impersonation():
             _submit_req(VICTIM),
         )
     assert resp.build_id
+
+
+def _oversized_zip_b64() -> str:
+    import base64
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("build.yaml", b"0" * 1000)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_submit_build_rejects_oversized_archive_413():
+    """Archive caps apply at submit, so an oversized build is never stored."""
+    added = []
+    req = _submit_req(ATTACKER)
+    req.build_archive = _oversized_zip_b64()
+    with (
+        _patched_storage() as get_storage,
+        patch.object(builds_module, "MAX_ZIP_UNCOMPRESSED_BYTES", 100),
+    ):
+        get_storage.return_value.build_storage.add = added.append
+        with pytest.raises(HTTPException) as exc:
+            submit_build(_fake_request(ATTACKER, f"{ATTACKER}@example.com"), req)
+    assert exc.value.status_code == 413
+    assert added == []
 
 
 # ------------------------------------------------------------------ validate_build
@@ -223,6 +285,36 @@ def test_validate_build_allows_self_validation_via_space_uri():
     assert resp.status_code == 200
 
 
+def test_validate_build_rejects_non_member_via_space_name():
+    with (
+        _patched_storage(),
+        _real_authz(),
+        _NO_OP_VALIDATION,
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            validate_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _validate_req(ATTACKER, space_name=SPACE),
+            )
+        assert exc.value.status_code == 401
+
+
+def test_validate_build_rejects_oversized_archive_413():
+    req = _validate_req(ATTACKER, space_uri="git://example/space.git")
+    req.build_archive = _oversized_zip_b64()
+    with (
+        _patched_storage(),
+        _NO_OP_VALIDATION,
+        patch.object(builds_module, "MAX_ZIP_UNCOMPRESSED_BYTES", 100),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            validate_build(_fake_request(ATTACKER, f"{ATTACKER}@example.com"), req)
+    assert exc.value.status_code == 413
+
+
 def test_validate_build_allows_admin_impersonation_via_space_name():
     with (
         _patched_storage(),
@@ -242,7 +334,7 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
 #
 # Regression coverage for the asymmetry fixed here: read_build and
 # get_build_archive used to call the owner/admin-only authorize_build_access
-# (via #201's confirm_space_write_access), while get_build_status/
+# (via #201's confirm_existing_item_write_access), while get_build_status/
 # get_buildevents from that same PR correctly used the broader
 # authorize_build_read_access (any space member). A build's owner is VICTIM
 # throughout; MEMBER is a different user who is a member of SPACE but not its
@@ -250,8 +342,8 @@ def test_validate_build_allows_admin_impersonation_via_space_name():
 #
 # Both endpoints' current (fixed) path is authorize_build_read_access ->
 # confirm_space_member_access -> has_space_member_access, which only consults
-# is_super_admin and space_access_check — not confirm_space_write_access,
-# has_space_write_access, or is_space_admin. _real_authz() and the
+# is_super_admin and space_access_check — not confirm_existing_item_write_access,
+# _has_existing_item_write_access, or is_space_admin. _real_authz() and the
 # is_space_admin patch below don't affect that path today; they're kept as a
 # tripwire so that if either endpoint ever regresses back onto the
 # owner/admin-only authorize_build_access, the non_owner_space_member case
@@ -491,6 +583,28 @@ def test_restart_build_reopens_same_build_in_place():
     # Definition/targets are untouched (already on the build).
     assert reopened.build_archive == prior.build_archive
     assert reopened.targets == prior.targets
+
+
+def test_restart_build_rejects_owner_no_longer_in_space_404():
+    """Owning the build is not enough to restart it: the re-run uses the
+    space's compute and secrets, so an owner who has left the space gets the
+    same not-found as any other unauthorized caller, and the build is untouched."""
+    prior = _prior_build(ATTACKER, status=Status.FAILED)
+    builds = {prior.uuid: prior}
+    with (
+        _patched_restart_storage(builds),
+        _real_authz(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.is_space_admin", return_value=False),
+        patch("gbserver.api.utils.space_access_check", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            restart_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                BuildRestartRequest(build_id=prior.uuid),
+            )
+    assert exc.value.status_code == 404
+    assert builds[prior.uuid].status == Status.FAILED
 
 
 def test_restart_build_rejects_succeeded_build_409():

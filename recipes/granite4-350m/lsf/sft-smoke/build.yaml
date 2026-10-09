@@ -54,10 +54,10 @@ granite.build:
     align:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        teacher_model:
+        teacher:
           uri: "$${TEACHER_MODEL_URI}"
           type: model
-        student_model:
+        student:
           uri: "$${STUDENT_MODEL_URI}"
           type: model
         chat_template:
@@ -88,10 +88,7 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             align_config:
-              teacher_model: "{{ bindings.teacher_model.binding.path }}"
-              student_model: "{{ bindings.student_model.binding.path }}"
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
-              chat_template: "{{ bindings.chat_template.binding.path }}"
               # FALSE for this pair — see distill-smoke's parameters.yaml for
               # the full reasoning (no granite 4.x model has ChatML turn
               # tokens; the turn boundary is still checked separately).
@@ -128,8 +125,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             corpus_config:
-              dataset: "{{ bindings.source_dataset.binding.path }}"
-              tokenizer: "{{ bindings.tokenizer.binding.path }}"
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus"
               max_length: $${MAX_LENGTH}
               think_policy: "$${THINK_POLICY}"
@@ -177,8 +172,6 @@ granite.build:
               gpus_per_node: $${SFT_NUM_GPUS}
               nodes: 1
             sft_config:
-              student_model_path: "{{ bindings.student.binding.path }}"
-              corpus_path: "{{ bindings.corpus.binding.path }}"
               output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/train-sft"
               response_template: "$${RESPONSE_TEMPLATE}"
               max_length: $${MAX_LENGTH}

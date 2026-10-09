@@ -40,6 +40,9 @@ from gbserver.environment.bash import Bash
 from gbserver.environment.docker import Docker
 from gbserver.environment.runpod import Runpod
 
+# Bash refuses to run outside STANDALONE; these tests construct it directly.
+pytestmark = pytest.mark.usefixtures("allow_bash_environment")
+
 
 @pytest.fixture
 def bash_env():

@@ -10,13 +10,9 @@ target_expectations:
     # add input/output artifacts but launch NO extra pull/push step — step_count
     # stays 1. Two inputs (env_input + hf_input) and two outputs (env_output +
     # hf_output) are registered.
-    # NOTE: in this in-process standalone run the lineage store is a
-    # NoopLineageStore, so _verify_target_lineage skips the jobstats_count
-    # assertion entirely (see buildtest.py); the value below is documentary only.
     step_count: 1
     input_artifact_count: 2
     output_artifact_count: 2
-    jobstats_count: 2
 # Use the shared standalone space at <repo>/configurations/spaces/local so the BuildRunner
 # resolves space:// URIs (the bash environment and the command step) without
 # cloning from GitHub.  Relative path resolves against this YAML's directory.

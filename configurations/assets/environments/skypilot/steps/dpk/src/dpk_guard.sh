@@ -141,17 +141,15 @@ if [ -z "$output" ]; then
 fi
 
 # --- input_path -----------------------------------------------------------------
-# The step takes a PATH, resolved by the build from its own declared inputs (the byoc
-# pattern), rather than the NAME of a binding it would have to resolve itself. So the
-# name-shaped failures are gone: no sanitizing, no collision between two names that
-# sanitize alike, and no `set -u` abort from a mistyped variable name.
-#
-# What replaces them is one failure the PATH form introduces, and it is quiet.
+# The PATH the transform reads: the template resolves it from the step's declared
+# `docs` input, or from the deprecated dpk_config.input_path when `docs` is not bound.
+# Empty means neither was given.
 if [ -z "$input_path" ]; then
-  echo "dpk: ERROR dpk_config.input_path is required." >&2
-  echo "dpk: it is the directory the transform reads, resolved by the build from one" >&2
-  echo "dpk: of its declared inputs:" >&2
-  echo "dpk:   input_path: \"{{ bindings.<name>.binding.path }}\"" >&2
+  echo "dpk: ERROR no input: bind the target input 'docs' to the directory the transform" >&2
+  echo "dpk: reads, e.g." >&2
+  echo "dpk:   inputs:" >&2
+  echo "dpk:     docs: {binding: <target>.<output>}" >&2
+  echo "dpk: (the deprecated dpk_config.input_path is still read when 'docs' is unbound)" >&2
   exit 1
 fi
 

@@ -43,6 +43,37 @@ secret_manager:
 
 * File can be json, yaml or .env
 
+#### Default location (no `secrets_dir`)
+
+With `config: {}` (no `secrets_dir`), each space gets its own directory:
+`$GB_HOME_DIR/space_secrets/<space name>/` (default `~/.granite.build/space_secrets/<space name>/`),
+where `<space name>` is the `name:` in that space's `space.yaml`. A space reads every supported file in
+its own directory and nothing else, so one space never sees another space's secrets. The
+`/space_secrets` admin API writes there too.
+
+Files placed directly in `space_secrets/` (the shared layout used before per-space isolation) are
+**not** read; gbserver logs a warning naming them. Move each into the directory of the space it
+belongs to. The one exception is `space_secrets/<space name>.yaml` (what the admin API used to write),
+which is moved into `space_secrets/<space name>/` automatically on first use.
+
+Because the directory is keyed on the space.yaml `name`, not the registered space name, two different
+spaces using the default location must not share a space.yaml `name`; otherwise they would read each
+other's secrets. Registration enforces this. Standalone startup and `gbserver create-spaces` refuse a
+space whose space.yaml `name` matches that of another registered space (with a different URI) that also
+uses the default location. Rows that are aliases of one space, such as standalone's `public`,
+`standalone` and `local`, share a URI and are allowed. A registered space whose space.yaml can't be read
+(for example a stale row for a deleted directory) is skipped with a warning. Give the second space a
+different space.yaml `name`, or an explicit `secrets_dir`. A space that uses the default location
+but has no `name:` is also refused, since there would be no directory to read.
+
+The check runs only at registration. Whoever controls a registered space's repo is trusted not to change
+its space.yaml `name` afterwards to another space's name, because that would let the space read the other
+space's secrets. If space repos are controlled by different teams, give each space an explicit
+`secrets_dir`.
+
+An explicit `secrets_dir` is used exactly as given; spaces configured with the same `secrets_dir`
+share those secrets.
+
 ### Remote Synchronization (Optional)
 
 Remote synchronization allows secrets to be initially or periodically synced from a remote secrets manager into the local store. The only supported remote is IBM Cloud — see [ibmcloud-secrets-manager.md](ibmcloud-secrets-manager.md).

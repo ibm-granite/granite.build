@@ -10,12 +10,10 @@ target_expectations:
   - target_name: filemount
     # Just the one custom step runs: the env:// input/output are no-ops on the
     # shared FS (one input + one output artifact each, no extra pull/push step),
-    # and the file_mounts copy adds no step. jobstats_count is kept accurate for
-    # a single step.
+    # and the file_mounts copy adds no step.
     step_count: 1
     input_artifact_count: 1
     output_artifact_count: 1
-    jobstats_count: 1
 # Co-located test space (space/ next to this file) — carries the custom
 # filemount-check step and chains to configurations/assets for everything else.
 space_uri: space

@@ -104,7 +104,6 @@ TEST_REQUIRED_ENV_VARS = [
     "GBSERVER_SQL_SSLROOT_CERT_BASE64",
     "GITHUB_TOKEN",
     "IBM_CLOUD_API_KEY",
-    "LAKEHOUSE_TOKEN",
     "HF_TOKEN",
     # GB Test Secrets
     "GBTEST_GB_CLUSTER_API_KEY",
@@ -132,7 +131,6 @@ TEST_ENV_VAR_SPS_NAMES["GBSERVER_SQL_PASSWD"] = "gbserver-sql-passwd"
 TEST_ENV_VAR_SPS_NAMES["GBSERVER_SQL_SSLROOT_CERT_BASE64"] = (
     "gbserver-sql-sslroot-cert-base64"
 )
-TEST_ENV_VAR_SPS_NAMES["LAKEHOUSE_TOKEN"] = "lakehouse-token"
 # RIS3
 TEST_ENV_VAR_SPS_NAMES["IBM_CLOUD_API_KEY"] = "ris3-api-key"
 
@@ -769,6 +767,19 @@ def _mock_git_uri_branch_check(request):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def allow_bash_environment():
+    """Allow constructing the Bash environment in a non-STANDALONE test run.
+
+    Bash refuses to run outside a STANDALONE server (it executes step commands
+    on the server host). Tests run as GB_ENVIRONMENT=DEV, so a test that builds
+    a Bash instance directly opts in with
+    ``pytestmark = pytest.mark.usefixtures("allow_bash_environment")``.
+    """
+    with patch("gbserver.environment.bash.is_standalone", return_value=True):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _mock_space_access(request):
     """In mock mode, bypass space write-access checks."""
@@ -778,7 +789,7 @@ def _mock_space_access(request):
 
     with (
         patch(
-            "gbserver.api.utils.has_space_write_access",
+            "gbserver.api.utils._has_existing_item_write_access",
             return_value=(True, "standalone"),
         ),
         patch(
@@ -786,7 +797,7 @@ def _mock_space_access(request):
             return_value=True,
         ),
         patch(
-            "gbserver.api.artifacts.confirm_space_write_access",
+            "gbserver.api.artifacts.confirm_existing_item_write_access",
             return_value=None,
         ),
         patch(
@@ -794,7 +805,7 @@ def _mock_space_access(request):
             return_value=True,
         ),
         patch(
-            "gbserver.api.builds.confirm_space_write_access",
+            "gbserver.api.builds.confirm_existing_item_write_access",
             return_value=None,
         ),
     ):

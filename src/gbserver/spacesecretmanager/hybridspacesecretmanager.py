@@ -62,7 +62,9 @@ class HybridSpaceSecretManager(SpaceSecretManager):
             managers: List of manager configurations in priority order.
                      Each config is a dict with "type" and optional "config" keys.
                      Example: [{"type": "env", "config": {}}, {"type": "local", "config": {...}}]
-            **kwargs: Additional keyword arguments passed to parent class
+            **kwargs: Additional keyword arguments passed to parent class. A
+                ``space_name`` is also forwarded to every chained manager (the
+                local manager needs it to find its per-space default directory).
 
         Note:
             If a manager fails to initialize, it logs an error but continues with remaining managers.
@@ -100,7 +102,9 @@ class HybridSpaceSecretManager(SpaceSecretManager):
                 )
                 continue
 
-            manager_kwargs = manager_config.get("config", {})
+            manager_kwargs = dict(manager_config.get("config", {}))
+            if kwargs.get("space_name") is not None:
+                manager_kwargs.setdefault("space_name", kwargs["space_name"])
 
             try:
                 # Instantiate the manager using the factory method

@@ -30,6 +30,9 @@ import pytest
 
 from gbserver.types.buildevent import BuildEventType, EntityRunMetadata
 
+# Bash refuses to run outside STANDALONE; these tests construct it directly.
+pytestmark = pytest.mark.usefixtures("allow_bash_environment")
+
 # Mirrors the bash monitor.yaml log_monitor config: matches
 # "<PFX>ARTIFACT_ID:<id> <PFX>ARTIFACT_PATH:<path>" lines, where <PFX> is the
 # standardized GB_ prefix or the legacy LLMB_ prefix (dual-accept for backwards

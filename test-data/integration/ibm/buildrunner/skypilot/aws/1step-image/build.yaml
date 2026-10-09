@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-aws-command-image
+  name: skypilot-aws-command-image-test
   # Single command-step target on AWS EC2 (via SkyPilot) that runs the command
   # INSIDE a container image. This is the AWS analog of the LSF (bluevela) path:
   # there the image runs through LSF's enroot, whereas on AWS the skypilot command

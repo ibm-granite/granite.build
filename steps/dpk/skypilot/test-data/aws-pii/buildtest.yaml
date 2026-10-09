@@ -14,7 +14,6 @@ target_expectations:
     step_count: 1
     input_artifact_count: 1     # docs
     output_artifact_count: 1    # clean (env://, registered inline from the marker)
-    jobstats_count: 1
     expected_steps:
       - step_uri: space://steps/dpk
         config:

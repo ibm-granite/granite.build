@@ -9,12 +9,10 @@ targets:
 target_expectations:
   - target_name: eval-run
     # One workload runs and registers one env:// output artifact; there are no
-    # inputs. jobstats_count is not asserted under standalone's NoopLineageStore
-    # but is kept accurate for a single step.
+    # inputs.
     step_count: 1
     input_artifact_count: 0
     output_artifact_count: 1
-    jobstats_count: 1
 # The Space this test resolves the step (and the skypilot/aws environment +
 # monitors) through. In the step dir (Mode 1) it is the local Space rendered by `make space`
 # two levels up (steps/eval/skypilot/space/), which carries steps/eval/step.yaml

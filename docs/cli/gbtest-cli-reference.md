@@ -36,7 +36,10 @@ target_expectations:
     step_count: 5
     input_artifact_count: 1
     output_artifact_count: 1
-    jobstats_count: 3
+# Required: the space that resolves the build's space:// URIs. Takes precedence
+# over the space's git_repo_uri in the gb_spaces table. A git URI, or a local
+# path (relative file:// or filesystem paths resolve against this YAML's dir).
+space_uri: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
 
 # Optional (defaults shown).
 build_yaml: ./build.yaml          # path relative to this YAML; defaults to sibling
@@ -45,9 +48,6 @@ space_name: public                # space the build runs under
 targets: null                     # list of targets to run; null = run all
 timeout_minutes: 30
 simulate_step_failure: true            # inject one environment failure to exercise retry path
-space_uri: null                   # if set, takes precedence over the space's
-                                  #   git_repo_uri in the gb_spaces table
-                                  #   (relative file:// or filesystem paths resolve against this YAML's dir)
 tests:                            # which test methods to run (see below)
   - runner
   - runner_cancellation
@@ -64,7 +64,7 @@ tests:                            # which test methods to run (see below)
 | `targets`              | list[str] \| null | `null` (run all)                 | Subset of targets in `build.yaml` to run. |
 | `timeout_minutes`      | int             | `30`                               | Wall-clock cap for the build. |
 | `simulate_step_failure`     | bool            | `true`                             | If `true`, signals the environment to inject one simulated failure to exercise the retry path. |
-| `space_uri`            | str \| null     | `null`                             | When set, takes precedence over the `git_repo_uri` recorded for `space_name` in the `gb_spaces` table — the BuildRunner resolves `space://` URIs from this value instead of cloning the registered git repo. Relative `file://` URIs and bare relative filesystem paths resolve against this YAML's directory. PR creation and verification are skipped automatically (no GitHub repo). |
+| `space_uri`            | str             | **required**                       | Takes precedence over the `git_repo_uri` recorded for `space_name` in the `gb_spaces` table — the build resolves `space://` URIs from this value instead of the registered git repo. A git URI (IBM fixtures use `git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config`) or a local path; relative `file://` URIs and bare relative filesystem paths resolve against this YAML's directory. A direct BuildRunner run never creates PRs; BuildWatcher/BuildRunnerJob runs against a git `space_uri` create PRs and are verified for them. |
 | `tests`                | list[str]       | `["runner", "runner_cancellation"]` | Which test methods opt in for this spec. Unknown values fail at load time. |
 
 `ExpectedTarget` fields (all required):
@@ -75,7 +75,6 @@ tests:                            # which test methods to run (see below)
 | `step_count`             | Expected number of step records (use `-1` to skip checking). |
 | `input_artifact_count`   | Expected number of input artifacts on the recorded target run. |
 | `output_artifact_count`  | Expected number of output artifacts on the recorded target run. |
-| `jobstats_count`         | Expected number of jobstats (lineage) entries. |
 
 ### The `tests:` list
 
@@ -127,7 +126,7 @@ gb build describe -f template/build.yaml --raw --param ENVIRONMENT=skypilot/aws 
 gbtest render exec-build.yaml -o buildtest.yaml
 
 # 3. Edit buildtest.yaml to confirm the verification values — replace the
-#    step_count FIXME. See "gbtest render" below.
+#    step_count and space_uri FIXMEs. See "gbtest render" below.
 
 # 4. Run it — -f points gbtest at the executable build.
 gbtest buildtest.yaml -f exec-build.yaml
@@ -153,15 +152,16 @@ a **skeleton** `buildtest.yaml` (to stdout, or to `-o`). It:
   declared inputs/outputs;
 - emits a `FIXME` for `step_count`, the one value it cannot determine statically
   (it is environment-dependent), which you must replace;
-- defaults `jobstats_count` to `-1` (skip) — jobstats are not asserted at run
-  time yet, so it is not forced to a value;
+- emits a `FIXME` for the required `space_uri` (the space that resolves the
+  build's `space://` URIs), which you must replace;
 - pre-sets `simulate_step_failure: false` (no step-retry testing) and
   `tests: [runner]` (no cancellation run).
 
-The `step_count` `FIXME` **fails validation** if left unreplaced: loading the spec
-(on any `gbtest` run) raises a clear error naming the field, so you cannot
-accidentally run a half-filled skeleton. Replace `step_count` with the observed
-step count (or `-1` to skip that assertion).
+The `step_count` and `space_uri` `FIXME`s **fail validation** if left unreplaced:
+loading the spec (on any `gbtest` run) raises a clear error naming the field, so
+you cannot accidentally run a half-filled skeleton. Replace `step_count` with the
+observed step count (or `-1` to skip that assertion), and `space_uri` with the
+space to run against.
 
 > `output_artifact_count` counts *declared* outputs; a declared output whose
 > command emits no `GB_ARTIFACT` marker will over-count — the first real run

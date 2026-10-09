@@ -87,20 +87,24 @@ granite.build:
     align:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        # Recorded as lineage inputs. TEACHER_MODEL_URI / STUDENT_MODEL_URI /
+        # The step's named inputs (teacher, student, and the optional
+        # chat_template). TEACHER_MODEL_URI / STUDENT_MODEL_URI /
         # CHAT_TEMPLATE_URI carry a FULL uri, not a bare path: "env://" for
         # something already on a filesystem this environment can reach (the
         # pull is then a no-op), "hf:///org/repo" to pull fresh from the Hub,
         # or "s3://bucket/key" / "cos://bucket/key" for object storage — see
         # ibm-bluevela's environment.yaml assetstores block for what's wired
-        # in. Whichever scheme wins, align_config below reads the RESOLVED
-        # binding path, never the URI itself.
-        teacher_model:
+        # in. Whichever scheme wins, the step reads the RESOLVED binding path
+        # itself, never the URI — align_config carries no path for them.
+        teacher:
           uri: "$${TEACHER_MODEL_URI}"
           type: model
-        student_model:
+        student:
           uri: "$${STUDENT_MODEL_URI}"
           type: model
+        # Not optional for this pipeline: without a chat template carrying
+        # generation markers, prep cannot build assistant masks and the
+        # trainers fail deep inside sft.py.
         chat_template:
           uri: "$${CHAT_TEMPLATE_URI}"
           type: dataset
@@ -131,13 +135,7 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             align_config:
-              teacher_model: "{{ bindings.teacher_model.binding.path }}"
-              student_model: "{{ bindings.student_model.binding.path }}"
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
-              # Not optional for this pipeline: without a chat template carrying
-              # generation markers, prep cannot build assistant masks and the
-              # trainers fail deep inside sft.py.
-              chat_template: "{{ bindings.chat_template.binding.path }}"
               # FALSE for this pair, and it is the difference between this recipe
               # running and aborting. The knob gates whether the TEACHER's tokenizer
               # and the retagged student's must carry ChatML turn tokens. granite 4.0
@@ -187,8 +185,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             corpus_config:
-              dataset: "{{ bindings.source_dataset.binding.path }}"
-              tokenizer: "{{ bindings.tokenizer.binding.path }}"
               # ABSOLUTE, and that is forced rather than chosen: the two eval
               # targets have to name eval.jsonl and cannot compose it from their
               # own workdir, because every target run gets its OWN
@@ -273,8 +269,6 @@ granite.build:
               gpus_per_node: $${SFT_NUM_GPUS}
               nodes: 1
             sft_config:
-              student_model_path: "{{ bindings.student.binding.path }}"
-              corpus_path: "{{ bindings.corpus.binding.path }}"
               output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/train-sft"
               response_template: "$${RESPONSE_TEMPLATE}"
               max_length: $${MAX_LENGTH}
@@ -324,8 +318,10 @@ granite.build:
 <% endif %>
         corpus:
           binding: corpus.corpus
-        # TEACHER_MODEL_URI: same full-URI convention as align's inputs.
-        teacher_model:
+        # TEACHER_MODEL_URI: same full-URI convention as align's inputs. The
+        # step reads the RESOLVED local path, whatever the scheme was — gold.py
+        # takes it as a directory either way.
+        teacher:
           uri: "$${TEACHER_MODEL_URI}"
           type: model
       outputs:
@@ -359,11 +355,6 @@ granite.build:
             gold_config:
               run_name: "$${RUN_NAME}"
               ds_config: "$${DS_CONFIG}"
-              model_name_or_path: "{{ bindings.student.binding.path }}"
-              # The RESOLVED local path, whatever TEACHER_MODEL_URI's scheme was —
-              # gold.py reads this as a directory either way.
-              teacher_model_name_or_path: "{{ bindings.teacher_model.binding.path }}"
-              dataset_name: "{{ bindings.corpus.binding.path }}"
               num_train_epochs: $${GOLD_NUM_TRAIN_EPOCHS}
               # Caps the run by optimizer steps rather than epochs, which is what
               # makes this a smoke run rather than a short training run.
@@ -427,7 +418,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${EXPORT_MEMORY}
             export_config:
-              train_output_dir: "{{ bindings.train_output.binding.path }}"
               dest: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/export"
               # Empty selects the highest step number. Pin it per run to export
               # an earlier checkpoint.
@@ -444,7 +434,6 @@ granite.build:
               # was dropped. The fix is one line upstream.
               allow_unknown: true
               verify: true
-              expect_tokenizer_from: "{{ bindings.expected_tokenizer.binding.path }}"
 
     # ─── eval-transfer-baseline ─────────────────────────────────────────────
     # The t=0 read, and not optional decoration: a divergence with no baseline is
@@ -469,7 +458,7 @@ granite.build:
         # teacher is resolved and cached through granite.build's own asset
         # stores, instead of a bare hub id reaching the step and triggering an
         # uncached fetch inside transformers at eval time.
-        teacher_model:
+        teacher:
           uri: "$${TEACHER_MODEL_URI}"
           type: model
       outputs:
@@ -493,8 +482,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${GPU_MEMORY}
             eval_config:
-              student_model: "{{ bindings.student.binding.path }}"
-              teacher_model: "{{ bindings.teacher_model.binding.path }}"
               corpus: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus/eval.jsonl"
               output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-transfer-baseline"
               metrics: "$${EVAL_METRICS}"
@@ -522,7 +509,7 @@ granite.build:
         corpus:
           binding: corpus.corpus
         # TEACHER_MODEL_URI: same full-URI convention as align's inputs.
-        teacher_model:
+        teacher:
           uri: "$${TEACHER_MODEL_URI}"
           type: model
       outputs:
@@ -545,8 +532,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${GPU_MEMORY}
             eval_config:
-              student_model: "{{ bindings.student.binding.path }}"
-              teacher_model: "{{ bindings.teacher_model.binding.path }}"
               corpus: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus/eval.jsonl"
               output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/eval-transfer"
               metrics: "$${EVAL_METRICS}"
@@ -582,7 +567,6 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             bfcl_config:
-              model_path: "{{ bindings.model.binding.path }}"
               model_id: "$${BFCL_MODEL_ID}"
               experiment: "$${RUN_NAME}"
               eval_name: "$${BFCL_EVAL_NAME}"

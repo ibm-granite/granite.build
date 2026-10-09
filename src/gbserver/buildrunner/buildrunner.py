@@ -394,8 +394,8 @@ class BuildRunner(AbstractBuildRunner):
                 return  # Log messages were issued.
 
             build_dir = Path(tempfile.mkdtemp()) / build_id
-            build_archive_bytes = stored_build.load_from_build_archive()
-            extract_archive(build_archive_bytes, build_dir)
+            if not self.__extract_build_archive(stored_build, build_dir):
+                return  # Marked INVALID; log messages were issued.
 
             build = Build(
                 build_dir=build_dir,
@@ -535,6 +535,37 @@ class BuildRunner(AbstractBuildRunner):
                 self.stored_build.uuid, [Status.PENDING, Status.RUNNING]
             )
         return success
+
+    def __extract_build_archive(
+        self: Self, stored_build: StoredBuild, build_dir: Path
+    ) -> bool:
+        """Extract a build's archive, marking the build INVALID if that fails.
+
+        extract_archive returns False for bytes that are not a zip/tar and raises
+        ValueError for an unsafe one (over the entry/size caps, or a tar member
+        escaping build_dir). Either way the build cannot run, so it is failed
+        here rather than continuing with an empty build directory.
+
+        Args:
+            stored_build: The build being run.
+            build_dir: The directory to extract into.
+
+        Returns:
+            bool: True if the archive was extracted.
+        """
+        try:
+            archive_bytes = stored_build.load_from_build_archive()
+            if extract_archive(archive_bytes, build_dir):
+                return True
+            reason = "the build archive is not a readable zip or tar archive"
+        except ValueError as e:
+            reason = f"the build archive was rejected: {e}"
+        logger.error("build %s invalid: %s", stored_build.uuid, reason)
+        self.__update_stored_build_status(status=Status.INVALID, failure_reason=reason)
+        self.build_message_logger.error(
+            markdown=f"build `{stored_build.uuid}` status `{self.stored_build.status}`, error: {reason}"
+        )
+        return False
 
     def __get_build_space(self: Self, stored_build: StoredBuild) -> Optional[Space]:
         """Get the Space object for the given build, if it defines a space name"""
