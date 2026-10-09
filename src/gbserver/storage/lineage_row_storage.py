@@ -75,15 +75,41 @@ def endpoint_pair(
     return None
 
 
+def _keep_self_loops(
+    rows: List[StoredLineageRow], self_loops: bool
+) -> List[StoredLineageRow]:
+    if self_loops:
+        return rows
+    return [row for row in rows if row.input != row.output]
+
+
 class ILineageRowStorage(IItemStorage[StoredLineageRow]):
     """Interface for lineage row storage implementations."""
 
-    def get_rows_by_input(self, inputs: List[str]) -> List[StoredLineageRow]:
-        """Return rows whose ``input`` is one of ``inputs`` (descendant hop)."""
+    def get_rows_by_input(
+        self, inputs: List[str], self_loops: bool = True
+    ) -> List[StoredLineageRow]:
+        """Return rows whose ``input`` is one of ``inputs`` (descendant hop).
+
+        ``self_loops=False`` leaves out the rows whose input equals their output.
+        """
         raise NotImplementedError
 
-    def get_rows_by_output(self, outputs: List[str]) -> List[StoredLineageRow]:
-        """Return rows whose ``output`` is one of ``outputs`` (ancestor hop)."""
+    def get_rows_by_output(
+        self, outputs: List[str], self_loops: bool = True
+    ) -> List[StoredLineageRow]:
+        """Return rows whose ``output`` is one of ``outputs`` (ancestor hop).
+
+        ``self_loops=False`` leaves out the rows whose input equals their output.
+        """
+        raise NotImplementedError
+
+    def grouped_self_loops(self, uris: List[str]) -> List[GroupedEdge]:
+        """Return one :class:`GroupedEdge` per artifact in ``uris`` with self-loops.
+
+        The ``uri -> uri`` rows folded into a count and a sample job, without
+        reading them -- an artifact can have tens of thousands.
+        """
         raise NotImplementedError
 
     def get_rows_by_job(self, job_id: str) -> List[StoredLineageRow]:
@@ -212,7 +238,9 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             output="hf://huggingface.co/models/org/sample",
         )
 
-    def get_rows_by_input(self, inputs: List[str]) -> List[StoredLineageRow]:
+    def get_rows_by_input(
+        self, inputs: List[str], self_loops: bool = True
+    ) -> List[StoredLineageRow]:
         """Return rows whose ``input`` is one of ``inputs``.
 
         One batched, indexed query -- the descendant hop of a level-order walk.
@@ -221,6 +249,9 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             inputs: normalized URIs of the current frontier. The terminal
                 marker is dropped: a creation row's input identifies no artifact,
                 so matching on it would join unrelated creations together.
+            self_loops: whether to include the ``uri -> uri`` rows. This fallback
+                still reads them and filters in Python; the SQL backend filters
+                them in the query.
 
         Returns:
             The matching rows, or an empty list when nothing is left to match.
@@ -228,9 +259,11 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         wanted = self._batchable(inputs)
         if not wanted:
             return []
-        return self.get_by_where({"input": wanted})
+        return _keep_self_loops(self.get_by_where({"input": wanted}), self_loops)
 
-    def get_rows_by_output(self, outputs: List[str]) -> List[StoredLineageRow]:
+    def get_rows_by_output(
+        self, outputs: List[str], self_loops: bool = True
+    ) -> List[StoredLineageRow]:
         """Return rows whose ``output`` is one of ``outputs``.
 
         The ancestor hop; see :meth:`get_rows_by_input`.
@@ -238,7 +271,19 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         wanted = self._batchable(outputs)
         if not wanted:
             return []
-        return self.get_by_where({"output": wanted})
+        return _keep_self_loops(self.get_by_where({"output": wanted}), self_loops)
+
+    def grouped_self_loops(self, uris: List[str]) -> List[GroupedEdge]:
+        """Fold each artifact's self-loops into one edge, in Python.
+
+        The fallback reads every self-loop row; the SQL backend overrides it with
+        one ``GROUP BY``.
+        """
+        return [
+            edge
+            for edge in self.grouped_edges(uris, DOWNSTREAM)
+            if edge.input == edge.output
+        ]
 
     @staticmethod
     def _batchable(identifiers: List[str]) -> List[str]:

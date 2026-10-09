@@ -212,7 +212,9 @@ def build_graph_dict(
                 produced_by=endpoint_produced_by(rows[0].attributes, side),
             )
         run_id = _grouped_runs_node_id(source, target)
-        run_nodes[run_id] = _grouped_node(rows, source, target, run_id)
+        # A walk that collapsed self-loops kept one sample row and the real count.
+        count = graph.self_loop_runs.get(source) if source == target else None
+        run_nodes[run_id] = _grouped_node(rows, source, target, run_id, count)
         # For a self-loop both edges touch one artifact, so the rewrite reads as a
         # cycle on it rather than a dangling node.
         if source != TERMINAL:
@@ -328,7 +330,9 @@ def _name_from_uri(uri: str) -> str:
     return segments[-1]
 
 
-def _grouped_node(rows: list, source: str, target: str, run_id: str) -> dict:
+def _grouped_node(
+    rows: list, source: str, target: str, run_id: str, count: Optional[int] = None
+) -> dict:
     """Build the one run node for every job with ``source`` as input and ``target`` as output.
 
     Covers both cases alike: a self-loop (``source == target``, an in-place rewrite)
@@ -337,9 +341,14 @@ def _grouped_node(rows: list, source: str, target: str, run_id: str) -> dict:
     theirs. The representative is the first row, not a choice of "most recent":
     ordering rows by time would need a timestamp the blob does not promise. See
     :func:`_mark_grouped` for the metadata a client lists the jobs with.
+
+    ``count`` overrides the jobs counted from ``rows``, for a walk that read only a
+    sample of them (see ``walk_lineage(collapse_self_loops=True)``).
     """
     node = _run_node(rows[0], run_id)
-    _mark_grouped(node, source, target, len({row.job_id for row in rows}))
+    if count is None:
+        count = len({row.job_id for row in rows})
+    _mark_grouped(node, source, target, count)
     return node
 
 

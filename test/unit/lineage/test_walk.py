@@ -33,6 +33,7 @@ from gbserver.lineage.walk import (
     LineageGraph,
     walk_lineage,
 )
+from gbserver.storage.lineage_row_storage import GroupedEdge
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 from .reference_walk import reference_walk
@@ -49,15 +50,37 @@ class FakeStorage:
         self.rows = rows
         self.queries = 0
 
-    def get_rows_by_input(self, sources: list) -> list:
+    def get_rows_by_input(self, sources: list, self_loops: bool = True) -> list:
         self.queries += 1
         wanted = {s for s in sources if s and s != TERMINAL}
-        return [r for r in self.rows if r.input in wanted]
+        return [
+            r
+            for r in self.rows
+            if r.input in wanted and (self_loops or r.input != r.output)
+        ]
 
-    def get_rows_by_output(self, targets: list) -> list:
+    def get_rows_by_output(self, targets: list, self_loops: bool = True) -> list:
         self.queries += 1
         wanted = {t for t in targets if t and t != TERMINAL}
-        return [r for r in self.rows if r.output in wanted]
+        return [
+            r
+            for r in self.rows
+            if r.output in wanted and (self_loops or r.input != r.output)
+        ]
+
+    def get_rows_by_jobs(self, job_ids: list) -> list:
+        self.queries += 1
+        return [r for r in self.rows if r.job_id in set(job_ids)]
+
+    def grouped_self_loops(self, uris: list) -> list:
+        self.queries = getattr(self, "queries", 0) + 1
+        jobs: dict = {}
+        for r in self.rows:
+            if r.input == r.output and r.input in set(uris):
+                jobs.setdefault(r.input, set()).add(r.job_id)
+        return [
+            GroupedEdge(uri, uri, len(ids), "", min(ids)) for uri, ids in jobs.items()
+        ]
 
 
 def row(job_id: str, input: str, output: str) -> StoredLineageRow:
@@ -497,3 +520,29 @@ class TestCrossCheckAgainstReference:
         )
         assert keys(graph) == ref_keys
         assert graph.depths == ref_depths
+
+
+class TestCollapseSelfLoops:
+    """A collapsing walk reads one row per self-looping artifact, plus its count."""
+
+    def test_keeps_one_sample_and_the_count(self):
+        rows = [row(f"S{i}", "a", "a") for i in range(5)] + chain("a", "b", "c")
+        storage = FakeStorage(rows)
+        graph = walk_lineage(storage, ["a"], Direction.BOTH, collapse_self_loops=True)
+        assert graph.depths == walk_lineage(FakeStorage(rows), ["a"]).depths
+        assert keys(graph) == {("S0", "a", "a"), ("J0", "a", "b"), ("J1", "b", "c")}
+        assert graph.self_loop_runs == {"a": 5}
+
+    def test_self_loops_deeper_in_the_graph_are_counted(self):
+        rows = chain("a", "b") + [row("S1", "b", "b"), row("S2", "b", "b")]
+        graph = walk_lineage(
+            FakeStorage(rows), ["a"], Direction.DESCENDANTS, collapse_self_loops=True
+        )
+        assert graph.self_loop_runs == {"b": 2}
+        assert ("S1", "b", "b") in keys(graph)
+
+    def test_default_walk_reads_every_self_loop(self):
+        rows = [row("S1", "a", "a"), row("S2", "a", "a")]
+        graph = walk_lineage(FakeStorage(rows), ["a"], Direction.BOTH)
+        assert len(graph.rows) == 2
+        assert graph.self_loop_runs == {}

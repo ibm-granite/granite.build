@@ -194,6 +194,7 @@ class DBLineageService(LineageService):
             direction=walk_direction,
             max_depth=max_depth,
             max_nodes_per_level=DEFAULT_MAX_NODES_PER_LEVEL,
+            collapse_self_loops=True,
         )
 
         if artifact_type:
@@ -304,6 +305,9 @@ class DBLineageService(LineageService):
             direction=walk_direction,
             max_depth=max_depth,
             max_nodes_per_level=max_nodes_per_level or DEFAULT_MAX_NODES_PER_LEVEL,
+            # The grouped graph draws all of an artifact's self-loops as one node,
+            # so it needs one row and a count, not every row.
+            collapse_self_loops=group_runs,
         )
         # Only a single-artifact query has one root to flag; anything else has many.
         single_root = bool(root_uri) and not job_id

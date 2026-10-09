@@ -92,9 +92,12 @@ class LineageGraph:
             the walk. Turns ``truncated`` from a bare flag into a magnitude, so a
             caller can say "N not expanded" instead of implying a few more clicks
             will finish. 0 whenever ``truncated`` is False.
+        self_loop_runs: artifact URI -> how many jobs rewrote it in place, filled
+            only by a walk that collapses self-loops. There ``rows`` holds one
+            sample self-loop row per artifact, and this holds the real count.
     """
 
-    __slots__ = ("rows", "depths", "truncated", "unexpanded")
+    __slots__ = ("rows", "depths", "truncated", "unexpanded", "self_loop_runs")
 
     def __init__(
         self,
@@ -102,11 +105,13 @@ class LineageGraph:
         depths: Optional[dict] = None,
         truncated: bool = False,
         unexpanded: int = 0,
+        self_loop_runs: Optional[dict] = None,
     ) -> None:
         self.rows = rows if rows is not None else []
         self.depths = depths if depths is not None else {}
         self.truncated = truncated
         self.unexpanded = unexpanded
+        self.self_loop_runs = self_loop_runs if self_loop_runs is not None else {}
 
     @property
     def nodes(self) -> set:
@@ -140,6 +145,7 @@ def walk_lineage(
     direction: Direction = Direction.BOTH,
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_nodes_per_level: int = DEFAULT_MAX_NODES_PER_LEVEL,
+    collapse_self_loops: bool = False,
 ) -> LineageGraph:
     """Walk the lineage graph outward from ``seeds``.
 
@@ -152,6 +158,11 @@ def walk_lineage(
         max_depth: how many levels to expand. 0 returns an empty graph.
         max_nodes_per_level: ceiling on one level's frontier; exceeding it marks
             the result truncated.
+        collapse_self_loops: read one sample row per self-looping artifact and
+            count the rest in SQL (``graph.self_loop_runs``), instead of reading
+            every ``uri -> uri`` row. For a caller that folds self-loops into one
+            node anyway: one dataset has 68,905 of them, about 67 MB of JSON per
+            direction that the graph then draws as a single node.
 
     Returns:
         The reachable subgraph. An artifact with no lineage yields an empty graph
@@ -169,6 +180,9 @@ def walk_lineage(
     )
 
     seen_rows: set = set()
+    # Self-loops do not depend on direction, so a BOTH walk counts each artifact's
+    # once, whichever direction reaches it first.
+    self_loops_checked: Optional[set] = set() if collapse_self_loops else None
     for one_way in directions:
         _walk_one_direction(
             storage=storage,
@@ -178,6 +192,7 @@ def walk_lineage(
             max_nodes_per_level=max_nodes_per_level,
             graph=graph,
             seen_rows=seen_rows,
+            self_loops_checked=self_loops_checked,
         )
     return graph
 
@@ -190,12 +205,17 @@ def _walk_one_direction(
     max_nodes_per_level: int,
     graph: LineageGraph,
     seen_rows: set,
+    self_loops_checked: Optional[set] = None,
 ) -> None:
     """Expand one direction level by level, accumulating into ``graph``.
 
     Both directions of a ``BOTH`` walk share ``graph`` and ``seen_rows``, which is
     what merges them: a row reached both ways is stored once, and a node reachable
     both ways keeps its shorter depth.
+
+    ``self_loops_checked`` is ``None`` for a walk that reads every row, and
+    otherwise the artifacts whose self-loops are already counted; see
+    :func:`_self_loop_samples`.
     """
     frontier = list(seeds)
     visited = set(seeds)
@@ -216,7 +236,13 @@ def _walk_one_direction(
             graph.unexpanded += len(frontier)
             return
 
-        rows = _hop(storage, frontier, direction)
+        if self_loops_checked is None:
+            rows = _hop(storage, frontier, direction)
+        else:
+            # Leaving self-loops out of the hop changes nothing below: the walk
+            # never continues through one.
+            rows = _hop(storage, frontier, direction, self_loops=False)
+            rows += _self_loop_samples(storage, frontier, graph, self_loops_checked)
 
         next_frontier: list = []
         for row in rows:
@@ -264,7 +290,8 @@ def _walk_one_direction(
         # N-queries-per-level cost that _hop exists to avoid.
         held = set(frontier)
         remainder = set()
-        for r in _hop(storage, frontier, direction):
+        # Self-loops are skipped below, so there is no reason to read them.
+        for r in _hop(storage, frontier, direction, self_loops=False):
             reached = _continuation(r, direction)
             # Same stopping rules the main loop applies, so a frontier node whose only
             # rows are terminals or self-loops is correctly not counted as more graph.
@@ -286,11 +313,42 @@ def _hop(
     storage: ILineageRowStorage,
     frontier: list,
     direction: Direction,
+    self_loops: bool = True,
 ) -> list:
     """Fetch one level's rows with a single batched, indexed query."""
     if direction == Direction.DESCENDANTS:
-        return storage.get_rows_by_input(frontier)
-    return storage.get_rows_by_output(frontier)
+        return storage.get_rows_by_input(frontier, self_loops=self_loops)
+    return storage.get_rows_by_output(frontier, self_loops=self_loops)
+
+
+def _self_loop_samples(
+    storage: ILineageRowStorage,
+    frontier: list,
+    graph: LineageGraph,
+    checked: set,
+) -> list:
+    """One sample self-loop row per frontier artifact, recording the real counts.
+
+    Two queries, whatever the number of self-loops: a ``GROUP BY`` for the counts
+    and the sample job of each, then those sample jobs' rows. Artifacts already in
+    ``checked`` are skipped, so a BOTH walk does not count one twice.
+    """
+    pending = [uri for uri in frontier if uri not in checked]
+    checked.update(pending)
+    if not pending:
+        return []
+    edges = storage.grouped_self_loops(pending)
+    if not edges:
+        return []
+    samples = set()
+    for edge in edges:
+        graph.self_loop_runs[edge.input] = edge.job_count
+        samples.add((edge.sample_job_id, edge.input))
+    return [
+        row
+        for row in storage.get_rows_by_jobs(sorted({job for job, _ in samples}))
+        if row.input == row.output and (row.job_id, row.input) in samples
+    ]
 
 
 def _matched_on(row: StoredLineageRow, direction: Direction) -> str:

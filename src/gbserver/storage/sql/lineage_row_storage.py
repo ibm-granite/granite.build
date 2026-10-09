@@ -32,6 +32,7 @@ from gbserver.storage.lineage_row_storage import (
     endpoint_pair,
 )
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
+from gbserver.storage.storage import JSON_COLUMN_NAME
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 
@@ -150,6 +151,78 @@ class SQLLineageRowStorage(
                 .offset(offset)
             )
             return [job_id for (job_id,) in page.all()]
+
+    def get_rows_by_input(
+        self, inputs: List[str], self_loops: bool = True
+    ) -> List[StoredLineageRow]:
+        """The descendant hop, with ``self_loops=False`` filtered in SQL."""
+        if self_loops:
+            return super().get_rows_by_input(inputs)
+        return self._rows_without_self_loops(inputs, DOWNSTREAM)
+
+    def get_rows_by_output(
+        self, outputs: List[str], self_loops: bool = True
+    ) -> List[StoredLineageRow]:
+        """The ancestor hop, with ``self_loops=False`` filtered in SQL."""
+        if self_loops:
+            return super().get_rows_by_output(outputs)
+        return self._rows_without_self_loops(outputs, UPSTREAM)
+
+    def grouped_self_loops(self, uris: List[str]) -> List[GroupedEdge]:
+        """Fold each artifact's self-loops into one edge, in one ``GROUP BY``.
+
+        Constrains both ``input`` and ``output`` to ``uris`` so the
+        ``(input, output)`` index seeks straight to the ``uri -> uri`` range. Never
+        reads the blob: the artifact this exists for has 68,905 self-loops, about
+        67 MB of JSON that the graph collapses into one node anyway.
+        """
+        wanted = self._batchable(uris)
+        if not wanted or not self._ensure_table():
+            return []
+        session = self._get_session_without_retry()
+        try:
+            model = self._sql_alchemy_model
+            query = (
+                session.query(
+                    model.input,
+                    func.count(distinct(model.job_id)),
+                    func.max(model.recorded_at),
+                    func.min(model.job_id),
+                )
+                .filter(
+                    model.input.in_(wanted),
+                    model.output.in_(wanted),
+                    model.input == model.output,
+                )
+                .group_by(model.input)
+            )
+            return [
+                GroupedEdge(uri, uri, int(count), recorded or "", sample or "")
+                for uri, count, recorded, sample in query.all()
+            ]
+        finally:
+            session.close()
+
+    def _rows_without_self_loops(
+        self, frontier: List[str], direction: str
+    ) -> List[StoredLineageRow]:
+        """One hop's rows minus its self-loops, deserializing only those it returns."""
+        wanted = self._batchable(frontier)
+        if not wanted or not self._ensure_table():
+            return []
+        session = self._get_session_without_retry()
+        try:
+            model = self._sql_alchemy_model
+            side = model.input if direction == DOWNSTREAM else model.output
+            query = session.query(model.json).filter(
+                side.in_(wanted), model.input != model.output
+            )
+            return [
+                self._convert_row_dict_to_item({JSON_COLUMN_NAME: blob})
+                for (blob,) in query.all()
+            ]
+        finally:
+            session.close()
 
     def grouped_edges(
         self, frontier: List[str], direction: str, limit: Optional[int] = None

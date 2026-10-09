@@ -467,6 +467,29 @@ class TestWalkAgainstRealStorage:
         back = walk_lineage(storage, ["o1"], Direction.ANCESTORS)
         assert back.depths == {"o1": 0, "i1": 1, "i2": 1, "i3": 1}
 
+    def test_collapsed_walk_reads_one_self_loop_row(self, storage):
+        from gbserver.lineage.graph_builder import build_graph_dict
+        from gbserver.lineage.walk import Direction, walk_lineage
+
+        for job_id in ("A", "B", "C"):
+            storage.add(row(job_id=job_id, input="t", output="t"))
+        storage.add(row(job_id="J", input="t", output="u"))
+
+        full = walk_lineage(storage, ["t"], Direction.BOTH)
+        collapsed = walk_lineage(
+            storage, ["t"], Direction.BOTH, collapse_self_loops=True
+        )
+        assert collapsed.depths == full.depths
+        assert sorted((r.job_id, r.input, r.output) for r in collapsed.rows) == [
+            ("A", "t", "t"),
+            ("J", "t", "u"),
+        ]
+        assert collapsed.self_loop_runs == {"t": 3}
+        # Same graph either way.
+        assert build_graph_dict(collapsed, root_uri="t") == build_graph_dict(
+            full, root_uri="t"
+        )
+
 
 class TestUriIsTheIdentity:
     """The endpoints hold URIs, which is what collapses the old schema.
@@ -556,6 +579,32 @@ class TestGroupedEdges:
         for job_id in ("A", "B", "C"):
             self._add(storage, job_id, "t", "t", "2026-01-01")
         assert [e.job_count for e in storage.grouped_edges(["t"], DOWNSTREAM)] == [3]
+
+    def test_hop_can_leave_out_self_loops(self, storage):
+        self._add(storage, "A", "t", "t", "2026-01-01")
+        self._add(storage, "B", "t", "u", "2026-01-01")
+        self._add(storage, "C", "s", "t", "2026-01-01")
+        assert [
+            r.job_id for r in storage.get_rows_by_input(["t"], self_loops=False)
+        ] == ["B"]
+        assert [
+            r.job_id for r in storage.get_rows_by_output(["t"], self_loops=False)
+        ] == ["C"]
+        assert len(storage.get_rows_by_input(["t"])) == 2
+
+    def test_grouped_self_loops_counts_per_artifact(self, storage):
+        for job_id in ("B", "A", "C"):
+            self._add(storage, job_id, "t", "t", f"2026-01-0{ord(job_id) - 64}")
+        self._add(storage, "D", "u", "u", "2026-01-01")
+        self._add(storage, "E", "t", "u", "2026-01-09")
+        edges = sorted(
+            storage.grouped_self_loops(["t", "u", "nothing"]), key=lambda e: e.input
+        )
+        assert edges == [
+            GroupedEdge("t", "t", 3, "2026-01-03", "A"),
+            GroupedEdge("u", "u", 1, "2026-01-01", "D"),
+        ]
+        assert storage.grouped_self_loops([TERMINAL]) == []
 
     def test_limit_keeps_most_recent(self, storage):
         self._add(storage, "A", "x", "old", "2026-01-01")
