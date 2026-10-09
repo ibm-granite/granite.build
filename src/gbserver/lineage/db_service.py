@@ -41,16 +41,10 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from gbserver.lineage.attributes import (
     INPUT,
-    JOB_NAMESPACE,
-    JOB_OWNER,
-    JOB_STARTED_AT,
-    JOB_STATUS,
     OUTPUT,
     endpoint_kind,
-    job_detail,
-    origin_detail,
-    origin_system,
 )
+from gbserver.lineage.db_responses import job_listing_entry, job_search_event
 from gbserver.lineage.graph_builder import build_graph_dict
 from gbserver.lineage.job_detail import fetch_job_detail
 from gbserver.lineage.openlineage_service import LineageService
@@ -61,6 +55,7 @@ from gbserver.lineage.walk import (
     LineageGraph,
     walk_lineage,
 )
+from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_row_storage import (
     TERMINAL_INPUT,
     TERMINAL_OUTPUT,
@@ -100,8 +95,13 @@ class DBLineageService(LineageService):
             require a configured database.
     """
 
-    def __init__(self, storage: Optional[ILineageRowStorage] = None) -> None:
+    def __init__(
+        self,
+        storage: Optional[ILineageRowStorage] = None,
+        job_storage: Optional[ILineageJobStorage] = None,
+    ) -> None:
         self._storage = storage
+        self._job_storage = job_storage
 
     @property
     def storage(self) -> ILineageRowStorage:
@@ -111,6 +111,27 @@ class DBLineageService(LineageService):
 
             self._storage = get_admin_storage().lineage_row_storage
         return self._storage
+
+    @property
+    def job_storage(self) -> Optional[ILineageJobStorage]:
+        """The lineage job table, resolved on first use, or ``None``.
+
+        Only the tag search reads it: a tag is a property of an execution, and the
+        rows carry a copy per edge, so the one place a tag query belongs is the job
+        table. ``None`` rather than raising, because this is the *read* side -- a
+        search with no table to read answers "no matches", which is what an
+        unreachable index means to a caller, whereas raising would turn it into a
+        500 on a request that is not wrong.
+        """
+        if self._job_storage is None:
+            from gbserver.storage.singleton_storage import get_admin_storage
+
+            try:
+                self._job_storage = get_admin_storage().lineage_job_storage
+            except Exception:
+                logger.warning("No lineage job storage available for tag search")
+                return None
+        return self._job_storage
 
     def get_artifact_graph(
         self,
@@ -415,7 +436,7 @@ class DBLineageService(LineageService):
 
             admin_storage = get_admin_storage()
         return fetch_job_detail(
-            _job_entry(job_id, rows, tags),
+            job_listing_entry(job_id, rows, tags),
             rows,
             admin_storage,
             authorize_build,
@@ -437,7 +458,7 @@ class DBLineageService(LineageService):
             rows_by_job.setdefault(row.job_id, []).append(row)
             tags_by_job.setdefault(row.job_id, set()).update(tag_strings(row_tags(row)))
         return [
-            _job_entry(
+            job_listing_entry(
                 job_id,
                 rows_by_job.get(job_id, []),
                 sorted(tags_by_job.get(job_id, ())),
@@ -479,20 +500,51 @@ class DBLineageService(LineageService):
     def search_lineage_by_tags(
         self, tags: List[str], limit: int = 10, offset: int = 0
     ) -> Tuple[int, List[Dict]]:
-        """Return no results: the index stores no run tags to search by."""
-        return 0, []
+        """Jobs carrying any of ``tags``, as OpenLineage events, and the total.
+
+        ``tags`` is a disjunction -- the same ``$in`` the W&B provider applies --
+        and an empty list matches every job, which is what ``POST /lineage/search``
+        means by one. Answered from ``gb_lineage_job``'s promoted ``tags`` column,
+        so it is a SQL filter rather than a scan of a JSON blob.
+
+        **The owner and space must reach the facets.** The route filters access by
+        reading ``run.facets.job_details.owner`` and ``run.facets.tags.space_name``
+        off each result, not by querying the database, so a result that omits them
+        is dropped for every caller -- which looks exactly like an empty index
+        rather than like a bug. They are columns on the record, so they are carried
+        verbatim.
+        """
+        storage = self.job_storage
+        if storage is None:
+            return 0, []
+        try:
+            total, jobs = storage.search_by_tags(tags, limit=limit, offset=offset)
+        except Exception:
+            logger.exception("Lineage tag search failed")
+            return 0, []
+        return total, [job_search_event(job) for job in jobs]
 
     def count_events_by_tags(
         self, tags: List[str], required_tags: Optional[List[str]] = None
     ) -> int:
-        """Return 0: see :meth:`search_lineage_by_tags`."""
-        return 0
+        """How many jobs match; one event per job here, so the same count."""
+        return self.count_runs_by_tags(tags, required_tags)
 
     def count_runs_by_tags(
         self, tags: List[str], required_tags: Optional[List[str]] = None
     ) -> int:
-        """Return 0: see :meth:`search_lineage_by_tags`."""
-        return 0
+        """How many jobs carry any of ``tags`` and all of ``required_tags``."""
+        storage = self.job_storage
+        if storage is None:
+            return 0
+        try:
+            total, _ = storage.search_by_tags(
+                tags, all_of=required_tags, limit=0, offset=0
+            )
+        except Exception:
+            logger.exception("Lineage tag count failed")
+            return 0
+        return total
 
     def filter_unrecorded(
         self,
@@ -513,33 +565,3 @@ class DBLineageService(LineageService):
         id here versus target run uuid there -- and the two would disagree.
         """
         return target_ids
-
-
-def _job_entry(job_id: str, rows: List, tags: List[str]) -> Dict:
-    """One entry of the job listing, read from the job's index rows.
-
-    Job-first: a caller reaching here wants to know which executions matched, and
-    what each read and wrote. The endpoints come from the job's own rows, terminals
-    left out, so a self-rewrite shows its artifact on both sides. Every row of one
-    job carries the same ``job`` group, so the first one speaks for all.
-    """
-    attributes = rows[0].attributes if rows else {}
-    job = job_detail(attributes)
-    namespace = str(job.get(JOB_NAMESPACE, "") or "")
-    return {
-        "job_id": job_id,
-        "job_namespace": namespace,
-        # The space is the namespace's first segment, as the access filter reads it.
-        "space_name": namespace.split("/", 1)[0] if namespace else "",
-        "owner": str(job.get(JOB_OWNER, "") or ""),
-        "source_system": origin_system(attributes),
-        "status": str(job.get(JOB_STATUS, "") or ""),
-        "started_at": str(job.get(JOB_STARTED_AT, "") or ""),
-        "tags": tags,
-        "inputs": sorted({r.input for r in rows if r.input and r.input != TERMINAL}),
-        "outputs": sorted(
-            {r.output for r in rows if r.output and r.output != TERMINAL}
-        ),
-        "job": job,
-        "origin": origin_detail(attributes),
-    }

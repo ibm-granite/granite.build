@@ -22,6 +22,8 @@ artifact is unknown here" and never "this artifact has no lineage yet" -- the
 second is a real, successful answer and must come back as a graph.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from gbserver.lineage.db_service import DBLineageService
@@ -318,11 +320,18 @@ class TestWritePathIsInert:
     def test_emit_event_does_not_raise(self):
         assert service().emit_event({"anything": True}) is None
 
-    def test_tag_searches_are_empty(self):
-        svc = service(row("J1", A, B))
-        assert svc.search_lineage_by_tags(["t"]) == (0, [])
-        assert svc.count_events_by_tags(["t"]) == 0
-        assert svc.count_runs_by_tags(["t"]) == 0
+    def test_tag_searches_are_empty_with_no_job_table(self):
+        """Tags live on the job table; with none there is nothing to search.
+
+        Empty rather than raising: this is the read side, and "no matches" is what
+        an unreachable index means to a caller. See TestTagSearch for the answers
+        when the table is there.
+        """
+        svc = DBLineageService(storage=FakeStorage([]), job_storage=None)
+        with patch.object(DBLineageService, "job_storage", property(lambda self: None)):
+            assert svc.search_lineage_by_tags(["t"]) == (0, [])
+            assert svc.count_events_by_tags(["t"]) == 0
+            assert svc.count_runs_by_tags(["t"]) == 0
 
     def test_filter_unrecorded_fails_toward_rerecording(self):
         # The interface requires this: recording is idempotent, so returning the
@@ -577,3 +586,112 @@ class TestListJobs:
     def test_a_storage_failure_does_not_raise(self):
         svc = service(row("J1", A, B), fail=True)
         assert svc.list_jobs(uri=A)["jobs"] == []
+
+
+class TestTagSearch:
+    """``POST /lineage/search`` on the db provider, end to end through the service.
+
+    The storage schema and the API contract are independent here: the tags are a
+    promoted column on ``gb_lineage_job``, while the route reads an OpenLineage
+    envelope it cannot tell apart from W&B's. ``db_responses`` bridges the two, so
+    these assert the bridge.
+    """
+
+    @staticmethod
+    def _jobs(*records):
+        import uuid as uuid_module
+
+        from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+
+        storage = SqliteStorageFactory().create_lineage_job_storage(
+            table_name=f"t_svc_{uuid_module.uuid4().hex[:8]}"
+        )
+        for record in records:
+            storage.add(record)
+        return storage
+
+    @staticmethod
+    def _record(job_id, tags, owner="alice", space="sp", status="SUCCESS"):
+        from gbserver.storage.stored_lineage_job import StoredLineageJob
+
+        return StoredLineageJob(
+            job_id=job_id,
+            job_namespace=f"{space}/bld",
+            space_name=space,
+            owner=owner,
+            status=status,
+            started_at="2026-01-01 00:00:00",
+            tags=tags,
+        )
+
+    def _service(self, *records):
+        return DBLineageService(
+            storage=FakeStorage([]), job_storage=self._jobs(*records)
+        )
+
+    def test_a_matching_job_is_returned(self):
+        svc = self._service(self._record("J1", ["team=nlp"]))
+        total, runs = svc.search_lineage_by_tags(["team=nlp"])
+        assert total == 1
+        assert runs[0]["run"]["runId"] == "J1"
+
+    def test_any_of_is_a_disjunction(self):
+        """What makes this match W&B's $in; an AND would return 0 here."""
+        svc = self._service(
+            self._record("J1", ["team=nlp"]), self._record("J2", ["team=vision"])
+        )
+        total, runs = svc.search_lineage_by_tags(["team=nlp", "team=vision"])
+        assert total == 2
+        assert {r["run"]["runId"] for r in runs} == {"J1", "J2"}
+
+    def test_no_tags_matches_every_job(self):
+        svc = self._service(self._record("J1", ["a=1"]), self._record("J2", ["b=2"]))
+        assert svc.search_lineage_by_tags([])[0] == 2
+
+    def test_the_access_fields_the_route_reads_are_present(self):
+        """The route filters on these two and fails closed; without them every
+        result is dropped for every caller, which looks like an empty index."""
+        svc = self._service(self._record("J1", ["team=nlp"], owner="bob", space="sp-x"))
+        _, (run,) = svc.search_lineage_by_tags(["team=nlp"])
+        facets = run["run"]["facets"]
+        assert facets["job_details"]["owner"] == "bob"
+        assert facets["tags"]["space_name"] == "sp-x"
+
+    def test_the_tags_facet_is_recovered_from_the_column(self):
+        """The column holds what the producer's run.facets.tags held, so the facet
+        round-trips rather than being stored a second time."""
+        svc = self._service(
+            self._record("J1", ["username=alice", "space_name=sp", "team=nlp"])
+        )
+        _, (run,) = svc.search_lineage_by_tags(["team=nlp"])
+        assert run["run"]["facets"]["tags"] == {
+            "username": "alice",
+            "space_name": "sp",
+            "team": "nlp",
+        }
+
+    def test_the_envelope_is_shaped_like_an_openlineage_event(self):
+        """The shared contract: a caller cannot tell the providers apart by it."""
+        svc = self._service(self._record("J1", ["team=nlp"]))
+        _, (run,) = svc.search_lineage_by_tags(["team=nlp"])
+        assert set(run) >= {"eventType", "eventTime", "run", "job", "inputs", "outputs"}
+        assert run["job"]["namespace"] == "sp/bld"
+
+    def test_paging_reports_the_total_not_the_page(self):
+        svc = self._service(*(self._record(f"J{i}", ["t=1"]) for i in range(5)))
+        total, runs = svc.search_lineage_by_tags(["t=1"], limit=2, offset=0)
+        assert (total, len(runs)) == (5, 2)
+        total, runs = svc.search_lineage_by_tags(["t=1"], limit=2, offset=4)
+        assert (total, len(runs)) == (5, 1)
+
+    def test_counts_agree_with_the_search(self):
+        svc = self._service(
+            self._record("J1", ["team=nlp"]), self._record("J2", ["team=vision"])
+        )
+        assert svc.count_runs_by_tags(["team=nlp"]) == 1
+        assert svc.count_events_by_tags(["team=nlp"]) == 1
+        assert svc.count_runs_by_tags([], required_tags=["team=nlp"]) == 1
+
+    def test_an_unknown_tag_matches_nothing(self):
+        svc = self._service(self._record("J1", ["team=nlp"]))
+        assert svc.search_lineage_by_tags(["team=nope"]) == (0, [])
