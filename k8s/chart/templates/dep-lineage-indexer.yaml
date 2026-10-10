@@ -32,7 +32,7 @@ spec:
         command:
         - bash
         - -c
-        - gbserver lineage-indexer{{ with .Values.deployments.lineageIndexer.baseTimestamp }} --base-timestamp {{ . | quote }}{{ end }}
+        - gbserver lineage-indexer
         env:
         {{- range $key, $value := .Values.deployments.lineageIndexer.env }}
         - name: {{ $key | quote }}

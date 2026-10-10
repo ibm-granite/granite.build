@@ -25,6 +25,17 @@ from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.storage.stored_target_run import StoredTargetRun
 
 
+@pytest.fixture(autouse=True)
+def _standalone_by_default():
+    """Most tests here exercise scanning, which only runs unseeded in standalone.
+
+    Pinned so the suite means the same under any GB_ENVIRONMENT; the tests about
+    the non-standalone rule patch ``is_standalone`` themselves, inside this.
+    """
+    with patch.object(idx, "is_standalone", return_value=True):
+        yield
+
+
 class _KV:
     def __init__(self):
         self.values = {}
@@ -387,16 +398,39 @@ def test_wandb_seeded_timestamp_is_the_scan_filter():
     assert api.runs.call_args.kwargs["filters"] == {"createdAt": {"$gte": D2}}
 
 
-def test_seed_never_overwrites_and_all_writes_nothing():
+def test_seed_never_overwrites_without_force():
     ix, api, _ = _indexer([])
     storage = _storage()
-    assert ix.seed_if_absent(storage, "all") is False
-    assert storage.kv_pair_storage.values == {}
     key = idx._checkpoint_key_for_provider("wandb")
     storage.kv_pair_storage.set_value(key, {"timestamp": D1})
     assert ix.seed_if_absent(storage, D2) is False
+    assert ix.seed_if_absent(storage, "all") is False
     assert _checkpoint(storage)["timestamp"] == D1
     api.runs.assert_not_called()
+
+
+def test_seed_all_writes_the_from_beginning_mark_and_scans_unfiltered():
+    """``all`` must be explicit: outside standalone, absence means "nothing yet"."""
+    ix, api, _ = _indexer([])
+    storage = _storage()
+    assert ix.seed_if_absent(storage, "all") is True
+    assert _checkpoint(storage)["timestamp"] == "1970-01-01T00:00:00Z"
+    with patch.object(idx, "is_standalone", return_value=False):
+        ix.scan_once(storage)
+    # A full read, not a $gte filter on the sentinel date.
+    assert "createdAt" not in (api.runs.call_args.kwargs.get("filters") or {})
+
+
+def test_force_replaces_only_once_the_new_anchor_resolves():
+    ix, _, _ = _indexer([])
+    storage = _storage()
+    key = idx._checkpoint_key_for_provider("wandb")
+    storage.kv_pair_storage.set_value(key, {"timestamp": D1})
+    with pytest.raises(idx.LineageSeedError):
+        ix.seed_if_absent(storage, "not-a-time", force=True)
+    assert _checkpoint(storage)["timestamp"] == D1
+    assert ix.seed_if_absent(storage, D2, force=True) is True
+    assert _checkpoint(storage)["timestamp"] == D2
 
 
 def test_seed_that_is_not_a_timestamp_raises():
@@ -666,3 +700,70 @@ def test_a_first_scan_reads_every_successful_target():
         )
     full.assert_called_once()
     storage.target_storage.get_successful_finished_since.assert_not_called()
+
+
+# -- No checkpoint: automatic in standalone only ------------------------------
+
+
+def _job_indexer(jobs):
+    storage, kv = _admin_with_jobs(jobs)
+    rows = MagicMock()
+    rows.index_job_records.side_effect = len
+    return idx.LineageJobIndexer(sink=MagicMock(), rows=rows), storage, kv, rows
+
+
+def test_outside_standalone_no_checkpoint_indexes_nothing_until_seeded():
+    jobs = [_job_record("j1", "2026-01-01T00:00:00.000000+00:00")]
+    ix, storage, kv, rows = _job_indexer(jobs)
+    with (
+        patch.object(idx, "is_standalone", return_value=False),
+        patch.object(idx.logger, "info") as info,
+    ):
+        assert ix.scan_once(storage) == 0
+        assert ix.scan_once(storage) == 0
+        notices = [c for c in info.call_args_list if "No lineage index" in c.args[0]]
+        assert len(notices) == 1
+        rows.index_job_records.assert_not_called()
+        assert kv == {}
+        # Seeded while running: the next scan picks it up, no restart.
+        ix.seed_if_absent(storage, "all")
+        assert ix.scan_once(storage) == 1
+
+
+def test_in_standalone_no_checkpoint_still_indexes_everything():
+    jobs = [
+        _job_record("j1", "2026-01-01T00:00:00.000000+00:00"),
+        _job_record("j2", "2026-01-02T00:00:00.000000+00:00"),
+    ]
+    ix, storage, _, _ = _job_indexer(jobs)
+    with patch.object(idx, "is_standalone", return_value=True):
+        assert ix.scan_once(storage) == 2
+
+
+def test_the_from_beginning_mark_is_a_full_read():
+    ix, storage, _, _ = _job_indexer([])
+    ix.seed_if_absent(storage, "all")
+    with (
+        patch.object(idx, "is_standalone", return_value=False),
+        patch.object(ix, "_jobs_since", return_value=[]) as since,
+    ):
+        ix.scan_once(storage)
+    assert since.call_args.args[1] is None
+
+
+def test_standalone_indexer_honours_a_seeded_and_a_forced_checkpoint():
+    storage = _storage()
+    ix, rows, page = _target_indexer(
+        [_target("t1", 1), _target("t2", 2), _target("t3", 3)]
+    )
+    with (
+        page,
+        patch.object(idx, "is_standalone", return_value=True),
+        patch.object(idx, "_resolve_lineage_provider", return_value="none"),
+    ):
+        assert ix.seed_if_absent(storage, _ts(2)) is True
+        assert ix.scan_once(storage) == 2  # t2 (inclusive) and t3
+        assert ix.seed_if_absent(storage, _ts(1)) is False
+        assert ix.seed_if_absent(storage, _ts(1), force=True) is True
+        rows.index_job_entry.reset_mock()
+        assert ix.scan_once(storage) == 3

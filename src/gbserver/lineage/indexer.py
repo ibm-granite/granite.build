@@ -39,9 +39,13 @@ server was started:
     (``GBSERVER_LINEAGE_PROVIDER=db``) source and sink are the same table, so the
     indexer says so and does nothing; ``none`` has nothing to read.
 
-No checkpoint means "from the beginning". ``--base-timestamp`` seeds one
-(``from-latest``, ``all`` or an ISO-8601 timestamp), only when none exists yet.
-A timestamp is the natural anchor: it is what the checkpoint already holds, it
+**No checkpoint** means "from the beginning" in standalone, where the indexer
+stays automatic. Everywhere else it means "index nothing yet": the indexer logs
+once and re-reads the checkpoint every scan until ``gbserver lineage-index-init
+--base-timestamp`` seeds one (``from-latest``, ``all`` -- an explicit
+:data:`FROM_BEGINNING` mark -- or an ISO-8601 timestamp), as ``lineage-init``
+does for the watcher. The command works in standalone too. A timestamp is the
+natural anchor: it is what the checkpoint already holds, it
 means the same thing in both sources, and "index everything since this date" is
 the question an operator actually has.
 """
@@ -50,6 +54,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.jobstats import (
     LINEAGE_PROVIDER_DB,
@@ -86,6 +91,11 @@ INDEXER_SOURCE_LINEAGE_JOB = "lineage_job"
 # These are separate from every lineage-watch key.
 INDEXER_CHECKPOINT_PREFIX = "lineage_index_checkpoint"
 INDEXER_CHECKPOINT_VERSION = 1
+
+# The checkpoint ``all`` writes: "index from the beginning", said explicitly
+# because outside standalone no checkpoint means "index nothing yet". Stored in
+# each source's own timestamp form; a scan reading it does a full read.
+FROM_BEGINNING = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def _checkpoint_key_for_provider(provider: str) -> str:
@@ -243,6 +253,9 @@ class JobLineageIndexer:
         self._sink = sink or DBLineageStore()
         self._rows = rows or LineageRowIndexer()
         self._failed_attempts: Dict[str, int] = {}
+        # Whether the "no checkpoint yet" notice was logged, so it is not repeated
+        # every scan; reset once a checkpoint appears.
+        self._missing_checkpoint_logged = False
 
     # -- Source (per subclass) -----------------------------------------------
 
@@ -311,14 +324,54 @@ class JobLineageIndexer:
             },
         )
 
-    def seed_if_absent(self, storage: SingletonAdminStorage, spec: str) -> bool:
-        """Place the checkpoint at a timestamp, only when there is none yet.
+    def _is_from_beginning(self, checkpoint: dict) -> bool:
+        """Whether ``checkpoint`` is the explicit "index everything" mark."""
+        try:
+            return _parse_ts(checkpoint["timestamp"]) <= FROM_BEGINNING
+        except (TypeError, ValueError):
+            return False
+
+    def _resolve_seed(self, storage: SingletonAdminStorage, spec: str) -> str:
+        """The checkpoint timestamp ``spec`` names, in this source's form.
+
+        Raises:
+            LineageSeedError: When ``from-latest`` finds no job, or ``spec`` is
+                not a timestamp.
+        """
+        if spec == SEED_ALL:
+            return self._format_timestamp(FROM_BEGINNING)
+        if spec == SEED_FROM_LATEST:
+            job = self._latest_job(storage)
+            if job is None:
+                raise LineageSeedError(
+                    "No job found in the source; nothing to anchor a checkpoint at."
+                )
+            return self._timestamp(job)
+        try:
+            instant = _parse_ts(spec)
+        except ValueError as exc:
+            raise LineageSeedError(
+                f"{spec!r} is not '{SEED_FROM_LATEST}', '{SEED_ALL}', or an "
+                "ISO-8601 timestamp (e.g. 2026-09-01T00:00:00+00:00)."
+            ) from exc
+        return self._format_timestamp(instant)
+
+    def seed_if_absent(
+        self, storage: SingletonAdminStorage, spec: str, force: bool = False
+    ) -> bool:
+        """Place the checkpoint at a timestamp, by default only when there is none.
 
         ``spec`` is ``from-latest`` (the newest job's timestamp), ``all``, or an
         ISO-8601 timestamp; a timestamp without an offset is read as local time,
-        like every other naive instant here. ``all`` writes nothing: no
-        checkpoint already means "from the beginning". Seed-if-absent so the flag
-        is safe to leave in a pod spec. Returns True if written.
+        like every other naive instant here. ``all`` writes the explicit
+        :data:`FROM_BEGINNING` mark: outside standalone a missing checkpoint means
+        "index nothing yet", so "everything" has to be said. Returns True if
+        written.
+
+        ``force`` replaces an existing checkpoint. The new anchor is resolved
+        first, so a seed that cannot be resolved raises and leaves the existing one
+        in place. Moving it back re-indexes (deduplicated, not free); moving it
+        forward skips jobs for good.
 
         Scans read from the checkpoint inclusively, so a job at exactly the
         seeded instant is indexed.
@@ -327,9 +380,9 @@ class JobLineageIndexer:
             LineageSeedError: When ``from-latest`` finds no job, or ``spec`` is
                 not a timestamp.
         """
+        key = self._get_checkpoint_key()
         existing = self.read_checkpoint(storage)
-        if existing is not None:
-            key = self._get_checkpoint_key()
+        if existing is not None and not force:
             logger.info(
                 "Lineage index checkpoint %s already exists (%s); ignoring the "
                 "requested seed (%s).",
@@ -338,32 +391,19 @@ class JobLineageIndexer:
                 spec,
             )
             return False
-        if spec == SEED_ALL:
-            return False
-
-        if spec == SEED_FROM_LATEST:
-            job = self._latest_job(storage)
-            if job is None:
-                raise LineageSeedError(
-                    "No job found in the source; nothing to anchor a checkpoint at."
-                )
-            timestamp = self._timestamp(job)
-        else:
-            try:
-                instant = _parse_ts(spec)
-            except ValueError as exc:
-                raise LineageSeedError(
-                    f"{spec!r} is not '{SEED_FROM_LATEST}', '{SEED_ALL}', or an "
-                    "ISO-8601 timestamp (e.g. 2026-09-01T00:00:00+00:00)."
-                ) from exc
-            timestamp = self._format_timestamp(instant)
+        timestamp = self._resolve_seed(storage, spec)
         self._write_timestamp(storage, timestamp)
-        key = self._get_checkpoint_key()
-        logger.info(
-            "Seeded lineage index checkpoint %s at %s.",
-            key,
-            timestamp,
-        )
+        if existing is not None:
+            logger.warning(
+                "Overwrote lineage index checkpoint %s: %s -> %s. Jobs between the "
+                "two are re-indexed if it moved back, or skipped for good if it "
+                "moved forward.",
+                key,
+                existing,
+                timestamp,
+            )
+        else:
+            logger.info("Seeded lineage index checkpoint %s at %s.", key, timestamp)
         return True
 
     # -- Scanning ------------------------------------------------------------
@@ -376,6 +416,20 @@ class JobLineageIndexer:
         """
         storage = storage or get_admin_storage()
         checkpoint = self.read_checkpoint(storage)
+        if checkpoint is None and not is_standalone():
+            # Re-read every scan, so seeding takes effect without a restart.
+            if not self._missing_checkpoint_logged:
+                logger.info(
+                    "No lineage index checkpoint under %s; indexing nothing until "
+                    "one is seeded (gbserver lineage-index-init --base-timestamp).",
+                    self._get_checkpoint_key(),
+                )
+                self._missing_checkpoint_logged = True
+            return 0
+        self._missing_checkpoint_logged = False
+        if checkpoint is not None and self._is_from_beginning(checkpoint):
+            # A full read, never a SQL filter on the sentinel date.
+            checkpoint = None
         mark: Optional[Tuple[datetime, List[str]]] = (
             (_parse_ts(checkpoint["timestamp"]), list(checkpoint.get("item_ids") or []))
             if checkpoint

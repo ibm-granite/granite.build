@@ -122,13 +122,8 @@ deployments:
     # none (the process logs it and exits).
     enable: true
     replicas: 1
-    # Optional. Seeds the indexer checkpoint in gb_kv_pairs only when absent, so
-    # it is safe to leave set across restarts. Leave unset and the first scan
-    # indexes everything from the beginning.
-    #   from-latest  start at the most recent lineage run
-    #   all          index the full history
-    #   <ISO-8601>   index runs at or after this instant (naive is local time)
-    # baseTimestamp: from-latest
+    # The indexer indexes nothing until its checkpoint is seeded once, out of
+    # band: gbserver lineage-index-init --base-timestamp from-latest|all|<ISO-8601>
     resources:
       limits:
         cpu: "1"

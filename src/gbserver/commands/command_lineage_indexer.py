@@ -18,6 +18,9 @@
 
 Walks jobs by ``(timestamp, job_id)`` -- ``gb_targets`` in standalone, the
 configured lineage store everywhere else -- and writes them to the index. See :mod:`gbserver.lineage.indexer`.
+
+Outside standalone it indexes nothing until ``gbserver lineage-index-init`` seeds
+its checkpoint; it re-reads the checkpoint every scan, so no restart is needed.
 """
 
 import traceback
@@ -25,8 +28,6 @@ import traceback
 import click
 
 from gbserver.lineage.indexer import create_indexer, resolve_indexer_source
-from gbserver.lineage.lineage_seeding import LineageSeedError
-from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
 
@@ -42,34 +43,11 @@ logger = get_logger(__name__)
     show_default=True,
     help="Seconds between index scans.",
 )
-@click.option(
-    "--base-timestamp",
-    required=False,
-    type=str,
-    default=None,
-    help=(
-        "Seed the indexer checkpoint when absent: 'from-latest', 'all', or an "
-        "ISO-8601 timestamp (naive is local time). Jobs at or after it are "
-        "indexed. Never overwrites an existing checkpoint."
-    ),
-)
 @pass_environment
-def cli(ctx: CliEnvironment, interval: float, base_timestamp: str):
+def cli(ctx: CliEnvironment, interval: float):
     """Start the lineage indexer."""
     source = resolve_indexer_source()
     indexer = create_indexer(source, monitoring_interval=interval)
-
-    if base_timestamp is not None:
-        if not base_timestamp.strip():
-            raise click.ClickException(
-                "--base-timestamp was given an empty value; pass 'from-latest', "
-                "'all', or an ISO-8601 timestamp."
-            )
-        if indexer is not None:
-            try:
-                indexer.seed_if_absent(get_admin_storage(), base_timestamp.strip())
-            except LineageSeedError as exc:
-                raise click.ClickException(str(exc)) from exc
 
     if indexer is None:
         return
