@@ -687,8 +687,6 @@ export interface LineageJobsResult {
 export async function getLineageJobs(params: {
   uri?: string
   job_id?: string
-  tags?: string[]
-  required_tags?: string[]
   // With `uri`: only the jobs whose source and target are both that artifact --
   // the runs behind a looped (in-place rewrite) node of GET /lineage/graph.
   self_loop?: boolean
@@ -701,11 +699,7 @@ export async function getLineageJobs(params: {
   limit?: number
   offset?: number
 }): Promise<LineageJobsResult> {
-  const { data } = await client.get<LineageJobsResult>('/lineage/jobs', {
-    params,
-    // FastAPI reads repeated keys (`tags=a&tags=b`), not axios' default `tags[]=`.
-    paramsSerializer: { indexes: null },
-  })
+  const { data } = await client.get<LineageJobsResult>('/lineage/jobs', { params })
   return data
 }
 

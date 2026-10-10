@@ -31,7 +31,6 @@ from gbserver.lineage.attributes import (
     ALT_URIS,
     INPUT,
     OUTPUT,
-    endpoint_alt_uris,
     endpoint_kind,
     endpoint_name,
     job_detail,
@@ -43,6 +42,7 @@ from gbserver.lineage.decompose import LineageRowDraft
 from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.lineage.row_indexing import row_from_draft as _row_from_draft
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+from gbserver.storage.stored_lineage_row import TERMINAL
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
@@ -189,7 +189,7 @@ class TestDecomposition:
         )
         stored = rows.get_rows_by_job("J1")
         assert len(stored) == 1
-        assert stored[0].is_creation()
+        assert stored[0].input == TERMINAL
 
     def test_a_deletion_records_a_terminal_target(self, write_job, rows):
         write_job(
@@ -199,7 +199,7 @@ class TestDecomposition:
         )
         stored = rows.get_rows_by_job("J1")
         assert len(stored) == 1
-        assert stored[0].is_deletion()
+        assert stored[0].output == TERMINAL
 
     def test_an_undecomposable_job_is_skipped_not_raised(self, write_job, rows):
         # One unrecordable entry must not abort the rest of a build's lineage.
@@ -379,7 +379,7 @@ class TestRowContents:
         # Not NULL: in SQL NULL never equals NULL, so NULL endpoints would slip
         # past the unique index.
         assert row.input == ""
-        assert row.is_creation()
+        assert row.input == TERMINAL
 
     def test_rows_carry_the_slim_shape(self):
         """Producing system lives on the job record, not copied onto every row."""
@@ -496,8 +496,10 @@ class TestRowContents:
         stored = rows.get_rows_by_job("J1")[0]
         assert stored.input == "https://huggingface.co/org/repo"
         assert stored.output == "lh://prod/ns/models/mdl_tbl/trained"
-        assert endpoint_alt_uris(stored.attributes, INPUT) == ["hf:///org/repo"]
-        assert endpoint_alt_uris(stored.attributes, OUTPUT) == [
+        assert (stored.attributes.get(INPUT) or {}).get("alt_uris", []) == [
+            "hf:///org/repo"
+        ]
+        assert (stored.attributes.get(OUTPUT) or {}).get("alt_uris", []) == [
             lh_raw,
             "s3://bkt/models/trained/",
         ]
@@ -714,12 +716,6 @@ class TestJobTags:
         assert tags.count("team=nlp") == 1
         assert "new=1" in tags
 
-    def test_filter_by_any_tag(self, tagged_sink):
-        self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp"])
-        self._write(tagged_sink, "J2", "t2", extra_tags=["team=vision"])
-        assert self.tags.get_job_ids_by_tags(["team=nlp"]) == {"J1"}
-        assert self.tags.get_job_ids_by_tags(["build_id=BLD"]) == {"J1", "J2"}
-
     def test_release_count_counts_jobs_not_rows(self, tagged_sink):
         """The unit is one job per execution -- W&B's run shape, so comparable.
 
@@ -734,25 +730,8 @@ class TestJobTags:
         assert tagged_sink.count_release_ids("BLD", target_id="t1") == 1
         assert tagged_sink.count_release_ids("BLD", target_id="t3") == 0
 
-    def test_the_read_service_lists_jobs_by_tag(self, tagged_sink, rows):
-        from gbserver.lineage.db_service import DBLineageService
-
-        self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp"])
-        self._write(tagged_sink, "J2", "t2", extra_tags=["team=vision"])
-        service = DBLineageService(storage=rows)
-        result = service.list_jobs(tags=["build_id=BLD"], required_tags=["team=nlp"])
-        assert result["total"] == 1
-        assert result["jobs"][0]["job_id"] == "J1"
-        assert "team=nlp" in result["jobs"][0]["tags"]
-        assert result["jobs"][0]["inputs"] == [LH_TABLE]
-        assert result["jobs"][0]["outputs"] == [LH_MODEL]
-
-        paged = service.list_jobs(tags=["build_id=BLD"], limit=1, offset=1)
-        assert paged["total"] == 2
-        assert [job["job_id"] for job in paged["jobs"]] == ["J2"]
-
-    def test_the_read_service_combines_a_uri_with_a_tag(self, tagged_sink, rows):
-        """AND, not OR: the jobs that touched this artifact within this team."""
+    def test_the_read_service_combines_a_uri_with_a_job(self, tagged_sink, rows):
+        """AND, not OR: the filters narrow one another."""
         from gbserver.lineage.db_service import DBLineageService
 
         self._write(tagged_sink, "J1", "t1", extra_tags=["team=nlp"])
@@ -760,23 +739,16 @@ class TestJobTags:
         service = DBLineageService(storage=rows)
         both = service.list_jobs(uri=LH_TABLE)
         assert [job["job_id"] for job in both["jobs"]] == ["J1", "J2"]
-        narrowed = service.list_jobs(uri=LH_TABLE, tags=["team=nlp"])
-        assert [job["job_id"] for job in narrowed["jobs"]] == ["J1"]
-        assert narrowed["total"] == 1
         assert service.list_jobs(uri=LH_MODEL, job_id="J2")["total"] == 1
-        assert (
-            service.list_jobs(uri="s3://b/elsewhere", tags=["team=nlp"])["total"] == 0
-        )
+        assert service.list_jobs(uri="s3://b/elsewhere", job_id="J2")["total"] == 0
 
-    def test_the_read_service_lists_recent_jobs_with_no_filter(self, tagged_sink, rows):
+    def test_the_read_service_lists_nothing_with_no_filter(self, tagged_sink, rows):
+        """An unfiltered listing would aggregate the whole index; the route 422s."""
         from gbserver.lineage.db_service import DBLineageService
 
         self._write(tagged_sink, "J1", "t1")
-        self._write(tagged_sink, "J2", "t2")
         service = DBLineageService(storage=rows)
-        result = service.list_jobs()
-        assert result["total"] == 2
-        assert {job["job_id"] for job in result["jobs"]} == {"J1", "J2"}
+        assert service.list_jobs()["total"] == 0
 
 
 class TestJobsTouchingInSQL:

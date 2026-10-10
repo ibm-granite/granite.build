@@ -322,8 +322,6 @@ class DBLineageService(LineageService):
         self,
         uri: Optional[str] = None,
         job_id: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        required_tags: Optional[List[str]] = None,
         limit: int = 100,
         offset: int = 0,
         self_loop: bool = False,
@@ -332,8 +330,8 @@ class DBLineageService(LineageService):
     ) -> Dict:
         """List job executions matching every given filter, paged.
 
-        The one listing over the index. Filters AND together, so
-        ``uri=X&tags=build_id=Y`` is "the jobs that touched X within build Y":
+        The one listing over the index. Filters AND together, and ``uri`` or
+        ``job_id`` is required (with neither, the listing is empty):
 
         - ``uri`` -- jobs that consumed **or** produced the artifact, in any
           spelling. The drill-down for a graph node's ``run_count``:
@@ -348,9 +346,6 @@ class DBLineageService(LineageService):
           ``(nothing) -> uri`` row, ``"output"`` those with ``uri -> (nothing)``: the
           runs behind a grouped node with no recorded input or output.
         - ``job_id`` -- that one execution.
-        - ``tags`` / ``required_tags`` -- W&B's run-tag filter: **any** of ``tags``
-          and **all** of ``required_tags``, matched exactly.
-        - none -- the most recently recorded jobs.
 
         Paged rather than capped, unlike the graph: a flat list has no shape to
         preserve, so a caller can walk the whole thing.
@@ -362,8 +357,8 @@ class DBLineageService(LineageService):
         Returns:
             ``{jobs, total, limit, offset}``. ``total`` is the unpaged count of
             distinct jobs -- never rows, which overstate a many-input job. Filtered jobs
-            are ordered by ``job_id`` so paging is stable; unfiltered ones newest
-            first. A failed read degrades to empty rather than raising.
+            are ordered by ``job_id`` so paging is stable. A failed read degrades to
+            empty rather than raising.
         """
         limit = max(1, min(int(limit), _MAX_JOBS_PAGE))
         offset = max(0, int(offset))
@@ -374,12 +369,6 @@ class DBLineageService(LineageService):
             candidates: Optional[Set[str]] = None
             if job_id:
                 candidates = {job_id} if self.storage.get_rows_by_job(job_id) else set()
-            if tags or required_tags:
-                # Tags live on the rows' ``attributes.job.tags``.
-                tagged = self.storage.get_job_ids_by_tags(
-                    tags or [], all_of=required_tags
-                )
-                candidates = tagged if candidates is None else candidates & tagged
 
             if uri:
                 normalized = normalize_uri(uri)
@@ -408,10 +397,9 @@ class DBLineageService(LineageService):
                 )
 
             if candidates is None:
-                page, total = self.storage.get_recent_job_ids(limit, offset)
-            else:
-                ordered = sorted(candidates)
-                page, total = ordered[offset : offset + limit], len(ordered)
+                return empty
+            ordered = sorted(candidates)
+            page, total = ordered[offset : offset + limit], len(ordered)
             return {**empty, "jobs": self._job_entries(page), "total": total}
         except Exception:
             logger.exception("Lineage job listing failed")
@@ -423,6 +411,7 @@ class DBLineageService(LineageService):
         authorize_build: Callable[[Any], None],
         admin_storage: Any = None,
         wandb_runs: Optional[Callable[[str], List[Any]]] = None,
+        authorize_entry: Optional[Callable[[Dict], bool]] = None,
     ) -> Optional[Dict]:
         """One job's listing entry plus its full content, or ``None`` if unknown.
 
@@ -445,6 +434,7 @@ class DBLineageService(LineageService):
             admin_storage,
             authorize_build,
             wandb_runs=wandb_runs,
+            authorize_entry=authorize_entry,
         )
 
     def _job_entries(self, job_ids: List[str]) -> List[Dict]:

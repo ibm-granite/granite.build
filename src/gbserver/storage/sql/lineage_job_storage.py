@@ -100,18 +100,6 @@ class SQLLineageJobStorage(
         kwargs["default_pagination_sort_by_column"] = "recorded_at"
         super().__init__(**kwargs)
 
-    def _ensure_table(self) -> bool:
-        """Initialize the model if needed; whether the table exists to query.
-
-        ``__initialize_storage`` is name-mangled private, so this replicates it
-        through the protected API, as the row storage and ``SQLSpaceUserStorage``
-        do.
-        """
-        if self._sql_alchemy_model is None:
-            sample = self._convert_item_to_row_dict(self._get_sample_item())
-            self._create_or_adjust_schema_item_dict(sample)
-        return self._does_table_exist()
-
     def search_by_tags(
         self,
         any_of: List[str],

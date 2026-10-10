@@ -82,12 +82,15 @@ def deny(build):
     raise PermissionError("no")
 
 
-def detail(rows, job_id="j1", authorize=allow, wandb_runs=None, **storage):
+def detail(
+    rows, job_id="j1", authorize=allow, wandb_runs=None, authorize_entry=None, **storage
+):
     return DBLineageService(storage=Rows(rows)).get_job_detail(
         job_id,
         authorize_build=authorize,
         admin_storage=admin(**storage),
         wandb_runs=wandb_runs or (lambda job_id: []),
+        authorize_entry=authorize_entry,
     )
 
 
@@ -188,3 +191,35 @@ def test_other_store_returns_the_index_entry_only():
     assert result["job_store"] == "other"
     assert result["detail_available"] is False
     assert result["job"]["status"] == "success"
+
+
+def test_lineage_job_store_withholds_a_job_outside_the_callers_spaces():
+    job = StoredLineageJob(
+        job_id="j1", attributes={"payload": {"job_input_params": SECRET_PARAMS}}
+    )
+    seen = []
+
+    def outsider(entry):
+        seen.append(entry["space_name"])
+        return False
+
+    result = detail(
+        [index_row("j1", JobStore.LINEAGE_JOB)],
+        jobs={"j1": job},
+        authorize_entry=outsider,
+    )
+    assert seen == ["space"]
+    assert result["detail_available"] is False
+    assert "detail" not in result
+
+
+def test_wandb_store_withholds_a_job_outside_the_callers_spaces():
+    def runs(job_id):
+        raise AssertionError("W&B must not be read for an unauthorized caller")
+
+    result = detail(
+        [index_row("j1", JobStore.WANDB)],
+        wandb_runs=runs,
+        authorize_entry=lambda entry: False,
+    )
+    assert result["detail_available"] is False

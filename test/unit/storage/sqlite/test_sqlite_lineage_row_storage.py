@@ -412,8 +412,8 @@ class TestRoundTrip:
         storage.add(row(job_id="D", input="x", output=TERMINAL))
         storage.add(row(job_id="S", input="tbl", output="tbl"))
 
-        assert storage.get_rows_by_job("C")[0].is_creation()
-        assert storage.get_rows_by_job("D")[0].is_deletion()
+        assert storage.get_rows_by_job("C")[0].input == TERMINAL
+        assert storage.get_rows_by_job("D")[0].output == TERMINAL
         assert storage.get_rows_by_job("S")[0].is_self_loop()
 
     def test_creation_row_is_not_a_self_loop(self, storage):
@@ -451,7 +451,7 @@ class TestWalkAgainstRealStorage:
         graph = walk_lineage(storage, ["b"], Direction.ANCESTORS)
         assert graph.depths == {"b": 0, "a": 1}
         assert TERMINAL not in graph.depths
-        assert any(r.is_creation() for r in graph.rows)
+        assert any(r.input == TERMINAL for r in graph.rows)
 
     def test_cartesian_job_walks_from_any_endpoint(self, storage):
         from gbserver.lineage.walk import Direction, walk_lineage

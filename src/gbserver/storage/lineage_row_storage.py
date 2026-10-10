@@ -161,16 +161,6 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         """Return which of ``job_ids`` already have rows."""
         raise NotImplementedError
 
-    def get_recent_job_ids(self, limit: int, offset: int) -> Tuple[List[str], int]:
-        """Return one page of jobs, newest ``recorded_at`` first, and their count."""
-        raise NotImplementedError
-
-    def get_job_ids_by_tags(
-        self, any_of: List[str], all_of: Optional[List[str]] = None
-    ) -> Set[str]:
-        """Return the jobs carrying any of ``any_of`` and all of ``all_of``."""
-        raise NotImplementedError
-
     def get_tags(self, job_ids: List[str]) -> Dict[str, List[str]]:
         """Return each job's tags as sorted ``k=v`` strings, keyed by ``job_id``."""
         raise NotImplementedError
@@ -406,34 +396,6 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             for row in page
         }
 
-    def get_job_ids_by_tags(
-        self, any_of: List[str], all_of: Optional[List[str]] = None
-    ) -> Set[str]:
-        """Return the jobs matching a tag filter, W&B's ``$in`` + required shape.
-
-        Tags live in each row's ``attributes.job.tags`` and every row of a job
-        carries the same map, so a row-level match is a job-level match. This
-        fallback reads every row; the SQL backend filters on the JSON in the query.
-
-        Args:
-            any_of: a job must carry at least one of these. Empty means no ``$in``
-                constraint, in which case ``all_of`` alone decides.
-            all_of: a job must carry every one of these.
-
-        Returns:
-            The matching job ids. Empty when both lists are empty: an unfiltered
-            request is not a tag query, and answering it would list every job.
-        """
-        wanted_any, wanted_all = _tag_pairs(any_of), _tag_pairs(all_of or [])
-        if not wanted_any and not wanted_all:
-            return set()
-        return {
-            row.job_id
-            for page in self.get_paged()
-            for row in page
-            if _tags_match(row_tags(row), wanted_any, wanted_all)
-        }
-
     def get_tags(self, job_ids: List[str]) -> Dict[str, List[str]]:
         """Return each job's tags, sorted ``k=v``, in one query over its rows.
 
@@ -475,22 +437,6 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
             reverse=True,
         )
         return edges[:limit] if limit is not None else edges
-
-    def get_recent_job_ids(self, limit: int, offset: int) -> Tuple[List[str], int]:
-        """Return one page of jobs, newest first, and how many jobs there are.
-
-        A job is as recent as its newest row. This fallback reads every row; the
-        SQL backend overrides it with one ``GROUP BY job_id``.
-        """
-        latest: Dict[str, str] = {}
-        for page in self.get_paged():
-            for row in page:
-                if row.job_id:
-                    latest[row.job_id] = max(
-                        latest.get(row.job_id, ""), row.recorded_at or ""
-                    )
-        ordered = sorted(latest, key=lambda j: (latest[j], j), reverse=True)
-        return ordered[offset : offset + limit], len(ordered)
 
     def has_rows_for_job(self, job_id: str) -> bool:
         """Whether any row is already recorded for a job."""
@@ -551,13 +497,3 @@ def tags_to_map(tags: Iterable[str]) -> Dict[str, str]:
 def tag_strings(tags: Dict[str, str]) -> List[str]:
     """A stored tag map back as sorted strings: ``k=v``, or ``k`` for a bare tag."""
     return sorted(f"{key}={value}" if value else key for key, value in tags.items())
-
-
-def _tags_match(
-    tags: Dict[str, str],
-    any_of: List[Tuple[str, str]],
-    all_of: List[Tuple[str, str]],
-) -> bool:
-    if any(tags.get(key) != value for key, value in all_of):
-        return False
-    return not any_of or any(tags.get(key) == value for key, value in any_of)

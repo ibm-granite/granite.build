@@ -41,7 +41,7 @@ So the dispatch is explicit, and it borrows the handlers' logic only where that
 logic is a pure string transform.
 """
 
-from typing import Dict, Optional
+from typing import Dict
 from urllib.parse import urlparse, urlunparse
 
 from gbcommon.uri.cos import COS_SCHEME, S3_SCHEME
@@ -440,41 +440,3 @@ _NORMALIZERS = {
     "https": _normalize_https,
     **{scheme: _normalize_git for scheme in _GIT_SCHEMES},
 }
-
-
-def normalized_or_none(raw: str) -> Optional[str]:
-    """Return the normalized URI, or ``None`` when it could not be normalized.
-
-    A convenience for call sites that distinguish "no endpoint" from "an endpoint
-    that could not be identified" -- the latter is worth counting, since a rising
-    count means a producer is emitting a shape with no identity rule.
-    """
-    normalized = normalize_uri(raw)
-    return normalized or None
-
-
-def display_uri_from_url(url: Optional[str]) -> Optional[str]:
-    """Best-effort canonical URI for a web URL, for DISPLAY not identity.
-
-    Distinct from :func:`normalize_uri` in exactly one way, and it matters: this
-    **falls back to the input unchanged** when it cannot translate, because its
-    caller is filling a node's display URI in a response and showing the original
-    link beats showing nothing. :func:`normalize_uri` returns ``""`` instead, because
-    an unidentifiable endpoint must not become a graph node.
-
-    So: use this to show a user a link, and never to key a row. Two spellings that
-    this maps to one string are not thereby one artifact.
-
-    Args:
-        url: the web URL, or ``None``.
-
-    Returns:
-        The canonical URI when the URL is a recognizable HuggingFace one, the input
-        unchanged when it is not, or ``None`` for empty input.
-    """
-    if not url:
-        return None
-    normalized = normalize_uri(url)
-    if normalized:
-        return normalized
-    return url

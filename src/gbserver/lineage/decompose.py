@@ -186,15 +186,6 @@ def _artifact_uri(artifact: Optional[dict]) -> str:
     return ""
 
 
-def _normalized_job_keys() -> tuple:
-    """The job-dict keys holding artifact lists, in endpoint order.
-
-    Exposed so a caller reading endpoints out of a job entry (the build-graph
-    seeding) uses the same keys decomposition does, rather than restating them.
-    """
-    return ("sources", "targets")
-
-
 def _endpoint(artifact: Optional[dict]) -> str:
     """Return an artifact dict's normalized URI, or ``""`` when it has none.
 

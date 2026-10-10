@@ -118,10 +118,6 @@ class LineageGraph:
         """Every artifact identifier reached, terminals excluded."""
         return set(self.depths)
 
-    def max_depth_reached(self) -> int:
-        """The deepest level any node was found at, or 0 for an empty graph."""
-        return max(self.depths.values(), default=0)
-
     def __repr__(self) -> str:
         return (
             f"LineageGraph(rows={len(self.rows)}, nodes={len(self.depths)}, "

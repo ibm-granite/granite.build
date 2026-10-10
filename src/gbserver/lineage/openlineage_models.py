@@ -141,38 +141,12 @@ class ArtifactGraphRequest(BaseModel):
     direction: str = "both"
 
 
-class BuildGraphRequest(BaseModel):
-    """A request for the lineage graph seeded from one build's artifacts.
-
-    A build is not a graph node -- it is a way to seed one -- so this carries no
-    node identity, only the build to seed from and how far to expand.
-    """
-
-    build_id: str
-    max_depth: int = Field(default=10, ge=1, le=50)
-    direction: str = "both"
-
-
-class BuildGraphResponse(BaseModel):
-    """The walked graph of a build.
-
-    ``root_id`` is the build id, which names no node: a build-seeded graph has
-    several roots, so no node is flagged ``is_root``.
-    """
-
-    root_id: str
-    nodes: List[GraphNode] = Field(default_factory=list)
-    edges: List[GraphEdge] = Field(default_factory=list)
-    truncated: bool = False
-    unexpanded: int = 0
-
-
 class LineageQueryRequest(BaseModel):
     """A lineage query seeded by an artifact, a job, or both.
 
     One entry point so a caller can ask however it happens to hold the artifact:
     by URI in any spelling, or by the job that produced it. Each field is optional
-    on its own, but one of the two is required -- the route answers 400 otherwise.
+    on its own, but one of the two is required -- the route answers 422 otherwise.
     Both map to an indexed text column, so either combination is one predicate.
 
     There is deliberately no ``build_id`` filter: the index has no such column

@@ -408,14 +408,6 @@ class TestGraphResult:
         graph = walk_lineage(storage, ["a"], Direction.ANCESTORS)
         assert graph.nodes == {"a"}
 
-    def test_max_depth_reached(self):
-        storage = FakeStorage(chain("a", "b", "c"))
-        graph = walk_lineage(storage, ["a"], Direction.DESCENDANTS)
-        assert graph.max_depth_reached() == 2
-
-    def test_empty_graph_max_depth_is_zero(self):
-        assert LineageGraph().max_depth_reached() == 0
-
 
 def random_graph(seed: int, nodes: int = 12, edges: int = 20) -> list:
     """Build a random graph, deliberately including the hard shapes.

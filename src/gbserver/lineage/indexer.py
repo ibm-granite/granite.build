@@ -69,6 +69,7 @@ from gbserver.lineage.lineage_seeding import (
 )
 from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
+from gbserver.storage.storage import Pagination, QueryControl, SortOrder
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -473,10 +474,29 @@ class JobLineageIndexer:
             self.worker_thread.join(timeout=timeout)
 
 
+def _targets_page(
+    storage: SingletonAdminStorage, page_index: int, cutoff: Optional[datetime]
+) -> List[StoredTargetRun]:
+    """One newest-finished-first page of successful targets, narrowed in SQL.
+
+    With a cutoff the storage prefilters on completion time; it may return rows
+    before the cutoff but never drops one at or after it, so the caller's exact
+    check stays the answer. Without one (the first scan) every target is read.
+    """
+    if cutoff is None:
+        return _successful_targets_page(storage, page_index)
+    page = storage.target_storage.get_successful_finished_since(
+        as_aware(cutoff).astimezone(timezone.utc), page_index, _SCAN_PAGE_SIZE
+    )
+    return [t for t in page if isinstance(t, StoredTargetRun)]
+
+
 class TargetLineageIndexer(JobLineageIndexer):
     """Standalone source: successful ``gb_targets`` rows by ``finished_at``.
 
-    Every page is read, never stopping at the first row behind the checkpoint:
+    Past the first scan, the storage narrows the read to targets finished at or
+    after the checkpoint (see :func:`_targets_page`). Every page of that is read,
+    never stopping at the first row behind the checkpoint:
     SQLite orders ``finished_at`` as text and the column holds two spellings
     (``' '`` and ``'T'`` separators), so a newer row can sort below an older one
     (see ``select_builds_from_checkpoint``, which reads every page for the same
@@ -504,7 +524,7 @@ class TargetLineageIndexer(JobLineageIndexer):
         selected: List[StoredTargetRun] = []
         page_index = 0
         while True:
-            page = _successful_targets_page(storage, page_index)
+            page = _targets_page(storage, page_index, cutoff)
             if not page:
                 break
             for target in page:
@@ -524,8 +544,6 @@ class TargetLineageIndexer(JobLineageIndexer):
 
     def _index(self, storage: SingletonAdminStorage, job: StoredTargetRun) -> bool:
         if not job.input_artifacts and not any(job.output_artifacts.values()):
-            return False
-        if self._rows.has_rows_for_job(job.uuid):
             return False
         # gb_targets IS the job store for this source, so nothing is copied into
         # gb_lineage_job: the rows are stamped TARGETS and their ``retrieve`` keys
@@ -563,7 +581,7 @@ class TargetLineageIndexer(JobLineageIndexer):
     def _latest_job(self, storage: SingletonAdminStorage) -> Optional[StoredTargetRun]:
         page_index = 0
         while True:
-            page = _successful_targets_page(storage, page_index)
+            page = _targets_page(storage, page_index, None)
             if not page:
                 return None
             finished = [t for t in page if t.finished_at is not None]
@@ -605,13 +623,22 @@ class LineageJobIndexer(JobLineageIndexer):
         self, storage: SingletonAdminStorage, timestamp: Optional[str]
     ) -> List[StoredLineageJob]:
         cutoff = _parse_ts(timestamp) if timestamp else None
-        selected = [
-            job
-            for page in self._job_storage(storage).get_paged(page_size=_SCAN_PAGE_SIZE)
-            for job in page
-            if job.recorded_at
-            and (cutoff is None or _parse_ts(job.recorded_at) >= cutoff)
-        ]
+        selected: List[StoredLineageJob] = []
+        for page in self._newest_first(storage):
+            selected.extend(
+                job
+                for job in page
+                if job.recorded_at
+                and (cutoff is None or _parse_ts(job.recorded_at) >= cutoff)
+            )
+            # Newest first, so once a page reaches behind the cutoff every later
+            # page is older still: a scan reads what is new, not all of history.
+            if cutoff is not None and any(
+                job.recorded_at and _parse_ts(job.recorded_at) < cutoff for job in page
+            ):
+                break
+        # A record rewritten between pages can be read twice; keep one.
+        selected = list({job.job_id: job for job in selected}.values())
         selected.sort(key=lambda j: (_parse_ts(j.recorded_at), j.job_id))
         return selected
 
@@ -652,15 +679,45 @@ class LineageJobIndexer(JobLineageIndexer):
             mark = (last_ts, ids)
         return indexed
 
+    def _newest_first(self, storage: SingletonAdminStorage):
+        """Pages of job records by ``recorded_at`` descending, sorted in SQL.
+
+        ``recorded_at`` is fixed-width UTC text, so the column's string order is
+        instant order and the database can sort it.
+        """
+        job_storage = self._job_storage(storage)
+        page_index = 0
+        while True:
+            page = job_storage.get_by_where(
+                None,
+                query_control=QueryControl(
+                    pagination=Pagination(index=page_index, size=_SCAN_PAGE_SIZE),
+                    # job_id breaks ties, so offset paging cannot skip a record.
+                    sort_orders=[
+                        SortOrder(column="recorded_at", ascending=False),
+                        SortOrder(column="job_id", ascending=False),
+                    ],
+                ),
+            )
+            if not page:
+                return
+            yield page
+            if len(page) < _SCAN_PAGE_SIZE:
+                return
+            page_index += 1
+
     def _latest_job(self, storage: SingletonAdminStorage) -> Optional[StoredLineageJob]:
         latest = None
-        for page in self._job_storage(storage).get_paged(page_size=_SCAN_PAGE_SIZE):
+        # The first page holds the newest record; the max is taken over it rather
+        # than trusting its first item, in case a backend sorts differently.
+        for page in self._newest_first(storage):
             for job in page:
                 if job.recorded_at and (
                     latest is None
                     or _parse_ts(job.recorded_at) > _parse_ts(latest.recorded_at)
                 ):
                     latest = job
+            break
         return latest
 
     def _format_timestamp(self, instant: datetime) -> str:

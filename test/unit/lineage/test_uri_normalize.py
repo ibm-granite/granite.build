@@ -25,7 +25,7 @@ negative tests here are therefore as load-bearing as the positive ones.
 
 import pytest
 
-from gbserver.lineage.uri_normalize import normalize_uri, normalized_or_none
+from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.storage.stored_lineage_row import MAX_LINEAGE_URI_LENGTH
 
 # Groups of raw spellings that must each collapse to one identity. Every member
@@ -303,13 +303,6 @@ def test_normalize_uri_never_raises():
         except Exception as exc:  # pragma: no cover - the assertion is the point
             pytest.fail(f"normalize_uri raised on {raw!r}: {exc!r}")
         assert isinstance(result, str)
-
-
-def test_normalized_or_none_distinguishes_unidentifiable_from_empty():
-    """The optional wrapper lets a caller count dropped endpoints."""
-    assert normalized_or_none("") is None
-    assert normalized_or_none("bogus://x") is None
-    assert normalized_or_none("hf:///org/repo") == "https://huggingface.co/org/repo"
 
 
 def test_hf_path_in_repo_keeps_its_revision():

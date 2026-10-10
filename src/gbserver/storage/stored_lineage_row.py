@@ -170,14 +170,6 @@ class StoredLineageRow(BaseStoredItem):
         description="Node, job and provenance detail; not queryable",
     )
 
-    def is_creation(self) -> bool:
-        """Whether the job produced this output with no recorded input."""
-        return self.input == TERMINAL
-
-    def is_deletion(self) -> bool:
-        """Whether the job consumed this input and produced nothing."""
-        return self.output == TERMINAL
-
     def is_self_loop(self) -> bool:
         """Whether the job rewrote its own input.
 

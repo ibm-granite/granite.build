@@ -116,7 +116,9 @@ class LineageRowIndexer:
                     fill_job_from_record(row, record)
                     upsert_row(self.row_storage, row)
                 except Exception:
-                    logger.debug(
+                    # Warning, not debug: the checkpoint moves past this record, so
+                    # the row is not retried -- the log is the only trace of it.
+                    logger.warning(
                         "Lineage row from job record could not be added or merged "
                         "(job=%s, row=%r)",
                         record.job_id,
@@ -209,7 +211,7 @@ class LineageRowIndexer:
             try:
                 upsert_row(self.row_storage, row)
             except Exception:
-                logger.debug(
+                logger.warning(
                     "Lineage row could not be added or merged "
                     "(job=%s, input=%r, output=%r)",
                     row.job_id,

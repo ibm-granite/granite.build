@@ -70,11 +70,7 @@ _VALID_SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 # narrower than the 1024 the other URI columns get, because these two are indexed
 # AND both sit in the ``(job_id, input, output)`` unique index -- see
 # MAX_LINEAGE_URI_LENGTH for why that matters.
-#
-# ``source`` is no longer a lineage column; it stays so the events table's
-# ``source`` column keeps the width it has always had (this set is keyed on column
-# name across every table).
-_WIDE_STRING_COLUMNS = frozenset({"input", "output", "source"})
+_WIDE_STRING_COLUMNS = frozenset({"input", "output"})
 
 
 def _validate_sql_identifier(name: str, identifier_type: str = "identifier") -> str:
@@ -843,6 +839,18 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             raise_exception=False
         )  # returns [] if tables is not present
         return len(columns) > 0
+
+    def _ensure_table(self) -> bool:
+        """Initialize the model if needed; whether the table exists to query.
+
+        For a subclass running its own SQL. ``__initialize_storage`` is name-mangled
+        private, so this does the same through the protected API: like any first
+        read, it may create or adjust the table to match the item's columns.
+        """
+        if self._sql_alchemy_model is None:
+            sample = self._convert_item_to_row_dict(self._get_sample_item())
+            self._create_or_adjust_schema_item_dict(sample)
+        return self._does_table_exist()
 
     def __get_db_item_by_uuid(
         self, session: Any, uuid: str

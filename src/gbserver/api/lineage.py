@@ -16,10 +16,11 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Literal, Optional
+from typing import Any, Literal, Optional
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict
+from fastapi import FastAPI, HTTPException, Request, status
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import has_space_member_access
@@ -39,7 +40,7 @@ from gbserver.lineage.openlineage_models import (
     TagSearchRequest,
 )
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
-from gbserver.lineage.uri_normalize import display_uri_from_url
+from gbserver.lineage.openlineage_utils import parse_hf_url
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -54,6 +55,24 @@ logger = get_logger(__name__)
 # accessible fraction is a tiny sliver of a huge global result set.
 _SEARCH_SCAN_BACKEND_PAGE_SIZE = 100
 _SEARCH_SCAN_MAX_BACKEND_ITEMS = 2000
+
+
+def _uri_from_url(url: Optional[str]) -> Optional[str]:
+    """Derive an hf:// URI from a huggingface.co URL.
+
+    Kept for ``POST /lineage/artifact``: its clients match the returned URIs against
+    the artifact registry's ``hf://`` form, so this route keeps that shape.
+    """
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or "huggingface.co"
+        org, name, artifact_type = parse_hf_url(url)
+        type_part = f"{artifact_type}s/" if artifact_type != "model" else ""
+        return f"hf://{host}/{type_part}{org}/{name}"
+    except Exception:
+        return url
 
 
 def get_redacted_job_input_params(source: dict) -> dict:
@@ -372,7 +391,7 @@ def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
                 node_type = source_node.get("node_type", "")
                 if node_type == "artifact":
                     source_meta = source_node.get("metadata") or {}
-                    uri = source_meta.get("uri") or display_uri_from_url(
+                    uri = source_meta.get("uri") or _uri_from_url(
                         source_meta.get("url")
                     )
                     inputs.append(
@@ -398,7 +417,7 @@ def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
                 node_type = target_node.get("node_type", "")
                 if node_type == "artifact":
                     target_meta = target_node.get("metadata") or {}
-                    uri = target_meta.get("uri") or display_uri_from_url(
+                    uri = target_meta.get("uri") or _uri_from_url(
                         target_meta.get("url")
                     )
                     outputs.append(
@@ -481,17 +500,21 @@ def query_lineage_graph_get(
 
     The HTTP surface for :func:`query_lineage_graph`; see it for the semantics.
     """
-    return query_lineage_graph(
-        request,
-        LineageQueryRequest(
+    try:
+        body = LineageQueryRequest(
             uri=uri,
             job_id=job_id,
             direction=direction,
             max_depth=depth,
             max_nodes_per_level=max_nodes_per_level,
             group_runs=group_runs,
-        ),
-    )
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.errors(include_url=False, include_context=False),
+        ) from exc
+    return query_lineage_graph(request, body)
 
 
 def query_lineage_graph(
@@ -507,8 +530,7 @@ def query_lineage_graph(
     - ``job_id`` -- seeded from every endpoint of that execution.
     - both -- the union of their seeds.
 
-    One of the two is required -- a 400 otherwise. A graph needs somewhere to start;
-    "what ran lately" is ``GET /jobs`` with no filter.
+    One of the two is required -- a 422 otherwise: a graph needs somewhere to start.
 
     Unlike ``POST /artifact`` this returns the node/edge graph directly, with a
     ``depth`` per node, instead of re-projecting it into run-centred entries. It also
@@ -544,7 +566,7 @@ def query_lineage_graph(
     """
     if not body.uri and not body.job_id:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Either uri or job_id must be provided",
         )
     if body.direction not in ("downstream", "upstream", "both"):
@@ -583,8 +605,6 @@ def list_lineage_jobs(
     request: Request,
     uri: Optional[str] = None,
     job_id: Optional[str] = None,
-    tags: List[str] = Query(default_factory=list),
-    required_tags: List[str] = Query(default_factory=list),
     self_loop: bool = False,
     output: Optional[str] = None,
     terminal: Optional[Literal["input", "output"]] = None,
@@ -593,7 +613,8 @@ def list_lineage_jobs(
 ) -> LineageJobsResponse:
     """List the job executions matching every given filter, paged.
 
-    Filters AND together, and each is optional:
+    Filters AND together. ``uri`` or ``job_id`` is required -- the route answers
+    422 otherwise: an unfiltered listing would aggregate the whole index.
 
     - ``uri`` -- jobs that consumed or produced the artifact. The drill-down for a
       graph node's ``run_count``: the graph collapses an artifact's in-place
@@ -606,12 +627,9 @@ def list_lineage_jobs(
     - ``terminal`` (with ``uri``) -- ``input``: only the jobs that wrote ``uri`` with
       no recorded input; ``output``: only those that read it with no recorded
       output. The runs behind a grouped node with one empty side.
-    - ``tags`` (match any) / ``required_tags`` (match all) -- e.g.
-      ``?tags=build_id=<uuid>``. Tags are free-form and matched exactly.
-    - none -- the most recently recorded jobs.
 
-    So ``?uri=X&tags=build_id=Y`` is "the jobs that touched X within build Y". Each
-    entry carries the job's record, its tags and the artifacts it read and wrote.
+    Each entry carries the job's record, its tags and the artifacts it read and
+    wrote. A tag search is ``POST /lineage/search``.
 
     A GET because every filter is a scalar or a flat list; there is nothing a body
     would carry that a query string cannot, and a GET stays linkable and cacheable.
@@ -623,13 +641,16 @@ def list_lineage_jobs(
     by the same decision as the graph -- see :func:`query_lineage_graph` for why a
     lineage answer is not filtered per space, and what that costs.
     """
+    if not uri and not job_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="One of 'uri' or 'job_id' is required",
+        )
     service = _get_index_service()
 
     result = service.list_jobs(
         uri=uri,
         job_id=job_id,
-        tags=tags,
-        required_tags=required_tags,
         limit=limit,
         offset=offset,
         self_loop=self_loop,
@@ -655,6 +676,11 @@ def get_lineage_job_detail(request: Request, job_id: str) -> LineageJobDetail:
     detail = _get_index_service().get_job_detail(
         job_id,
         authorize_build=lambda build: authorize_build_read_access(request, build),
+        authorize_entry=lambda entry: has_space_member_access(
+            request,
+            username_on_target=entry.get("owner", ""),
+            space_name=entry.get("space_name", ""),
+        )[0],
     )
     if detail is None:
         raise HTTPException(

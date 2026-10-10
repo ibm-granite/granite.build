@@ -46,7 +46,7 @@ creation next to a source that saw what X was made from.
 import copy
 from typing import Any, Dict, List, Optional, Tuple
 
-from gbserver.lineage.attributes import ORIGIN, ORIGIN_IDS, ORIGIN_SYSTEM
+from gbserver.lineage.attributes import ORIGIN, ORIGIN_SYSTEM
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
@@ -209,33 +209,6 @@ def rows_to_add(rows: List[StoredLineageRow]) -> List[StoredLineageRow]:
         for row in job_rows
         if not _superseded(row, [other for other in job_rows if other is not row])
     ]
-
-
-def prune_superseded(storage: ILineageRowStorage, job_id: str) -> int:
-    """Drop the terminal rows of one job that a real edge supersedes; return how many.
-
-    For a bulk writer that adds rows in batches -- and so bypasses the check
-    :func:`upsert_row` makes per row -- and runs this once per job it wrote a
-    terminal for. The superseded rows' attributes are merged into the edge that
-    replaces them, so nothing a source knew is lost with the row.
-    """
-    rows = storage.get_rows_by_job(job_id)
-    stale = [row for row in rows if _superseded(row, rows)]
-    if not stale:
-        return 0
-    for edge in rows:
-        if edge in stale:
-            continue
-        covering = [row for row in stale if _superseded(row, [edge])]
-        if not covering:
-            continue
-        attributes = edge.attributes
-        for row in covering:
-            attributes = merge_attributes(attributes, row.attributes)
-        if attributes != edge.attributes:
-            storage.update_fields(edge.uuid, {"attributes": attributes})
-    storage.delete([row.uuid for row in stale])
-    return len(stale)
 
 
 def _superseded(row: StoredLineageRow, others: List[StoredLineageRow]) -> bool:

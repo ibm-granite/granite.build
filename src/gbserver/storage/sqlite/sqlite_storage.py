@@ -17,6 +17,7 @@
 
 import multiprocessing
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Generic, Optional, TypeVar, Union
 
@@ -37,6 +38,7 @@ from gbserver.storage.sql.space_user_storage import SQLSpaceUserStorage
 from gbserver.storage.sql.steprun_storage import SQLStepRunStorage
 from gbserver.storage.sql.target_run_storage import SQLTargetRunStorage
 from gbserver.storage.storage import BASE_ITEM_TYPE, IItemStorage, QueryControl
+from gbserver.storage.stored_target_run import StoredTargetRun
 
 # Legacy location, retained for the one-time standalone startup migration.
 LEGACY_LLMB_DIR_NAME = ".llmb"
@@ -176,6 +178,14 @@ class SqliteTargetRunStorage(SqliteStorageOverrides, SQLTargetRunStorage):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+
+    def get_successful_finished_since(
+        self, cutoff_utc: datetime, page_index: int, page_size: int
+    ) -> list[StoredTargetRun]:
+        with self._db_file_lock:
+            return super().get_successful_finished_since(
+                cutoff_utc, page_index, page_size
+            )
 
 
 class SqliteLineageRowStorage(SqliteStorageOverrides, SQLLineageRowStorage):

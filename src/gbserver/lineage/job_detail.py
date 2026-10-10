@@ -56,6 +56,14 @@ PAYLOAD_KEYS = (
 # configs are exposed only to those who could read the build's own status.
 AuthorizeBuild = Callable[[Any], None]
 
+# Called with a job's listing entry before a store with no build of its own (the
+# lineage job table, W&B) is read; returns whether the caller may see the job. The
+# API checks space membership off ``job_namespace``, as the graph's access filter does.
+AuthorizeEntry = Callable[[Dict[str, Any]], bool]
+
+# Stores whose detail is gated by AuthorizeEntry; TARGETS goes through AuthorizeBuild.
+_ENTRY_GATED_STORES = (JobStore.LINEAGE_JOB, JobStore.WANDB)
+
 
 class JobDetailUnavailable(Exception):
     """The store has no detail for this job; the message says why."""
@@ -161,15 +169,31 @@ _FETCHERS = {
 }
 
 
+# Whether this process has logged in to W&B: the login is too slow to repeat on
+# every drawer open. The Api itself is NOT kept: ``Api.runs`` caches each query's
+# result on the instance for its lifetime, which would serve stale runs and grow
+# without bound.
+_wandb_logged_in = False  # pylint: disable=invalid-name
+
+
 def _default_wandb_runs(job_id: str) -> List[Any]:
+    global _wandb_logged_in  # pylint: disable=global-statement
     # Deferred: W&B is only imported where a job actually lives there.
     # pylint: disable=import-outside-toplevel
-    from gbserver.lineage.indexer import WandBLineageIndexer
+    import wandb
 
-    indexer = WandBLineageIndexer()
+    from gbserver.lineage.indexer import WandBLineageIndexer
+    from gbserver.types.constants import (
+        GBSERVER_WANDB_API_KEY,
+        GBSERVER_WANDB_BASE_URL,
+    )
+
+    if not _wandb_logged_in:
+        wandb.login(key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL)
+        _wandb_logged_in = True
     return list(
-        indexer._wandb_api().runs(  # pylint: disable=protected-access
-            indexer._project_path(),  # pylint: disable=protected-access
+        wandb.Api().runs(
+            WandBLineageIndexer._project_path(),  # pylint: disable=protected-access
             filters={"config.job_id": job_id},
             per_page=10,
         )
@@ -194,6 +218,7 @@ def fetch_job_detail(
     admin_storage: Any,
     authorize_build: AuthorizeBuild,
     wandb_runs: Optional[Callable[[str], List[Any]]] = None,
+    authorize_entry: Optional[AuthorizeEntry] = None,
 ) -> Dict[str, Any]:
     """Extend a listing entry with the job's content from its store.
 
@@ -204,6 +229,7 @@ def fetch_job_detail(
         admin_storage: the admin storage holding the job table, targets and builds.
         authorize_build: see :data:`AuthorizeBuild`.
         wandb_runs: lists the W&B runs of a job id; defaults to the configured W&B.
+        authorize_entry: see :data:`AuthorizeEntry`; ``None`` skips the check.
     """
     first = rows[0]
     try:
@@ -219,6 +245,15 @@ def fetch_job_detail(
         "detail_available": True,
         "detail_error": None,
     }
+    if (
+        job_store in _ENTRY_GATED_STORES
+        and authorize_entry is not None
+        and not authorize_entry(entry)
+    ):
+        detail.update(
+            detail_available=False, detail_error="Not authorized to read this job"
+        )
+        return detail
     try:
         detail.update(_FETCHERS[job_store](entry["job_id"], retrieve, ctx))
     except JobDetailUnavailable as e:

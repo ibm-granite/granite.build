@@ -593,10 +593,6 @@ class TestListJobs:
         ]
         assert svc.list_jobs(uri=A, job_id="J2")["total"] == 0
 
-    def test_a_tag_no_row_carries_is_empty(self):
-        """A tag filter must not match every job when no row carries the tag."""
-        assert service(row("J1", A, B)).list_jobs(tags=["build_id=X"])["total"] == 0
-
     def test_an_unresolvable_uri_is_empty_not_an_error(self):
         result = service(row("J1", A, B)).list_jobs(uri="bogus://x")
         assert result == {"jobs": [], "total": 0, "limit": 100, "offset": 0}

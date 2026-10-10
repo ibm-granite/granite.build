@@ -147,7 +147,13 @@ def _job_record(job_id, recorded_at, entry=True):
 def _admin_with_jobs(jobs):
     kv = {}
     storage = MagicMock()
-    storage.lineage_job_storage.get_paged.side_effect = lambda **_: iter([list(jobs)])
+
+    def newest_first(_where=None, query_control=None):
+        page = query_control.pagination
+        ordered = sorted(jobs, key=lambda j: j.recorded_at, reverse=True)
+        return ordered[page.index * page.size : (page.index + 1) * page.size]
+
+    storage.lineage_job_storage.get_by_where.side_effect = newest_first
     storage.kv_pair_storage.get_value.side_effect = kv.get
     storage.kv_pair_storage.set_value.side_effect = kv.__setitem__
     return storage, kv
@@ -446,8 +452,8 @@ def _target_indexer(targets, indexed=()):
     ordered = sorted(targets, key=lambda t: t.finished_at, reverse=True)
     page = patch.object(
         idx,
-        "_successful_targets_page",
-        side_effect=lambda storage, i: ordered if i == 0 else [],
+        "_targets_page",
+        side_effect=lambda storage, i, cutoff: ordered if i == 0 else [],
     )
     return ix, rows, page
 
@@ -495,19 +501,18 @@ def test_target_scan_reads_past_a_page_that_reaches_the_checkpoint():
     pages = [first, [_target("missorted", 61)]]
     with patch.object(
         idx,
-        "_successful_targets_page",
-        side_effect=lambda storage, i: pages[i] if i < len(pages) else [],
+        "_targets_page",
+        side_effect=lambda storage, i, cutoff: pages[i] if i < len(pages) else [],
     ):
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             assert ix.scan_once(storage) == 1
     assert _checkpoint(storage, provider="none")["item_ids"] == ["missorted"]
 
 
-def test_already_indexed_and_artifactless_targets_are_not_rewritten():
+def test_artifactless_targets_are_not_indexed():
     storage = _storage()
     ix, rows, page = _target_indexer(
-        [_target("done", 1), _target("empty", 2, artifacts=False), _target("t3", 3)],
-        indexed={"done"},
+        [_target("empty", 2, artifacts=False), _target("t3", 3)]
     )
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
@@ -613,3 +618,51 @@ def test_each_source_stamps_its_job_store():
     indexer.index_job_records([prebuilt])
     (added,) = rows.add.call_args.args
     assert [r.job_store for r in added] == [JobStore.LINEAGE_JOB]
+
+
+def test_a_partly_indexed_target_is_completed_on_retry():
+    """Rows already present must not short-circuit: the upsert is idempotent."""
+    storage = _storage()
+    ix, rows, page = _target_indexer([_target("t1", 1)])
+    rows.has_rows_for_job.return_value = True
+    with page:
+        with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
+            assert ix.scan_once(storage) == 1
+    assert rows.index_job_entry.call_count == 1
+
+
+def test_a_scan_with_a_checkpoint_reads_only_targets_since_it_in_utc():
+    """The SQL prefilter gets the checkpoint as a UTC instant; Python re-checks."""
+    storage = SimpleNamespace(target_storage=MagicMock())
+    storage.target_storage.get_successful_finished_since.return_value = [
+        _target("before", 59),
+        _target("after", 61),
+    ]
+    with patch.object(idx, "_successful_targets_page", side_effect=AssertionError):
+        selected = idx.TargetLineageIndexer(
+            sink=MagicMock(), rows=MagicMock()
+        )._jobs_since(
+            storage,
+            (T0 + timedelta(minutes=60))
+            .astimezone(timezone(timedelta(hours=-3)))
+            .isoformat(),
+        )
+    assert [t.uuid for t in selected] == ["after"]
+    cutoff, page_index, _ = (
+        storage.target_storage.get_successful_finished_since.call_args.args
+    )
+    assert cutoff == T0 + timedelta(minutes=60)
+    assert cutoff.tzinfo == timezone.utc
+    assert page_index == 0
+
+
+def test_a_first_scan_reads_every_successful_target():
+    storage = SimpleNamespace(target_storage=MagicMock())
+    with patch.object(
+        idx, "_successful_targets_page", side_effect=lambda storage, i: []
+    ) as full:
+        idx.TargetLineageIndexer(sink=MagicMock(), rows=MagicMock())._jobs_since(
+            storage, None
+        )
+    full.assert_called_once()
+    storage.target_storage.get_successful_finished_since.assert_not_called()

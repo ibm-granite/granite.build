@@ -17,10 +17,9 @@
 """SQL storage implementation for lineage rows."""
 
 from contextlib import contextmanager
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional
 
-from sqlalchemy import and_, cast, distinct, func, or_
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import and_, distinct, func, or_
 
 from gbserver.storage.lineage_row_storage import (
     DOWNSTREAM,
@@ -28,7 +27,6 @@ from gbserver.storage.lineage_row_storage import (
     BaseLineageRowStorage,
     GroupedEdge,
     ILineageRowStorage,
-    _tag_pairs,
     endpoint_pair,
 )
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
@@ -263,61 +261,6 @@ class SQLLineageRowStorage(
         finally:
             session.close()
 
-    def get_job_ids_by_tags(
-        self, any_of: List[str], all_of: Optional[List[str]] = None
-    ) -> Set[str]:
-        """Match the tags on the JSON blob in SQL, one ``SELECT DISTINCT job_id``.
-
-        Reads ``attributes.job.tags.<key>`` from the ``json`` text column with the
-        dialect's JSON operator. A dialect without one falls back to the base scan.
-        """
-        wanted_any, wanted_all = _tag_pairs(any_of), _tag_pairs(all_of or [])
-        if not wanted_any and not wanted_all:
-            return set()
-        if not self._ensure_table():
-            return set()
-        dialect = self._engine.dialect.name
-        if dialect not in ("sqlite", "postgresql"):
-            return super().get_job_ids_by_tags(any_of, all_of)
-        model = self._sql_alchemy_model
-
-        def tag(key: str):
-            if dialect == "postgresql":
-                return cast(model.json, JSONB)["attributes"]["job"]["tags"][key].astext
-            # The key is quoted so a dot or space in it stays one path segment.
-            escaped = key.replace("\\", "\\\\").replace('"', '\\"')
-            return func.json_extract(model.json, f'$.attributes.job.tags."{escaped}"')
-
-        conditions = [tag(key) == value for key, value in wanted_all]
-        if wanted_any:
-            conditions.append(or_(*(tag(key) == value for key, value in wanted_any)))
-        session = self._get_session_without_retry()
-        try:
-            query = session.query(model.job_id).filter(and_(*conditions)).distinct()
-            return {job_id for (job_id,) in query.all() if job_id}
-        finally:
-            session.close()
-
-    def get_recent_job_ids(self, limit: int, offset: int) -> Tuple[List[str], int]:
-        """One page of jobs by newest ``recorded_at``, and their count, in SQL."""
-        if not self._ensure_table():
-            return [], 0
-        session = self._get_session_without_retry()
-        try:
-            model = self._sql_alchemy_model
-            last = func.max(model.recorded_at)
-            page = (
-                session.query(model.job_id)
-                .group_by(model.job_id)
-                .order_by(last.desc(), model.job_id.desc())
-                .limit(limit)
-                .offset(offset)
-            )
-            total = session.query(func.count(distinct(model.job_id))).scalar()
-            return [job_id for (job_id,) in page.all()], int(total or 0)
-        finally:
-            session.close()
-
     @property
     def _job_id(self):
         return self._sql_alchemy_model.job_id
@@ -350,14 +293,3 @@ class SQLLineageRowStorage(
             yield session.query(model).filter(condition)
         finally:
             session.close()
-
-    def _ensure_table(self) -> bool:
-        """Initialize the model if needed; whether the table exists to query.
-
-        ``__initialize_storage`` is name-mangled private, so this replicates it
-        through the protected API, as ``SQLSpaceUserStorage`` does.
-        """
-        if self._sql_alchemy_model is None:
-            sample = self._convert_item_to_row_dict(self._get_sample_item())
-            self._create_or_adjust_schema_item_dict(sample)
-        return self._does_table_exist()

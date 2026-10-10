@@ -502,12 +502,6 @@ def endpoint_produced_by(
     )
 
 
-def endpoint_alt_uris(attributes: Optional[Dict[str, Any]], side: str) -> List[str]:
-    """The alternative URI spellings recorded for one endpoint, or ``[]``."""
-    values = ((attributes or {}).get(side) or {}).get(ALT_URIS) or []
-    return [str(value) for value in values if value]
-
-
 def job_detail(attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """The ``job`` group, or an empty map."""
     return (attributes or {}).get(JOB) or {}
@@ -522,11 +516,6 @@ def payload_detail(attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     raw.
     """
     return (attributes or {}).get(PAYLOAD) or {}
-
-
-def run_detail(attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """The ``run`` group of a JOB blob, or an empty map."""
-    return (attributes or {}).get(RUN) or {}
 
 
 def origin_detail(attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:
