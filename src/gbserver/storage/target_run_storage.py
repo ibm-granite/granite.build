@@ -17,13 +17,31 @@
 from datetime import datetime
 from typing import Self
 
-from gbserver.storage.storage import BaseItemStorage, IItemStorage
+from gbserver.storage.storage import (
+    BaseItemStorage,
+    IItemStorage,
+    Pagination,
+    QueryControl,
+    SortOrder,
+)
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.constants import GB_TARGET_RUNS_TABLE_NAME
+from gbserver.types.status import Status
 
 
 class IStoredTargetRunStorage(IItemStorage[StoredTargetRun]):
-    pass
+
+    def get_successful_finished_since(
+        self, cutoff_utc: datetime, page_index: int, page_size: int
+    ) -> list[StoredTargetRun]:
+        """One newest-finished-first page of successful targets near ``cutoff_utc``.
+
+        A read-only prefilter, never the exact answer: a backend may return rows
+        before the cutoff (this base form returns every successful target), and the
+        caller re-checks each ``finished_at``. It must never drop a row at or after
+        the cutoff, nor one whose time it cannot read.
+        """
+        raise NotImplementedError
 
 
 class BaseStoredTargetRunStorage(
@@ -37,6 +55,18 @@ class BaseStoredTargetRunStorage(
         ):  # Allow for testing using alternate table names.
             kwargs["table_name"] = GB_TARGET_RUNS_TABLE_NAME
         super().__init__(**kwargs)
+
+    def get_successful_finished_since(
+        self, cutoff_utc: datetime, page_index: int, page_size: int
+    ) -> list[StoredTargetRun]:
+        """The fallback: every successful target, paged as the lineage scan pages."""
+        return self.get_by_where(
+            {"status": Status.SUCCESS.name},
+            query_control=QueryControl(
+                pagination=Pagination(index=page_index, size=page_size),
+                sort_orders=[SortOrder(column="finished_at", ascending=False)],
+            ),
+        )
 
     def _get_column_values(self: Self, item: StoredTargetRun) -> dict:
         fields_to_include = {

@@ -1002,8 +1002,16 @@ GBSERVER_IBMID_USERINFO_URL = os.getenv(
 )
 GBSERVER_IBMID_CALLBACK_URL = os.getenv(ENV_VAR_IBMID_CALLBACK_URL, "")
 
-# OpenLineage / WandB lineage provider
-GBSERVER_LINEAGE_PROVIDER = os.getenv(ENV_VAR_PREFIX + "_LINEAGE_PROVIDER", "wandb")
+# OpenLineage / WandB lineage provider.
+#
+# NOT read here. The provider is resolved by
+# gbserver.lineage.jobstats._resolve_lineage_provider(), which both the write side
+# (get_lineage_store) and the read side (LineageServiceFactory.create) go through.
+# A module-level constant cannot express this one: the default depends on whether
+# standalone mode is active, which is established at RUNTIME, after this module is
+# imported -- so a constant captured here would read "wandb" in a standalone
+# process and send lineage to W&B. Resolving at call time is what fixes that, and
+# keeping a second unconditional default here only invited the two to diverge.
 GBSERVER_WANDB_API_KEY = os.getenv(ENV_VAR_PREFIX + "_WANDB_API_KEY", "")
 GBSERVER_WANDB_PROJECT = os.getenv(
     ENV_VAR_PREFIX + "_WANDB_PROJECT", "lineage-tracking"
@@ -1127,6 +1135,8 @@ GB_STEP_RUNS_TABLE_NAME = "gb_steps"
 GB_ARTIFACT_REGISTRY_TABLE_NAME = "gb_artifacts"
 GB_TARGET_RUNS_TABLE_NAME = "gb_targets"
 GB_NODE_FAILURES_TABLE_NAME = "gb_ndfail"
+GB_LINEAGE_TABLE_NAME = "gb_lineage_index"
+GB_LINEAGE_JOB_TABLE_NAME = "gb_lineage_job"
 GB_SPACE_USERS_TABLE_NAME = "gb_space_users"
 GB_KV_PAIRS_TABLE_NAME = "gb_kv_pairs"
 

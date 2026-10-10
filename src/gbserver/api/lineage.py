@@ -16,11 +16,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import has_space_member_access
@@ -31,7 +31,11 @@ from gbserver.lineage.openlineage_models import (
 )
 from gbserver.lineage.openlineage_models import LineageEvent as OpenLineageEvent
 from gbserver.lineage.openlineage_models import (
+    LineageGraphResponse,
+    LineageJobDetail,
+    LineageJobsResponse,
     LineageNodeRef,
+    LineageQueryRequest,
     PaginatedResponse,
     TagSearchRequest,
 )
@@ -54,7 +58,11 @@ _SEARCH_SCAN_MAX_BACKEND_ITEMS = 2000
 
 
 def _uri_from_url(url: Optional[str]) -> Optional[str]:
-    """Derive an hf:// URI from a huggingface.co URL."""
+    """Derive an hf:// URI from a huggingface.co URL.
+
+    Kept for ``POST /lineage/artifact``: its clients match the returned URIs against
+    the artifact registry's ``hf://`` form, so this route keeps that shape.
+    """
     if not url:
         return None
     try:
@@ -117,7 +125,7 @@ class BuildJobStatsResponse(BaseModel):
     target_ids: list[str]
 
 
-@lineage_api.get("/build/{build_id}")
+@lineage_api.get("/build/{build_id}", tags=["gb admin"])
 def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse:
     """Get JobStats for all targets in a build.
 
@@ -172,7 +180,7 @@ def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse
     )
 
 
-@lineage_api.get("/target/{target_id}")
+@lineage_api.get("/target/{target_id}", tags=["gb admin"])
 def get_target_jobstats(request: Request, target_id: str) -> TargetJobStatsResponse:
     """Get JobStats for a target run, grouped by output artifact name.
 
@@ -226,14 +234,35 @@ def _get_openlineage_service() -> LineageService:
     return _openlineage_service
 
 
-@lineage_api.post("/")
+_index_service = None
+
+
+def _get_index_service():
+    """The reader of ``gb_lineage_index``, whatever the configured provider.
+
+    The ``lineage-index`` routes read the index directly: the lineage-indexer
+    fills it from ``gb_targets`` or the lineage store, so it has data even when
+    the provider is ``wandb`` or ``none``.
+    """
+    global _index_service
+    if _index_service is None:
+        # Deferred: importing the DB service at module scope would pull the storage
+        # layer into every environment that never serves these routes.
+        # pylint: disable=import-outside-toplevel
+        from gbserver.lineage.db_service import DBLineageService
+
+        _index_service = DBLineageService()
+    return _index_service
+
+
+@lineage_api.post("/", tags=["lineage store"])
 def ingest_lineage_event(event: OpenLineageEvent):
     service = _get_openlineage_service()
     service.emit_event(event.model_dump())
     return {"status": "accepted"}
 
 
-@lineage_api.post("/search")
+@lineage_api.post("/search", tags=["lineage store"])
 def search_lineage_events(request: Request, body: TagSearchRequest):
     """Search lineage runs by tag.
 
@@ -299,7 +328,7 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
     )
 
 
-@lineage_api.post("/artifact")
+@lineage_api.post("/artifact", tags=["lineage store"])
 def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
     """Get the lineage DAG for an artifact, traversing downstream or upstream.
 
@@ -450,3 +479,212 @@ def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
         runs=runs,
         truncated=result["truncated"],
     )
+
+
+# The only route in this file taking query params. A GET with filters is what a UI
+# wants for a shareable, bookmarkable lineage view, and every filter here maps to an
+# indexed text column, so there is no shape a caller can ask for that forces a scan.
+# There is no POST form: the filters are a handful of scalars, so a body would carry
+# nothing a query string cannot, at the cost of an unbookmarkable URL.
+@lineage_api.get("/graph", tags=["lineage-index"])
+def query_lineage_graph_get(
+    request: Request,
+    uri: Optional[str] = None,
+    job_id: Optional[str] = None,
+    direction: str = "both",
+    depth: int = 10,
+    max_nodes_per_level: Optional[int] = None,
+    group_runs: bool = True,
+) -> LineageGraphResponse:
+    """Query the lineage graph by URI, by job, or both; one of them is required.
+
+    The HTTP surface for :func:`query_lineage_graph`; see it for the semantics.
+    """
+    try:
+        body = LineageQueryRequest(
+            uri=uri,
+            job_id=job_id,
+            direction=direction,
+            max_depth=depth,
+            max_nodes_per_level=max_nodes_per_level,
+            group_runs=group_runs,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.errors(include_url=False, include_context=False),
+        ) from exc
+    return query_lineage_graph(request, body)
+
+
+def query_lineage_graph(
+    request: Request, body: LineageQueryRequest
+) -> LineageGraphResponse:
+    """Query the lineage graph seeded by an artifact, a job, or both.
+
+    One entry point so a caller asks however it holds the artifact rather than the
+    index dictating a lookup shape:
+
+    - ``uri`` -- that artifact's lineage, up and down. Any spelling: a browser URL
+      and the runtime's own URI normalize to one artifact.
+    - ``job_id`` -- seeded from every endpoint of that execution.
+    - both -- the union of their seeds.
+
+    One of the two is required -- a 422 otherwise: a graph needs somewhere to start.
+
+    Unlike ``POST /artifact`` this returns the node/edge graph directly, with a
+    ``depth`` per node, instead of re-projecting it into run-centred entries. It also
+    never 404s: an empty graph means "nothing recorded", which is a real answer, and a
+    caller must not render it as an error.
+
+    There is no ``build_id`` filter. The index has no such column -- a build is a
+    granite.build process concept, absent from every imported row -- and a
+    build-scoped view goes through ``POST /build``, which resolves the build outside
+    the index and seeds this same walk.
+
+    Reads the lineage index directly, whatever the configured provider.
+
+    **The graph is cross-space and is NOT filtered per space.** That is deliberate,
+    and it is the one design decision here worth stating twice.
+
+    A lineage graph carries no access to anything: it holds artifact URIs, job names
+    and edges. Reading a model, pulling a dataset or fetching a step config each needs
+    its own authorized call, none of which route through here.
+
+    Filtering it would break the question lineage exists to answer. A chain almost
+    always crosses spaces -- a shared curated dataset, a platform-team base model --
+    so pruning nodes from spaces the caller cannot read makes "what was my model
+    trained on?" silently unanswerable: the graph would look complete while stopping
+    at the space boundary. A truthful partial answer is not available here, only a
+    misleading one.
+
+    The accepted cost: artifact URIs and job names are visible across spaces. That is
+    broader than ``GET /artifacts/``, which narrows to the caller's spaces via
+    ``scope_space_name_filter``. Provenance is judged worth that asymmetry -- so if
+    an artifact URI or a job name is ever itself a secret, this route is the wrong
+    place to keep it.
+    """
+    if not body.uri and not body.job_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Either uri or job_id must be provided",
+        )
+    if body.direction not in ("downstream", "upstream", "both"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="direction must be 'downstream', 'upstream', or 'both'",
+        )
+    service = _get_index_service()
+
+    try:
+        result = service.query_graph(
+            uri=body.uri,
+            job_id=body.job_id,
+            direction=body.direction,
+            max_depth=body.max_depth,
+            max_nodes_per_level=body.max_nodes_per_level,
+            group_runs=body.group_runs,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+
+    return LineageGraphResponse(
+        root_id=result.get("root_id", ""),
+        nodes=result.get("nodes", []),
+        edges=result.get("edges", []),
+        truncated=result.get("truncated", False),
+        unexpanded=result.get("unexpanded", 0),
+    )
+
+
+@lineage_api.get("/jobs", tags=["lineage-index"])
+def list_lineage_jobs(
+    request: Request,
+    uri: Optional[str] = None,
+    job_id: Optional[str] = None,
+    self_loop: bool = False,
+    output: Optional[str] = None,
+    terminal: Optional[Literal["input", "output"]] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> LineageJobsResponse:
+    """List the job executions matching every given filter, paged.
+
+    Filters AND together. ``uri`` or ``job_id`` is required -- the route answers
+    422 otherwise: an unfiltered listing would aggregate the whole index.
+
+    - ``uri`` -- jobs that consumed or produced the artifact. The drill-down for a
+      graph node's ``run_count``: the graph collapses an artifact's in-place
+      rewrites into one node, and this lists them.
+    - ``job_id`` -- one execution.
+    - ``self_loop`` (with ``uri``) -- only the jobs that rewrote the artifact in
+      place (same source and target): the runs behind its looped graph node.
+    - ``output`` (with ``uri``) -- only the jobs that read ``uri`` and wrote
+      ``output``: the runs behind a graph node grouping same-signature jobs.
+    - ``terminal`` (with ``uri``) -- ``input``: only the jobs that wrote ``uri`` with
+      no recorded input; ``output``: only those that read it with no recorded
+      output. The runs behind a grouped node with one empty side.
+
+    Each entry carries the job's record, its tags and the artifacts it read and
+    wrote. A tag search is ``POST /lineage/search``.
+
+    A GET because every filter is a scalar or a flat list; there is nothing a body
+    would carry that a query string cannot, and a GET stays linkable and cacheable.
+
+    Paged rather than capped, unlike the graph: a flat list has no shape to
+    preserve. ``total`` is the unpaged count of distinct jobs.
+
+    Reads the lineage index directly, whatever the configured provider. Cross-space
+    by the same decision as the graph -- see :func:`query_lineage_graph` for why a
+    lineage answer is not filtered per space, and what that costs.
+    """
+    if not uri and not job_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="One of 'uri' or 'job_id' is required",
+        )
+    service = _get_index_service()
+
+    result = service.list_jobs(
+        uri=uri,
+        job_id=job_id,
+        limit=limit,
+        offset=offset,
+        self_loop=self_loop,
+        output=output,
+        terminal=terminal,
+    )
+    return LineageJobsResponse(**result)
+
+
+@lineage_api.get("/jobs/{job_id:path}", tags=["lineage-index"])
+def get_lineage_job_detail(request: Request, job_id: str) -> LineageJobDetail:
+    """One job execution with its full content, from wherever it is stored.
+
+    The listing (``GET /jobs``) carries only what the index rows hold. This follows
+    the rows' ``job_store`` to the job's own store -- the lineage job table, this
+    server's builds and target runs, or W&B -- and returns one shape for all of them.
+
+    404 only when the index has no such job. A store that cannot answer (build not
+    on this server, run deleted, no read access to the build) still returns 200,
+    with ``detail_available`` false and ``detail_error`` saying why. A build's step
+    configs and target run are returned only to callers who may read that build.
+    """
+    detail = _get_index_service().get_job_detail(
+        job_id,
+        authorize_build=lambda build: authorize_build_read_access(request, build),
+        authorize_entry=lambda entry: has_space_member_access(
+            request,
+            username_on_target=entry.get("owner", ""),
+            space_name=entry.get("space_name", ""),
+        )[0],
+    )
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found in the lineage index",
+        )
+    return LineageJobDetail(**detail)

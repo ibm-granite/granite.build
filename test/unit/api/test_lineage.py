@@ -30,8 +30,15 @@ fail here.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from fastapi import HTTPException
+
 from gbserver.api import lineage as lineage_mod
-from gbserver.lineage.openlineage_models import ArtifactGraphRequest, TagSearchRequest
+from gbserver.lineage.openlineage_models import (
+    ArtifactGraphRequest,
+    LineageQueryRequest,
+    TagSearchRequest,
+)
 
 MY_SPACE = "my-space"
 OTHER_SPACE = "other-space"
@@ -114,6 +121,49 @@ def test_search_lineage_events_excludes_cross_space_run():
     assert run_ids == [f"run-{MY_SPACE}"], run_ids
     assert resp.total == 1
     assert resp.count == 1
+
+
+def test_search_lineage_events_filters_a_real_db_provider_result():
+    """The db provider's own envelope must satisfy the shared route contract.
+
+    Not a hand-written run dict like the tests above: this goes through
+    DBLineageService, so it fails if db_responses ever stops emitting the two
+    facets the route filters on. The route is provider-agnostic and fails closed,
+    so a missing one silently empties every search instead of erroring.
+    """
+    import uuid as uuid_module
+
+    from gbserver.lineage.db_service import DBLineageService
+    from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+    from gbserver.storage.stored_lineage_job import StoredLineageJob
+
+    jobs = SqliteStorageFactory().create_lineage_job_storage(
+        table_name=f"t_api_{uuid_module.uuid4().hex[:8]}"
+    )
+    for space in (MY_SPACE, OTHER_SPACE):
+        jobs.add(
+            StoredLineageJob(
+                job_id=f"run-{space}",
+                job_namespace=f"{space}/some-build",
+                space_name=space,
+                owner="someone_else@example.com",
+                tags=["team=nlp"],
+            )
+        )
+    service = DBLineageService(job_storage=jobs)
+
+    is_admin, is_member = _member_of(MY_SPACE)
+    with (
+        is_admin,
+        is_member,
+        patch.object(lineage_mod, "_get_openlineage_service", return_value=service),
+    ):
+        resp = lineage_mod.search_lineage_events(
+            _fake_request("member", "member@example.com"),
+            TagSearchRequest(tags=["team=nlp"]),
+        )
+    assert [r["run"]["runId"] for r in resp.runs] == [f"run-{MY_SPACE}"]
+    assert resp.total == 1
 
 
 def test_search_lineage_events_includes_owned_run_from_any_space():
@@ -316,3 +366,451 @@ def test_get_artifact_graph_excludes_run_with_no_owner_or_namespace():
             ArtifactGraphRequest(artifact_name="dataset-x", direction="both"),
         )
     assert resp.runs == []
+
+
+def _db_service(**kwargs):
+    """A stub that passes the endpoint's isinstance(DBLineageService) check."""
+    from gbserver.lineage.db_service import DBLineageService
+
+    service = DBLineageService.__new__(DBLineageService)
+    for name, value in kwargs.items():
+        setattr(service, name, value)
+    return service
+
+
+# --------------------------------------------------------------- POST/GET /graph
+
+
+def test_query_graph_rejects_an_unknown_direction():
+    with pytest.raises(HTTPException) as caught:
+        lineage_mod.query_lineage_graph(
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(uri="s3://b/x", direction="sideways"),
+        )
+    assert caught.value.status_code == 400
+
+
+def test_index_routes_read_the_index_whatever_the_provider():
+    """The index is filled by the lineage-indexer, so a wandb/none provider still has data."""
+    service = _db_service(
+        query_graph=lambda **_kw: {"root_id": "", "nodes": [], "edges": []},
+        list_jobs=lambda **_kw: {
+            "jobs": [],
+            "total": 0,
+            "limit": 100,
+            "offset": 0,
+        },
+    )
+    req = _fake_request("member", "member@example.com")
+    with (
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+        patch.object(
+            lineage_mod, "_get_openlineage_service", side_effect=AssertionError
+        ),
+    ):
+        lineage_mod.query_lineage_graph(req, LineageQueryRequest(uri="s3://b/x"))
+        lineage_mod.list_lineage_jobs(req, uri="s3://b/x")
+
+
+def test_query_graph_requires_a_uri_or_a_job_id():
+    """A graph needs somewhere to start: 422, as GET /jobs answers."""
+    service = _db_service(query_graph=lambda **_kw: pytest.fail("must not walk"))
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.query_lineage_graph_get(
+                _fake_request("member", "member@example.com")
+            )
+    assert caught.value.status_code == 422
+
+
+def test_query_graph_fills_in_its_defaults():
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return {"root_id": "", "nodes": [], "edges": [], "truncated": False}
+
+    service = _db_service(query_graph=fake)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        resp = lineage_mod.query_lineage_graph(
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(job_id="J1"),
+        )
+    assert seen == {
+        "uri": None,
+        "job_id": "J1",
+        "direction": "both",
+        "max_depth": 10,
+        # None, not a number: the per-level ceiling is the service's default unless a
+        # caller explicitly raises it for a "show the full graph" request.
+        "max_nodes_per_level": None,
+        "group_runs": True,
+    }
+    assert resp.root_id == ""
+    assert resp.nodes == []
+
+
+def test_query_graph_passes_every_filter_through():
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return {"root_id": "s3://b/x", "nodes": [], "edges": [], "truncated": False}
+
+    service = _db_service(query_graph=fake)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        lineage_mod.query_lineage_graph(
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(
+                uri="s3://b/x",
+                job_id="J1",
+                direction="upstream",
+                max_depth=3,
+                max_nodes_per_level=25_000,
+            ),
+        )
+    assert seen == {
+        "uri": "s3://b/x",
+        "job_id": "J1",
+        "direction": "upstream",
+        "max_depth": 3,
+        "max_nodes_per_level": 25_000,
+        "group_runs": True,
+    }
+
+
+def test_query_graph_does_not_404_on_an_empty_graph():
+    """ "Nothing recorded" is a real answer and must not read as an error.
+
+    This is the difference from ``POST /artifact``, whose ``None`` becomes the 404 the
+    frontend renders as "lineage is not available".
+    """
+    service = _db_service(
+        query_graph=lambda **_kw: {
+            "root_id": "",
+            "nodes": [],
+            "edges": [],
+            "truncated": False,
+        }
+    )
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        resp = lineage_mod.query_lineage_graph(
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(uri="s3://b/absent"),
+        )
+    assert resp.nodes == []
+
+
+def test_query_graph_carries_node_depth_to_the_response():
+    """``depth`` is the field a client needs to lay the graph out."""
+    service = _db_service(
+        query_graph=lambda **_kw: {
+            "root_id": "s3://b/x",
+            "nodes": [
+                {
+                    "id": "s3://b/x",
+                    "node_type": "artifact",
+                    "name": "x",
+                    "is_root": True,
+                    "depth": 0,
+                    "metadata": {"uri": "s3://b/x"},
+                },
+                {
+                    "id": "s3://b/y",
+                    "node_type": "artifact",
+                    "name": "y",
+                    "depth": 2,
+                    "metadata": {"uri": "s3://b/y"},
+                },
+                _graph_node("run:J1", MY_SPACE, "someone_else@example.com"),
+            ],
+            "edges": [
+                {"source": "s3://b/x", "target": "run:J1"},
+                {"source": "run:J1", "target": "s3://b/y"},
+            ],
+            "truncated": False,
+        }
+    )
+    is_admin, is_member = _member_of(MY_SPACE)
+    with (
+        is_admin,
+        is_member,
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+    ):
+        resp = lineage_mod.query_lineage_graph(
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(uri="s3://b/x"),
+        )
+    depths = {n.id: n.depth for n in resp.nodes if n.node_type == "artifact"}
+    assert depths == {"s3://b/x": 0, "s3://b/y": 2}
+
+
+def test_query_graph_get_form_maps_its_query_params():
+    """The GET form exists so a lineage view can be bookmarked and shared."""
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return {"root_id": "", "nodes": [], "edges": [], "truncated": False}
+
+    service = _db_service(query_graph=fake)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        lineage_mod.query_lineage_graph_get(
+            _fake_request("member", "member@example.com"),
+            uri="s3://b/x",
+            job_id="J1",
+            direction="downstream",
+            depth=4,
+        )
+    # note: the wire calls it `depth`, the service `max_depth`
+    assert seen["max_depth"] == 4
+    assert seen["direction"] == "downstream"
+    assert seen["uri"] == "s3://b/x"
+    assert seen["job_id"] == "J1"
+
+
+@pytest.mark.parametrize(
+    "params", [{"depth": 100}, {"depth": 0}, {"max_nodes_per_level": 0}]
+)
+def test_query_graph_get_answers_422_on_out_of_range_params(params):
+    """Bounds live on the request model; a violation is the client's error, not a 500."""
+    with pytest.raises(HTTPException) as caught:
+        lineage_mod.query_lineage_graph_get(
+            _fake_request("member", "member@example.com"), uri="s3://b/x", **params
+        )
+    assert caught.value.status_code == 422
+
+
+# --------------------------------------- the graph is cross-space, by decision
+
+
+def _two_space_graph() -> dict:
+    """A graph whose two runs live in different spaces.
+
+    ``mine`` produced ``a_mine``; ``theirs`` produced ``a_theirs`` and also consumed
+    ``a_shared``, which both runs touch.
+    """
+    return {
+        "root_id": "a_shared",
+        "nodes": [
+            {"id": "a_shared", "node_type": "artifact", "name": "shared", "depth": 0},
+            {"id": "a_mine", "node_type": "artifact", "name": "mine", "depth": 1},
+            {"id": "a_theirs", "node_type": "artifact", "name": "theirs", "depth": 1},
+            _graph_node("run:mine", MY_SPACE, "someone_else@example.com"),
+            _graph_node("run:theirs", OTHER_SPACE, "someone_else@example.com"),
+        ],
+        "edges": [
+            {"source": "a_shared", "target": "run:mine"},
+            {"source": "run:mine", "target": "a_mine"},
+            {"source": "a_shared", "target": "run:theirs"},
+            {"source": "run:theirs", "target": "a_theirs"},
+        ],
+        "truncated": False,
+    }
+
+
+def _query_graph_as_member_of(space: str, graph: dict):
+    service = _db_service(query_graph=lambda **_kw: graph)
+    is_admin, is_member = _member_of(space)
+    with (
+        is_admin,
+        is_member,
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+    ):
+        return lineage_mod.query_lineage_graph(
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(uri="a_shared"),
+        )
+
+
+def test_graph_is_not_filtered_per_space():
+    """The graph crosses spaces, and that is the decision -- not an oversight.
+
+    A lineage graph carries no access to any artifact: URIs, job names and edges
+    only. Filtering it would make "what was my model trained on?" silently
+    unanswerable whenever a chain crosses a space, which is the normal case for a
+    shared dataset or a platform base model.
+
+    This test exists so the behaviour cannot be changed by accident. Reversing it is a
+    product decision about whether artifact URIs are themselves secret -- see the
+    docstring on ``query_lineage_graph``.
+    """
+    resp = _query_graph_as_member_of(MY_SPACE, _two_space_graph())
+    ids = {n.id for n in resp.nodes}
+    assert {"a_shared", "a_mine", "a_theirs"} <= ids
+    assert {"run:mine", "run:theirs"} <= ids
+
+
+def test_graph_keeps_every_edge_regardless_of_space():
+    resp = _query_graph_as_member_of(MY_SPACE, _two_space_graph())
+    assert len(resp.edges) == 4
+
+
+def test_graph_provenance_is_complete_across_a_space_boundary():
+    """The use case the no-filtering decision protects.
+
+    A model in my space, trained on a dataset curated by another team: the upstream
+    chain must answer truthfully, or the index does not do its job.
+    """
+    graph = {
+        "root_id": "s3://mine/finetune",
+        "nodes": [
+            {
+                "id": "s3://mine/finetune",
+                "node_type": "artifact",
+                "name": "finetune",
+                "is_root": True,
+                "depth": 0,
+            },
+            {
+                "id": "s3://curated/corpus",
+                "node_type": "artifact",
+                "name": "corpus",
+                "depth": 1,
+            },
+            _graph_node("run:platform", "platform-team", "other@example.com"),
+        ],
+        "edges": [
+            {"source": "s3://curated/corpus", "target": "run:platform"},
+            {"source": "run:platform", "target": "s3://mine/finetune"},
+        ],
+        "truncated": False,
+    }
+    resp = _query_graph_as_member_of(MY_SPACE, graph)
+    depths = {n.id: n.depth for n in resp.nodes if n.node_type == "artifact"}
+    assert depths == {"s3://mine/finetune": 0, "s3://curated/corpus": 1}
+
+
+def test_graph_keeps_a_run_with_no_provenance():
+    """No space check means an unattributed run is not dropped either.
+
+    ``POST /artifact`` and ``POST /search`` fail closed on a run with neither
+    namespace nor owner because they authorize per run. This route does not authorize
+    per node at all, so there is nothing to fail closed about -- worth pinning, since
+    the two routes now differ.
+    """
+    graph = {
+        "root_id": "a1",
+        "nodes": [
+            {"id": "a1", "node_type": "artifact", "name": "a"},
+            {"id": "run:anon", "node_type": "run", "name": "anon", "metadata": {}},
+        ],
+        "edges": [{"source": "a1", "target": "run:anon"}],
+        "truncated": False,
+    }
+    resp = _query_graph_as_member_of(MY_SPACE, graph)
+    assert {n.id for n in resp.nodes} == {"a1", "run:anon"}
+
+
+def test_artifact_graph_still_filters_per_space():
+    """The contrast: POST /artifact DOES filter, and must keep doing so.
+
+    It re-projects into run-centred entries and has always applied the per-run space
+    check. Only the node/edge routes are cross-space, so a change to one must not be
+    assumed to apply to the other.
+    """
+    my_run = _graph_node("run:mine", MY_SPACE, "someone_else@example.com")
+    other_run = _graph_node("run:theirs", OTHER_SPACE, "someone_else@example.com")
+    fake_service = SimpleNamespace(
+        get_artifact_graph=lambda **_kw: {
+            "root_id": "a1",
+            "nodes": [
+                {"id": "a1", "node_type": "artifact", "name": "a"},
+                my_run,
+                other_run,
+            ],
+            "edges": [
+                {"source": "a1", "target": "run:mine"},
+                {"source": "a1", "target": "run:theirs"},
+            ],
+            "truncated": False,
+        }
+    )
+    is_admin, is_member = _member_of(MY_SPACE)
+    with (
+        is_admin,
+        is_member,
+        patch.object(
+            lineage_mod, "_get_openlineage_service", return_value=fake_service
+        ),
+    ):
+        resp = lineage_mod.get_artifact_graph(
+            _fake_request("member", "member@example.com"),
+            ArtifactGraphRequest(artifact_url="a1"),
+        )
+    assert [r.job_namespace.split("/", 1)[0] for r in resp.runs] == [MY_SPACE]
+
+
+# ----------------------------------------------------------- GET /lineage/jobs
+
+
+def test_jobs_requires_a_uri_or_a_job_id():
+    """An unfiltered listing would aggregate the whole index: 422, not a scan."""
+    service = _db_service(list_jobs=lambda **_kw: pytest.fail("must not list"))
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.list_lineage_jobs(_fake_request("member", "member@example.com"))
+    assert caught.value.status_code == 422
+
+
+def test_jobs_passes_every_filter_and_its_paging_through():
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return {
+            "jobs": [{"job_id": "J1", "tags": ["build_id=B", "team=nlp"]}],
+            "total": 1,
+            "limit": 10,
+            "offset": 50,
+        }
+
+    service = _db_service(list_jobs=fake)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        resp = lineage_mod.list_lineage_jobs(
+            _fake_request("member", "member@example.com"),
+            uri="s3://b/x",
+            job_id="J1",
+            limit=10,
+            offset=50,
+        )
+    assert seen == {
+        "uri": "s3://b/x",
+        "job_id": "J1",
+        "limit": 10,
+        "offset": 50,
+        "self_loop": False,
+        "output": None,
+        "terminal": None,
+    }
+    assert resp.limit == 10
+    assert resp.offset == 50
+    assert resp.jobs[0].tags == ["build_id=B", "team=nlp"]
+
+
+def test_jobs_reports_the_total_so_a_caller_can_page():
+    """The count is what makes a collapsed graph node expandable."""
+    service = _db_service(
+        list_jobs=lambda **_kw: {
+            "jobs": [
+                {
+                    "job_id": "J1",
+                    "inputs": ["s3://b/x"],
+                    "outputs": ["s3://b/x"],
+                    "job": {"name": "append"},
+                    "source_system": "lakehouse",
+                }
+            ],
+            "total": 68906,
+            "limit": 1,
+            "offset": 0,
+        }
+    )
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        resp = lineage_mod.list_lineage_jobs(
+            _fake_request("member", "member@example.com"),
+            uri="s3://b/x",
+        )
+    assert resp.total == 68906
+    assert resp.jobs[0].inputs == resp.jobs[0].outputs == ["s3://b/x"]
+    assert resp.jobs[0].job["name"] == "append"

@@ -1,0 +1,82 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.deployments.enable }}
+{{- if .Values.deployments.lineageIndexer.enable }}
+{{- $lineageIndexerName := printf "llmbuild-lineage-indexer-%s" .Release.Name }}
+{{- $mainSecretName := printf "llmbuild-secret-%s" .Release.Name }}
+{{- if .Values.secrets.mainSecretName }}
+{{- $mainSecretName = .Values.secrets.mainSecretName }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '{{ $lineageIndexerName }}'
+  labels:
+    'llmbuild/internal': '{{ $lineageIndexerName }}'
+spec:
+  # Single replica: the lineage-indexer is the single writer of its gb_kv_pairs
+  # checkpoint. Writes to gb_lineage_index are idempotent, but two replicas would
+  # race on the checkpoint and re-read each other's work.
+  replicas: {{ .Values.deployments.lineageIndexer.replicas }}
+  selector:
+    matchLabels:
+      'llmbuild/internal': '{{ $lineageIndexerName }}'
+  template:
+    metadata:
+      labels:
+        'llmbuild/internal': '{{ $lineageIndexerName }}'
+    spec:
+      containers:
+      - name: lineage-indexer
+        image: '{{ .Values.deployments.image }}'
+        imagePullPolicy: Always
+        command:
+        - bash
+        - -c
+        - gbserver lineage-indexer
+        env:
+        {{- range $key, $value := .Values.deployments.lineageIndexer.env }}
+        - name: {{ $key | quote }}
+          value: {{ $value | quote }}
+        {{- end }}
+        {{- range $x := .Values.deployments.lineageIndexer.envFromMainSecret }}
+        - name: {{ $x | quote }}
+          valueFrom:
+            secretKeyRef:
+              key: {{ $x | quote }}
+              name: '{{ $mainSecretName }}'
+        {{- end }}
+        resources:
+          {{- .Values.deployments.lineageIndexer.resources | toYaml | nindent 10 }}
+        securityContext:
+          runAsGroup: 0
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /tmp
+          name: lineage-indexer-tmp-volume
+        - mountPath: /app/ibm-cloud-databases.cert
+          name: secret-volume
+          readOnly: true
+          subPath: ibm-cloud-databases.cert
+      imagePullSecrets:
+      {{- range $v := .Values.deployments.imagePullSecrets }}
+      - name: "{{ $v }}"
+      {{- end }}
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      serviceAccountName: 'granite-dot-build-svc-acc-{{ .Release.Name }}'
+      volumes:
+      - name: lineage-indexer-tmp-volume
+        emptyDir: {}
+      - name: secret-volume
+        secret:
+          secretName: '{{ $mainSecretName }}'
+          defaultMode: 416
+{{- end }}
+{{- end }}
+{{- end }}

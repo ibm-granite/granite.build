@@ -17,6 +17,7 @@
 
 import multiprocessing
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Generic, Optional, TypeVar, Union
 
@@ -29,12 +30,15 @@ from gbserver.storage.sql.artifact_registry import SQLArtifactRegistry
 from gbserver.storage.sql.build_storage import SQLBuildStorage
 from gbserver.storage.sql.event_storage import SQLEventStorage
 from gbserver.storage.sql.kv_pair_storage import SQLKeyValuePairStorage
+from gbserver.storage.sql.lineage_job_storage import SQLLineageJobStorage
+from gbserver.storage.sql.lineage_row_storage import SQLLineageRowStorage
 from gbserver.storage.sql.node_failure_storage import SQLNodeFailureStorage
 from gbserver.storage.sql.space_storage import SQLSpaceStorage
 from gbserver.storage.sql.space_user_storage import SQLSpaceUserStorage
 from gbserver.storage.sql.steprun_storage import SQLStepRunStorage
 from gbserver.storage.sql.target_run_storage import SQLTargetRunStorage
 from gbserver.storage.storage import BASE_ITEM_TYPE, IItemStorage, QueryControl
+from gbserver.storage.stored_target_run import StoredTargetRun
 
 # Legacy location, retained for the one-time standalone startup migration.
 LEGACY_LLMB_DIR_NAME = ".llmb"
@@ -174,6 +178,22 @@ class SqliteTargetRunStorage(SqliteStorageOverrides, SQLTargetRunStorage):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+
+    def get_successful_finished_since(
+        self, cutoff_utc: datetime, page_index: int, page_size: int
+    ) -> list[StoredTargetRun]:
+        with self._db_file_lock:
+            return super().get_successful_finished_since(
+                cutoff_utc, page_index, page_size
+            )
+
+
+class SqliteLineageRowStorage(SqliteStorageOverrides, SQLLineageRowStorage):
+    """Sqlite storage for lineage rows."""
+
+
+class SqliteLineageJobStorage(SqliteStorageOverrides, SQLLineageJobStorage):
+    """Sqlite storage for lineage job records."""
 
 
 class SqliteNodeFailureStorage(SqliteStorageOverrides, SQLNodeFailureStorage):

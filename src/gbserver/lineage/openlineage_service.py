@@ -124,12 +124,23 @@ class LineageServiceFactory:
 
     @staticmethod
     def create(service_type: str) -> LineageService:
+        """Build the graph service for a provider.
+
+        The provider strings are the ones ``jobstats`` defines, so the read side
+        and the write side accept exactly the same set. ``jobstats`` deliberately
+        is not imported here to keep the registry importable on its own; the
+        overlap is asserted by a test instead.
+        """
         if service_type == "none":
             return NoopLineageService()
         if not LineageServiceFactory._registry:
+            from gbserver.lineage.db_service import DBLineageService
             from gbserver.lineage.wandb_service import WandBLineageService
 
             LineageServiceFactory._registry["wandb"] = WandBLineageService
+            # Serves the graph from the local lineage index, so a deployment with
+            # no W&B answers POST /lineage/artifact instead of 404-ing.
+            LineageServiceFactory._registry["db"] = DBLineageService
         if service_type not in LineageServiceFactory._registry:
             raise ValueError(f"Unsupported lineage provider: {service_type}")
         return LineageServiceFactory._registry[service_type]()
