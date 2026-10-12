@@ -215,10 +215,10 @@ class _ApiKeyUserClient(TestClient):
             return super().request(*args, **kwargs)
 
 
-# apikey auth never contacts GitHub, so opt out of conftest's mock-mode GitHub
-# fixtures: they also bypass space-access checks (is_super_admin -> True), which
-# would defeat the admin/non-admin authorization assertions.
-@pytest.mark.live("github")
+# Real space-access checks: conftest's mock-mode bypass (is_super_admin -> True)
+# would defeat the admin/non-admin authorization assertions. Only that mock is
+# lifted; the other GitHub mocks (auth, MyGHApi, git branch check) stay on.
+@pytest.mark.live("space_access")
 class AbstractStandaloneAPITest(AbstractAPITest):
     """Base for REST API tests on apikey auth, with no GitHub or IBM dependency.
 

@@ -812,8 +812,12 @@ def allow_bash_environment():
 
 @pytest.fixture(autouse=True)
 def _mock_space_access(request):
-    """In mock mode, bypass space write-access checks."""
-    if should_use_live(request, "github"):
+    """In mock mode, bypass space write-access checks.
+
+    Live for ``@pytest.mark.live("space_access")`` (real checks, other GitHub mocks
+    kept) or ``"github"`` (everything GitHub real).
+    """
+    if should_use_live(request, "github") or should_use_live(request, "space_access"):
         yield
         return
 

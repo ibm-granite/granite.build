@@ -107,7 +107,9 @@ Other markers: `standalone` (only standalone deps), `thirdparty` (open-source de
 `GBTEST_MODE` controls whether external services are mocked or real: `mock` (the quick suite's default —
 placeholder credentials, services stubbed) or `live` (real connections). You can opt individual services
 into live mode with `GBTEST_LIVE_<SERVICE>=true` (e.g. `GBTEST_LIVE_STORAGE=true`) or per test with
-`@pytest.mark.live("storage", "github")`.
+`@pytest.mark.live("storage", "github")`. The services are listed in `SERVICES` in
+`test/libgbtest/mode.py`. `"space_access"` lifts only the mock-mode bypass of space-access checks
+(`is_super_admin`, write access) and keeps the other GitHub mocks; `"github"` lifts all of them.
 
 The run-relevant environment variables:
 
