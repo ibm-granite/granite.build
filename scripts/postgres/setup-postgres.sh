@@ -32,41 +32,29 @@
 # Environment variables:
 #   GBTEST_POSTGRES_PORT   - Host port on 127.0.0.1 (default: 55432)
 #   GBTEST_POSTGRES_IMAGE  - Image (default: quay.io/sclorg/postgresql-16-c9s)
-#   GBTEST_POSTGRES_DIR    - Where certs and the env file go
-#                            (default: <repo>/.cache/gbtest-postgres)
+#   GBTEST_POSTGRES_DIR    - Where the CA cert and env file go
+#                            (default: <repo>/.cache/gbtest-postgres). May be a
+#                            shared directory: only the files setup writes are
+#                            ever replaced or deleted, never the directory itself.
 #   DOCKER                 - Container runtime: docker or podman (default: auto-detect)
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# PG_DIR, CONTAINER_NAME, ENV_FILE, CERTS_DIR, CA_FILE, detect_runtime,
+# remove_generated_files.
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+
 PG_PORT="${GBTEST_POSTGRES_PORT:-55432}"
 PG_IMAGE="${GBTEST_POSTGRES_IMAGE:-quay.io/sclorg/postgresql-16-c9s}"
-PG_DIR="${GBTEST_POSTGRES_DIR:-${REPO_ROOT}/.cache/gbtest-postgres}"
-CONTAINER_NAME="gbtest-postgres"
 PG_USER="gbtest"
 PG_DBNAME="gbtest"
 PG_SCHEMA="gbtest"
-ENV_FILE="${PG_DIR}/postgres.env"
 READY_TIMEOUT_SECONDS=90
 
 # ---- Helpers ----
 
 log() { echo "[postgres-setup] $*"; }
 die() { echo "[postgres-setup] ERROR: $*" >&2; exit 1; }
-
-# detect_runtime: print the container runtime to use (docker or podman).
-detect_runtime() {
-    if [[ -n "${DOCKER:-}" ]]; then
-        echo "${DOCKER}"
-    elif command -v docker >/dev/null 2>&1; then
-        echo docker
-    elif command -v podman >/dev/null 2>&1; then
-        echo podman
-    else
-        die "neither docker nor podman found"
-    fi
-}
 
 # generate_certs DIR: write ca.crt and server.{crt,key} (SAN localhost, 127.0.0.1) into DIR.
 generate_certs() {
@@ -135,26 +123,32 @@ GBSERVER_SQL_DBNAME=${PG_DBNAME}
 GBSERVER_SQL_SCHEMA=${PG_SCHEMA}
 GBSERVER_SQL_USER=${PG_USER}
 GBSERVER_SQL_PASSWD=${password}
-GBSERVER_SQL_SSLROOT_CERT_FILE=${PG_DIR}/certs/ca.crt
+GBSERVER_SQL_SSLROOT_CERT_FILE=${CA_FILE}
 EOF
 }
 
 # ---- Main ----
 
 RUNTIME="$(detect_runtime)"
+[[ -n "${RUNTIME}" ]] || die "neither docker nor podman found"
 command -v openssl >/dev/null 2>&1 || die "openssl is required to generate the TLS certs"
 
 log "Using ${RUNTIME}; image ${PG_IMAGE}; port 127.0.0.1:${PG_PORT}"
 "${RUNTIME}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-rm -rf "${PG_DIR}"
-mkdir -p "${PG_DIR}"
-chmod 700 "${PG_DIR}"
+# Replace only the files a previous run generated; PG_DIR may be a shared dir.
+remove_generated_files
+# A new dir is private; an existing one keeps its permissions (the env file is
+# written 0600 regardless).
+[[ -d "${PG_DIR}" ]] || mkdir -m 700 -p "${PG_DIR}"
+mkdir -m 700 -p "${CERTS_DIR}"
 
-EXT_DIR="${PG_DIR}/image-src"
+# The image extension hooks and the server key are staged in a private temp dir,
+# outside PG_DIR, and removed on exit.
+EXT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gbtest-postgres-src.XXXXXX")"
+trap 'rm -rf "${EXT_DIR}"' EXIT
 write_image_extensions "${EXT_DIR}"
 generate_certs "${EXT_DIR}/certs"
-mkdir -p "${PG_DIR}/certs"
-cp "${EXT_DIR}/certs/ca.crt" "${PG_DIR}/certs/ca.crt"
+cp "${EXT_DIR}/certs/ca.crt" "${CA_FILE}"
 
 PASSWORD="$(openssl rand -hex 24)"
 
@@ -167,7 +161,7 @@ PASSWORD="$(openssl rand -hex 24)"
     -e POSTGRESQL_DATABASE="${PG_DBNAME}" \
     "${PG_IMAGE}" >/dev/null
 "${RUNTIME}" cp "${EXT_DIR}/." "${CONTAINER_NAME}:/opt/app-root/src/"
-rm -rf "${EXT_DIR}"   # the server key now exists only inside the container
+rm -rf "${EXT_DIR}"   # our mktemp dir: the server key now exists only inside the container
 "${RUNTIME}" start "${CONTAINER_NAME}" >/dev/null
 
 log "Waiting for PostgreSQL to accept TLS connections..."

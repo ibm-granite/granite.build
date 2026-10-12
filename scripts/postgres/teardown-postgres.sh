@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # teardown-postgres.sh -- Stop the local test PostgreSQL started by setup-postgres.sh.
 #
-# Removes the container (and with it all test data) and the generated env file and
-# CA certificate. Safe to run when nothing is running.
+# Removes the container (and with it all test data) and the env file and CA
+# certificate setup wrote. Only those files are deleted; their directories are
+# removed only if left empty, so GBTEST_POSTGRES_DIR may safely point at a shared
+# directory. Safe to run when nothing is running.
 #
 # Usage:
 #   bash scripts/postgres/teardown-postgres.sh
@@ -14,24 +16,14 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-PG_DIR="${GBTEST_POSTGRES_DIR:-${REPO_ROOT}/.cache/gbtest-postgres}"
-CONTAINER_NAME="gbtest-postgres"
+# PG_DIR, CONTAINER_NAME, detect_runtime, remove_generated_files.
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-if [[ -n "${DOCKER:-}" ]]; then
-    RUNTIME="${DOCKER}"
-elif command -v docker >/dev/null 2>&1; then
-    RUNTIME=docker
-elif command -v podman >/dev/null 2>&1; then
-    RUNTIME=podman
-else
-    echo "[postgres-teardown] neither docker nor podman found; nothing to stop"
-    RUNTIME=""
-fi
-
+RUNTIME="$(detect_runtime)"
 if [[ -n "${RUNTIME}" ]]; then
     "${RUNTIME}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+else
+    echo "[postgres-teardown] neither docker nor podman found; no container to stop"
 fi
-rm -rf "${PG_DIR}"
-echo "[postgres-teardown] Removed ${CONTAINER_NAME} and ${PG_DIR}"
+remove_generated_files
+echo "[postgres-teardown] Removed ${CONTAINER_NAME} and its generated files in ${PG_DIR}"
