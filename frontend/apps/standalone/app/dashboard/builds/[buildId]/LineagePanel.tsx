@@ -386,7 +386,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     (id: string) => uriToUuid.get(id) ?? runToTarget.get(id) ?? id,
     [uriToUuid, runToTarget]
   )
-  const expansion = useLineageExpansion(renameIndexId)
+  // The build graph draws one node per target run, so expansions must too: a
+  // grouped node would stand beside the very runs it groups.
+  const expansion = useLineageExpansion(renameIndexId, false)
 
   const { nodes: enrichedNodes, links: allLinks } = React.useMemo(
     () => mergeElkGraphs({ nodes: enrichedBuildNodes, links: buildLinks }, expansion.extra),

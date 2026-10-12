@@ -40,7 +40,7 @@ into one shared "nothing" node.
 
 import copy
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from gbcommon.uri.lh import URLSEGMENT_FILES
 from gbcommon.uri.lh import URLSEGMENT_MODELS as LH_URLSEGMENT_MODELS
@@ -92,6 +92,7 @@ def build_graph_dict(
     root_uri: str = "",
     root_is_artifact: bool = True,
     group_runs: bool = True,
+    job_rows_of: Optional[Callable[[list], list]] = None,
 ) -> dict:
     """Project a walked graph into the API's graph dict.
 
@@ -108,6 +109,11 @@ def build_graph_dict(
         group_runs: fold the jobs with the same source and target into one node, as
             described below. ``False`` returns one run node per job, self-loops
             included -- the uncompacted graph, for a caller that wants every job.
+        job_rows_of: every stored row of the given job ids, in one batch. Grouping
+            compares whole jobs, and a depth-limited walk may have read only some
+            of a job's rows -- a 2-input job reached from one input looks like a
+            1-input job. ``None`` trusts the walked rows, for a caller (a test) that
+            already passes whole jobs.
 
     Returns:
         ``{root_id, nodes, edges, truncated, unexpanded}``. An empty artifact graph
@@ -127,21 +133,22 @@ def build_graph_dict(
     frontier and reach no artifact the graph would otherwise miss. They are pure
     volume.
 
-    The other case is N jobs repeating one ``A -> B`` step, which would stack N
-    identical run nodes between A and B; see :func:`_repeated_single_edge_jobs`.
+    The other case is N jobs with the same inputs and outputs -- one step re-run,
+    whatever its N inputs and M outputs -- which would stack N identical run nodes;
+    see :func:`_same_signature_jobs`.
 
     Either way the node is an ordinary run node named after the first job, with a
-    ``run_count``, and the jobs behind it are listed by
-    ``GET /lineage/jobs?uri=<source>&output=<target>`` -- indexed, paged, and never
-    truncated.
+    ``run_count`` and a ``jobs_query`` for ``GET /lineage/jobs`` that lists exactly
+    the jobs behind it, paged and never truncated: ``self_loop`` for an artifact's
+    rewrites, ``job_ids`` for a signature group.
     Nothing is lost, only moved off the graph response. See :func:`_grouped_node`.
     """
     artifact_nodes: dict[str, dict] = {}
     run_nodes: dict[str, dict] = {}
-    # Rows grouped by (source, target), for the jobs that share one node: every
-    # self-loop, and the jobs repeating one ``A -> B``. See :func:`_grouped_node`.
+    # Self-loop rows grouped by artifact, for the rewrites that share one node.
+    # See :func:`_grouped_node`.
     grouped_rows: dict[tuple[str, str], list] = {}
-    # Each job's rows, to find the jobs with one input and one output.
+    # Each job's walked rows, to find the jobs with the same signature.
     job_rows: dict[str, list] = {}
     edges: list[dict] = []
     edge_keys: set[tuple[str, str]] = set()
@@ -185,9 +192,10 @@ def build_graph_dict(
             )
             add_edge(run_id, row.output)
 
-    grouped_ids = (
-        _repeated_single_edge_jobs(job_rows, grouped_rows) if group_runs else set()
-    )
+    signature_groups = _same_signature_jobs(job_rows, job_rows_of) if group_runs else {}
+    grouped_ids = {
+        run_id for members in signature_groups.values() for run_id, _ in members
+    }
     if grouped_ids:
         for run_id in grouped_ids:
             del run_nodes[run_id]
@@ -198,7 +206,44 @@ def build_graph_dict(
         ]
         edge_keys = {(e["source"], e["target"]) for e in edges}
 
-    # One node per (source, target) group, in place of one per job.
+    # One node per signature, in place of one per job, with every endpoint of the
+    # signature -- including any the walk did not reach, since the jobs have them.
+    for (inputs, outputs), members in signature_groups.items():
+        rows = [r for _, job_full_rows in members for r in job_full_rows]
+        for uri, side in [(u, INPUT) for u in inputs] + [(u, OUTPUT) for u in outputs]:
+            sample = next(
+                r for r in rows if (r.input if side == INPUT else r.output) == uri
+            )
+            _ensure_artifact_node(
+                artifact_nodes,
+                uri=uri,
+                kind=endpoint_kind(sample.attributes, side),
+                name=endpoint_name(sample.attributes, side),
+                depth=graph.depths.get(uri),
+                produced_by=endpoint_produced_by(sample.attributes, side),
+            )
+        run_id = _signature_node_id(inputs, outputs)
+        node = _run_node(members[0][1][0], run_id)
+        _mark_grouped(
+            node,
+            inputs[0] if inputs else TERMINAL,
+            outputs[0] if outputs else TERMINAL,
+            len(members),
+        )
+        node["metadata"].update(
+            {
+                "source_uris": list(inputs),
+                "target_uris": list(outputs),
+                "jobs_query": {"job_ids": sorted(r[len("run:") :] for r, _ in members)},
+            }
+        )
+        run_nodes[run_id] = node
+        for uri in inputs:
+            add_edge(uri, run_id)
+        for uri in outputs:
+            add_edge(run_id, uri)
+
+    # One node per self-looped artifact, in place of one per in-place rewrite.
     for (source, target), rows in grouped_rows.items():
         for uri, side in ((source, INPUT), (target, OUTPUT)):
             if uri == TERMINAL:
@@ -352,35 +397,55 @@ def _grouped_node(
     return node
 
 
-def _repeated_single_edge_jobs(
-    job_rows: dict[str, list], grouped_rows: dict[tuple[str, str], list]
-) -> set:
-    """Move the jobs repeating one ``A -> B`` into ``grouped_rows``; return their ids.
+def _same_signature_jobs(
+    job_rows: dict[str, list], job_rows_of: Optional[Callable[[list], list]] = None
+) -> dict[tuple[tuple, tuple], list]:
+    """Group the jobs that read and wrote exactly the same artifacts.
 
     N executions of one step (the same dedup re-run over one table, say) otherwise
-    render as N identical run nodes stacked between A and B. Only jobs with exactly
-    one row, both endpoints real, qualify: ``GET /lineage/jobs?uri=A&output=B`` is
-    how the group is listed, and a job with more endpoints would also match the pair
-    while belonging to a different group. A lone job keeps its own node.
+    render as N identical run nodes. A job's *signature* is its set of inputs and
+    its set of outputs, so this covers any N inputs and M outputs alike, and one
+    side may be empty: jobs with no recorded input (or output) stack the same way.
 
-    One side may be :data:`TERMINAL`: N jobs writing B with no recorded input (or
-    reading A with no recorded output) are as identical as N ``A -> B`` jobs, and
-    stack the same way. They group under ``("", B)`` / ``(A, "")`` and are listed by
-    ``?uri=B&terminal=input`` / ``?uri=A&terminal=output``.
+    The signature is read from **every** stored row of the job (``job_rows_of``),
+    not from the walked ones: a depth-limited walk reaching a 2-input job from one
+    input sees one row, and grouping on that would fold it with real 1-input jobs
+    -- and would group differently depending on where the graph was seeded.
+
+    Self-loop rows are left out of the signature: the graph draws them on the
+    artifact's own rewrite node (see :func:`build_graph_dict`), so a job that reads
+    A and rewrites X groups as ``A -> X``. Matching is exact, so a job with one
+    extra endpoint is its own node, and a lone job is never grouped.
+
+    Returns:
+        ``{(inputs, outputs): [(run_id, full_rows), ...]}`` for every signature
+        shared by at least two jobs, inputs and outputs as sorted tuples, members
+        in walk order.
     """
-    pairs: dict[tuple[str, str], list] = {}
-    for run_id, rows in job_rows.items():
-        if len(rows) != 1 or rows[0].input == rows[0].output == TERMINAL:
-            continue
-        pairs.setdefault((rows[0].input, rows[0].output), []).append(run_id)
+    full: dict[str, list] = {}
+    if job_rows_of is not None and job_rows:
+        for row in job_rows_of([run_id[len("run:") :] for run_id in job_rows]):
+            full.setdefault(_run_node_id(row), []).append(row)
 
-    moved: set = set()
-    for pair, run_ids in pairs.items():
-        if len(run_ids) < 2:
+    by_signature: dict[tuple[tuple, tuple], list] = {}
+    for run_id, walked in job_rows.items():
+        rows = [r for r in full.get(run_id) or walked if not r.is_self_loop()]
+        inputs = tuple(sorted({r.input for r in rows} - {TERMINAL}))
+        outputs = tuple(sorted({r.output for r in rows} - {TERMINAL}))
+        if not inputs and not outputs:
             continue
-        grouped_rows.setdefault(pair, []).extend(job_rows[r][0] for r in run_ids)
-        moved.update(run_ids)
-    return moved
+        by_signature.setdefault((inputs, outputs), []).append((run_id, rows))
+    return {sig: members for sig, members in by_signature.items() if len(members) > 1}
+
+
+def _signature_node_id(inputs: tuple, outputs: tuple) -> str:
+    """Identity of the node standing in for every job with one signature.
+
+    The ``runs:<source> → <target>`` form of :func:`_grouped_runs_node_id`, with
+    several endpoints on a side joined by `` + `` in sorted order, so a ``1 x 1``
+    group keeps the id it always had.
+    """
+    return f"runs:{' + '.join(inputs) or '∅'} → {' + '.join(outputs) or '∅'}"
 
 
 def _grouped_runs_node_id(source: str, target: str) -> str:

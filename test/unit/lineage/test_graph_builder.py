@@ -97,6 +97,7 @@ def edge_pairs(result: dict) -> set:
 A = "lh://prod/ns/tables/a"
 B = "lh://prod/ns/tables/b"
 C = "lh://prod/ns/tables/c"
+D = "lh://prod/ns/tables/d"
 
 
 class TestBipartiteShape:
@@ -408,8 +409,8 @@ class TestSelfLoopCollapse:
         )
 
 
-class TestSameEndpointGrouping:
-    """Jobs with the same single input and output share one node, like self-loops."""
+class TestSameSignatureGrouping:
+    """Jobs with the same inputs and outputs share one node, like self-loops."""
 
     def test_parallel_jobs_become_one_node(self):
         rows = [
@@ -422,7 +423,7 @@ class TestSameEndpointGrouping:
         metadata = runs[0]["metadata"]
         assert metadata["run_count"] == 12
         assert metadata["self_loop"] is False
-        assert metadata["jobs_query"] == {"uri": A, "output": B}
+        assert metadata["jobs_query"] == {"job_ids": sorted(f"J{i}" for i in range(12))}
         assert runs[0]["id"] == f"runs:{A} \u2192 {B}"
         assert {(e["source"], e["target"]) for e in result["edges"]} == {
             (A, runs[0]["id"]),
@@ -433,11 +434,59 @@ class TestSameEndpointGrouping:
         result = build_graph_dict(graph_of(row("J1", A, B)), root_uri=A)
         assert [n["id"] for n in nodes_by_type(result, "run")] == ["run:J1"]
 
-    def test_jobs_with_more_endpoints_are_not_grouped(self):
-        """The pair filter would over-list them, so they stay separate."""
-        rows = [row("J1", A, B), row("J1", C, B), row("J2", A, B), row("J2", C, B)]
+    def test_n_inputs_and_m_outputs_group(self):
+        """2 inputs x 2 outputs: four rows per job, one node for both jobs."""
+        rows = [
+            row(job, src, dst)
+            for job in ("J1", "J2")
+            for src in (A, C)
+            for dst in (B, D)
+        ]
         result = build_graph_dict(graph_of(*rows), root_uri=A)
-        assert {n["id"] for n in nodes_by_type(result, "run")} == {"run:J1", "run:J2"}
+        runs = nodes_by_type(result, "run")
+        assert len(runs) == 1
+        node = runs[0]
+        assert node["id"] == f"runs:{A} + {C} \u2192 {B} + {D}"
+        assert node["metadata"]["run_count"] == 2
+        assert node["metadata"]["source_uris"] == [A, C]
+        assert node["metadata"]["target_uris"] == [B, D]
+        assert node["metadata"]["jobs_query"] == {"job_ids": ["J1", "J2"]}
+        assert edge_pairs(result) == {
+            (A, node["id"]),
+            (C, node["id"]),
+            (node["id"], B),
+            (node["id"], D),
+        }
+
+    def test_an_extra_endpoint_keeps_a_job_apart(self):
+        rows = [row("J1", A, B), row("J2", A, B), row("J3", A, B), row("J3", C, B)]
+        result = build_graph_dict(graph_of(*rows), root_uri=A)
+        ids = {n["id"] for n in nodes_by_type(result, "run")}
+        assert ids == {f"runs:{A} \u2192 {B}", "run:J3"}
+
+    def test_the_signature_comes_from_the_whole_job_not_the_walk(self):
+        """A walk from A sees one row of each 2-input job; they must not group as A -> B."""
+        walked = [row("J1", A, B), row("J2", A, B), row("J3", A, B)]
+        stored = walked + [row("J1", C, B), row("J2", C, B)]
+        result = build_graph_dict(
+            graph_of(*walked),
+            root_uri=A,
+            job_rows_of=lambda ids: [r for r in stored if r.job_id in ids],
+        )
+        ids = {n["id"] for n in nodes_by_type(result, "run")}
+        assert ids == {f"runs:{A} + {C} \u2192 {B}", "run:J3"}
+        # The input the walk never reached is still drawn: the jobs have it.
+        assert (C, f"runs:{A} + {C} \u2192 {B}") in edge_pairs(result)
+        assert C in {n["id"] for n in nodes_by_type(result, "artifact")}
+
+    def test_a_job_with_no_stored_rows_falls_back_to_the_walk(self):
+        rows = [row("J1", A, B), row("J2", A, B)]
+        result = build_graph_dict(
+            graph_of(*rows), root_uri=A, job_rows_of=lambda ids: []
+        )
+        assert [n["id"] for n in nodes_by_type(result, "run")] == [
+            f"runs:{A} \u2192 {B}"
+        ]
 
     def test_ungrouped_returns_one_node_per_job(self):
         rows = [row("J1", A, B), row("J2", A, B), row("J3", A, A), row("J4", A, A)]
@@ -447,7 +496,7 @@ class TestSameEndpointGrouping:
         assert all("run_count" not in n["metadata"] for n in runs)
         assert {"source": "run:J3", "target": A} in result["edges"]
 
-    def test_different_pairs_get_a_node_each(self):
+    def test_different_signatures_get_a_node_each(self):
         rows = [row("J1", A, B), row("J2", A, B), row("J3", A, C), row("J4", A, C)]
         result = build_graph_dict(graph_of(*rows), root_uri=A)
         assert len(nodes_by_type(result, "run")) == 2
@@ -457,8 +506,9 @@ class TestSameEndpointGrouping:
         result = build_graph_dict(graph_of(*rows), root_uri=B)
         runs = nodes_by_type(result, "run")
         assert len(runs) == 1
+        assert runs[0]["id"] == f"runs:\u2205 \u2192 {B}"
         assert runs[0]["metadata"]["run_count"] == 5
-        assert runs[0]["metadata"]["jobs_query"] == {"uri": B, "terminal": "input"}
+        assert runs[0]["metadata"]["source_uris"] == []
         assert edge_pairs(result) == {(runs[0]["id"], B)}
         assert {n["id"] for n in nodes_by_type(result, "artifact")} == {B}
 
@@ -467,8 +517,46 @@ class TestSameEndpointGrouping:
         result = build_graph_dict(graph_of(*rows), root_uri=A)
         runs = nodes_by_type(result, "run")
         assert len(runs) == 1
-        assert runs[0]["metadata"]["jobs_query"] == {"uri": A, "terminal": "output"}
+        assert runs[0]["id"] == f"runs:{A} \u2192 \u2205"
+        assert runs[0]["metadata"]["target_uris"] == []
         assert edge_pairs(result) == {(A, runs[0]["id"])}
+
+    def test_many_inputs_and_no_output_group(self):
+        rows = [row(job, src, TERMINAL) for job in ("J1", "J2") for src in (A, C)]
+        result = build_graph_dict(graph_of(*rows), root_uri=A)
+        runs = nodes_by_type(result, "run")
+        assert [n["id"] for n in runs] == [f"runs:{A} + {C} \u2192 \u2205"]
+        assert edge_pairs(result) == {(A, runs[0]["id"]), (C, runs[0]["id"])}
+
+    def test_no_output_and_a_real_output_do_not_group(self):
+        rows = [row("J1", A, TERMINAL), row("J2", A, B)]
+        result = build_graph_dict(graph_of(*rows), root_uri=A)
+        assert {n["id"] for n in nodes_by_type(result, "run")} == {"run:J1", "run:J2"}
+
+    def test_self_loops_stay_on_the_rewrite_node(self):
+        """A job reading A and rewriting B groups as A -> B; its loop joins B's node."""
+        rows = [
+            row("J1", A, B),
+            row("J1", B, B),
+            row("J2", A, B),
+            row("J2", B, B),
+        ]
+        result = build_graph_dict(
+            graph_of(*rows),
+            root_uri=A,
+            job_rows_of=lambda ids: [r for r in rows if r.job_id in ids],
+        )
+        ids = {n["id"]: n for n in nodes_by_type(result, "run")}
+        assert set(ids) == {f"runs:{A} \u2192 {B}", f"runs:{B}"}
+        assert ids[f"runs:{A} \u2192 {B}"]["metadata"]["run_count"] == 2
+
+    def test_a_loop_only_job_never_joins_a_signature_group(self):
+        rows = [row("J1", A, A), row("J2", A, A), row("J3", A, B)]
+        result = build_graph_dict(graph_of(*rows), root_uri=A)
+        assert {n["id"] for n in nodes_by_type(result, "run")} == {
+            f"runs:{A}",
+            "run:J3",
+        }
 
 
 class TestSlimRows:

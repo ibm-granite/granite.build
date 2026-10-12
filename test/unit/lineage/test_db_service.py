@@ -394,6 +394,16 @@ class TestQueryGraph:
         assert depths[A] == 0
         assert depths[B] == 0
 
+    def test_grouping_reads_whole_jobs_whatever_the_seed(self):
+        """2-input jobs group the same from one input as from their output."""
+        rows = [row(f"J{i}", src, C) for i in range(3) for src in (A, B)]
+        svc = service(*rows)
+        for seed, direction in ((A, "downstream"), (C, "upstream"), (C, "both")):
+            result = svc.query_graph(uri=seed, direction=direction, max_depth=1)
+            runs = [n for n in result["nodes"] if n["node_type"] == "run"]
+            assert [n["id"] for n in runs] == [f"runs:{A} + {B} \u2192 {C}"], seed
+            assert runs[0]["metadata"]["jobs_query"] == {"job_ids": ["J0", "J1", "J2"]}
+
     def test_a_job_query_flags_no_root(self):
         """It has several, and picking one would misreport what was asked."""
         result = service(row("J1", A, B)).query_graph(job_id="J1")
@@ -582,6 +592,17 @@ class TestListJobs:
         result = svc.list_jobs(job_id="J1")
         assert [j["job_id"] for j in result["jobs"]] == ["J1"]
         assert result["total"] == 1
+
+    def test_by_job_ids(self):
+        svc = service(row("J1", A, B), row("J2", B, C), row("J3", A, C))
+        result = svc.list_jobs(job_ids=["J3", "J1", "nope"])
+        assert [j["job_id"] for j in result["jobs"]] == ["J1", "J3"]
+        assert result["total"] == 2
+
+    def test_job_ids_combine_with_uri(self):
+        svc = service(row("J1", A, B), row("J2", B, C), row("J3", A, C))
+        result = svc.list_jobs(uri=B, job_ids=["J1", "J3"])
+        assert [j["job_id"] for j in result["jobs"]] == ["J1"]
 
     def test_an_unknown_job_id_is_empty(self):
         assert service(row("J1", A, B)).list_jobs(job_id="nope")["total"] == 0

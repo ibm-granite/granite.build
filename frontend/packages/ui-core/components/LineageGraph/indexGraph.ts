@@ -24,10 +24,14 @@ export function artifactTypeToNodeType(artifactType: string | null | undefined):
 }
 
 // Seed for expanding a node through GET /lineage/graph. Run nodes are `run:<job_id>`;
-// grouped jobs are `runs:<source> → <target>` (or `runs:<uri>` for in-place
-// rewrites) and expand from their source artifact.
+// grouped jobs are `runs:<inputs> → <outputs>` (several endpoints on a side joined by
+// ` + `, an empty side as `∅`; `runs:<uri>` for in-place rewrites) and expand from
+// their first recorded artifact.
 export function expansionSeed(nodeId: string): { uri?: string; job_id?: string } {
-  if (nodeId.startsWith('runs:')) return { uri: nodeId.slice('runs:'.length).split(' → ')[0] }
+  if (nodeId.startsWith('runs:')) {
+    const endpoints = nodeId.slice('runs:'.length).split(' → ').flatMap((side) => side.split(' + '))
+    return { uri: endpoints.find((uri) => uri && uri !== '∅') ?? endpoints[0] }
+  }
   if (nodeId.startsWith('run:')) return { job_id: nodeId.slice('run:'.length) }
   return { uri: nodeId }
 }

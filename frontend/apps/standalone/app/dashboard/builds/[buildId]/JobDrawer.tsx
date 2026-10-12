@@ -294,21 +294,34 @@ const GROUPED_PAGE = 50
 // GET /lineage/jobs with the node's jobs_query. One row per job; a row opens its details.
 function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) {
   const meta = node.indexNode?.metadata ?? {}
-  // jobs_query is the exact filter the server says lists this node's jobs; a group
-  // with an empty side has no source (or target) to anchor on, so it uses `terminal`.
-  const query = (meta.jobs_query ?? {}) as { uri?: string; output?: string; terminal?: 'input' | 'output' }
+  // jobs_query is the exact filter the server says lists this node's jobs: the job
+  // ids of a group of same-signature jobs, or an artifact's in-place rewrites.
+  const query = (meta.jobs_query ?? {}) as { uri?: string; output?: string; terminal?: 'input' | 'output'; job_ids?: string[] }
+  const jobIds = Array.isArray(query.job_ids) ? query.job_ids : undefined
   const uri = query.uri ?? str(meta.source_uri)
   const terminal = query.terminal
   const output = terminal ? undefined : (query.output ?? str(meta.target_uri) ?? uri)
+  const sources = Array.isArray(meta.source_uris) ? meta.source_uris : undefined
+  const targets = Array.isArray(meta.target_uris) ? meta.target_uris : undefined
   const runCount = typeof meta.run_count === 'number' ? meta.run_count : undefined
   const [openJobId, setOpenJobId] = React.useState<string | null>(null)
 
   const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage, error } = useInfiniteQuery({
-    queryKey: ['lineage-grouped-jobs', uri, output, terminal],
-    queryFn: ({ pageParam }) => getLineageJobs({ uri: uri!, output, terminal, limit: GROUPED_PAGE, offset: pageParam }),
+    queryKey: ['lineage-grouped-jobs', jobIds ?? [uri, output, terminal]],
+    // The ids are known up front, so a page is a slice of them: one short URL each.
+    queryFn: async ({ pageParam }) => {
+      if (!jobIds) return getLineageJobs({ uri: uri!, output, terminal, limit: GROUPED_PAGE, offset: pageParam })
+      const page = await getLineageJobs({ job_ids: jobIds.slice(pageParam, pageParam + GROUPED_PAGE), limit: GROUPED_PAGE })
+      return { ...page, offset: pageParam, total: jobIds.length }
+    },
     initialPageParam: 0,
-    getNextPageParam: (last) => (last.offset + last.jobs.length < last.total && last.jobs.length > 0 ? last.offset + last.jobs.length : undefined),
-    enabled: Boolean(uri),
+    getNextPageParam: (last) => {
+      // A slice may come back short (a job gone since the graph was drawn), so step
+      // by the slice, not by what it returned.
+      const next = last.offset + (jobIds ? GROUPED_PAGE : last.jobs.length)
+      return next < last.total && (jobIds || last.jobs.length > 0) ? next : undefined
+    },
+    enabled: Boolean(jobIds?.length || uri),
     staleTime: 5 * 60 * 1000,
     retry: false,
   })
@@ -322,7 +335,7 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
         <div className={styles.stepSidePanelIdentity}>
           <h4 className={styles.stepSidePanelHeading}>{title}</h4>
           <div className={styles.stepSidePanelSubtitle}>
-            {total !== undefined ? `${total} ${total === 1 ? 'run' : 'runs'}` : 'Runs'} · {terminal === 'input' ? 'no recorded input' : terminal === 'output' ? 'no recorded output' : uri === output ? 'in-place rewrites' : 'same source and target'}
+            {total !== undefined ? `${total} ${total === 1 ? 'run' : 'runs'}` : 'Runs'} · {sources?.length === 0 ? 'no recorded input' : targets?.length === 0 ? 'no recorded output' : terminal === 'input' ? 'no recorded input' : terminal === 'output' ? 'no recorded output' : !jobIds && uri === output ? 'in-place rewrites' : 'same inputs and outputs'}
           </div>
         </div>
         <IconButton ref={closeButtonRef} kind="ghost" label="Close" align="bottom" onClick={onClose}>

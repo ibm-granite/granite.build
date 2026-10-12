@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gbserver.api.build_files_paths import authorize_build_read_access
@@ -608,18 +608,22 @@ def list_lineage_jobs(
     self_loop: bool = False,
     output: Optional[str] = None,
     terminal: Optional[Literal["input", "output"]] = None,
+    job_ids: Optional[list[str]] = Query(None),
     limit: int = 100,
     offset: int = 0,
 ) -> LineageJobsResponse:
     """List the job executions matching every given filter, paged.
 
-    Filters AND together. ``uri`` or ``job_id`` is required -- the route answers
+    Filters AND together. ``uri``, ``job_id`` or ``job_ids`` is required -- the route answers
     422 otherwise: an unfiltered listing would aggregate the whole index.
 
     - ``uri`` -- jobs that consumed or produced the artifact. The drill-down for a
       graph node's ``run_count``: the graph collapses an artifact's in-place
       rewrites into one node, and this lists them.
     - ``job_id`` -- one execution.
+    - ``job_ids`` (repeated) -- those executions: the runs behind a graph node
+      grouping jobs with the same inputs and outputs, as its ``jobs_query`` lists
+      them. A client pages a long list itself, a slice per request.
     - ``self_loop`` (with ``uri``) -- only the jobs that rewrote the artifact in
       place (same source and target): the runs behind its looped graph node.
     - ``output`` (with ``uri``) -- only the jobs that read ``uri`` and wrote
@@ -641,14 +645,15 @@ def list_lineage_jobs(
     by the same decision as the graph -- see :func:`query_lineage_graph` for why a
     lineage answer is not filtered per space, and what that costs.
     """
-    if not uri and not job_id:
+    if not uri and not job_id and not job_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="One of 'uri' or 'job_id' is required",
+            detail="One of 'uri', 'job_id' or 'job_ids' is required",
         )
     service = _get_index_service()
 
     result = service.list_jobs(
+        job_ids=job_ids,
         uri=uri,
         job_id=job_id,
         limit=limit,

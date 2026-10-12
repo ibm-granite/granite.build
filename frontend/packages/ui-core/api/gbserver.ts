@@ -696,10 +696,17 @@ export async function getLineageJobs(params: {
   // With `uri`: the side of its row that is empty -- 'input' lists the jobs that wrote
   // `uri` from nothing recorded, 'output' those that read it and recorded no output.
   terminal?: 'input' | 'output'
+  // Exactly these jobs -- the runs behind a node grouping jobs with the same inputs
+  // and outputs (metadata.jobs_query). Sent repeated (`job_ids=a&job_ids=b`), the
+  // form FastAPI reads; keep a request to a page-sized slice so the URL stays short.
+  job_ids?: string[]
   limit?: number
   offset?: number
 }): Promise<LineageJobsResult> {
-  const { data } = await client.get<LineageJobsResult>('/lineage/jobs', { params })
+  const { data } = await client.get<LineageJobsResult>('/lineage/jobs', {
+    params,
+    paramsSerializer: { indexes: null },
+  })
   return data
 }
 

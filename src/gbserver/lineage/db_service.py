@@ -79,6 +79,10 @@ logger = logging.getLogger(__name__)
 # problem the graph collapse exists to avoid.
 _MAX_JOBS_PAGE = 1000
 
+# Job ids per ``IN`` when reading whole jobs back: well under SQLite's bound-
+# parameter limit, and the walk's frontier batches are no larger.
+_JOB_ROWS_BATCH = 500
+
 _WIRE_DIRECTIONS = {
     "downstream": Direction.DESCENDANTS,
     "upstream": Direction.ANCESTORS,
@@ -316,7 +320,17 @@ class DBLineageService(LineageService):
             root_uri=root_uri,
             root_is_artifact=single_root,
             group_runs=group_runs,
+            job_rows_of=self._rows_of_jobs,
         )
+
+    def _rows_of_jobs(self, job_ids: List[str]) -> List:
+        """Every stored row of ``job_ids``, batched so one ``IN`` stays bounded."""
+        rows: List = []
+        for start in range(0, len(job_ids), _JOB_ROWS_BATCH):
+            rows.extend(
+                self.storage.get_rows_by_jobs(job_ids[start : start + _JOB_ROWS_BATCH])
+            )
+        return rows
 
     def list_jobs(
         self,
@@ -327,11 +341,12 @@ class DBLineageService(LineageService):
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        job_ids: Optional[List[str]] = None,
     ) -> Dict:
         """List job executions matching every given filter, paged.
 
-        The one listing over the index. Filters AND together, and ``uri`` or
-        ``job_id`` is required (with neither, the listing is empty):
+        The one listing over the index. Filters AND together, and ``uri``,
+        ``job_id`` or ``job_ids`` is required (with neither, the listing is empty):
 
         - ``uri`` -- jobs that consumed **or** produced the artifact, in any
           spelling. The drill-down for a graph node's ``run_count``:
@@ -346,6 +361,8 @@ class DBLineageService(LineageService):
           ``(nothing) -> uri`` row, ``"output"`` those with ``uri -> (nothing)``: the
           runs behind a grouped node with no recorded input or output.
         - ``job_id`` -- that one execution.
+        - ``job_ids`` -- those executions: the runs behind a graph node grouping
+          jobs with the same inputs and outputs (its ``jobs_query``).
 
         Paged rather than capped, unlike the graph: a flat list has no shape to
         preserve, so a caller can walk the whole thing.
@@ -369,6 +386,12 @@ class DBLineageService(LineageService):
             candidates: Optional[Set[str]] = None
             if job_id:
                 candidates = {job_id} if self.storage.get_rows_by_job(job_id) else set()
+            if job_ids:
+                wanted = (
+                    set(job_ids) if candidates is None else candidates & set(job_ids)
+                )
+                recorded = {row.job_id for row in self._rows_of_jobs(sorted(wanted))}
+                candidates = wanted & recorded
 
             if uri:
                 normalized = normalize_uri(uri)
