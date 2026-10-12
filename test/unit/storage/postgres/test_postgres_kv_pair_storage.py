@@ -1,6 +1,4 @@
-import pytest
-from libgbtest.constants import extended_testing_only
-from libgbtest.local_postgres import requires_local_postgres
+from libgbtest.local_postgres import LOCAL_POSTGRES_TEST_MARKS
 from libgbtest.storage.kv_pair_storage import (
     BaseKeyValuePairStorageTest,
 )
@@ -14,8 +12,7 @@ from gbserver.storage.sql.storage_factory import SQLStorageFactory
 # test/integration/ibm/storage/sql/test_sql_kv_pair_storage.py,
 # which runs them against the hosted PostgreSQL; here they run against the
 # local test PostgreSQL.
-# thirdparty: needs the psycopg driver from the `thirdparty` extra.
-pytestmark = pytest.mark.thirdparty
+pytestmark = LOCAL_POSTGRES_TEST_MARKS
 
 
 class SQLKeyValuePairStorageTests(BaseKeyValuePairStorageTest):
@@ -34,19 +31,9 @@ class SQLKeyValuePairValueMethodsTests(_TestKeyValuePairValueMethods):
         return SQLStorageFactory()
 
 
-# live("storage"): keep the real SQL factory even in mock mode, where conftest
-# would otherwise swap in SQLite.
-@extended_testing_only
-@requires_local_postgres
-@pytest.mark.live("storage")
 class TestSQLKeyValuePairStorage(SQLKeyValuePairStorageTests):
     """SQLKeyValuePairStorage tests against the local test PostgreSQL."""
 
 
-# live("storage"): keep the real SQL factory even in mock mode, where conftest
-# would otherwise swap in SQLite.
-@extended_testing_only
-@requires_local_postgres
-@pytest.mark.live("storage")
 class TestSQLKeyValuePairValueMethods(SQLKeyValuePairValueMethodsTests):
     """SQLKeyValuePairValueMethods tests against the local test PostgreSQL."""

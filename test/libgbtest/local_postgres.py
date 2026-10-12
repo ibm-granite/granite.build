@@ -140,3 +140,21 @@ A STANDALONE run can't target the hosted database: GBSERVER_SQL_SCHEMA defaults 
 the STANDALONE config's "standalone" schema, which the hosted database doesn't have,
 and when ``make postgres-setup`` has run, GBSERVER_SQL_* point at localhost. Either
 way, skip instead of failing or silently testing the local server."""
+
+LOCAL_POSTGRES_TEST_MARKS = [
+    # Needs the psycopg driver from the `thirdparty` extra.
+    pytest.mark.thirdparty,
+    # Real-infra test: extended suite only (what libgbtest.constants'
+    # extended_testing_only applies; not imported here, as it imports gbserver).
+    pytest.mark.extended,
+    requires_local_postgres,
+    # Keep the real SQL factory even in mock mode, where conftest would otherwise
+    # swap in SQLite.
+    pytest.mark.live("storage"),
+]
+"""``pytestmark`` for SQL storage test modules that run against the local test
+PostgreSQL (test/unit/storage/postgres)."""
+
+HOSTED_POSTGRES_TEST_MARKS = [pytest.mark.ibm, requires_hosted_postgres]
+"""``pytestmark`` for SQL storage test modules that run against the hosted PostgreSQL
+(test/integration/ibm/storage/sql)."""

@@ -1,8 +1,6 @@
 import uuid
 
-import pytest
-from libgbtest.constants import extended_testing_only
-from libgbtest.local_postgres import requires_local_postgres
+from libgbtest.local_postgres import LOCAL_POSTGRES_TEST_MARKS
 from libgbtest.storage.space_user_storage import BaseSpaceUserStorageTest
 
 from gbserver.storage.sql.storage_factory import SQLStorageFactory
@@ -13,8 +11,7 @@ from gbserver.storage.stored_space_user import StoredSpaceUser
 # test/integration/ibm/storage/sql/test_sql_space_user_storage.py,
 # which runs them against the hosted PostgreSQL; here they run against the
 # local test PostgreSQL.
-# thirdparty: needs the psycopg driver from the `thirdparty` extra.
-pytestmark = pytest.mark.thirdparty
+pytestmark = LOCAL_POSTGRES_TEST_MARKS
 
 
 class SQLSpaceUserStorageTests(BaseSpaceUserStorageTest):
@@ -66,10 +63,5 @@ class SQLSpaceUserStorageTests(BaseSpaceUserStorageTest):
         assert count_none == 0, "Expected count of 0 when no items match"
 
 
-# live("storage"): keep the real SQL factory even in mock mode, where conftest
-# would otherwise swap in SQLite.
-@extended_testing_only
-@requires_local_postgres
-@pytest.mark.live("storage")
 class TestSQLSpaceUserStorage(SQLSpaceUserStorageTests):
     """SQLSpaceUserStorage tests against the local test PostgreSQL."""

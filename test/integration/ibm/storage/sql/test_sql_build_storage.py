@@ -9,7 +9,7 @@ database's real tables, so they exist only here.
 import os
 
 import pytest
-from libgbtest.local_postgres import requires_hosted_postgres
+from libgbtest.local_postgres import HOSTED_POSTGRES_TEST_MARKS
 from libgbtest.storage.build_storage import BaseLegacyStoredBuildTest
 from unit.storage.postgres.test_postgres_build_storage import (
     SQLBuildStorageTests,
@@ -17,10 +17,7 @@ from unit.storage.postgres.test_postgres_build_storage import (
 
 from gbserver.storage.sql.storage_factory import SQLStorageFactory
 
-# requires_hosted_postgres: these target the hosted database, so skip in
-# GB_ENVIRONMENT=STANDALONE runs (no such schema there, or GBSERVER_SQL_* point at
-# the local test PostgreSQL).
-pytestmark = [pytest.mark.ibm, requires_hosted_postgres]
+pytestmark = HOSTED_POSTGRES_TEST_MARKS
 
 
 @pytest.mark.skipif(
