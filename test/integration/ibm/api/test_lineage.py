@@ -25,8 +25,16 @@ import pytest
 from integration.standalone.api.test_lineage import LineageAPITests
 from libgbtest.api.utils import AbstractAPITest
 
+from gbserver.types.constants import ENV_VAR_PREFIX
+
 pytestmark = pytest.mark.ibm
 
 
 class TestLineageAPI(LineageAPITests, AbstractAPITest):
     """Lineage API tests on GitHub-token auth with the real lineage store."""
+
+    def _server_env(self) -> dict[str, str]:
+        # Pin the WandB store: under GB_ENVIRONMENT=STANDALONE the provider would
+        # default to "none", and the no-op store would silently skip the
+        # records_centralized_lineage-guarded assertions.
+        return {**super()._server_env(), f"{ENV_VAR_PREFIX}_LINEAGE_PROVIDER": "wandb"}

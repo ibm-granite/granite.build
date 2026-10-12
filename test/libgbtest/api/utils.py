@@ -16,6 +16,7 @@ from libgbtest.utils import AbstractSingletonStorageUsingPreloadedSpaceTest
 from gbserver.api.auth import _make_synthetic_user, get_gh_user
 from gbserver.api.builds import BuildStatusResponse
 from gbserver.api.root_api import root_api
+from gbserver.lineage.jobstats import reset_lineage_store
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.storage_factory import StorageFactory
 from gbserver.storage.stored_space import StoredSpace
@@ -48,9 +49,18 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     @pytest.fixture(autouse=True)
     def _apply_server_env(self):
-        """Apply :meth:`_server_env` to the environment for the duration of each test."""
+        """Apply :meth:`_server_env` to the environment for the duration of each test.
+
+        The lineage store is a singleton that caches the provider it was created
+        with, so it is reset on entry and exit. Otherwise a store built before this
+        fixture ran (at session start, or by an earlier fixture) would ignore the
+        provider set here, e.g. leave a standalone test on a WandB store or an IBM
+        test on the no-op store, whose lineage assertions are skipped.
+        """
         with patch.dict(os.environ, self._server_env()):
+            reset_lineage_store()
             yield
+        reset_lineage_store()
 
     def _server_env(self) -> dict[str, str]:
         """Env vars that configure the server (auth, lineage) for these tests.
