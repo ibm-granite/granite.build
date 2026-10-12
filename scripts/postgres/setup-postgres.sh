@@ -142,25 +142,33 @@ remove_generated_files
 [[ -d "${PG_DIR}" ]] || mkdir -m 700 -p "${PG_DIR}"
 mkdir -m 700 -p "${CERTS_DIR}"
 
-# The image extension hooks and the server key are staged in a private temp dir,
-# outside PG_DIR, and removed on exit.
+# The image extension hooks and the server key are staged in a private (0700)
+# temp dir, outside PG_DIR, and removed on exit. They go in its src/ subdir, which
+# is what gets copied into the container.
 EXT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gbtest-postgres-src.XXXXXX")"
 trap 'rm -rf "${EXT_DIR}"' EXIT
-write_image_extensions "${EXT_DIR}"
-generate_certs "${EXT_DIR}/certs"
-cp "${EXT_DIR}/certs/ca.crt" "${CA_FILE}"
+STAGE_DIR="${EXT_DIR}/src"
+write_image_extensions "${STAGE_DIR}"
+generate_certs "${STAGE_DIR}/certs"
+cp "${STAGE_DIR}/certs/ca.crt" "${CA_FILE}"
+# Make the staged files readable by any user. `docker cp` gives copied files
+# root (or, with -a, the host's) ownership, and podman may map them differently;
+# either way the server (uid 26) must be able to read them, so don't rely on
+# ownership. The 0700 parent keeps the key private on the host, and the
+# pre-start hook copies it to a 0600 file owned by the server user.
+chmod -R a+rX "${STAGE_DIR}"
 
 PASSWORD="$(openssl rand -hex 24)"
 
-# Create, copy the extension hooks in (no bind mount, so file ownership and
-# permissions inside the container don't depend on the host runtime), then start.
+# Create, copy the extension hooks in (no bind mount, which would expose host
+# ownership and permissions directly), then start.
 "${RUNTIME}" create --name "${CONTAINER_NAME}" \
     -p "127.0.0.1:${PG_PORT}:5432" \
     -e POSTGRESQL_USER="${PG_USER}" \
     -e POSTGRESQL_PASSWORD="${PASSWORD}" \
     -e POSTGRESQL_DATABASE="${PG_DBNAME}" \
     "${PG_IMAGE}" >/dev/null
-"${RUNTIME}" cp "${EXT_DIR}/." "${CONTAINER_NAME}:/opt/app-root/src/"
+"${RUNTIME}" cp "${STAGE_DIR}/." "${CONTAINER_NAME}:/opt/app-root/src/"
 rm -rf "${EXT_DIR}"   # our mktemp dir: the server key now exists only inside the container
 "${RUNTIME}" start "${CONTAINER_NAME}" >/dev/null
 
