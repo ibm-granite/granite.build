@@ -309,8 +309,10 @@ extended-tests-setup:
 # Stops what extended-tests-setup started.
 .PHONY: extended-tests-teardown
 extended-tests-teardown:
-	$(MAKE) slurm-teardown
-	$(MAKE) postgres-teardown
+	@# "-": run every teardown even if one fails, so the postgres container and its
+	@# password-bearing env file never outlive a failed slurm-teardown.
+	-$(MAKE) slurm-teardown
+	-$(MAKE) postgres-teardown
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 # GBTEST_STANDALONE_ENVIRONMENT (which HF resource group a STANDALONE push targets)
