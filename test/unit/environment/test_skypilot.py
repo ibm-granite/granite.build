@@ -1460,6 +1460,71 @@ class TestSkypilotMonitorLogParsing:
         )
 
     @pytest.mark.asyncio
+    async def test_a_partial_last_line_is_left_for_the_next_pull(
+        self, skypilot_env_with_terminal_job, tmp_path
+    ):
+        """An artifact line appended to a still-unterminated line is not lost.
+
+        Regression (build 5feb878d): a pull ended on a half-written tqdm bar and
+        counted it as seen; the step then printed GB_ARTIFACT_ID on that same
+        line, and every later pull skipped it.
+        """
+        from gbserver.environment.environment import EventLogLineParserConfig
+
+        env, launch_id, event_q = skypilot_env_with_terminal_job
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "job-42.log"
+        log_file.write_text("Starting job...\n 40%|████      | 1005/2500")
+
+        async def _pull(start_line_num, final=False):
+            with patch(
+                "gbserver.environment.skypilot._download_logs_with_retry",
+                return_value=str(log_dir),
+            ):
+                return await env._download_and_parse_logs(
+                    cluster_name="gb-log-parse-te",
+                    job_id=42,
+                    launch_id=launch_id,
+                    event_q=event_q,
+                    entityrun_metadata=EntityRunMetadata(build_id="build-log-p"),
+                    event_log_parser_configs=[
+                        EventLogLineParserConfig.model_validate(c)
+                        for c in self.EVENT_CONFIGS
+                    ],
+                    start_line_num=start_line_num,
+                    final=final,
+                )
+
+        def _artifact_events():
+            events = []
+            while not event_q.empty():
+                events.append(event_q.get_nowait())
+            return [
+                e
+                for e in events
+                if e.type == BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT
+            ]
+
+        # The unterminated bar is not counted, so the next pull rereads it.
+        assert await _pull(0) == 1
+        assert _artifact_events() == []
+
+        with log_file.open("a") as f:
+            f.write(" Generated Data: /tmp/outputs/ck1000.jsonl\nJob complete.")
+        assert await _pull(1) == 2
+        [event] = _artifact_events()
+        assert event.payload.binding["path"] == "/tmp/outputs/ck1000.jsonl"
+
+        # At terminal status the log is complete: its last line is parsed even
+        # without a newline.
+        with log_file.open("a") as f:
+            f.write(" Generated Data: /tmp/outputs/final.jsonl")
+        assert await _pull(2, final=True) == 3
+        [event] = _artifact_events()
+        assert event.payload.binding["path"] == "/tmp/outputs/final.jsonl"
+
+    @pytest.mark.asyncio
     async def test_no_event_configs_skips_log_parsing(
         self, skypilot_env_with_terminal_job
     ):

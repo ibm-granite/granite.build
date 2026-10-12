@@ -4176,6 +4176,7 @@ class Skypilot(Environment):
                         entityrun_metadata=entityrun_metadata,
                         event_log_parser_configs=event_log_parser_configs,
                         start_line_num=terminal_resume,
+                        final=True,
                     )
                     if new_last:
                         self._log_lines_parsed[launch_id] = max(
@@ -4294,6 +4295,7 @@ class Skypilot(Environment):
         entityrun_metadata,
         event_log_parser_configs: list,
         start_line_num: int = 0,
+        final: bool = False,
     ) -> int:
         """Download job logs and parse for artifact events.
 
@@ -4301,6 +4303,9 @@ class Skypilot(Environment):
             start_line_num: Skip lines at or below this number (1-based).
                 Used to avoid re-emitting events already processed by a prior
                 pull or by live log streaming.
+            final: True for the pull at terminal status. Only then is an
+                unterminated last line parsed and counted: during the run it is
+                a line the workload is still writing.
 
         Returns:
             The highest 1-based line number seen in the log (0 if nothing was
@@ -4358,6 +4363,13 @@ class Skypilot(Environment):
                 try:
                     with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                         for line_num, line in enumerate(f, 1):
+                            # Counting an unterminated last line as seen would skip
+                            # whatever the workload appends to it, on every later
+                            # pull. That is often a GB_ARTIFACT_ID line printed right
+                            # after a tqdm bar, which ends in no newline. Leave the
+                            # line for the next pull, unless this is the last one.
+                            if not final and not line.endswith("\n"):
+                                break
                             if line_num > max_line:
                                 max_line = line_num
                             if line_num <= start_line_num:
