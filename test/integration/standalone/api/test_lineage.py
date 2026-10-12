@@ -466,7 +466,11 @@ class TestLineageAPI(LineageAPITests, AbstractStandaloneAPITest):
     """Lineage API tests on apikey auth, with the WandB service stubbed out."""
 
     def _server_env(self) -> dict[str, str]:
-        # The WandB lineage store, whose service _stub_wandb_service stubs out.
+        """Use the WandB lineage store, whose service _stub_wandb_service stubs out.
+
+        Returns:
+            The base env, with GBSERVER_LINEAGE_PROVIDER=wandb.
+        """
         return {**super()._server_env(), f"{ENV_VAR_PREFIX}_LINEAGE_PROVIDER": "wandb"}
 
     @pytest.fixture(autouse=True)

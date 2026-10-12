@@ -71,5 +71,9 @@ class TestSQLBuildStorage(SQLBuildStorageTests):
 
     @classmethod
     def _get_test_config(cls) -> BuildStorageTestSupport:
-        # A fixed username, so builds need no GitHub token to resolve one.
+        """Stamp test builds with a fixed username.
+
+        Returns:
+            Support that needs no GitHub token to resolve a username.
+        """
         return BuildStorageTestSupport(username="test-user")

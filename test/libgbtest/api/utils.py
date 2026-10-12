@@ -64,6 +64,9 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         fixture ran (at session start, or by an earlier fixture) would ignore the
         provider set here, e.g. leave a standalone test on a WandB store or an IBM
         test on the no-op store, whose lineage assertions are skipped.
+
+        Yields:
+            None, while the test runs with the env applied.
         """
         with patch.dict(os.environ, self._server_env()):
             reset_lineage_store()
@@ -73,20 +76,35 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
     def _server_env(self) -> dict[str, str]:
         """Env vars that configure the server (auth, lineage) for these tests.
 
-        Read by the server at request time. None here: use the environment's.
+        Read by the server at request time. Subclasses override to set them.
+
+        Returns:
+            Env var names to values; none here, so the environment's apply.
         """
         return {}
 
     def default_identity(self) -> Optional[str]:
-        """Identity of the default caller (the GBSERVER_GITHUB_TOKEN user)."""
+        """Identity of the default caller.
+
+        Returns:
+            The GBSERVER_GITHUB_TOKEN token (its user is the caller).
+        """
         return GBSERVER_GITHUB_TOKEN
 
     def admin_identity(self) -> Optional[str]:
-        """Identity of a caller that tests make a super-admin, or None if unavailable."""
+        """Identity of a caller that tests make a super-admin.
+
+        Returns:
+            The GBTEST_ADMIN_GITHUB_TOKEN token, or None if unset.
+        """
         return GBTEST_ADMIN_GITHUB_TOKEN
 
     def non_admin_identity(self) -> Optional[str]:
-        """Identity of a caller that is never an admin, or None if unavailable."""
+        """Identity of a caller that is never an admin.
+
+        Returns:
+            The GBTEST_NON_ADMIN_GITHUB_TOKEN token, or None if unset.
+        """
         return GBTEST_NON_ADMIN_GITHUB_TOKEN
 
     def require_admin_and_non_admin(self) -> tuple[str, str]:
@@ -122,6 +140,12 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         ``GBSERVER_API_USER`` user, whatever token was sent. Otherwise the user is
         resolved from the GitHub token.
 
+        Args:
+            identity: A GitHub token; defaults to :meth:`default_identity`.
+
+        Returns:
+            The user the server attaches to requests made as ``identity``.
+
         Raises:
             AssertionError: if the user cannot be resolved from the GitHub token.
         """
@@ -135,11 +159,27 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         return user
 
     def get_caller_username(self, identity: Optional[str] = None) -> str:
-        """Login of the user the server sees for ``identity``."""
+        """Login of the user the server sees for ``identity``.
+
+        Args:
+            identity: The caller; defaults to :meth:`default_identity`.
+
+        Returns:
+            The user's login.
+        """
         return self.get_caller_user(identity).login
 
     def get_caller_email(self, identity: Optional[str] = None) -> str:
-        """Email (the space-access identity) of the user the server sees for ``identity``."""
+        """Email of the user the server sees for ``identity``.
+
+        Space access is keyed on this email.
+
+        Args:
+            identity: The caller; defaults to :meth:`default_identity`.
+
+        Returns:
+            The user's email.
+        """
         return self.get_caller_user(identity).email
 
     def grant_super_admin(self, identity: Optional[str] = None) -> None:
@@ -186,6 +226,13 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 def github_test_client(token: Optional[str] = GBSERVER_GITHUB_TOKEN) -> TestClient:
     """Get a TestClient that sends ``token`` (or $GITHUB_TOKEN) as a Bearer credential.
 
+    Args:
+        token: GitHub token to authenticate with; defaults to GBSERVER_GITHUB_TOKEN.
+            If None or empty, $GITHUB_TOKEN is used instead.
+
+    Returns:
+        A TestClient for the gbserver API sending the token as a Bearer credential.
+
     Raises:
         AssertionError: if neither ``token`` nor $GITHUB_TOKEN is set.
     """
@@ -206,11 +253,25 @@ class _ApiKeyUserClient(TestClient):
     """
 
     def __init__(self, api_key: str, user: str) -> None:
+        """Create a client for the gbserver API acting as apikey user ``user``.
+
+        Args:
+            api_key: The server's GBSERVER_API_KEY, sent as a Bearer credential.
+            user: The apikey user (GBSERVER_API_USER) every request is made as.
+        """
         super().__init__(root_api, headers={"authorization": f"Bearer {api_key}"})
         self._user = user
 
     def request(self, *args: Any, **kwargs: Any):  # type: ignore[override]
-        """Send the request with ``GBSERVER_API_USER`` set to this client's user."""
+        """Send the request with ``GBSERVER_API_USER`` set to this client's user.
+
+        Args:
+            *args: Positional arguments for :meth:`TestClient.request`.
+            **kwargs: Keyword arguments for :meth:`TestClient.request`.
+
+        Returns:
+            The response.
+        """
         with patch.dict(os.environ, {"GBSERVER_API_USER": self._user}):
             return super().request(*args, **kwargs)
 
@@ -231,9 +292,22 @@ class AbstractStandaloneAPITest(AbstractAPITest):
 
     @classmethod
     def _get_storage_factory(cls) -> StorageFactory:
+        """Use SQLite storage, so no database server is needed.
+
+        Returns:
+            A SQLite storage factory.
+        """
         return SqliteStorageFactory()
 
     def _get_preloaded_spaces(self) -> list[StoredSpace]:
+        """Preload a "public" space backed by the repo's local space.
+
+        The STANDALONE config has no public space git URI, so the space:// URIs in
+        builds resolve from configurations/spaces/local instead.
+
+        Returns:
+            The public space, with a ``file://`` git_repo_uri.
+        """
         return [
             StoredSpace(
                 name=PUBLIC_SPACE_NAME,
@@ -243,7 +317,14 @@ class AbstractStandaloneAPITest(AbstractAPITest):
         ]
 
     def _server_env(self) -> dict[str, str]:
-        # No lineage provider: outside STANDALONE it would default to WandB.
+        """Run the server on apikey auth, with no lineage provider.
+
+        Without the provider set, it would default to WandB outside STANDALONE.
+
+        Returns:
+            GBSERVER_AUTH_MODE=apikey, this class's GBSERVER_API_KEY, and
+            GBSERVER_LINEAGE_PROVIDER=none.
+        """
         return {
             "GBSERVER_AUTH_MODE": "apikey",
             "GBSERVER_API_KEY": self._API_KEY,
@@ -251,20 +332,49 @@ class AbstractStandaloneAPITest(AbstractAPITest):
         }
 
     def default_identity(self) -> Optional[str]:
+        """Identity of the default caller.
+
+        Returns:
+            The apikey user "standalone" (GBSERVER_API_USER's default).
+        """
         return "standalone"
 
     def admin_identity(self) -> Optional[str]:
+        """Identity of a caller that tests make a super-admin.
+
+        Returns:
+            The apikey user "gbtest-admin".
+        """
         return "gbtest-admin"
 
     def non_admin_identity(self) -> Optional[str]:
+        """Identity of a caller that is never an admin.
+
+        Returns:
+            The apikey user "gbtest-nonadmin".
+        """
         return "gbtest-nonadmin"
 
     def get_caller_user(self, identity: Optional[str] = None) -> User:
-        """The synthetic user the apikey middleware builds for ``identity``."""
+        """The synthetic user the apikey middleware builds for ``identity``.
+
+        Args:
+            identity: An apikey username; defaults to :meth:`default_identity`.
+
+        Returns:
+            The user the server attaches to requests made as ``identity``.
+        """
         return _make_synthetic_user(identity or self.default_identity() or "")
 
     def get_test_client(self, identity: Optional[str] = None) -> TestClient:
-        """A client sending the API key and acting as apikey user ``identity``."""
+        """A client sending the API key and acting as apikey user ``identity``.
+
+        Args:
+            identity: An apikey username; defaults to :meth:`default_identity`.
+
+        Returns:
+            A TestClient whose requests are all made as ``identity``.
+        """
         return _ApiKeyUserClient(
             self._API_KEY, identity or self.default_identity() or ""
         )
