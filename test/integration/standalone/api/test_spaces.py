@@ -80,6 +80,11 @@ class SpaceMembersAPITests(AbstractAPITest):
     Independent of the auth mode (see the Test* classes below)."""
 
     def _get_storage_to_clear(self):
+        """Clear the space and space-user tables between tests.
+
+        Returns:
+            The storages these tests write to.
+        """
         return [
             self.storage.space_storage,
             self.storage.space_user_storage,

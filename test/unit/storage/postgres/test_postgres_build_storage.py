@@ -3,13 +3,13 @@ from libgbtest.storage.build_storage import (
     BaseBuildStorageTest,
     BuildStorageTestSupport,
 )
+from libgbtest.storage.postgres_storage import PostgresStorageTestMixin
 
 from gbserver.storage.build_storage import (
     _BUILD_SCHEMA_VERSION1,
     _BUILD_SCHEMA_VERSION2,
     BaseStoredBuildStorage,
 )
-from gbserver.storage.sql.storage_factory import SQLStorageFactory
 
 # from gbserver.storage import build_storage as xyz_build_storage
 
@@ -20,13 +20,8 @@ from gbserver.storage.sql.storage_factory import SQLStorageFactory
 pytestmark = LOCAL_POSTGRES_TEST_MARKS
 
 
-class SQLBuildStorageTests(BaseBuildStorageTest):
+class SQLBuildStorageTests(PostgresStorageTestMixin, BaseBuildStorageTest):
     """SQLBuildStorage tests, shared with the IBM copy (see TestSQLBuildStorage below)."""
-
-    @classmethod
-    def _get_storage_factory(cls):
-        # This makes it a SQL test.
-        return SQLStorageFactory()
 
     def test_tags_column_addition(self):
 

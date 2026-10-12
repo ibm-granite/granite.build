@@ -233,7 +233,10 @@ turn into connection failures. If setup fails, it leaves no env file. While it's
 The IBM SQL storage tests target the hosted database, so they skip in every STANDALONE run
 (`requires_hosted_postgres`), whether or not the local server is set up: the STANDALONE schema
 (`standalone`) doesn't exist in the hosted database, and with the env file loaded `GBSERVER_SQL_*` point
-at localhost. Run them with `GB_ENVIRONMENT=STAGING` or `DEV`.
+at localhost. Run them with `GB_ENVIRONMENT=STAGING` or `DEV`. They also skip when storage is mocked
+(`GBTEST_MODE=mock`, unless `GBTEST_LIVE_STORAGE=true`), where they would otherwise run on SQLite; SQLite
+has its own tests in `test/unit/storage/sqlite/`. Both copies get the SQL storage factory from
+`PostgresStorageTestMixin` (`test/libgbtest/storage/postgres_storage.py`).
 
 ## Build-level tests: `gbtest`
 

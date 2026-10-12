@@ -1,9 +1,9 @@
 import uuid
 
 from libgbtest.local_postgres import LOCAL_POSTGRES_TEST_MARKS
+from libgbtest.storage.postgres_storage import PostgresStorageTestMixin
 from libgbtest.storage.space_user_storage import BaseSpaceUserStorageTest
 
-from gbserver.storage.sql.storage_factory import SQLStorageFactory
 from gbserver.storage.storage import UUID_COLUMN_NAME, BaseItemStorage, BaseStoredItem
 from gbserver.storage.stored_space_user import StoredSpaceUser
 
@@ -14,12 +14,8 @@ from gbserver.storage.stored_space_user import StoredSpaceUser
 pytestmark = LOCAL_POSTGRES_TEST_MARKS
 
 
-class SQLSpaceUserStorageTests(BaseSpaceUserStorageTest):
+class SQLSpaceUserStorageTests(PostgresStorageTestMixin, BaseSpaceUserStorageTest):
     """SQLSpaceUserStorage tests, shared with the IBM copy (see TestSQLSpaceUserStorage below)."""
-
-    @classmethod
-    def _get_storage_factory(cls):
-        return SQLStorageFactory()
 
     def _get_where_test_item(self, index: int) -> StoredSpaceUser:
         # Give each call a unique (space_name, username) pair to avoid the unique

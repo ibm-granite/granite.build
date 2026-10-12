@@ -5,8 +5,7 @@ from libgbtest.storage.kv_pair_storage import (
 from libgbtest.storage.kv_pair_storage import (
     TestKeyValuePairValueMethods as _TestKeyValuePairValueMethods,
 )
-
-from gbserver.storage.sql.storage_factory import SQLStorageFactory
+from libgbtest.storage.postgres_storage import PostgresStorageTestMixin
 
 # The test bodies are mixins (SQL*Tests) shared with the IBM copy in
 # test/integration/ibm/storage/sql/test_sql_kv_pair_storage.py,
@@ -15,20 +14,16 @@ from gbserver.storage.sql.storage_factory import SQLStorageFactory
 pytestmark = LOCAL_POSTGRES_TEST_MARKS
 
 
-class SQLKeyValuePairStorageTests(BaseKeyValuePairStorageTest):
+class SQLKeyValuePairStorageTests(
+    PostgresStorageTestMixin, BaseKeyValuePairStorageTest
+):
     """SQLKeyValuePairStorage tests, shared with the IBM copy (see TestSQLKeyValuePairStorage below)."""
 
-    @classmethod
-    def _get_storage_factory(cls):
-        return SQLStorageFactory()
 
-
-class SQLKeyValuePairValueMethodsTests(_TestKeyValuePairValueMethods):
+class SQLKeyValuePairValueMethodsTests(
+    PostgresStorageTestMixin, _TestKeyValuePairValueMethods
+):
     """SQLKeyValuePairValueMethods tests, shared with the IBM copy (see TestSQLKeyValuePairValueMethods below)."""
-
-    @classmethod
-    def _get_storage_factory(cls):
-        return SQLStorageFactory()
 
 
 class TestSQLKeyValuePairStorage(SQLKeyValuePairStorageTests):

@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
+from libgbtest.mode import is_live  # imports only os
 
 # gbcommon only: it doesn't import gbserver, so GBSERVER_SQL_* aren't read yet.
 from gbcommon.types.gbenvconfig import is_standalone
@@ -128,18 +129,44 @@ requires_local_postgres = pytest.mark.skipif(
 )
 """Skip for SQL storage tests that run against the local test PostgreSQL."""
 
-requires_hosted_postgres = pytest.mark.skipif(
-    is_standalone(),
-    reason='GB_ENVIRONMENT=STANDALONE: its SQL schema ("standalone") doesn\'t exist in '
-    "the hosted database, and the local test PostgreSQL's settings may be loaded; "
-    "run these with GB_ENVIRONMENT=STAGING or DEV",
-)
-"""Skip for SQL storage tests meant for the hosted PostgreSQL in STANDALONE runs.
 
-A STANDALONE run can't target the hosted database: GBSERVER_SQL_SCHEMA defaults to
-the STANDALONE config's "standalone" schema, which the hosted database doesn't have,
-and when ``make postgres-setup`` has run, GBSERVER_SQL_* point at localhost. Either
-way, skip instead of failing or silently testing the local server."""
+def _hosted_postgres_skip_reason() -> Optional[str]:
+    """Why the hosted-PostgreSQL tests can't run, or None if they can.
+
+    A STANDALONE run can't target the hosted database: GBSERVER_SQL_SCHEMA defaults
+    to the STANDALONE config's "standalone" schema, which the hosted database
+    doesn't have, and when ``make postgres-setup`` has run, GBSERVER_SQL_* point at
+    localhost. With storage mocked (mock mode), conftest swaps the SQL factory for
+    SQLite, so the tests would pass without touching PostgreSQL; SQLite has its own
+    tests in test/unit/storage/sqlite.
+
+    Returns:
+        A skip reason, or None when the tests can run.
+    """
+    if is_standalone():
+        return (
+            'GB_ENVIRONMENT=STANDALONE: its SQL schema ("standalone") doesn\'t exist '
+            "in the hosted database, and the local test PostgreSQL's settings may be "
+            "loaded; run these with GB_ENVIRONMENT=STAGING or DEV"
+        )
+    if not is_live("storage"):
+        return (
+            "storage is mocked (GBTEST_MODE=mock), which would run these hosted-"
+            "PostgreSQL tests on SQLite; run with GBTEST_MODE=live or "
+            "GBTEST_LIVE_STORAGE=true"
+        )
+    return None
+
+
+HOSTED_POSTGRES_SKIP_REASON: Optional[str] = _hosted_postgres_skip_reason()
+"""Why the hosted-PostgreSQL tests skip, or None if they run (computed on import)."""
+
+requires_hosted_postgres = pytest.mark.skipif(
+    HOSTED_POSTGRES_SKIP_REASON is not None,
+    reason=HOSTED_POSTGRES_SKIP_REASON or "",
+)
+"""Skip for SQL storage tests meant for the hosted PostgreSQL, unless they would
+really run against it (see _hosted_postgres_skip_reason)."""
 
 LOCAL_POSTGRES_TEST_MARKS = [
     # Needs the psycopg driver from the `thirdparty` extra.
@@ -155,6 +182,16 @@ LOCAL_POSTGRES_TEST_MARKS = [
 """``pytestmark`` for SQL storage test modules that run against the local test
 PostgreSQL (test/unit/storage/postgres)."""
 
-HOSTED_POSTGRES_TEST_MARKS = [pytest.mark.ibm, requires_hosted_postgres]
+HOSTED_POSTGRES_TEST_MARKS = [
+    pytest.mark.ibm,
+    requires_hosted_postgres,
+    pytest.mark.skipif(
+        os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
+        reason="Don't want to run this in CICD.",
+    ),
+    # Keep the real SQL factory (GBTEST_LIVE_STORAGE=true in mock mode), where
+    # conftest would otherwise swap in SQLite.
+    pytest.mark.live("storage"),
+]
 """``pytestmark`` for SQL storage test modules that run against the hosted PostgreSQL
 (test/integration/ibm/storage/sql)."""

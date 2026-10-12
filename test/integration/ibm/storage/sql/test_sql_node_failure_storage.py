@@ -6,34 +6,19 @@ which runs them against the local test PostgreSQL. The legacy tests read existin
 database's real tables, so they exist only here.
 """
 
-import os
-
-import pytest
 from libgbtest.local_postgres import HOSTED_POSTGRES_TEST_MARKS
 from libgbtest.storage.node_failure_storage import BaseLegacyNodeFailureTest
+from libgbtest.storage.postgres_storage import PostgresStorageTestMixin
 from unit.storage.postgres.test_postgres_node_failure_storage import (
     SQLNodeFailureStorageTests,
 )
 
-from gbserver.storage.sql.storage_factory import SQLStorageFactory
-
 pytestmark = HOSTED_POSTGRES_TEST_MARKS
 
 
-@pytest.mark.skipif(
-    os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
-    reason="Don't want to run this in CICD.",
-)
 class TestSQLNodeFailureStorage(SQLNodeFailureStorageTests):
     """SQLNodeFailureStorage tests against the hosted PostgreSQL."""
 
 
-@pytest.mark.skipif(
-    os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
-    reason="Don't want to run this in CICD.",
-)
-class TestSQLLegacyNodeFailure(BaseLegacyNodeFailureTest):
-
-    @classmethod
-    def _get_storage_factory(cls):
-        return SQLStorageFactory()
+class TestSQLLegacyNodeFailure(PostgresStorageTestMixin, BaseLegacyNodeFailureTest):
+    """Reads the existing rows in the hosted database's real tables (no prefix)."""
