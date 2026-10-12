@@ -753,6 +753,22 @@ def test_jobs_requires_a_uri_or_a_job_id():
     assert caught.value.status_code == 422
 
 
+def test_jobs_lists_by_job_ids_alone():
+    """A grouped graph node's jobs_query is a job_ids list; that is enough."""
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return {"jobs": [], "total": 0, "limit": 100, "offset": 0}
+
+    service = _db_service(list_jobs=fake)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        lineage_mod.list_lineage_jobs(
+            _fake_request("member", "member@example.com"), job_ids=["J1", "J2"]
+        )
+    assert seen["job_ids"] == ["J1", "J2"]
+
+
 def test_jobs_passes_every_filter_and_its_paging_through():
     seen = {}
 
@@ -782,6 +798,7 @@ def test_jobs_passes_every_filter_and_its_paging_through():
         "self_loop": False,
         "output": None,
         "terminal": None,
+        "job_ids": None,
     }
     assert resp.limit == 10
     assert resp.offset == 50

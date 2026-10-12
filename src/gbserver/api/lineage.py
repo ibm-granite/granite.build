@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
@@ -608,7 +608,7 @@ def list_lineage_jobs(
     self_loop: bool = False,
     output: Optional[str] = None,
     terminal: Optional[Literal["input", "output"]] = None,
-    job_ids: Optional[list[str]] = Query(None),
+    job_ids: Annotated[Optional[list[str]], Query()] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> LineageJobsResponse:
