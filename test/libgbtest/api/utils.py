@@ -10,7 +10,6 @@ from libgbtest.constants import (
     GBTEST_ADMIN_GITHUB_TOKEN,
     GBTEST_NON_ADMIN_GITHUB_TOKEN,
 )
-from libgbtest.mode import is_mock_mode
 from libgbtest.utils import AbstractSingletonStorageUsingPreloadedSpaceTest
 
 from gbserver.api.auth import _make_synthetic_user, get_gh_user
@@ -32,6 +31,15 @@ from gbserver.types.constants import (
 # The repo's shared local space; the standalone API tests' "public" space points
 # at it so space:// URIs resolve without cloning from GitHub.
 _LOCAL_SPACE_DIR = Path(__file__).resolve().parents[3] / "configurations/spaces/local"
+
+
+def server_auth_mode() -> str:
+    """The server's auth mode, read as the auth middleware reads it: per call, default "github".
+
+    Returns:
+        The ``GBSERVER_AUTH_MODE`` value the server will use for the next request.
+    """
+    return os.getenv("GBSERVER_AUTH_MODE", "github")
 
 
 class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
@@ -84,8 +92,9 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
     def require_admin_and_non_admin(self) -> tuple[str, str]:
         """Return (admin, non-admin) identities, skipping the test if they can't be distinct.
 
-        In mock mode the server runs apikey auth and maps every GitHub token to one
-        synthetic user, so GitHub-auth tests can't tell admin from non-admin there.
+        When the server runs apikey auth (as in mock mode, even with
+        GBTEST_LIVE_GITHUB=true), it maps every GitHub token to one synthetic user,
+        so GitHub-auth tests can't tell admin from non-admin there.
 
         Returns:
             The admin and non-admin identities.
@@ -93,7 +102,7 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         Raises:
             pytest.skip.Exception: if the two identities are unavailable or not distinct.
         """
-        if self.auth_mode == "github" and is_mock_mode():
+        if self.auth_mode == "github" and server_auth_mode() == "apikey":
             pytest.skip(
                 reason="apikey auth maps every token to one synthetic user; "
                 "admin/non-admin authorization requires live GitHub identities"
@@ -108,9 +117,16 @@ class AbstractAPITest(AbstractSingletonStorageUsingPreloadedSpaceTest):
     def get_caller_user(self, identity: Optional[str] = None) -> User:
         """Resolve the user the server sees for ``identity`` (default: :meth:`default_identity`).
 
+        Mirrors the auth middleware: when the server runs apikey auth (as in mock
+        mode, even with GBTEST_LIVE_GITHUB=true), every request is the synthetic
+        ``GBSERVER_API_USER`` user, whatever token was sent. Otherwise the user is
+        resolved from the GitHub token.
+
         Raises:
             AssertionError: if the user cannot be resolved from the GitHub token.
         """
+        if server_auth_mode() == "apikey":
+            return _make_synthetic_user(os.getenv("GBSERVER_API_USER", "standalone"))
         __tracebackhide__ = True  # Hide token during stack traces
         user, _ = get_gh_user(identity or self.default_identity() or "")
         assert user is not None and isinstance(
