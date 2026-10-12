@@ -302,6 +302,7 @@ quick-tests:
 extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 	$(MAKE) slurm-setup
+	$(MAKE) postgres-setup
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 # GBTEST_STANDALONE_ENVIRONMENT (which HF resource group a STANDALONE push targets)
@@ -462,6 +463,19 @@ slurm-setup:
 slurm-teardown:
 	source .venv/bin/activate;\
 	bash scripts/slurm/teardown-slurm.sh
+
+# Local TLS-enabled PostgreSQL for the standalone SQL storage tests
+# (test/unit/storage/postgres). Setup writes the GBSERVER_SQL_* connection env to
+# .cache/gbtest-postgres/postgres.env, which libgbtest/local_postgres.py loads in
+# GB_ENVIRONMENT=STANDALONE test runs (extended-tests sets that).
+
+.PHONY: postgres-setup
+postgres-setup:
+	bash scripts/postgres/setup-postgres.sh
+
+.PHONY: postgres-teardown
+postgres-teardown:
+	bash scripts/postgres/teardown-postgres.sh
 
 # Local S3-compatible store (SeaweedFS) for the SLURM demo's artifact push.
 # Demo-only — keep out of CI setup targets (Docker Hub anonymous rate limit).
@@ -650,10 +664,10 @@ cicd-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)	# [all,dev] installs all optional deps + test tools
 
-.PHONY: standalone-venv
-standalone-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
+#.PHONY: standalone-venv
+#standalone-venv: sky-api-stop
+#	rm -rf $(VENVDIR)
+#	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
 
 .PHONY: demo-venv
 demo-venv: sky-api-stop

@@ -197,6 +197,34 @@ through the identity hooks (`get_test_client(identity)`, `get_caller_username(id
 `admin_identity()`, `non_admin_identity()`, `grant_super_admin(identity)`), never a token or apikey
 user directly.
 
+### SQL storage tests: local PostgreSQL
+
+The SQL storage tests follow the same pattern. Their bodies are mixins (`SQL*Tests`) in
+`test/unit/storage/postgres/`, next to the SQLite tests in `test/unit/storage/sqlite/`, and run
+against a **local, TLS-enabled PostgreSQL**.
+`test/integration/ibm/storage/sql/` runs the same tests against the hosted PostgreSQL, plus the
+`*Legacy*` tests. Those read existing rows in the hosted database's real tables, so they exist only
+in the IBM copy.
+
+```bash
+make postgres-setup      # start it (also part of `make extended-tests-setup`)
+make extended-tests PYTEST_TEST_TARGETS=test/unit/storage/postgres
+make postgres-teardown   # stop it and delete its data, certs and credentials
+```
+
+`postgres-setup` (`scripts/postgres/setup-postgres.sh`) does the following:
+- Starts `quay.io/sclorg/postgresql-16-c9s` on `127.0.0.1:55432`, with a random password and TLS 1.3
+  (verified with `sslmode=verify-full` against a CA it generates).
+- Creates the `gbtest` schema.
+- Writes the `GBSERVER_SQL_*` settings and `GBTEST_LOCAL_POSTGRES=true` to
+  `.cache/gbtest-postgres/postgres.env`, readable only by you.
+
+The tests load that file themselves (`test/libgbtest/local_postgres.py`, imported first by
+`test/conftest.py`) in `GB_ENVIRONMENT=STANDALONE` runs, which `make extended-tests` sets. That
+covers plain `pytest` and VS Code too, as long as `GB_ENVIRONMENT=STANDALONE`. Without the file, or
+outside STANDALONE, the standalone SQL tests skip (`requires_local_postgres`). While it's loaded, its
+`GBSERVER_SQL_*` values take precedence over the SPS secrets.
+
 ## Build-level tests: `gbtest`
 
 For asserting on a *build* (expected status, per-target step/artifact counts, cancellation behaviour),

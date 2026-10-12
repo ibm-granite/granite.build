@@ -56,6 +56,11 @@ if not _can_import("asyncssh"):
     collect_ignore.append("integration/ibm/utils/test_ssh_tunnel.py")
 
 
+# Before importing gbserver (below): loads the local test PostgreSQL's
+# GBSERVER_SQL_* settings in STANDALONE runs, which gbserver reads at import.
+import libgbtest.local_postgres  # noqa: E402  # isort: skip
+
+
 import libgbtest
 import libgbtest.constants
 from libgbtest.constants import BUILD_ID_PATTERN
@@ -142,10 +147,31 @@ TEST_ENV_VAR_SPS_NAMES["GBSERVER_WANDB_ENTITY"] = "gbserver-wandb-entry"
 TEST_ENV_VAR_SPS_NAMES["GBSERVER_WANDB_API_KEY"] = "gbserver-wandb-api-key"
 
 
+def _local_postgres_owns(env_var: str) -> bool:
+    """Whether a local test PostgreSQL's settings must win over SPS for ``env_var``.
+
+    While the local server's env is in effect (see libgbtest.local_postgres), the
+    SPS SQL secrets (the hosted database's password/cert) must not replace its
+    GBSERVER_SQL_* values.
+
+    Args:
+        env_var: Name of the environment variable being resolved.
+
+    Returns:
+        True if ``env_var`` is a GBSERVER_SQL_* setting and the local server is in use.
+    """
+    return (
+        env_var.startswith("GBSERVER_SQL_")
+        and libgbtest.local_postgres.GBTEST_LOCAL_POSTGRES
+    )
+
+
 # Set each required environment variable, either from value or secret manager
 def set_test_env(sps_api_key: str, enable_env_var_override: bool):
     """Set up the test env vars using one of 1) local env vars, 2) default values or 3) sps secrets.
     if enable_env_var_override is True, then let local env vars supersede secret values.
+    Local GBSERVER_SQL_* values always supersede them while a local test PostgreSQL
+    is in use (see _local_postgres_owns).
 
     Args:
         sps_api_key (str): _description_
@@ -164,7 +190,9 @@ def set_test_env(sps_api_key: str, enable_env_var_override: bool):
         env_var_value = os.getenv(env_var, None)
         if env_var in TEST_ENV_VAR_SPS_NAMES:
             # Handle secrets
-            if env_var_value is not None and enable_env_var_override:
+            if env_var_value is not None and (
+                enable_env_var_override or _local_postgres_owns(env_var)
+            ):
                 value = env_var_value
                 value_source = "Local Environment"
             else:
@@ -319,6 +347,12 @@ def pytest_sessionstart(session):
     before performing collection and entering the run test loop.
     """
     from libgbtest.mode import get_test_mode
+
+    if libgbtest.local_postgres.LOADED_ENV_FILE is not None:
+        logger.info(
+            "Loaded local test PostgreSQL settings from %s",
+            libgbtest.local_postgres.LOADED_ENV_FILE,
+        )
 
     test_mode = get_test_mode()
     logger.info(f"GBTEST_MODE={test_mode}")
