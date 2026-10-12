@@ -225,10 +225,12 @@ The tests load that file themselves (`test/libgbtest/local_postgres.py`, importe
 `test/conftest.py`) in `GB_ENVIRONMENT=STANDALONE` runs, which `make extended-tests` sets. That
 covers plain `pytest` and VS Code too, as long as `GB_ENVIRONMENT=STANDALONE`. Without the file, or
 outside STANDALONE, the standalone SQL tests skip (`requires_local_postgres`). While it's loaded, its
-`GBSERVER_SQL_*` values take precedence over the SPS secrets, and the IBM SQL storage tests skip
-(`requires_hosted_postgres`) instead of silently testing localhost. The settings are read once per
-process, so a run can't use both databases. To run the IBM copy in a STANDALONE run while the file
-exists, set `GBTEST_LOCAL_POSTGRES=false` and the file isn't loaded.
+`GBSERVER_SQL_*` values take precedence over the SPS secrets.
+
+The IBM SQL storage tests target the hosted database, so they skip in every STANDALONE run
+(`requires_hosted_postgres`), whether or not the local server is set up: the STANDALONE schema
+(`standalone`) doesn't exist in the hosted database, and with the env file loaded `GBSERVER_SQL_*` point
+at localhost. Run them with `GB_ENVIRONMENT=STAGING` or `DEV`.
 
 ## Build-level tests: `gbtest`
 

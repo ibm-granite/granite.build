@@ -14,8 +14,9 @@ from unit.storage.postgres.test_postgres_space_user_storage import (
     SQLSpaceUserStorageTests,
 )
 
-# requires_hosted_postgres: skip, rather than silently test localhost, while the
-# local test PostgreSQL's GBSERVER_SQL_* settings are loaded.
+# requires_hosted_postgres: these target the hosted database, so skip in
+# GB_ENVIRONMENT=STANDALONE runs (no such schema there, or GBSERVER_SQL_* point at
+# the local test PostgreSQL).
 pytestmark = [pytest.mark.ibm, requires_hosted_postgres]
 
 
