@@ -34,6 +34,7 @@ Usage:
 
 import importlib.util
 import os
+import socket
 from pathlib import Path
 from typing import Optional
 
@@ -83,15 +84,47 @@ Without it the SQL storage retries the failing driver import instead of erroring
 so a run would look hung rather than fail.
 """
 
+
+def _local_postgres_skip_reason() -> Optional[str]:
+    """Why the local-PostgreSQL tests can't run, or None if they can.
+
+    Checks, in order: the local server's env is loaded, the driver is installed,
+    and the server accepts TCP connections. The last catches a stale env file
+    whose server is gone (stopped container, reboot) so the tests skip instead
+    of failing to connect.
+
+    Returns:
+        A skip reason, or None when the tests can run.
+    """
+    if not GBTEST_LOCAL_POSTGRES:
+        return (
+            "local test PostgreSQL not configured: run `make postgres-setup` and run "
+            "with GB_ENVIRONMENT=STANDALONE (e.g. `make extended-tests`)"
+        )
+    if not HAS_PSYCOPG:
+        return (
+            "psycopg (PostgreSQL driver) not installed: install the `thirdparty` "
+            "extra, e.g. `make g4os-skypilot-venv` or `make venv`"
+        )
+    host = os.getenv("GBSERVER_SQL_HOST", "")
+    port = os.getenv("GBSERVER_SQL_PORT", "")
+    try:
+        with socket.create_connection((host, int(port)), timeout=1):
+            return None
+    except (OSError, ValueError):
+        return (
+            f"local test PostgreSQL not reachable at {host}:{port} (stale "
+            f"{LOADED_ENV_FILE}?): run `make postgres-setup`, or "
+            "`make postgres-teardown` to remove the env file"
+        )
+
+
+LOCAL_POSTGRES_SKIP_REASON: Optional[str] = _local_postgres_skip_reason()
+"""Why the local-PostgreSQL tests skip, or None if they run (computed on import)."""
+
 requires_local_postgres = pytest.mark.skipif(
-    not (GBTEST_LOCAL_POSTGRES and HAS_PSYCOPG),
-    reason=(
-        "local test PostgreSQL not configured: run `make postgres-setup` and run "
-        "with GB_ENVIRONMENT=STANDALONE (e.g. `make extended-tests`)"
-        if not GBTEST_LOCAL_POSTGRES
-        else "psycopg (PostgreSQL driver) not installed: install the `thirdparty` "
-        "extra, e.g. `make g4os-skypilot-venv` or `make venv`"
-    ),
+    LOCAL_POSTGRES_SKIP_REASON is not None,
+    reason=LOCAL_POSTGRES_SKIP_REASON or "",
 )
 """Skip for SQL storage tests that run against the local test PostgreSQL."""
 

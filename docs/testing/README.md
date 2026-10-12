@@ -209,9 +209,10 @@ against a **local, TLS-enabled PostgreSQL**.
 in the IBM copy.
 
 ```bash
-make postgres-setup      # start it (also part of `make extended-tests-setup`)
+make postgres-setup      # start it (also run, best-effort, by `make extended-tests-setup`)
 make extended-tests PYTEST_TEST_TARGETS=test/unit/storage/postgres
 make postgres-teardown   # stop it and delete its data, certs and credentials
+                         # (`make extended-tests-teardown` also stops SLURM)
 ```
 
 `postgres-setup` (`scripts/postgres/setup-postgres.sh`) does the following:
@@ -224,7 +225,9 @@ make postgres-teardown   # stop it and delete its data, certs and credentials
 The tests load that file themselves (`test/libgbtest/local_postgres.py`, imported first by
 `test/conftest.py`) in `GB_ENVIRONMENT=STANDALONE` runs, which `make extended-tests` sets. That
 covers plain `pytest` and VS Code too, as long as `GB_ENVIRONMENT=STANDALONE`. Without the file, or
-outside STANDALONE, the standalone SQL tests skip (`requires_local_postgres`). While it's loaded, its
+outside STANDALONE, the standalone SQL tests skip (`requires_local_postgres`). They also skip when the
+file is loaded but its server isn't reachable (a stopped container, or a reboot), so a stale file can't
+turn into connection failures. If setup fails, it leaves no env file. While it's loaded, its
 `GBSERVER_SQL_*` values take precedence over the SPS secrets.
 
 The IBM SQL storage tests target the hosted database, so they skip in every STANDALONE run

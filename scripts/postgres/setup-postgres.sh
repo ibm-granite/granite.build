@@ -129,14 +129,17 @@ EOF
 
 # ---- Main ----
 
+# Remove a previous run's files first (only those; PG_DIR may be a shared dir), so
+# a setup that fails at any later step leaves no env file pointing at a server
+# that isn't running. The env file is written only once setup succeeds.
+remove_generated_files
+
 RUNTIME="$(detect_runtime)"
 [[ -n "${RUNTIME}" ]] || die "neither docker nor podman found"
 command -v openssl >/dev/null 2>&1 || die "openssl is required to generate the TLS certs"
 
 log "Using ${RUNTIME}; image ${PG_IMAGE}; port 127.0.0.1:${PG_PORT}"
 "${RUNTIME}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-# Replace only the files a previous run generated; PG_DIR may be a shared dir.
-remove_generated_files
 # A new dir is private; an existing one keeps its permissions (the env file is
 # written 0600 regardless).
 [[ -d "${PG_DIR}" ]] || mkdir -m 700 -p "${PG_DIR}"
@@ -146,7 +149,17 @@ mkdir -m 700 -p "${CERTS_DIR}"
 # temp dir, outside PG_DIR, and removed on exit. They go in its src/ subdir, which
 # is what gets copied into the container.
 EXT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gbtest-postgres-src.XXXXXX")"
-trap 'rm -rf "${EXT_DIR}"' EXIT
+# On exit: remove the staging dir, and on failure also the half-created container
+# and the files generated so far, so a failed setup leaves nothing behind.
+cleanup() {
+    local rc=$?
+    rm -rf "${EXT_DIR}"
+    if (( rc != 0 )); then
+        "${RUNTIME}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+        remove_generated_files
+    fi
+}
+trap cleanup EXIT
 STAGE_DIR="${EXT_DIR}/src"
 write_image_extensions "${STAGE_DIR}"
 generate_certs "${STAGE_DIR}/certs"

@@ -302,7 +302,15 @@ quick-tests:
 extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 	$(MAKE) slurm-setup
-	$(MAKE) postgres-setup
+	@# Best-effort: without a container runtime/openssl or a free port, the
+	@# local-PostgreSQL storage tests skip instead of blocking every extended test.
+	$(MAKE) postgres-setup || echo "WARNING: postgres-setup failed; the local-PostgreSQL storage tests will skip."
+
+# Stops what extended-tests-setup started.
+.PHONY: extended-tests-teardown
+extended-tests-teardown:
+	$(MAKE) slurm-teardown
+	$(MAKE) postgres-teardown
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 # GBTEST_STANDALONE_ENVIRONMENT (which HF resource group a STANDALONE push targets)
