@@ -51,12 +51,16 @@ def load_local_postgres_env() -> Optional[Path]:
     """In STANDALONE runs, load the local test PostgreSQL's env file, if it exists.
 
     The file's values replace any already in the environment, so a partial set of
-    hosted-database settings can't mix with the local ones.
+    hosted-database settings can't mix with the local ones. Set
+    GBTEST_LOCAL_POSTGRES=false to keep the hosted database's settings in a
+    STANDALONE run (e.g. to run test/integration/ibm/storage/sql).
 
     Returns:
-        The file loaded, or None if not STANDALONE or there is no env file.
+        The file loaded, or None if not STANDALONE, opted out, or there is no env file.
     """
     if not is_standalone():
+        return None
+    if os.getenv("GBTEST_LOCAL_POSTGRES", "").lower() == "false":
         return None
     pg_dir = os.getenv("GBTEST_POSTGRES_DIR")
     env_file = (Path(pg_dir) if pg_dir else _DEFAULT_POSTGRES_DIR) / "postgres.env"
@@ -94,3 +98,14 @@ requires_local_postgres = pytest.mark.skipif(
     ),
 )
 """Skip for SQL storage tests that run against the local test PostgreSQL."""
+
+requires_hosted_postgres = pytest.mark.skipif(
+    GBTEST_LOCAL_POSTGRES,
+    reason="the local test PostgreSQL's settings are loaded (STANDALONE run with "
+    ".cache/gbtest-postgres/postgres.env present), so GBSERVER_SQL_* point at "
+    "localhost, not the hosted database; set GBTEST_LOCAL_POSTGRES=false to use "
+    "the hosted database's settings",
+)
+"""Skip for SQL storage tests meant for the hosted PostgreSQL, while the local one's
+settings are in effect (GBSERVER_SQL_* are read once per process, so they can't be
+switched per test)."""

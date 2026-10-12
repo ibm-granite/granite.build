@@ -9,6 +9,7 @@ database's real tables, so they exist only here.
 import os
 
 import pytest
+from libgbtest.local_postgres import requires_hosted_postgres
 from libgbtest.storage.node_failure_storage import BaseLegacyNodeFailureTest
 from unit.storage.postgres.test_postgres_node_failure_storage import (
     SQLNodeFailureStorageTests,
@@ -16,7 +17,9 @@ from unit.storage.postgres.test_postgres_node_failure_storage import (
 
 from gbserver.storage.sql.storage_factory import SQLStorageFactory
 
-pytestmark = pytest.mark.ibm
+# requires_hosted_postgres: skip, rather than silently test localhost, while the
+# local test PostgreSQL's GBSERVER_SQL_* settings are loaded.
+pytestmark = [pytest.mark.ibm, requires_hosted_postgres]
 
 
 @pytest.mark.skipif(
