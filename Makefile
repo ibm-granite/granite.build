@@ -664,10 +664,10 @@ cicd-venv: sky-api-stop
 	rm -rf $(VENVDIR)
 	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)	# [all,dev] installs all optional deps + test tools
 
-#.PHONY: standalone-venv
-#standalone-venv: sky-api-stop
-#	rm -rf $(VENVDIR)
-#	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
+.PHONY: standalone-venv
+standalone-venv: sky-api-stop
+	rm -rf $(VENVDIR)
+	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
 
 .PHONY: demo-venv
 demo-venv: sky-api-stop
