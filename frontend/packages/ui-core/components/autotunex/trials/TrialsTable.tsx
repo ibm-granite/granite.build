@@ -44,7 +44,7 @@ import { TrialSearchSpace } from './TrialSearchSpace'
 import { EMPHASIS_THRESHOLD, emphasisColorScale, selectionSlots, trialColorScale } from './trialMetrics'
 import { formatCell } from './trialsTableFormat'
 import { formatHyperparamValue, hyperparamColumnLabel, hyperparamColumns } from './trialHyperparams'
-import { bestTrialId, isLowerBetter, jobMetric, primaryMetric, rankBestFirst, scoreOn, toFeatureLabel } from './trialsRadar'
+import { bestTrialId, isLowerBetter, jobMetric, rankBestFirst, scoreOn, toFeatureLabel } from './trialsRadar'
 import type { JobDetail, Trial } from '../../../types'
 
 // Hyperparameter columns are appended to these at render time. Appended, not
@@ -157,23 +157,18 @@ export function TrialsTable({ job }: Props) {
   // feature.
   const hyperparamKeys = useMemo(() => hyperparamColumns(trials), [trials])
 
-  // The metric the job scores its trials on, and whether smaller is better. Read
-  // through the same accessor and the same predicate `bestTrialId` uses, so the
-  // plot's better-is-up axes cannot disagree with which trial it marks as best.
-  // Decided from the first trial reporting a value, since every trial in a job is
-  // scored on the same metric. A hook, and up here with the others rather than
-  // beside its use below, because the early returns follow.
-  const plotMetric = useMemo(() => {
-    for (const trial of trials) {
-      const primary = primaryMetric(trial)
-      if (primary) return { name: primary.name, lowerIsBetter: isLowerBetter(primary.name) }
-    }
-    return { name: 'loss', lowerIsBetter: true }
-  }, [trials])
   // The column is keyed `loss` for formatCell and the default sort, but holds the
   // job's metric, so it is labelled with it: a reward job's 0.91 under "Loss"
   // read as a bad loss.
   const metric = jobMetric(trials)
+  // The metric the job scores its trials on, and whether smaller is better. The
+  // same `jobMetric` `bestTrialId` ranks on, so the plot's better-is-up axes cannot
+  // disagree with which trial it marks as best. Not read per trial: `primaryMetric`
+  // falls back to `loss` for a trial whose own metric is absent, which made a
+  // reward job whose first trial had only a loss plot as lower-is-better. A hook,
+  // and up here with the others rather than beside its use below, because the
+  // early returns follow.
+  const plotMetric = useMemo(() => ({ name: metric, lowerIsBetter: isLowerBetter(metric) }), [metric])
   const tableHeaders = useMemo(
     () => [
       ...BASE_HEADERS.map((h) => (h.key === 'loss' ? { ...h, header: toFeatureLabel(metric) } : h)),

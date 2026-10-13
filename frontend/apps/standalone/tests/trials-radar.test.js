@@ -211,5 +211,13 @@ describe('the trials table metric column', () => {
   it('shows the value the ranking used', () => {
     assert.match(src, /loss: scoreOn\(t, metric\) \?\? undefined,/)
   })
+
+  // The fixture above ("a trial reporting only the fallback metric") is the case:
+  // read per trial, trial 'a' would make the plot a lower-is-better loss plot while
+  // the column and the best chip are on reward.
+  it('plots the job metric, not the first trial to report any value', () => {
+    assert.match(src, /lowerIsBetter: isLowerBetter\(metric\)/)
+    assert.doesNotMatch(src, /primaryMetric\(/)
+  })
 })
 
