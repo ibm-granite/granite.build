@@ -38,7 +38,9 @@ granite.build:
             dpk_config:
               transform: tokenization2arrow
               dpk_version: "1.1.8"
-              input_path: "{{ bindings.docs.binding.path }}"
+              # The dpk step declares `docs` as a named input and reads this
+              # target's `docs` binding directly, so no input_path config line
+              # is set here (steps/byoc/skypilot/USAGE.md).
               output: tokens
               validate: true
               module: dpk_tokenization2arrow.runtime
