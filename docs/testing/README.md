@@ -230,7 +230,10 @@ covers plain `pytest` and VS Code too, as long as `GB_ENVIRONMENT=STANDALONE`. W
 outside STANDALONE, the standalone SQL tests skip (`requires_local_postgres`). They also skip when the
 file is loaded but its server isn't reachable (a stopped container, or a reboot), so a stale file can't
 turn into connection failures. If setup fails, it leaves no env file. While it's loaded, its
-`GBSERVER_SQL_*` values take precedence over the SPS secrets.
+`GBSERVER_SQL_*` values take precedence over the SPS secrets and over any you set yourself. That points
+everything using SQL storage in the run, subprocesses included, at the local server. To keep your own
+`GBSERVER_SQL_*` in a STANDALONE run while the file exists, set `GBTEST_LOCAL_POSTGRES=false`. If the
+file, which holds the password, is readable by group or others, loading it warns.
 
 The IBM SQL storage tests target the hosted database, so they skip in every STANDALONE run
 (`requires_hosted_postgres`), whether or not the local server is set up: the STANDALONE schema

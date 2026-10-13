@@ -35,6 +35,7 @@ Usage:
 import importlib.util
 import os
 import socket
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -53,17 +54,34 @@ def load_local_postgres_env() -> Optional[Path]:
     """In STANDALONE runs, load the local test PostgreSQL's env file, if it exists.
 
     The file's values replace any already in the environment, so a partial set of
-    hosted-database settings can't mix with the local ones.
+    hosted-database settings can't mix with the local ones. That points every
+    SQL-storage user in the run (subprocesses included) at the local server, so
+    set GBTEST_LOCAL_POSTGRES=false to keep the environment's GBSERVER_SQL_*
+    instead. (That doesn't enable the hosted-PostgreSQL tests, which skip in any
+    STANDALONE run; see requires_hosted_postgres.)
 
     Returns:
-        The file loaded, or None if not STANDALONE or there is no env file.
+        The file loaded, or None if not STANDALONE, opted out, or there is no env file.
+
+    Warns:
+        UserWarning: if the file, which holds the password, is readable or
+            writable by group or others (setup writes it 0600).
     """
     if not is_standalone():
+        return None
+    if os.getenv("GBTEST_LOCAL_POSTGRES", "").lower() == "false":
         return None
     pg_dir = os.getenv("GBTEST_POSTGRES_DIR")
     env_file = (Path(pg_dir) if pg_dir else _DEFAULT_POSTGRES_DIR) / "postgres.env"
     if not env_file.is_file():
         return None
+    if env_file.stat().st_mode & 0o077:
+        warnings.warn(
+            f"{env_file} holds the local test PostgreSQL password but is accessible "
+            f"to group/others (mode {env_file.stat().st_mode & 0o777:o}); "
+            f"run `chmod 600 {env_file}`",
+            stacklevel=2,
+        )
     for line in env_file.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
