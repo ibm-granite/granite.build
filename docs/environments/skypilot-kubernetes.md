@@ -142,11 +142,8 @@ Two requirements, both checked on a local kind cluster:
   example, fails at startup. To avoid Docker Hub pull-rate limits, `public.ecr.aws/docker/library/<image>`
   mirrors the Docker official images.
 - **With shared storage, the image needs nothing to fetch `hf://` inputs.** They are downloaded by the
-  separate `hfpull` step into the shared volume and read from there. Only an env that sets `inline: true`
-  (being deprecated) downloads inside the consuming step's image; for that case gbserver obtains the `hf`
-  client itself: `pip` if the image has it, else a preinstalled `hf`, else a pinned, sha256-verified `uv`
-  release fetched with `curl` (which SkyPilot's startup guarantees). That last route needs outbound access
-  to `github.com` (the `uv` release, plus a Python build if the image has no `python3`) and to PyPI.
+  separate `hfpull` step into the shared volume and read from there. Inline pulls (`inline: true`) are
+  legacy, kept only for existing environments; don't use them on Kubernetes.
 
 ## See also
 
