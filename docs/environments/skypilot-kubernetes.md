@@ -70,7 +70,10 @@ step, as on SLURM), and targets can hand files to each other through `env://<sha
   *replaced*, not merged, so a top-level `kubernetes.pod_config` would overwrite any `pod_config` you keep
   for other clusters.
 - **Pin the context** with `kubernetes.allowed_contexts: [<context>]`. SkyPilot then launches only there,
-  whatever kube context is current.
+  whatever kube context is current. Like all `cloud_config`, it is written into the global
+  `~/.sky/config.yaml` and stays there (deep-merged keys are never removed), so it limits *all* SkyPilot
+  Kubernetes use on that machine to the pinned context. For `skypilot/kubernetes/local`,
+  `make kube-teardown` removes exactly that pin and the env's `context_configs` entry.
 
 Kubernetes has no host/container split to worry about: the PVC is attached as a pod volume, so it is the
 container's filesystem too. There is no separate `workdir` mount to configure (unlike SLURM), and image

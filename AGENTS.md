@@ -32,7 +32,8 @@ make cicd-merge-test  # extended CI set (the `extended` marker)
 make quick-tests-setup quick-tests        # fast: GBTEST_MODE=mock, -m "not ibm and not extended"
 make extended-tests-setup extended-tests  # full: GBTEST_MODE=live, -m "not ibm"; setup also brings up SLURM
 make kube-setup   # opt-in: local kind cluster so the skypilot/kubernetes tests run instead of self-skipping
-                  # (needs kind, kubectl, socat, GNU netcat; switches the kube context to kind-skypilot)
+                  # (needs kind, kubectl, socat, GNU netcat; leaves your current kube context as it was)
+make kube-teardown # delete the kind cluster and remove its pin from ~/.sky/config.yaml
 ```
 
 ### Formatting and Linting

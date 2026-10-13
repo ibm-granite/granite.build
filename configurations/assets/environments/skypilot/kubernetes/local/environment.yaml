@@ -23,8 +23,9 @@ config:
       # Pin SkyPilot to the kind cluster. With allowed_contexts set, SkyPilot
       # launches only into these contexts and ignores the CURRENT kube context,
       # so these builds never land on whatever cluster happens to be current.
-      # NOTE: this lands in the GLOBAL SkyPilot config, so while it is there other
-      # SkyPilot use on this machine is also limited to kind-skypilot.
+      # NOTE: this lands in the GLOBAL SkyPilot config and persists (deep-merged
+      # keys are never removed), so other SkyPilot use on this machine is also
+      # limited to kind-skypilot until `make kube-teardown` removes the pin.
       allowed_contexts:
         - kind-skypilot
       # The shared volume, scoped to the kind context (context_configs.<context>)

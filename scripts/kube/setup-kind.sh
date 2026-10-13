@@ -255,3 +255,5 @@ if [ -n "$previous_context" ] && [ "$previous_context" != "$CONTEXT" ]; then
 fi
 
 echo "setup-kind: ready — space://environments/skypilot/kubernetes/local builds launch into '${CONTEXT}'."
+echo "setup-kind: NOTE builds on that env pin SkyPilot to '${CONTEXT}' in ~/.sky/config.yaml"
+echo "setup-kind:   (kubernetes.allowed_contexts); \`make kube-teardown\` removes the pin."
