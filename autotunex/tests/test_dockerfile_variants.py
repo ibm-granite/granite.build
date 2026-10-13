@@ -14,9 +14,11 @@ recorded in ``docs/superpowers/specs/2026-09-16-cuda-container-image-design.md``
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 _DOCKERFILE = Path(__file__).resolve().parents[1] / "Dockerfile"
+_FM_TUNE_PYPROJECT = Path(__file__).resolve().parents[1] / "src" / "fm-tune" / "pyproject.toml"
 
 
 def _dockerfile() -> str:
@@ -73,3 +75,12 @@ def test_the_cuda_stage_pins_a_cp312_flash_attn_wheel() -> None:
     body = _stage_body(_dockerfile(), "cuda")
 
     assert "flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl" in body
+
+
+def test_the_cuda_flash_attn_wheel_matches_fm_tunes_uv_source() -> None:
+    body = _stage_body(_dockerfile(), "cuda")
+    match = re.search(r"FLASH_ATTN_WHEEL=(\S+)", body)
+    sources = tomllib.loads(_FM_TUNE_PYPROJECT.read_text(encoding="utf-8"))["tool"]["uv"]["sources"]
+
+    assert match is not None
+    assert match.group(1) == sources["flash-attn"]["url"]
