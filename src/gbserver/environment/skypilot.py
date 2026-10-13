@@ -2268,12 +2268,15 @@ class Skypilot(Environment):
         :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash, or
             a differing (non-``HostName``) block for the same alias owned by another
             environment.
+        :raises StepCertExpiredError: If a host sets ``IdentityStepCert`` but no
+            currently-loaded Smallstep certificate is still valid.
         """
         cfg = self.config.config if self.config else {}
         ssh_raw = cfg.get("cluster_ssh_configs")
         if not ssh_raw:
             return None
         from gbserver.environment.skypilot_config import (
+            _check_step_certs,
             _read_managed_hostnames,
             _resolve_cloud_hosts,
         )
@@ -2286,6 +2289,9 @@ class Skypilot(Environment):
         hosts = await asyncio.to_thread(_resolve_cloud_hosts, ssh, secrets, cloud)
         if not hosts:
             return None
+        # Check any IdentityStepCert directive against already-loaded Smallstep
+        # certs before rendering (check-only, never refreshes).
+        hosts = await asyncio.to_thread(_check_step_certs, hosts, cloud)
         # Bare infra (no cluster segment) + exactly one declared host: that host is
         # the unambiguous target, so its login nodes can still fail over (issue #439).
         if target_alias is None and len(hosts) == 1:
