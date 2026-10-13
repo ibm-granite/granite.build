@@ -35,7 +35,10 @@ Write/merge-only. Three destinations are supported:
     design (the config files are host-local).
   * ``cloud_config`` -> ``~/.sky/config.yaml`` (deep-merged into the global
     SkyPilot config the API server / optimizer reads directly; the env's values
-    win, unrelated keys are preserved).
+    win, unrelated keys are preserved). Last writer wins: the keys gbserver last
+    wrote are recorded next to the file, and the next write removes them before
+    merging its own, so one environment's settings (a Kubernetes context pin, say)
+    never outlive it into another's launches.
   * ``aws_credentials`` -> ``~/.aws/credentials`` (INI, mode 0600, merged by
     profile under a cross-process file lock).
 
@@ -45,6 +48,7 @@ pure-filesystem (no ``sky`` import) so it is unit-testable without the SDK.
 """
 
 import configparser
+import copy
 import hashlib
 import io
 import os
@@ -701,39 +705,111 @@ def _deep_merge_overwrite(base: Dict, overlay: Dict) -> None:
             base[key] = val
 
 
-def merge_cloud_config(
-    cloud_config: Dict, env_name: str, home: Optional[Path] = None
-) -> None:
-    """Write the env's ``cloud_config`` into ``~/.sky/config.yaml``.
+#: Record of the cloud_config gbserver last wrote into ``~/.sky/config.yaml``
+#: (environment name + the block), so the next write can take it back out.
+_CLOUD_CONFIG_RECORD = ".gbserver-cloud-config.yaml"
 
-    Deep-merges ``cloud_config`` into the global SkyPilot config (the file the
-    API server / optimizer reads directly), with the env's values taking
-    precedence and any unrelated keys preserved. Done under a cross-process file
-    lock (the file is host-shared). The file alone does NOT reach a running
-    gbserver's requests: its in-process SkyPilot client read the file at import
-    and sends that copy with every request, so the caller must reload it --
-    see ``gbserver.environment.skypilot._reload_skypilot_client_config``.
+
+def _remove_recorded(base: Dict, recorded: Dict) -> None:
+    """Remove from ``base`` (in place) each value that still equals ``recorded``'s.
+
+    Walks ``recorded`` like :func:`_deep_merge_overwrite` walks its overlay: dicts
+    recurse, and any other value (lists included, which SkyPilot's config replaces
+    whole) is removed only if ``base`` still holds exactly that value, so a key
+    the user has since edited is kept. A dict that this leaves empty is removed
+    too, so a removed section does not linger as ``{}``.
+
+    :param base: The current config (mutated in place).
+    :param recorded: The cloud_config gbserver wrote last.
+    """
+    for key, val in recorded.items():
+        if key not in base:
+            continue
+        if isinstance(val, dict) and isinstance(base[key], dict):
+            _remove_recorded(base[key], val)
+            if not base[key]:
+                del base[key]
+        elif base[key] == val:
+            del base[key]
+
+
+def merge_cloud_config(
+    cloud_config: Optional[Dict], env_name: str, home: Optional[Path] = None
+) -> bool:
+    """Make the env's ``cloud_config`` the gbserver part of ``~/.sky/config.yaml``.
+
+    Last writer wins, the way SSH config blocks overwrite: first removes what the
+    previous write recorded (:func:`_remove_recorded`, so keys the user edited
+    since are kept), then deep-merges ``cloud_config`` with the env's values
+    taking precedence, and records it for the next write. Keys gbserver never
+    wrote are preserved. An empty or ``None`` ``cloud_config`` only removes the
+    previous one, so an environment without one launches without, e.g., another
+    environment's Kubernetes context pin. A key the env overwrote is removed, not
+    restored, when the env's turn ends: its earlier value was not kept.
+
+    Done under a cross-process file lock (the file is host-shared). The file alone
+    does NOT reach a running gbserver's requests: its in-process SkyPilot client
+    read the file at import and sends that copy with every request, so the caller
+    must reload it -- see
+    ``gbserver.environment.skypilot._reload_skypilot_client_config``.
 
     :param cloud_config: The behavioral SkyPilot config block (e.g. an ``lsf:``
-        block) to write, sourced from the environment.yaml.
-    :param env_name: The contributing environment name (for logging).
+        block) to write, sourced from the environment.yaml; ``None`` for none.
+    :param env_name: The contributing environment name (recorded and logged).
     :param home: Home dir override (tests).
+    :returns: Whether ``~/.sky/config.yaml`` changed.
     """
-    if not cloud_config:
-        return
+    cloud_config = cloud_config or {}
     home_path = _home(home)
     dest = home_path / ".sky" / "config.yaml"
+    record = home_path / ".sky" / _CLOUD_CONFIG_RECORD
     with _THREAD_LOCK, _lock_for(home_path, "gbserver-sky-config.lock"):
         existing: Dict = {}
         if dest.exists():
             existing = yaml.safe_load(dest.read_text(encoding="utf-8")) or {}
-        _deep_merge_overwrite(existing, cloud_config)
-        logger.info(
-            "Writing cloud_config from environment '%s' into %s", env_name, dest
-        )
-        _write_atomic(
-            dest, yaml.safe_dump(existing, default_flow_style=False, sort_keys=False)
-        )
+        previous: Dict = {}
+        if record.exists():
+            previous = yaml.safe_load(record.read_text(encoding="utf-8")) or {}
+        merged = copy.deepcopy(existing)
+        _remove_recorded(merged, previous.get("cloud_config") or {})
+        _deep_merge_overwrite(merged, copy.deepcopy(cloud_config))
+        changed = merged != existing
+        if changed:
+            logger.info(
+                "Writing cloud_config from environment '%s' into %s (replacing "
+                "environment '%s')",
+                env_name,
+                dest,
+                previous.get("environment"),
+            )
+            _write_atomic(
+                dest,
+                yaml.safe_dump(merged, default_flow_style=False, sort_keys=False),
+            )
+        if cloud_config:
+            _write_atomic(
+                record,
+                yaml.safe_dump(
+                    {"environment": env_name, "cloud_config": cloud_config},
+                    default_flow_style=False,
+                    sort_keys=False,
+                ),
+            )
+        elif record.exists():
+            record.unlink()
+        return changed
+
+
+def release_cloud_config(home: Optional[Path] = None) -> bool:
+    """Remove the cloud_config gbserver last wrote from ``~/.sky/config.yaml``.
+
+    For teardown (``make kube-teardown``): leaves only what gbserver never wrote,
+    plus anything the user edited since. A later build writes its own again.
+
+    :param home: Home dir override (tests).
+    :returns: Whether ``~/.sky/config.yaml`` changed.
+    """
+    return merge_cloud_config(None, "(released)", home=home)
 
 
 def render_aws_profile(
@@ -946,7 +1022,9 @@ def materialize(
     Write/merge-only; no cleanup. SSH/AWS sections raise
     ``SkypilotConfigCollisionError`` on a foreign/conflicting entry;
     ``cloud_config`` is written from the env into ``~/.sky/config.yaml``
-    (env values win).
+    (env values win, last writer wins; see :func:`merge_cloud_config`). The
+    Skypilot environment writes ``cloud_config`` itself, per launch, so it passes
+    ``None`` here.
 
     :param env_name: The environment name (used in messages).
     :param ssh: Inline cluster SSH configs, or ``None``.

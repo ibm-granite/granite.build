@@ -33,7 +33,7 @@ make quick-tests-setup quick-tests        # fast: GBTEST_MODE=mock, -m "not ibm 
 make extended-tests-setup extended-tests  # full: GBTEST_MODE=live, -m "not ibm"; setup also brings up SLURM and kind
 make kube-setup    # just the kind cluster for the skypilot/kubernetes tests (installs kind, socat, GNU netcat
                    # if missing; needs docker + kubectl; leaves your current kube context as it was)
-make kube-teardown # delete the kind cluster and remove its pin from ~/.sky/config.yaml
+make kube-teardown # delete the kind cluster and remove gbserver's cloud_config from ~/.sky/config.yaml
 ```
 
 ### Formatting and Linting

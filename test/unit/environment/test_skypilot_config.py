@@ -253,6 +253,72 @@ class TestCloudConfig:
         assert cfg["lsf"]["cluster_configs"]["bv"]["queue"] == "grp_preemptable"
 
 
+class TestCloudConfigLastWriterWins:
+    """A later env's write removes what the previous env wrote, nothing else."""
+
+    PIN = {
+        "kubernetes": {
+            "allowed_contexts": ["kind-skypilot"],
+            "context_configs": {"kind-skypilot": {"pod_config": {"spec": {"v": 1}}}},
+        }
+    }
+
+    def _sky_config(self, tmp_path):
+        dest = tmp_path / ".sky" / "config.yaml"
+        return yaml.safe_load(dest.read_text()) if dest.exists() else None
+
+    def _record(self, tmp_path):
+        return tmp_path / ".sky" / ".gbserver-cloud-config.yaml"
+
+    def _user_file(self, tmp_path, text):
+        dest = tmp_path / ".sky" / "config.yaml"
+        dest.parent.mkdir(parents=True)
+        dest.write_text(text)
+
+    def test_next_env_replaces_previous_envs_keys(self, tmp_path):
+        self._user_file(tmp_path, "kubernetes:\n  remote_identity: sa\n")
+        assert sc.merge_cloud_config(self.PIN, "kube-local", home=tmp_path)
+        assert sc.merge_cloud_config({"lsf": {"q": 1}}, "lsf-env", home=tmp_path)
+        # The pin and its context entry are gone; the user's key and the new
+        # env's block remain.
+        assert self._sky_config(tmp_path) == {
+            "kubernetes": {"remote_identity": "sa"},
+            "lsf": {"q": 1},
+        }
+        record = yaml.safe_load(self._record(tmp_path).read_text())
+        assert record == {"environment": "lsf-env", "cloud_config": {"lsf": {"q": 1}}}
+
+    def test_env_without_cloud_config_removes_previous_and_record(self, tmp_path):
+        sc.merge_cloud_config(self.PIN, "kube-local", home=tmp_path)
+        assert sc.merge_cloud_config(None, "kube-generic", home=tmp_path)
+        assert self._sky_config(tmp_path) == {}
+        assert not self._record(tmp_path).exists()
+
+    def test_same_env_again_is_unchanged(self, tmp_path):
+        sc.merge_cloud_config(self.PIN, "kube-local", home=tmp_path)
+        dest = tmp_path / ".sky" / "config.yaml"
+        before = dest.stat().st_mtime_ns
+        assert not sc.merge_cloud_config(self.PIN, "kube-local", home=tmp_path)
+        assert dest.stat().st_mtime_ns == before
+
+    def test_value_the_user_edited_is_kept(self, tmp_path):
+        sc.merge_cloud_config(self.PIN, "kube-local", home=tmp_path)
+        cfg = self._sky_config(tmp_path)
+        cfg["kubernetes"]["allowed_contexts"] = ["kind-skypilot", "my-cluster"]
+        (tmp_path / ".sky" / "config.yaml").write_text(yaml.safe_dump(cfg))
+        sc.merge_cloud_config(None, "kube-generic", home=tmp_path)
+        assert self._sky_config(tmp_path) == {
+            "kubernetes": {"allowed_contexts": ["kind-skypilot", "my-cluster"]}
+        }
+
+    def test_release_removes_the_last_write(self, tmp_path):
+        self._user_file(tmp_path, "api_server:\n  endpoint: http://x\n")
+        sc.merge_cloud_config(self.PIN, "kube-local", home=tmp_path)
+        assert sc.release_cloud_config(home=tmp_path)
+        assert self._sky_config(tmp_path) == {"api_server": {"endpoint": "http://x"}}
+        assert not sc.release_cloud_config(home=tmp_path)  # nothing left to remove
+
+
 # --------------------------------------------------------------------------- #
 # AWS credentials
 # --------------------------------------------------------------------------- #

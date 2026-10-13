@@ -258,4 +258,5 @@ fi
 
 echo "setup-kind: ready — space://environments/skypilot/kubernetes/local builds launch into '${CONTEXT}'."
 echo "setup-kind: NOTE builds on that env pin SkyPilot to '${CONTEXT}' in ~/.sky/config.yaml"
-echo "setup-kind:   (kubernetes.allowed_contexts); \`make kube-teardown\` removes the pin."
+echo "setup-kind:   (kubernetes.allowed_contexts) until a build on another env replaces it, or"
+echo "setup-kind:   \`make kube-teardown\` removes it."
