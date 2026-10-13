@@ -229,11 +229,12 @@ function formatCount(value: number): string {
  * fallback for imports made before the server recorded it. Deliberately not the
  * other way round: a `false` flag must never suppress row counts that plainly
  * disagree with it.
+ *
+ * The cap itself is not quoted. Provenance does not record it, and the
+ * deployment's current `max_rows` may postdate the import -- quoting it read "the
+ * first 50,000 of 200,000 (capped at 100,000)" once an operator raised the limit.
  */
-export function truncationNotice(
-  provenance: HfProvenance | null | undefined,
-  maxRows: number
-): string | null {
+export function truncationNotice(provenance: HfProvenance | null | undefined): string | null {
   if (!provenance) return null
   const splits: [
     string,
@@ -262,7 +263,7 @@ export function truncationNotice(
     if (typeof retained !== 'number') continue
     if (typeof original === 'number' && retained < original) {
       parts.push(
-        `Imported the first ${formatCount(retained)} of ${formatCount(original)} ${label} rows (capped at ${formatCount(maxRows)}).`
+        `Imported the first ${formatCount(retained)} of ${formatCount(original)} ${label} rows (capped).`
       )
       continue
     }
@@ -274,7 +275,7 @@ export function truncationNotice(
         ? `${formatCount(unreadShards)} further ${unreadShards === 1 ? 'shard was' : 'shards were'} not read`
         : 'more rows remain upstream'
     parts.push(
-      `Imported ${formatCount(retained)} ${label} rows (capped at ${formatCount(maxRows)}); ${remainder}.`
+      `Imported ${formatCount(retained)} ${label} rows (capped); ${remainder}.`
     )
   }
   return parts.length > 0 ? parts.join(' ') : null

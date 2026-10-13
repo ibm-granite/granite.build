@@ -235,26 +235,41 @@ describe('defaultTrainSplit', () => {
 
 describe('truncationNotice', () => {
   it('is silent when nothing was truncated', () => {
-    assert.equal(truncationNotice(null, 50000), null)
-    assert.equal(truncationNotice(undefined, 50000), null)
+    assert.equal(truncationNotice(null), null)
+    assert.equal(truncationNotice(undefined), null)
     assert.equal(
-      truncationNotice({ train_original_rows: 100, train_retained_rows: 100 }, 50000),
+      truncationNotice({ train_original_rows: 100, train_retained_rows: 100 }),
       null
     )
   })
 
   it('is silent when the counts are absent', () => {
-    assert.equal(truncationNotice({ column_mapping: { input: 'instruction' } }, 50000), null)
+    assert.equal(truncationNotice({ column_mapping: { input: 'instruction' } }), null)
   })
 
-  it('reports a truncated train split with both counts and the cap', () => {
+  it('reports a truncated train split with both counts', () => {
     const notice = truncationNotice(
-      { train_original_rows: 120000, train_retained_rows: 50000 },
-      50000
+      { train_original_rows: 120000, train_retained_rows: 50000 }
     )
     assert.match(notice, /50,000/)
     assert.match(notice, /120,000/)
     assert.match(notice, /train/)
+  })
+
+  it('does not quote a cap, because the deployment one may postdate the import', () => {
+    // Imported under a 50,000 cap that has since been raised: quoting today's
+    // max_rows read "the first 50,000 of 200,000 (capped at 100,000)".
+    const byCounts = truncationNotice({ train_original_rows: 200000, train_retained_rows: 50000 })
+    const byShards = truncationNotice({
+      train_original_rows: 50000,
+      train_retained_rows: 50000,
+      train_truncated: true,
+      train_unread_shards: 3,
+    })
+    for (const notice of [byCounts, byShards]) {
+      assert.match(notice, /\(capped\)/)
+      assert.doesNotMatch(notice, /capped at/)
+    }
   })
 
   it('reports a truncated validation split even when train was untouched', () => {
@@ -265,8 +280,7 @@ describe('truncationNotice', () => {
         train_retained_rows: 100,
         validation_original_rows: 80000,
         validation_retained_rows: 50000,
-      },
-      50000
+      }
     )
     assert.match(notice, /validation/)
     assert.ok(!notice.includes('train'))
@@ -279,8 +293,7 @@ describe('truncationNotice', () => {
         train_retained_rows: 50000,
         validation_original_rows: 80000,
         validation_retained_rows: 50000,
-      },
-      50000
+      }
     )
     assert.match(notice, /train/)
     assert.match(notice, /validation/)
@@ -296,8 +309,7 @@ describe('truncationNotice', () => {
         train_retained_rows: 50000,
         train_truncated: true,
         train_unread_shards: 9999,
-      },
-      50000
+      }
     )
     assert.match(notice, /train/)
     assert.match(notice, /9,999/)
@@ -310,8 +322,7 @@ describe('truncationNotice', () => {
   it('stays silent on the same counts when the server reported no truncation', () => {
     assert.equal(
       truncationNotice(
-        { train_original_rows: 50000, train_retained_rows: 50000, train_unread_shards: 0 },
-        50000
+        { train_original_rows: 50000, train_retained_rows: 50000, train_unread_shards: 0 }
       ),
       null
     )
@@ -326,8 +337,7 @@ describe('truncationNotice', () => {
         validation_retained_rows: 50000,
         validation_truncated: true,
         validation_unread_shards: 1,
-      },
-      50000
+      }
     )
     assert.match(notice, /validation/)
     // Singular, because "1 shards were not read" is the kind of copy people notice.
@@ -338,8 +348,7 @@ describe('truncationNotice', () => {
   it('trusts row counts over a flag that contradicts them', () => {
     // A `false` flag must not be able to hide a shortfall the counts state plainly.
     const notice = truncationNotice(
-      { train_original_rows: 120000, train_retained_rows: 50000, train_truncated: false },
-      50000
+      { train_original_rows: 120000, train_retained_rows: 50000, train_truncated: false }
     )
     assert.match(notice, /120,000/)
   })

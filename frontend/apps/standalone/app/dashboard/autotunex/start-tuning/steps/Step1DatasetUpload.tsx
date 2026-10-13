@@ -302,7 +302,7 @@ export function Step1DatasetUpload({
   // frontend cannot know the total in advance -- the preview samples 100 rows -- so
   // this reads it back out of the provenance the import wrote.
   const truncationMessage = useMemo(
-    () => (hfConfig ? truncationNotice(selectedExistingDataset?.hf_provenance, hfConfig.max_rows) : null),
+    () => (hfConfig ? truncationNotice(selectedExistingDataset?.hf_provenance) : null),
     [selectedExistingDataset, hfConfig]
   )
 
