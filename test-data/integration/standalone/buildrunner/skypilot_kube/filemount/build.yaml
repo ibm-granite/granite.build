@@ -2,7 +2,7 @@ granite.build:
   name: skypilot-kube-filemount-test
   targets:
     filemount:
-      environment_uri: space://environments/skypilot/kubernetes
+      environment_uri: space://environments/skypilot/kubernetes/local
       inputs:
         # env:// input: pulled as a no-op (pullasset_envstore) on every env.
         # The path need not physically exist — EnvURI.exists()/pull() are stubs —

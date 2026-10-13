@@ -14,9 +14,10 @@
 
 """Unit tests for libgbtest.kube.kind_cluster_reachable, the skypilot/kubernetes skip gate.
 
-Runs the gate against a stub ``kubectl`` on PATH, so no cluster is needed. The
-case that matters most is the refusal: a reachable cluster that is NOT the
-current kind context must never let a build test launch pods into it.
+Runs the gate against a stub ``kubectl`` on PATH, so no cluster is needed. The gate
+admits a run only when the pinned kind context exists, answers, and has the
+shared-volume claim; it no longer cares which context is CURRENT, because
+skypilot/kubernetes/local pins SkyPilot to the kind context itself.
 """
 
 import pathlib
@@ -26,23 +27,32 @@ import stat
 import pytest
 from libgbtest import kube
 
+_BASH = shutil.which("bash") or "/bin/bash"
 
-def _stub_kubectl(tmp_path: pathlib.Path, current: str, ready_rc: int = 0) -> None:
-    """Write a kubectl that reports ``current`` and answers /readyz with ``ready_rc``."""
+
+def _stub_kubectl(
+    tmp_path: pathlib.Path,
+    contexts: tuple[str, ...] = ("prod-cluster", "kind-skypilot"),
+    ready_rc: int = 0,
+    pvc_rc: int = 0,
+    calls: pathlib.Path | None = None,
+) -> None:
+    """A kubectl that lists ``contexts``, answers /readyz and `get pvc` with the rcs."""
     script = tmp_path / "kubectl"
+    log = f'echo "$*" >> {calls}\n' if calls else ""
+    listing = "\\n".join(contexts)
     # Absolute interpreter: PATH is narrowed to tmp_path, so `env bash` would fail.
     script.write_text(
         f"#!{_BASH}\n"
-        'if [ "$1 $2" = "config current-context" ]; then\n'
-        f'  [ -n "{current}" ] && echo "{current}" && exit 0\n'
-        "  exit 1\n"
-        "fi\n"
-        f"exit {ready_rc}\n"
+        f"{log}"
+        'case "$*" in\n'
+        f'  "config get-contexts -o name") printf "{listing}\\n" ;;\n'
+        f"  *readyz*) exit {ready_rc} ;;\n"
+        f'  *" get pvc "*) exit {pvc_rc} ;;\n'
+        "  *) exit 2 ;;\n"
+        "esac\n"
     )
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
-
-
-_BASH = shutil.which("bash") or "/bin/bash"
 
 
 @pytest.fixture
@@ -53,33 +63,41 @@ def stub_path(tmp_path, monkeypatch):
 
 
 class TestKindClusterGate:
-    def test_ready_kind_context_passes(self, stub_path):
-        _stub_kubectl(stub_path, "kind-skypilot")
+    def test_ready_context_with_claim_passes(self, stub_path):
+        _stub_kubectl(stub_path)
         assert kube.kind_cluster_reachable()
 
-    def test_another_current_context_is_refused_even_if_ready(self, stub_path):
-        _stub_kubectl(stub_path, "prod-cluster")
-        assert not kube.kind_cluster_reachable()
+    def test_another_current_context_does_not_matter(self, stub_path):
+        # The stub's contexts include prod-cluster; which one is CURRENT is never
+        # consulted: the env pins kind-skypilot via allowed_contexts.
+        _stub_kubectl(stub_path, contexts=("prod-cluster", "kind-skypilot"))
+        assert kube.kind_cluster_reachable()
 
-    def test_no_current_context_is_refused(self, stub_path):
-        _stub_kubectl(stub_path, "")
+    def test_missing_kind_context_is_refused(self, stub_path):
+        _stub_kubectl(stub_path, contexts=("prod-cluster",))
         assert not kube.kind_cluster_reachable()
 
     def test_unready_api_server_is_refused(self, stub_path):
-        _stub_kubectl(stub_path, "kind-skypilot", ready_rc=1)
+        _stub_kubectl(stub_path, ready_rc=1)
         assert not kube.kind_cluster_reachable()
+
+    def test_missing_shared_claim_is_refused(self, stub_path):
+        # Without the claim the env's pods would sit Pending; skip instead.
+        _stub_kubectl(stub_path, pvc_rc=1)
+        assert not kube.kind_cluster_reachable()
+        assert "gb-shared" in kube.kind_skip_reason()
 
     def test_missing_kubectl_is_refused(self, stub_path):
         assert not kube.kind_cluster_reachable()
 
     def test_context_override(self, stub_path, monkeypatch):
         monkeypatch.setenv("GBTEST_SKY_KUBE_CONTEXT", "kind-dpk")
-        _stub_kubectl(stub_path, "kind-dpk")
+        _stub_kubectl(stub_path, contexts=("kind-dpk",))
         assert kube.kind_cluster_reachable()
         assert "kind-dpk" in kube.kind_skip_reason()
 
     def test_default_context_is_the_sky_local_up_one(self, stub_path):
-        _stub_kubectl(stub_path, "kind-other")
+        _stub_kubectl(stub_path, contexts=("kind-other",))
         assert kube.expected_kind_context() == "kind-skypilot"
         assert not kube.kind_cluster_reachable()
 
@@ -89,17 +107,10 @@ class TestProbeIsCached:
 
     def test_repeated_checks_call_kubectl_once(self, stub_path):
         calls = stub_path / "calls"
-        script = stub_path / "kubectl"
-        script.write_text(
-            f"#!{_BASH}\n"
-            f'echo "$*" >> {calls}\n'
-            'if [ "$1 $2" = "config current-context" ]; then echo kind-skypilot; fi\n'
-            "exit 0\n"
-        )
-        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        _stub_kubectl(stub_path, calls=calls)
         assert all(kube.kind_cluster_reachable() for _ in range(5))
-        # One current-context lookup + one /readyz probe, not five of each.
-        assert len(calls.read_text().splitlines()) == 2
+        # get-contexts + /readyz + get pvc once, not five times each.
+        assert len(calls.read_text().splitlines()) == 3
 
     def test_shared_marker_is_the_skypilot_kube_group(self):
         assert kube.KUBE_XDIST_GROUP.name == "xdist_group"

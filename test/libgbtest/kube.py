@@ -15,16 +15,17 @@
 """Skip gate for build tests that launch into a local kind cluster via SkyPilot.
 
 The Kubernetes counterpart of the slurm gate (``_slurm_cluster_reachable``) and
-of ``aws_credentials_present``: a ``skypilot/kubernetes`` build test runs only
-when ``make kube-setup`` (``scripts/kube/setup-kind.sh``) has brought the
-cluster up.
+of ``aws_credentials_present``: a kube build test runs only when ``make
+kube-setup`` (``scripts/kube/setup-kind.sh``) has brought the cluster and its
+shared volume up.
 
-Reachability alone is not enough. SkyPilot launches into the CURRENT kube
-context, so a developer whose current context is a shared or production cluster
-would otherwise have test pods scheduled there just because it answered. The
-gate therefore also requires the current context to be the expected kind one —
-the same "never by accident" rule the aws tests enforce by skipping unless
-credentials are explicitly exported.
+The tests use ``space://environments/skypilot/kubernetes/local``, which pins
+SkyPilot to the kind context through ``kubernetes.allowed_contexts`` in its
+``cloud_config``. So the gate does not require kind to be the CURRENT kube
+context — the env, not the ambient context, decides where pods go. It checks
+that the pinned context exists and answers, and that the env's shared-volume
+claim exists, so a missing ``kube-setup`` skips cleanly instead of leaving pods
+``Pending`` on an absent claim.
 """
 
 import functools
@@ -34,8 +35,13 @@ import subprocess
 
 import pytest
 
-#: Context ``sky local up`` creates with its default cluster name.
+#: Context ``sky local up`` creates with its default cluster name; the one
+#: skypilot/kubernetes/local pins in ``allowed_contexts``.
 DEFAULT_KIND_CONTEXT = "kind-skypilot"
+
+#: PersistentVolumeClaim skypilot/kubernetes/local mounts at /shared; created by
+#: ``make kube-setup`` in the ``default`` namespace.
+SHARED_CLAIM = "gb-shared"
 
 #: Every kube build test class carries this, so they run one at a time. Each pod
 #: requests 2 CPUs and a CI runner's kind node has ~3 left after the control
@@ -45,20 +51,24 @@ KUBE_XDIST_GROUP = pytest.mark.xdist_group(name="skypilot_kube")
 
 
 def expected_kind_context() -> str:
-    """The kube context the tests may launch into (``GBTEST_SKY_KUBE_CONTEXT``)."""
+    """The kube context the tests expect (``GBTEST_SKY_KUBE_CONTEXT``).
+
+    Overriding it only changes what the gate checks; skypilot/kubernetes/local
+    itself pins ``kind-skypilot``.
+    """
     return os.environ.get("GBTEST_SKY_KUBE_CONTEXT") or DEFAULT_KIND_CONTEXT
 
 
 def kind_cluster_reachable() -> bool:
-    """True when the current kube context is the expected one and it answers.
+    """True when the kind context exists, answers, and has the shared claim.
 
     Evaluated by ``skipif`` at collection time in every kube test module, on
     every xdist worker, so the probe is cached per (kubectl, context) for the
-    life of the process — at most one pair of ``kubectl`` calls each.
+    life of the process.
 
-    :returns: False when kubectl is missing, the current context is anything
-        other than :func:`expected_kind_context`, or its API server does not
-        report ready within a few seconds.
+    :returns: False when kubectl is missing, the context is not in the
+        kubeconfig, its API server does not report ready within a few seconds,
+        or the ``gb-shared`` claim does not exist.
     """
     kubectl = shutil.which("kubectl")
     if kubectl is None:
@@ -67,38 +77,44 @@ def kind_cluster_reachable() -> bool:
 
 
 @functools.lru_cache(maxsize=None)
-def _probe(kubectl: str, expected: str) -> bool:
+def _probe(kubectl: str, context: str) -> bool:
     """Uncached check behind :func:`kind_cluster_reachable`."""
+
+    def ok(*args: str) -> bool:
+        proc = subprocess.run(
+            [kubectl, *args], capture_output=True, text=True, timeout=10, check=False
+        )
+        return proc.returncode == 0
+
     try:
-        current = subprocess.run(
-            [kubectl, "config", "current-context"],
+        names = subprocess.run(
+            [kubectl, "config", "get-contexts", "-o", "name"],
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
-        if current.returncode != 0 or current.stdout.strip() != expected:
+        if names.returncode != 0 or context not in names.stdout.split():
             return False
-        ready = subprocess.run(
-            [
-                kubectl,
-                "--context",
-                expected,
-                "get",
-                "--raw",
-                "/readyz",
-                "--request-timeout=3s",
-            ],
-            capture_output=True,
-            timeout=10,
+        return ok(
+            "--context", context, "get", "--raw", "/readyz", "--request-timeout=3s"
+        ) and ok(
+            "--context",
+            context,
+            "-n",
+            "default",
+            "get",
+            "pvc",
+            SHARED_CLAIM,
+            "--request-timeout=3s",
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return ready.returncode == 0
 
 
 def kind_skip_reason() -> str:
-    """Skip message naming the context the gate wanted."""
+    """Skip message naming what the gate wanted."""
     return (
-        f"kind cluster not reachable as the current kube context "
-        f"'{expected_kind_context()}' (run: make kube-setup)"
+        f"kind cluster context '{expected_kind_context()}' not reachable, or its "
+        f"'{SHARED_CLAIM}' volume claim is missing (run: make kube-setup)"
     )

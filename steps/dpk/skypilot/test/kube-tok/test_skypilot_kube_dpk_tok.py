@@ -17,18 +17,19 @@
 The kube counterpart of ``test/aws-tok/test_skypilot_aws_dpk_tok.py``. Same single
 target — ``transform: tokenization2arrow`` with ``validate: true`` — run in a pod
 on a local kind cluster. Only the environment
-(``space://environments/skypilot/kubernetes``) and the skip gate differ; the step
+(``space://environments/skypilot/kubernetes/local``) and the skip gate differ; the step
 (``space://steps/dpk``) and the transform config are the same, so reaching SUCCESS
 proves the derivations and the in-step validator hook hold on kubernetes too.
 
-Like aws, kube has no shared filesystem, so the ``hf://`` input is pulled inline in
-the step's own setup and the bundled ``src/`` reaches the pod via file_mounts. The
-input is public, so no HF_TOKEN is needed.
+The env mounts a shared volume at /shared in every pod (its shared_workdir), so —
+as on slurm — the ``hf://`` input is pulled by a separate hfpull step into
+/shared/hf_cache, and the bundled ``src/`` reaches the pod via file_mounts. The input
+is public, so no HF_TOKEN is needed.
 
 **Never runs against a shared cluster by accident.** Extended-suite only AND skips
-unless the CURRENT kube context is the local kind cluster
-(:func:`libgbtest.kube.kind_cluster_reachable`; bring it up with
-``make test-setup-kube``).
+unless the local kind cluster and its shared volume are up
+(:func:`libgbtest.kube.kind_cluster_reachable`; bring them up with
+``make test-setup-kube``); the env pins SkyPilot to the kind context.
 
 Fixtures (build.yaml/buildtest.yaml) live in the ``test-data/`` dir mirroring this
 file, resolved by the repo's ``test/`` <-> ``test-data/`` helper so the pairing holds

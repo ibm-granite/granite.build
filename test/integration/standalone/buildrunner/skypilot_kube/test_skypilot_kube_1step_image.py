@@ -19,13 +19,16 @@ The kube sibling of ``skypilot_slurm/test_skypilot_1step_image.py``:
   HF URI input  ->  command step in a container image on SkyPilot/kubernetes  ->  env:// output
 
 Unlike SLURM, which needs the Pyxis SPANK plugin, Kubernetes runs images natively,
-so this always runs on the local kind cluster. Because kube pulls hf inputs INLINE,
-the download runs inside the step's image; the image here (plain Ubuntu) has no
-pip, so the test proves the inline pull bootstraps its own hf client. The bare
+so this always runs on the local kind cluster. The hf input is downloaded by a
+separate hfpull step into the shared volume, and the step's image (plain Ubuntu)
+reads it from /shared — proving the env's volume is mounted into image pods too.
+SkyPilot's kube pod bootstrap needs a Debian/Ubuntu image (it installs packages
+with apt-get), which is why this is not the slurm test's fedora-minimal. The bare
 image-less path is ``test_skypilot_kube_1step.py``.
 
-Requires a local kind cluster as the CURRENT kube context (``make kube-setup``).
-Auto-skips otherwise, so pods are never scheduled on another cluster by accident.
+Requires the local kind cluster and its shared volume (``make kube-setup``);
+auto-skips otherwise. The env pins SkyPilot to the kind context, so pods never
+land on whatever cluster happens to be current.
 
 The fixture's build.yaml and buildtest.yaml live in the directory returned by
 _get_yaml_spec_dir below.

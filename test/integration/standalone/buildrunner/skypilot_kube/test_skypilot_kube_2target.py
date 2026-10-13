@@ -21,13 +21,12 @@ binds it and fails unless the value arrived verbatim — proving the skypilot
 monitor's STATE marker and mem:// bindings work on kube, and that a dependent
 target launches only after its producer.
 
-This is the only multi-target kube test. It does NOT cover a file handoff between
-targets: on the shipped skypilot/kubernetes env each pod has its own filesystem and
-there is no s3 assetstore, so that needs an env that adds one (see
-docs/environments/skypilot-kubernetes.md).
+mem:// moves no bytes between pods; the file handoff through the shared volume is
+``test_skypilot_kube_2target_files.py``.
 
-Requires a local kind cluster as the CURRENT kube context (``make kube-setup``).
-Auto-skips otherwise, so pods are never scheduled on another cluster by accident.
+Requires the local kind cluster and its shared volume (``make kube-setup``);
+auto-skips otherwise. The env pins SkyPilot to the kind context, so pods never
+land on whatever cluster happens to be current.
 
 The fixture's build.yaml and buildtest.yaml live in the directory returned by
 _get_yaml_spec_dir below.

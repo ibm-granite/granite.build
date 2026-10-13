@@ -1,9 +1,9 @@
 granite.build:
   name: mem_2target_skypilot_kube
   # Two skypilot/kubernetes targets — each in its own pod — exercising the mem://
-  # asset store for cross-target output -> input binding. Unlike a file handoff
-  # (impossible on this env: no shared filesystem, no s3 assetstore), mem://
-  # moves no bytes between pods, so it works here. The builtin
+  # asset store for cross-target output -> input binding. mem:// moves no bytes
+  # between pods (unlike the file handoff in 2target-files), so it would work even
+  # without the env's shared volume. The builtin
   # `bash` step runs an arbitrary command, so it can echo the
   # GB_ARTIFACT_STATE marker the skypilot monitor now recognizes. A mem:// URI
   # is an opaque key into the build's shared in-memory dict: the producer's
@@ -18,7 +18,7 @@ granite.build:
   #     proving the value flowed through the mem:// store between the two pods.
   targets:
     first:
-      environment_uri: space://environments/skypilot/kubernetes
+      environment_uri: space://environments/skypilot/kubernetes/local
       outputs:
         mem_output1:
           uri: "mem://mem_output1"
@@ -35,7 +35,7 @@ granite.build:
               num_gpus_per_node: 0
               total_memory_per_node: 1Gi
     second:
-      environment_uri: space://environments/skypilot/kubernetes
+      environment_uri: space://environments/skypilot/kubernetes/local
       inputs:
         from_first:
           binding: first.mem_output1

@@ -21,8 +21,9 @@ a custom step (defined in a co-located test space) whose ``file_mounts`` copies 
 to reach the node (e.g. the dpk step's ``file_mounts: {src: src}``), so on kube it
 also covers rsync into a pod over ``kubectl port-forward``.
 
-Requires a local kind cluster as the CURRENT kube context (``make kube-setup``).
-Auto-skips otherwise, so pods are never scheduled on another cluster by accident.
+Requires the local kind cluster and its shared volume (``make kube-setup``);
+auto-skips otherwise. The env pins SkyPilot to the kind context, so pods never
+land on whatever cluster happens to be current.
 
 The fixture's build.yaml, buildtest.yaml, and test space live in the directory
 returned by _get_yaml_spec_dir below.

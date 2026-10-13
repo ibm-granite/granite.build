@@ -18,20 +18,18 @@ The kube sibling of ``skypilot_slurm/test_skypilot_1step.py``:
 
   HF URI input  ->  command step in a pod on SkyPilot/kubernetes  ->  env:// output
 
-What it proves that the slurm test cannot: the shipped
-``space://environments/skypilot/kubernetes`` env stages an ``hf://`` input into
-the SAME pod the step runs in. Each step is its own pod and there is no shared
-filesystem, so the env must download inline (``inline: true``) in the step's own
-setup; a separate hfpull step would land the bytes in a pod that is torn down.
-The command fails on an empty input dir, and ``step_count: 1`` (no queued
-hfpull) pins the inline path.
+Runs on ``space://environments/skypilot/kubernetes/local``, the slurm model on
+kube: a separate hfpull step (its own pod) downloads the ``hf://`` input into the
+shared volume every pod mounts at /shared, and the command step — a DIFFERENT pod —
+fails unless it can see it. So it proves the shared volume carries data between
+pods, and ``step_count: 2`` pins the separate pull.
 
 Outputs are env:// only, unlike the slurm test's hf:// pushes, so a run never
 writes to a HuggingFace org. The input dataset is public: no HF_TOKEN needed.
 
-Requires a local kind cluster as the CURRENT kube context (``make kube-setup``).
-Auto-skips otherwise — including when the current context is any other cluster,
-so pods are never scheduled somewhere shared by accident.
+Requires the local kind cluster and its shared volume (``make kube-setup``);
+auto-skips otherwise. The env pins SkyPilot to the kind context, so pods never
+land on whatever cluster happens to be current.
 
 The fixture's build.yaml and buildtest.yaml live in the directory returned by
 _get_yaml_spec_dir below.

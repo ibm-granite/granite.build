@@ -4,10 +4,10 @@ targets:
   - image-run
 target_expectations:
   - target_name: image-run
-    # step_count = 1: the command step only — the hf input is pulled inline (in
-    # the step's setup, inside its image), not as a separate hfpull step. env://
-    # outputs only, so no hf push steps (the slurm spec's 5 includes 3 hfpushes).
-    step_count: 1
+    # step_count = 2: the hfpull step (into the shared volume) + the command step
+    # in the image. env:// outputs only, so no hf push steps (the slurm spec's 5
+    # includes 3 hfpushes).
+    step_count: 2
     input_artifact_count: 1    # input_model
     output_artifact_count: 1   # env_output
     # Not asserted under standalone's NoopLineageStore; CALIBRATE on a lineage run.
@@ -17,5 +17,5 @@ space_uri: ../../../../../../configurations/spaces/local
 simulate_step_failure: false
 tests:
   - runner
-# Image pull + SkyPilot's apt-get bootstrap + the uv bootstrap and download.
+# The hfpull step, then the image pull + SkyPilot's apt-get bootstrap.
 timeout_minutes: 20

@@ -8,8 +8,9 @@ granite.build:
   # validation.json landing in the registered output) but in a Kubernetes pod.
   #
   # Kube-specific points it also covers:
-  #   * the inline hf pull: kube has no shared filesystem, so the download runs in
-  #     THIS step's setup (=> step_count 1 in buildtest.yaml, as on aws);
+  #   * the shared volume: skypilot/kubernetes/local mounts one claim at /shared in
+  #     every pod, so — as on slurm — a separate hfpull step downloads the input
+  #     into /shared/hf_cache and the dpk pod reads it (=> step_count 2);
   #   * file_mounts {src: src}: the bundled scripts are rsynced into the pod;
   #   * the pure-python pool inside a pod: runtime_num_processors matches
   #     num_cpus_per_node, because os.cpu_count() in a pod reports the HOST (see
@@ -17,7 +18,7 @@ granite.build:
   targets:
 
     tokenize:
-      environment_uri: space://environments/skypilot/kubernetes
+      environment_uri: space://environments/skypilot/kubernetes/local
       inputs:
         docs:
           # Public dataset (DPK's own tokenization fixture) — stages with no creds.
@@ -26,8 +27,8 @@ granite.build:
         tokens:
           # Terminal env:// output, registered inline from the step's marker.
           # Nothing downstream reads it, so the default output_path (./output in
-          # the pod's per-run workdir) is fine — a cross-target handoff would not
-          # be on this env (no shared filesystem, no s3 assetstore).
+          # the per-run workdir on /shared, removed at target teardown) is fine. A
+          # downstream target would need an explicit path under /shared instead.
           uri: "env:///tokens"
           type: dataset
       steps:

@@ -1,0 +1,60 @@
+granite.build:
+  name: skypilot-kube-file-handoff-test
+  # A FILE handed from one target's pod to another's through the shared volume
+  # that skypilot/kubernetes/local mounts at /shared in every pod — the slurm
+  # model. env:// moves no bytes (push/pull are no-ops), so the bytes survive only
+  # because both pods see the same /shared. On the generic skypilot/kubernetes env
+  # (no shared volume) the consumer would read an absent path.
+  #
+  # `produce` writes a per-run token into the file and ALSO publishes the token as
+  # a mem:// value; `consume` fails unless the file's content equals the token, so
+  # a file left over from an earlier run can never make this pass.
+  targets:
+    produce:
+      environment_uri: space://environments/skypilot/kubernetes/local
+      outputs:
+        handoff_file:
+          uri: "env:///shared/gb-handoff-test/data.txt"
+          type: fileset
+        token:
+          uri: "mem://token"
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              command: >-
+                mkdir -p /shared/gb-handoff-test;
+                tok="tok-$(date +%s%N)-$$";
+                echo "$tok" > /shared/gb-handoff-test/data.txt;
+                echo "produced $tok";
+                echo "GB_ARTIFACT_ID:handoff_file GB_ARTIFACT_PATH:/shared/gb-handoff-test/data.txt";
+                echo "GB_ARTIFACT_ID:token GB_ARTIFACT_STATE:$tok"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi
+    consume:
+      environment_uri: space://environments/skypilot/kubernetes/local
+      inputs:
+        from_file:
+          binding: produce.handoff_file
+        from_token:
+          binding: produce.token
+      outputs:
+        verified:
+          uri: "mem://verified"
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              command: >-
+                f={{ bindings.from_file.binding.path }};
+                want="{{ bindings.from_token.binding.state }}";
+                got="$(cat "$f" 2>/dev/null || true)";
+                echo "consume read $f: got '$got', want '$want'";
+                { [ -n "$want" ] && [ "$got" = "$want" ]; } || { echo "FAIL: file handed off through /shared does not hold this run's token"; exit 1; };
+                echo "GB_ARTIFACT_ID:verified GB_ARTIFACT_STATE:$got"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

@@ -2,12 +2,12 @@ granite.build:
   name: skypilot-kube-command-hf-test
   targets:
     pod-run:
-      environment_uri: space://environments/skypilot/kubernetes
+      environment_uri: space://environments/skypilot/kubernetes/local
       inputs:
         input_model:
-          # Public dataset (same one the slurm 1step pulls). The kube env pulls hf
-          # inputs INLINE — injected into this step's setup — because each step is
-          # its own pod with no shared filesystem.
+          # Public dataset (same one the slurm 1step pulls). skypilot/kubernetes/local
+          # pulls it with a separate hfpull step into /shared/hf_cache on the shared
+          # volume every pod mounts — the slurm model.
           uri: hf:///datasets/ibm-research/vira-intents-live
       outputs:
         env_output:
@@ -25,9 +25,9 @@ granite.build:
           config:
             poll_interval_seconds: 5
             command_config:
-              # Fail loudly unless the hf input was staged INTO THIS POD. Without
-              # inline pulls the binding path exists only in a torn-down hfpull pod,
-              # so `ls -A` here is empty (or the dir is absent) and the step fails.
+              # Fail loudly unless the input the hfpull step (a DIFFERENT pod) wrote
+              # is visible in THIS pod — i.e. the shared volume works. Without it the
+              # path exists only in the torn-down hfpull pod and `ls -A` is empty.
               command: >-
                 in={{ bindings.input_model.binding.path }};
                 echo "input path: $in";
