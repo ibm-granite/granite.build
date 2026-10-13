@@ -157,9 +157,10 @@ function MyBuildsTile() {
 // call per tag below), and asking the authoritative per-build endpoint instead
 // would mean one request per build rather than one per tag. The build page
 // itself no longer uses tags — it asks
-// GET /jobs/by-build-id — so the two can legitimately disagree when an operator
-// customises AutoTuneX's `gb_tags` setting, with this tile being the one that
-// undercounts.
+// GET /jobs/by-build-id. The tag is AutoTuneX's `gb_tags` default, so the two
+// agree out of the box; they disagree, with this tile undercounting, for builds
+// tagged before that default changed from `autotunex`, and on a deployment that
+// sets AUTOTUNEX_GB_TAGS to something else.
 const MODEL_CUSTOMISATION_TAGS = [
   "model-customization"
 ];
