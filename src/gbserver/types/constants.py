@@ -743,6 +743,18 @@ TRANSPORT_RETRY_BASE_DELAY = float(
 TRANSPORT_RETRY_MAX_DELAY = float(
     os.getenv(ENV_VAR_PREFIX + "_TRANSPORT_RETRY_MAX_DELAY", "15.0")
 )
+# Docker image pull retries (see environment/docker.py): transient registry
+# errors (rate limits, 5xx, dropped connections) back off exponentially. Set
+# MAX_ATTEMPTS to 1 to disable.
+DOCKER_PULL_MAX_ATTEMPTS = int(
+    os.getenv(ENV_VAR_PREFIX + "_DOCKER_PULL_MAX_ATTEMPTS", "4"), base=10
+)
+DOCKER_PULL_RETRY_BASE_DELAY = float(
+    os.getenv(ENV_VAR_PREFIX + "_DOCKER_PULL_RETRY_BASE_DELAY", "2.0")
+)
+DOCKER_PULL_RETRY_MAX_DELAY = float(
+    os.getenv(ENV_VAR_PREFIX + "_DOCKER_PULL_RETRY_MAX_DELAY", "30.0")
+)
 GBSERVER_GITHUB_TOKEN = os.getenv(
     ENV_VAR_DEFAULT_GITHUB_TOKEN, os.getenv("GITHUB_TOKEN", "")
 )

@@ -37,18 +37,17 @@ from gbserver.types.buildevent import (
     BuildEventMessagePayload,
     BuildEventType,
 )
+from gbserver.types.constants import (
+    DOCKER_PULL_MAX_ATTEMPTS,
+    DOCKER_PULL_RETRY_BASE_DELAY,
+    DOCKER_PULL_RETRY_MAX_DELAY,
+)
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import LogMonitoringFailedException
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-# Image pulls retry transient registry errors (rate limits, 5xx, dropped
-# connections) with capped exponential backoff.
-PULL_MAX_ATTEMPTS = 4
-PULL_RETRY_BASE_DELAY = 2.0
-PULL_RETRY_MAX_DELAY = 30.0
 
 # Registry errors no retry fixes: a bad reference, a missing image, or bad
 # credentials.
@@ -315,14 +314,14 @@ class Docker(Environment):
                 image,
                 sleep,
                 retry_state.attempt_number,
-                PULL_MAX_ATTEMPTS,
+                DOCKER_PULL_MAX_ATTEMPTS,
                 exc,
             )
 
         for attempt in Retrying(
-            stop=stop_after_attempt(PULL_MAX_ATTEMPTS),
+            stop=stop_after_attempt(DOCKER_PULL_MAX_ATTEMPTS),
             wait=wait_random_exponential(
-                multiplier=PULL_RETRY_BASE_DELAY, max=PULL_RETRY_MAX_DELAY
+                multiplier=DOCKER_PULL_RETRY_BASE_DELAY, max=DOCKER_PULL_RETRY_MAX_DELAY
             ),
             retry=retry_if_exception(
                 lambda e: _is_retryable_pull_error(e, docker_module)

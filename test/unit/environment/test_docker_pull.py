@@ -36,8 +36,8 @@ _IMAGE = "registry.example/library/alpine:3.22"
 
 @pytest.fixture(autouse=True)
 def _no_backoff(monkeypatch):
-    monkeypatch.setattr(docker_env, "PULL_RETRY_BASE_DELAY", 0)
-    monkeypatch.setattr(docker_env, "PULL_RETRY_MAX_DELAY", 0)
+    monkeypatch.setattr(docker_env, "DOCKER_PULL_RETRY_BASE_DELAY", 0)
+    monkeypatch.setattr(docker_env, "DOCKER_PULL_RETRY_MAX_DELAY", 0)
 
 
 def _client(*pull_results):
@@ -97,10 +97,10 @@ def test_transient_in_stream_error_is_retried():
 
 def test_transient_errors_exhaust_attempts():
     rate_limited = [{"error": "toomanyrequests: Rate exceeded"}]
-    client = _client(*([rate_limited] * docker_env.PULL_MAX_ATTEMPTS))
+    client = _client(*([rate_limited] * docker_env.DOCKER_PULL_MAX_ATTEMPTS))
     with pytest.raises(ImagePullError, match="toomanyrequests"):
         _pull(client)
-    assert client.api.pull.call_count == docker_env.PULL_MAX_ATTEMPTS
+    assert client.api.pull.call_count == docker_env.DOCKER_PULL_MAX_ATTEMPTS
 
 
 @pytest.mark.parametrize(
