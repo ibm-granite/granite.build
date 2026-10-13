@@ -64,7 +64,6 @@ ENV FM_TUNE_EXTRAS=full \
 # deepspeed and verl fall back to an sdist build that needs a host compiler, and
 # CUDA_BASE is overridable — a leaner `-runtime` or `-base` tag would not have
 # one. A no-op on the default base, so it costs nothing to keep.
-# docker/runtime/Dockerfile names it on the same base for the same reason.
 #
 # The venv is not cosmetic either: Ubuntu marks its system python PEP 668
 # "externally-managed" and pip refuses to install into it. Putting the venv's
