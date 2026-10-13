@@ -216,7 +216,7 @@ mode, and the environment variable named by `AUTOTUNEX_GB_TOKEN_ENV` must be pre
 | `AUTOTUNEX_JOB_RECONCILE_INTERVAL_SECONDS` | How often the reconcile loop sweeps non-terminal jobs for status changes. Must be ≥ 1. | `30` |
 | `AUTOTUNEX_JOB_RECONCILE_CONCURRENCY` | Upper bound on simultaneous status reads against the build server per sweep. Must be ≥ 1. | `5` |
 | `AUTOTUNEX_LLMB_COMMAND` | The `llmb` CLI binary name or path used to submit builds — and to push datasets when the HuggingFace storage backend is active. | `llmb` |
-| `AUTOTUNEX_GB_TAGS` | Tag(s) passed to `llmb build start` and `llmb artifact push` via `--tag`. A single tag or a comma-separated list, forwarded verbatim (`llmb` splits it); set empty to omit the flag from both commands. | `autotunex` |
+| `AUTOTUNEX_GB_TAGS` | Tag(s) passed to `llmb build start` and `llmb artifact push` via `--tag`. A single tag or a comma-separated list, forwarded verbatim (`llmb` splits it); set empty to omit the flag from both commands. | `model-customization` |
 
 ### `llmb` backend (local `bash` variant)
 

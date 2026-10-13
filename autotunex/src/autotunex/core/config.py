@@ -511,14 +511,14 @@ class Settings(BaseSettings):
     ``job_backend="llmb"`` this env var is REQUIRED at startup: there is no
     ambient-credential fallback, so startup fails if it is unset."""
 
-    gb_tags: str = "autotunex"
+    gb_tags: str = "model-customization"
     """Tag(s) passed to ``llmb build start`` and ``llmb artifact push`` via ``--tag``.
 
     A single tag or a comma-separated list (``"autotunex,exp-42"``) — the value is
     forwarded verbatim as one ``--tag`` argument, and ``llmb`` itself splits a
-    comma-separated list, so no parsing happens here. Defaults to ``"autotunex"``,
-    which both tags every build with a shared marker and preserves the tag the
-    dataset push already carried. An empty or whitespace-only value disables
+    comma-separated list, so no parsing happens here. Defaults to
+    ``"model-customization"``, which tags every build and dataset push with a
+    shared marker. An empty or whitespace-only value disables
     tagging entirely: the ``--tag`` flag is then omitted from both commands."""
 
     job_spec_dir: Path = Path("tmp")
