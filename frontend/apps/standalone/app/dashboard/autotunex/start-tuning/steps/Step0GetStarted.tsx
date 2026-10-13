@@ -303,6 +303,18 @@ export function Step0GetStarted({
   // effect above already clears its own timer this way.
   useEffect(() => () => clearTimeout(debounceRef.current), [])
 
+  // A tuned-model check still in flight when Next unmounts this step would write
+  // `setSelectedModel('')` -- the wizard's state, not this step's -- after the
+  // notice that explains it is gone. Invalidating the token on unmount discards it.
+  // Only the remount re-check can get here: a fresh pick clears the model first,
+  // so Next stays disabled until its check settles.
+  useEffect(
+    () => () => {
+      tunedCheckTokenRef.current++
+    },
+    []
+  )
+
   function handleComboBoxInputChange(inputValue: string) {
     clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
