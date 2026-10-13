@@ -193,11 +193,13 @@ chmod -R a+rX "${STAGE_DIR}"
 PASSWORD="$(openssl rand -hex 24)"
 
 # Create, copy the extension hooks in (no bind mount, which would expose host
-# ownership and permissions directly), then start.
-"${RUNTIME}" create --name "${CONTAINER_NAME}" \
+# ownership and permissions directly), then start. The password is passed by name
+# (-e POSTGRESQL_PASSWORD, value read from this command's environment), so it never
+# appears on a command line other local users can see in `ps`.
+POSTGRESQL_PASSWORD="${PASSWORD}" "${RUNTIME}" create --name "${CONTAINER_NAME}" \
     -p "127.0.0.1:${PG_PORT}:5432" \
     -e POSTGRESQL_USER="${PG_USER}" \
-    -e POSTGRESQL_PASSWORD="${PASSWORD}" \
+    -e POSTGRESQL_PASSWORD \
     -e POSTGRESQL_DATABASE="${PG_DBNAME}" \
     "${PG_IMAGE}" >/dev/null
 "${RUNTIME}" cp "${STAGE_DIR}/." "${CONTAINER_NAME}:/opt/app-root/src/"
