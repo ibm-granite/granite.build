@@ -8,7 +8,7 @@
  * AutoTuneX queries HuggingFace server-side, so private repos in its allowlisted
  * namespaces are visible, which a direct browser call never could.
  *
- * Targets AutoTuneX API v0.3.5 (`/api/v1/*`, offset-paginated list envelopes
+ * Targets AutoTuneX API v0.4.0 (`/api/v1/*`, offset-paginated list envelopes
  * `{items,total,limit,offset}`). `pageQuery`/`toListResult` and the `adaptX()`
  * mappers live in `@/api/autotunexAdapters` (re-exported below) and are the
  * shared helpers every list endpoint (`getJobs`/`getConfigurations`/
