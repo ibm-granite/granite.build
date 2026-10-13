@@ -16,12 +16,16 @@
 #      enabled, then prints each node's allocatable CPU and memory, which is what
 #      a fixture's resources have to fit
 #
-# CONTEXT SWITCH. `sky local up` makes kind-<name> the CURRENT kube context. That
-# is deliberate and is not undone here: SkyPilot launches into the current
-# context, so restoring a previous one would send the next build to whatever
-# cluster that was. The tests refuse to run unless the current context is the
-# kind one. Switch back yourself (`kubectl config use-context <ctx>`) when done,
-# or run scripts/kube/teardown-kind.sh.
+# CONTEXT. `sky local up` makes kind-<name> the CURRENT kube context; this script
+# switches back to whatever was current before, so your other kubectl work is
+# unaffected. Builds do not need it current: the skypilot/kubernetes/local env pins
+# SkyPilot to the kind context via `kubernetes.allowed_contexts` in its
+# cloud_config, and the tests check that context directly.
+#
+# SHARED VOLUME. Creates the ReadWriteMany `gb-shared` claim that the
+# skypilot/kubernetes/local env mounts at /shared in every pod (its shared_workdir
+# and hf cache), bound to a static hostPath PV on the kind node — see the
+# "Shared volume" section below for why it cannot be ReadWriteOnce.
 #
 # Usage:
 #   bash scripts/kube/setup-kind.sh
@@ -182,10 +186,72 @@ echo "setup-kind: nodes (allocatable):"
 kubectl --context "$CONTEXT" get nodes \
   -o custom-columns='NAME:.metadata.name,CPU:.status.allocatable.cpu,MEMORY:.status.allocatable.memory'
 
+# ---- Shared volume for skypilot/kubernetes/local ----
+# The env mounts the `gb-shared` claim at /shared in every pod. It must be
+# ReadWriteMany: SkyPilot refuses to start a pod on a ReadWriteOnce(Pod) claim
+# that any other pod still uses (check_pvc_usage_for_pod), and pods overlap — the
+# hfpull pod and its consumer, or one test's pod still tearing down while the next
+# launches. kind's local-path class only provisions ReadWriteOnce, so the volume
+# is a static ReadWriteMany hostPath PV on the (single) kind node, which is valid
+# because every pod runs on that node.
+SHARED_DIR=/var/local/gb-shared
+# World-writable like /tmp: kubelet would create the dir root-owned 0755, and
+# SkyPilot's default pod image runs as a non-root user.
+for node in $(kind get nodes --name "${KIND_CLUSTER_NAME}" 2>/dev/null); do
+  docker exec "$node" sh -c "mkdir -p $SHARED_DIR && chmod 1777 $SHARED_DIR"
+done
+# A claim's access mode is immutable: replace one left by an older setup.
+modes="$(kubectl --context "$CONTEXT" -n default get pvc gb-shared \
+  -o jsonpath='{.spec.accessModes[*]}' 2>/dev/null || true)"
+if [ -n "$modes" ] && [ "$modes" != "ReadWriteMany" ]; then
+  echo "setup-kind: replacing the old '${modes}' gb-shared claim with a ReadWriteMany one"
+  kubectl --context "$CONTEXT" -n default delete pvc gb-shared --wait=true >/dev/null
+fi
+# Idempotent (apply).
+kubectl --context "$CONTEXT" apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: gb-shared-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    namespace: default
+    name: gb-shared
+  hostPath:
+    path: $SHARED_DIR
+    type: Directory
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gb-shared
+  namespace: default
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: ""
+  volumeName: gb-shared-pv
+  resources:
+    requests:
+      storage: 20Gi
+EOF
+if ! kubectl --context "$CONTEXT" -n default wait --for=jsonpath='{.status.phase}'=Bound \
+  pvc/gb-shared --timeout=60s >/dev/null; then
+  echo "setup-kind: ERROR the gb-shared claim did not bind to gb-shared-pv" >&2
+  exit 1
+fi
+echo "setup-kind: shared volume: ReadWriteMany claim 'gb-shared' bound (node dir $SHARED_DIR, mounted at /shared by skypilot/kubernetes/local)"
+
+# ---- Restore the previous kube context ----
+# Done last: everything above addresses the kind cluster with --context, and
+# `sky check` (run above) needs kind current while it runs.
 if [ -n "$previous_context" ] && [ "$previous_context" != "$CONTEXT" ]; then
-  echo "setup-kind: NOTE current kube context switched from '${previous_context}' to '${CONTEXT}'."
-  echo "setup-kind: SkyPilot launches into the current context; switch back with"
-  echo "setup-kind:   kubectl config use-context ${previous_context}"
+  kubectl config use-context "$previous_context" >/dev/null
+  echo "setup-kind: restored your kube context '${previous_context}' (the kind cluster stays reachable as '${CONTEXT}')"
 fi
 
-echo "setup-kind: ready — skypilot/kubernetes builds now launch into '${CONTEXT}'."
+echo "setup-kind: ready — space://environments/skypilot/kubernetes/local builds launch into '${CONTEXT}'."

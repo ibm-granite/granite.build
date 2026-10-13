@@ -434,11 +434,12 @@ node. What works depends on the endpoint:
 |---|---|---|
 | `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` | explicit, matching the `uri` |
 | `skypilot/aws` | `s3://bucket/…` (the S3 assetstore pushes it; the consumer pulls it) | may be left default |
-| `skypilot/kubernetes` | none with the shipped environment — it has no `s3` assetstore and no shared filesystem | — |
+| `skypilot/kubernetes/local` | `env:///shared/…` (the env's shared volume, mounted in every pod) | explicit, matching the `uri` |
+| `skypilot/kubernetes` | none until its shared storage is enabled — the env ships the PVC wiring commented out | — |
 
-On `skypilot/kubernetes`, a cross-target handoff needs an environment that adds an `s3`
-assetstore (then as `skypilot/aws`) or a ReadWriteMany PVC as its `shared_workdir` (then as
-`skypilot/slurm`, using the PVC's mount path). A node-local `env:///tmp/…` is never safe for a
+On `skypilot/kubernetes`, a cross-target handoff needs its documented shared-storage block
+enabled (a ReadWriteMany PVC as `shared_workdir`, then as `skypilot/kubernetes/local`) or an
+`s3` assetstore added (then as `skypilot/aws`). A node-local `env:///tmp/…` is never safe for a
 handoff: the consumer may run on a different node or pod and read an absent directory.
 
 ## Notes and limitations

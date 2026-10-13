@@ -171,14 +171,15 @@ backend is reachable:
   `AWS_PROFILE` or the key pair is exported.) **First-time setup walkthrough** (and the full
   runbook, identical to the byoc/eval steps):
   [docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md#quickstart-run-the-aws-step-tests-for-the-first-time).
-- **kube-tok** — the aws-tok fixture in a pod on `skypilot/kubernetes`: `transform:
+- **kube-tok** — the aws-tok fixture in a pod on `skypilot/kubernetes/local`: `transform:
   tokenization2arrow` with `validate: true`, parallel (`runtime_num_processors: 2`). Runs on a
   local kind cluster; bring it up once with `make test-setup-kube` (delegates to the repo-root
-  `kube-setup`, which wraps `sky local up` and, on podman, lifts the node's process cap). It
-  **self-skips unless the current kube context is that kind cluster**, so it never schedules
-  pods on a shared cluster just because one is reachable. Like aws, kube has no shared
-  filesystem: the hf pull is inline (`step_count` 1) and the bundled `src/` reaches the pod via
-  `file_mounts`. Note that `make test-setup-kube` makes `kind-skypilot` the current context.
+  `kube-setup`, which wraps `sky local up`, creates the env's ReadWriteMany `gb-shared` volume
+  and, on podman, lifts the node's process cap). It **self-skips unless that cluster and volume
+  are up**. The env pins SkyPilot to the kind context (`kubernetes.allowed_contexts`), so pods
+  never land on whatever cluster is current, and setup restores your previous context. As on
+  slurm, every pod mounts the shared volume at `/shared`: the hf pull is a separate step into
+  `/shared/hf_cache` (`step_count` 2) and the bundled `src/` reaches the pod via `file_mounts`.
 
 > **No cluster coverage of the cross-node `env:///shared` handoff.** It was covered by the
 > two-target form of the `slurm` fixture, which `validate: true` replaced (see that fixture's
@@ -303,7 +304,8 @@ on **different nodes**. What works depends on the endpoint:
 |---|---|---|
 | `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` + an **explicit** matching `output_path` | `/shared` is the environment's `shared_workdir`, mounted on every node — cross-node safe. The `./output` default will not do here: it lives in the per-target workdir, which is deleted at target teardown. |
 | `skypilot/aws` | `s3://bucket/…`, `output_path` may be **left default** | Each target gets its own instance with no shared filesystem. The S3 assetstore pushes the staged dir and the consumer pulls it, so a node-local `./output` is fine. |
-| `skypilot/kubernetes` | **None out of the box** — terminal outputs only | Each step is its own pod, and the shipped environment declares neither an `s3` assetstore nor a `shared_workdir`, so nothing survives to a second target. To hand off, use an environment that adds one: an `s3` assetstore (then as `skypilot/aws`), or a ReadWriteMany PVC as `shared_workdir` (then as `skypilot/slurm`, with its mount path). See `docs/environments/skypilot-kubernetes.md`. |
+| `skypilot/kubernetes/local` | `env:///shared/…` + an **explicit** matching `output_path` | As on slurm: every pod mounts the env's ReadWriteMany volume at `/shared`, its `shared_workdir`. The `./output` default lives in the per-target workdir, deleted at target teardown. |
+| `skypilot/kubernetes` | **None until shared storage is enabled** — terminal outputs only | Each step is its own pod. The env ships its ReadWriteMany-PVC wiring commented out; once enabled (or with an `s3` assetstore added), hand off as on `skypilot/kubernetes/local` (or `skypilot/aws`). See `docs/environments/skypilot-kubernetes.md`. |
 
 A node-local `env:///tmp/…` is **not** safe for a cross-target handoff: if the two targets
 land on different nodes the consumer reads an absent directory.
