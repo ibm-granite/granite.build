@@ -9,7 +9,9 @@
 #   1. Checks the prerequisites up front, reporting all of them at once rather
 #      than one per run: what SkyPilot's create_cluster.sh needs (docker, kind,
 #      kubectl — warning on Rancher Desktop's shim), plus socat and GNU netcat,
-#      without which SkyPilot leaves the Kubernetes cloud disabled
+#      without which SkyPilot leaves the Kubernetes cloud disabled. `make
+#      kube-setup` runs install-prereqs.sh first, which installs kind, socat and
+#      GNU netcat when it can, so this check mostly catches docker and kubectl
 #   2. Runs `sky local up --no-gpus`, which creates (or reuses) the kind cluster
 #   3. Verifies the API server answers, runs `sky check kubernetes` (sky local up
 #      skips it when the cluster already exists) and fails unless Kubernetes is
@@ -61,7 +63,7 @@ elif ! docker info >/dev/null 2>&1; then
   missing+=("docker: the CLI is installed but the daemon is not reachable — start it")
 fi
 command -v kind >/dev/null 2>&1 ||
-  missing+=("kind: https://kind.sigs.k8s.io/docs/user/quick-start/#installation (e.g. brew install kind)")
+  missing+=("kind: run make kube-prereqs (installs the pinned kind into the venv), or see https://kind.sigs.k8s.io/docs/user/quick-start/#installation")
 # Present is not enough, and neither is `version --client`. Rancher Desktop's
 # kubectl is a kuberlr shim that, on first CONTACT with a cluster, fetches a client
 # matching the server version — from a retired bucket
@@ -89,11 +91,11 @@ fi
 # apple, and it runs whichever nc is FIRST on PATH, so a brew netcat must shadow
 # /usr/bin/nc.
 socat -V >/dev/null 2>&1 ||
-  missing+=("socat: brew install socat (or apt install socat)")
+  missing+=("socat: run make kube-prereqs, or brew install socat / apt install socat")
 nc_rc=0
 nc_err="$(nc -h 2>&1 >/dev/null)" || nc_rc=$?
 if ! command -v nc >/dev/null 2>&1; then
-  missing+=("netcat: brew install netcat (or apt install netcat)")
+  missing+=("netcat: run make kube-prereqs, or brew install netcat / apt install netcat-openbsd")
 elif [ "$nc_rc" -eq 1 ] && printf '%s' "$nc_err" | grep -qi apple; then
   missing+=("netcat: '$(command -v nc)' is macOS's BSD nc; SkyPilot needs GNU netcat — brew install netcat, and make sure it is ahead of /usr/bin on PATH")
 elif [ "$nc_rc" -ne 0 ]; then

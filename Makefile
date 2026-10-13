@@ -299,14 +299,13 @@ quick-tests:
 		.test
 
 .PHONY: extended-tests-setup
-# The skypilot/kubernetes tests' kind cluster is deliberately NOT set up here: it
-# needs extra host tools (kind, kubectl, socat, GNU netcat) and switches the current
-# kube context to kind-skypilot. The nightly workflow runs `make kube-setup` as its
-# own step after this target; locally, run it yourself to opt in — without it those
-# tests self-skip.
+# Brings up the local infrastructure the extended tests launch into: SLURM and the
+# kind cluster for the skypilot/kubernetes tests (either one missing fails setup),
+# plus a best-effort local PostgreSQL.
 extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 	$(MAKE) slurm-setup
+	$(MAKE) kube-setup
 	@# Best-effort: without a container runtime/openssl or a free port, the
 	@# local-PostgreSQL storage tests skip instead of blocking every extended test.
 	$(MAKE) postgres-setup || echo "WARNING: postgres-setup failed; the local-PostgreSQL storage tests will skip."
@@ -317,6 +316,7 @@ extended-tests-teardown:
 	@# "-": run every teardown even if one fails, so the postgres container and its
 	@# password-bearing env file never outlive a failed slurm-teardown.
 	-$(MAKE) slurm-teardown
+	-$(MAKE) kube-teardown
 	-$(MAKE) postgres-teardown
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
@@ -493,9 +493,16 @@ postgres-teardown:
 	bash scripts/postgres/teardown-postgres.sh
 
 # Local kind Kubernetes cluster (via `sky local up`) for the skypilot/kubernetes
-# build tests. Switches the current kube context to kind-skypilot; see the script.
+# build tests, with the shared volume its env mounts. Installs kind (pinned, into
+# the venv), socat and GNU netcat first if missing; needs docker and kubectl.
+# Leaves the current kube context as it was; see the scripts.
+.PHONY: kube-prereqs
+kube-prereqs:
+	source .venv/bin/activate;\
+	bash scripts/kube/install-prereqs.sh
+
 .PHONY: kube-setup
-kube-setup:
+kube-setup: kube-prereqs
 	source .venv/bin/activate;\
 	bash scripts/kube/setup-kind.sh
 
