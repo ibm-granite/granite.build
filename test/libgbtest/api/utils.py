@@ -265,6 +265,11 @@ class _ApiKeyUserClient(TestClient):
     def request(self, *args: Any, **kwargs: Any):  # type: ignore[override]
         """Send the request with ``GBSERVER_API_USER`` set to this client's user.
 
+        Only that one key is saved and restored. (``patch.dict`` would restore by
+        clearing and refilling the whole environment on every request, undoing
+        anything the server wrote to it and briefly leaving it empty for other
+        threads.)
+
         Args:
             *args: Positional arguments for :meth:`TestClient.request`.
             **kwargs: Keyword arguments for :meth:`TestClient.request`.
@@ -272,8 +277,15 @@ class _ApiKeyUserClient(TestClient):
         Returns:
             The response.
         """
-        with patch.dict(os.environ, {"GBSERVER_API_USER": self._user}):
+        previous = os.environ.get("GBSERVER_API_USER")
+        os.environ["GBSERVER_API_USER"] = self._user
+        try:
             return super().request(*args, **kwargs)
+        finally:
+            if previous is None:
+                os.environ.pop("GBSERVER_API_USER", None)
+            else:
+                os.environ["GBSERVER_API_USER"] = previous
 
 
 # Real space-access checks: conftest's mock-mode bypass (is_super_admin -> True)
