@@ -11,6 +11,7 @@ nothing about HTTP routing — raises the domain exceptions in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import shutil
@@ -228,6 +229,8 @@ async def _stage_split(
 
     Raises:
         DomainValidationError: the download exceeded ``max_bytes``.
+        HfHubUnavailable: a redirect would carry the token (see
+            :func:`hf_hub.send_following_redirects`).
     """
     headers = hf_hub._headers(token)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -243,12 +246,11 @@ async def _stage_split(
                 break
             tmp_path = destination.parent / f".{destination.name}.{index}.tmp"
             try:
-                async with client.stream(
-                    "GET",
-                    url,
-                    follow_redirects=True,
-                    headers=headers,
-                    timeout=_DOWNLOAD_TIMEOUT,
+                request = client.build_request(
+                    "GET", url, headers=headers, timeout=_DOWNLOAD_TIMEOUT
+                )
+                async with contextlib.aclosing(
+                    await hf_hub.send_following_redirects(client, request, stream=True)
                 ) as response:
                     response.raise_for_status()
                     with tmp_path.open("wb") as tmp_file:

@@ -172,6 +172,63 @@ async def test_staging_sends_the_bearer_token_when_given(tmp_path: Path) -> None
         )
 
 
+async def test_staging_does_not_carry_the_token_through_a_same_origin_redirect(
+    tmp_path: Path,
+) -> None:
+    """A Hub rename between plan and stage must not send the token to the new namespace."""
+    from autotunex.services.hf_import_service import _stage_split
+    from autotunex.services.storage.hf_hub import HfHubUnavailable
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            307,
+            headers={"Location": "https://huggingface.co/datasets/elsewhere/r/resolve/x/0.parquet"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(HfHubUnavailable):
+            await _stage_split(
+                client,
+                urls=["https://huggingface.co/datasets/o/r/resolve/x/0.parquet"],
+                destination=tmp_path / "train.parquet",
+                max_rows=50_000,
+                max_bytes=_ROOMY_BYTES,
+                token="tok",
+            )
+
+    assert len(seen) == 1
+
+
+async def test_staging_follows_the_cdn_redirect_without_the_token(tmp_path: Path) -> None:
+    from autotunex.services.hf_import_service import _stage_split
+
+    payload = _parquet_bytes(5)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "huggingface.co":
+            return httpx.Response(302, headers={"Location": "https://cdn.example/0.parquet"})
+        return httpx.Response(200, content=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        _, retained, _, _ = await _stage_split(
+            client,
+            urls=["https://huggingface.co/datasets/o/r/resolve/x/0.parquet"],
+            destination=tmp_path / "train.parquet",
+            max_rows=50_000,
+            max_bytes=_ROOMY_BYTES,
+            token="tok",
+        )
+
+    assert retained == 5
+    assert [r.url.host for r in seen] == ["huggingface.co", "cdn.example"]
+    assert "authorization" not in seen[1].headers
+
+
 async def test_staging_truncates_at_the_row_cap(tmp_path: Path) -> None:
     """Bounded ingest: a larger dataset imports its first N rows, not all of them."""
     from autotunex.services.hf_import_service import stage_parquet

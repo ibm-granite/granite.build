@@ -293,6 +293,63 @@ async def test_a_tokened_request_does_not_follow_a_redirect() -> None:
     assert len(seen) == 1
 
 
+async def test_head_total_bytes_does_not_carry_the_token_through_a_same_origin_redirect() -> None:
+    """The size gate's HEAD follows the same token rule as :func:`hf_hub._get_json`."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            307, headers={"Location": f"{BASE}/datasets/elsewhere/x/resolve/{REVISION}/0.parquet"}
+        )
+
+    async with _client(handler) as client:
+        with pytest.raises(hf_hub.HfHubUnavailable):
+            await hf_hub.head_total_bytes(
+                client,
+                urls=[f"{BASE}/datasets/allowed/x/resolve/{REVISION}/0.parquet"],
+                token="tok",
+            )
+
+    assert len(seen) == 1
+
+
+async def test_head_total_bytes_follows_the_cdn_redirect_without_the_token() -> None:
+    """A ``resolve`` URL always redirects to the CDN; httpx drops the token on that hop."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "huggingface.co":
+            return httpx.Response(302, headers={"Location": "https://cdn.example/0.parquet"})
+        return httpx.Response(200, headers={"content-length": "100"})
+
+    async with _client(handler) as client:
+        total = await hf_hub.head_total_bytes(
+            client, urls=[f"{BASE}/datasets/allowed/x/resolve/{REVISION}/0.parquet"], token="tok"
+        )
+
+    assert total == 100
+    assert [r.url.host for r in seen] == ["huggingface.co", "cdn.example"]
+    assert "authorization" not in seen[1].headers
+
+
+async def test_head_total_bytes_follows_an_anonymous_same_origin_redirect() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/old/" in request.url.path:
+            return httpx.Response(
+                307, headers={"Location": f"{BASE}/datasets/new/x/resolve/{REVISION}/0.parquet"}
+            )
+        return httpx.Response(200, headers={"content-length": "100"})
+
+    async with _client(handler) as client:
+        total = await hf_hub.head_total_bytes(
+            client, urls=[f"{BASE}/datasets/old/x/resolve/{REVISION}/0.parquet"], token=None
+        )
+
+    assert total == 100
+
+
 async def test_search_models_returns_ids_and_skips_malformed_entries() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/models"

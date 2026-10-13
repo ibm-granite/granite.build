@@ -123,6 +123,34 @@ async def _get_json(
         raise HfHubUnavailable(f"{url}: malformed JSON") from exc
 
 
+async def send_following_redirects(
+    client: httpx.AsyncClient, request: httpx.Request, *, stream: bool = False
+) -> httpx.Response:
+    """Send ``request``, following redirects without carrying a token across them.
+
+    For reads that cannot simply refuse redirects, as :func:`_get_json` does: a
+    ``resolve`` URL always redirects to the CDN. The same rule is applied per hop
+    instead. httpx drops ``Authorization`` from a hop that changes origin, so a hop
+    that still carries it is a same-origin one -- a Hub rename, which could hand
+    the token to a namespace outside ``hf_import_namespaces``. That hop is refused.
+    An anonymous request has no token to carry and follows every hop.
+
+    Raises:
+        HfHubUnavailable: a hop would carry the token, or too many redirects.
+        httpx.HTTPError: a transport failure, as from ``client.send``.
+    """
+    for _ in range(client.max_redirects + 1):
+        response = await client.send(request, stream=stream, follow_redirects=False)
+        next_request = response.next_request
+        if next_request is None:
+            return response
+        await response.aclose()
+        if "Authorization" in next_request.headers:
+            raise HfHubUnavailable(f"{request.url}: redirect would carry the token")
+        request = next_request
+    raise HfHubUnavailable(f"{request.url}: too many redirects")
+
+
 async def search_datasets(
     client: httpx.AsyncClient, *, base_url: str, query: str, limit: int, token: str | None
 ) -> list[str]:
@@ -300,7 +328,9 @@ async def head_total_bytes(client: httpx.AsyncClient, *, urls: list[str], token:
     async def one(url: str) -> int:
         async with semaphore:
             try:
-                response = await client.head(url, headers=_headers(token), follow_redirects=True)
+                response = await send_following_redirects(
+                    client, client.build_request("HEAD", url, headers=_headers(token))
+                )
             except httpx.HTTPError as exc:
                 raise HfHubUnavailable(f"{url}: HEAD transport error: {exc}") from exc
         if response.status_code != 200:
