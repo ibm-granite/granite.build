@@ -192,9 +192,11 @@ class TestLaunchDocker:
         mock_client = mock_docker.from_env.return_value
         mock_docker.errors = MagicMock()
         mock_docker.errors.ImageNotFound = type("ImageNotFound", (Exception,), {})
-        mock_client.images.get.side_effect = mock_docker.errors.ImageNotFound(
-            "not found"
-        )
+        # Absent before the pull, present after it.
+        mock_client.images.get.side_effect = [
+            mock_docker.errors.ImageNotFound("not found"),
+            MagicMock(),
+        ]
         mock_container = MagicMock()
         mock_container.id = "container-pulled"
         mock_client.containers.run.return_value = mock_container
@@ -214,7 +216,7 @@ class TestLaunchDocker:
                 step={"name": "test"},
             )
 
-        mock_client.images.pull.assert_called_once()
+        mock_client.api.pull.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_launch_uses_default_image_from_env_config(self, docker_env):

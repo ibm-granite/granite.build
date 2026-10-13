@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import requests
+import urllib3
 
 docker = pytest.importorskip("docker")
 
@@ -40,15 +41,28 @@ def _no_backoff(monkeypatch):
     monkeypatch.setattr(docker_env, "DOCKER_PULL_RETRY_MAX_DELAY", 0)
 
 
-def _client(*pull_results):
-    """Mock client whose image is absent and whose api.pull yields *pull_results*.
+def _client(*pull_results, lands=True):
+    """Mock client whose api.pull yields *pull_results*, one per attempt.
 
-    Each result is a list of stream chunks, or an exception to raise.
+    Each result is a list of stream chunks, or an exception to raise. The image
+    is absent until a stream finishes cleanly, then present if *lands*.
     """
+    present = False
+
+    def _stream(chunks):
+        nonlocal present
+        yield from chunks
+        present = lands
+
+    def _get(_image):
+        if not present:
+            raise docker.errors.ImageNotFound("absent")
+        return MagicMock()
+
     client = MagicMock()
-    client.images.get.side_effect = docker.errors.ImageNotFound("absent")
+    client.images.get.side_effect = _get
     client.api.pull.side_effect = [
-        r if isinstance(r, BaseException) else iter(r) for r in pull_results
+        r if isinstance(r, BaseException) else _stream(r) for r in pull_results
     ]
     return client
 
@@ -66,24 +80,28 @@ def test_clean_stream_pulls_once():
     _pull(client)
     client.api.pull.assert_called_once()
     args, kwargs = client.api.pull.call_args
-    assert args == ("registry.example/library/alpine",)
-    assert kwargs["tag"] == "3.22"
+    assert args == (_IMAGE,)
     assert kwargs["stream"] and kwargs["decode"]
 
 
-def test_untagged_image_pulls_latest():
+def test_always_policy_pulls_present_image():
     client = _client(_OK)
-    env = object.__new__(Docker)
-    env._pull_image(client, docker, "alpine", "always")
-    assert client.api.pull.call_args.kwargs["tag"] == "latest"
+    _pull(client, policy="always")
+    client.api.pull.assert_called_once()
 
 
-def test_in_stream_error_is_raised_with_registry_message():
-    error = {"error": "manifest for alpine:3.22 not found: manifest unknown"}
-    client = _client([{"status": "Pulling"}, error])
-    with pytest.raises(ImagePullError, match="manifest unknown"):
+@pytest.mark.parametrize(
+    "message",
+    [
+        "manifest for alpine:3.22 not found: manifest unknown",
+        "no matching manifest for linux/arm64 in the manifest list entries",
+        "pull access denied for alpine",
+    ],
+)
+def test_permanent_in_stream_error_is_not_retried(message):
+    client = _client([{"status": "Pulling"}, {"error": message}])
+    with pytest.raises(ImagePullError, match=message):
         _pull(client)
-    # Permanent error: no retry.
     client.api.pull.assert_called_once()
 
 
@@ -103,12 +121,22 @@ def test_transient_errors_exhaust_attempts():
     assert client.api.pull.call_count == docker_env.DOCKER_PULL_MAX_ATTEMPTS
 
 
+def test_stream_ending_without_image_is_retried():
+    attempts = docker_env.DOCKER_PULL_MAX_ATTEMPTS
+    client = _client(*([[]] * attempts), lands=False)
+    with pytest.raises(ImagePullError, match="image is missing"):
+        _pull(client)
+    assert client.api.pull.call_count == attempts
+
+
 @pytest.mark.parametrize(
     "exc",
     [
         docker.errors.APIError("server error", response=MagicMock(status_code=500)),
         docker.errors.APIError("rate", response=MagicMock(status_code=429)),
+        docker.errors.APIError("blob not found", response=MagicMock(status_code=502)),
         requests.exceptions.ConnectionError("reset"),
+        urllib3.exceptions.ProtocolError("Connection broken: IncompleteRead"),
     ],
 )
 def test_transient_request_errors_are_retried(exc):

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Tuple
 
 import requests
+import urllib3
 from tenacity import (
     RetryCallState,
     Retrying,
@@ -49,27 +50,35 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Registry errors no retry fixes: a bad reference, a missing image, or bad
-# credentials.
+# Pull errors no retry fixes: bad reference, missing image or platform, bad
+# credentials, full disk.
 _PERMANENT_PULL_ERRORS = (
     "manifest unknown",
-    "not found",
     "repository does not exist",
     "invalid reference format",
+    "no matching manifest",
     "unauthorized",
     "denied",
+    "no space left on device",
+)
+
+# Connection failures, including a stream dropped mid-pull (raised by urllib3).
+_TRANSIENT_PULL_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.Timeout,
+    urllib3.exceptions.ProtocolError,
+    urllib3.exceptions.TimeoutError,
 )
 
 
 class ImagePullError(RuntimeError):
-    """The daemon reported an error in the pull stream."""
+    """An image pull reported an error or did not produce the image."""
 
 
 def _is_retryable_pull_error(exc: BaseException, docker_module) -> bool:
     """Return True if *exc* from an image pull may succeed on retry."""
-    if isinstance(
-        exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
-    ):
+    if isinstance(exc, _TRANSIENT_PULL_EXCEPTIONS):
         return True
     if isinstance(exc, docker_module.errors.APIError):
         status = exc.status_code
@@ -339,24 +348,26 @@ class Docker(Environment):
         image: str,
         auth_config: Optional[Dict[str, str]],
     ) -> None:
-        """Pull *image* once, raising ImagePullError on an in-stream error.
+        """Pull *image* once; raise ImagePullError if the pull did not land.
 
-        ``client.images.pull`` discards the pull stream, so a registry error
-        surfaces only as a misleading ImageNotFound from its follow-up lookup.
+        Unlike ``client.images.pull``, which drops the stream and reports any
+        registry error as ImageNotFound, this raises the daemon's own message.
         """
-        repository, tag = docker_module.utils.parse_repository_tag(image)
         for chunk in client.api.pull(
-            repository,
-            tag=tag or "latest",
-            stream=True,
-            decode=True,
-            auth_config=auth_config,
+            image, stream=True, decode=True, auth_config=auth_config
         ):
             error = chunk.get("error") or (chunk.get("errorDetail") or {}).get(
                 "message"
             )
             if error:
                 raise ImagePullError(f"Failed to pull image {image}: {error}")
+        # A stream can end early without an error chunk.
+        try:
+            client.images.get(image)
+        except docker_module.errors.ImageNotFound as e:
+            raise ImagePullError(
+                f"Pull of {image} ended but the image is missing"
+            ) from e
 
     # ------------------------------------------------------------------
     # pullasset_hfstore
