@@ -216,8 +216,10 @@ make postgres-teardown   # stop it and delete its data, certs and credentials
 ```
 
 `postgres-setup` (`scripts/postgres/setup-postgres.sh`) does the following:
-- Starts `quay.io/sclorg/postgresql-16-c9s` on `127.0.0.1:55432`, with a random password and TLS 1.3
-  (verified with `sslmode=verify-full` against a CA it generates).
+- Starts `quay.io/sclorg/postgresql-16-c9s` on `127.0.0.1:55432`, with a random password. The server
+  requires TLS 1.3 and a password for every TCP login and rejects plaintext. Its `pg_hba.conf` replaces
+  the image's, which trusts `127.0.0.1` with no password. The tests connect with `sslmode=verify-full`
+  against a CA the script generates.
 - Creates the `gbtest` schema.
 - Writes the `GBSERVER_SQL_*` settings and `GBTEST_LOCAL_POSTGRES=true` to
   `.cache/gbtest-postgres/postgres.env`, readable only by you.
