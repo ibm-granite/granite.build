@@ -16,6 +16,15 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Tuple
 
+import requests
+from tenacity import (
+    RetryCallState,
+    Retrying,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_random_exponential,
+)
+
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.environment.local_assets import (
@@ -34,6 +43,43 @@ from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Image pulls retry transient registry errors (rate limits, 5xx, dropped
+# connections) with capped exponential backoff.
+PULL_MAX_ATTEMPTS = 4
+PULL_RETRY_BASE_DELAY = 2.0
+PULL_RETRY_MAX_DELAY = 30.0
+
+# Registry errors no retry fixes: a bad reference, a missing image, or bad
+# credentials.
+_PERMANENT_PULL_ERRORS = (
+    "manifest unknown",
+    "not found",
+    "repository does not exist",
+    "invalid reference format",
+    "unauthorized",
+    "denied",
+)
+
+
+class ImagePullError(RuntimeError):
+    """The daemon reported an error in the pull stream."""
+
+
+def _is_retryable_pull_error(exc: BaseException, docker_module) -> bool:
+    """Return True if *exc* from an image pull may succeed on retry."""
+    if isinstance(
+        exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+    ):
+        return True
+    if isinstance(exc, docker_module.errors.APIError):
+        status = exc.status_code
+        if status is not None and status < 500 and status != 429:
+            return False
+    elif not isinstance(exc, ImagePullError):
+        return False
+    message = str(exc).lower()
+    return not any(p in message for p in _PERMANENT_PULL_ERRORS)
 
 
 def _import_docker():
@@ -233,15 +279,14 @@ class Docker(Environment):
 
         if pull_policy == "always":
             logger.info("Pulling image (policy=always): %s", image)
-            client.images.pull(image, auth_config=auth_config)
+            self._pull_with_retry(client, docker_module, image, auth_config)
         elif pull_policy == "if-not-present":
             try:
                 client.images.get(image)
                 logger.info("Image already present: %s", image)
             except docker_module.errors.ImageNotFound:
                 logger.info("Pulling image (policy=if-not-present): %s", image)
-                # TODO: Need to also handle exception here.
-                client.images.pull(image, auth_config=auth_config)
+                self._pull_with_retry(client, docker_module, image, auth_config)
         elif pull_policy == "never":
             client.images.get(image)  # raises ImageNotFound if missing
         else:
@@ -251,7 +296,68 @@ class Docker(Environment):
             try:
                 client.images.get(image)
             except docker_module.errors.ImageNotFound:
-                client.images.pull(image, auth_config=auth_config)
+                self._pull_with_retry(client, docker_module, image, auth_config)
+
+    def _pull_with_retry(
+        self: Self,
+        client,
+        docker_module,
+        image: str,
+        auth_config: Optional[Dict[str, str]],
+    ) -> None:
+        """Pull *image*, retrying transient registry errors."""
+
+        def _log_retry(retry_state: RetryCallState) -> None:
+            exc = retry_state.outcome.exception() if retry_state.outcome else None
+            sleep = getattr(retry_state.next_action, "sleep", 0.0)
+            logger.warning(
+                "Retrying pull of %s in %.1fs (attempt %d/%d) after: %s",
+                image,
+                sleep,
+                retry_state.attempt_number,
+                PULL_MAX_ATTEMPTS,
+                exc,
+            )
+
+        for attempt in Retrying(
+            stop=stop_after_attempt(PULL_MAX_ATTEMPTS),
+            wait=wait_random_exponential(
+                multiplier=PULL_RETRY_BASE_DELAY, max=PULL_RETRY_MAX_DELAY
+            ),
+            retry=retry_if_exception(
+                lambda e: _is_retryable_pull_error(e, docker_module)
+            ),
+            before_sleep=_log_retry,
+            reraise=True,
+        ):
+            with attempt:
+                self._pull_once(client, docker_module, image, auth_config)
+
+    def _pull_once(
+        self: Self,
+        client,
+        docker_module,
+        image: str,
+        auth_config: Optional[Dict[str, str]],
+    ) -> None:
+        """Pull *image* once, raising ImagePullError on an in-stream error.
+
+        ``client.images.pull`` discards the pull stream, so a registry error
+        surfaces only as a misleading ImageNotFound from its follow-up lookup.
+        """
+        repository, tag = docker_module.utils.parse_repository_tag(image)
+        for chunk in client.api.pull(
+            repository,
+            tag=tag or "latest",
+            stream=True,
+            decode=True,
+            auth_config=auth_config,
+        ):
+            error = chunk.get("error") or (chunk.get("errorDetail") or {}).get(
+                "message"
+            )
+            if error:
+                raise ImagePullError(f"Failed to pull image {image}: {error}")
 
     # ------------------------------------------------------------------
     # pullasset_hfstore
