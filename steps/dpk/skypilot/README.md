@@ -179,7 +179,11 @@ backend is reachable:
   are up**. The env pins SkyPilot to the kind context (`kubernetes.allowed_contexts`), so pods
   never land on whatever cluster is current, and setup restores your previous context. As on
   slurm, every pod mounts the shared volume at `/shared`: the hf pull is a separate step into
-  `/shared/hf_cache` (`step_count` 2) and the bundled `src/` reaches the pod via `file_mounts`.
+  `/shared/hf_cache`, the bundled `src/` reaches the pod via `file_mounts`, and the `tokens`
+  output is an `hf://` dataset pushed by a separate hfpush pod from that volume (`step_count` 3).
+  The test names the dataset per run in `GBTEST_HF_PUSH_ORG` (default `ibm-research`), checks it
+  landed on the Hub and deletes it, so it needs an `HF_TOKEN` that can write that org; see
+  `test/libgbtest/hfpush.py` for pushing to your own namespace instead.
 
 > **No cluster coverage of the cross-node `env:///shared` handoff.** It was covered by the
 > two-target form of the `slurm` fixture, which `validate: true` replaced (see that fixture's

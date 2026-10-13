@@ -16,16 +16,19 @@
 
 The kube sibling of ``skypilot_slurm/test_skypilot_1step.py``:
 
-  HF URI input  ->  command step in a pod on SkyPilot/kubernetes  ->  env:// output
+  HF URI input  ->  command step in a pod on SkyPilot/kubernetes  ->  hf:// + env:// outputs
 
 Runs on ``space://environments/skypilot/kubernetes/local``, the slurm model on
 kube: a separate hfpull step (its own pod) downloads the ``hf://`` input into the
 shared volume every pod mounts at /shared, and the command step — a DIFFERENT pod —
 fails unless it can see it. So it proves the shared volume carries data between
-pods, and ``step_count: 2`` pins the separate pull.
+pods, and ``step_count: 5`` pins the separate pull and the three pushes
+(one per artifact marker).
 
-Outputs are env:// only, unlike the slurm test's hf:// pushes, so a run never
-writes to a HuggingFace org. The input dataset is public: no HF_TOKEN needed.
+The two hf:// outputs are pushed by hfpush steps — again separate pods, reading
+the artifacts from the shared volume. :class:`libgbtest.hfpush.HfPushCleanupMixin`
+names the datasets per run in ``GBTEST_HF_PUSH_ORG``, checks they landed on the
+Hub, and deletes them, so it needs an ``HF_TOKEN`` that can write that org.
 
 Requires the local kind cluster and its shared volume (``make kube-setup``);
 auto-skips otherwise. The env pins SkyPilot to the kind context, so pods never
@@ -43,6 +46,7 @@ from libgbtest.buildrunner.buildtest import (
     get_test_data_dir_for,
 )
 from libgbtest.constants import extended_testing_only
+from libgbtest.hfpush import HfPushCleanupMixin
 from libgbtest.kube import (
     KUBE_XDIST_GROUP,
     kind_cluster_reachable,
@@ -57,8 +61,8 @@ pytestmark = pytest.mark.skypilot_integration
 @KUBE_XDIST_GROUP
 @extended_testing_only
 @pytest.mark.skipif(not kind_cluster_reachable(), reason=kind_skip_reason())
-class TestSkypilotKube1Step(AbstractYamlBuildRunnerTest):
-    """HF input -> command step in a pod via SkyPilot/kubernetes -> env:// output."""
+class TestSkypilotKube1Step(HfPushCleanupMixin, AbstractYamlBuildRunnerTest):
+    """HF input -> command step in a pod via SkyPilot/kubernetes -> hf:// outputs."""
 
     def _get_yaml_spec_dir(self) -> Path:
         return get_test_data_dir_for(__file__) / "1step"

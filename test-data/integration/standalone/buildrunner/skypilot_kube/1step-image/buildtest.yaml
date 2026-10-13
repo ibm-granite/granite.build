@@ -4,12 +4,13 @@ targets:
   - image-run
 target_expectations:
   - target_name: image-run
-    # step_count = 2: the hfpull step (into the shared volume) + the command step
-    # in the image. env:// outputs only, so no hf push steps (the slurm spec's 5
-    # includes 3 hfpushes).
-    step_count: 2
+    # step_count = 5, as on slurm: the hfpull step (into the shared volume) + the
+    # command step in the image + one hfpush step per artifact marker
+    # (output_model1 emits two, output_model2 one). The env:// output moves no
+    # bytes, so it queues no push step.
+    step_count: 5
     input_artifact_count: 1    # input_model
-    output_artifact_count: 1   # env_output
+    output_artifact_count: 3   # output_model1, output_model2, env_output
     # Not asserted under standalone's NoopLineageStore; CALIBRATE on a lineage run.
     jobstats_count: 1
 space_uri: ../../../../../../configurations/spaces/local

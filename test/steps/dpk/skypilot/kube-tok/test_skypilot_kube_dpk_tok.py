@@ -23,8 +23,11 @@ proves the derivations and the in-step validator hook hold on kubernetes too.
 
 The env mounts a shared volume at /shared in every pod (its shared_workdir), so —
 as on slurm — the ``hf://`` input is pulled by a separate hfpull step into
-/shared/hf_cache, and the bundled ``src/`` reaches the pod via file_mounts. The input
-is public, so no HF_TOKEN is needed.
+/shared/hf_cache, and the bundled ``src/`` reaches the pod via file_mounts. The
+``tokens`` output is an ``hf://`` dataset pushed by a separate hfpush pod, which
+reads it from the same volume: :class:`libgbtest.hfpush.HfPushCleanupMixin` names it
+per run in ``GBTEST_HF_PUSH_ORG``, checks it landed on the Hub, and deletes it, so
+the run needs an ``HF_TOKEN`` that can write that org (the input stays public).
 
 **Never runs against a shared cluster by accident.** Extended-suite only AND skips
 unless the local kind cluster and its shared volume are up
@@ -44,6 +47,7 @@ from libgbtest.buildrunner.buildtest import (
     get_test_data_dir_for,
 )
 from libgbtest.constants import extended_testing_only
+from libgbtest.hfpush import HfPushCleanupMixin
 from libgbtest.kube import (
     KUBE_XDIST_GROUP,
     kind_cluster_reachable,
@@ -56,7 +60,7 @@ pytestmark = pytest.mark.skypilot_integration
 @KUBE_XDIST_GROUP
 @extended_testing_only
 @pytest.mark.skipif(not kind_cluster_reachable(), reason=kind_skip_reason())
-class TestSkypilotKubeDpkTok(AbstractYamlBuildRunnerTest):
+class TestSkypilotKubeDpkTok(HfPushCleanupMixin, AbstractYamlBuildRunnerTest):
     """dpk step: tokenization with in-step validation, end to end in a kube pod."""
 
     def _get_yaml_spec_dir(self) -> Path:

@@ -10,6 +10,14 @@ granite.build:
           # it from /shared — so the image needs nothing to download it itself.
           uri: hf:///datasets/ibm-research/vira-intents-live
       outputs:
+        # hf:// outputs exercise hfpush on kube from an image step: the files this
+        # image writes reach the separate hfpush pod via the shared volume. The
+        # placeholders are filled per run by libgbtest.hfpush (org + run suffix),
+        # which then checks each dataset landed on the Hub and deletes it.
+        output_model1:
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/skypilot-kube-img-test1___GBTEST_HF_PUSH_RUN__
+        output_model2:
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/skypilot-kube-img-test2___GBTEST_HF_PUSH_RUN__
         env_output:
           uri: "env:///tmp/gb-env-output.txt"
           type: fileset
@@ -32,6 +40,8 @@ granite.build:
               # Fail unless (a) this really runs in the Ubuntu image and (b) the
               # input the hfpull pod wrote is visible inside it via the shared
               # volume, which the env mounts into every pod, image or not.
+              # output_model1's files go in the working directory (the per-run
+              # workdir on /shared), output_model2 re-pushes the input, as on slurm.
               command: >-
                 . /etc/os-release; echo "running in: $PRETTY_NAME";
                 case "$ID" in ubuntu) ;; *) echo "FAIL: expected the ubuntu image, got $ID"; exit 1;; esac;
@@ -39,6 +49,10 @@ granite.build:
                 echo "input path: $in";
                 test -n "$(ls -A "$in" 2>/dev/null)" || { echo "FAIL: input dir $in missing or empty in this image"; exit 1; };
                 ls -la "$in";
+                echo "workdir: $PWD";
+                file=foo1a.json; echo '{"artifact": "output_model1", "file": "foo1a"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
+                file=foo1b.json; echo '{"artifact": "output_model1", "file": "foo1b"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
+                echo "GB_ARTIFACT_ID:output_model2 GB_ARTIFACT_PATH:$in";
                 echo "pod-local output" > /tmp/gb-env-output.txt;
                 echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-env-output.txt"
             compute_config:

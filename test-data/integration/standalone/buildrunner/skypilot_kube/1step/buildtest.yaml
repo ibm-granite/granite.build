@@ -4,12 +4,13 @@ targets:
   - pod-run
 target_expectations:
   - target_name: pod-run
-    # step_count = 2: the hfpull step for the hf input (a separate pod writing to
-    # the shared volume, as on slurm) + the command step. The env:// output moves
-    # no bytes, so it queues no push step.
-    step_count: 2
+    # step_count = 5, as on slurm: the hfpull step for the hf input (a separate
+    # pod writing to the shared volume) + the command step + one hfpush step per
+    # artifact marker (output_model1 emits two, output_model2 one). The env://
+    # output moves no bytes, so it queues no push step.
+    step_count: 5
     input_artifact_count: 1    # input_model
-    output_artifact_count: 1   # env_output, registered from the marker
+    output_artifact_count: 3   # output_model1, output_model2, env_output
     # Not asserted under standalone's NoopLineageStore; CALIBRATE on a lineage run.
     jobstats_count: 1
 # Shared standalone space, as the slurm tests use, so the SHIPPED

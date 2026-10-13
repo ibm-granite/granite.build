@@ -10,7 +10,9 @@ granite.build:
   # Kube-specific points it also covers:
   #   * the shared volume: skypilot/kubernetes/local mounts one claim at /shared in
   #     every pod, so — as on slurm — a separate hfpull step downloads the input
-  #     into /shared/hf_cache and the dpk pod reads it (=> step_count 2);
+  #     into /shared/hf_cache and the dpk pod reads it;
+  #   * hfpush on kube: the tokens output is an hf:// dataset, pushed by a
+  #     separate hfpush pod that reads it from the shared volume (=> step_count 3);
   #   * file_mounts {src: src}: the bundled scripts are rsynced into the pod;
   #   * the pure-python pool inside a pod: runtime_num_processors matches
   #     num_cpus_per_node, because os.cpu_count() in a pod reports the HOST (see
@@ -25,12 +27,13 @@ granite.build:
           uri: hf:///datasets/shalisha-witherspoon/dpk-tokenization-sample
       outputs:
         tokens:
-          # Terminal env:// output, registered inline from the step's marker.
-          # Nothing downstream reads it, so the default output_path (./output in
-          # the per-run workdir on /shared, removed at target teardown) is fine. A
-          # downstream target would need an explicit path under /shared instead.
-          uri: "env:///tokens"
-          type: dataset
+          # Pushed to the Hub by a separate hfpush step. The default output_path
+          # (./output in the per-run workdir on /shared) is right for an
+          # assetstore-pushed output: the hfpush pod reads it there before target
+          # teardown removes the workdir. The placeholders are filled per run by
+          # libgbtest.hfpush (org + run suffix), which then checks the dataset
+          # landed on the Hub and deletes it.
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/dpk-kube-tok___GBTEST_HF_PUSH_RUN__
       steps:
         - step_uri: space://steps/dpk
           config:
