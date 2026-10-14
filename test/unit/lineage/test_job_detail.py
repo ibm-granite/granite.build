@@ -109,7 +109,7 @@ def test_lineage_job_store_reads_the_job_table_and_redacts():
         },
     )
     result = detail([index_row("j1", JobStore.LINEAGE_JOB)], jobs={"j1": job})
-    assert result["job_store"] == "lineage_job"
+    assert result["job_store"] == "gb_lineage_job"
     assert result["detail_available"] is True
     assert result["detail"]["execution_stats"] == {"rows": 3}
     assert result["detail"]["job_input_params"]["step"]["api_key"] == REDACTED

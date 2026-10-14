@@ -225,7 +225,7 @@ class LineageJobEntry(BaseModel):
 class LineageJobDetail(LineageJobEntry):
     """One job with its full content, fetched from the store its index rows name.
 
-    ``job_store`` says where that was: ``lineage_job``, ``targets``, ``wandb`` or
+    ``job_store`` says where that was: ``gb_lineage_job``, ``gb_targets``, ``wandb`` or
     ``other``. ``detail`` holds the large payloads (step configs redacted); ``build``
     and ``target`` are the granite.build build and target run, in the shape
     ``GET /builds/{id}/status`` uses, when this server has them. When the store could

@@ -184,7 +184,7 @@ def test_lineage_job_indexer_reads_in_order_and_checkpoints():
         assert ix.scan_once(storage) == 2
         (batch,) = [c.args[0] for c in rows.index_job_records.call_args_list]
         assert [j.job_id for j in batch] == ["j1", "j2"]
-        cp = kv["lineage_index_checkpoint:db"]
+        cp = kv["lineage_index_checkpoint:gb_lineage_job"]
         assert cp["timestamp"] == "2026-01-02T00:00:00.000000+00:00"
         # Nothing new: nothing re-read.
         assert ix.scan_once(storage) == 0

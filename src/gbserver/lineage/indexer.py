@@ -101,17 +101,15 @@ FROM_BEGINNING = datetime(1970, 1, 1, tzinfo=timezone.utc)
 def _checkpoint_key_for_provider(provider: str) -> str:
     """Build the checkpoint key for a lineage provider.
 
-    The provider determines which source data we're reading from, and thus
-    which checkpoint key to use. For lineage_store source, the provider is
-    either wandb or db (db is a no-op, but we track it anyway).
+    The suffix is the ``job_store`` value the provider's indexer writes, so a
+    checkpoint names the same store as the rows it tracks.
     """
     if provider == LINEAGE_PROVIDER_NONE:
-        # admin_db source (standalone)
-        return f"{INDEXER_CHECKPOINT_PREFIX}:none"
+        return f"{INDEXER_CHECKPOINT_PREFIX}:{JobStore.TARGETS.value}"
     if provider == LINEAGE_PROVIDER_DB:
-        return f"{INDEXER_CHECKPOINT_PREFIX}:db"
+        return f"{INDEXER_CHECKPOINT_PREFIX}:{JobStore.LINEAGE_JOB.value}"
     if provider == LINEAGE_PROVIDER_WANDB:
-        return f"{INDEXER_CHECKPOINT_PREFIX}:wandb"
+        return f"{INDEXER_CHECKPOINT_PREFIX}:{JobStore.WANDB.value}"
     return INDEXER_CHECKPOINT_PREFIX  # fallback
 
 

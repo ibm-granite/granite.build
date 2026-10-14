@@ -99,9 +99,9 @@ class JobStore(str, Enum):
     serializes to the plain value.
     """
 
-    LINEAGE_JOB = "lineage_job"  # gb_lineage_job
+    LINEAGE_JOB = "gb_lineage_job"
     WANDB = "wandb"  # a W&B run
-    TARGETS = "targets"  # gb_targets (and its build)
+    TARGETS = "gb_targets"  # and its build
     OTHER = "other"  # an external system; the reference is opaque
 
 
