@@ -1,0 +1,133 @@
+# Default parameters for the Shadow Residual answerability adapter recipe.
+# Override any of these with: gb build start ... --param KEY=VALUE
+
+# ── Environment ──────────────────────────────────────────────────────────────
+ENVIRONMENT_URI: "space://environments/skypilot/lsf/ibm-bluevela"
+
+# Public container image both targets run in. Pinned (not :latest) so a run is
+# reproducible. torch 2.6 + CUDA 12.4 is the pairing the shadow-residual repo
+# documents for its own GPU runs, and python 3.11 sits inside the package's
+# requires-python (>=3.10,<3.14). The step renders this as SkyPilot
+# `docker:<image>`; BlueVela runs it under enroot.
+IMAGE: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
+
+# ── Code under test ──────────────────────────────────────────────────────────
+# The byoc step does an UNAUTHENTICATED `git clone`, so this must be a public
+# repo. shadow-residual on github.com is public; the github.ibm.com mirror of
+# the same name is both auth-walled and ~6 weeks stale, so do not repoint here.
+SR_REPO: "https://github.com/generative-computing/shadow-residual"
+# Pin a SHA or tag for reproducibility. `main` tracks the stock-PEFT API this
+# recipe's generated config is written against.
+SR_REF: "main"
+
+# ── Model ────────────────────────────────────────────────────────────────────
+# Public on the Hub, so no HF_TOKEN is needed. Must be identical in both
+# targets — eval rebuilds this same SR base before attaching the adapter.
+BASE_MODEL: "ibm-granite/granite-4.2-8b"
+
+# Shared Hub cache on /proj, so the ~16 GB of base weights are pulled once
+# rather than per run. Left unset the cache would land in the functional ID's
+# $HOME.
+HF_HOME_DIR: "/proj/data-eng/llmb-read-write/hfcache"
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+# CONFIRM THIS BEFORE THE FIRST RUN. Directory holding train.jsonl + test.jsonl
+# in shadow-residual's {"messages": [...]} JSONL format. This is NOT one of the
+# dirs already on /proj: the answerability training data exists there as raw
+# classification JSONL (train_data/) and as tokenized parquet
+# (train_data_parquet/), and sr-train reads neither. The messages-JSONL has to
+# be exported once from intrinsics_training — see README.md, "Before the first
+# run". Point this at wherever that export landed.
+TRAIN_DATA_DIR: "/proj/dmfexp/8cc/data/answerability/jsonl/granite-4.2-8b"
+
+# Eval dataset directory, used as-is. The layout answerability_eval.py expects
+# (gold.jsonl, rag.jsonl, unanswerable_v2.{a,b,c}.jsonl + collection.txt and
+# setting.txt) is exactly what this directory already holds — it is the
+# provenance intrinsics_training records for its own bundled copy, so no export
+# step is needed on the eval side.
+EVAL_DATASET_DIR: "/proj/dmfexp/8cc/data/answerability/test_data"
+
+# ── Adapter geometry ─────────────────────────────────────────────────────────
+# rank 16 / alpha 32 / dropout 0.05, from intrinsics_training's
+# configs/answerability/shadow_residual/sr_sharedkv_4.2_8b.yaml.
+#
+# k_proj and v_proj are deliberately absent and must stay absent: SR computes
+# K/V once from the frozen base stream and shares it, so a K/V LoRA delta has
+# nowhere to land and the model rejects it at build time.
+LORA_RANK: 16
+# Rank of the per-layer base->adapter cross_stream injection. Listing
+# cross_stream at all is what engages SR's dual-stream forward; drop it and the
+# run silently degrades to plain LoRA.
+CROSS_STREAM_RANK: 16
+LORA_ALPHA: 32
+LORA_DROPOUT: 0.05
+
+# ── Tokenizer markers ────────────────────────────────────────────────────────
+# granite-4.2 is ChatML, and its chat template carries no {% generation %}
+# tags, so TRL's assistant_only_loss path is unavailable and the trainer falls
+# back to ResponseOnlyCollator. That collator's default marker is Granite 4.1's
+# <|start_of_role|>assistant<|end_of_role|>, which never appears in a 4.2 row —
+# so this override is load-bearing, not cosmetic. Without it the loss mask is
+# wrong rather than absent.
+ASSISTANT_MARKER: "<|im_start|>assistant\\n"
+# End-of-completion marker, appended to any training row not already ending in
+# it, and recorded into adapter_config.json. <|im_end|> is 4.2's eos and is a
+# single added token, which is what the trainer requires of this field.
+LAST_TOKEN: "<|im_end|>"
+
+# ── Optimizer / schedule ─────────────────────────────────────────────────────
+LEARNING_RATE: "5.0e-05"
+WEIGHT_DECAY: 0.01
+LR_SCHEDULER: "cosine"
+WARMUP_RATIO: 0.05
+
+# ── Batch geometry ───────────────────────────────────────────────────────────
+PER_DEVICE_TRAIN: 1
+GRADIENT_ACCUMULATION: 8
+PER_DEVICE_EVAL: 4
+MAX_LENGTH: 8192
+# true, where intrinsics_training ran false. Its config was forced off by the
+# aLoRA gating that version used; the current stock-PEFT SR has no gating and
+# its dual-stream decoder forward is pure, so recompute is exact — checkpointing
+# costs time, not correctness. On by default because SR holds two hidden-state
+# streams, roughly doubling activation memory for an 8B at 8192 context.
+GRADIENT_CHECKPOINTING: true
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+NUM_EPOCHS: 3
+SEED: 0
+LOGGING_STEPS: 1
+DATALOADER_NUM_WORKERS: 4
+SAVE_TOTAL_LIMIT: 3
+# YAML list, injected verbatim. tensorboard is pip-installed by setup_command.
+# Use "[]" to disable reporting entirely.
+REPORT_TO: "[tensorboard]"
+# >0 caps training at N optimizer steps and turns this recipe into its own
+# smoke test (see README.md, "Smoke-testing"). 0 trains the full schedule.
+MAX_STEPS: 0
+
+# ── Eval knobs ───────────────────────────────────────────────────────────────
+EVAL_BATCH_SIZE: 4
+# 30, not 6: a 4.2 generation prompt opens a <think></think> block before the
+# label, and a tighter cap truncates it into a repeat loop. Generation stops on
+# eos/<|im_end|> regardless, so this is a ceiling and not a cost.
+EVAL_MAX_NEW_TOKENS: 30
+# Rows loaded per eval JSONL file. Lower it for a quick scoring pass.
+EVAL_DATASET_SIZE: 100000
+
+# ── Compute ──────────────────────────────────────────────────────────────────
+# 1 GPU is what intrinsics_training used for this exact config and model size.
+# accelerators is PER NODE; memory is host memory per node, in GB.
+NUM_NODES: 1
+NUM_GPUS_PER_NODE: 1
+ACCELERATORS: "H100:1"
+MEMORY: 80
+CLUSTER: "bluevela"
+# For the LSF cloud, SkyPilot's `zone` is the queue name.
+QUEUE: "normal"
+
+# Eval is a single-GPU generation pass over the eval set; it needs no more
+# hardware than training and is kept separate so the two can be sized apart.
+EVAL_NUM_GPUS_PER_NODE: 1
+EVAL_ACCELERATORS: "H100:1"
+EVAL_MEMORY: 80
