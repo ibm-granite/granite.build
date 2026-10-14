@@ -121,6 +121,7 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 | `GBSERVER_DOCKER_PULL_MAX_ATTEMPTS` / `_RETRY_BASE_DELAY` / `_RETRY_MAX_DELAY` | `4` / `5.0` / `30.0` | Docker image pull retry policy for transient registry errors (rate limits, 5xx). |
 | `GBSERVER_K8S_USE_ASPERA` / `GBSERVER_LSF_USE_ASPERA` | `true` / `false` | Use Aspera for asset transfer. |
 | `GBSERVER_ENABLE_STEP_RETRY` | `true` | Master switch for step-level retry. See [step retry](../builds/step-retry-configuration.md). |
+| `GBSERVER_MAX_PREEMPTIONS` | `5` | K8s: relaunches allowed when the cluster disrupts a step's pods (preemption, drain, eviction) before the step fails; applies even with step retry disabled. Per environment: `PodEviction` strategy `max_preemptions`. |
 | `GBSERVER_ENABLE_SSH_HOST_KEY_VERIFICATION` | `false` | Verify SSH host keys. |
 
 ## Build-files API caps
