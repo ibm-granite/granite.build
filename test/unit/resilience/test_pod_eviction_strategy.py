@@ -156,8 +156,10 @@ class TestPodEvictionRetryStrategy:
 
         assert result is True
 
-    def test_should_not_retry_wrong_object_type(self: Self) -> None:
-        """Test that strategy ignores events from non-monitored object types."""
+    def test_retries_regardless_of_wrapper_object_type(self: Self) -> None:
+        """The disruption verdict does not filter on ``object_types``: a preempted
+        pod is not a workload failure whatever wraps it, so this retries even when
+        the wrapper events come from another type (see ``_is_disruption``)."""
         strategy = PodEvictionRetryStrategy(object_types=["AppWrapper"])
         event = create_eviction_event(
             object_type="Job",
@@ -166,7 +168,7 @@ class TestPodEvictionRetryStrategy:
 
         result = strategy.should_retry(event=event)
 
-        assert result is False
+        assert result is True
 
     def test_should_retry_with_multiple_object_types(self: Self) -> None:
         """Test that strategy works when configured for multiple object types."""
@@ -611,3 +613,59 @@ class TestPodEvictionRetryStrategy:
         )
         nodes = strategy_with_avoidance.extract_nodes_to_avoid(event=event)
         assert "dmf-nnnqh-gpu-worker-3-n6r6x" in nodes
+
+
+class TestPodEvictionDisruptionVerdict:
+    """should_retry follows the per-pod disruption verdict."""
+
+    def _event(self: Self, **data_overrides) -> BuildEvent:
+        data = {
+            "state": "Failed",
+            "previous_state": "Running",
+            "events": [],
+            "failed_pods": {"pod-1": {"failure-reason": "exit code 137"}},
+            "disrupted_pods": {"pod-1": "EvictionByEvictionAPI"},
+        }
+        data.update(data_overrides)
+        payload = EventPayload.payload_parser(
+            event_type=BuildEventType.MESSAGE_EVENT,
+            data={"msg": f"```json\n{json.dumps(data)}\n```"},
+        )
+        return BuildEvent(
+            run_metadata=EntityRunMetadata(build_id="test-build-id"),
+            type=BuildEventType.MESSAGE_EVENT,
+            payload=payload,
+        )
+
+    def test_disrupted_pod_retries(self: Self) -> None:
+        assert PodEvictionRetryStrategy().should_retry(self._event()) is True
+
+    def test_undisrupted_failed_pod_does_not_retry(self: Self) -> None:
+        event = self._event(
+            failed_pods={
+                "pod-1": {"failure-reason": "exit code 137"},
+                "pod-2": {"failure-reason": "reason: OOMKilled"},
+            }
+        )
+        assert PodEvictionRetryStrategy().should_retry(event) is False
+
+    @pytest.mark.parametrize("previous_state", ["Resetting", "Resuming"])
+    def test_started_states_other_than_running_retry(
+        self: Self, previous_state: str
+    ) -> None:
+        event = self._event(previous_state=previous_state)
+        assert PodEvictionRetryStrategy().should_retry(event) is True
+
+    @pytest.mark.parametrize("previous_state", ["NotStarted", "Suspended"])
+    def test_never_started_does_not_retry(self: Self, previous_state: str) -> None:
+        event = self._event(previous_state=previous_state)
+        assert PodEvictionRetryStrategy().should_retry(event) is False
+
+    def test_is_exhausted_counts_relaunches(self: Self) -> None:
+        strategy = PodEvictionRetryStrategy(max_preemptions="2")  # YAML string
+        event = self._event()
+        assert [strategy.is_exhausted(event, 0, 0) for _ in range(3)] == [
+            False,
+            False,
+            True,
+        ]

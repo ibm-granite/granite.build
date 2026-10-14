@@ -29,6 +29,9 @@ from kubernetes_asyncio import client
 
 from gbserver.environment.k8s import AtomicApiClient
 from gbserver.monitoring.monitor_base import MonitorBase
+from gbserver.resilience.strategies.appwrapper_classifier import (
+    event_disruption_reason,
+)
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventType,
@@ -165,6 +168,11 @@ class AppWrapperMonitor(MonitorBase):
         self.failed_pods = {}  # type: ignore[var-annotated]
         self.launched_pods = {}  # type: ignore[var-annotated]
         self._api_failure_start_time: Optional[float] = None
+        # Pods the cluster disrupted this launch (pod name -> reason), recorded
+        # when seen, so the Failed verdict is attributed per pod.
+        self._disrupted_pods: Dict[str, str] = {}
+        # Bumped by unpause(), so a relaunch during the Failed grace period is seen.
+        self._generation = 0
         self._run_event = asyncio.Event()
         self._run_event.set()  # running by default; cleared by pause()
 
@@ -201,6 +209,8 @@ class AppWrapperMonitor(MonitorBase):
         self.failed_pods = {}
         self.launched_pods = {}
         self._api_failure_start_time = None
+        self._disrupted_pods = {}
+        self._generation += 1
         self._run_event.set()
 
     def _is_api_failure_timeout(self: Self) -> bool:
@@ -393,7 +403,15 @@ class AppWrapperMonitor(MonitorBase):
                             + "The `failed_pods` and `events` sections in the message above have more error details."
                         )
                         logger.error("%s", error_message)
+                        generation = self._generation
                         await asyncio.sleep(GBSERVER_MONITORING_GRACE_PERIOD)
+                        # The RetryHandler may relaunch on this Failed (pause() ->
+                        # reinstall -> unpause()); keep watching the new workload.
+                        if (
+                            not self._run_event.is_set()
+                            or self._generation != generation
+                        ):
+                            continue
                         self.stop()
                         # Note: Do NOT raise WorkloadFailedException here
                         # The RetryHandler will evaluate if this failure should trigger a retry
@@ -607,6 +625,9 @@ class AppWrapperMonitor(MonitorBase):
                 pod_name = pod.metadata.name
                 # update the list of all the pods ever launched by this appwrapper
                 self.launched_pods[pod_name] = pod
+                disruption = self._pod_disruption_reason(pod)
+                if disruption:
+                    self._disrupted_pods.setdefault(pod_name, disruption)
                 is_failed, failure_reason = self._analyze_pod_status(pod)
                 if is_failed:
                     logger.info(
@@ -638,6 +659,22 @@ class AppWrapperMonitor(MonitorBase):
                 self.name,
                 str(self.failed_pods.keys()),
             )
+
+    @staticmethod
+    def _pod_disruption_reason(pod) -> Optional[str]:
+        """Return why the cluster disrupted this pod, or None.
+
+        Reads the ``DisruptionTarget`` condition Kubernetes sets on a pod it is
+        about to terminate (reason ``PreemptionByScheduler``,
+        ``EvictionByEvictionAPI``, ``TerminationByKubelet``,
+        ``DeletionByTaintManager``, ...), falling back to an ``Evicted`` pod status.
+        """
+        for cond in pod.status.conditions or []:
+            if cond.type == "DisruptionTarget" and str(cond.status) == "True":
+                return cond.reason or "DisruptionTarget"
+        if pod.status.reason == "Evicted":
+            return "Evicted"
+        return None
 
     def _analyze_pod_status(self, pod):
         is_failed = False
@@ -830,6 +867,12 @@ class AppWrapperMonitor(MonitorBase):
                 )
                 self._seen_event_uids.add(uid)
         self.latest_events = fresh_events
+        # A pod deleted before a poll saw it (e.g. scheduler preemption) leaves
+        # only its event; record it so the Failed verdict can attribute it.
+        for ev in fresh_events:
+            disruption = event_disruption_reason(ev)
+            if disruption and ev.get("object_name"):
+                self._disrupted_pods.setdefault(ev["object_name"], disruption)
         return fresh_events
 
     async def _get_state_change(
@@ -843,7 +886,7 @@ class AppWrapperMonitor(MonitorBase):
                 "current_resets", 0
             ),
             "max_retries": self.additional_appwrapper_state_info.get(
-                "max_resets", "unlimited"
+                "max_retries", "unlimited"
             ),
             "workload_status": await self._get_workload_status(),
         }
@@ -855,6 +898,8 @@ class AppWrapperMonitor(MonitorBase):
         if get_state_for_exception:
             payload["failed_pods"] = self.failed_pods
         payload["events"] = await self._get_new_events(self.failed_pods.keys())  # type: ignore[arg-type]
+        # After _get_new_events, which may record more disruptions.
+        payload["disrupted_pods"] = dict(self._disrupted_pods)
         return f"\n```json\n{json.dumps(payload, indent=4)}\n```\n"
 
     async def _publish_state_change(

@@ -1456,6 +1456,11 @@ class K8s(Environment):
                 launch_id,
                 e,
             )
+            # Nothing is left to watch: end the paused monitor (it would otherwise
+            # wait for unpause() forever) so the RetryHandler's verdict surfaces.
+            if launch_id in self._monitors:
+                self._monitors[launch_id].stop()
+                self._monitors[launch_id].unpause()
             raise
 
     async def monitor_sidecar_monitor(

@@ -949,6 +949,12 @@ GBSERVER_MONITORING_GRACE_PERIOD = int(
 GBSERVER_API_FAILURE_TIMEOUT = int(
     os.getenv(ENV_VAR_PREFIX + "_API_FAILURE_TIMEOUT", "300"), base=10
 )
+# Relaunches allowed for a K8s workload whose pods the cluster disrupted
+# (preemption, drain, eviction) before the step fails; applies even with step
+# retries disabled. Default for PodEvictionRetryStrategy.max_preemptions.
+GBSERVER_MAX_PREEMPTIONS = int(
+    os.getenv(ENV_VAR_PREFIX + "_MAX_PREEMPTIONS", "5"), base=10
+)
 # Maximum number of retries for helm uninstall during cleanup
 GBSERVER_CLEANUP_MAX_RETRIES = int(
     os.getenv(ENV_VAR_PREFIX + "_CLEANUP_MAX_RETRIES", "5"), base=10
