@@ -294,6 +294,22 @@ training_rl_config:
     min_val: 1
     max_val: 8
     type: int
+  # DAPO overlong penalty. Fixed, not swept: the penalty is part of the reward
+  # that HPO ranks trials by, so sweeping it would favour the weakest penalty.
+  overlong_buffer_len:
+    description: "DAPO overlong penalty buffer: responses longer than max_response_length - overlong_buffer_len are penalised"
+    default: 128
+    values: null
+    min_val: 64
+    max_val: 1024
+    type: int
+  overlong_penalty_factor:
+    description: "Penalty factor for overlong responses in DAPO"
+    default: 1.0
+    values: null
+    min_val: 0.1
+    max_val: 5.0
+    type: float
 
 # Config used for setting up the Offline RL tuners (DPO, ORPO, KP))
 # Offline RL must be paired with a training_config.tuning_algorithm and the two 
@@ -517,26 +533,6 @@ tuners_rl_config:
         values: [0.7, 1.0, 1.2]
         min_val: 0.0
         max_val: 2.0
-        default: 1.0
-        type: float
-        for_tuner: true
-      overlong_buffer_len:
-        description: "Buffer length for DAPO overlong penalty"
-        options: ["choice", "uniform"]
-        strategy: "choice"
-        values: [128, 256, 512]
-        min_val: 64
-        max_val: 1024
-        default: 256
-        type: int
-        for_tuner: true
-      overlong_penalty_factor:
-        description: "Penalty factor for overlong responses in DAPO"
-        options: ["choice", "uniform"]
-        strategy: "choice"
-        values: [0.5, 1.0, 2.0]
-        min_val: 0.1
-        max_val: 5.0
         default: 1.0
         type: float
         for_tuner: true

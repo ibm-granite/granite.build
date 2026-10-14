@@ -884,7 +884,11 @@ class TestThePinCheckScript:
         assert cfg["think_policy"] == params["THINK_POLICY"]
         assert cfg["documents_policy"] == params["DOCUMENTS_POLICY"]
         assert cfg["eval_fraction"] == params["EVAL_FRACTION"]
-        assert cfg["tokenizer_dir"] == "{{ bindings.tokenizer.binding.path }}"
+        # The tokenizer is the step's `tokenizer` input, not a config key.
+        assert "tokenizer_dir" not in cfg
+        assert _targets(pinned)["corpus-pin-check"]["inputs"]["tokenizer"] == {
+            "binding": "align.retagged_student"
+        }
 
     def _run(self, pinned, tmp_path, manifest, splits=("train.jsonl", "eval.jsonl")):
         corpus = tmp_path / "corpus"

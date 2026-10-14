@@ -29,6 +29,13 @@ config:
     output_dir: "gen-smoke"
     python: "/stage/.venv/bin/python"
 
+# No named inputs, by design: gen_smoke_config.rungs is a variable-length list, one
+# entry per exported checkpoint, so there is no fixed set of input names to declare.
+# Recipes bind each export (e.g. `export_<N>`) purely to order this target after it;
+# allow_unknown keeps those valid.
+inputs:
+  allow_unknown: true
+
 outputs:
   required:
     repetition_report:

@@ -23,8 +23,10 @@ resource prefix.
 
 MCP requests authenticate with the **`X-API-Key`** header, resolved to the same scoped
 principal the REST API uses; every tool call is therefore owner-scoped exactly as the
-equivalent REST endpoint would be. With the `api_key` provider enabled, a request that
-presents no valid key fails the tool call with an authentication error.
+equivalent REST endpoint would be. Impersonation overlays (the `autotunex_assume` cookie)
+and `users.last_login_at` tracking do not apply to MCP calls. With the `api_key` provider
+enabled, a request that presents no valid key fails the tool call with an authentication
+error.
 
 For an external client to have a credential it can present, the `api_key` provider must be
 enabled (in `auth_providers`). MCP has no bearer or session-cookie transport of its own — it

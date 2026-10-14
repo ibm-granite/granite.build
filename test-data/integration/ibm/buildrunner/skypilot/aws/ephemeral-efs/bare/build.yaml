@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-aws-ephemeral-efs-probe
+  name: skypilot-aws-ephemeral-efs-probe-test
   # Ephemeral EFS (#391) analog of the BYO shared-fs bare test. The environment's
   # shared_filesystem uses `provision: ephemeral`, so gbserver CREATES an EFS at
   # target-run setup, mounts it on every worker, and DESTROYS it at teardown — no

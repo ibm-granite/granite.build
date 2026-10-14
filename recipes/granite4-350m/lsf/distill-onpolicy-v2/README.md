@@ -72,7 +72,7 @@ the trainer looks for a server running on a different node.
 
 | trap | what it looks like | what stops it here |
 |---|---|---|
-| serving the **teacher** | a complete run, plausible loss, a different algorithm | `model_path` is bound to `align.retagged_student`, and a test asserts it is not the teacher |
+| serving the **teacher** | a complete run, plausible loss, a different algorithm | the `model` input is bound to `align.retagged_student`, and a test asserts it is not the teacher |
 | server allocated, generation local | 8 idle H100s, zero requests, then a shape mismatch — build `d77546a9` | the step states `--use_vllm` positively in both directions, from the same key |
 | URL mangled in transit | `/http:/host:8001` | `mem://`, not `env://`; `env://` normalises it as a filesystem path |
 | immediate-EOS collapse | the teacher scoring empty completions as rollouts | `MIN_COMPLETION_LENGTH` on **both** sides |

@@ -198,12 +198,12 @@ class TestInputPathGuard:
     def test_empty_path_is_refused_by_name(self):
         rc, msgs = _run(input_path="")
         assert rc == 1
-        assert any("dpk_config.input_path is required" in m for m in msgs)
+        assert any("bind the target input 'docs'" in m for m in msgs)
 
-    def test_the_message_shows_the_binding_form_to_use(self):
-        """The field is not obvious from its name alone: it wants Jinja, not a literal."""
+    def test_the_message_shows_the_input_form_to_use(self):
+        """Names the declared input, not the deprecated config key, as the fix."""
         _, msgs = _run(input_path="")
-        assert any("bindings." in m and "binding.path" in m for m in msgs)
+        assert any("docs: {binding:" in m for m in msgs)
 
     @pytest.mark.parametrize(
         "bad",

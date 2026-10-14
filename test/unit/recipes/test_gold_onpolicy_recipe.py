@@ -44,6 +44,17 @@ _RECIPE = (
     / "gold-onpolicy-smoke"
 )
 
+_GOLD_STEP = (
+    pathlib.Path(__file__).resolve().parents[3]
+    / "configurations"
+    / "assets"
+    / "environments"
+    / "skypilot"
+    / "steps"
+    / "distill"
+    / "gold"
+)
+
 # apply_parameters' delimiters: variable_start_string="$${", variable_end_string="}".
 _MARKER = re.compile(r"\$\$\{([A-Za-z0-9_]+)\}")
 
@@ -109,8 +120,10 @@ def test_three_targets_in_the_expected_roles(targets):
 
 def test_the_server_is_a_starting_target(targets):
     """A target with no input bindings dispatches immediately; one with them waits.
-    The server must have none, or nothing ever starts."""
-    assert "inputs" not in targets["vllm-server"]
+    The server must have none, or nothing ever starts. Its one input, the model it
+    serves, is a plain env:// uri, which resolves at once."""
+    inputs = targets["vllm-server"].get("inputs", {})
+    assert all("binding" not in spec for spec in inputs.values()), inputs
 
 
 def test_service_outputs_use_the_mem_store(targets):
@@ -140,11 +153,16 @@ def test_the_url_is_dereferenced_as_state_not_path(targets):
     """The single most likely silent break. mem:// bindings carry `state`;
     `.binding.path` would render empty or wrong, and the trainer would launch
     pointed at nothing. Filesystem stores are the ones that use `.path`.
-    """
-    url = _gold(targets)["vllm_server_url"]
 
-    assert url == "{{ bindings.vllm.binding.state }}"
-    assert ".binding.path" not in url
+    The URL reaches the gold step as its declared `vllm` input, which the step
+    itself dereferences, so the recipe must not also copy it into a config key —
+    and the published step must read it as `state`.
+    """
+    assert "vllm_server_url" not in _gold(targets)
+
+    step_yaml = (_GOLD_STEP / "step.yaml").read_text(encoding="utf-8")
+    assert "bindings.vllm.binding.state" in step_yaml
+    assert "bindings.vllm.binding.path" not in step_yaml
 
 
 def test_teardown_gates_on_the_checkpoint_and_the_cluster(targets):
@@ -187,11 +205,14 @@ def test_the_server_serves_the_student_not_the_teacher(targets, params):
     """The on-policy contract, and a mistake that RUNS: the student generates and
     the teacher scores those generations. Serving the teacher gives a different
     algorithm that completes and reports a loss."""
-    served = targets["vllm-server"]["steps"][0]["config"]["vllm_config"]["model_path"]
+    served = targets["vllm-server"]["inputs"]["model"]["uri"]
 
-    assert served == params["STUDENT_MODEL"]
-    assert served == _gold(targets)["model_name_or_path"]
-    assert served != params["TEACHER_MODEL"]
+    assert served == "env://" + params["STUDENT_MODEL"]
+    assert served == targets["train"]["inputs"]["student"]["uri"]
+    assert served != "env://" + params["TEACHER_MODEL"]
+    assert (
+        "model_path" not in targets["vllm-server"]["steps"][0]["config"]["vllm_config"]
+    )
 
 
 def test_the_run_is_genuinely_on_policy(targets):
@@ -265,24 +286,26 @@ def test_three_lineage_inputs_on_the_training_target(targets):
     inputs must be declared alongside it rather than displaced by it."""
     inputs = targets["train"]["inputs"]
 
-    assert {"teacher_model", "student_model", "training_dataset"} <= set(inputs)
-    assert inputs["teacher_model"]["type"] == "model"
-    assert inputs["student_model"]["type"] == "model"
-    assert inputs["training_dataset"]["type"] == "dataset"
-    for name in ("teacher_model", "student_model", "training_dataset"):
+    assert {"teacher", "student", "corpus"} <= set(inputs)
+    assert inputs["teacher"]["type"] == "model"
+    assert inputs["student"]["type"] == "model"
+    assert inputs["corpus"]["type"] == "dataset"
+    for name in ("teacher", "student", "corpus"):
         assert inputs[name]["uri"].startswith("env:///"), name
     assert "type" not in inputs["vllm"]
 
 
-def test_inputs_agree_with_what_the_trainer_is_given(targets):
+def test_inputs_are_the_only_route_to_the_trainer(targets, params):
+    """The gold step reads student, teacher and corpus from its declared inputs.
+    A config key carrying the same path again could only disagree with them."""
     inputs = targets["train"]["inputs"]
     gold = _gold(targets)
 
-    assert inputs["student_model"]["uri"] == "env://" + gold["model_name_or_path"]
-    assert (
-        inputs["teacher_model"]["uri"] == "env://" + gold["teacher_model_name_or_path"]
-    )
-    assert inputs["training_dataset"]["uri"] == "env://" + gold["dataset_name"]
+    assert inputs["student"]["uri"] == "env://" + params["STUDENT_MODEL"]
+    assert inputs["teacher"]["uri"] == "env://" + params["TEACHER_MODEL"]
+    assert inputs["corpus"]["uri"] == "env://" + params["TRAINING_DATASET"]
+    for retired in ("model_name_or_path", "teacher_model_name_or_path", "dataset_name"):
+        assert retired not in gold, retired
 
 
 def test_response_template_transports_its_newline_as_an_escape(targets):

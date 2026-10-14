@@ -26,8 +26,9 @@ from gbserver.api.utils import (
     NO_ACCESSIBLE_SPACE,
     ListAppendOrSet,
     apply_tag_update,
+    confirm_can_add_to_space,
+    confirm_existing_item_write_access,
     confirm_space_member_access,
-    confirm_space_write_access,
     get_row_filter,
     is_super_admin,
     scope_space_name_filter,
@@ -163,6 +164,15 @@ def _create_and_register_artifact(
     type: ArtifactType,
 ) -> RegisterArtifactResponse:
     _validate_lh_uri(uri)
+    # Authorize before anything below touches the requested space: the
+    # origin-uri lookup would otherwise let a non-member probe that space's
+    # registry, and the jobstats write would leave a lineage record in it even
+    # though register_artifact's own (repeated) check then refuses the artifact.
+    confirm_can_add_to_space(
+        request,
+        username_on_target=artifact_request.username,
+        space_name=artifact_request.space_name,
+    )
     if artifact_request.name == "":
         artifact_request.name = getattr(artifact_request, "table_name", "")
 
@@ -338,8 +348,9 @@ def register_artifact(
     # attributed owner (including compliance flags like
     # certified_no_restrictions) — bind it to the caller unless a space/super
     # admin is explicitly registering on another user's behalf, the same gate
-    # update_artifact/archive_artifact already apply to the stored owner.
-    confirm_space_write_access(
+    # update_artifact/archive_artifact already apply to the stored owner. The
+    # caller must also be a member of the target space.
+    confirm_can_add_to_space(
         request,
         username_on_target=new_artifact.username,
         space_name=new_artifact.space_name,
@@ -393,7 +404,7 @@ def set_archive_bit(
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
-    confirm_space_write_access(
+    confirm_existing_item_write_access(
         request=request,
         username_on_target=item.username,
         space_name=item.space_name,
@@ -535,7 +546,7 @@ def decode_uri(
         # resource_group_id for hf:// URIs (see __get_hf_decoded_uri_response)
         # -- so member-level access here would leak more than the read paths
         # already do, not just duplicate what they show.
-        confirm_space_write_access(
+        confirm_existing_item_write_access(
             request=request,
             username_on_target=artifact.username,
             space_name=artifact.space_name,
@@ -681,7 +692,7 @@ def update_artifact(
     assert isinstance(artifact, ArtifactRegistration)
 
     # Make sure the user (owner or admin) has access to the artifact
-    confirm_space_write_access(
+    confirm_existing_item_write_access(
         request=request,
         username_on_target=artifact.username,
         space_name=artifact.space_name,

@@ -26,16 +26,13 @@ steps:
 The trainer's settings live under `config.gold_config`. Checkpoint emission, resume and
 the monitor are top-level `config` keys; the trainer source is `config.code_config`.
 
-### Required
-
-| Field | Type | Purpose |
-|---|---|---|
-| `model_name_or_path` | string | Student init. On the on-policy path this is also the model the vLLM server nodes serve. Must share a tokenizer with the teacher (see [Choosing a student/teacher pair](#choosing-a-studentteacher-pair)). |
-| `teacher_model_name_or_path` | string | The teacher: frozen, forward-only in the training loop. |
-| `dataset_name` | string | The training corpus. **Must be think-filtered** (`*_nothink.jsonl`): an assistant completion containing an inline `<think>...</think>` breaks GOLD's completion extraction. |
-
-All three default to `""`. The renderer passes them through without checking for an empty
-value, so an empty one is not caught before the trainer starts on a held allocation.
+The student, teacher and corpus are no longer config fields; they are the required
+`student`, `teacher` and `corpus` target inputs — see [Inputs](#inputs) below. The
+student is also, on the on-policy path, the model the vLLM server nodes serve, and must
+share a tokenizer with the teacher (see
+[Choosing a student/teacher pair](#choosing-a-studentteacher-pair)). The corpus **must be
+think-filtered** (`*_nothink.jsonl`): an assistant completion containing an inline
+`<think>...</think>` breaks GOLD's completion extraction.
 
 ### Optional
 
@@ -57,7 +54,7 @@ value, so an empty one is not caught before the trainer starts on a held allocat
 
 | Field | Type | Purpose |
 |---|---|---|
-| `num_train_epochs` | number | Epochs over `dataset_name`. Default: `1.0`. |
+| `num_train_epochs` | number | Epochs over the `corpus` input. Default: `1.0`. |
 | `max_steps` | integer | Cap the run by optimizer steps rather than epochs. `0` leaves the key out of the rendered config, so an epoch-bounded run is unaffected; any positive value overrides `num_train_epochs` in the trainer. One epoch of the 802,027-row reference corpus is 4,177 steps at effective batch 192. Default: `0`. |
 | `learning_rate` | number | Peak learning rate. Rendered as a YAML float. Default: `1.0e-05`. |
 | `min_lr` | number | Floor of the `cosine_with_min_lr` schedule; rendered under `lr_scheduler_kwargs`, not at the top level. Default: `1.0e-06`. |
@@ -119,12 +116,14 @@ see [CE anchor and entropy guard](#ce-anchor-and-entropy-guard-1).
 
 #### On-policy
 
-All default to off-policy. See [On-policy](#on-policy-1).
+All default to off-policy. See [On-policy](#on-policy-1). The external vLLM server is no
+longer a config field; it is the optional `vllm` mem:// input (see [Inputs](#inputs)) —
+binding it requires `vllm_num_servers > 0` and `lmbda > 0`, and makes every node train.
+Not yet run on a cluster.
 
 | Field | Type | Purpose |
 |---|---|---|
-| `vllm_num_servers` | integer | `> 0` selects on-policy. Without `vllm_server_url`, dedicates the **last** N nodes of the allocation to serving the student under vLLM and trains on the rest. Default: `0`. |
-| `vllm_server_url` | string | An **external** vLLM server, reached by URL, instead of carving nodes out of this allocation; typically another target's `mem://` binding, `{{ bindings.<name>.binding.state }}`. When set, every node trains. Requires `vllm_num_servers > 0` and `lmbda > 0`. Not yet run on a cluster. Default: `""`. |
+| `vllm_num_servers` | integer | `> 0` selects on-policy. Without the optional `vllm` input bound, dedicates the **last** N nodes of the allocation to serving the student under vLLM and trains on the rest. Default: `0`. |
 | `vllm_mode` | string | `server` = talk to a vLLM HTTP server (the reference launcher's value). Passed to the trainer only on the external-server path. Default: `server`. |
 | `vllm_sync_frequency` | integer | How often, in optimizer steps, the trainer pushes updated weights to the server; a larger value samples from a staler policy. Passed to the trainer only on the external-server path. Default: `1`. |
 | `top_p` | number | Rollout sampling `top_p`; emitted only on-policy. Default: `0.95`. |
@@ -168,8 +167,16 @@ check and the vLLM server run with `/stage/.venv/bin/python` directly, not with
 
 ### Inputs
 
-The step declares no `inputs:`; it reads the paths in `gold_config`. A recipe declares the
-inputs on the target and passes their paths in:
+The step declares its inputs; the run script reads path inputs as
+`{{ bindings.<name>.binding.path }}` and the `mem://` `vllm` input as
+`{{ bindings.vllm.binding.state }}`:
+
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `student` | yes | model | `align.retagged_student`, or the `checkpoint` of `space://steps/distill/sft` |
+| `teacher` | yes | model | a direct `uri:` to the teacher directory |
+| `corpus` | yes | dataset | `corpus.corpus` (the `space://steps/distill/corpus-prep` step) |
+| `vllm` | no | `mem://` | `<server>.vllm_url` (the `space://steps/distill/vllm-server` step) |
 
 ```yaml
 inputs:
@@ -177,21 +184,16 @@ inputs:
     binding: align.retagged_student   # or an SFT target's checkpoint
   corpus:
     binding: corpus.corpus
-  teacher_model:
+  teacher:
     uri: "env:///proj/.../teacher"
     type: model
-# ...and in the step's config:
-gold_config:
-  model_name_or_path: "{{ bindings.student.binding.path }}"
-  teacher_model_name_or_path: "{{ bindings.teacher_model.binding.path }}"
-  dataset_name: "{{ bindings.corpus.binding.path }}"
+  vllm:                               # external-server on-policy path only
+    binding: vllm-server.vllm_url
 ```
 
-Typical sources are the `retagged_student` output of `space://steps/distill/tokenizer-align`
-(or the `checkpoint` of `space://steps/distill/sft`) for the student, and the `corpus` output
-of `space://steps/distill/corpus-prep`. On the external-server on-policy path,
-`vllm_server_url` comes from another target's `mem://` binding as
-`{{ bindings.<name>.binding.state }}`.
+`gold_config.model_name_or_path`, `teacher_model_name_or_path`, `dataset_name` and
+`vllm_server_url` are no longer read; a target that still sets one fails at run time with a
+message naming the input to bind instead.
 
 ### Outputs
 
@@ -229,8 +231,8 @@ identity-mounted into the container), falling back to the current directory when
 - `checkpoints/<run_name>_node<N>/` — the trainer's `--output_dir`, and the `checkpoint`
   artifact.
 
-`model_name_or_path`, `teacher_model_name_or_path`, `dataset_name` and
-`resume_from_checkpoint_dir` are used as given; pass absolute paths.
+The resolved `student`, `teacher` and `corpus` input paths, and
+`resume_from_checkpoint_dir`, are used as given; pass/bind absolute paths.
 
 ## Example build.yaml
 
@@ -242,6 +244,16 @@ granite.build:
   targets:
     train-gold:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        student:
+          uri: "env:///proj/.../student_overlays/granite-4.1-3b-base-hub"
+          type: model
+        teacher:
+          uri: "env:///proj/.../teacher_overlays/granite-4.2-30b"
+          type: model
+        corpus:
+          uri: "env:///proj/.../subsampled_0.4_shuffled_nothink.jsonl"
+          type: dataset
       outputs:
         checkpoint:
           uri: "env://{{ binding.path }}"
@@ -259,9 +271,6 @@ granite.build:
                 cluster: "bluevela"
                 zone: "normal"
             gold_config:
-              model_name_or_path: /proj/.../student_overlays/granite-4.1-3b-base-hub
-              teacher_model_name_or_path: /proj/.../teacher_overlays/granite-4.2-30b
-              dataset_name: /proj/.../subsampled_0.4_shuffled_nothink.jsonl
               gradient_accumulation_steps: 12
 ```
 
@@ -480,15 +489,16 @@ never modified.
 
 `vllm_num_servers > 0` dedicates the **last** N nodes to serving the student under vLLM and
 trains on the rest; the renderer rejects a count that leaves no trainers, or on-policy on a
-single node. On-policy continues from a good off-policy checkpoint — point
-`model_name_or_path` at that checkpoint, not the base overlay. `--use_vllm` is passed to the
-trainer explicitly in both directions from `vllm_num_servers`: emitted only negatively, an
+single node. On-policy continues from a good off-policy checkpoint — bind the `student`
+input to that checkpoint, not the base overlay. `--use_vllm` is passed to the trainer
+explicitly in both directions from `vllm_num_servers`: emitted only negatively, an
 on-policy run would allocate a vLLM node and then generate locally, leaving the server idle
 (build `d77546a9` did exactly that and died in the local path).
 
-With `vllm_server_url` set, the server lives in another target's allocation and every node
-here trains. This path has **not yet run on a cluster**: the trainer pushes updated student
-weights to the server over NCCL, so an external server means a NCCL process group spanning two
-LSF allocations, and whether that works is the open question this path exists to answer. The
-renderer refuses `vllm_server_url` with `vllm_num_servers: 0` (the run would train off-policy
-while a server sat idle) or with `lmbda: 0` (the student would never generate).
+With the optional `vllm` input bound, the server lives in another target's allocation and
+every node here trains. This path has **not yet run on a cluster**: the trainer pushes
+updated student weights to the server over NCCL, so an external server means a NCCL process
+group spanning two LSF allocations, and whether that works is the open question this path
+exists to answer. The renderer refuses the `vllm` input with `vllm_num_servers: 0` (the run
+would train off-policy while a server sat idle) or with `lmbda: 0` (the student would never
+generate).

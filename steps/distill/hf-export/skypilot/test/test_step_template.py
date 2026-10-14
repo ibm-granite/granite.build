@@ -166,8 +166,9 @@ class TestFlagSurface:
 
 
 class TestConfigDefaults:
-    def test_the_input_is_not_defaulted(self, step):
-        assert step["config"]["export_config"]["train_output_dir"] == ""
+    def test_the_train_output_is_a_required_input(self, step):
+        assert set(step["inputs"]["required"]) == {"train_output"}
+        assert "train_output_dir" not in step["config"]["export_config"]
 
     def test_padding_side_defaults_to_publish_correct(self, step):
         """The trainer sets 'left' because it GENERATES during on-policy rollout. That is
@@ -198,7 +199,8 @@ class TestConfigDefaults:
 
     def test_the_tokenizer_cross_check_is_opt_in(self, step):
         """It needs a second directory to compare against, which only a recipe knows."""
-        assert step["config"]["export_config"]["expect_tokenizer_from"] == ""
+        assert set(step["inputs"]["optional"]) == {"expected_tokenizer"}
+        assert "expect_tokenizer_from" not in step["config"]["export_config"]
 
     def test_step_type_is_a_real_enum_member(self, step):
         from gbcommon.types.stepconfig import StepType

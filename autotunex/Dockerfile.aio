@@ -16,8 +16,8 @@
 # 127.0.0.1 for every caller — identical fix in Podman and on OpenShift. Clients
 # keep using :8080 unchanged. See docker/aio/Caddyfile.
 #
-# granite.build is installed via its PUBLIC standalone path from the fork branch
-# (no internal Artifactory). AutoTuneX submits builds to the co-located gbserver
+# granite.build is installed via its PUBLIC standalone path from ibm-granite/granite.build
+# main (no internal Artifactory). AutoTuneX submits builds to the co-located gbserver
 # through the `llmb` CLI (job_backend=llmb, GB_ENVIRONMENT=standalone).
 #
 # All secrets and internal hostnames are injected at RUN time via --env-file
@@ -30,8 +30,8 @@ ARG PYTHON_VERSION=3.12
 # Node 22 (LTS): granite.build's frontend pulls @carbon/themes>=11.79, whose
 # package engines require node>=22 — yarn --frozen-lockfile aborts on node 20.
 ARG NODE_VERSION=22
-ARG GB_REPO=https://github.com/priyanshu891/granite.build.git
-ARG GB_REF=feat/autotunex-endpoint-migration
+ARG GB_REPO=https://github.com/ibm-granite/granite.build.git
+ARG GB_REF=main
 
 # -----------------------------------------------------------------------------
 # Stage 1 — build the AutoTuneX SvelteKit SPA (adapter-static, base path /autotune)
@@ -54,7 +54,7 @@ RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
 # Output: /app/ux/build
 
 # -----------------------------------------------------------------------------
-# Stage 2 — clone granite.build (fork branch) and build its dashboard UI
+# Stage 2 — clone granite.build (GB_REPO at GB_REF) and build its dashboard UI
 # -----------------------------------------------------------------------------
 FROM node:${NODE_VERSION}-slim AS gb-builder
 
@@ -80,8 +80,16 @@ WORKDIR /opt/granite.build/frontend
 # corepack ships with the Node base image; it activates the yarn version the frontend
 # declares. This mirrors the repo's `make build-frontend` recipe: build the
 # Next.js dashboard, then stage the static export where gbserver serves it from
-# (src/gbserver/static/ui/) — the fork does NOT track static/ui, so this build is
+# (src/gbserver/static/ui/) — granite.build does NOT track static/ui, so this build is
 # the only source of the dashboard the pod serves.
+#
+# The export path is NOT frontend/out. granite.build's frontend became a yarn
+# workspace (ibm-granite/granite.build PR #307, 5d2d187): the root package.json only delegates `build`
+# to the `standalone-ui` workspace, so Next.js writes the static export under
+# apps/standalone/out. frontend/out is where it landed BEFORE that split, is
+# gitignored, and so simply does not exist in a fresh clone — rsyncing from it
+# failed the build with an opaque `change_dir "out" failed` (exit 23). Keep this
+# path in step with that repo's own `make build-frontend` recipe.
 #
 # CRITICAL — delete .env*.local BEFORE `yarn build`. next.config.ts inlines
 # GBSERVER_API_URL/AUTOTUNEX_API_URL into the CLIENT bundle, and Next.js loads
@@ -96,20 +104,33 @@ WORKDIR /opt/granite.build/frontend
 # Caddy fronts on :8080. The grep is a tripwire — fail the build loudly here
 # rather than ship a bundle that only breaks in someone's browser.
 RUN corepack enable \
-    && rm -f .env.local .env.production.local .env.development.local \
+    && APP=apps/standalone \
+    && rm -f .env*.local apps/*/.env*.local \
     && yarn install --frozen-lockfile \
     && yarn build \
-    && if grep -rq "127\.0\.0\.1:8080" out/; then \
+    # Fail loudly if the export path moves again. Without this the grep below
+    # "passes" a missing directory — grep exits 2, so `if grep -q` is false — and
+    # the real problem only surfaces as an rsync error two lines later.
+    && if [ ! -d "$APP/out" ]; then \
+         echo "FATAL: no static export at frontend/$APP/out after yarn build" >&2; \
+         echo "       the frontend layout moved on ${GB_REF}; check that" >&2; \
+         echo "       repo's make build-frontend recipe for the new path" >&2; \
+         exit 1; \
+       fi \
+    && if grep -rq "127\.0\.0\.1:8080" "$APP/out/"; then \
          echo "FATAL: loopback API base URL baked into the dashboard bundle" >&2; \
-         echo "       check for a committed frontend/.env*.local on ${GB_REF}" >&2; \
+         echo "       check for a committed frontend/$APP/.env*.local on ${GB_REF}" >&2; \
          exit 1; \
        fi \
     && mkdir -p ../src/gbserver/static/ui \
-    && rsync -a --delete out/ ../src/gbserver/static/ui/ \
+    && rsync -a --delete "$APP/out/" ../src/gbserver/static/ui/ \
     # Drop the frontend build artifacts once the static export is staged into
     # src/gbserver/static/ui/ — node_modules + the .next webpack cache are
     # hundreds of MB of pure waste that must not be copied into later stages.
-    && rm -rf node_modules .next out
+    # The workspace hoists most of node_modules to frontend/, but yarn still
+    # creates per-package ones, and .next now lives under the app.
+    && rm -rf node_modules apps/*/node_modules packages/*/node_modules \
+         apps/*/.next apps/*/out
 
 # -----------------------------------------------------------------------------
 # Stage 3 — build three isolated virtualenvs (conflicting pins across services)
@@ -130,9 +151,18 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # --- venv 1: AutoTuneX ----------------------------------------------------------
-# Default: the `mysql` extra ONLY (asyncmy + cryptography for MySQL 8.4
-# caching_sha2_password). With job_backend=llmb, AutoTuneX shells out to the
-# `llmb` CLI rather than importing a trainer, so the image stays lean.
+# Default: the database extras ONLY — `mysql` (asyncmy + cryptography for MySQL
+# 8.4 caching_sha2_password) and `postgres` (asyncpg). With job_backend=llmb,
+# AutoTuneX shells out to the `llmb` CLI rather than importing a trainer, so the
+# image stays lean.
+#
+# Both drivers ship unconditionally rather than behind a build arg:
+# AUTOTUNEX_DATABASE_URL picks the dialect at run time, and a driver that is
+# absent fails at engine creation — an operator who supplies a
+# postgresql+asyncpg:// URL cannot recover without a rebuild. Neither wheel costs
+# an apt package in the runtime stage: asyncpg speaks the Postgres wire protocol
+# directly, so it needs no libpq at all. Same reasoning as psycopg2-binary in
+# venv 2 and `[postgres]` in venv 3 below.
 #
 # Opt-in (--build-arg INSTALL_AUTOTUNE_CORE=1): also install the `granite-build`
 # extra AND the autotune training core used by the in-process `local` job
@@ -151,8 +181,8 @@ COPY src /build/autotunex/src
 RUN python -m venv /opt/venv/autotunex \
     && /opt/venv/autotunex/bin/pip install --upgrade pip \
     && case "$INSTALL_AUTOTUNE_CORE" in \
-         1|true|TRUE|yes|on) EXTRAS="[mysql,granite-build]" ;; \
-         *)                  EXTRAS="[mysql]" ;; \
+         1|true|TRUE|yes|on) EXTRAS="[mysql,postgres,granite-build]" ;; \
+         *)                  EXTRAS="[mysql,postgres]" ;; \
        esac \
     && echo "Installing autotunex${EXTRAS}" \
     && /opt/venv/autotunex/bin/pip install "/build/autotunex${EXTRAS}" \
@@ -165,19 +195,44 @@ RUN python -m venv /opt/venv/autotunex \
        esac
 
 # --- venv 2: granite.build — the public `standalone` extra ----------------------
-# Editable install (like the fork's own Dockerfile) so gbserver resolves its
+# Editable install (like granite.build's own Dockerfile) so gbserver resolves its
 # bundled dashboard from the repo tree at /opt/granite.build — which is built in
 # the gb-builder stage above and kept at the SAME path in the runtime stage, so
 # the egg-link stays valid across the stage copy.
+#
+# psycopg2-binary is installed ALONGSIDE `[standalone]` so gbserver can use a
+# Postgres metadata store (GBSERVER_METADATA_STORAGE=sql). Its SQL storage layer
+# is synchronous and GBSERVER_SQL_SCHEME defaults to `postgresql`, i.e. the
+# psycopg2 DBAPI — but upstream declares psycopg2-binary only in the Tier-3 `ibm`
+# extra, which would also drag in skypilot-from-git, kubernetes, aspera and
+# dmf-lib. The async driver asyncpg already arrives via `[standalone]` ->
+# `[analytics]` and is NOT a substitute: the analytics routers use it, the
+# metadata store cannot. The `-binary` wheel bundles its own libpq, so the
+# runtime stage needs no extra apt package when it copies /opt/venv.
+#
+# This is a capability, not a default: the image still ships
+# GBSERVER_METADATA_STORAGE=sqlite (see the runtime stage). Absent psycopg2 the
+# `sql` setting fails in a way that is very hard to read — every storage
+# __init__ logs its connection line and only then connects, and tenacity retries
+# the failure 10x, nested, per table, so gbserver appears to hang silently for
+# tens of minutes instead of reporting a missing driver.
 COPY --from=gb-builder /opt/granite.build /opt/granite.build
 RUN python -m venv /opt/venv/gb \
     && /opt/venv/gb/bin/pip install --upgrade pip \
-    && /opt/venv/gb/bin/pip install -e "/opt/granite.build[standalone]"
+    && /opt/venv/gb/bin/pip install -e "/opt/granite.build[standalone]" psycopg2-binary
 
-# --- venv 3: api-bridge (synchronous MySQL write-path) --------------------------
+# --- venv 3: api-bridge (synchronous MySQL/Postgres write-path) -----------------
+# The `[postgres]` extra (psycopg 3) ships for the same reason venv 1 carries
+# asyncpg: the bridge reads the SAME AUTOTUNEX_DATABASE_URL as AutoTuneX and
+# coerces a Postgres URL to postgresql+psycopg, so one connection string has to
+# satisfy both services. The bridge's own standalone image keeps this behind
+# INSTALL_POSTGRES=1 so its base install carries no LGPL dependency; that trade
+# is already spent in this image, where venv 2 installs psycopg2-binary. The
+# `[binary]` wheel bundles libpq, so again no apt package in the runtime stage.
+# Quoted so the shell does not glob `[postgres]`.
 RUN python -m venv /opt/venv/apibridge \
     && /opt/venv/apibridge/bin/pip install --upgrade pip \
-    && /opt/venv/apibridge/bin/pip install /build/autotunex/src/api-bridge
+    && /opt/venv/apibridge/bin/pip install "/build/autotunex/src/api-bridge[postgres]"
 
 # -----------------------------------------------------------------------------
 # Stage 4 — runtime

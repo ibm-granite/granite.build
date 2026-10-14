@@ -26,8 +26,6 @@ from gbserver.storage.storage import BaseItemStorage, BaseStoredItem, IItemStora
 from gbserver.storage.storage_factory import StorageFactory
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import (
-    ENV_VAR_GBSERVER_IMAGE_TAG,
-    ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
     GB_ARTIFACT_REGISTRY_TABLE_NAME,
     GB_BUILDS_TABLE_NAME,
     GB_ENVIRONMENT,
@@ -72,8 +70,8 @@ logger = get_logger(__name__)
 def check_cloud_config():
     """Assert the IBM/cloud secret bundle needed by `ibm`-marked tests is present.
 
-    Covers Lakehouse, IBM Cloud Secret Manager, and GitHub Enterprise
-    credentials.  Invoked from the ``_check_test_env`` autouse fixture only for
+    Covers the Lakehouse environment, IBM Cloud Secret Manager, and GitHub
+    Enterprise credentials.  Invoked from the ``_check_test_env`` autouse fixture only for
     tests carrying the ``ibm`` marker.  No-op in mock mode (GBTEST_MODE != 'live'),
     where credentials are intentionally absent.  The general ``GB_ENVIRONMENT !=
     PROD`` guard is handled separately (the fixture + storage ``setup_class``),
@@ -87,21 +85,10 @@ def check_cloud_config():
     assert (
         LAKEHOUSE_ENVIRONMENT != "PROD"
     ), f"LAKEHOUSE_ENVIRONMENT={LAKEHOUSE_ENVIRONMENT}, but should we one of STAGING or DEV"
-    check_env_var_set("LAKEHOUSE_TOKEN")  # Needed for lakehouse
     check_env_var_set(
         "IBM_CLOUD_API_KEY"
     )  # Needed for ibm cloud secrets and maybe others
     assert GBSERVER_GITHUB_TOKEN != ""
-    # Image tags for cluster/BuildRunnerJob builds.  Don't apply to every build
-    # environment, but generally required for K8s (sidecar) and BuildRunnerJob.
-    check_env_var_set(
-        ENV_VAR_GBSERVER_IMAGE_TAG,
-        f"Build tests must be configured with the gbserver image to use with the {ENV_VAR_GBSERVER_IMAGE_TAG} env var. Use 'make info' in the dev or main branch.",
-    )
-    check_env_var_set(
-        ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
-        f"Build tests must be configured with the sidecar image to use with the {ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG} env var. Use 'make info' in the dev or main branch.",
-    )
 
 
 class AbstractReadonlySingletonStorageUsingTest:

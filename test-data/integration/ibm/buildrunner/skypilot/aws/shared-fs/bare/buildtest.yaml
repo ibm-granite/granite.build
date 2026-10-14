@@ -14,7 +14,6 @@ target_expectations:
     step_count: 3
     input_artifact_count: 1 # hf input
     output_artifact_count: 1 # hf output
-    jobstats_count: 1
 # The committed Space (../space) carries environments/skypilot/aws-shared-fs and
 # chains base_uris to configurations/assets. The `command` step is a gbserver
 # builtin (space://steps/command) resolved regardless of the space.

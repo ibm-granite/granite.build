@@ -155,32 +155,29 @@ def test_no_single_dollar_substitution_markers(recipe):
 
 @pytest.mark.parametrize("recipe", _RECIPES)
 def test_three_lineage_inputs_declared(recipe, tmp_path):
-    """Lineage inputs[] is built from the target's input_artifacts, not from step
-    config, so a path handed only to gold_config records nothing."""
+    """Lineage inputs[] is built from the target's input_artifacts, and these are
+    also the gold step's declared inputs: the only route the paths take to the
+    trainer."""
     inputs = _target(_render(recipe, tmp_path), recipe)["inputs"]
 
-    assert set(inputs) == {"teacher_model", "student_model", "training_dataset"}
-    assert inputs["teacher_model"]["type"] == "model"
-    assert inputs["student_model"]["type"] == "model"
-    assert inputs["training_dataset"]["type"] == "dataset"
+    assert set(inputs) == {"teacher", "student", "corpus"}
+    assert inputs["teacher"]["type"] == "model"
+    assert inputs["student"]["type"] == "model"
+    assert inputs["corpus"]["type"] == "dataset"
     for name, spec in inputs.items():
         # env:// needs an absolute path; pullasset_envstore rejects a relative one.
         assert spec["uri"].startswith("env:///"), name
 
 
 @pytest.mark.parametrize("recipe", _RECIPES)
-def test_inputs_agree_with_what_the_trainer_is_given(recipe, tmp_path):
-    """An input renamed on one side only would make lineage describe a run that did
-    not happen."""
+def test_inputs_are_the_only_route_to_the_trainer(recipe, tmp_path):
+    """The gold step reads student, teacher and corpus from its declared inputs, so
+    a gold_config key carrying the same path again could only disagree with them."""
     rendered = _render(recipe, tmp_path)
-    inputs = _target(rendered, recipe)["inputs"]
     gold = _gold(rendered, recipe)
 
-    assert inputs["student_model"]["uri"] == "env://" + gold["model_name_or_path"]
-    assert (
-        inputs["teacher_model"]["uri"] == "env://" + gold["teacher_model_name_or_path"]
-    )
-    assert inputs["training_dataset"]["uri"] == "env://" + gold["dataset_name"]
+    for retired in ("model_name_or_path", "teacher_model_name_or_path", "dataset_name"):
+        assert retired not in gold, retired
 
 
 @pytest.mark.parametrize("recipe", _RECIPES)
@@ -193,7 +190,8 @@ def test_corpus_think_filtering_has_been_established(recipe, tmp_path):
     extraction with no error — so the guarantee moves into an explicit allowlist
     that records how each corpus was checked.
     """
-    dataset = _gold(_render(recipe, tmp_path), recipe)["dataset_name"]
+    uri = _target(_render(recipe, tmp_path), recipe)["inputs"]["corpus"]["uri"]
+    dataset = uri.removeprefix("env://")
 
     assert "nothink" in dataset or dataset in _THINK_CHECKED_CORPORA, (
         f"{dataset} is neither named *_nothink nor listed in "

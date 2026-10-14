@@ -58,7 +58,7 @@ dmypy.json
 .env
 .env.*
 !.env.example
-!.env.aio.example
+!.env.*.example
 *.pem
 *.key
 credentials.json
@@ -121,6 +121,7 @@ logs/
 *.swo
 *~
 .ipynb_checkpoints/
+
 
 
 # ---------------------------------------------------------------------------

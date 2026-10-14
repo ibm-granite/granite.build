@@ -20,12 +20,13 @@ from libgbtest.buildrunner.buildtest import (
     AbstractYamlBuildRunnerTest,
     get_test_data_dir_for,
 )
-from libgbtest.constants import extended_testing_only
+from libgbtest.constants import extended_testing_only, requires_k8s_image_tags
 
 pytestmark = pytest.mark.ibm
 
 
 @extended_testing_only
+@requires_k8s_image_tags
 @pytest.mark.xdist_group(name="buildtest_cpu")
 class TestBuildRunner1StepCPU(AbstractYamlBuildRunnerTest):
 

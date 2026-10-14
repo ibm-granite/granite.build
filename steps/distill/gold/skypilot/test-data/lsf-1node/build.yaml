@@ -33,19 +33,28 @@ granite.build:
   targets:
     gold-smoke:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
-      # Same three lineage inputs as the lsf/ fixture and the gold-smoke recipe.
+      # Same three named inputs (student, teacher, corpus) as the lsf/
+      # fixture; the step reads their resolved paths itself.
       # This variant has no buildtest.yaml — it is launched by hand as the 1-node
       # control — which is exactly why it needs them: a control run whose lineage
       # omits the pair and dataset cannot be compared against the 2-node run it
       # exists to control for.
       inputs:
-        teacher_model:
+        teacher:
           uri: "env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.2-30b"
           type: model
-        student_model:
+        student:
           uri: "env:///proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
           type: model
-        training_dataset:
+        # A 2000-row head slice of the reference dataset
+        # (en_sft_4.1/subsampled_0.2_shuffled_nothink.jsonl, already
+        # shuffled, so the slice is unbiased). Same schema, same tokenizer
+        # family, real multi-hundred-token completions — unlike the
+        # conveniently small rl_multidomain *_nothink files, whose assistant
+        # turns are single-character answer keys (median 1 char) rather than
+        # completions, which would both measure nothing and exercise the
+        # empty-completion path the trainer had to be patched to survive.
+        corpus:
           uri: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
           type: dataset
       outputs:
@@ -69,17 +78,6 @@ granite.build:
                 accelerators: "H100:8"
             gold_config:
               run_name: gold-smoke-1node
-              model_name_or_path: "/proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
-              teacher_model_name_or_path: "/proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.2-30b"
-              # A 2000-row head slice of the reference dataset
-              # (en_sft_4.1/subsampled_0.2_shuffled_nothink.jsonl, already
-              # shuffled, so the slice is unbiased). Same schema, same tokenizer
-              # family, real multi-hundred-token completions — unlike the
-              # conveniently small rl_multidomain *_nothink files, whose assistant
-              # turns are single-character answer keys (median 1 char) rather than
-              # completions, which would both measure nothing and exercise the
-              # empty-completion path the trainer had to be patched to survive.
-              dataset_name: "/proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
               # 4x smaller than the reference 16384/4096. Sized against the actual
               # data: completions are ~451 tokens at the median, ~936 at p90, so
               # this truncates little while cutting activation memory sharply.

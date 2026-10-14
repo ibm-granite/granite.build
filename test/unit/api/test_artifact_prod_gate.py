@@ -55,7 +55,7 @@ class TestRegisterArtifactProdGate:
     def test_hf_uri_allowed_in_prod(self):
         """HF artifacts register in PROD (the feature this gate enables)."""
         with patch.object(artifacts_module, "is_super_admin", return_value=True):
-            with patch.object(artifacts_module, "confirm_space_write_access"):
+            with patch.object(artifacts_module, "confirm_can_add_to_space"):
                 with patch.object(
                     artifacts_module, "get_admin_storage"
                 ) as mock_storage:
@@ -67,7 +67,7 @@ class TestRegisterArtifactProdGate:
     def test_lh_uri_prod_host_allowed_in_prod(self):
         """LhURI pointing at the production Lakehouse host is allowed in PROD."""
         with patch.object(artifacts_module, "is_super_admin", return_value=True):
-            with patch.object(artifacts_module, "confirm_space_write_access"):
+            with patch.object(artifacts_module, "confirm_can_add_to_space"):
                 with patch.object(
                     artifacts_module, "get_admin_storage"
                 ) as mock_storage:

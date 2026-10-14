@@ -18,27 +18,104 @@
 The main parser for the build.yaml file.
 """
 
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Type
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from gbcommon.types.gbenvconfig import is_standalone
 from gbcommon.uri.env import is_relative_env_uri
+from gbcommon.uri.uri import URI
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.config import Config
 from gbserver.types.constants import (
     BUILD_YAML_BASE_KEYS,
+    CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI,
     CURRENT_BUILD_YAML_VERSION,
+    FILE_SCHEME,
 )
 from gbserver.types.validation import GBValidationErrors, GBValidationErrorType
 from gbserver.utils.logger import get_logger
+from gbserver.utils.template import fill_template
 
 logger = get_logger(__name__)
 
 BUILD_FILENAME = "build.yaml"
 BUILD_RUN_YAML_FILENAME = "run.yaml"
+
+
+def reject_host_file_uri(uri: Optional[str], field: str) -> None:
+    """Refuse a step.yaml URI naming a file on the gbserver host, unless STANDALONE.
+
+    The step.yaml counterpart of BuildConfig's build.yaml ``file:`` check: a step
+    can come from the user's own git repo, so its ``validator_uri`` or monitor
+    ``ref`` could otherwise name e.g. ``file:///home/gbserver/.kube`` and have it
+    synced into the step. These are resolved with a ``file`` default scheme, so
+    a bare path counts too. ``space://`` refs are allowed (they resolve through
+    the space's admin-controlled base_uris, contained by SpaceURI).
+
+    Args:
+        uri: The URI as written in step.yaml.
+        field: The field it came from, used in the error message.
+
+    Raises:
+        ValueError: If the server is not STANDALONE and the URI is, or may render
+            to, a ``file:`` URI.
+    """
+    if not is_standalone() and _may_be_file_uri(uri, FILE_SCHEME):
+        raise ValueError(
+            f"{field} '{uri}': file: URIs are only allowed on a standalone server"
+        )
+
+
+def _may_be_file_uri(uri: Optional[str], default_scheme: str) -> bool:
+    """Return True if a build.yaml URI is, or may render to, a ``file:`` URI.
+
+    Args:
+        uri: The URI as written in build.yaml (None/empty means "not set").
+        default_scheme: The scheme its consumer applies to a bare path
+            (``"file"`` for step/environment URIs, ``"git"`` for inputs/outputs).
+
+    Returns:
+        bool: True if the scheme is ``file`` (or ``default_scheme`` is ``file``
+        and none is given), or if any Jinja syntax (``{{``, ``{%`` or ``{#``)
+        appears before the first ``:``/``/`` -- the scheme is then only decided
+        when it is rendered (possibly with run-time values), so it cannot be
+        shown not to be ``file``.
+    """
+    if not uri:
+        return False
+    prefix = re.split(r"[:/]", uri, maxsplit=1)[0]
+    if any(tag in prefix for tag in ("{{", "{%", "{#")):
+        return True
+    return urlparse(uri, default_scheme).scheme == FILE_SCHEME
+
+
+def _has_parent_segment(uri: Optional[str]) -> bool:
+    """Return True if a URI contains a ``..`` path segment.
+
+    The URI is checked both as written and after filling in space-config
+    templates (as URI.get_uri will), so ``{{ '..' }}`` cannot hide one. Segments
+    are split on ``/`` and on the ``:``/``#``/``?``/``&``/``=`` separators, so
+    ``file:../x`` and a git ``#subdirectory=../x`` are caught too; ``..`` inside
+    a name (``a..b``) is not a segment.
+
+    Args:
+        uri: The URI as written in build.yaml (None/empty means "not set").
+
+    Returns:
+        bool: True if any segment of the raw or rendered URI is exactly ``..``.
+    """
+    if not uri:
+        return False
+    candidates = [uri]
+    try:
+        candidates.append(fill_template(uri, URI.get_space_config()))
+    except (ValueError, RuntimeError):
+        pass  # an unrenderable template fails later in URI.get_uri anyway
+    return any(".." in re.split(r"[:/#?&=]", c) for c in candidates)
 
 
 class InvalidTarget(Exception):
@@ -160,10 +237,7 @@ class BuildTargetStepConfig(Config):
     def apply_default_for_empty_value(cls, v):
         # If value is missing, empty string, or just whitespace -> use base step
         if v is None or (isinstance(v, str) and v.strip() == ""):
-            default_path = (
-                Path(os.path.abspath(__file__)).parent.parent / "builtins/steps/gbstep"
-            )
-            default_step_uri = f"file://{default_path}"
+            default_step_uri = CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI
             logger.info(
                 f"[FIELD VALIDATOR - BuildTargetStepConfig] EMPTY STEP URI PROVIDED. DEFAULTING TO: {default_step_uri} ======="
             )
@@ -175,10 +249,7 @@ class BuildTargetStepConfig(Config):
     @model_validator(mode="after")
     def fill_missing_step_uri(self):
         if not self.step_uri:
-            default_path = (
-                Path(os.path.abspath(__file__)).parent.parent / "builtins/steps/gbstep"
-            )
-            self.step_uri = f"file://{default_path}"
+            self.step_uri = CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI
             logger.info(
                 f"[MODEL VALIDATOR - BuildTargetStepConfig] STEP URI OMITTED IN BUILD.YAML, DEFAULTING TO {self.step_uri}"
             )
@@ -383,6 +454,75 @@ class BuildConfig(Config):
                     )
         return errors
 
+    def __validate_no_file_uris(self: Self) -> GBValidationErrors:
+        """Reject ``file:`` URIs in a build.yaml unless the server is STANDALONE.
+
+        A ``file:`` URI names a path on the build host itself. On a shared server
+        that would let a build.yaml sync the server's own files to compute
+        (``step_uri: file:///home/gbserver/.kube``, an ``environment_uri``) or
+        read/write them through a ``file:`` input/output. A STANDALONE server
+        runs on the user's own machine, so it keeps accepting local paths.
+
+        Checked: every target's ``environment_uri``, each step's ``step_uri``
+        (except the server's own builtin gbstep default, which an empty/missing
+        ``step_uri`` is rewritten to), and each input/output ``uri``.
+
+        Returns:
+            GBValidationErrors: one error per offending URI (none in STANDALONE).
+        """
+        errors = GBValidationErrors()
+        if is_standalone():
+            return errors
+        hint = "file: URIs are only allowed on a standalone server"
+        for target_name, target in self.targets.items():
+            prefix = f"Target `{target_name}`"
+            # environment_uri/step_uri are resolved with a "file" default scheme.
+            if _may_be_file_uri(target.environment_uri, FILE_SCHEME):
+                errors.add(
+                    f"{prefix} environment_uri '{target.environment_uri}': {hint}"
+                )
+            for i, step in enumerate(target.steps):
+                uri = step.step_uri or ""
+                if uri != CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI and (
+                    _may_be_file_uri(uri, FILE_SCHEME)
+                ):
+                    errors.add(f"{prefix} Step `{i}` step_uri '{uri}': {hint}")
+            # Inputs/outputs go through URI.get_uri, whose default scheme is git.
+            for name, target_input in (target.inputs or {}).items():
+                if _may_be_file_uri(target_input.uri, "git"):
+                    errors.add(f"{prefix} Input `{name}` '{target_input.uri}': {hint}")
+            for name, target_output in (target.outputs or {}).items():
+                if _may_be_file_uri(target_output.uri, "git"):
+                    errors.add(
+                        f"{prefix} Output `{name}` '{target_output.uri}': {hint}"
+                    )
+        return errors
+
+    def __validate_no_parent_segments(self: Self) -> GBValidationErrors:
+        """Reject ``..`` path segments in step_uri and environment_uri.
+
+        A ``..`` segment could climb out of whatever the URI resolves against (a
+        space's base_uris, a git checkout's ``#subdirectory=``, a local path), so
+        it is rejected in every mode, STANDALONE included.
+
+        Returns:
+            GBValidationErrors: one error per offending URI.
+        """
+        errors = GBValidationErrors()
+        hint = "'..' path segments are not allowed"
+        for target_name, target in self.targets.items():
+            prefix = f"Target `{target_name}`"
+            if _has_parent_segment(target.environment_uri):
+                errors.add(
+                    f"{prefix} environment_uri '{target.environment_uri}': {hint}"
+                )
+            for i, step in enumerate(target.steps):
+                if _has_parent_segment(step.step_uri):
+                    errors.add(
+                        f"{prefix} Step `{i}` step_uri '{step.step_uri}': {hint}"
+                    )
+        return errors
+
     def __validate_output_push(self: Self) -> GBValidationErrors:
         """Validate each output's push config via the owning store's own rules.
 
@@ -405,7 +545,6 @@ class BuildConfig(Config):
         names) fail at submit time. Templated URIs are checked at push time.
         """
         from gbcommon.uri.lh import LH_URI_SCHEME
-        from gbcommon.uri.uri import URI
 
         errors = GBValidationErrors()
         for target_name, target in self.targets.items():
@@ -429,6 +568,8 @@ class BuildConfig(Config):
         errors.add(self.__validate_step_uris())
         errors.add(self.__validate_target_inputs())
         errors.add(self.__validate_env_uris())
+        errors.add(self.__validate_no_file_uris())
+        errors.add(self.__validate_no_parent_segments())
         errors.add(self.__validate_output_push())
         errors.add(self.__validate_lh_output_uris())
         logger.info("validated the build config and found %d errors", len(errors))

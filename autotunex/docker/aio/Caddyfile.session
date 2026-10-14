@@ -1,0 +1,67 @@
+# Front reverse proxy for the all-in-one image, with the granite.build dashboard
+# gated on the AutoTuneX OIDC login session. Opt-in alternative to ./Caddyfile — see
+# docs/superpowers/specs/2026-09-25-aio-dashboard-session-gate-design.md.
+#
+# Requires AutoTuneX running with AUTOTUNEX_AUTH_PROVIDERS=["session"] and
+# AUTOTUNEX_PUBLIC_BASE_URL=http://localhost:8080 (so the OIDC callback lands on
+# this proxy), and the in-container gbserver callers pointed past this gate:
+# AUTOTUNEX_GB_SERVER_URL and GBSERVER_HOST = http://127.0.0.1:8090.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# The session cookie is host-only on `localhost`, so a request addressed to
+	# 127.0.0.1 would never carry it and would loop through login forever.
+	@ip host 127.0.0.1
+	redir @ip http://localhost:8080{uri} 302
+
+	# Login, callback, me, logout — ungated. gbserver has no root /auth routes.
+	handle /auth/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# `route` keeps the written order; Caddy would otherwise run `redir` before
+	# `forward_auth` and let the return-trip redirect skip the session check.
+	handle {
+		route {
+			# Page loads: no session → remember where the user was going, then log in.
+			@nav header Sec-Fetch-Mode navigate
+			forward_auth @nav 127.0.0.1:8000 {
+				uri /auth/me
+				@unauth status 401
+				handle_response @unauth {
+					header Set-Cookie "gb_return={http.request.uri}; Path=/; Max-Age=600; HttpOnly; SameSite=Lax"
+					# `*` is required: a bare leading `/auth/login` parses as a path matcher.
+					redir * /auth/login 302
+				}
+			}
+			# XHR/assets: pass AutoTuneX's 401 through; a redirect to the identity provider would
+			# only surface in the browser as a CORS error.
+			@notnav not header Sec-Fetch-Mode navigate
+			forward_auth @notnav 127.0.0.1:8000 {
+				uri /auth/me
+			}
+
+			# The callback always lands on `/`. Send the user on to the saved path.
+			# Only a single leading slash followed by neither `/` nor `\` is
+			# accepted: browsers resolve `//host` and `/\host` as another origin.
+			@return {
+				path /
+				header_regexp ret Cookie `(?:^|;\s*)gb_return=(/[^/\\;\s][^;\s]*)`
+			}
+			header @return Set-Cookie "gb_return=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+			redir @return {re.ret.1} 302
+
+			# Same loopback dial and X-Forwarded-* stripping as ./Caddyfile — gbserver's
+			# standalone auth admits only loopback peers.
+			reverse_proxy 127.0.0.1:8090 {
+				header_up -X-Forwarded-For
+				header_up -X-Forwarded-Proto
+				header_up -X-Forwarded-Host
+				header_up -Forwarded
+			}
+		}
+	}
+}

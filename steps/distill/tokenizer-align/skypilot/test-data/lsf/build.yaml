@@ -12,6 +12,20 @@ granite.build:
   targets:
     align:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      # The step declares both models as named inputs and reads their resolved paths
+      # itself; env:// because they already sit on /proj.
+      inputs:
+        teacher:
+          uri: "env:///proj/granite-build/g4os/models/granite-4.2-3b-nothink"
+          type: model
+        # A RAW, un-retagged base student, which is what this step is for: its
+        # tokenizer_config.json declares tokenizer_class GPT2Tokenizer and it
+        # carries no chat template, so the retag has real work to do. The
+        # student_overlays/* dirs are the hand-built PRODUCTS of this step and
+        # would make the retag a no-op.
+        student:
+          uri: "env:///proj/granite-build/g4os/granite-4.0-1b-base-prerelease-castlerock-final"
+          type: model
       # All three declared. An undeclared output makes the resolver drop the
       # NEWARTIFACT event and the target completes with no output AND no error.
       outputs:
@@ -38,13 +52,6 @@ granite.build:
                 zone: "normal"
                 memory: 32
             align_config:
-              teacher_model: "/proj/granite-build/g4os/models/granite-4.2-3b-nothink"
-              # A RAW, un-retagged base student, which is what this step is for: its
-              # tokenizer_config.json declares tokenizer_class GPT2Tokenizer and it
-              # carries no chat template, so the retag has real work to do. The
-              # student_overlays/* dirs are the hand-built PRODUCTS of this step and
-              # would make the retag a no-op.
-              student_model: "/proj/granite-build/g4os/granite-4.0-1b-base-prerelease-castlerock-final"
               out_dir: "align-smoke"
               # For real: writes the three artifacts and registers them. Set true to
               # resolve-and-report instead, which still builds the two (cheap,

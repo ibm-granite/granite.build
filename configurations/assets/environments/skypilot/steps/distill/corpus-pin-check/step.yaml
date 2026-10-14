@@ -23,12 +23,23 @@ config:
     think_policy: ""
     documents_policy: ""
     eval_fraction: 0.0
-    # This build's retagged tokenizer, byte-compared against the manifest's
-    # tokenizer_path when that directory still exists.
-    tokenizer_dir: ""
+    # This build's retagged tokenizer is the `tokenizer` target input — see `inputs:`.
     # Where corpus_pin.json is written. A relative path lands under GB_BUILD_WORKDIR.
     output_dir: "corpus-pin"
     python: "/stage/.venv/bin/python"
+
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads it as {{ bindings.tokenizer.binding.path }}. allow_unknown stays
+# true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # This build's retagged tokenizer, byte-compared against the manifest's
+    # tokenizer_path when that directory still exists.
+    tokenizer:
+      type: model
+      accept: [uri, binding]
 
 outputs:
   required:
@@ -55,6 +66,12 @@ environment_configs:
           run: |
             set -euo pipefail
             echo "=== corpus-pin-check on $(hostname) ==="
+            # The tokenizer used to be a config key. A recipe that still sets it would
+            # otherwise be ignored silently, so refuse it.
+            {% if config.pin_check_config.tokenizer_dir is defined %}
+            echo "corpus-pin-check: FATAL: pin_check_config.tokenizer_dir is no longer read; bind the target input 'tokenizer' instead (see this step's README)" >&2
+            exit 1
+            {% endif %}
             WORK="${GB_BUILD_WORKDIR:-$PWD}"
             OUT_DIR="{{ config.pin_check_config.output_dir }}"
             case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
@@ -66,7 +83,7 @@ environment_configs:
               "{{ config.pin_check_config.think_policy }}" \
               "{{ config.pin_check_config.documents_policy }}" \
               "{{ config.pin_check_config.eval_fraction }}" \
-              "{{ config.pin_check_config.tokenizer_dir }}" \
+              "{{ bindings.tokenizer.binding.path }}" \
               "$OUT_DIR/corpus_pin.json"
     monitors:
       skypilot_monitor:

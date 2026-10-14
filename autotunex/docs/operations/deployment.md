@@ -185,9 +185,16 @@ training stack (`torch` + `ray[tune,default]`) and serves the SPA in-process
 alongside the API. With `AUTOTUNEX_JOB_BACKEND=local` baked in (see the table
 below), tuning runs in-container; only the GPU / online-RL extras (`[full]`:
 verl/vLLM, flash-attn, deepspeed) and the macOS-arm64-only `[mlx]` extra are left
-out. The image runs as a non-root user, exposes port 8000, keeps all writable
-state — the SQLite DB and artifacts — under a `/data` volume so it survives
-restarts, and defines a `HEALTHCHECK` that probes `/health`.
+out. That describes the default `DEVICE=cpu` build: `docker build --build-arg
+DEVICE=cuda .` selects an `nvidia/cuda` base stage in the same `Dockerfile` and
+installs `[full]` instead, so the `local` backend can train on an NVIDIA GPU.
+`compose.yaml` carries the same build behind a `cuda` profile —
+`docker compose --profile cuda up --build` builds `autotunex:cuda` with its own
+`autotunex-cuda-data` volume and an NVIDIA device reservation. See
+the README's *GPU (CUDA)* section for the run flags and the image-size caveat.
+The image runs as a non-root user, exposes port 8000, keeps all writable state —
+the SQLite DB and artifacts — under a `/data` volume so it survives restarts, and
+defines a `HEALTHCHECK` that probes `/health`.
 
 ```bash
 podman compose up --build      # or: docker compose up --build
@@ -222,7 +229,7 @@ The runtime stage installs the base dependencies only (`pip install .`), so neit
 extras — and pointing this image at `mysql+asyncmy://...` or
 `postgresql+asyncpg://...` fails at engine creation, not at some later query.
 Rebuild it with the matching extra (`pip install ".[mysql]"` or `".[postgres]"` in
-place of `pip install .`), or use the AIO image below, which installs `[mysql]`.
+place of `pip install .`), or use the AIO image below, which installs both.
 
 ### All-in-one (AIO) image
 
@@ -237,7 +244,7 @@ self-sufficient:
   standalone auth grants access to loopback peers only, so behind any NAT (the
   Podman bridge, an OpenShift Route) a browser would otherwise get a `401`.
 - **8001** (loopback only, deliberately **not** published) — the api-bridge, the
-  synchronous MySQL write path the tuning pipeline logs through.
+  synchronous MySQL/PostgreSQL write path the tuning pipeline logs through.
 
 Reach for it when you want job execution to work end to end — a demo, a dev box,
 an evaluation — without standing up gbserver and the api-bridge separately. Its
@@ -246,9 +253,9 @@ baked defaults are `AUTOTUNEX_ENVIRONMENT=dev`, `AUTOTUNEX_JOB_BACKEND=llmb` and
 dev/standalone posture as the image above, not the hardened one this checklist
 describes.
 
-Unlike the single-service image it needs an external MySQL and a real token, so
-its compose service sits behind a **profile** — a bare `docker compose up` never
-builds or starts it:
+Unlike the single-service image it needs an external MySQL or PostgreSQL database
+and a real token, so its compose service sits behind a **profile** — a bare
+`docker compose up` never builds or starts it:
 
 ```bash
 cp .env.aio.example .env.aio                 # fill in real values first
@@ -256,8 +263,8 @@ docker compose --profile aio up --build      # or: podman compose --profile aio 
 ```
 
 `.env.aio` is git-ignored and carries only what cannot be baked in: the external
-MySQL URL (**shared** — one connection string configures both AutoTuneX and the
-api-bridge), `GB_TOKEN` (**required**: the `llmb` backend refuses to start without
+MySQL or PostgreSQL URL (**shared** — one connection string configures both AutoTuneX
+and the api-bridge), `GB_TOKEN` (**required**: the `llmb` backend refuses to start without
 it, and the entrypoint also uses it for runtime `git` clones), a session-signing
 secret for the api-bridge, and optionally the private git host those clones
 authenticate against. If your MySQL requires verified TLS, mount the CA cert into
@@ -267,16 +274,16 @@ the container and point `AUTOTUNEX_DATABASE_SSL_CA` and
 
 At build time, `GB_REPO` and `GB_REF` pick the granite.build source the
 in-container gbserver is cloned and built from: they default to
-`https://github.com/priyanshu891/granite.build.git` and the branch
-`feat/autotunex-endpoint-migration` respectively, so the gbserver in this image
-is built from that fork branch — **not** from the `ibm-granite` repository the
-`granite-build` pip extra fetches (see below). Override both to build gbserver
+`https://github.com/ibm-granite/granite.build.git` and the branch `main`
+respectively — the same repository the `granite-build` pip extra fetches (see
+below), but tracking `main` rather than the extra's pinned `stable` tag, so a
+rebuild picks up whatever `main` holds at the time. Override both to build gbserver
 from somewhere else. `PUBLIC_AUTOTUNEX_API_URL` (empty by default, meaning
 same-origin) matters only if the API is fronted elsewhere.
 `INSTALL_AUTOTUNE_CORE=1` additionally installs
 the `autotune` training core that the `local` backend needs, from the vendored
 `src/fm-tune[core,mlx]` already in the build context, and switches the AutoTuneX
-install from the `[mysql]` extra to `[mysql,granite-build]`. That extra is a VCS
+install from `[mysql,postgres]` to `[mysql,postgres,granite-build]`. That extra is a VCS
 dependency, so the build makes one more `git` fetch, separate from the gbserver
 clone above — the `granite.build` **pip package** from the public
 `github.com/ibm-granite/granite.build` at its `stable` tag — though still no

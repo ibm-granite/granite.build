@@ -1,5 +1,5 @@
 granite.build:
-  name: env_in_out_bash
+  name: env_in_out_bash-test
   # Single bash target exercising BOTH the env:// and hf:// asset stores for an
   # input and an output on the in-process Bash environment.
   #
@@ -24,8 +24,9 @@ granite.build:
           # no-op), it just flows to the command as bindings.env_input.binding.path.
           uri: "env:///tmp/gb-env-input.txt"
         hf_input:
-          # HF pull is mocked, so nothing is downloaded; the resolved cache path
-          # flows to the command as bindings.hf_input.binding.path.
+          # Really downloaded (extended suite, real HF); the resolved cache path
+          # flows to the command as bindings.hf_input.binding.path, and the
+          # command's `test -e` under `set -e` fails the build if it's missing.
           uri: hf:///ibm-granite/granite-4.0-350m
       outputs:
         env_output:
@@ -57,7 +58,9 @@ granite.build:
               # into the single command line and shell-comment out everything after
               # it (dropping the GB_ARTIFACT markers) — keep comments out of it.
               command: >-
+                set -e;
                 sleep 10;
+                test -e "{{ bindings.hf_input.binding.path }}";
                 hf_out="$(pwd)/gb-hf-output.txt";
                 echo '{"artifact": "hf_output"}' > "$hf_out";
                 echo "env input path: {{ bindings.env_input.binding.path }}";

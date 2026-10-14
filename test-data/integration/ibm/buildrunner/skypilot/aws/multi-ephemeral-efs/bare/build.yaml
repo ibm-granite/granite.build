@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-aws-multi-ephemeral-efs-probe
+  name: skypilot-aws-multi-ephemeral-efs-probe-test
   # Two-ephemeral-EFS (#391/#422) analog of the single-mount ephemeral probe. The
   # aws-multi-ephemeral environment's shared_filesystem lists TWO
   # `provision: ephemeral` mounts (/mnt/gb-eph-a hosts the workdir, /mnt/gb-eph-b

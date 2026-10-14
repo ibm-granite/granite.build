@@ -8,6 +8,7 @@ config:
     mock: false
     step_contents_in_env: false
   sft_config:
+    # DEPRECATED: bind the `model` input instead; read only when it is not bound.
     model_path: ""
     tokenized_data_path: ""
     chat_template_path: ""
@@ -27,6 +28,20 @@ config:
     checkpointing_steps: "epoch"
     keep_last_n_checkpoints: 5
     logging_steps: 1
+
+# I/O schema, validated against the build.yaml target at build time. Inputs are
+# OPTIONAL during the deprecation window: the run script reads each one through
+# {{ bindings.<name>.binding.<path|state> }} when it is bound, and otherwise falls back
+# to the old config key, with a DEPRECATED warning. allow_unknown stays true so a recipe
+# can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  optional:
+    # The base model to fine-tune.
+    model:
+      type: model
+      accept: [uri, binding]
+
 outputs:
   optional:
     checkpoint:
@@ -47,7 +62,20 @@ environment_configs:
             echo "=== Open Instruct SFT Training on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
+            # `model` is an optional input; sft_config.model_path is the DEPRECATED fallback.
+            {% if bindings.model is defined %}
+            MODEL_PATH="{{ bindings.model.binding.path }}"
+            {% if config.sft_config.model_path and config.sft_config.model_path != bindings.model.binding.path %}
+            echo "openinstruct-sft: WARNING: sft_config.model_path is ignored because the 'model' input is bound" >&2
+            {% elif config.sft_config.model_path %}
+            echo "openinstruct-sft: DEPRECATED: sft_config.model_path duplicates the bound 'model' input; remove it from the recipe" >&2
+            {% endif %}
+            {% else %}
             MODEL_PATH="{{ config.sft_config.model_path }}"
+            {% if config.sft_config.model_path %}
+            echo "openinstruct-sft: DEPRECATED: sft_config.model_path will be removed in a future release; bind the target input 'model' instead" >&2
+            {% endif %}
+            {% endif %}
             DATASET_DIR="{{ config.sft_config.tokenized_data_path }}"
             CHAT_TEMPLATE_PATH="{{ config.sft_config.chat_template_path }}"
             OUTPUT_DIR="{{ config.sft_config.output_dir }}"

@@ -8,6 +8,7 @@ config:
     mock: false
     step_contents_in_env: false
   bfcl_config:
+    # DEPRECATED: bind the `model` input instead; read only when it is not bound.
     model_path: ""
     model_id: "ibm-granite/granite-4"
     experiment: ""
@@ -17,6 +18,20 @@ config:
     num_gpus_evaluate: 1
     gpu_memory_utilization: "0.5"
     output_dir: ""
+
+# I/O schema, validated against the build.yaml target at build time. Inputs are
+# OPTIONAL during the deprecation window: the run script reads each one through
+# {{ bindings.<name>.binding.<path|state> }} when it is bound, and otherwise falls back
+# to the old config key, with a DEPRECATED warning. allow_unknown stays true so a recipe
+# can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  optional:
+    # The model directory to evaluate (an HF export or a training checkpoint).
+    model:
+      type: model
+      accept: [uri, binding]
+
 outputs:
   optional:
     bfcl_results:
@@ -40,7 +55,20 @@ environment_configs:
             # Unset distributed training vars — vLLM conflicts with them
             unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
 
+            # `model` is an optional input; bfcl_config.model_path is the DEPRECATED fallback.
+            {% if bindings.model is defined %}
+            export MODEL_PATH="{{ bindings.model.binding.path }}"
+            {% if config.bfcl_config.model_path and config.bfcl_config.model_path != bindings.model.binding.path %}
+            echo "bfcl-eval: WARNING: bfcl_config.model_path is ignored because the 'model' input is bound" >&2
+            {% elif config.bfcl_config.model_path %}
+            echo "bfcl-eval: DEPRECATED: bfcl_config.model_path duplicates the bound 'model' input; remove it from the recipe" >&2
+            {% endif %}
+            {% else %}
             export MODEL_PATH="{{ config.bfcl_config.model_path }}"
+            {% if config.bfcl_config.model_path %}
+            echo "bfcl-eval: DEPRECATED: bfcl_config.model_path will be removed in a future release; bind the target input 'model' instead" >&2
+            {% endif %}
+            {% endif %}
             export MODEL_ID="{{ config.bfcl_config.model_id }}"
             export OUTPUT_DIR="{{ config.bfcl_config.output_dir }}/{{ config.bfcl_config.experiment }}/{{ config.bfcl_config.eval_name }}"
             export EXP_NAME="{{ config.bfcl_config.experiment }}"

@@ -78,11 +78,15 @@ def test_the_rendered_script_passes_every_argument_in_place(
             "think_policy": "strip",
             "documents_policy": "keep",
             "eval_fraction": eval_fraction,
-            "tokenizer_dir": str(tmp_path / "tok"),
             "python": sys.executable,
         }
     }
-    script = fill_template(templ=launcher["run"], data={"config": config})
+    bindings = {"tokenizer": {"binding": {"path": str(tmp_path / "tok")}}}
+    script = fill_template(
+        templ=launcher["run"],
+        data={"config": config, "bindings": bindings},
+        strict=True,
+    )
 
     result = subprocess.run(
         ["bash", "-c", script],
@@ -100,3 +104,34 @@ def test_the_rendered_script_passes_every_argument_in_place(
         assert result.returncode != 0
         assert "eval_fraction 0.01 != 0.02" in result.stdout
         assert not out.exists()
+
+
+def test_the_tokenizer_is_a_required_input(step):
+    assert set(step["inputs"]["required"]) == {"tokenizer"}
+    assert "tokenizer_dir" not in step["config"]["pin_check_config"]
+
+
+def test_the_retired_tokenizer_dir_key_is_refused(step, launcher, tmp_path):
+    """A recipe still setting the old key would otherwise be ignored silently."""
+    config = {
+        "pin_check_config": {
+            **step["config"]["pin_check_config"],
+            "tokenizer_dir": "/old",
+            "python": sys.executable,
+        }
+    }
+    bindings = {"tokenizer": {"binding": {"path": str(tmp_path / "tok")}}}
+    script = fill_template(
+        templ=launcher["run"],
+        data={"config": config, "bindings": bindings},
+        strict=True,
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=_DIR,
+        env={**os.environ, "GB_BUILD_WORKDIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "pin_check_config.tokenizer_dir is no longer read" in result.stderr

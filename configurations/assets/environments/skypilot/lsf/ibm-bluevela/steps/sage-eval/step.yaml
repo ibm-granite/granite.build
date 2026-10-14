@@ -9,6 +9,7 @@ config:
     step_contents_in_env: false
   sage_eval_config:
     gb_script: ""
+    # DEPRECATED: bind the `model` input instead; read only when it is not bound.
     model_path: ""
     experiment: ""
     batch_size: 10
@@ -17,6 +18,20 @@ config:
     output_dir: ""
     image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
     extra_env: {}
+
+# I/O schema, validated against the build.yaml target at build time. Inputs are
+# OPTIONAL during the deprecation window: the run script reads each one through
+# {{ bindings.<name>.binding.<path|state> }} when it is bound, and otherwise falls back
+# to the old config key, with a DEPRECATED warning. allow_unknown stays true so a recipe
+# can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  optional:
+    # The model directory to evaluate (an HF export or a training checkpoint).
+    model:
+      type: model
+      accept: [uri, binding]
+
 outputs:
   optional:
     sage_eval_results:
@@ -81,7 +96,20 @@ environment_configs:
             export TEMP="$TMPDIR"
 
             # Standard vars consumed by sage gb_scripts
+            # `model` is an optional input; sage_eval_config.model_path is the DEPRECATED fallback.
+            {% if bindings.model is defined %}
+            export MODEL_PATH="{{ bindings.model.binding.path }}"
+            {% if config.sage_eval_config.model_path and config.sage_eval_config.model_path != bindings.model.binding.path %}
+            echo "sage-eval: WARNING: sage_eval_config.model_path is ignored because the 'model' input is bound" >&2
+            {% elif config.sage_eval_config.model_path %}
+            echo "sage-eval: DEPRECATED: sage_eval_config.model_path duplicates the bound 'model' input; remove it from the recipe" >&2
+            {% endif %}
+            {% else %}
             export MODEL_PATH="{{ config.sage_eval_config.model_path }}"
+            {% if config.sage_eval_config.model_path %}
+            echo "sage-eval: DEPRECATED: sage_eval_config.model_path will be removed in a future release; bind the target input 'model' instead" >&2
+            {% endif %}
+            {% endif %}
             export EXPERIMENT="{{ config.sage_eval_config.experiment }}"
             export OUTPUT_BASE_PATH="{{ config.sage_eval_config.output_dir }}"
             export NUM_GPUS={{ config.sage_eval_config.num_gpus }}

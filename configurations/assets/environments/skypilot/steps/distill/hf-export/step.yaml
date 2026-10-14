@@ -25,7 +25,7 @@ version: 1.0.0
 #
 # It deliberately does NOT graft a tokenizer from elsewhere: if the trainer's tokenizer
 # disagrees with the corpus the run trained on, that is a defect to fail on, not to paper
-# over at packaging time — which is what expect_tokenizer_from is for.
+# over at packaging time — which is what the expected_tokenizer input is for.
 type: data_processing
 config:
   # ─── Source delivery ──────────────────────────────────────────────────────────
@@ -79,15 +79,13 @@ config:
 
   # ─── Export ───────────────────────────────────────────────────────────────────
   export_config:
-    # The TRAINER'S output_dir — the parent containing checkpoint-25/, checkpoint-50/, …
-    # — not a single checkpoint. Which one is published is `checkpoint` below. Named to
-    # match the CLI flag so the two cannot be confused.
-    train_output_dir: ""
+    # The trainer's output directory and the expected tokenizer are target INPUTS, not
+    # config keys — see `inputs:` below.
 
     # Where the packaged model is written. Relative resolves against $GB_BUILD_WORKDIR.
     dest: "hf_model"
 
-    # Which checkpoint to publish. Empty means the HIGHEST STEP NUMBER, which is not the
+    # Which checkpoint of the `train_output` input to publish: a NAME, not a path. Empty means the HIGHEST STEP NUMBER, which is not the
     # same as newest mtime: a resumed run rewrites older checkpoints' mtimes, so mtime
     # ordering can pick a checkpoint that is behind. Set explicitly (e.g.
     # "checkpoint-500") to publish a specific one — for instance when eval preferred an
@@ -129,11 +127,26 @@ config:
     # line a run actually executed.
     verify: true
 
-    # Optional. A tokenizer directory the export's tokenizer must agree with, token id for
-    # token id — normally distill-tokenizer-align's `retagged_student`. This is the check
-    # that catches a checkpoint trained against a different tokenizer than the recipe
-    # believes, which no amount of "does it load" can detect. Empty skips it.
-    expect_tokenizer_from: ""
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The TRAINER'S output_dir — the parent containing checkpoint-25/, checkpoint-50/, …
+    # — not a single checkpoint. Which one is published is export_config.checkpoint.
+    train_output:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # A tokenizer directory the export's tokenizer must agree with, token id for token
+    # id — normally distill-tokenizer-align's `retagged_student`. This is the check that
+    # catches a checkpoint trained against a different tokenizer than the recipe
+    # believes, which no amount of "does it load" can detect. Unbound skips it.
+    expected_tokenizer:
+      type: model
+      accept: [uri, binding]
 
 # Declared for EVERY artifact this step emits. An undeclared output makes the buildrun
 # resolver drop the NEWARTIFACT event, and the target then completes with no output AND no
@@ -166,6 +179,13 @@ environment_configs:
             HF_HOME: /opt/hf-cache
           run: |
             echo "=== distill-hf-export on $(hostname) ==="
+
+            # The inputs used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("train_output_dir", "expect_tokenizer_from") if config.export_config[key] is defined %}
+            echo "distill-hf-export: FATAL: export_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
 
             # --- distill source delivery: BEGIN (identical in all ported steps) ---
             # `set -eu` is already in effect: the launcher prefixes it.
@@ -299,14 +319,14 @@ environment_configs:
             case "$DEST" in /*) ;; *) DEST="$WORK/$DEST" ;; esac
 
             "$PYBIN" ./src/export_hf_model.py \
-              --train-output-dir "{{ config.export_config.train_output_dir }}" \
+              --train-output-dir "{{ bindings.train_output.binding.path }}" \
               --dest "$DEST" \
               --checkpoint "{{ config.export_config.checkpoint }}" \
               --padding-side "{{ config.export_config.padding_side }}" \
               --chat-template-thinking "{{ config.export_config.chat_template_thinking }}" \
               {% if config.export_config.allow_unknown %}--allow-unknown{% else %}--no-allow-unknown{% endif %} \
               {% if config.export_config.verify %}--verify{% else %}--no-verify{% endif %} \
-              --expect-tokenizer-from "{{ config.export_config.expect_tokenizer_from }}"
+              --expect-tokenizer-from "{{ bindings.expected_tokenizer.binding.path if bindings.expected_tokenizer is defined else "" }}"
 
             echo "GB_ARTIFACT_ID:hf_model GB_ARTIFACT_PATH:${DEST}"
     monitors:

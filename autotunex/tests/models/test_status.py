@@ -37,7 +37,7 @@ def test_gb_task_type_values_match_the_schema_enum_verbatim() -> None:
 
 
 def test_dataset_status_values_are_the_lowercase_lifecycle_strings() -> None:
-    assert [s.value for s in DatasetStatus] == ["empty", "uploading", "ready", "error"]
+    assert [s.value for s in DatasetStatus] == ["empty", "uploading", "importing", "ready", "error"]
 
 
 def test_dataset_status_is_a_str_enum_so_it_compares_to_plain_strings() -> None:

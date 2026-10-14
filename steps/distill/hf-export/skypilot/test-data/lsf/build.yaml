@@ -8,14 +8,18 @@ granite.build:
   # DeepSpeed checkpoint trees without first spending a training run.
   #
   # The step only READS that directory — files reach `dest` through shutil.copy2 against an
-  # explicit keep list, and nothing is deleted, moved or written under train_output_dir —
+  # explicit keep list, and nothing is deleted, moved or written under train_output —
   # so pointing it at a run this build did not produce is safe on a shared account.
   targets:
     export:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        # Recorded as a lineage input: env:// means "already on a filesystem this
-        # environment can reach", so the pull is a no-op and this costs no extra step.
+        # The step's named input: it reads the resolved path itself. env:// means
+        # "already on a filesystem this environment can reach", so the pull is a no-op
+        # and this costs no extra step.
+        #
+        # A real on-policy GOLD run: checkpoint-50 .. checkpoint-390, each with a
+        # DeepSpeed global_step*/ tree — which is precisely what gets pruned.
         train_output:
           uri: "env:///proj/granite-build/g4os/kd-sandbox/checkpoints/granite-4.1-3b-base_from-4.2-30b_onpolicy-multidomain_custom-1.0_node4"
           type: model
@@ -38,9 +42,6 @@ granite.build:
                 # A 3B checkpoint plus its verify load. Host memory, per node.
                 memory: 64
             export_config:
-              # A real on-policy GOLD run: checkpoint-50 .. checkpoint-390, each with a
-              # DeepSpeed global_step*/ tree — which is precisely what gets pruned.
-              train_output_dir: "/proj/granite-build/g4os/kd-sandbox/checkpoints/granite-4.1-3b-base_from-4.2-30b_onpolicy-multidomain_custom-1.0_node4"
               dest: "hf-export-smoke"
               # PINNED rather than left empty. Empty means "highest step number", which is
               # correct behaviour but not a deterministic fixture: that directory gains

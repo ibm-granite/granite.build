@@ -79,10 +79,9 @@ granite.build:
             dpk_config:
               transform: tokenization2arrow
               dpk_version: "1.1.8"
-              # A PATH, resolved here from this target's own declared input — the
-              # byoc pattern (steps/byoc/skypilot/USAGE.md). The step never learns
-              # binding NAMES, so it cannot be wrong about them.
-              input_path: "{{ bindings.docs.binding.path }}"
+              # The dpk step declares `docs` as a named input and reads this
+              # target's `docs` binding directly, so no input_path config line
+              # is set here (steps/byoc/skypilot/USAGE.md).
               output: tokens
               # The point of this fixture. One line replaces a whole second target;
               # the step runs src/validate_tokenization2arrow.py before registering

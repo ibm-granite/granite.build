@@ -263,23 +263,23 @@ class TestCredentialStorage:
         assert "expired" in str(exc_info.value).lower()
 
     def test_get_user_token_falls_back_to_github(self, tmp_path):
-        """When no default_provider is set, fall back to GitHub token."""
+        """When no default_provider is set, fall back to GitHub token.
+
+        The token is not pre-validated against GitHub (gbserver authenticates it),
+        so no network call is made.
+        """
         creds_path = tmp_path / "credentials"
         creds_path.write_text(
             '[user.github]\ntoken = "ghp_test_token"\n'
             'login = "testuser"\nemail = "test@ibm.com"\n'
         )
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
-
         with patch(
             "gbcli.utils.gbcredentials.get_local_gb_config", return_value=str(tmp_path)
         ):
             with patch("gbcli.utils.gbcredentials.is_standalone", return_value=False):
                 with patch(
-                    "gbcli.utils.gbcredentials.requests.get", return_value=mock_response
+                    "requests.get", side_effect=AssertionError("unexpected network")
                 ):
                     from gbcli.utils.gbcredentials import get_user_token
 

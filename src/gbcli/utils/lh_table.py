@@ -1,7 +1,9 @@
 import json
 import re
+from typing import TYPE_CHECKING
 
-import pandas as pd
+if TYPE_CHECKING:
+    import pandas as pd
 
 from gbcli.utils.gbconstants import GB_DMF_LOADER_BATCH_SIZE, GB_DMF_USE_CLASSIC_LOADER
 
@@ -105,11 +107,11 @@ def createTableDataset(lh, df, namespace, table_name, type: str, public: bool):
         raise e
 
 
-def hasNullValues(df: pd.DataFrame):
+def hasNullValues(df: "pd.DataFrame"):
     return df.isnull().values.any()
 
 
-def preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
+def preprocess_df(df: "pd.DataFrame") -> "pd.DataFrame":
     df.columns = df.columns.str.replace(r"[. ]", "_", regex=True).str.lower()
     for col in df.columns:
         if df[col].isnull().any():  # If column contains nulls
@@ -122,7 +124,9 @@ def preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def convert_to_df(filepath: str, extension: str) -> pd.DataFrame:
+def convert_to_df(filepath: str, extension: str) -> "pd.DataFrame":
+    import pandas as pd
+
     try:
 
         from lakehouse.assets.utils.dataset_utils import (  # type: ignore

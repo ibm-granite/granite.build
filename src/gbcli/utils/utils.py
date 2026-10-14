@@ -12,7 +12,6 @@ from typing import List, Optional
 
 import humanize
 import yaml
-from git import RemoteProgress
 from rich.console import Console
 from rich.markdown import (
     ConsoleOptions,
@@ -33,7 +32,6 @@ from rich.markdown import (
 )
 from rich.panel import Panel
 from tabulate import tabulate
-from tqdm import tqdm
 
 from gbcli.utils.cli_config import get_local_build_cache
 from gbcli.utils.gbconstants import (
@@ -165,26 +163,6 @@ class CustomParagraph(Paragraph):
     ) -> RenderResult:
         text = self.text
         yield Text(text.plain, style=Style(bold=True))
-
-
-class CloneProgress(RemoteProgress):
-    def __init__(self, update_bar):
-        super().__init__()
-        self.update_bar = update_bar
-        if not update_bar:
-            self.pbar = tqdm(leave=False)
-
-    def update(self, op_code, cur_count, max_count=None, message=""):
-        if self.update_bar:
-            # convert to step size for specified total
-            step_size = 100 / max_count
-            self.update_bar(
-                callback_event="preparing_contents", callback_args={"steps": step_size}
-            )
-        else:
-            self.pbar.total = max_count
-            self.pbar.n = cur_count
-            self.pbar.refresh()
 
 
 def remove_prefix(prefix: str, full_text: str) -> str:

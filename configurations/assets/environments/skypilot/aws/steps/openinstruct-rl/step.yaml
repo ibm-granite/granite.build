@@ -25,6 +25,13 @@ config:
     num_learners_per_node: "3"
     vllm_num_engines: "4"
     hf_token: ""
+# No named inputs: the policy model and the reward model reach this step as S3
+# URIs (model_source_s3, rm_model_s3) mounted by file_mounts, and code_server_url is a
+# literal; recipes bind nothing. allow_unknown lets a recipe bind inputs purely to
+# order this target.
+inputs:
+  allow_unknown: true
+
 outputs:
   optional:
     checkpoint:

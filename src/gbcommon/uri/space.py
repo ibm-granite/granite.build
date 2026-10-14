@@ -18,7 +18,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, List, Optional, Self, Tuple
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, unquote, urlparse
 
 import yaml
 
@@ -54,6 +54,7 @@ class SpaceURI(URI):
             uri_suffix = uristr.removeprefix(GBSPACE_SCHEME + "://")
         elif uristr.startswith(SPACE_SCHEME):
             uri_suffix = uristr.removeprefix(SPACE_SCHEME + "://")
+        SpaceURI._reject_parent_segments(uri_suffix, uristr)
         # Tier 1: for `space://steps/<name>` with an active env, first honor the
         # space's own root step (`base_uris[0]/steps/<name>`, highest priority),
         # then the env-co-located ancestor-walk (nearest-wins), bounded by the
@@ -93,6 +94,30 @@ class SpaceURI(URI):
             if after is None or SpaceURI._fallback_steps_ok(base_uri, after):
                 return resolved  # type: ignore[return-value]
         raise ValueError(f"Unresolvable space uri : {uristr}")
+
+    @staticmethod
+    def _reject_parent_segments(uri_suffix: str, uristr: str) -> None:
+        """Refuse a space URI whose path climbs with ``..``.
+
+        Every tier joins the suffix onto a base (tier 3 verbatim, via
+        append_path), so ``space://../../home/gbserver/.kube`` would leave the
+        space. Checked after percent-decoding, since ``%2E%2E`` is decoded later
+        by the URI handlers (e.g. a git ``#subdirectory=`` via parse_qs).
+
+        Args:
+            uri_suffix: The URI with its ``space://``/``gb://`` scheme removed.
+            uristr: The full URI, for the error message.
+
+        Raises:
+            ValueError: If any ``/``-separated segment of the decoded suffix is
+                ``..`` (prefixed "Unresolvable space uri", like other failures).
+        """
+        decoded = unquote(uri_suffix)
+        if ".." in decoded.replace("\\", "/").split("/"):
+            raise ValueError(
+                f"Unresolvable space uri : {uristr} ('..' path segments are not"
+                " allowed)"
+            )
 
     @staticmethod
     def _steps_suffix(uri_suffix: str) -> Optional[str]:

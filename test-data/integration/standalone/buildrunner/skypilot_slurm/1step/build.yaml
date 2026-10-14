@@ -40,7 +40,11 @@ granite.build:
               sbatch_options:
                 time: "12:00:00"
             command_config:
+              # `test -e` under `set -e` fails the build if the hf-pulled input
+              # isn't present on the node when the command runs.
               command: >-
+                set -e;
+                test -e "{{ bindings.input_model.binding.path }}";
                 file=foo1a.json; echo '{"artifact": "output_model1", "file": "foo1a"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
                 file=foo1b.json; echo '{"artifact": "output_model1", "file": "foo1b"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
                 file={{ bindings.input_model.binding.path }}; echo "GB_ARTIFACT_ID:output_model2 GB_ARTIFACT_PATH:$file";

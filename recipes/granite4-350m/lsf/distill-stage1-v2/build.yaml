@@ -174,14 +174,14 @@ granite.build:
     align:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        # Recorded as lineage inputs. env:// means "already on a filesystem this
+        # The step's named inputs: it reads their resolved paths itself, so
+        # align_config carries neither. env:// means "already on a filesystem this
         # environment can reach", so the pull is a no-op: these add input
-        # artifacts and no extra step. A path passed only to a step's config
-        # would run fine and record nothing.
-        teacher_model:
+        # artifacts and no extra step.
+        teacher:
           uri: "env://$${TEACHER_MODEL}"
           type: model
-        student_model:
+        student:
           uri: "env://$${STUDENT_MODEL}"
           type: model
       outputs:
@@ -211,8 +211,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             align_config:
-              teacher_model: "$${TEACHER_MODEL}"
-              student_model: "$${STUDENT_MODEL}"
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
               # Not optional for this pipeline: without a chat template carrying
               # generation markers, prep cannot build assistant masks and the
@@ -267,8 +265,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             corpus_config:
-              dataset: "{{ bindings.source_dataset.binding.path }}"
-              tokenizer: "{{ bindings.tokenizer.binding.path }}"
               # ABSOLUTE, and that is forced rather than chosen: the two eval
               # targets have to name eval.jsonl and cannot compose it from their
               # own workdir, because every target run gets its OWN
@@ -362,7 +358,6 @@ granite.build:
               think_policy: "$${THINK_POLICY}"
               documents_policy: "$${DOCUMENTS_POLICY}"
               eval_fraction: $${EVAL_FRACTION}
-              tokenizer_dir: "{{ bindings.tokenizer.binding.path }}"
               output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus-pin"
 
 <% endif %>
@@ -420,8 +415,6 @@ granite.build:
               gpus_per_node: $${SFT_NUM_GPUS}
               nodes: 1
             sft_config:
-              student_model_path: "{{ bindings.student.binding.path }}"
-              corpus_path: "{{ bindings.corpus.binding.path }}"
               output_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/train-sft"
               response_template: "$${RESPONSE_TEMPLATE}"
               max_length: $${MAX_LENGTH}
@@ -486,7 +479,7 @@ granite.build:
         corpus:
           binding: corpus.corpus
 <% endif %>
-        teacher_model:
+        teacher:
           uri: "env://$${TEACHER_MODEL}"
           type: model
       outputs:
@@ -546,10 +539,6 @@ granite.build:
             gold_config:
               run_name: "$${RUN_NAME}"
               ds_config: "$${DS_CONFIG}"
-              model_name_or_path: "{{ bindings.student.binding.path }}"
-              # A path, never a hub id: this teacher is not publicly fetchable.
-              teacher_model_name_or_path: "$${TEACHER_MODEL}"
-              dataset_name: "{{ bindings.corpus.binding.path }}"
               num_train_epochs: $${GOLD_NUM_TRAIN_EPOCHS}
               # Caps the run by optimizer steps, and here that IS the point rather
               # than a smoke-scale shortcut: the objective had ~12% of headroom and
@@ -639,7 +628,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${EXPORT_MEMORY}
             export_config:
-              train_output_dir: "{{ bindings.train_output.binding.path }}"
               dest: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/export-$${N}"
               # Named explicitly, never left empty. Empty means "highest step
               # number", which for a guard-stopped run is whatever step the guard
@@ -657,7 +645,6 @@ granite.build:
               # was dropped. The fix is one line upstream.
               allow_unknown: true
               verify: true
-              expect_tokenizer_from: "{{ bindings.expected_tokenizer.binding.path }}"
 <% endfor %>
 
     # ─── eval-transfer-baseline ─────────────────────────────────────────────
@@ -691,6 +678,12 @@ granite.build:
         corpus:
           binding: corpus.corpus
 <% endif %>
+        # The teacher the divergence is measured against: the step's optional
+        # teacher input, read as a resolved path (a path, never a hub id —
+        # this teacher is not publicly fetchable).
+        teacher:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
       outputs:
         eval_metrics:
           uri: "env://{{ binding.path }}"
@@ -712,8 +705,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${GPU_MEMORY}
             eval_config:
-              student_model: "{{ bindings.student.binding.path }}"
-              teacher_model: "$${TEACHER_MODEL}"
 <% if CORPUS_DIR | string | trim %>
               corpus: "$${CORPUS_DIR.rstrip('/')}/eval.jsonl"
 <% else %>
@@ -766,6 +757,12 @@ granite.build:
         corpus:
           binding: corpus.corpus
 <% endif %>
+        # The teacher the divergence is measured against: the step's optional
+        # teacher input, read as a resolved path (a path, never a hub id —
+        # this teacher is not publicly fetchable).
+        teacher:
+          uri: "env://$${TEACHER_MODEL}"
+          type: model
       outputs:
         eval_metrics:
           uri: "env://{{ binding.path }}"
@@ -786,8 +783,6 @@ granite.build:
                 zone: "$${QUEUE}"
                 memory: $${GPU_MEMORY}
             eval_config:
-              student_model: "{{ bindings.student.binding.path }}"
-              teacher_model: "$${TEACHER_MODEL}"
 <% if CORPUS_DIR | string | trim %>
               corpus: "$${CORPUS_DIR.rstrip('/')}/eval.jsonl"
 <% else %>
@@ -898,7 +893,6 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             bfcl_config:
-              model_path: "{{ bindings.model.binding.path }}"
               model_id: "$${BFCL_MODEL_ID}"
               experiment: "$${RUN_NAME}-baseline"
               eval_name: "$${BFCL_EVAL_NAME}"
@@ -934,7 +928,6 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             bfcl_config:
-              model_path: "{{ bindings.model.binding.path }}"
               model_id: "$${BFCL_MODEL_ID}"
               experiment: "$${RUN_NAME}-ck$${N}"
               eval_name: "$${BFCL_EVAL_NAME}"

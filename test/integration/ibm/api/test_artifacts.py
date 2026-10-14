@@ -488,6 +488,10 @@ class TestArtifactAPI(AbstractAPITest):
         username0 = "un0"
 
         client = self.get_test_client()
+        # Registration authorizes the caller against the space before validating
+        # the request body, so the caller must be authorized for the synthetic
+        # space to reach the certification check this test exercises.
+        self._grant_super_admin()
         headers = {
             "content-type": "application/json",
         }

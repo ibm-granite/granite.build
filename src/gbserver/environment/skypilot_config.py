@@ -709,8 +709,10 @@ def merge_cloud_config(
     Deep-merges ``cloud_config`` into the global SkyPilot config (the file the
     API server / optimizer reads directly), with the env's values taking
     precedence and any unrelated keys preserved. Done under a cross-process file
-    lock (the file is host-shared). gbserver materializes this before starting
-    the API server, so the server picks it up.
+    lock (the file is host-shared). The file alone does NOT reach a running
+    gbserver's requests: its in-process SkyPilot client read the file at import
+    and sends that copy with every request, so the caller must reload it --
+    see ``gbserver.environment.skypilot._reload_skypilot_client_config``.
 
     :param cloud_config: The behavioral SkyPilot config block (e.g. an ``lsf:``
         block) to write, sourced from the environment.yaml.

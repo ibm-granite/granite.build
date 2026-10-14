@@ -12,6 +12,12 @@ config:
     export_stack: "granite4-instruct"
     input_dir: ""
     output_csv: ""
+# No named inputs: the directories it exports are literal config paths. Recipes
+# bind the upstream eval results (e.g. `gate_bfcl`) purely to order this target
+# after them; allow_unknown keeps those valid.
+inputs:
+  allow_unknown: true
+
 outputs:
   optional:
     sage_export_csv:

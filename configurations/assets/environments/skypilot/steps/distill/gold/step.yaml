@@ -137,9 +137,10 @@ config:
     run_name: "gold"
 
     # ── Model and data ──────────────────────────────────────────────────────
-    model_name_or_path: ""          # student init
-    teacher_model_name_or_path: ""  # frozen, forward-only in the training loop
-    # Refuse to start when either of the two paths above names weights GPFS has
+    # The student, the teacher and the corpus are target INPUTS, not config keys —
+    # see `inputs:` below.
+    #
+    # Refuse to start when the student or teacher path names weights GPFS has
     # migrated to tape. Reading those back is a per-shard recall of minutes to
     # hours, inside a GPU allocation, and the failure it produces downstream does
     # not look like a storage problem. The check is metadata-only (mmlsattr, and
@@ -153,9 +154,6 @@ config:
     # Proceed anyway. Announces itself in the log; for the case where you know
     # the recall is already running.
     allow_offline_weights: false
-    # Must be think-filtered ("nothink"): an assistant completion containing an
-    # inline <think>...</think> breaks gold's completion extraction.
-    dataset_name: ""
 
     # ── Training hyperparameters ────────────────────────────────────────────
     num_train_epochs: 1.0
@@ -305,21 +303,10 @@ config:
 
     # ── On-policy (online), default off ─────────────────────────────────────
     # >0 dedicates the LAST N nodes to serving the student under vLLM and trains
-    # on the rest. On-policy continues from a good off-policy checkpoint, so set
-    # model_name_or_path to that checkpoint rather than the base overlay.
+    # on the rest. On-policy continues from a good off-policy checkpoint, so bind
+    # the `student` input to that checkpoint rather than the base overlay.
     vllm_num_servers: 0
-    # An EXTERNAL vLLM server, reached by URL, instead of carving nodes out of
-    # this allocation. Set from another target's mem:// binding, e.g.
-    #   vllm_server_url: "{{ '{{' }} bindings.vllm.binding.state {{ '}}' }}"
-    # When set, EVERY node here trains and the role split below does not happen;
-    # the trainer is given the address on gold.py's command line. Empty keeps the
-    # in-allocation split that vllm_num_servers alone selects.
-    #
-    # NOT YET RUN ON A CLUSTER. The trainer pushes updated student weights to the
-    # server over NCCL (the reference launcher's VLLM_NCCL_COORDINATOR_PORT), so
-    # an external server means a NCCL process group spanning two LSF allocations.
-    # Whether that works here is the open question this path exists to answer.
-    vllm_server_url: ""
+    # An EXTERNAL vLLM server is the optional `vllm` input — see `inputs:` below.
     # server = talk to a vLLM HTTP server; the reference launcher's value. Only
     # consulted on the on-policy path.
     vllm_mode: "server"
@@ -341,6 +328,43 @@ config:
     # vLLM min_tokens for the student's rollout. >0 blocks the immediate-EOS mode
     # collapse. For vllm_mode server the SERVER must agree, via GOLD_MIN_TOKENS.
     min_completion_length: 0
+
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads path inputs as {{ bindings.<name>.binding.path }} and the
+# mem:// `vllm` input as {{ bindings.vllm.binding.state }}. allow_unknown stays true
+# so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # Student init.
+    student:
+      type: model
+      accept: [uri, binding]
+    # Frozen, forward-only in the training loop.
+    teacher:
+      type: model
+      accept: [uri, binding]
+    # distill-corpus-prep's `corpus`. Must be think-filtered ("nothink"): an
+    # assistant completion containing an inline <think>...</think> breaks gold's
+    # completion extraction.
+    corpus:
+      type: dataset
+      accept: [uri, binding]
+  optional:
+    # An EXTERNAL vLLM server, reached by URL, instead of carving nodes out of
+    # this allocation: bind distill-vllm-server's mem:// `vllm_url`. When
+    # bound, EVERY node here trains and the role split below does not happen; the
+    # trainer is given the address on gold.py's command line. Unbound keeps the
+    # in-allocation split that gold_config.vllm_num_servers alone selects.
+    #
+    # NOT YET RUN ON A CLUSTER. The trainer pushes updated student weights to the
+    # server over NCCL (the reference launcher's VLLM_NCCL_COORDINATOR_PORT), so
+    # an external server means a NCCL process group spanning two LSF allocations.
+    # Whether that works here is the open question this path exists to answer.
+    vllm:
+      type: fileset
+      accept: [binding]
 
 outputs:
   optional:
@@ -387,6 +411,14 @@ environment_configs:
           # forwards the outer environment. Confirm on a real run with
           # `grep NCCL_ job.log`; if that file does not set them, add both here.
           run: |
+            {% set vllm_server_url = bindings.vllm.binding.state | string | trim if bindings.vllm is defined else "" %}
+            # The inputs used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("model_name_or_path", "teacher_model_name_or_path", "dataset_name", "vllm_server_url") if config.gold_config[key] is defined %}
+            echo "distill-gold: FATAL: gold_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
+
             # The image's venv is not on PATH by default. The dispatcher runs this
             # with `bash <file>` (non-login), so this export sticks — a login
             # shell would re-run /etc/profile and drop it.
@@ -569,14 +601,14 @@ environment_configs:
 
             # Weight residency, BEFORE the role split below: the vLLM branch `exec`s, so a
             # check placed after it would never run on the node that serves the student --
-            # which loads model_name_or_path too. Every node checks (metadata-only, a few
+            # which loads the student too. Every node checks (metadata-only, a few
             # mmlsattr calls), because a rank-0-only check that refused would leave the
             # other ranks waiting on a rendezvous that is never coming.
             {% if config.gold_config.check_weight_residency %}
             /stage/.venv/bin/python ./src/check_weight_residency.py \
               {% if config.gold_config.allow_offline_weights %}--allow-offline{% endif %} \
-              "student={{ config.gold_config.model_name_or_path }}" \
-              "teacher={{ config.gold_config.teacher_model_name_or_path }}"
+              "student={{ bindings.student.binding.path }}" \
+              "teacher={{ bindings.teacher.binding.path }}"
             {% endif %}
 
             # accelerate gets an IP, not a hostname. The provisioner exports
@@ -661,10 +693,10 @@ environment_configs:
               # count, rather than discovered by every rank after allocation.
               RESUME_SHARDS="$(find "$CKPT_DIR/checkpoint-$RESUME_LAST" -mindepth 2 -maxdepth 2 \
                 -path '*/global_step*/*' -name '*optim_states.pt' 2>/dev/null | wc -l)"
-              # An EXTERNAL server (vllm_server_url set) is another target's allocation:
+              # An EXTERNAL server (the `vllm` input bound) is another target's allocation:
               # every node here trains, whatever vllm_num_servers says. Only the
               # in-allocation split gives nodes to vLLM -- see "Node roles" below.
-              {% if config.gold_config.vllm_server_url | default("") | string | trim %}
+              {% if vllm_server_url %}
               RESUME_WORLD=$(( NODES * GPUS ))
               {% else %}
               RESUME_WORLD=$(( (NODES - VLLM_SERVERS) * GPUS ))
@@ -796,9 +828,9 @@ environment_configs:
             /stage/.venv/bin/python ./src/render_gold_config.py \
               --output "$CFG" \
               --total-nodes "$NODES" \
-              --model-name-or-path "{{ config.gold_config.model_name_or_path }}" \
-              --teacher-model-name-or-path "{{ config.gold_config.teacher_model_name_or_path }}" \
-              --dataset-name "{{ config.gold_config.dataset_name }}" \
+              --model-name-or-path "{{ bindings.student.binding.path }}" \
+              --teacher-model-name-or-path "{{ bindings.teacher.binding.path }}" \
+              --dataset-name "{{ bindings.corpus.binding.path }}" \
               --num-train-epochs {{ config.gold_config.num_train_epochs }} \
               --max-steps {{ config.gold_config.max_steps }} \
               --learning-rate {{ config.gold_config.learning_rate }} \
@@ -838,7 +870,7 @@ environment_configs:
               --last-message-only {{ config.gold_config.last_message_only }} \
               --clip-alpha {{ config.gold_config.clip_alpha }} \
               --opd-importance-sampling {{ config.gold_config.opd_importance_sampling }} \
-              --vllm-server-url "{{ config.gold_config.vllm_server_url }}"
+              --vllm-server-url "{{ vllm_server_url }}"
 
             if [ "$NODE_RANK" = "0" ]; then
               echo "--- rendered gold config ($CFG) ---"
@@ -854,14 +886,14 @@ environment_configs:
 
             # Node roles, three cases.
             #
-            # 1. EXTERNAL server (vllm_server_url set): the server lives in another
+            # 1. EXTERNAL server (the `vllm` input bound): the server lives in another
             #    target's allocation and this one is all trainers. The address is
             #    split out of the URL here rather than templated, because it is only
             #    known at run time — it arrives through a mem:// binding.
-            # 2. In-allocation split (vllm_server_url empty, vllm_num_servers > 0):
+            # 2. In-allocation split (`vllm` unbound, vllm_num_servers > 0):
             #    the LAST N nodes serve, matching the reference launcher.
             # 3. Off-policy (the default): every node trains.
-            VLLM_URL="{{ config.gold_config.vllm_server_url }}"
+            VLLM_URL="{{ vllm_server_url }}"
             VLLM_ARGS=""
             if [ -n "$VLLM_URL" ]; then
               # http://host:port -> host, port. Strip the scheme, then split on the
@@ -888,7 +920,7 @@ environment_configs:
                 echo "distill-gold: rank $NODE_RANK serving the student under vLLM"
                 exec /stage/.venv/bin/python -m gb_steps_post_training.distillation.run_vllm_serve \
                   --port "${KD_VLLM_API_PORT:-8001}" \
-                  --model "{{ config.gold_config.model_name_or_path }}" \
+                  --model "{{ bindings.student.binding.path }}" \
                   --gpu-memory-utilization 0.9 \
                   --tensor-parallel-size 1 \
                   --data-parallel-size "$GPUS" \

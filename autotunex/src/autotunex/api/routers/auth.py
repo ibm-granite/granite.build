@@ -468,6 +468,14 @@ async def me(principal: PrincipalDep) -> Principal:
     return principal
 
 
+# The same /me under the API prefix, for a UI that can only reach /api/v1/*
+# (granite.build's dev rewrite and gbserver's autotunex proxy forward nothing
+# else) and needs `is_admin` to know whether it may request `scope=all`. Only
+# /me: /login, /callback and the rest are browser-navigated and stay at the root.
+api_router = APIRouter(prefix="/auth", tags=["auth"])
+api_router.add_api_route("/me", me, methods=["GET"], summary="The current principal")
+
+
 @router.post("/assume/{user_id}", summary="Assume another user's identity (admin only)")
 async def assume(
     user_id: UUID,

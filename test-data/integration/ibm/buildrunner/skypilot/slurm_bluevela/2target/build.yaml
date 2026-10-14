@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-bluevela-slurm-hf-2target
+  name: skypilot-bluevela-slurm-hf-2target-test
   # Two targets on BlueVela SLURM (via Skypilot) running the generic `command`
   # step: BOTH `first` and `second` run INSIDE a container image
   # (`command_config.image` set → image_id docker:<image>), the SLURM
@@ -54,7 +54,7 @@ granite.build:
                 pwd=$(pwd);
                 echo "first target on bluevela gpu-mid partition";
                 echo "hf input path: {{ bindings.input_model.binding.path }}";
-                test -e {{ bindings.input_model.binding.path }} || { echo "missing hf input: {{ bindings.input_model.binding.path }}" >&2; exit 1; };
+                test -e "{{ bindings.input_model.binding.path }}";
                 file=out1.json; echo '{"artifact": "out1", "produced_by": "first"}' > $file;
                 echo "GB_ARTIFACT_ID:out1 GB_ARTIFACT_PATH:$pwd/$file"
             # No launcher_config.resources.cluster or zone: the environment's
@@ -82,7 +82,7 @@ granite.build:
               command: >-
                 set -e;
                 echo "second target received first output path: {{ bindings.from_first.binding.path }}";
-                test -e {{ bindings.from_first.binding.path }} || { echo "missing input from first: {{ bindings.from_first.binding.path }}" >&2; exit 1; };
+                test -e "{{ bindings.from_first.binding.path }}";
                 file=out2.json; echo '{"artifact": "out2", "produced_by": "second"}' > $file;
                 pwd=$(pwd);
                 echo "GB_ARTIFACT_ID:out2 GB_ARTIFACT_PATH:$pwd/$file"

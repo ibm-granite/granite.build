@@ -29,13 +29,17 @@ All fields in this section live under the step's `config.align_config`. The step
 carries a `config.code_config` block, described in
 [`code_config`](#code_config) below.
 
+The teacher and student models are no longer config fields; they are target inputs — see
+[Inputs](#inputs) below. `teacher` must be a **directory**, not an HF repo id (the
+teacher for the reference pairing is not publicly fetchable), and `student` must be the
+**raw, pre-retag** base student directory — the one directory in the pipeline that
+genuinely mis-segments.
+
 ### Required
 
 | Field | Type | Purpose |
 |---|---|---|
-| `teacher_model` | string | The teacher model **directory** (the 4.2 30B teacher for the reference pairing), not an HF repo id. Its tokenizer is what the student is retagged onto. Empty fails the step: `src/run-align.sh` exits 2 with `--teacher-model is required`. |
-| `student_model` | string | The **raw, pre-retag** base student directory (the 4.1 3B base for the reference pairing) — the one directory in the pipeline that genuinely mis-segments. Empty fails the step the same way. |
-| `chat_template` | string | The chat template installed on the retagged student. A relative path resolves against the delivered checkout; an absolute path is used as-is. **Set it explicitly:** the default, `templates/chatml_granite_42_generation.jinja`, does not exist in `gb-steps-distillation` at the pinned commit, so the default resolves to a missing file. See [Chat template](#chat-template). |
+| `chat_template` | string | The chat template installed on the retagged student, used when the target does not bind the optional `chat_template` input (a bound input wins). A relative path resolves against the delivered checkout; an absolute path is used as-is. **Set it explicitly:** the default, `templates/chatml_granite_42_generation.jinja`, does not exist in `gb-steps-distillation` at the pinned commit, so the default resolves to a missing file. See [Chat template](#chat-template). |
 
 ### Optional
 
@@ -70,18 +74,18 @@ distillation step; see [Source delivery](#source-delivery) for how the fields in
 
 ### Inputs
 
-The step declares no `inputs:` of its own. It reads two model directories, named by
-`align_config.teacher_model` and `align_config.student_model`. The shipped recipes declare
-them as target inputs and pass the resolved paths in:
+The step declares its inputs, read as `{{ bindings.<name>.binding.path }}`:
+
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `teacher` | yes | model | a direct `uri:` to the teacher directory |
+| `student` | yes | model | a direct `uri:` to the RAW base student directory |
+| `chat_template` | no | fileset | a template file; unbound uses `align_config.chat_template` |
 
 ```yaml
 inputs:
-  teacher_model: { uri: "env:///path/to/teacher", type: model }
-  student_model: { uri: "env:///path/to/raw-base-student", type: model }
-# ...
-align_config:
-  teacher_model: "{{ bindings.teacher_model.binding.path }}"
-  student_model: "{{ bindings.student_model.binding.path }}"
+  teacher: { uri: "env:///path/to/teacher", type: model }
+  student: { uri: "env:///path/to/raw-base-student", type: model }
 ```
 
 Any scheme the environment can resolve to a directory works (`env://` for a path already
@@ -89,6 +93,9 @@ on a reachable filesystem, `hf:///org/repo`, object storage); the step reads the
 binding path, never the URI. Both must be **directories**: `retag_student` needs the
 teacher's `config.json` (vocab size and the bos/eos/pad ids live there and nowhere else),
 so a tokenizer-only directory is not enough for the teacher.
+
+`align_config.teacher_model` and `align_config.student_model` are no longer read; a target
+that still sets either fails at run time with a message naming the input to bind instead.
 
 ### Outputs
 
@@ -103,7 +110,7 @@ GB_ARTIFACT_ID:student_overlay GB_ARTIFACT_PATH:<out_dir>/student_overlay
 
 | Output | What it is | Consumer |
 |---|---|---|
-| `retagged_student` | The base student re-embedded onto the teacher's tokenizer, with the chat template installed. Also holds `retag_manifest.json`, `tokenizer_identity.json` and, when a template was installed, `masking.json`. | The `model_name_or_path` of the `space://steps/distill/gold` step; the tokenizer the `space://steps/distill/corpus-prep` step tokenizes with. |
+| `retagged_student` | The base student re-embedded onto the teacher's tokenizer, with the chat template installed. Also holds `retag_manifest.json`, `tokenizer_identity.json` and, when a template was installed, `masking.json`. | The `student` input of the `space://steps/distill/gold` step; the tokenizer the `space://steps/distill/corpus-prep` step tokenizes with. |
 | `teacher_overlay` | The teacher's tokenizer files only, `tokenizer_class` pinned. | The teacher tokenizer for the eval steps — kept separate from the teacher MODEL path on purpose. |
 | `student_overlay` | The **pre-retag** student's tokenizer files, pinned the same way. Not consumed by the retag. | The `space://steps/distill/corpus-prep` step, as the trustworthy comparison point when it asserts one-tokenizer-per-run. |
 
@@ -146,10 +153,10 @@ granite.build:
     align:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        teacher_model:
+        teacher:
           uri: "env:///proj/models/granite-4.2-30b"
           type: model
-        student_model:
+        student:
           uri: "env:///proj/models/granite-4.1-3b-base"
           type: model
       outputs:
@@ -174,8 +181,6 @@ granite.build:
                 zone: "normal"
                 memory: 64
             align_config:
-              teacher_model: "{{ bindings.teacher_model.binding.path }}"
-              student_model: "{{ bindings.student_model.binding.path }}"
               out_dir: "my-run/align"
               chat_template: "/proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"
               require_chatml: false
@@ -190,7 +195,6 @@ granite.build:
         - step_uri: space://steps/distill/corpus-prep
           config:
             corpus_config:
-              tokenizer: "{{ bindings.tokenizer.binding.path }}"
               # ...
 ```
 
@@ -317,7 +321,7 @@ never describe an unverified student.
 
 ### Already-retagged student input
 
-If `student_model` already contains `retag_manifest.json` — `retag_student`'s own
+If the `student` input already contains `retag_manifest.json` — `retag_student`'s own
 signature, so it is another run's `retagged_student`, not a raw base — the step skips
 `[3/4]` and reuses that directory as this run's `retagged_student` unchanged. Retagging
 again is not idempotent: the second template install can land on a tokenizer that already

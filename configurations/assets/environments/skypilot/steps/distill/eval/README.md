@@ -24,13 +24,17 @@ steps:
 
 All fields in the first two tables live under the step's `config.eval_config`.
 
+The student and the teacher are no longer config fields; they are the required `student`
+and optional `teacher` target inputs — see [Inputs](#inputs) below. With no teacher
+only `entropy` is computable, and asking for `jsd` (or `kld`/`rkld`) without one is
+**refused** rather than defaulted; leave it unbound only together with
+`metrics: "entropy"`.
+
 ### Required
 
 | Field | Type | Purpose |
 |---|---|---|
-| `student_model` | string | Path to the student model directory. The `hf_model` output of the `space://steps/distill/hf-export` step for a post-training measurement, or the `retagged_student` output of the `space://steps/distill/tokenizer-align` step for the t=0 baseline. `src/run-eval.sh` refuses an empty value. |
 | `corpus` | string | Path to the JSONL corpus to measure on — the **eval split**, not the training split (see [Notes and limitations](#corpus-must-be-the-eval-split)). `src/run-eval.sh` refuses an empty value. |
-| `teacher_model` | string | Path to the teacher model directory, normally the same teacher the trainer used. Required with the default `metrics`: with no teacher only `entropy` is computable, and asking for `jsd` (or `kld`/`rkld`) without one is **refused** rather than defaulted. Leave it empty only together with `metrics: "entropy"`. |
 
 ### Optional
 
@@ -83,21 +87,25 @@ here.
 
 ### Inputs
 
-The step declares no `inputs:` of its own. It reads three paths from `eval_config` —
-`student_model`, `teacher_model` and `corpus` — and a recipe supplies them by declaring
-inputs on the target and passing their paths in with `{{ bindings.<name>.binding.path }}`:
+The step declares its models as inputs, read as `{{ bindings.<name>.binding.path }}`:
 
-- `student` — a `binding:` to `align.retagged_student` (baseline) or `export.hf_model`
-  (post-training), passed as `student_model`.
-- `teacher_model` — a direct `uri:` with `type: model`. Binding the teacher (rather than
-  passing a bare hub id) lets a `hf://` or `s3://` teacher be resolved and cached through
-  granite.build's asset stores instead of triggering an uncached fetch inside transformers
-  at eval time.
-- `corpus` — a `binding:` to `corpus.corpus`, the output of the
-  `space://steps/distill/corpus-prep` step. It is bound for the **ordering edge**, not the
-  path: `eval.jsonl` is not a declared artifact, so `eval_config.corpus` is composed from
-  the same root the corpus target wrote to (or read from the corpus manifest's
-  `splits.eval.path`).
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `student` | yes | model | `align.retagged_student` (baseline) or `export.hf_model` (post-training) |
+| `teacher` | no | model | a direct `uri:`; unbound, only `entropy` is computable |
+
+Binding the teacher (rather than passing a bare hub id) lets a `hf://` or `s3://` teacher
+be resolved and cached through granite.build's asset stores instead of triggering an
+uncached fetch inside transformers at eval time.
+
+`eval_config.corpus` stays a config key. Recipes also bind `corpus: {binding: corpus.corpus}`
+(the `space://steps/distill/corpus-prep` step) for the **ordering edge**, not the path:
+`eval.jsonl` is not a declared artifact, so `eval_config.corpus` is composed from the same
+root the corpus target wrote to (or read from the corpus manifest's `splits.eval.path`).
+The step accepts extra inputs like this one (`allow_unknown: true`).
+
+`eval_config.student_model` and `eval_config.teacher_model` are no longer read; a target
+that still sets either fails at run time with a message naming the input to bind instead.
 
 ### Outputs
 
@@ -120,8 +128,8 @@ Declare `eval_metrics` on the target (typically `uri: "env://{{ binding.path }}"
 - The run block sets `WORK="${GB_BUILD_WORKDIR:-$PWD}"`. A relative `output_dir` is
   absolutised to `$WORK/<output_dir>` before the script runs, because the marker path is
   handed to the `env://` store, possibly from another host.
-- `student_model`, `teacher_model` and `corpus` are passed to the script unchanged. Use
-  absolute paths; bindings already resolve to absolute paths.
+- The resolved `student` and `teacher` input paths, and `corpus`, are passed to the
+  script unchanged. Use absolute paths; bindings already resolve to absolute paths.
 - The source is cloned into `$WORK/<code_config.workdir>` (default `distill-code/`), or
   taken from `code_config.code_dir`, and `$CODE_DIR/src` is prepended to `PYTHONPATH`.
 - The step's `src/` directory is mounted at `./src`; the workload is
@@ -150,7 +158,7 @@ granite.build:
           binding: align.retagged_student
         corpus:
           binding: corpus.corpus        # ordering edge; the path is composed below
-        teacher_model:
+        teacher:
           uri: "env:///proj/models/teacher"
           type: model
       outputs:
@@ -170,8 +178,6 @@ granite.build:
                 zone: "normal"
                 memory: 64
             eval_config:
-              student_model: "{{ bindings.student.binding.path }}"
-              teacher_model: "{{ bindings.teacher_model.binding.path }}"
               corpus: "/proj/run/corpus/eval.jsonl"
               output_dir: "/proj/run/eval-transfer-baseline"
               max_length: 4096          # same budget as corpus prep and training
@@ -183,7 +189,7 @@ granite.build:
           binding: export.hf_model
         corpus:
           binding: corpus.corpus
-        teacher_model:
+        teacher:
           uri: "env:///proj/models/teacher"
           type: model
       outputs:
@@ -203,8 +209,6 @@ granite.build:
                 zone: "normal"
                 memory: 64
             eval_config:
-              student_model: "{{ bindings.student.binding.path }}"
-              teacher_model: "{{ bindings.teacher_model.binding.path }}"
               corpus: "/proj/run/corpus/eval.jsonl"
               output_dir: "/proj/run/eval-transfer"
               max_length: 4096
@@ -276,7 +280,7 @@ manifest's `splits.eval.path` or compose it from the same parameters.
 - **`allow_tokenizer_mismatch`**: keep it `false`. Index *i* denotes a different token to each
   model, so the arithmetic **succeeds and measures nothing**. It is kept as a knob only for a
   deliberate cross-tokenizer experiment, and setting it prints a warning in the step's log.
-- **`teacher_model` empty** is "no teacher", not a blank path: the script omits the flag
+- **`teacher` empty** is "no teacher", not a blank path: the script omits the flag
   entirely rather than passing `""`.
 
 ### `output_dir` is a FILESET
@@ -303,7 +307,7 @@ the template prints no marker.
 
 A restarted recipe re-runs every step, so the script first asks whether this measurement has
 already been made (`[0/2] resume check`). Identity is the student's and teacher's content plus
-the sampling and length policy, not the `student_model` path.
+the sampling and length policy, not the `student` input's path.
 
 - Nothing recorded: measure.
 - Recorded under the exact same expectation: print the marker and exit 0 (SKIP).

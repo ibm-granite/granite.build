@@ -69,20 +69,10 @@ config:
 
   # ─── Corpus ───────────────────────────────────────────────────────────────────
   corpus_config:
-    # Input: a .jsonl of conversation records, or an HF dataset id. A local file is what
-    # the recipe wires — the image runs with HF_HUB_OFFLINE=1, so a hub id needs that
-    # overridden deliberately.
-    dataset: ""
+    # The source dataset and the tokenizer are target INPUTS, not config keys — see
+    # `inputs:` below.
     dataset_split: "train"
     dataset_config: ""
-
-    # The tokenizer that DEFINES this corpus. Normally distill-tokenizer-align's
-    # `retagged_student`. Not decoration: max_length filtering and the completion-boundary
-    # check are both measured on the RENDERED, TOKENIZED conversation, so the surviving set
-    # of examples is a function of this directory. Its identity is copied into
-    # corpus_manifest.json, and the trainer refuses a student whose tokenizer identity
-    # differs.
-    tokenizer: ""
 
     # Relative values resolve against $GB_BUILD_WORKDIR.
     out_dir: "corpus"
@@ -145,6 +135,28 @@ config:
 # eval.jsonl is deliberately NOT declared: it exists only when eval_fraction > 0, and a
 # declared-but-absent output is a resolver failure. A recipe that needs it reads it from the
 # manifest's splits.eval.path.
+#
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # A .jsonl of conversation records (or a directory load_dataset() accepts). The
+    # image runs with HF_HUB_OFFLINE=1, so bind a local file, not a hub id.
+    source_dataset:
+      type: dataset
+      accept: [uri, binding]
+    # The tokenizer that DEFINES this corpus. Normally distill-tokenizer-align's
+    # `retagged_student`. Not decoration: max_length filtering and the completion-boundary
+    # check are both measured on the RENDERED, TOKENIZED conversation, so the surviving set
+    # of examples is a function of this directory. Its identity is copied into
+    # corpus_manifest.json, and the trainer refuses a student whose tokenizer identity
+    # differs.
+    tokenizer:
+      type: model
+      accept: [uri, binding]
 outputs:
   required:
     corpus:
@@ -171,6 +183,13 @@ environment_configs:
             HF_HOME: /opt/hf-cache
           run: |
             echo "=== distill-corpus-prep on $(hostname) ==="
+
+            # The inputs used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("dataset", "tokenizer") if config.corpus_config[key] is defined %}
+            echo "distill-corpus-prep: FATAL: corpus_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
 
             # --- distill source delivery: BEGIN (identical in all ported steps) ---
             # `set -eu` is already in effect: the launcher prefixes it.
@@ -310,10 +329,10 @@ environment_configs:
             fi
 
             "$PYBIN" ./src/prep_corpus.py \
-              --dataset "{{ config.corpus_config.dataset }}" \
+              --dataset "{{ bindings.source_dataset.binding.path }}" \
               --dataset-split "{{ config.corpus_config.dataset_split }}" \
               --dataset-config "{{ config.corpus_config.dataset_config }}" \
-              --tokenizer "{{ config.corpus_config.tokenizer }}" \
+              --tokenizer "{{ bindings.tokenizer.binding.path }}" \
               --out-dir "$OUT_DIR" \
               --max-length {{ config.corpus_config.max_length }} \
               --length-policy "{{ config.corpus_config.length_policy }}" \

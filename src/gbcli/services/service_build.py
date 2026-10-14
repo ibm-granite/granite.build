@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
-from fastapi import HTTPException
 from jinja2 import UndefinedError
 from pydantic import BaseModel
 from requests import HTTPError
@@ -64,6 +63,7 @@ from gbcli.utils.gbserver import (
     update_build_gserver,
     validate_build,
 )
+from gbcli.utils.gbserver_errors import GBServerHTTPError
 from gbcli.utils.gh_auth import get_user
 from gbcli.utils.gh_clone import (  # get_prs,
     clone_github_repo,
@@ -1114,7 +1114,7 @@ def build_log(
     elif not skip_id_check:
         try:
             id_check = get_build(build_id, github_token, GBSERVER_BUILD_API)
-        except HTTPException as e:
+        except GBServerHTTPError as e:
             if e.status_code == 404:
                 id_check = None
             else:
@@ -1717,7 +1717,7 @@ def build_monitor(
     else:
         try:
             id_check = get_build(build_id, github_token, GBSERVER_BUILD_API)
-        except HTTPException as e:
+        except GBServerHTTPError as e:
             if callback is not None:
                 callback(
                     callback_event="error",
@@ -2769,7 +2769,7 @@ def validate_helper(
                 callback_args={"reason": f"{e}"},
             )
         return None
-    except HTTPException as e:
+    except GBServerHTTPError as e:
         if callback is not None:
             if 400 < e.status_code < 600:
                 callback(

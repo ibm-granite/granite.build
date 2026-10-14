@@ -63,10 +63,11 @@ class TestShape:
         makes a step unportable."""
         assert launcher["resources"] == {}
 
-    def test_the_model_path_has_no_default(self, step):
+    def test_the_model_is_a_required_input(self, step):
         """Serving the wrong model is not a failure, it is a different algorithm
         that runs. For on-policy GOLD this must be the STUDENT."""
-        assert step["config"]["vllm_config"]["model_path"] == ""
+        assert set(step["inputs"]["required"]) == {"model"}
+        assert "model_path" not in step["config"]["vllm_config"]
 
 
 class TestRunScriptIsValidShell:

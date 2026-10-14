@@ -1058,6 +1058,92 @@ def has_resumable_final_checkpoint(output_dir: str) -> bool:
     return False
 
 
+# --model_at_root: after a successful run, the model files are moved from
+# <output_dir>/<model_name>/ (or <output_dir>/models/<model_name>/ for the
+# single-device drivers) up to <output_dir>/ itself, so a job whose whole
+# output_dir is uploaded (e.g. AutotuneX via granite.build → a HF repo) can be
+# loaded straight from the repo root. Every other entry in output_dir is
+# deleted, or moved into <output_dir>/diagnostics/ when diagnostics are kept.
+
+DIAGNOSTICS_DIRNAME = "diagnostics"
+_PROMOTE_STAGING_DIRNAME = ".fmtune-model-staging"
+
+
+def resolve_keep_diagnostics(flag: bool = False) -> bool:
+    """Whether ``--model_at_root`` keeps non-model artifacts under ``diagnostics/``.
+
+    True when ``--keep_diagnostics`` is passed, or when the environment variable
+    ``FMTUNE_KEEP_DIAGNOSTICS`` is set to anything other than empty / ``0`` /
+    ``false`` / ``no`` / ``off``.
+    """
+    if flag:
+        return True
+    val = os.getenv("FMTUNE_KEEP_DIAGNOSTICS")
+    if val is None:
+        return False
+    return val.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def promote_model_to_root(output_dir: str, model_name: str, keep_diagnostics: bool = False) -> bool:
+    """Move the saved model to the root of ``output_dir``; clear everything else.
+
+    Looks for the model at ``<output_dir>/<model_name>/``, then at
+    ``<output_dir>/models/<model_name>/``. Every other entry in ``output_dir`` is
+    deleted, or moved into ``<output_dir>/diagnostics/`` when
+    ``keep_diagnostics`` is True. Nothing is touched (returns False) when no
+    non-empty model dir is found, or when the model itself holds an entry named
+    ``diagnostics``, or when a staging dir from an interrupted earlier promote
+    is still present. Pure filesystem — unit-testable without Ray or Torch.
+
+    Only call this on a successful run, and only on an output_dir owned by this
+    run: it rewrites the whole directory.
+    """
+    # No expanduser: the drivers write to output_dir as given.
+    root = os.path.abspath(output_dir)
+    candidates = [os.path.join(root, model_name), os.path.join(root, "models", model_name)]
+    model_dir = next((p for p in candidates if os.path.isdir(p) and os.listdir(p)), None)
+    if model_dir is None:
+        logger.warning(f"[AutoTune] --model_at_root: no saved model found at {candidates}; leaving {root} as is")
+        return False
+    if DIAGNOSTICS_DIRNAME in os.listdir(model_dir):
+        logger.warning(
+            f"[AutoTune] --model_at_root: {model_dir} contains '{DIAGNOSTICS_DIRNAME}'; leaving {root} as is"
+        )
+        return False
+
+    # Park the model under a staging name first, so clearing the root cannot
+    # touch it (the single-device layout nests it inside models/).
+    staging = os.path.join(root, _PROMOTE_STAGING_DIRNAME)
+    if os.path.lexists(staging):
+        # Left by an interrupted earlier promote; shutil.move would nest the
+        # model inside it and promote the stale contents instead.
+        logger.warning(f"[AutoTune] --model_at_root: {staging} already exists; leaving {root} as is")
+        return False
+    shutil.move(model_dir, staging)
+
+    diagnostics_dir = os.path.join(root, DIAGNOSTICS_DIRNAME)
+    for name in os.listdir(root):
+        if name in (_PROMOTE_STAGING_DIRNAME, DIAGNOSTICS_DIRNAME):
+            continue
+        path = os.path.join(root, name)
+        if keep_diagnostics:
+            os.makedirs(diagnostics_dir, exist_ok=True)
+            shutil.move(path, os.path.join(diagnostics_dir, name))
+        elif os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+    if not keep_diagnostics and os.path.isdir(diagnostics_dir):
+        shutil.rmtree(diagnostics_dir)
+
+    for name in os.listdir(staging):
+        shutil.move(os.path.join(staging, name), os.path.join(root, name))
+    os.rmdir(staging)
+
+    logger.info(f"[AutoTune] Model moved to the root of {root} (diagnostics kept: {keep_diagnostics})")
+    return True
+
+
 def get_autotune_precision(precision: str):
     """
     Get the AutotunePrecision for a given string.

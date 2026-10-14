@@ -309,7 +309,7 @@ class DatasetService:
 
         Raises:
             DatasetNotFoundError: unknown dataset or not the caller's.
-            DatasetNotReadyError: the dataset is already uploading.
+            DatasetNotReadyError: the dataset is already uploading or importing.
             DomainValidationError: both a validation file and a percentage given,
                 or an invalid ``column_mapping`` JSON, or the validation file's
                 format differs from the train file's.
@@ -325,8 +325,8 @@ class DatasetService:
         dataset = await self._repository.get(dataset_id, owner_id=owner_id)
         if dataset is None:
             raise DatasetNotFoundError(dataset_id)
-        if dataset.status == DatasetStatus.UPLOADING:
-            raise DatasetNotReadyError(dataset_id)
+        if dataset.status in (DatasetStatus.UPLOADING, DatasetStatus.IMPORTING):
+            raise DatasetNotReadyError(dataset_id, status=dataset.status)
         if validation is not None and validation_percentage is not None:
             raise DomainValidationError(
                 "Provide either a validation file or a validation_percentage, not both."

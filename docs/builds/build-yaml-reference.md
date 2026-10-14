@@ -293,6 +293,7 @@ Available variables:
 | Variable          | What it is |
 |-------------------|------------|
 | `run_metadata.*`  | Per-run identifiers (`targetsteprun_id`, `build_id`, etc.). |
+| `unique_hash`     | Output `uri` only. Hash of the artifact event that triggers the push, so each push of an output gets a new value, including a workload step retry; a push step retry keeps it. A build retry that reuses a target keeps its old URI. Keep a prefix (e.g. `hf://huggingface.co/datasets/my-org/eval_{{ unique_hash }}`): the hash may start with a digit. Unlike `{{ target_hash }}`, which retries reuse. |
 | `space.variables.*` | Variables defined in the space's `space.yaml`. |
 | `binding.*`       | Resolved upstream artifact info for a bound input. `binding.path` is the filesystem location (filesystem-backed outputs); `binding.state` is the verbatim value of a `mem://` output. Use whichever the upstream output's scheme produces. |
 | `bindings.*`      | Map of all bound inputs by name (`bindings.<name>.binding.path` / `.state`); use when a target has more than one bound input. |
@@ -334,6 +335,17 @@ Common rejections from `BuildConfig.my_validate()`:
 - A `binding` references a target or output that doesn't exist.
 - A target has zero steps.
 - A `k8s.env` value is an unquoted integer.
+- On a non-standalone server (`GB_ENVIRONMENT` is not `STANDALONE`), a `file:`
+  URI in a target's `environment_uri`, a step's `step_uri`, or an input/output
+  `uri`. A `file:` URI names a path on the build host itself, so only a
+  standalone server (running on your own machine) accepts it. A `step_uri` or
+  `environment_uri` with no scheme counts as `file:`. On a shared server use
+  `space://`, a git URI, or `env://` (a path on the worker) instead. An empty or
+  missing `step_uri` still defaults to the bundled `gbstep` runner.
+- A `..` path segment in a `step_uri` or `environment_uri`, on any server
+  (standalone included). This covers `space://steps/../x`, `file:../x` and a
+  git `#subdirectory=../x`, and is checked after filling in space-config
+  templates. Dots inside a name (`a..b`) are fine.
 
 Run `gb build start -f build.yaml` and read the error — it'll point at the
 field.

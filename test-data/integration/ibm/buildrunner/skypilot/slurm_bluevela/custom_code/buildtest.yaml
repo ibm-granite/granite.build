@@ -16,7 +16,6 @@ target_expectations:
     step_count: 3
     input_artifact_count: 1
     output_artifact_count: 1 # the hf:// fileset output
-    jobstats_count: 1
     # Assert the step recorded the resolved commit SHA as lineage metadata. The
     # step emits GB_STEP_METADATA_KEY:commit_hash GB_STEP_METADATA_VALUE:<sha>,
     # which the skypilot monitor captures and the buildrunner merges onto the

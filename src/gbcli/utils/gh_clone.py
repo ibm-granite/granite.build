@@ -6,11 +6,10 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 import requests
-from fastapi import HTTPException
-from git import GitCommandError, Repo
 from requests.exceptions import ConnectionError
 
-from gbcli.utils.utils import CloneProgress, remove_prefix
+from gbcli.utils.gbserver_errors import GBServerHTTPError
+from gbcli.utils.utils import remove_prefix
 from gbcommon.types.constants import get_gh_api_base
 
 logger = logging.getLogger(__name__)
@@ -41,6 +40,10 @@ def clone_github_repo(
 
     shutil.rmtree(cache_path, ignore_errors=True)
     cache_path.mkdir(mode=0o777, parents=True, exist_ok=False)
+
+    from git import GitCommandError, Repo
+
+    from gbcli.utils.clone_progress import CloneProgress
 
     exception_message = None
     clone_progress = CloneProgress(update_bar)
@@ -325,7 +328,7 @@ def get_public_repo_tags(space_org: str, space_name: str) -> Any:
 def run_github_command(command, callback=None, final_command=None):
     try:
         result = command()
-    except HTTPException as e:
+    except GBServerHTTPError as e:
         raise Exception(f"github returned '{e.status_code} {e.detail}'")
     except ConnectionError:
         raise Exception(

@@ -8,6 +8,7 @@ dropping the column. These tests pin the round trip.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -206,12 +207,88 @@ def test_the_last_login_revision_has_a_downgrade_that_drops_the_column() -> None
 
 
 def _last_login_revision_source() -> str:
-    """Return the source of the revision that adds ``users.last_login_at``."""
+    """Return the source of the revision that adds ``users.last_login_at``.
+
+    Matched with a line-start anchor, not a bare substring: an unanchored
+    ``revision = "..."`` search also matches any later revision's
+    ``down_revision = "..."`` line, since that line ends with the same text.
+    Without the anchor, the very next migration built on top of this one
+    would make this helper find two "matches" instead of one.
+    """
+    pattern = re.compile(rf'^revision = "{_LAST_LOGIN_REVISION}"$', re.MULTILINE)
     matches = [
-        path.read_text()
-        for path in REVISIONS.glob("*.py")
-        if f'revision = "{_LAST_LOGIN_REVISION}"' in path.read_text()
+        path.read_text() for path in REVISIONS.glob("*.py") if pattern.search(path.read_text())
     ]
 
     assert len(matches) == 1, f"expected exactly one last-login revision, found {len(matches)}"
     return matches[0]
+
+
+_HF_PROVENANCE_REVISION = "dd4511a46fc5"
+_REVISION_BEFORE_HF_PROVENANCE = "a3c71d94e5b2"
+
+
+def test_the_raw_schema_file_does_not_declare_the_hf_provenance_columns() -> None:
+    """A post-baseline revision's columns must not also be in the schema file.
+
+    CLAUDE.md's bring-up path for a database built from
+    ``resources/autotunex_schema.sql`` is ``alembic stamp 1fb645a87b48`` then
+    ``alembic upgrade head``: the baseline's ``upgrade()`` would fail on the
+    already-existing tables, so it is stamped, and every later revision runs for
+    real. A column declared in *both* places therefore makes that upgrade die on
+    MySQL error 1060 (duplicate column) -- unlike the known ``trials.id`` re-widen
+    divergence, which is merely redundant.
+
+    This is why ``datasets.status``, ``datasets.status_detail``,
+    ``jobs.reward_function_code``/``_name``, ``users.last_login_at`` and the whole
+    ``training_metrics`` table are all ORM-and-migration only (see *Open decisions*
+    6). These five belong to that set.
+    """
+    schema = Path("resources/autotunex_schema.sql").read_text()
+
+    declared = {
+        column
+        for column in ("hf_repo_id", "hf_revision", "hf_config", "hf_split", "hf_provenance")
+        if column in schema
+    }
+
+    assert not declared, (
+        f"{sorted(declared)} are in both the schema file and revision "
+        f"{_HF_PROVENANCE_REVISION}; a stamped baseline then `upgrade head` would "
+        "fail on a duplicate column."
+    )
+
+
+def test_the_hf_provenance_revision_adds_columns_and_downgrade_drops_them(
+    tmp_path: Path,
+) -> None:
+    """The one revision on this table that is not ``batch_alter_table``.
+
+    ``datasets`` has two ``GENERATED ALWAYS AS (...) STORED`` columns
+    (``train_file``, ``validation_file``) that SQLite batch mode's
+    copy-and-recreate cannot round-trip, so this revision uses plain
+    ``add_column``/``drop_column`` instead -- the one migration deviating from
+    every other revision's precedent in this file. A round trip through both
+    directions is what actually exercises that choice, rather than a
+    source-only assertion.
+    """
+    database = tmp_path / "hf_provenance.db"
+    _alembic(database, "upgrade", _REVISION_BEFORE_HF_PROVENANCE)
+    engine = create_engine(f"sqlite:///{database}")
+    hf_columns = {"hf_repo_id", "hf_revision", "hf_config", "hf_split", "hf_provenance"}
+
+    with engine.connect() as connection:
+        before = {row[1] for row in connection.execute(text("PRAGMA table_info(datasets)"))}
+    assert not (hf_columns & before)
+
+    _alembic(database, "upgrade", _HF_PROVENANCE_REVISION)
+    with engine.connect() as connection:
+        after_upgrade = {row[1] for row in connection.execute(text("PRAGMA table_info(datasets)"))}
+    assert hf_columns <= after_upgrade
+
+    _alembic(database, "downgrade", _REVISION_BEFORE_HF_PROVENANCE)
+    with engine.connect() as connection:
+        after_downgrade = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(datasets)"))
+        }
+    assert not (hf_columns & after_downgrade)

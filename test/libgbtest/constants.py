@@ -26,7 +26,11 @@ import os
 
 import pytest
 
-from gbserver.types.constants import GB_ENVIRONMENT_CONFIG
+from gbserver.types.constants import (
+    ENV_VAR_GBSERVER_IMAGE_TAG,
+    ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG,
+    GB_ENVIRONMENT_CONFIG,
+)
 
 TEST_ENV_VAR_PREFIX = "GBTEST_"
 
@@ -149,6 +153,30 @@ manual_testing_only = pytest.mark.skipif(
     not GBTEST_ENABLE_MANUAL_TESTS,
     reason="manual-only test: set GBTEST_ENABLE_MANUAL_TESTS=1 to run (depends on "
     "external, possibly-unpushed resources — see the test docstring)",
+)
+
+
+# Skip for K8s/BuildRunnerJob build tests, which launch the gbserver build-runner
+# image and the monitoring sidecar image and so need both image tags set. Like
+# manual_testing_only it reads the env at import time; a blank value counts as
+# unset (`make .test` may export the vars empty). Use `make info` in the dev or
+# main branch to get the tag values.
+#
+# Usage:
+#   from libgbtest.constants import requires_k8s_image_tags
+#
+#   @requires_k8s_image_tags
+#   class TestK8sBuild: ...
+K8S_IMAGE_TAGS_MISSING = [
+    name
+    for name in (ENV_VAR_GBSERVER_IMAGE_TAG, ENV_VAR_SIDECAR_MONITORING_IMAGE_TAG)
+    if not os.getenv(name, "").strip()
+]
+
+requires_k8s_image_tags = pytest.mark.skipif(
+    bool(K8S_IMAGE_TAGS_MISSING),
+    reason=f"K8s build test needs the gbserver/sidecar image tags; "
+    f"{', '.join(K8S_IMAGE_TAGS_MISSING)} not set (use 'make info')",
 )
 
 

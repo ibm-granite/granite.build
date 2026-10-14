@@ -72,8 +72,8 @@ vllm-server ──vllm_url──> train ──checkpoint──> teardown
      └────────────────cluster_name───────────────┘
 ```
 
-Ordering is implicit; there is no `depends_on` key. `vllm-server` has no inputs, so it
-starts immediately. `train` waits on `vllm_url`. `teardown` waits on the trainer's
+Ordering is implicit; there is no `depends_on` key. `vllm-server` has no input bindings
+(its one input, `model`, is a plain `env://` uri), so it starts immediately. `train` waits on `vllm_url`. `teardown` waits on the trainer's
 `checkpoint` — emitted as the trainer's **last** log line, which is what puts teardown
 after training — and on `cluster_name`.
 

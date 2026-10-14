@@ -2,6 +2,7 @@
 
 **Automated fine-tuning and hyperparameter optimization for large language models.**
 
+[![CI](https://img.shields.io/github/actions/workflow/status/ibm-granite/granite.build/ci.yml?branch=main&label=CI&cacheSeconds=86400)](https://github.com/ibm-granite/granite.build/actions/workflows/autotunex-ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](../LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
@@ -116,11 +117,51 @@ To point at an external database instead of the embedded SQLite file, set
 `-e AUTOTUNEX_DATABASE_URL=...` (the `postgres`/`mysql` drivers are **not** in
 this image — installing those extras is a separate build).
 
-> **Training execution.** This image installs the lean `fm-tune[core]` training
-> stack — `torch` plus `ray[tune,default]`, transformers/trl/peft — from the
-> in-tree `src/fm-tune/`, and defaults `AUTOTUNEX_JOB_BACKEND=local`, so tuning
-> runs in-container on CPU. Only the GPU / online-RL extras (`[full]`:
-> verl/vLLM, flash-attn, deepspeed) and `[mlx]` (macOS-arm64 only) are left out.
+### GPU (CUDA)
+
+The same `Dockerfile` builds against a CUDA base, which lets the in-process
+`local` backend train on an NVIDIA GPU and adds the online-RL extras
+(`fm-tune[full]`: verl/vLLM, flash-attn, deepspeed):
+
+```bash
+docker build -t autotunex:cuda --build-arg DEVICE=cuda .
+
+docker run --rm --gpus all -p 8000:8000 -v autotunex-cuda-data:/data autotunex:cuda
+```
+
+Podman passes devices through with CDI rather than `--gpus`:
+
+```bash
+podman run --rm --device nvidia.com/gpu=all -p 8000:8000 -v autotunex-cuda-data:/data autotunex:cuda
+```
+
+Or with Compose: `docker compose --profile cuda up --build`.
+
+`DEVICE` selects a base stage inside the same `Dockerfile` — `cpu` (the default)
+or `cuda` — and the value names deliberately match fm-tune's own
+`FMTUNE_DEVICE=cuda|mps|cpu` runtime override, which forces a device when
+autodetection picks the wrong one. `--build-arg CUDA_BASE=...` changes the CUDA
+version, but keep an Ubuntu whose system python is 3.12: the pinned flash-attn
+wheel is `cp312`-only. It is also the escape hatch if Docker Hub rate-limits the
+base-image pull (`toomanyrequests`) — NVIDIA's own registry serves the same tags:
+
+```bash
+docker build -t autotunex:cuda --build-arg DEVICE=cuda \
+  --build-arg CUDA_BASE=nvcr.io/nvidia/cuda:12.8.0-devel-ubuntu24.04 .
+```
+
+> **Expect a large image** — a `-devel` CUDA base (needed for deepspeed's runtime
+> JIT compilation) plus verl/vLLM is several times the size of the CPU image. The
+> CPU image itself is unaffected: a plain `docker build .` still produces it, with
+> the identical package set it has today.
+
+> **Training execution.** The default (CPU) image installs the lean
+> `fm-tune[core]` training stack — `torch` plus `ray[tune,default]`,
+> transformers/trl/peft — from the in-tree `src/fm-tune/`, and defaults
+> `AUTOTUNEX_JOB_BACKEND=local`, so tuning runs in-container on CPU. The GPU /
+> online-RL extras (`[full]`: verl/vLLM, flash-attn, deepspeed) come with the
+> CUDA build above instead; `[mlx]` (macOS-arm64 only) is never installed in a
+> container.
 > Locally, `make install` installs just the slim, torch-free catalog, so wizard
 > endpoints work out of the box, and those heavy extras stay a separate, opt-in
 > install — `make install-training` (`pip install -e "./src/fm-tune[full,mlx]"`).
@@ -144,8 +185,8 @@ tasks relate, plus the job lifecycle — see [concepts](docs/concepts.md).
 
 ## API surface
 
-Resource endpoints are mounted under `/api/v1`; `/auth/*`, `/health` and `/mcp` are
-unprefixed. Reads and owner-scoped writes are own-data by default; an admin widens reads,
+Resource endpoints are mounted under `/api/v1`; `/auth/*` (except `GET /api/v1/auth/me`),
+`/health` and `/mcp` are unprefixed. Reads and owner-scoped writes are own-data by default; an admin widens reads,
 updates and deletes to every owner's rows per request with `?scope=all` (a non-admin who asks
 gets a `403`). Configuration and dataset reads additionally return the **shared system tier** —
 curated starter content owned by a reserved system user — which every caller sees even under the
@@ -157,16 +198,17 @@ lives in [`docs/api/`](docs/api/).
 
 | Resource | Endpoints | Reference |
 | --- | --- | --- |
-| **Jobs** | `POST`/`GET` `/jobs`, `GET`/`DELETE` `/jobs/{id}`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/reconcile` (admin), `POST /jobs/estimate-usages`, `POST /jobs/generate-test-solutions`, `GET /jobs/by-build-id/{build_id}`, `GET /jobs/{id}/trials`, result-report (list/file/archive), job/trial/gb logs, per-step training metrics (`GET /jobs/{id}/metrics`, `GET /jobs/{id}/trials/{trial_id}/metrics`) | [jobs.md](docs/api/jobs.md) |
+| **Jobs** | `POST`/`GET` `/jobs`, `GET`/`DELETE` `/jobs/{id}`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/reconcile` (admin), `POST /jobs/estimate-usages`, `POST /jobs/generate-test-solutions`, `GET /jobs/by-build-id/{build_id}`, `GET /jobs/tuned-models`, `GET /jobs/{id}/trials`, result-report (list/file/archive), job/trial/gb logs, per-step training metrics (`GET /jobs/{id}/metrics`, `GET /jobs/{id}/trials/{trial_id}/metrics`) | [jobs.md](docs/api/jobs.md) |
 | **Reward functions** | `POST /reward-functions/validate` (validate an online-RL reward function, sandboxed) | [reward-functions.md](docs/api/reward-functions.md) |
 | **Configurations** | full CRUD `/configurations` (+ `GET /configurations/template`) | [configurations.md](docs/api/configurations.md) |
-| **Datasets** | full CRUD `/datasets`, `POST /datasets/{id}/upload`, `?preview=true` | [datasets.md](docs/api/datasets.md) |
+| **Datasets** | full CRUD `/datasets`, `POST /datasets/{id}/upload`, `?preview=true`, `GET /datasets/hf/{search,splits}`, `POST /datasets/hf/{preview,import}` | [datasets.md](docs/api/datasets.md) |
 | **Dataset intelligence** | `POST /datasets/intelligence/{parse-strategy,suggest-mapping,validate-strategy}`, `GET .../formats` | [datasets.md](docs/api/datasets.md) |
+| **HuggingFace models** | `GET /hf/models/search`, `GET /hf/models/card` | [hf-models.md](docs/api/hf-models.md) |
 | **Users** | `GET /users`, `GET /users/{id}`, `PATCH /users/{id}` (all admin-only); `GET /users/me/metadata` (open to any authenticated caller) | [users.md](docs/api/users.md) |
 | **Chat & MCP** | `POST /chat`, `POST /chat/stream`, `/mcp` (unprefixed) | [chat.md](docs/api/chat.md), [mcp.md](docs/api/mcp.md) |
-| **Auth** | `GET /auth/{login,callback,me}`, `POST /auth/logout`, `POST /auth/assume/{user_id}` (admin), `POST /auth/unassume` | [authentication.md](docs/api/authentication.md) |
+| **Auth** | `GET /auth/{login,callback,me}`, `POST /auth/logout`, `POST /auth/assume/{user_id}` (admin), `POST /auth/unassume` (also `GET /api/v1/auth/me`, a prefixed alias of `/auth/me` for UIs that can only reach `/api/v1/*`) | [authentication.md](docs/api/authentication.md) |
 | **Health** | `GET /health`, `GET /health/live` (liveness alias), `GET /health/ready` (DB-gated readiness; `503` when the database is unreachable) | [overview.md](docs/api/overview.md) |
-| **App config** | `GET /app-config` (unauthenticated; the upload cap and client gzip/preview knobs the web UI reads at boot) | [overview.md](docs/api/overview.md) |
+| **App config** | `GET /app-config` (unauthenticated; the upload cap and client gzip/preview knobs the web UI reads at boot, plus the HF-import availability flag and byte/row caps under `hf_import`) | [overview.md](docs/api/overview.md) |
 
 For the conventions shared by every endpoint — pagination, ownership scoping, and the RFC 9457
 error shape — see the [API overview](docs/api/overview.md).

@@ -42,10 +42,7 @@ config:
     setup_command: ""
   vllm_config:
     # ── Code and model ──────────────────────────────────────────────────────
-    # The model to serve. For on-policy GOLD this is the STUDENT, not the teacher:
-    # the student generates and the teacher scores those generations, so serving
-    # the teacher here would be a different algorithm that still runs.
-    model_path: ""
+    # The model to serve is the `model` target input — see `inputs:` below.
     # ── Serving ─────────────────────────────────────────────────────────────
     # The reference launcher's VLLM_API_PORT.
     port: 8001
@@ -87,6 +84,20 @@ config:
     # nothing underneath reclaims it. Build d77546a9 held 8 H100s that way until
     # they were downed by hand. This is the backstop, not the normal path.
     max_lifetime_seconds: 0
+
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads it as {{ bindings.model.binding.path }}. allow_unknown stays true
+# so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The model to serve. For on-policy GOLD this is the STUDENT, not the teacher:
+    # the student generates and the teacher scores those generations, so serving
+    # the teacher here would be a different algorithm that still runs.
+    model:
+      type: model
+      accept: [uri, binding]
 outputs:
   optional:
     # The URL, as a mem:// binding. mem:// and NOT env://: env:// would run the
@@ -123,6 +134,13 @@ environment_configs:
             OMP_NUM_THREADS: "8"
           run: |
             set -u
+
+            # The model used to be a config key. A recipe that still sets it would
+            # otherwise be ignored silently, so refuse it.
+            {% if config.vllm_config.model_path is defined %}
+            echo "distill-vllm-server: FATAL: vllm_config.model_path is no longer read; bind the target input 'model' instead (see this step's README)" >&2
+            exit 1
+            {% endif %}
 
             # The image's venv is not on PATH by default; the dispatcher runs this
             # with `bash <file>` (non-login), so this export sticks.
@@ -210,7 +228,7 @@ environment_configs:
             # trainer would dispatch and race a multi-minute model load.
             "$PYBIN" -m gb_steps_post_training.distillation.run_vllm_serve \
               --port "$PORT" \
-              --model "{{ config.vllm_config.model_path }}" \
+              --model "{{ bindings.model.binding.path }}" \
               --gpu-memory-utilization {{ config.vllm_config.gpu_memory_utilization }} \
               --tensor-parallel-size {{ config.vllm_config.tensor_parallel_size }} \
               --data-parallel-size "$DP" \

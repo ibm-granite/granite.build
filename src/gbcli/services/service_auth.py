@@ -35,7 +35,7 @@ def gh_token_verify(device_code: str) -> TokenURLResponse:
 
 
 def gh_login(gh_access_token: str):
-    user_obj = get_user(token=gh_access_token)
+    user_obj = get_user(token=gh_access_token, verify=True)
     gh_section = get_gh_credentials_section()
     credentials = GBCredentials()
     credentials.set("token", gh_access_token, section=gh_section)

@@ -30,6 +30,12 @@ config:
     rows: 200
     python: "/stage/.venv/bin/python"
 
+# No named inputs, by design: a diagnostic run against literal paths
+# (probe_config.checkpoint, probe_config.corpus), not a pipeline stage. allow_unknown
+# lets a recipe bind inputs purely to order this target.
+inputs:
+  allow_unknown: true
+
 environment_configs:
   Skypilot:
     subtypes:

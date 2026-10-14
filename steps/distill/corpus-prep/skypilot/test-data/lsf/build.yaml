@@ -17,6 +17,15 @@ granite.build:
   targets:
     align:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        teacher:
+          uri: "env:///proj/granite-build/g4os/models/granite-4.2-3b-nothink"
+          type: model
+        # A RAW, un-retagged base student: tokenizer_class GPT2Tokenizer, no chat
+        # template, so the retag has real work to do.
+        student:
+          uri: "env:///proj/granite-build/g4os/granite-4.0-1b-base-prerelease-castlerock-final"
+          type: model
       outputs:
         retagged_student:
           uri: "env://{{ binding.path }}"
@@ -41,10 +50,6 @@ granite.build:
                 zone: "normal"
                 memory: 32
             align_config:
-              teacher_model: "/proj/granite-build/g4os/models/granite-4.2-3b-nothink"
-              # A RAW, un-retagged base student: tokenizer_class GPT2Tokenizer, no chat
-              # template, so the retag has real work to do.
-              student_model: "/proj/granite-build/g4os/granite-4.0-1b-base-prerelease-castlerock-final"
               out_dir: "align"
 
     corpus:
@@ -54,6 +59,11 @@ granite.build:
         # exists before this target starts.
         tokenizer:
           binding: align.retagged_student
+        # A think-filtered conversation JSONL — the same slice the gold smoke recipe
+        # trains on, so the schema is known-good.
+        source_dataset:
+          uri: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+          type: dataset
       outputs:
         # The FILE, not out_dir: the trainer dispatches on the .jsonl suffix and finds the
         # manifest as a sibling of it.
@@ -74,10 +84,6 @@ granite.build:
                 zone: "normal"
                 memory: 32
             corpus_config:
-              # A think-filtered conversation JSONL — the same slice the gold smoke recipe
-              # trains on, so the schema is known-good.
-              dataset: "/proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
-              tokenizer: "{{ bindings.tokenizer.binding.path }}"
               out_dir: "corpus-smoke"
               # Same budget the gold smoke recipe trains at, so this corpus would be
               # usable by it.

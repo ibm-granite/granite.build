@@ -9,6 +9,14 @@ See [overview.md](overview.md) for shared conventions, [authentication.md](authe
 for how a caller is resolved to a `Principal` and role, and [../concepts.md](../concepts.md)
 for the domain model.
 
+Every route shares the credential errors documented in
+[authentication.md](authentication.md): `401` for a missing or invalid credential, `400`
+when more than one credential is sent (a bearer token and an API key together).
+
+Under an active impersonation overlay (`POST /auth/assume/{id}`), every `/users` route
+acts as the **assumed** identity: `/users/me/metadata` returns the assumed user's counts,
+and the own-role guard applies to the assumed user, not the real admin.
+
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
@@ -122,7 +130,7 @@ mutable user field — email is not editable here.
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `role` | string | yes | `admin` \| `user` (any other value is a `422`) |
+| `role` | string | yes | `admin` \| `user` (`role` missing or not `admin`/`user`, or any field other than `role` in the body, is a `422`) |
 
 ```bash
 curl -X PATCH https://example.com/api/v1/users/a2c9... \
@@ -142,7 +150,7 @@ curl -X PATCH https://example.com/api/v1/users/a2c9... \
 | `403` | Caller is not an admin |
 | `404` | No such user |
 | `409` | Changing your own role, or demoting the last admin |
-| `422` | `role` is not `admin` or `user` |
+| `422` | `role` missing or not `admin`/`user`, or the body has any field other than `role` |
 
 ## See also
 

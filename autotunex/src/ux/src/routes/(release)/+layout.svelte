@@ -24,6 +24,7 @@
 	import { SettingsAdjust } from 'carbon-icons-svelte';
 	import {
 		display_conversation,
+		homeView,
 		isAuthenticated,
 		currentUser,
 		featureFlags,
@@ -97,7 +98,7 @@
 	company="IBM Research"
 	platformName="AutoTuneX"
 	on:click={() => {
-		localStorage.removeItem('view');
+		homeView.set(null);
 	}}
 	bind:isSideNavOpen
 >
@@ -114,7 +115,7 @@
 			<HeaderPanelLinks>
 				<HeaderPanelLink
 					on:click={() => {
-						localStorage.removeItem('view');
+						homeView.set(null);
 						goto('/autotune');
 					}}>About</HeaderPanelLink
 				>

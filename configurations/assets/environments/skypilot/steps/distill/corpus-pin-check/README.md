@@ -36,7 +36,10 @@ stands in for checks the wrong thing.
 | `think_policy` | string | Must equal the manifest's `policies.think_policy`. |
 | `documents_policy` | string | Must equal the manifest's `policies.documents_policy`. |
 | `eval_fraction` | number | Must equal the manifest's `eval_fraction`, and decides whether `eval.jsonl` must exist. The default `0.0` matches only a corpus prepped without an eval split. |
-| `tokenizer_dir` | string | This build's retagged tokenizer, byte-compared against the manifest's `tokenizer_path` when that directory still exists. |
+
+The retagged tokenizer is no longer a config field; it is the required `tokenizer` target
+input, byte-compared against the manifest's `tokenizer_path` when that directory still
+exists — see [Inputs](#inputs) below.
 
 ### Optional
 
@@ -49,16 +52,22 @@ stands in for checks the wrong thing.
 
 ### Inputs
 
-The step declares no `inputs:` of its own; it reads `corpus_dir` and `tokenizer_dir`
-from config. The shipped recipes declare two target inputs anyway:
+The step declares one required input, read as `{{ bindings.tokenizer.binding.path }}`:
 
-- `pinned_corpus` — a direct `uri:` to the corpus's `train.jsonl` (`type: dataset`), so the
-  pinned corpus appears in the build's lineage. When a recipe skips corpus prep, this is the
-  only place it is named as an input.
-- `tokenizer` — `binding: align.retagged_student`, the output of the
-  `space://steps/distill/tokenizer-align` step. It is passed in as
-  `tokenizer_dir: "{{ bindings.tokenizer.binding.path }}"`, and the binding is the ordering
-  edge that guarantees align has run before the comparison is made.
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `tokenizer` | yes | model | `align.retagged_student` (the `space://steps/distill/tokenizer-align` step) |
+
+The binding is also the ordering edge that guarantees align has run before the
+comparison is made. `corpus_dir` and `teacher_model` stay config keys: the first names
+the pinned directory, the second is compared by basename only.
+
+The shipped recipes also declare `pinned_corpus` — a direct `uri:` to the corpus's
+`train.jsonl` (`type: dataset`) — so the pinned corpus appears in the build's lineage.
+The step accepts extra inputs like this one (`allow_unknown: true`).
+
+`pin_check_config.tokenizer_dir` is no longer read; a target that still sets it fails at
+run time with a message naming the input to bind instead.
 
 ### Outputs
 
@@ -83,8 +92,8 @@ The run block sets `WORK` to `$GB_BUILD_WORKDIR` (falling back to the current di
 A relative `output_dir` becomes `$WORK/<output_dir>`; it is created before the check runs.
 `src/` is file-mounted beside the step and the workload runs
 `<python> ./src/check_corpus_pin.py` with the config values as positional arguments.
-`corpus_dir`, `teacher_model` and `tokenizer_dir` are used as given, so pass absolute
-paths.
+`corpus_dir` and `teacher_model` are used as given, so pass absolute paths; the
+`tokenizer` input's resolved binding path is used the same way.
 
 ## Example build.yaml
 
@@ -118,7 +127,6 @@ granite.build:
               think_policy: keep
               documents_policy: keep
               eval_fraction: 0.005
-              tokenizer_dir: "{{ bindings.tokenizer.binding.path }}"
               output_dir: /proj/run/corpus-pin
     train:
       inputs:
@@ -152,7 +160,7 @@ metric downstream would still look normal.
   assistant turn.
 - `eval_fraction` matches the manifest's (compared as a float).
 - When the manifest's `tokenizer_path` still exists, its `tokenizer.json` and
-  `chat_template.jinja` are byte-identical (SHA-256) to the ones in `tokenizer_dir`; a file
+  `chat_template.jinja` are byte-identical (SHA-256) to the ones in the `tokenizer` input; a file
   missing on either side is a mismatch. When `tokenizer_path` no longer exists, that
   comparison is skipped — a pin should outlive the build that produced it — and
   `corpus_pin.json` records `identity-only (pinned tokenizer_path no longer on disk)`

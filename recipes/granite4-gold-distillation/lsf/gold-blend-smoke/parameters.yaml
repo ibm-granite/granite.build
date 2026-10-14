@@ -70,7 +70,7 @@ TEMPERATURE: 1.0
 # 0.3 => on-policy-BLENDED: the student generates 30% of samples under vLLM and
 # trains on the fixed corpus the rest. The renderer refuses a server URL at
 # lmbda 0, because the server would then be allocated and never asked for
-# anything — so this value must stay above 0 as long as vllm_server_url is set.
+# anything — so this value must stay above 0 as long as the trainer's `vllm` input is bound.
 LMBDA: 0.3
 BETA: 0.5
 # false, as in gold-sweep-*/gold-onpolicy-smoke: granite's logits_scaling=10
@@ -120,7 +120,7 @@ NCCL_ENABLE_MONITORING: true
 
 # ─── Topology and resources ───────────────────────────────────────────
 # ONE trainer node, in its own allocation. All 8 of its GPUs train, because the
-# server is elsewhere — that is what vllm_server_url changes.
+# server is elsewhere — that is what binding the trainer's `vllm` input changes.
 NUM_NODES: 1
 NUM_GPUS_PER_NODE: 8
 ACCELERATORS: "H100:8"

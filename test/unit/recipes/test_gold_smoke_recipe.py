@@ -120,38 +120,39 @@ def test_three_lineage_inputs_declared(rendered):
     required for the artifact to appear.
     """
     inputs = _target(rendered)["inputs"]
-    assert set(inputs) == {"teacher_model", "student_model", "training_dataset"}
-    assert inputs["teacher_model"]["type"] == "model"
-    assert inputs["student_model"]["type"] == "model"
-    assert inputs["training_dataset"]["type"] == "dataset"
+    assert set(inputs) == {"teacher", "student", "corpus"}
+    assert inputs["teacher"]["type"] == "model"
+    assert inputs["student"]["type"] == "model"
+    assert inputs["corpus"]["type"] == "dataset"
     for name, spec in inputs.items():
         # env:// needs an absolute path (pullasset_envstore rejects a relative
         # one), so the scheme is followed by three slashes once /proj/... lands.
         assert spec["uri"].startswith("env:///"), name
 
 
-def test_inputs_agree_with_what_the_trainer_is_given(rendered):
+def test_inputs_are_the_only_route_to_the_trainer(rendered):
     """The lineage record and the trainer's arguments cannot disagree.
 
-    Both sides resolve from the same parameter, so this pins the wiring: an input
-    renamed on one side only would make lineage describe a run that did not happen.
+    The gold step reads student, teacher and corpus from its declared inputs, so the
+    inputs ARE the trainer's arguments. A gold_config key carrying the same path
+    again could only drift from them.
     """
     target = _target(rendered)
     inputs = target["inputs"]
     gold = target["steps"][0]["config"]["gold_config"]
+    params = get_params_from_file(str(_RECIPE / "parameters.yaml"))
 
-    assert inputs["student_model"]["uri"] == "env://" + gold["model_name_or_path"]
-    assert (
-        inputs["teacher_model"]["uri"] == "env://" + gold["teacher_model_name_or_path"]
-    )
-    assert inputs["training_dataset"]["uri"] == "env://" + gold["dataset_name"]
+    assert inputs["student"]["uri"] == "env://" + params["STUDENT_MODEL"]
+    assert inputs["teacher"]["uri"] == "env://" + params["TEACHER_MODEL"]
+    assert inputs["corpus"]["uri"] == "env://" + params["TRAINING_DATASET"]
+    for retired in ("model_name_or_path", "teacher_model_name_or_path", "dataset_name"):
+        assert retired not in gold, retired
 
 
 def test_dataset_is_think_filtered(rendered):
     """An inline <think>...</think> in an assistant turn breaks gold's completion
     extraction, silently. The reference and smoke datasets are *_nothink.jsonl."""
-    gold = _target(rendered)["steps"][0]["config"]["gold_config"]
-    assert "nothink" in gold["dataset_name"]
+    assert "nothink" in _target(rendered)["inputs"]["corpus"]["uri"]
 
 
 def test_fixture_declares_the_same_three_paths(rendered):
@@ -169,12 +170,9 @@ def test_fixture_declares_the_same_three_paths(rendered):
     ]["targets"]["gold-smoke"]["inputs"]
     params = get_params_from_file(str(_RECIPE / "parameters.yaml"))
 
-    assert fixture_inputs["teacher_model"]["uri"] == "env://" + params["TEACHER_MODEL"]
-    assert fixture_inputs["student_model"]["uri"] == "env://" + params["STUDENT_MODEL"]
-    assert (
-        fixture_inputs["training_dataset"]["uri"]
-        == "env://" + params["TRAINING_DATASET"]
-    )
+    assert fixture_inputs["teacher"]["uri"] == "env://" + params["TEACHER_MODEL"]
+    assert fixture_inputs["student"]["uri"] == "env://" + params["STUDENT_MODEL"]
+    assert fixture_inputs["corpus"]["uri"] == "env://" + params["TRAINING_DATASET"]
 
 
 def test_every_float_parameter_survives_as_a_float(rendered):

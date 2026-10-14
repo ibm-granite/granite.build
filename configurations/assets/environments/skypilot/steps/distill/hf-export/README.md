@@ -24,25 +24,28 @@ steps:
 
 All fields in the first two tables live under the step's `config.export_config`.
 
-### Required
-
-| Field | Type | Purpose |
-|---|---|---|
-| `train_output_dir` | string | The **trainer's** `output_dir` — the parent containing `checkpoint-25/`, `checkpoint-50/`, … — not a single checkpoint. With the empty default the step looks for `checkpoint-*` in the current directory and fails with "no checkpoint-* directory". |
+The trainer's output directory is no longer a config field; it is the required
+`train_output` target input — see [Inputs](#inputs) below. It must be the **trainer's**
+`output_dir` — the parent containing `checkpoint-25/`, `checkpoint-50/`, … — not a single
+checkpoint.
 
 ### Optional
 
 | Field | Type | Purpose |
 |---|---|---|
 | `dest` | string | Where the packaged model is written; this is what gets published as `hf_model`. A relative value resolves against `$GB_BUILD_WORKDIR`. Default: `hf_model`. |
-| `checkpoint` | string | Which checkpoint to publish: a bare `checkpoint-N` (resolved under `train_output_dir`) or a path. Empty selects the **highest step number**, not the newest mtime. Default: `""`. |
+| `checkpoint` | string | Which checkpoint to publish: a bare `checkpoint-N` (resolved under the `train_output` input) or a path. Empty selects the **highest step number**, not the newest mtime. Default: `""`. |
 | `padding_side` | string | `right` (publish-correct, the reason this step exists) \| `left` (knowingly publishing a generation-only artifact) \| `keep` (copy the trainer's value verbatim). Default: `right`. |
 | `allow_unknown` | boolean | `false` refuses checkpoint files the keep list does not recognise; `true` drops them and records them in `export_manifest.json`. Default: `false` — but see [allow_unknown and distributed checkpoints](#allow_unknown-and-distributed-checkpoints). |
 | `chat_template_thinking` | string | `keep` \| `default-off`: which generation prompt `apply_chat_template(..., add_generation_prompt=True)` hands out. Default: `keep`. |
 | `verify` | boolean | Load the result with `AutoConfig`/`AutoTokenizer` before declaring success. Costs seconds; catches an export missing a file. Default: `true`. |
-| `expect_tokenizer_from` | string | A tokenizer directory the export must agree with, token id for token id — normally the `retagged_student` output of the `space://steps/distill/tokenizer-align` step. Empty skips the check. Default: `""`. |
 
-> **Wire `expect_tokenizer_from` rather than leaving it empty.** It is the only check in the
+The optional `expected_tokenizer` input (see [Inputs](#inputs)) replaces
+`expect_tokenizer_from`: a tokenizer directory the export must agree with, token id for
+token id — normally the `retagged_student` output of the `space://steps/distill/tokenizer-align`
+step. Unbound skips the check.
+
+> **Bind `expected_tokenizer` rather than leaving it unbound.** It is the only check in the
 > pipeline that catches a checkpoint trained against a different tokenizer than the recipe
 > believes, which no amount of "does it load" can detect.
 
@@ -78,17 +81,22 @@ here.
 
 ### Inputs
 
-The step declares no `inputs:` of its own. It reads `train_output_dir` and, optionally,
-`expect_tokenizer_from` from `export_config`; a recipe supplies both by declaring inputs on
-the target and passing their paths in with `{{ bindings.<name>.binding.path }}`:
+The step declares its inputs, read as `{{ bindings.<name>.binding.path }}`:
 
-- a `binding:` to the trainer target's `checkpoint` output (e.g. `train.checkpoint`, from
-  the `space://steps/distill/gold` or `space://steps/distill/sft` step), passed as
-  `train_output_dir`;
-- a `binding:` to `align.retagged_student`, passed as `expect_tokenizer_from`. Binding it
-  means the cross-check cannot name a tokenizer this build did not produce.
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `train_output` | yes | model | the trainer target's `checkpoint` (`space://steps/distill/gold` or `sft`) |
+| `expected_tokenizer` | no | model | `align.retagged_student`; unbound skips the cross-check |
 
-Nothing is deleted, moved or written under `train_output_dir`.
+Binding `expected_tokenizer` means the cross-check cannot name a tokenizer this build did
+not produce. `export_config.checkpoint` stays a config key: it is the NAME of the
+checkpoint under `train_output` to publish (e.g. `"checkpoint-500"`), not a path.
+
+Nothing is deleted, moved or written under `train_output`.
+
+`export_config.train_output_dir` and `export_config.expect_tokenizer_from` are no longer
+read; a target that still sets either fails at run time with a message naming the input to
+bind instead.
 
 ### Outputs
 
@@ -103,7 +111,7 @@ GB_ARTIFACT_ID:hf_model GB_ARTIFACT_PATH:<absolute dest>
 ```
 
 Declare `hf_model` on the target (typically `uri: "env://{{ binding.path }}"`,
-`type: model`). Consumers are the `space://steps/distill/eval` step (`student_model`), the
+`type: model`). Consumers are the `space://steps/distill/eval` step (`student`), the
 `space://steps/distill/gen-smoke` step (one rung per export) and `space://steps/bfcl-eval`
 (`model_path`).
 
@@ -112,8 +120,9 @@ Declare `hf_model` on the target (typically `uri: "env://{{ binding.path }}"`,
 - The run block sets `WORK="${GB_BUILD_WORKDIR:-$PWD}"`. A relative `dest` is absolutised to
   `$WORK/<dest>` before the marker, because the monitor hands the path to the `env://` store,
   possibly from another host, and a relative `env:` URI is rejected at config load.
-- `train_output_dir`, `checkpoint` and `expect_tokenizer_from` are passed to the script
-  unchanged. Use absolute paths; bindings already resolve to absolute paths.
+- The resolved `train_output` and `expected_tokenizer` input paths, and `checkpoint`, are
+  passed to the script unchanged. Use absolute paths; bindings already resolve to absolute
+  paths.
 - The source is cloned into `$WORK/<code_config.workdir>` (default `distill-code/`), or taken
   from `code_config.code_dir`, and `$CODE_DIR/src` is prepended to `PYTHONPATH`.
 - The step's `src/` directory is mounted at `./src`; the workload is
@@ -137,10 +146,10 @@ granite.build:
     export:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        checkpoint:
+        train_output:
           binding: train.checkpoint
         # Bound so the cross-check below cannot name a tokenizer this build did not produce.
-        tokenizer:
+        expected_tokenizer:
           binding: align.retagged_student
       outputs:
         hf_model:
@@ -158,11 +167,9 @@ granite.build:
                 zone: "normal"
                 memory: 64
             export_config:
-              train_output_dir: "{{ bindings.checkpoint.binding.path }}"
               dest: "/proj/run/hf_model"
               # Needed for a multi-GPU training run; see Notes and limitations.
               allow_unknown: true
-              expect_tokenizer_from: "{{ bindings.tokenizer.binding.path }}"
 ```
 
 ## Notes and limitations
@@ -187,11 +194,11 @@ It has five jobs, each of which exists because the trainer cannot do it:
 
 Grafting a tokenizer from somewhere else is **not** one of its jobs. If the trainer's tokenizer
 disagrees with the corpus the run trained on, that is a defect to fail on, not to paper over at
-packaging time — which is what `expect_tokenizer_from` is for.
+packaging time — which is what the `expected_tokenizer` input is for.
 
 **The prune is by omission.** Files reach `dest` through `shutil.copy2` against an explicit keep
-list; nothing is deleted, moved or written under `train_output_dir`. So pointing this step at a
-checkpoint you did not produce is safe.
+list; nothing is deleted, moved or written under the `train_output` input. So pointing this step
+at a checkpoint you did not produce is safe.
 
 The NORMALISE job also covers the model config and `tokenizer.json`; `src/export_hf_model.py`
 documents each rule and the measurement behind it. In short: numeric values that transformers 5

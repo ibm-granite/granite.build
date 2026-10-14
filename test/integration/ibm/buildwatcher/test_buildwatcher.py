@@ -8,7 +8,7 @@ from libgbtest.buildrunner.buildtest import (
     ClassTestedEnum,
     get_test_data_root,
 )
-from libgbtest.constants import extended_testing_only
+from libgbtest.constants import extended_testing_only, requires_k8s_image_tags
 
 pytestmark = pytest.mark.ibm
 
@@ -26,6 +26,7 @@ _INVALID_YAML = (
     reason="Can't run this since it is configured as not having G.B cluster access",
 )
 @extended_testing_only
+@requires_k8s_image_tags
 class AbstractTestBuildWatcher(AbstractBuildTest):
 
     def _get_build_count(self) -> int:

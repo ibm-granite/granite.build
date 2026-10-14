@@ -32,7 +32,6 @@ granite.build:
             dpk_config:
               transform: tokenization2arrow
               dpk_version: "1.1.8"
-              input_path: "{{ bindings.docs.binding.path }}"
               output: tokens
               validate: true
               module: dpk_tokenization2arrow.runtime

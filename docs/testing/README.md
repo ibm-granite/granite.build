@@ -121,8 +121,8 @@ The run-relevant environment variables:
 | `GBTEST_ENABLE_MANUAL_TESTS` | Set to `1` to run tests marked `@manual_testing_only` (from `libgbtest.constants`) — manual-only tests that depend on external, possibly-unpushed resources (private repos, unpushed assets steps, cluster SSH, real secrets). Skipped otherwise, including in CI. See the test's docstring for its specific prerequisites. |
 | `GBTEST_SPS_ENABLE_ENV_VAR_OVERRIDE` | When `true`, a locally-set env var supersedes the value `conftest.set_test_env` fetches from SPS (default `false`, so the SPS secret wins). Set it alongside a local write `HF_TOKEN` to push with your own token instead of the shared `hf-token` secret (see the hf:// push note below). |
 | **IBM infrastructure** | For `ibm`-marked / live-cluster tests: |
-| `GBSERVER_IMAGE_TAG` | The gbserver build-runner image tag to run against. |
-| `GBSERVER_SIDECAR_MONITORING_IMAGE_TAG` | The monitoring sidecar image tag. |
+| `GBSERVER_IMAGE_TAG` | The gbserver build-runner image tag to run against. K8s build tests (`@requires_k8s_image_tags`) are skipped unless it is set. |
+| `GBSERVER_SIDECAR_MONITORING_IMAGE_TAG` | The monitoring sidecar image tag. K8s build tests (`@requires_k8s_image_tags`) are skipped unless it is set. |
 
 For the IBM-infra tags, the Makefile prints ready-to-`source` lines (`export GBSERVER_IMAGE_TAG=…` /
 `export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=…`) derived from the current git commit — use those so tests

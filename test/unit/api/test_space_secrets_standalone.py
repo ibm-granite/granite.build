@@ -88,8 +88,8 @@ def local_default_client(tmp_path, monkeypatch):
     """A `type: local` space.yaml with `config: {}` and no secrets_dir.
 
     Mirrors configurations/spaces/local/space.yaml: LocalSpaceSecretManager should
-    default secrets_dir to <gb_home>/space_secrets. GB_HOME_DIR is pointed at a temp
-    dir so the default location is isolated and assertable.
+    default secrets_dir to <gb_home>/space_secrets/<space.yaml name>. GB_HOME_DIR is
+    pointed at a temp dir so the default location is isolated and assertable.
     """
     gb_home = tmp_path / "gb_home"
     monkeypatch.setenv("GB_HOME_DIR", str(gb_home))
@@ -169,7 +169,8 @@ def test_get_missing_space_secret_returns_404(local_client):
 
 
 def test_local_default_secrets_dir_crud(local_default_client):
-    """`type: local` with no secrets_dir defaults to <gb_home>/space_secrets and is writable."""
+    """`type: local` with no secrets_dir defaults to the space's own
+    <gb_home>/space_secrets/<space name> dir and is writable."""
     client, gb_home = local_default_client
     base = "/space_secrets/standalone"
 
@@ -179,10 +180,10 @@ def test_local_default_secrets_dir_crud(local_default_client):
     )
     assert r.status_code == 200, r.text
 
-    # The secret file landed under the defaulted <gb_home>/space_secrets dir.
-    default_dir = gb_home / "space_secrets"
+    # The secret file landed in this space's own dir, keyed by space.yaml's name.
+    default_dir = gb_home / "space_secrets" / "standalone"
     assert default_dir.is_dir()
-    assert any(default_dir.iterdir()), "expected a secret file under the default dir"
+    assert [p.name for p in default_dir.iterdir()] == ["standalone.yaml"]
 
     # Round-trips via the API.
     assert client.get(base).json()["secrets"] == ["API_KEY"]

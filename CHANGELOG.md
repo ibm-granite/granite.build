@@ -23,6 +23,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Published steps declare named inputs and read them from bindings (#453).** Every
+  `step.yaml` under `configurations/assets/` now has an `inputs:` block. A target that
+  doesn't bind a required input now fails build validation before anything is queued.
+  Before, the step failed on the cluster with an unresolved `{{ bindings… }}` string.
+  Steps with no fixed set of input names declare `inputs: {allow_unknown: true}` and say
+  why: `byoc`, `skypilot-teardown`, `corpus-sources`, `gen-smoke`, `probe`, the servers,
+  the export gates, `hello`, `sage`, and the AWS S3-mounted evals.
+  **Breaking change for the distill steps, which are not in any tag yet.** Their inputs
+  are required, and the old config keys are no longer read. A recipe that still sets one
+  of those keys fails at run time with a message naming the input to bind.
+
+  | Step | Old config key | Input |
+  |---|---|---|
+  | `distill/tokenizer-align` | `align_config.teacher_model`, `.student_model` | `teacher`, `student`, `chat_template` (optional) |
+  | `distill/corpus-prep` | `corpus_config.dataset`, `.tokenizer` | `source_dataset`, `tokenizer` |
+  | `distill/corpus-pin-check` | `pin_check_config.tokenizer_dir` | `tokenizer` |
+  | `distill/sft` | `sft_config.student_model_path`, `.corpus_path` | `student`, `corpus` |
+  | `distill/gold` | `gold_config.model_name_or_path`, `.teacher_model_name_or_path`, `.dataset_name`, `.vllm_server_url` | `student`, `teacher`, `corpus`, `vllm` (optional) |
+  | `distill/eval` | `eval_config.student_model`, `.teacher_model` | `student`, `teacher` (optional) |
+  | `distill/hf-export` | `export_config.train_output_dir`, `.expect_tokenizer_from` | `train_output`, `expected_tokenizer` (optional) |
+  | `distill/logit-precompute` | `precompute_config.corpus_path`, `.teacher_model_path`, `.teacher_tokenizer_path` | `corpus`, `teacher`, `teacher_tokenizer` |
+  | `distill/vllm-server` | `vllm_config.model_path` | `model` |
+
+  The shipped recipes, examples and step READMEs bind the new names. See
+  [Declaring inputs](docs/steps/README.md#declaring-inputs).
+
 - **SkyPilot HPC (SLURM/LSF) — `cluster_ssh_configs` may list several candidate login
   nodes for one cluster, with automatic failover.** A `Host` block's `HostName` may now be a
   list of interchangeable login hostnames. gbserver picks one per launch and, if provisioning
@@ -63,6 +89,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch-time error — add the secret to `secret_names_to_use_as_env_variable` to restore
   it. (Builds whose secret bag contained a non-identifier name were already failing to
   launch on SkyPilot before this change; see Fixed.)
+
+### Deprecated
+
+- **Config keys that carried an input path in steps shipped in v0.3.x (#453).** These
+  steps now declare the input as optional and read the binding when it is bound. A bound
+  input wins over the key. When the input isn't bound, the step falls back to the old
+  key and prints a `DEPRECATED` warning. A key set to the same value as the bound input
+  also gets a `DEPRECATED` note asking the recipe to drop it. The fallback will be removed
+  in a future release.
+
+  | Step | Deprecated key | Input |
+  |---|---|---|
+  | `sage-eval` (LSF) | `sage_eval_config.model_path` | `model` |
+  | `bfcl-eval` (LSF) | `bfcl_config.model_path` | `model` |
+  | `openinstruct-sft` (LSF) | `sft_config.model_path` | `model` |
+  | `openinstruct-rl` (LSF) | `rl_config.rm_server_url`, `rl_config.code_server_url` | `rm_url`, `code_url` (`mem://`) |
+  | `dpk` | `dpk_config.input_path` | `docs` |
+
+  The AWS `openinstruct-sft` also declares an optional `model` input, but its
+  `sft_config.model_path` is **not** deprecated: it is the Hugging Face id the trainer
+  downloads when `model` is not bound, so it stays as a real default with no warning.
 
 ### Fixed
 

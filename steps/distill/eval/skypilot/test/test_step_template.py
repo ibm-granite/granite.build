@@ -217,15 +217,17 @@ class TestFlagSurface:
 
 
 class TestConfigDefaults:
-    def test_the_student_and_corpus_are_not_defaulted(self, step):
+    def test_the_student_is_required_and_the_corpus_not_defaulted(self, step):
+        assert set(step["inputs"]["required"]) == {"student"}
         cfg = step["config"]["eval_config"]
-        assert cfg["student_model"] == ""
+        assert "student_model" not in cfg
         assert cfg["corpus"] == ""
 
-    def test_the_teacher_is_optional_and_empty(self, step):
+    def test_the_teacher_is_an_optional_input(self, step):
         """With no teacher only entropy is computable, and asking for jsd without one is
-        refused rather than defaulted. The emptiness is meaningful."""
-        assert step["config"]["eval_config"]["teacher_model"] == ""
+        refused rather than defaulted. The absence is meaningful."""
+        assert set(step["inputs"]["optional"]) == {"teacher"}
+        assert "teacher_model" not in step["config"]["eval_config"]
 
     def test_all_four_metrics_are_requested_by_default(self, step):
         """They are reductions over the SAME pair of logit tensors, so four cost one
@@ -262,3 +264,41 @@ class TestConfigDefaults:
         from gbcommon.types.stepconfig import StepType
 
         assert step["type"] in {m.value for m in StepType}
+
+
+class TestTheRenamedTeacherInputIsRefused:
+    """`teacher` is optional and the step allows unknown inputs, so a target still
+    binding the pre-rename `teacher_model` would validate and then score with no
+    teacher at all. The run script refuses it instead."""
+
+    def _render(self, step, launcher, bindings):
+        from gbserver.utils.template import fill_template
+
+        return fill_template(
+            templ=launcher["run"],
+            data={"config": step["config"], "bindings": bindings},
+            strict=True,
+        )
+
+    def test_the_old_name_is_fatal(self, step, launcher):
+        rendered = self._render(
+            step,
+            launcher,
+            {
+                "student": {"binding": {"path": "/s"}},
+                "teacher_model": {"binding": {"path": "/t"}},
+            },
+        )
+        assert "the 'teacher_model' input was renamed to 'teacher'" in rendered
+
+    def test_the_new_name_is_not(self, step, launcher):
+        rendered = self._render(
+            step,
+            launcher,
+            {
+                "student": {"binding": {"path": "/s"}},
+                "teacher": {"binding": {"path": "/t"}},
+            },
+        )
+        assert "renamed to 'teacher'" not in rendered
+        assert '--teacher-model "/t"' in rendered

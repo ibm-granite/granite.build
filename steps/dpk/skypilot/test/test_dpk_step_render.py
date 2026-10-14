@@ -95,10 +95,10 @@ def _transform_cfg(defaults: dict, **over) -> dict:
     return base
 
 
-# The template no longer reads `bindings` at all: a build resolves its own input path
-# and passes it as `input_path`, the byoc pattern. This is kept only because the render
-# signature still accepts it, and passing it proves the template ignores it.
+# The step reads its declared `docs` input; the bindings a target binding it renders
+# with. Unrelated names only order targets and must not affect the render.
 _BINDINGS = {"docs": {"binding": {"path": "/staged/docs"}}}
+_ORDERING_ONLY = {"gate": {"binding": {"path": "/elsewhere"}}}
 
 # The rendered blocks now invoke the bundled scripts rather than inlining the
 # shell, so the meaningful assertion is "what argv does the script receive?".
@@ -586,9 +586,10 @@ class TestBothBlocksCallTheGuard:
 
     @pytest.mark.parametrize("block", ["setup", "run"])
     def test_the_resolved_input_path_is_passed(self, launcher, defaults, block):
-        """The guard checks the PATH now, not a name against a list of bindings."""
-        cfg = _transform_cfg(defaults, input_path="/staged/elsewhere")
-        rendered = _render(launcher[block], cfg, _BINDINGS)
+        """The guard checks the resolved PATH: the bound `docs` input."""
+        cfg = _transform_cfg(defaults, input_path="")
+        bindings = {"docs": {"binding": {"path": "/staged/elsewhere"}}}
+        rendered = _render(launcher[block], cfg, bindings)
         assert "--input-path '/staged/elsewhere'" in rendered
 
     @pytest.mark.parametrize("block", ["setup", "run"])
@@ -601,17 +602,12 @@ class TestBothBlocksCallTheGuard:
         assert _bash_ok(_render(launcher[block], cfg, bindings))
 
 
-class TestTheStepNeverLearnsBindingNames:
-    """Regression fence for the byoc switch: the template must not read `bindings`.
+class TestDocsInput:
+    """The `docs` input, with dpk_config.input_path as the deprecated fallback (#453).
 
-    It used to take `input: <name>` and resolve the name itself, which required exporting
-    $GB_INPUT_<name> for every declared input and reading exactly one of them back —
-    variables no bundled script, no other step, and no build ever read. That indirection
-    cost a name sanitizer, a collision guard for the sanitizer being many-to-one, two
-    guards validating the name against the bindings, and a `set -u` abort of the whole
-    run block when a name was mistyped. All of it is deleted, so these assert it stays
-    deleted rather than being reintroduced by a well-meaning "the step should resolve
-    this" change.
+    The step used to take `input: <name>` and resolve the name itself by exporting
+    $GB_INPUT_<name> for every declared input; that indirection stays deleted. It now
+    reads ONE declared input, `docs`, through bindings, which build validation checks.
     """
 
     def test_no_gb_input_variable_is_exported(self, launcher, defaults):
@@ -619,20 +615,41 @@ class TestTheStepNeverLearnsBindingNames:
             rendered = _render(launcher[block], _transform_cfg(defaults), _BINDINGS)
             assert "GB_INPUT_" not in rendered
 
-    def test_the_blocks_render_identically_with_no_bindings_at_all(
+    def test_docs_is_declared_optional(self, template):
+        assert set(template["inputs"]["optional"]) == {"docs"}
+        assert template["inputs"]["allow_unknown"] is True
+
+    def test_a_bound_docs_input_reaches_the_script(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, input_path="")
+        bindings = {"docs": {"binding": {"path": "/staged/some where/docs"}}}
+        rendered = _render(launcher["run"], cfg, bindings)
+        assert _opt(_script_argv(rendered, "run"), "--input-path") == (
+            "/staged/some where/docs"
+        )
+        assert "DEPRECATED" not in rendered
+        assert "WARNING" not in rendered
+
+    def test_unbound_falls_back_to_the_config_key_with_a_deprecation(
         self, launcher, defaults
     ):
-        """The sharpest form: bindings are not an input to rendering any more."""
-        cfg = _transform_cfg(defaults)
-        for block in ("setup", "run"):
-            assert _render(launcher[block], cfg, {}) == _render(
-                launcher[block], cfg, _BINDINGS
-            )
+        cfg = _transform_cfg(defaults, input_path="/staged/legacy")
+        rendered = _render(launcher["run"], cfg, _ORDERING_ONLY)
+        assert _opt(_script_argv(rendered, "run"), "--input-path") == "/staged/legacy"
+        assert "dpk: DEPRECATED: dpk_config.input_path" in rendered
 
-    def test_the_input_path_reaches_the_script_verbatim(self, launcher, defaults):
-        cfg = _transform_cfg(defaults, input_path="/staged/some where/docs")
-        argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
-        assert _opt(argv, "--input-path") == "/staged/some where/docs"
+    def test_the_bound_input_wins_over_the_config_key(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, input_path="/staged/legacy")
+        rendered = _render(launcher["run"], cfg, _BINDINGS)
+        assert _opt(_script_argv(rendered, "run"), "--input-path") == "/staged/docs"
+        assert "dpk_config.input_path is ignored" in rendered
+
+    def test_the_same_path_in_both_is_flagged_as_redundant(self, launcher, defaults):
+        """A recipe that still copies the binding into the key is not 'ignored', but
+        the key is still deprecated, so it is told to drop it."""
+        cfg = _transform_cfg(defaults, input_path="/staged/docs")
+        rendered = _render(launcher["run"], cfg, _BINDINGS)
+        assert "WARNING" not in rendered
+        assert "dpk: DEPRECATED: dpk_config.input_path duplicates" in rendered
 
     @pytest.mark.parametrize(
         "path", ["/staged/o'brien", "/staged/it's/docs", "/staged/a'b'c"]
@@ -640,9 +657,9 @@ class TestTheStepNeverLearnsBindingNames:
     def test_a_quote_in_the_path_survives_and_cannot_break_the_block(
         self, launcher, defaults, path
     ):
-        """A path is author-controlled config text, so q() still applies to it."""
-        cfg = _transform_cfg(defaults, input_path=path)
-        rendered = _render(launcher["run"], cfg, _BINDINGS)
+        """A path is author-controlled text, so q() still applies to it."""
+        cfg = _transform_cfg(defaults, input_path="")
+        rendered = _render(launcher["run"], cfg, {"docs": {"binding": {"path": path}}})
         assert _bash_ok(rendered)
         assert _opt(_script_argv(rendered, "run"), "--input-path") == path
 

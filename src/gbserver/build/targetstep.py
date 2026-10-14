@@ -37,6 +37,7 @@ from gbserver.build.step import STEP_FILE_NAME, Step
 from gbserver.environment.environment import Environment
 from gbserver.types.buildconfig import BuildTargetConfig, BuildTargetStepConfig
 from gbserver.types.constants import (
+    CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_DIR,
     GB_ENVIRONMENT,
     GBSERVER_SIDECAR_MONITORING_IMAGE_TAG,
 )
@@ -242,7 +243,7 @@ def _copy_basestep_scaffold(temp_path: Path, env_type: str) -> None:
     with `no template "gbstepbase.app"`). Keeping a dir the active backend never
     reads is harmless; deleting one it needs is not.
     """
-    base_step_src = Path(__file__).parent.parent / "builtins/steps/gbstep"
+    base_step_src = CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_DIR
     sync_or_copy(str(base_step_src) + "/", temp_path, delete=False)
 
     key = env_type.lower()
@@ -711,8 +712,7 @@ class TargetStep(BuildEntity):
 
             if use_basestep:
                 step_default_file_path = (
-                    Path(os.path.abspath(__file__)).parent.parent
-                    / "builtins/steps/gbstep/step_default.yaml"
+                    CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_DIR / "step_default.yaml"
                 )
                 self.step_default_file_path = step_default_file_path
                 if step_default_file_path.exists():

@@ -12,7 +12,6 @@ target_expectations:
     step_count: 2
     input_artifact_count: 0
     output_artifact_count: 0
-    # jobstats not asserted (default -1): a no-output command step records none.
 # The committed Space (../space) carries environments/skypilot/aws-ephemeral and
 # chains base_uris to configurations/assets, from which space://steps/command
 # resolves. No `make space` render needed.

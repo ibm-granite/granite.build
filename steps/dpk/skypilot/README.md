@@ -162,8 +162,10 @@ backend is reachable:
   `environment.yaml` resolves the secret names `GB_AWS_ACCESS_KEY_ID` /
   `GB_AWS_SECRET_ACCESS_KEY` through the space **secret manager** and materializes them into a
   non-default `gb-skypilot` profile that SkyPilot then selects (an explicit profile disables
-  the ambient `AWS_*` provider). Standalone: seed those secret names (base64) into
-  `~/.granite.build/space_secrets/` — or, since the secrets are lenient when absent, rely on an
+  the ambient `AWS_*` provider). Standalone: store those secrets with `gb secret create
+  <NAME> --value <v> --space <space>` (each space has its own directory under
+  `~/.granite.build/space_secrets/`; files placed directly there are not read) — or, since
+  the secrets are lenient when absent, rely on an
   existing `[gb-skypilot]` profile already in `~/.aws/credentials`; shared: the server-managed
   store supplies them. (A bare `[default]` profile does **not** satisfy the skip-gate unless
   `AWS_PROFILE` or the key pair is exported.) **First-time setup walkthrough** (and the full

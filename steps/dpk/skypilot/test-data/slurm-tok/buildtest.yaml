@@ -16,15 +16,11 @@ target_expectations:
   # itself. The skypilot/slurm environment does NOT set `inline: true` on its hf
   # assetstore pull (unlike skypilot/aws), so the download is a separate step rather
   # than injected into the main step's setup. The env:// output moves no bytes, so it
-  # queues no push step.
-  #
-  # jobstats_count is not asserted under standalone's NoopLineageStore but is kept
-  # accurate. CALIBRATE all four numbers against the first green run.
+  # queues no push step. CALIBRATE all three numbers against the first green run.
   - target_name: tokenize
     step_count: 2              # hfpull(docs) + dpk
     input_artifact_count: 1    # docs
     output_artifact_count: 1   # tokens (env://, registered inline from the marker)
-    jobstats_count: 1
     # Pin what this fixture proves: the build named ONE DPK detail (the transform)
     # and asked for validation with one flag; the step derived the rest. Read from
     # step_storage, so it holds under NoopLineageStore.

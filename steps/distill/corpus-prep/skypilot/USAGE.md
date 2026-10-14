@@ -24,12 +24,10 @@ steps:
 
 All fields in these tables live under the step's `config.corpus_config`.
 
-### Required
-
-| Field | Type | Purpose |
-|---|---|---|
-| `dataset` | string | A `.jsonl` of conversation records, or an HF dataset id. A local path is checked first; anything else is loaded as a hub id. A local file is what recipes wire — the launcher sets `HF_HUB_OFFLINE=1`, so a hub id needs that overridden deliberately. Empty is not a file, so it falls through to an (offline) hub load and fails. |
-| `tokenizer` | string | Tokenizer directory that **defines the corpus**, normally the `retagged_student` output of the `space://steps/distill/tokenizer-align` step. Must hold a `tokenizer.json`; empty or a directory without one is refused. See [The corpus is text, not tokens](#the-corpus-is-text-not-tokens--and-is-still-tokenizer-specific). |
+The source dataset and the tokenizer are no longer config fields; they are target inputs
+(`source_dataset`, `tokenizer`) — see [Inputs](#inputs) below. The tokenizer must hold a
+`tokenizer.json`; a resolved input without one is refused. See
+[The corpus is text, not tokens](#the-corpus-is-text-not-tokens--and-is-still-tokenizer-specific).
 
 ### Optional
 
@@ -76,15 +74,25 @@ container.
 
 ### Inputs
 
-The step declares no `inputs:` of its own. It reads two things, both through config:
+The step declares two required inputs, read as `{{ bindings.<name>.binding.path }}`:
 
-- **`corpus_config.tokenizer`** — bind the target's input to `align.retagged_student` (the
-  `space://steps/distill/tokenizer-align` step's output) and pass
-  `{{ bindings.tokenizer.binding.path }}`. The binding is also the ordering edge that guarantees
-  the tokenizer exists before this target starts. A pre-existing tokenizer does not work — see
-  [It cannot run without align's output](#it-cannot-run-without-aligns-output).
-- **`corpus_config.dataset`** — a literal path, or a target input (the GOLD recipes declare
-  `source_dataset: {uri: ..., type: dataset}` and pass `{{ bindings.source_dataset.binding.path }}`).
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `source_dataset` | yes | dataset | a `uri:` to a `.jsonl` of conversation records, or `sources.corpus_source` |
+| `tokenizer` | yes | model | `align.retagged_student` (the `space://steps/distill/tokenizer-align` step) |
+
+The `tokenizer` binding is also the ordering edge that guarantees the tokenizer exists
+before this target starts. A pre-existing tokenizer does not work — see
+[It cannot run without align's output](#it-cannot-run-without-aligns-output).
+
+```yaml
+inputs:
+  source_dataset: {uri: "env:///data/corpus.jsonl", type: dataset}
+  tokenizer: {binding: align.retagged_student}
+```
+
+`corpus_config.dataset` and `corpus_config.tokenizer` are no longer read; a target that
+still sets either fails at run time with a message naming the input to bind instead.
 
 ### Outputs
 
@@ -107,7 +115,8 @@ The run starts in the step's working directory, `$GB_BUILD_WORKDIR` (falling bac
 (default `distill-code`), or taken from `code_config.code_dir`, and put on `PYTHONPATH`. A relative `out_dir` is absolutised against
 `$GB_BUILD_WORKDIR` before the artifact marker is printed, because the monitor hands the path to
 the `env://` store, possibly from another host, and a relative `env:` URI is rejected at config
-load. `dataset` and `tokenizer` are passed through unchanged, so give them as absolute paths.
+load. The resolved `source_dataset` and `tokenizer` input paths are passed through unchanged, so
+bind inputs that resolve to absolute paths.
 
 ## Example build.yaml
 
@@ -130,12 +139,17 @@ granite.build:
         student_overlay:
           uri: "env://{{ binding.path }}"
           type: model
+      inputs:
+        teacher:
+          uri: "env:///path/to/teacher"
+          type: model
+        student:
+          uri: "env:///path/to/student"
+          type: model
       steps:
         - step_uri: space://steps/distill/tokenizer-align
           config:
             align_config:
-              teacher_model: "/path/to/teacher"
-              student_model: "/path/to/student"
               out_dir: "$${RUN_NAME}/align"
 
     corpus:
@@ -143,6 +157,9 @@ granite.build:
       inputs:
         tokenizer:
           binding: align.retagged_student
+        source_dataset:
+          uri: "env://$${DATASET}"
+          type: dataset
       outputs:
         corpus:
           uri: "env://{{ binding.path }}"
@@ -154,8 +171,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: 1
             corpus_config:
-              dataset: "$${DATASET}"
-              tokenizer: "{{ bindings.tokenizer.binding.path }}"
               out_dir: "$${RUN_NAME}/corpus"
               max_length: $${MAX_LENGTH}
 ```

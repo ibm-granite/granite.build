@@ -24,6 +24,9 @@ import pytest
 from gbserver.environment.bash import Bash
 from gbserver.environment.environment import BINDING_KEY
 
+# Bash refuses to run outside STANDALONE; these tests construct it directly.
+pytestmark = pytest.mark.usefixtures("allow_bash_environment")
+
 
 @pytest.fixture
 def bash_env():

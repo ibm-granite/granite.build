@@ -80,10 +80,10 @@ granite.build:
               dataset_eval_mixer: '$${DATASET_EVAL_MIXER}'
               output_dir: "$${OUTPUT_DIR}"
               checkpoint_state_dir: "$${CHECKPOINT_STATE_DIR}"
-              # external services (resolved from the rm-server target binding;
-              # .binding.state carries the verbatim URL from the mem:// store).
+              # external services: the openinstruct-rl step declares `rm_url` as a
+              # named input and reads the rm-server target's binding directly, so
+              # no rm_server_url config line is set here.
               # No code_server_url: identity RL runs without a code-server.
-              rm_server_url: "{{ bindings.rm_url.binding.state }}"
               # GRPO hyperparameters (all parameterizable)
               beta: "$${BETA}"
               num_unique_prompts_rollout: "$${NUM_UNIQUE_PROMPTS_ROLLOUT}"

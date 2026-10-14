@@ -46,7 +46,6 @@ granite.build:
               num_gpus_per_node: 4
             sft_config:
               build_name: "$${NAME}"
-              model_path: "{{ bindings.model.binding.path }}"
               #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
               dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
               checkpoint_s3_uri: "s3://granite-build-checkpoints"

@@ -182,11 +182,13 @@ class TestFlagSurface:
 
 
 class TestConfigDefaults:
-    def test_dataset_and_tokenizer_are_not_defaulted(self, step):
-        """A wrong default here silently changes which examples survive."""
+    def test_dataset_and_tokenizer_are_required_inputs(self, step):
+        """A wrong default here silently changes which examples survive, so both are
+        required target inputs, never config defaults."""
+        assert set(step["inputs"]["required"]) == {"source_dataset", "tokenizer"}
         corpus = step["config"]["corpus_config"]
-        assert corpus["dataset"] == ""
-        assert corpus["tokenizer"] == ""
+        assert "dataset" not in corpus
+        assert "tokenizer" not in corpus
 
     def test_the_filtering_policies_are_the_measured_defaults(self, step):
         """Each of these changes WHICH examples survive, so each is pinned rather than

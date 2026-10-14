@@ -1,5 +1,5 @@
 llm.build:
-  name: sdktest
+  name: k8s-1step-gpu-test 
   targets:
     download_file:
       environment_uri: space://environments/{{ space.variables.DEFAULT_ENVIRONMENT }}

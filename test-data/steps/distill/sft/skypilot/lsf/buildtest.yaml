@@ -16,20 +16,17 @@ targets:
 target_expectations:
   - target_name: align
     step_count: 1
-    input_artifact_count: 0
+    input_artifact_count: 2
     output_artifact_count: 3
-    jobstats_count: 1
   - target_name: corpus
     step_count: 1
-    input_artifact_count: 1
+    input_artifact_count: 2
     output_artifact_count: 1
-    jobstats_count: 1
   - target_name: train-sft
     # Two bound inputs (student, corpus), one model out.
     step_count: 1
     input_artifact_count: 2
     output_artifact_count: 1
-    jobstats_count: 1
     expected_steps:
       - metadata_matches:
           distill_code_commit: "^[0-9a-f]{40}$"

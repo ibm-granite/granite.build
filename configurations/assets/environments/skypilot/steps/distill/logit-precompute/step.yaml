@@ -92,14 +92,9 @@ config:
     nodes: 1
 
   precompute_config:
-    # distill-corpus-prep's `corpus`. The SAME corpus the arm will train on: the index is
-    # keyed to it, so a precompute against a different corpus is a silent mismatch.
-    corpus_path: ""
-    # The teacher, loaded once. This is the only step that holds it without a student.
-    teacher_model_path: ""
-    # Kept SEPARATE from teacher_model_path on purpose, as in the trainer: the tokenizer
-    # that defines the token ids in the index need not be the model directory's own.
-    teacher_tokenizer_path: ""
+    # The corpus, the teacher and its tokenizer are target INPUTS, not config keys —
+    # see `inputs:` below.
+    #
     # Refuse to start when the teacher's weights have been migrated to tape by GPFS. See
     # src/check_weight_residency.py: metadata only (mmlsattr, else st_blocks arithmetic),
     # never reads contents, refuses on OFFLINE or on a path it cannot stat, warns and
@@ -146,6 +141,29 @@ config:
     # else to the trainer, and the arithmetic would succeed.
     allow_tokenizer_mismatch: false
 
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # distill-corpus-prep's `corpus`. The SAME corpus the arm will train on: the index is
+    # keyed to it, so a precompute against a different corpus is a silent mismatch.
+    corpus:
+      type: dataset
+      accept: [uri, binding]
+    # The teacher, loaded once. This is the only step that holds it without a student.
+    teacher:
+      type: model
+      accept: [uri, binding]
+    # Kept SEPARATE from teacher on purpose, as in the trainer: the tokenizer that
+    # defines the token ids in the index need not be the model directory's own. Normally
+    # distill-tokenizer-align's `teacher_overlay`.
+    teacher_tokenizer:
+      type: model
+      accept: [uri, binding]
+
 # FILESET: shards/ + index.jsonl + meta.json are a derived artifact read back by a trainer,
 # not a dataset anything is filtered from. An undeclared output makes the resolver drop the
 # NEWARTIFACT event and the target completes with no output AND no error.
@@ -186,6 +204,13 @@ environment_configs:
             OMP_NUM_THREADS: "8"
           run: |
             echo "=== distill-logit-precompute on $(hostname) ==="
+
+            # The inputs used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("corpus_path", "teacher_model_path", "teacher_tokenizer_path") if config.precompute_config[key] is defined %}
+            echo "distill-logit-precompute: FATAL: precompute_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
 
             # --- distill source delivery: BEGIN (identical in all ported steps) ---
             # `set -eu` is already in effect: the launcher prefixes it.
@@ -332,12 +357,12 @@ environment_configs:
 
             # This step reads the teacher and nothing else, so a teacher on tape is the whole
             # step waiting on a recall. Metadata only; refuses only on an authoritative
-            # OFFLINE. teacher_tokenizer_path is not checked: a tokenizer overlay has no
+            # OFFLINE. teacher_tokenizer is not checked: a tokenizer overlay has no
             # shards.
             {% if config.precompute_config.check_weight_residency %}
             "$PYBIN" ./src/check_weight_residency.py \
               {% if config.precompute_config.allow_offline_weights %}--allow-offline{% endif %} \
-              "teacher={{ config.precompute_config.teacher_model_path }}"
+              "teacher={{ bindings.teacher.binding.path }}"
             {% endif %}
 
             # Absolutise before the script runs: IT prints the artifact marker, from its own
@@ -358,9 +383,9 @@ environment_configs:
             # NEWARTIFACT events for one id — the same duplication the distill-eval port
             # dropped.
             PYBIN="$PYBIN" bash ./src/run-precompute.sh \
-              --corpus-path "{{ config.precompute_config.corpus_path }}" \
-              --teacher-model-path "{{ config.precompute_config.teacher_model_path }}" \
-              --teacher-tokenizer-path "{{ config.precompute_config.teacher_tokenizer_path }}" \
+              --corpus-path "{{ bindings.corpus.binding.path }}" \
+              --teacher-model-path "{{ bindings.teacher.binding.path }}" \
+              --teacher-tokenizer-path "{{ bindings.teacher_tokenizer.binding.path }}" \
               --output-dir "$OUT_DIR" \
               --top-k {{ config.precompute_config.top_k }} \
               --dtype "{{ config.precompute_config.dtype }}" \

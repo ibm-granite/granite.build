@@ -15,9 +15,9 @@ API-provisioned and reached through AWS credentials.
 
 ### Credentials: `aws_credentials`
 
-SkyPilot's API server uses boto3, which reads `~/.aws/credentials`. Inline credential profiles and
-gbserver materializes that file (INI, mode `0600`) at launch; SkyPilot then uploads the file to the
-provisioned nodes so they can reach S3.
+SkyPilot's API server uses boto3, which reads `~/.aws/credentials`. You declare inline credential
+profiles via `aws_credentials`, and gbserver materializes that file (INI, mode `0600`) at launch;
+SkyPilot then uploads the file to the provisioned nodes so they can reach S3.
 
 ```yaml
 config:
@@ -568,15 +568,18 @@ config:
 
 ### 2. Seed the local secret store (standalone)
 
-With `secret_manager: type: local`, secrets are read from `$GB_HOME_DIR/space_secrets/` (default
-`~/.granite.build/space_secrets/`). Files may be `.json`/`.yaml`/`.env`; **values are base64-encoded**
-and looked up by exact name. Write a file whose keys match the secret names above:
+With `secret_manager: type: local` and no `secrets_dir`, each space reads its secrets from its own
+directory, `$GB_HOME_DIR/space_secrets/<space name>/` (default
+`~/.granite.build/space_secrets/<space name>/`), where `<space name>` is the `name:` in the space's
+`space.yaml` — `public` for the default standalone space. Files placed directly in `space_secrets/`
+are **not** read. Files may be `.json`/`.yaml`/`.env`; **values are base64-encoded** and looked up by
+exact name. Write a file whose keys match the secret names above:
 
 ```bash
-mkdir -p ~/.granite.build/space_secrets
+mkdir -p ~/.granite.build/space_secrets/public
 python3 - <<'PY'
 import os, base64, json, pathlib
-d = pathlib.Path.home() / ".granite.build" / "space_secrets"; d.mkdir(parents=True, exist_ok=True)
+d = pathlib.Path.home() / ".granite.build" / "space_secrets" / "public"; d.mkdir(parents=True, exist_ok=True)
 enc = lambda v: base64.b64encode(v.encode()).decode()
 p = d / "aws.json"
 p.write_text(json.dumps({
@@ -640,27 +643,21 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 1. **Give the build its launch credentials.** The committed `environment.yaml` selects the
    `gb-skypilot` profile, so your key pair needs to reach that profile. Pick one path:
 
-   **A — simplest (local/standalone): add the profile to `~/.aws/credentials` by hand.**
-
-   ```ini
-   [gb-skypilot]
-   aws_access_key_id = AKIA...
-   aws_secret_access_key = ...
-   ```
-
-   gbserver leaves an existing `gb-skypilot` profile as-is (the `GB_AWS_*` secrets are lenient
-   when absent) and SkyPilot reads it. Do **not** *also* seed the secret store (path B) with
-   different values — a mismatch raises `SkypilotConfigCollisionError`.
-
-   **B — portable (standalone *and* shared): seed the secret store.** gbserver materializes the
+   **A — recommended (standalone *and* shared): seed the secret store.** gbserver materializes the
    `gb-skypilot` profile from the `GB_AWS_*` secrets at launch, so the *same* `environment.yaml`
-   also works in a server deployment (where the server-managed store supplies them):
+   works unchanged in a server deployment (where the server-managed store supplies them) — nothing
+   is hand-edited in `~/.aws`.
+
+   Seed them for the **test's own space**: each test space reads `space_secrets/<its space.yaml
+   name>/`, not `public/`. For example, the ephemeral EFS test space is named
+   `ephemeral-efs-e2e` (see `name:` in its `space/space.yaml`). Set `SPACE_NAME` and run once per
+   test space:
 
    ```bash
-   mkdir -p ~/.granite.build/space_secrets
-   python3 - <<'PY'
+   SPACE_NAME=ephemeral-efs-e2e python3 - <<'PY'
    import os, base64, json, pathlib
-   d = pathlib.Path.home() / ".granite.build" / "space_secrets"; d.mkdir(parents=True, exist_ok=True)
+   d = pathlib.Path.home() / ".granite.build" / "space_secrets" / os.environ["SPACE_NAME"]
+   d.mkdir(parents=True, exist_ok=True)
    enc = lambda v: base64.b64encode(v.encode()).decode()
    p = d / "aws.json"
    p.write_text(json.dumps({
@@ -669,6 +666,18 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
    }, indent=2)); p.chmod(0o600)
    PY
    ```
+
+   **B — quick local shortcut (standalone only): add the profile to `~/.aws/credentials` by hand.**
+
+   ```ini
+   [gb-skypilot]
+   aws_access_key_id = AKIA...
+   aws_secret_access_key = ...
+   ```
+
+   gbserver leaves an existing `gb-skypilot` profile as-is (the `GB_AWS_*` secrets are lenient
+   when absent) and SkyPilot reads it. Do **not** *also* seed the secret store (path A) with
+   different values — a mismatch raises `SkypilotConfigCollisionError`.
 
 2. **Set the skip-gate** so the test runs instead of self-skipping — export **either**
    `AWS_PROFILE=gb-skypilot` **or** the `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` pair. A bare

@@ -44,6 +44,17 @@ jobs:
           python -m pip install --upgrade pip
           make extended-tests-setup
 
+      # Same preload as ci.yml, restore-only: reuse main's cached images
+      # instead of pulling from a rate-limited registry mid-test.
+      - name: Restore cached Docker images
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/ci-docker-images
+          key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
+
+      - name: Load Docker images (pull with retry on cache miss)
+        run: scripts/ci-docker-images.sh load
+
       - name: Run extended tests
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

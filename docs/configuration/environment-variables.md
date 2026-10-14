@@ -111,13 +111,14 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 | `GBSERVER_LINEAGE_PROVIDER` | `wandb` (standalone `none`) | Lineage backend. See [lineage](../builds/lineage.md). |
 | `GBSERVER_WANDB_API_KEY` / `_PROJECT` / `_ENTITY` / `_BASE_URL` | (W&B) | W&B lineage settings. |
 
-## SkyPilot / LSF tuning
+## Compute environment tuning
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY` | `4` | Concurrent `sky.launch` operations. |
 | `GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS` / `_BACKOFF_MAX` | `4` / `30` | Provision retry policy (also drives login-node failover — see [SkyPilot SLURM](../environments/skypilot-slurm.md)). |
 | `GBSERVER_LSF_TRANSIENT_ERROR_MAX_RETRIES` / `_RETRY_DELAY` | `3` / `30` | LSF transient-error retry policy. |
+| `GBSERVER_DOCKER_PULL_MAX_ATTEMPTS` / `_RETRY_BASE_DELAY` / `_RETRY_MAX_DELAY` | `4` / `5.0` / `30.0` | Docker image pull retry policy for transient registry errors (rate limits, 5xx). |
 | `GBSERVER_K8S_USE_ASPERA` / `GBSERVER_LSF_USE_ASPERA` | `true` / `false` | Use Aspera for asset transfer. |
 | `GBSERVER_ENABLE_STEP_RETRY` | `true` | Master switch for step-level retry. See [step retry](../builds/step-retry-configuration.md). |
 | `GBSERVER_ENABLE_SSH_HOST_KEY_VERIFICATION` | `false` | Verify SSH host keys. |

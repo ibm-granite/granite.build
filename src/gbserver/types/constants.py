@@ -52,6 +52,7 @@ CURRENT_BUILD_YAML_VERSION_KEY = "version"
 CURRENT_BUILD_YAML_VERSION = "0.0.1"
 DEFAULT_REPO_DIR_TO_WATCH = "experiments"
 FULL_CONFIG_RUN_METADATA_KEY = "run_metadata"
+UNIQUE_HASH_KEY = "unique_hash"
 GBSERVER_SECRET_NAME_SEPARATOR = "___"
 STEP_FILE_NAME = "step.yaml"
 
@@ -741,6 +742,18 @@ TRANSPORT_RETRY_BASE_DELAY = float(
 )
 TRANSPORT_RETRY_MAX_DELAY = float(
     os.getenv(ENV_VAR_PREFIX + "_TRANSPORT_RETRY_MAX_DELAY", "15.0")
+)
+# Docker image pull retries (see environment/docker.py): transient registry
+# errors (rate limits, 5xx, dropped connections) back off exponentially. Set
+# MAX_ATTEMPTS to 1 to disable.
+DOCKER_PULL_MAX_ATTEMPTS = int(
+    os.getenv(ENV_VAR_PREFIX + "_DOCKER_PULL_MAX_ATTEMPTS", "4"), base=10
+)
+DOCKER_PULL_RETRY_BASE_DELAY = float(
+    os.getenv(ENV_VAR_PREFIX + "_DOCKER_PULL_RETRY_BASE_DELAY", "5.0")
+)
+DOCKER_PULL_RETRY_MAX_DELAY = float(
+    os.getenv(ENV_VAR_PREFIX + "_DOCKER_PULL_RETRY_MAX_DELAY", "30.0")
 )
 GBSERVER_GITHUB_TOKEN = os.getenv(
     ENV_VAR_DEFAULT_GITHUB_TOKEN, os.getenv("GITHUB_TOKEN", "")

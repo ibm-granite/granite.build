@@ -103,6 +103,56 @@ Each launcher type matches an environment backend (bash, docker, k8s, lsf,
 skypilot, runpod). A step can support multiple environments by declaring
 multiple launchers.
 
+### Declaring inputs
+
+Every published step declares the inputs it reads, by name, and reads them from its
+bindings. Don't have recipes copy `{{ bindings.<name>.binding.path }}` into a config key
+for the step to read: a misnamed binding there renders as literal text and fails on the
+cluster after queue time, while a declared input that the target doesn't bind fails
+build validation before anything runs.
+
+```yaml
+inputs:
+  allow_unknown: true        # let recipes bind extra inputs purely to order targets
+  required:
+    model:
+      type: model            # dataset | fileset | model | bucket
+      accept: [uri, binding]
+  optional:
+    tokenizer:
+      type: model
+      accept: [uri, binding]
+```
+
+In the launcher's `run` (or `setup`, `envs`, `file_mounts`), refer to an input by the
+name the step declares:
+
+| Input | Expression |
+|-------|------------|
+| A path input (model, dataset, fileset) | `{{ bindings.model.binding.path }}` |
+| A `mem://` value input (a server URL, a cluster name) | `{{ bindings.vllm.binding.state }}` |
+| An optional input | `{% if bindings.tokenizer is defined %}…{% endif %}`, or `bindings.tokenizer.binding.path if bindings.tokenizer is defined else ""` |
+
+- **Launcher config is rendered strictly.** An unbound optional input raises an error, it
+  doesn't render as empty, so always guard it. Treat "not bound" as "not provided".
+- **Don't use `$LLMB_*_INPUT_<NAME>`.** Only the bash and LSF launchers export it, so a
+  step that reads it doesn't work in other environments.
+- **Required inputs are safe to reference directly.** Validation guarantees that the
+  target binds them.
+- **`type` isn't checked.** Validation checks presence, `accept`, and (with
+  `allow_unknown: false`) extra inputs.
+- **`allow_unknown: true` catches misnamed required inputs only.** A required input the
+  target binds under the wrong name still fails validation as missing. An optional input
+  bound under the wrong name is accepted as an extra, and the step sees it as unbound.
+- **Steps with no fixed set of names** (a variable-length list of sources, a free-form
+  `byoc` command, a diagnostic run on literal paths) still declare
+  `inputs: {allow_unknown: true}`, with a comment explaining why.
+- **Renaming an input in a step that has shipped in a tag:** declare the new input as
+  optional. Have the step fall back to the old config key when the input isn't bound,
+  and print a `DEPRECATED` warning when it does. A bound input wins over the config key;
+  a key that is still set alongside it gets a warning too.
+  Make it required in a later release.
+
 ## Step configuration in build.yaml
 
 The `config` block in a step entry is merged with the step's own defaults:

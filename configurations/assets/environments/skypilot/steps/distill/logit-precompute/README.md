@@ -24,18 +24,19 @@ steps:
 The workload fields live under `config.precompute_config`; the allocation under
 `config.workload`; the trainer source under `config.code_config`.
 
-### Required
-
-| Field | Type | Purpose |
-|---|---|---|
-| `corpus_path` | string | The `corpus` output of the `space://steps/distill/corpus-prep` step. **The same corpus the arm will train on** — the index is keyed to it, so a precompute against a different corpus is a silent mismatch. Empty, or not an existing file, fails the step. |
-| `teacher_model_path` | string | The teacher model directory, loaded once. This is the only step that holds the teacher without a student. Empty, or not an existing directory, fails the step. |
+The corpus, the teacher model and the teacher tokenizer are no longer config fields; they
+are the required `corpus`, `teacher` and `teacher_tokenizer` target inputs — see
+[Inputs](#inputs) below. The corpus must be **the same corpus the arm will train on** — the
+index is keyed to it, so a precompute against a different corpus is a silent mismatch. The
+teacher tokenizer is kept **separate** from the teacher model on purpose, as in the trainer:
+it need not be the model directory's own (for example the `teacher_overlay` output of the
+`space://steps/distill/tokenizer-align` step), and there is no fallback to the model
+directory — it must be bound explicitly.
 
 ### Optional
 
 | Field | Type | Purpose |
 |---|---|---|
-| `teacher_tokenizer_path` | string | The tokenizer that defines the token ids in the index. Kept **separate** from the model path on purpose, as in the trainer: it need not be the model directory's own (for example the `teacher_overlay` output of the `space://steps/distill/tokenizer-align` step). Default: `""`, which uses `teacher_model_path`. |
 | `check_weight_residency` | boolean | Refuse to launch when GPFS has migrated the teacher's weights to tape — this step reads the teacher and nothing else, so that is the whole step waiting on a recall. See [Weight residency check](#weight-residency-check). Default: `true`. |
 | `allow_offline_weights` | boolean | Proceed through the OFFLINE refusal, loudly. For when the recall is already under way. Default: `false`. |
 | `output_dir` | string | Where the artifact is written. Relative values resolve against `$GB_BUILD_WORKDIR`. Default: `teacher-logits`. |
@@ -77,14 +78,17 @@ clone the public trainer source at a pinned commit, so nothing needs setting.
 
 ### Inputs
 
-The step declares no `inputs:`; it reads the paths given in `precompute_config`. To take
-them from upstream targets, declare the inputs on the target and pass
-`{{ bindings.<name>.binding.path }}` into the config fields:
+The step declares three required inputs, read as `{{ bindings.<name>.binding.path }}`:
 
-- `corpus_path` ← the `corpus` output of `space://steps/distill/corpus-prep`.
-- `teacher_tokenizer_path` ← typically the `teacher_overlay` output of
-  `space://steps/distill/tokenizer-align`.
-- `teacher_model_path` ← a teacher checkpoint directory, usually a plain path.
+| Input | Required | Type | Typical source |
+|---|---|---|---|
+| `corpus` | yes | dataset | the `corpus` output of `space://steps/distill/corpus-prep` |
+| `teacher` | yes | model | a teacher checkpoint directory, usually a direct `uri:` |
+| `teacher_tokenizer` | yes | model | the `teacher_overlay` output of `space://steps/distill/tokenizer-align` |
+
+`precompute_config.corpus_path`, `teacher_model_path` and `teacher_tokenizer_path` are no
+longer read; a target that still sets one fails at run time with a message naming the input
+to bind instead.
 
 ### Outputs
 
@@ -111,8 +115,8 @@ when unset) is the base for relative paths. The step's `src/` is mounted at `./s
 trainer source is cloned into `<workdir>/distill-code` (`code_config.workdir`) unless
 `code_config.code_dir` points at an existing checkout. A relative `output_dir` is
 absolutised against `$GB_BUILD_WORKDIR` before the script runs, so the marker always carries
-an absolute path. `corpus_path`, `teacher_model_path` and `teacher_tokenizer_path` are passed
-through unchanged; give absolute paths.
+an absolute path. The resolved `corpus`, `teacher` and `teacher_tokenizer` input paths
+are passed through unchanged; bind inputs that resolve to absolute paths.
 
 ## Example build.yaml
 
@@ -125,7 +129,10 @@ granite.build:
       inputs:
         corpus:
           binding: corpus.corpus            # a space://steps/distill/corpus-prep target
-        teacher_tok:
+        teacher:
+          uri: "env:///proj/run/teacher"
+          type: model
+        teacher_tokenizer:
           binding: align.teacher_overlay    # a space://steps/distill/tokenizer-align target
       outputs:
         teacher_logits:
@@ -140,10 +147,6 @@ granite.build:
             workload:
               gpus_per_node: 8
               nodes: 1
-            precompute_config:
-              corpus_path: "{{ bindings.corpus.binding.path }}"
-              teacher_model_path: /proj/run/teacher
-              teacher_tokenizer_path: "{{ bindings.teacher_tok.binding.path }}"
 ```
 
 …and then, in the arm that consumes it, say plainly in that recipe's README that
@@ -217,7 +220,7 @@ With `check_weight_residency: true`, `src/check_weight_residency.py` checks the 
 files before the allocation is spent. It reads metadata only (`mmlsattr`, never a shard). It
 refuses on an authoritative `OFFLINE`, and also on a weight path it cannot stat at all (that
 refusal is not overridable by `allow_offline_weights`). With no `mmlsattr` it warns and proceeds,
-and a hub id rather than a path is skipped. `teacher_tokenizer_path` is not checked — a
+and a hub id rather than a path is skipped. The `teacher_tokenizer` input is not checked — a
 tokenizer overlay has no shards.
 
 ### Response template escape

@@ -29,7 +29,6 @@ from tenacity import (
     retry,
     retry_if_not_exception_type,
     stop_after_attempt,
-    wait_exponential,
     wait_random_exponential,
 )
 
@@ -578,7 +577,8 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         finally:
             session.close()
 
-    # Don't need @retry here since we have it on get_by_where() above.
+    # Don't need @retry here: it is only reached through get_by_where(), which is
+    # retried via _get_by_where_with_retry() (both defined further below).
     def _get_by_where_row_dicts(
         self,
         where: Optional[Union[str, dict]] = None,
@@ -855,17 +855,57 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 raise e
         return existing_columns
 
-    @retry(
-        wait=wait_random_exponential(multiplier=1, min=1, max=30),
-        stop=stop_after_attempt(10),
-        reraise=True,
-    )
     def get_by_where(
         self,
         where: str | dict | None = None,
         query_control: Optional[QueryControl] = None,
     ) -> list[BASE_ITEM_TYPE]:
-        """Override the super-class method to add support for like-style queries on the exact_liked_columns."""
+        """Delegate to the retried _get_by_where_with_retry; see it for full docs.
+
+        The @retry decorator sits on the helper, not here, so mixins (e.g. the
+        SQLite storages' SqliteStorageOverrides) can override this plain method:
+        tenacity >= 9.2 types a decorated function as ``_RetryDecorated``, which
+        mypy rejects as an override of a plain method.
+        """
+        return self._get_by_where_with_retry(where, query_control)
+
+    @retry(
+        wait=wait_random_exponential(multiplier=1, min=1, max=30),
+        stop=stop_after_attempt(10),
+        retry=retry_if_not_exception_type((ValueError, NotImplementedError)),
+        reraise=True,
+    )
+    def _get_by_where_with_retry(
+        self,
+        where: str | dict | None = None,
+        query_control: Optional[QueryControl] = None,
+    ) -> list[BASE_ITEM_TYPE]:
+        """Run get_by_where's query, retrying failures with exponential backoff.
+
+        Retries any exception except ValueError (a deterministic bad-argument
+        error) up to 10 attempts, waiting 1-30 seconds (randomized exponential)
+        between them, then re-raises the last one. After the base
+        query, dict ``where`` values for exact_liked_list_columns are post-filtered
+        to exact list-member matches.
+
+        Args:
+            where: A SQL where-clause string or a column->value dict, or None for all.
+            query_control: Optional pagination/sorting control.
+
+        Returns:
+            list[BASE_ITEM_TYPE]: The matching items.
+
+        Raises:
+            ValueError: If ``where`` is neither a string, a dict, nor None. Raised
+                on the first attempt; it is not retried.
+            Exception: Whatever the last attempt raised, unchanged
+                (``reraise=True``), if every attempt fails. Typically a
+                sqlalchemy.exc.SQLAlchemyError from the query, but any other
+                error is retried and re-raised the same way, including
+                NotImplementedError for a string ``where``, the Exception for a
+                non-str/list exact_liked_list_columns value, and AssertionError
+                from the list post-filter.
+        """
         items = super().get_by_where(where, query_control=query_control)
         if isinstance(where, dict):
             # For queries, such as %like%, we can enable better exact list member match here via exact_liked_list_columns.

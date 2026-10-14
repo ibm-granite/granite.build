@@ -5,13 +5,13 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from libgbtest.docker_images import ci_docker_image
 
 # pytestmark = pytest.mark.ibm
 
 pytestmark = pytest.mark.docker_required
 
-# Docker Hub mirror: Docker Hub pulls flake in CI.
-_IMAGE = "public.ecr.aws/docker/library/alpine:latest"
+_IMAGE = ci_docker_image("ALPINE_IMAGE")
 
 
 def _docker_available():

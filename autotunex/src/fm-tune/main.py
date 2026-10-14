@@ -53,6 +53,8 @@ from autotune.utils import (
     generate_unique_id,
     has_resumable_final_checkpoint,
     load_final_config,
+    promote_model_to_root,
+    resolve_keep_diagnostics,
     save_hpo_history,
     set_seed,
 )
@@ -233,6 +235,30 @@ if __name__ == "__main__":
             "(final_checkpoints/, outputs/, train_results/, data_cache/) after "
             "final training completes. Useful for debugging. Has no effect during "
             "HPO trials (artifacts are never deleted there)."
+        ),
+    )
+
+    parser.add_argument(
+        "--model_at_root",
+        action="store_true",
+        help=(
+            "After a successful run, move the saved model files from "
+            "<output_dir>/<output_model_name>/ up to <output_dir>/ itself and "
+            "delete every other entry in output_dir (or move it into "
+            "<output_dir>/diagnostics/ with --keep_diagnostics). Use when the whole "
+            "output_dir is uploaded as the model (e.g. a HF repo). Rewrites the "
+            "entire output_dir, so only use it on a dir owned by this run. Off by "
+            "default; a failed run is never touched."
+        ),
+    )
+
+    parser.add_argument(
+        "--keep_diagnostics",
+        action="store_true",
+        help=(
+            "With --model_at_root, keep the non-model artifacts (logs/, results/, "
+            "outputs/, ...) under <output_dir>/diagnostics/ instead of deleting "
+            "them. Also enabled by FMTUNE_KEEP_DIAGNOSTICS=1."
         ),
     )
 
@@ -662,6 +688,7 @@ if __name__ == "__main__":
 
     # Run HPO + final training, with proper error propagation and exit codes.
     exit_code = 0
+    run_succeeded = False  # set only at the end of the try; an interrupt leaves it False
     try:
         if resume_saved:
             # Resume the final training round from the saved config + checkpoint.
@@ -694,6 +721,7 @@ if __name__ == "__main__":
         logger.info("[AutoTune] Finished training best/default config.")
         logger.info(f"[AutoTune] Tuned model score: {best_result.metrics}")
         logger.info("[AutoTune] Finished AutoTune run.")
+        run_succeeded = True
 
         # AutoTune does NOT report a job-level terminal status. It runs as one
         # step of a multi-step granite.build build — a later step can fail after
@@ -722,6 +750,24 @@ if __name__ == "__main__":
         if args.cleanup:
             logger.info("[AutoTune] Cleaning up the run...")
             cleanup(args.output_dir)
+
+        # Last step before exit, so nothing the run writes afterwards lands
+        # next to the promoted model. Never on a failed run: its artifacts stay
+        # in place for debugging and --resume_from_checkpoint. A failed or
+        # skipped promote fails the run: the caller uploads output_dir
+        # expecting the model at its root.
+        if args.model_at_root and run_succeeded:
+            try:
+                promoted = promote_model_to_root(
+                    args.output_dir,
+                    args.output_model_name,
+                    keep_diagnostics=resolve_keep_diagnostics(args.keep_diagnostics),
+                )
+            except Exception as e:
+                logger.error(f"[AutoTune] --model_at_root failed: {e}", exc_info=True)
+                promoted = False
+            if not promoted:
+                exit_code = 1
 
         logger.info("[AutoTune] Disconnected from ray cluster")
 

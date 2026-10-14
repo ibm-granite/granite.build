@@ -38,15 +38,10 @@ config:
     # parameter, both of which resolve at render time and so are visible in the
     # persisted step config and in lineage.
     args: {}
+    # DEPRECATED: bind the `docs` input instead (see `inputs:` below); this path is read
+    # only when `docs` is not bound. One of the two is REQUIRED.
+    #
     # The directory the transform READS, as a PATH — not the name of a binding.
-    # REQUIRED.
-    #
-    # The build resolves it from its own declared inputs, which is the byoc pattern
-    # (see steps/byoc/skypilot/USAGE.md): the build author declared the bindings, so
-    # the build author writes the Jinja that reads them.
-    #
-    #   dpk_config:
-    #     input_path: "{{ bindings.docs.binding.path }}"
     #
     # This step used to take `input: docs` — a NAME — and resolve it itself, which is
     # what made it export $GB_INPUT_<name> for every declared input and then read
@@ -157,6 +152,19 @@ config:
     num_gpus_per_node: 0
     total_memory_per_node: "4Gi"
 
+# I/O schema, validated against the build.yaml target at build time. `docs` is
+# OPTIONAL during the deprecation window: the step reads
+# {{ bindings.docs.binding.path }} when it is bound and otherwise falls back to
+# dpk_config.input_path, with a DEPRECATED warning. allow_unknown stays true so a
+# recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  optional:
+    # The directory the transform reads.
+    docs:
+      type: dataset
+      accept: [uri, binding]
+
 environment_configs:
   Skypilot:
     # No `subtypes:` restriction, so this step resolves on ALL FOUR SkyPilot
@@ -199,6 +207,11 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- The directory the transform reads: the optional `docs` input when it is
+                bound, else the DEPRECATED dpk_config.input_path. Computed in BOTH blocks
+                for the same reason q() is. #}
+            {%- set docs_bound = bindings is defined and "docs" in bindings %}
+            {%- set input_path = bindings.docs.binding.path if docs_bound else config.dpk_config.input_path %}
             {#- The SAME four required-config guards the run block applies, duplicated
                 here because setup runs FIRST and is the expensive phase. Without them an
                 invalid build paid for the whole install before `run` refused it: the
@@ -224,7 +237,7 @@ environment_configs:
               --module '{{ q(config.dpk_config.module) }}' \
               --dpk-image '{{ q(config.dpk_config.dpk_image) }}' \
               --output '{{ q(config.dpk_config.output) }}' \
-              --input-path '{{ q(config.dpk_config.input_path) }}' \
+              --input-path '{{ q(input_path) }}' \
               {%- for k in config.dpk_config.args.keys() %}
               --arg-key '{{ q(k) }}' \
               {%- endfor %}
@@ -289,6 +302,18 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- The directory the transform reads: the optional `docs` input when it is
+                bound, else the DEPRECATED dpk_config.input_path. Computed in BOTH blocks
+                for the same reason q() is. #}
+            {%- set docs_bound = bindings is defined and "docs" in bindings %}
+            {%- set input_path = bindings.docs.binding.path if docs_bound else config.dpk_config.input_path %}
+            {%- if docs_bound and config.dpk_config.input_path and config.dpk_config.input_path != input_path %}
+            echo "dpk: WARNING: dpk_config.input_path is ignored because the 'docs' input is bound" >&2
+            {%- elif docs_bound and config.dpk_config.input_path %}
+            echo "dpk: DEPRECATED: dpk_config.input_path duplicates the bound 'docs' input; remove it from the recipe" >&2
+            {%- elif not docs_bound and config.dpk_config.input_path %}
+            echo "dpk: DEPRECATED: dpk_config.input_path will be removed in a future release; bind the target input 'docs' instead" >&2
+            {%- endif %}
             {%- if not config.dpk_config.dpk_image %}
             . ./venv/bin/activate
             {%- endif %}
@@ -301,7 +326,7 @@ environment_configs:
               --module '{{ q(config.dpk_config.module) }}' \
               --dpk-image '{{ q(config.dpk_config.dpk_image) }}' \
               --output '{{ q(config.dpk_config.output) }}' \
-              --input-path '{{ q(config.dpk_config.input_path) }}' \
+              --input-path '{{ q(input_path) }}' \
               {%- for k in config.dpk_config.args.keys() %}
               --arg-key '{{ q(k) }}' \
               {%- endfor %}
@@ -352,7 +377,7 @@ environment_configs:
                 backtick after the quote then RUNS on the node (verified). #}
             bash ./src/dpk_run.sh \
               --module '{{ q(module) }}' \
-              --input-path '{{ q(config.dpk_config.input_path) }}' \
+              --input-path '{{ q(input_path) }}' \
               --output-path '{{ q(config.dpk_config.output_path if config.dpk_config.output_path else "./output") }}' \
               --artifact-id '{{ q(config.dpk_config.output) }}' \
               {%- if config.dpk_config.validate %}

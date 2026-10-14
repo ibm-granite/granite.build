@@ -36,6 +36,9 @@ from libgbtest.constants import requires_k8s
 from gbserver.environment import environment as environment_module
 from gbserver.environment.environment import Environment
 
+# Bash refuses to run outside STANDALONE; these tests construct it directly.
+pytestmark = pytest.mark.usefixtures("allow_bash_environment")
+
 # ---------------------------------------------------------------------------
 # Base Environment.get_launch_env_vars (the standard cross-environment set)
 # ---------------------------------------------------------------------------

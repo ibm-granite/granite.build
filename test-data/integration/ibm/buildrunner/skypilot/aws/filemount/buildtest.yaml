@@ -14,7 +14,6 @@ target_expectations:
     step_count: 1
     input_artifact_count: 1
     output_artifact_count: 1
-    jobstats_count: 1
 # Co-located test space (space/ next to this file) — carries the custom
 # filemount-check step and chains to configurations/assets for everything else.
 space_uri: space
