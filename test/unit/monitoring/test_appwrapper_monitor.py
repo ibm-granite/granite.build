@@ -3,6 +3,7 @@
 """Unit tests for AppWrapperMonitor time-based API failure threshold."""
 
 import asyncio
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -243,39 +244,75 @@ class TestWorkloadStatusTransientErrors:
             await monitor._get_workload_status()
 
 
-class TestPreemptionSignalTracking:
-    """The monitor captures durable preemption signals so a later terminal
-    `Failed` is classifiable as transient."""
+def _pod(name, phase="Failed", reason=None, conditions=()):
+    """A minimal K8s pod object for the disruption checks."""
+    pod = MagicMock()
+    pod.metadata.name = name
+    pod.status.phase = phase
+    pod.status.reason = reason
+    pod.status.container_statuses = []
+    pod.status.conditions = [
+        MagicMock(type=ctype, status=cstatus, reason=creason)
+        for ctype, cstatus, creason in conditions
+    ]
+    return pod
+
+
+class TestDisruptionTracking:
+    """The monitor records, per pod, whether the cluster disrupted it, so a
+    `Failed` verdict can tell a disruption from a workload failure."""
+
+    @pytest.mark.parametrize(
+        "pod, expected",
+        [
+            (
+                _pod(
+                    "p",
+                    conditions=[("DisruptionTarget", "True", "PreemptionByScheduler")],
+                ),
+                "PreemptionByScheduler",
+            ),
+            (
+                _pod(
+                    "p",
+                    conditions=[("DisruptionTarget", "True", "EvictionByEvictionAPI")],
+                ),
+                "EvictionByEvictionAPI",
+            ),
+            (_pod("p", reason="Evicted"), "Evicted"),
+            (_pod("p", conditions=[("DisruptionTarget", "False", "x")]), None),
+            (_pod("p", conditions=[("Ready", "False", "PodFailed")]), None),
+        ],
+    )
+    def test_pod_disruption_reason(self, pod, expected):
+        assert AppWrapperMonitor._pod_disruption_reason(pod) == expected
 
     @pytest.mark.asyncio
-    async def test_reset_count_tracked_but_not_a_preemption_signal(self):
-        """resettingCount records the running max (for reporting) but does NOT set
-        the sticky preemption flag -- the controller resets on any failure."""
+    async def test_failed_pods_poll_records_disruption(self):
         monitor, _, _ = _make_monitor()
-        monitor.custom_api = MagicMock()
-        monitor.custom_api.get_namespaced_custom_object = AsyncMock(
-            return_value={"status": {"phase": "Running", "resettingCount": 2}}
-        )
-        await monitor._get_appwrapper_status()
-        assert monitor._preemption_observed is False
-        assert monitor._max_resets_seen == 2
-
-        # A later poll with a lower/absent count must not lower the running max.
-        monitor.custom_api.get_namespaced_custom_object = AsyncMock(
-            return_value={"status": {"phase": "Failed", "resettingCount": 0}}
-        )
-        await monitor._get_appwrapper_status()
-        assert monitor._max_resets_seen == 2
+        monitor.v1 = MagicMock()
+        pods = MagicMock()
+        pods.items = [
+            _pod(
+                "p-1", conditions=[("DisruptionTarget", "True", "TerminationByKubelet")]
+            ),
+            _pod("p-2"),
+        ]
+        monitor.v1.list_namespaced_pod = AsyncMock(return_value=pods)
+        monitor._collect_pod_logs = AsyncMock(return_value={})
+        await monitor._get_appwrapper_failed_pods()
+        assert monitor._disrupted_pods == {"p-1": "TerminationByKubelet"}
+        assert set(monitor.failed_pods) == {"p-1", "p-2"}
 
     @pytest.mark.asyncio
-    async def test_preemption_event_sets_sticky_flag(self):
-        """A Preempted/Evicted K8s event flips the sticky preemption flag."""
+    async def test_preemption_event_records_disruption(self):
+        """A pod deleted before a poll saw it leaves only its Preempted event."""
         monitor, _, _ = _make_monitor()
         monitor.v1 = MagicMock()
         event = MagicMock()
-        event.type = "Warning"
+        event.type = "Normal"
         event.reason = "Preempted"
-        event.message = "Preempted by a higher priority pod"
+        event.message = "Preempted by pod x on node y"
         event.involved_object.name = "gbtest-0"
         event.involved_object.kind = "Pod"
         event.metadata.uid = "uid-1"
@@ -286,38 +323,21 @@ class TestPreemptionSignalTracking:
         monitor.v1.list_namespaced_event = AsyncMock(return_value=events_list)
         monitor.launched_pods = {"gbtest-0": MagicMock()}
 
-        assert monitor._preemption_observed is False
         await monitor._get_new_events([])
-        assert monitor._preemption_observed is True
+        assert monitor._disrupted_pods == {"gbtest-0": "Preempted"}
 
-    @pytest.mark.asyncio
-    async def test_appwrapper_conditions_captured(self):
-        """`.status.conditions` are captured for the classifier."""
+    def test_unpause_resets_disruptions_and_bumps_generation(self):
         monitor, _, _ = _make_monitor()
-        monitor.custom_api = MagicMock()
-        conditions = [{"type": "Unhealthy", "status": "True"}]
-        monitor.custom_api.get_namespaced_custom_object = AsyncMock(
-            return_value={"status": {"phase": "Running", "conditions": conditions}}
-        )
-        await monitor._get_appwrapper_status()
-        assert (
-            monitor.additional_appwrapper_state_info["appwrapper_conditions"]
-            == conditions
-        )
-
-    def test_unpause_resets_preemption_tracking(self):
-        """unpause() clears the sticky preemption state for the new attempt."""
-        monitor, _, _ = _make_monitor()
-        monitor._preemption_observed = True
-        monitor._max_resets_seen = 5
+        monitor._disrupted_pods = {"p": "Evicted"}
+        generation = monitor._generation
         monitor.unpause()
-        assert monitor._preemption_observed is False
-        assert monitor._max_resets_seen == 0
+        assert monitor._disrupted_pods == {}
+        assert monitor._generation == generation + 1
 
     @pytest.mark.asyncio
-    async def test_state_change_payload_fixes_max_retries_and_adds_signals(self):
-        """G6 regression: payload `max_retries` is the real retryLimit, not the
-        constant 'unlimited'; and the payload carries the new classifier signals."""
+    async def test_state_change_payload(self):
+        """Payload `max_retries` is the real retryLimit, not the constant
+        'unlimited', and the payload carries the disrupted pods."""
         monitor, _, _ = _make_monitor()
         monitor.custom_api = MagicMock()
         monitor.custom_api.get_namespaced_custom_object = AsyncMock(
@@ -328,37 +348,84 @@ class TestPreemptionSignalTracking:
                 "status": {"phase": "Failed", "resettingCount": 1},
             }
         )
-        # Populate the state info the payload reads from.
         await monitor._get_appwrapper_status()
-        # Stub the workload/pod/event fetches used by _get_state_change.
-        monitor._get_workload_status = AsyncMock(
-            return_value=[
-                {
-                    "workload_name": "wl-1",
-                    "workload_status": {
-                        "conditions": [{"type": "Evicted", "status": "True"}],
-                        "requeueState": {"count": 1},
-                    },
-                }
-            ]
-        )
+        monitor._get_workload_status = AsyncMock(return_value=[])
         monitor._get_appwrapper_failed_pods = AsyncMock(return_value=None)
         monitor._get_new_events = AsyncMock(return_value=[])
+        monitor._disrupted_pods = {"p-1": "PreemptionByScheduler"}
 
         msg = await monitor._get_state_change("Failed", get_state_for_exception=True)
-        import json
-
         data = json.loads(msg.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
 
-        assert data["max_retries"] == "3"  # G6: real retryLimit, not "unlimited"
-        assert data["max_resets_seen"] == 1
-        # No preemption event was seen, so the sticky flag stays False; the
-        # preemption signal here comes from the Kueue workload_conditions.
-        assert data["preemption_observed"] is False
-        assert data["workload_conditions"] == [
-            {
-                "workload_name": "wl-1",
-                "conditions": [{"type": "Evicted", "status": "True", "reason": ""}],
-                "requeued": True,
-            }
-        ]
+        assert data["max_retries"] == "3"
+        assert data["disrupted_pods"] == {"p-1": "PreemptionByScheduler"}
+
+
+class TestFailedGracePeriod:
+    """On `Failed` the monitor stops after the grace period -- unless the
+    RetryHandler relaunched the workload meanwhile, which it must keep watching."""
+
+    async def _run(self, monitor, statuses, on_failed=None):
+        """Run monitor() over `statuses`, calling on_failed when Failed is seen."""
+        seen = []
+
+        async def status():
+            state = statuses.pop(0) if statuses else "Running"
+            seen.append(state)
+            if state == "Failed" and on_failed:
+                on_failed()
+            return state
+
+        api_cm = MagicMock()
+        api_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        api_cm.__aexit__ = AsyncMock(return_value=False)
+        monitor._get_appwrapper_status = status
+        monitor._get_appwrapper_failed_pods = AsyncMock(return_value=None)
+        monitor._publish_state_change = AsyncMock(return_value=None)
+        with (
+            patch(
+                "gbserver.monitoring.appwrapper_monitor.AtomicApiClient.create_api_client",
+                AsyncMock(return_value=api_cm),
+            ),
+            patch(
+                "gbserver.monitoring.appwrapper_monitor.GBSERVER_MONITORING_GRACE_PERIOD",
+                0.2,
+            ),
+        ):
+            await asyncio.wait_for(monitor.monitor(), timeout=5.0)
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_failed_without_relaunch_stops(self):
+        monitor, _, stop_event = _make_monitor(poll=0.01)
+        seen = await self._run(monitor, ["Running", "Failed", "Running"])
+        assert seen == ["Running", "Failed"]
+        assert stop_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_relaunch_during_grace_keeps_watching(self):
+        monitor, _, _ = _make_monitor(poll=0.01)
+        loop = asyncio.get_running_loop()
+
+        def relaunch():  # what K8s.retry_workload does: pause, reinstall, unpause
+            loop.call_later(0.02, monitor.pause)
+            loop.call_later(0.1, monitor.unpause)
+
+        seen = await self._run(
+            monitor, ["Running", "Failed", "Running", "Succeeded"], on_failed=relaunch
+        )
+        assert seen == ["Running", "Failed", "Running", "Succeeded"]
+
+    @pytest.mark.asyncio
+    async def test_relaunch_still_in_progress_after_grace_waits(self):
+        monitor, _, _ = _make_monitor(poll=0.01)
+        loop = asyncio.get_running_loop()
+
+        def slow_relaunch():  # reinstall outlasts the grace period
+            loop.call_later(0.02, monitor.pause)
+            loop.call_later(0.5, monitor.unpause)
+
+        seen = await self._run(
+            monitor, ["Failed", "Running", "Succeeded"], on_failed=slow_relaunch
+        )
+        assert seen == ["Failed", "Running", "Succeeded"]

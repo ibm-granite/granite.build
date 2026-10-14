@@ -642,42 +642,49 @@ class TestWorkloadStatusTerminalFailure:
         assert handler.environment.retry_called is True
 
 
-def create_preempted_failed_event(**overrides) -> BuildEvent:
-    """A terminal AppWrapper 'Failed' snapshot caused by preemption.
-
-    Carries a durable preemption signal (the sticky preemption_observed flag) but
-    no genuine hard-failure reason -- the shape the classifier must judge transient.
-    """
+def create_disrupted_failed_event(**overrides) -> BuildEvent:
+    """A terminal AppWrapper 'Failed' snapshot whose only failed pod was
+    disrupted by the cluster -- the shape the classifier must judge a disruption."""
     data = {
         "appwrapper": "gbtest",
         "state": "Failed",
         "previous_state": "Running",
-        "preemption_observed": True,
         "workload_status": [],
         "events": [],
-        "failed_pods": {},
+        "failed_pods": {"gbtest-0": {"failure-reason": "exit code 137", "logs": {}}},
+        "disrupted_pods": {"gbtest-0": "PreemptionByScheduler"},
     }
     data.update(overrides)
     return create_test_event(f"\n```json\n{json.dumps(data, indent=4)}\n```\n")
 
 
-class TestPreemptionReclassification:
-    """A `Failed` AppWrapper caused by normal Kueue preemption/requeue must not
-    fail the build -- even when step retries are disabled.
+class FailingRetryEnvironment(MockEnvironment):
+    """retry_workload raises, as a failed helm reinstall does."""
 
-    These exercise the *real* PodEvictionRetryStrategy through process_events (not
-    a NeverRetryStrategy), because the bug the review found lives in the
-    interaction: the strategy recognizes the preemption event as retriable, which
-    on its own would drive the retries_exhausted_on_retriable terminal path.
+    async def retry_workload(self: Self, launch_id: str, **kwargs) -> None:
+        await super().retry_workload(launch_id, **kwargs)
+        raise RuntimeError("helm reinstall failed")
+
+
+class TestDisruptionRelaunch:
+    """A `Failed` AppWrapper whose pods the cluster disrupted is relaunched on
+    PodEvictionRetryStrategy's own max_preemptions budget -- even when step
+    retries are disabled -- and otherwise fails the step. It is never left
+    neither relaunched nor failed: on Failed the monitor stops, so that would
+    end the launch as if it had succeeded.
+
+    These run the *real* PodEvictionRetryStrategy through process_events.
     """
 
-    def _handler(self, max_retries: int, max_preemptions: int = 20) -> RetryHandler:
+    def _handler(
+        self, max_retries: int, max_preemptions: int = 5, environment=None
+    ) -> RetryHandler:
         from gbserver.resilience.strategies import PodEvictionRetryStrategy
 
         return RetryHandler(
             launch_id="test-launch-123",
             downstream_queue=asyncio.Queue(),
-            environment=MockEnvironment(),
+            environment=environment or MockEnvironment(),
             max_retries=max_retries,
             strategies=[PodEvictionRetryStrategy(max_preemptions=max_preemptions)],
         )
@@ -693,59 +700,61 @@ class TestPreemptionReclassification:
         handler.stop_processing = False  # reusable for the next _run_once
 
     @pytest.mark.asyncio
-    async def test_preemption_does_not_raise_with_retry_disabled(self: Self) -> None:
-        # The reported bug, with the production strategy: retries off
-        # (max_retries=0), a preemption-caused Failed must NOT raise -- neither the
-        # terminal path nor retries_exhausted_on_retriable may fire.
+    async def test_disruption_relaunches_with_retry_disabled(self: Self) -> None:
         handler = self._handler(max_retries=0)
-        await self._run_once(handler, create_preempted_failed_event())
-        assert handler.environment.retry_called is False
-        assert handler.downstream_queue.qsize() == 1  # forwarded, not dropped
+        await self._run_once(handler, create_disrupted_failed_event())
+        assert handler.environment.retry_call_count == 1
+        assert handler.downstream_queue.qsize() == 2  # retry message + the event
 
     @pytest.mark.asyncio
     async def test_genuine_failed_still_raises_with_retry_disabled(self: Self) -> None:
-        # A hard failure with no preemption signal is not vetoed -> still fails.
         handler = self._handler(max_retries=0)
-        event = create_preempted_failed_event(
-            preemption_observed=False,
-            failed_pods={"pod-1": {"failure-reason": "OOMKilled", "logs": {}}},
-        )
+        event = create_disrupted_failed_event(disrupted_pods={})
         await handler.get_wrapper_queue().put(event)
         with pytest.raises(WorkloadFailedException):
             await asyncio.wait_for(handler.process_events(), timeout=5.0)
+        assert handler.environment.retry_called is False
 
     @pytest.mark.asyncio
-    async def test_preemption_over_ceiling_raises(self: Self) -> None:
-        # Past the ceiling the workload is allowed to fail rather than vetoed
-        # forever (no silent hang). Counting classifications (not resettingCount)
-        # means a pure Kueue-requeue loop trips it too.
-        handler = self._handler(max_retries=0, max_preemptions=3)
-        for _ in range(3):
-            await self._run_once(handler, create_preempted_failed_event())
-            assert handler.environment.retry_called is False
-        # The 4th preemption exceeds the ceiling -> no veto -> raises.
-        await handler.get_wrapper_queue().put(create_preempted_failed_event())
+    async def test_failed_relaunch_raises(self: Self) -> None:
+        # A relaunch that raises (e.g. helm reinstall error) leaves nothing
+        # running, so the Failed is terminal rather than swallowed.
+        handler = self._handler(max_retries=0, environment=FailingRetryEnvironment())
+        await handler.get_wrapper_queue().put(create_disrupted_failed_event())
         with pytest.raises(WorkloadFailedException):
             await asyncio.wait_for(handler.process_events(), timeout=5.0)
+        assert handler.environment.retry_call_count == 1
 
     @pytest.mark.asyncio
-    async def test_preemption_retries_when_enabled(self: Self) -> None:
-        # With retries enabled, the strategy relaunches instead of merely vetoing.
-        handler = self._handler(max_retries=3)
-        retry_triggered = await handler._evaluate_and_retry(
-            create_preempted_failed_event(
-                events=[
-                    {
-                        "object_type": "Pod",
-                        "object_name": "gbtest-0",
-                        "reason": "Preempted",
-                        "message": "Preempted by a higher priority pod",
-                    }
-                ],
-            )
+    async def test_relaunch_budget_then_raises(self: Self) -> None:
+        # Each relaunched workload can be disrupted again; after max_preemptions
+        # relaunches the next disruption fails the step instead of relaunching.
+        handler = self._handler(max_retries=0, max_preemptions=3)
+        for _ in range(3):
+            await self._run_once(handler, create_disrupted_failed_event())
+        assert handler.environment.retry_call_count == 3
+        await handler.get_wrapper_queue().put(create_disrupted_failed_event())
+        with pytest.raises(WorkloadFailedException):
+            await asyncio.wait_for(handler.process_events(), timeout=5.0)
+        assert handler.environment.retry_call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_disruption_ignores_shared_retry_budget(self: Self) -> None:
+        # max_retries is spent, but disruption relaunches have their own budget.
+        handler = self._handler(max_retries=1)
+        handler.retry_count = 1
+        assert await handler._evaluate_and_retry(create_disrupted_failed_event())
+        assert handler.environment.retry_call_count == 1
+
+    def test_disruption_matched_once_per_event(self: Self) -> None:
+        # should_retry/is_exhausted are evaluated once per event, so one event
+        # consumes exactly one unit of the relaunch budget.
+        handler = self._handler(max_retries=0)
+        strategy, exhausted = handler._match_retry_strategy(
+            create_disrupted_failed_event()
         )
-        assert retry_triggered is True
-        assert handler.environment.retry_called is True
+        assert strategy is handler.strategies[0] and exhausted is False
+        assert handler.strategies[0].preemption_count == 1
 
 
 class TestExhaustedRetriableIsTerminal:
@@ -766,14 +775,19 @@ class TestExhaustedRetriableIsTerminal:
             strategies=[strategy],
         )
 
-    def test_is_retriable_event_reflects_strategy(self: Self) -> None:
-        """_is_retriable_event ignores retry_count -- it only asks the strategies."""
+    def test_match_retry_strategy_reflects_strategy(self: Self) -> None:
+        """_match_retry_strategy finds the strategy regardless of retry_count, and
+        reports it exhausted once the shared budget is spent."""
         event = create_test_event("Cannot open your job file")
-        assert (
-            self._handler(0, AlwaysRetryStrategy())._is_retriable_event(event) is True
+        always = AlwaysRetryStrategy()
+        assert self._handler(0, always)._match_retry_strategy(event) == (always, True)
+        assert self._handler(1, always)._match_retry_strategy(event) == (
+            always,
+            False,
         )
-        assert (
-            self._handler(0, NeverRetryStrategy())._is_retriable_event(event) is False
+        assert self._handler(0, NeverRetryStrategy())._match_retry_strategy(event) == (
+            None,
+            False,
         )
 
     @pytest.mark.asyncio
