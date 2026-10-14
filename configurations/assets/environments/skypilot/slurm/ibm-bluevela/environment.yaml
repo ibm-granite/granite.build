@@ -12,6 +12,18 @@ config:
   # without repeating `cluster`, see docs/environments/skypilot-slurm.md#cluster--zone.
   cluster: bluevela
   zone: gpu-mid
+  # gpu-mid is heavily contended (hundreds of jobs queued, 0-8 idle nodes out of
+  # ~384 observed fluctuating). gbserver's own bounded provisioning retry
+  # (_provision_with_retry in skypilot.py) is the actual retry-until-up
+  # equivalent here — sky.launch itself is never called with retry_until_up by
+  # gbserver, so that SkyPilot CLI flag has no effect through this path. Raise
+  # both knobs well past the defaults (4 attempts / 30s-capped backoff) so a
+  # launch keeps retrying through transient ResourcesUnavailableError for
+  # much longer before giving up, trading a slower failure for a much better
+  # chance of catching a freed GPU on a saturated partition.
+  retry:
+    max_retries: 20
+    provision_backoff_max: 180
   # Env-level shared filesystem root for per-run build workdirs (same path the
   # LSF bluevela environment uses — both backends reach the same /proj GPFS
   # mount). gbserver derives ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/
@@ -68,16 +80,36 @@ config:
       # leading --). `account` is granitebuild's own SLURM association
       # (confirmed via `sacctmgr show associations user=granitebuild`); there is
       # no `hew` association under this login, since jobs run as granitebuild.
-      # `qos` is the LSF-group-equivalent: unlike LSF (where preemptable vs
-      # default is a *group* swap, bsub_options.G), on this SLURM cluster it's a
-      # *QOS* swap within the same account — grp_granite_dot_build_high
-      # (priority 100, confirmed via `sacctmgr show qos`) is the default/high
-      # tier; grp_granite_dot_build_medium (priority 0, preempted by burst/cpu)
-      # is the lower-priority analog of LSF's grp_preemptable. Override either
-      # per build via config.launcher_config.sbatch_options.
+      #
+      # `qos` MUST be grp_granite_dot_build_medium on gpu-mid, not the
+      # higher-priority grp_granite_dot_build_high: confirmed by direct sbatch
+      # testing that this cluster's own submission filter rejects _high here
+      # with "Project grp_granite_dot_build uses --qos=grp_granite_dot_build_medium
+      # in gpu-mid (this job requested grp_granite_dot_build_high)". _medium is
+      # also the lower-priority/preemptable-equivalent tier (sacctmgr show qos:
+      # priority 0, preempted by burst/cpu) that an LSF-group-swap maps to
+      # anyway, so this isn't a real functionality loss for this environment.
+      #
+      # `gpus` is REQUIRED alongside SkyPilot's own auto-generated --gres
+      # directive: this cluster's sbatch submission filter defaults every job
+      # to H100 unless --gpus=h200:<N> (or --constraint=h200) is ALSO present,
+      # so a bare --gres=gpu:h200:<N> (all SkyPilot sets) gets silently
+      # reinterpreted as an H100 request and fails with "Not enough H100 nodes
+      # are free" even while H200s sit idle (confirmed via direct sbatch
+      # testing — this is why every smoke-test launch failed with
+      # ResourcesUnavailableError despite real GPU availability. See
+      # docs/environments/skypilot-slurm.md's note on `gres` being
+      # SkyPilot-managed; `gpus` is NOT in SkyPilot's protected-sbatch-options
+      # set, so it passes through). The count here (1) matches this recipe's
+      # current TENSOR_PARALLEL_SIZE=1 usage only — sbatch_options is a static
+      # per-environment string, not derived from resources.accelerators, so a
+      # step requesting a different GPU count must override `gpus` itself via
+      # config.launcher_config.sbatch_options (e.g. "h200:2") or this mismatch
+      # silently reproduces the same H100-vs-H200 confusion.
       sbatch_options:
         account: grp_granite_dot_build
-        qos: grp_granite_dot_build_high
+        qos: grp_granite_dot_build_medium
+        gpus: "h200:1"
         # NODE EXCLUSIONS: the LSF bluevela environment excludes several hosts
         # known to fail (CUDA init errors, missing /opt/nvme) via bsub's -R
         # select[]. The SLURM equivalent is `exclude` (comma-separated hostnames,
