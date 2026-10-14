@@ -1,7 +1,7 @@
 # All-in-one image (`Dockerfile.aio`)
 
 A single container that runs the whole local AutoTuneX stack for demo / dev /
-evaluation. Design: [`docs/superpowers/specs/2026-08-18-unified-aio-docker-image-design.md`](../../docs/superpowers/specs/2026-08-18-unified-aio-docker-image-design.md).
+evaluation. Operator notes: [`docs/operations/deployment.md`](../../docs/operations/deployment.md#all-in-one-aio-image).
 
 | Service | Port | Published | UI |
 | --- | --- | --- | --- |

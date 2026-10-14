@@ -82,8 +82,7 @@ export const showLoader = writable(false);
 export const userMetadata = writable<UserMetaData>();
 
 // Which features have a live backend today. UI reads this to disable the rest.
-// Flip a flag to true when its endpoint(s) land (see the integration spec §9 register:
-// docs/superpowers/specs/2026-08-05-ux-integration-design.md).
+// Flip a flag to true when its endpoint(s) land.
 export const capabilities = {
 	jobsRead: true,
 	configsCrud: true,

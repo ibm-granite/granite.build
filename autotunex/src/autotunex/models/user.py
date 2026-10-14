@@ -6,7 +6,7 @@ A *user* is an identity that owns configurations, datasets and jobs — not an
 owned resource itself. These schemas back the admin-only management endpoints
 (``GET /users``, ``GET /users/{id}``, ``PATCH /users/{id}``) and the
 self-service ``GET /users/me/metadata``. See
-``docs/superpowers/specs/2026-08-10-user-management-endpoints-design.md``.
+``docs/api/users.md``.
 """
 
 from __future__ import annotations

@@ -176,9 +176,9 @@ class Settings(BaseSettings):
     # *new* connection pays a full TLS + caching_sha2_password handshake worth
     # seconds. SQLite's async engine uses a non-queue pool and ignores the sizing
     # knobs (see db/session.build_pool_kwargs), so these are inert for local dev
-    # and the test suite. See docs/superpowers/specs — the connection-pool tuning
-    # was added after prod GET /configurations and /jobs latencies of 7-8s traced
-    # to cold reconnects and pool contention with the reconcile loop.
+    # and the test suite. See docs/operations/database.md — the connection-pool
+    # tuning was added after prod GET /configurations and /jobs latencies of
+    # 7-8s traced to cold reconnects and pool contention with the reconcile loop.
     database_pool_size: int = Field(default=10, ge=1)
     """Connections kept open and reused per worker process (``QueuePool`` base size).
 
@@ -464,7 +464,7 @@ class Settings(BaseSettings):
     """Broker URL for the future JobRunner implementation, e.g. redis://...."""
 
     # --- Execution: job launch ---
-    # See docs/superpowers/specs/2026-08-06-job-launch-runner-design.md.
+    # See docs/operations/job-backends.md.
     job_backend: Literal["none", "llmb", "local"] = "none"
     """Which JobRunner to build. ``none`` → NoOpJobRunner (jobs stay pending, the
     default). ``llmb`` → InProcessJobRunner submitting granite.build builds via the
@@ -547,7 +547,7 @@ class Settings(BaseSettings):
     in-flight jobs never open N simultaneous connections."""
 
     # --- Execution: local & bash runners ---
-    # See docs/superpowers/specs/2026-08-11-local-and-bash-runners-design.md.
+    # See docs/operations/job-backends.md.
     gb_environment: str | None = Field(
         default=None,
         validation_alias=AliasChoices("gb_environment", "GB_ENVIRONMENT"),
@@ -578,7 +578,7 @@ class Settings(BaseSettings):
     """``BACKEND`` for the bash spec: ``mlx`` (Apple Silicon) or ``torch``."""
 
     # --- Execution: LSF / SkyPilot standalone runner ---
-    # See docs/superpowers/specs/2026-08-13-lsf-runner-design.md.
+    # See docs/operations/job-backends.md.
     lsf_cluster: str | None = None
     """SkyPilot/LSF cluster name (``launcher_config.resources.cluster``).
 

@@ -8,7 +8,7 @@ an allowlisted namespace are listed: fm-tune cannot use a PEFT adapter as a
 base, and a private base model loads only through the ``inputs.base_model``
 binding, which is only emitted for allowlisted owners
 (``services/launch/_shared.base_model_uri``). See
-``docs/superpowers/specs/2026-09-26-tuned-model-search-design.md``.
+``docs/api/jobs.md`` (``GET /api/v1/jobs/tuned-models``).
 
 Separate from :class:`~autotunex.services.jobs.JobService` because it reads
 through its own narrow repository Protocol.

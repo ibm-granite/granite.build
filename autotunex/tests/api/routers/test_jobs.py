@@ -1,10 +1,7 @@
 """Job endpoints.
 
 ``GET /jobs`` and ``GET /jobs/{id}`` report what exists; ``POST /jobs``
-submits a new one, owned by the calling principal — see
-``docs/superpowers/specs/2026-07-29-autotunex-jobs-view-design.md`` for why the
-read path was rebuilt on the real schema, and Task A5's brief for why
-submission was restored on top of it.
+submits a new one, owned by the calling principal.
 """
 
 from __future__ import annotations

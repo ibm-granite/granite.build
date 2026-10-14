@@ -621,8 +621,7 @@ class HfImportService:
         and a mapping made against stale column names cannot reach a stored
         dataset -- ``_reject_unmapped_sources`` re-checks the real staged columns
         at import. The ranged-read alternative that would buy back byte-identical
-        sampling is measured and deferred in
-        ``docs/superpowers/specs/2026-09-16-hf-dataset-import-design.md``.
+        sampling was measured and deferred.
 
         Raises:
             DomainValidationError: ``config``/a split is absent, or the dataset

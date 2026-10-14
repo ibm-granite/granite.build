@@ -22,8 +22,7 @@ connections. Optional TLS is configured with ``AUTOTUNEX_DATABASE_SSL_CA`` /
 
 The two services stay independent: nothing is imported from ``src/autotunex`` —
 the small amount of shared logic (URL driver coercion, the TLS-context builder) is
-copied, not imported. See
-``docs/superpowers/specs/2026-08-20-api-bridge-multi-dialect-design.md``.
+copied, not imported.
 """
 
 import logging
