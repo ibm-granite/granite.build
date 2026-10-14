@@ -125,28 +125,19 @@ token's **5 minutes**.
 
 ### Get an `id_token`
 
-`.superpowers/sdd/w3id-task6-authcode-probe.py` runs the authorization-code flow
-and verifies the result against the live JWKS with the real verifier. It prints
-no token to stdout by design; two flags route one somewhere usable:
+Run the authorization-code flow with any OIDC client registered for your client
+id, and take the `id_token` field from the token response, not `access_token`.
+Keep the token out of stdout, shell history and `ps` output:
 
-```bash
-export W3ID_CLIENT_ID='<your-client-id>'
-read -rs -p 'client secret: ' W3ID_CLIENT_SECRET && export W3ID_CLIENT_SECRET && echo
-.venv/bin/python .superpowers/sdd/w3id-task6-authcode-probe.py --clipboard
-```
-
-- `--clipboard` pipes it to `pbcopy`; nothing touches disk. Clear it afterwards
+- Put it on the clipboard (`pbcopy`), so nothing touches disk. Clear it afterwards
   with `pbcopy </dev/null`.
-- `--out FILE` writes it `0600` for `curl -H "Authorization: Bearer $(cat FILE)"`.
-  Refuses to overwrite. Delete it when done — an `id_token` is a live bearer
-  credential for two hours.
+- Or write it to a `0600` file for `curl -H "Authorization: Bearer $(cat FILE)"`.
+  Delete the file when done — an `id_token` is a live bearer credential for two
+  hours.
 
-**Port 8000 must be free**, because the probe's listener binds the exact redirect
-URI registered for the client. If your own server is on 8000, move it with
-`make dev PORT=8001`.
-
-Note the script lives under `.superpowers/`, which is git-ignored — it is a local
-helper, not a shipped tool.
+**If the client's redirect URI is on port 8000, that port must be free**, because
+the client's local listener binds the exact redirect URI registered for it. If
+your own server is on 8000, move it with `make dev PORT=8001`.
 
 ### Configure and use
 
@@ -177,7 +168,7 @@ the authorization code to a host of the attacker's choosing.
 So the IdP client must have **`http://localhost:8000/auth/callback`** registered.
 If your registration lists a different path, the authorize request fails on
 redirect_uri mismatch and no environment variable can fix it. Keep any existing
-redirect URI as well if another tool depends on it — the token probe above does.
+redirect URI as well if another tool depends on it, such as the token client above.
 
 ### Configure
 
@@ -310,7 +301,7 @@ loses them.
 | 401 on every bearer token | Sending the opaque access token instead of the `id_token` |
 | Login appears to succeed but no session | Cookie dropped — see the localhost note below |
 | Settings error on startup | `AUTOTUNEX_AUTH_PROVIDERS` needs JSON: `["oidc"]`, not `oidc` |
-| Probe hangs on "Listening…" | Port 8000 taken; move the server with `make dev PORT=8001` |
+| Token client never receives the redirect | Port 8000 taken; move the server with `make dev PORT=8001` |
 
 ### `Secure` cookies over `http://localhost`
 
