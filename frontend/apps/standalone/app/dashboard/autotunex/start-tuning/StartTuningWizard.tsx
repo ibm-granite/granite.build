@@ -862,7 +862,9 @@ export function StartTuningWizard() {
       clearDraft()
       router.push(`/dashboard/autotunex/_/?id=${jobId}`)
     } catch (err: any) {
-      setTransitionError(err.message || 'Launch failed. Please try again.')
+      // The backend's problem detail names the cause (a duplicate dataset name, a
+      // rejected job); axios's own message is only "status code 409".
+      setTransitionError(problemDetail(err, err.message || 'Launch failed. Please try again.'))
     } finally {
       setIsLaunching(false)
       setLaunchPhase(null)
