@@ -120,6 +120,18 @@ _MAX_JOB_ATTEMPTS = 5
 
 _WANDB_PAGE_SIZE = 200
 
+# A W&B run still "running" is still receiving its artifacts and job_id (the sink
+# logs them asynchronously until finish()), so it is waited on -- but only this
+# long, so a run whose writer died without finishing does not pin the scan.
+_WANDB_RUNNING_MAX_AGE_S = 6 * 3600
+
+# How old a job's timestamp must be before the scan takes it. The timestamp is
+# stamped before the row commits (finished_at when the event is created,
+# recorded_at in Python), so rows can commit out of timestamp order; a checkpoint
+# moved to the newest timestamp would skip one that commits later behind it.
+# Only taking settled jobs keeps the checkpoint at most ``now - grace``.
+_SETTLE_GRACE_S = 120.0
+
 # Checkpoint writes are batched: one per job turned a 300k-record source into 300k
 # gb_kv updates per scan. Losing a batch on a crash only re-reads it, and the
 # re-read is deduplicated by the sink.
@@ -273,6 +285,14 @@ class JobLineageIndexer:
 
     def _is_pending(self, job: Any) -> bool:
         return False
+
+    # Instance-overridable so tests can turn the grace off.
+    settle_grace_s: float = _SETTLE_GRACE_S
+
+    def _is_settled(self, job: Any) -> bool:
+        """Whether the job is old enough that nothing can still commit behind it."""
+        age = datetime.now(timezone.utc) - _parse_ts(self._timestamp(job))
+        return age.total_seconds() >= self.settle_grace_s
 
     def _index(self, storage: SingletonAdminStorage, job: Any) -> bool:
         """Index one job; return whether it was written (vs. nothing to write)."""
@@ -461,7 +481,8 @@ class JobLineageIndexer:
             ):
                 # Behind the mark, or on it and already done.
                 continue
-            if self._is_pending(job):
+            if not self._is_settled(job) or self._is_pending(job):
+                # Jobs come in timestamp order, so every later one waits too.
                 logger.debug("Job %s still pending; stopping the scan", item_id)
                 break
             try:
@@ -713,9 +734,12 @@ class LineageJobIndexer(JobLineageIndexer):
         todo = [
             job
             for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"])
-            if mark is None
-            or _parse_ts(job.recorded_at) > mark[0]
-            or (_parse_ts(job.recorded_at) == mark[0] and job.job_id not in mark[1])
+            if self._is_settled(job)
+            and (
+                mark is None
+                or _parse_ts(job.recorded_at) > mark[0]
+                or (_parse_ts(job.recorded_at) == mark[0] and job.job_id not in mark[1])
+            )
         ]
         indexed = 0
         for start in range(0, len(todo), _CHECKPOINT_EVERY):
@@ -842,9 +866,11 @@ def wandb_run_to_job(run: Any) -> Optional[dict]:
 class WandBLineageIndexer(JobLineageIndexer):
     """Lineage-store source: W&B lineage runs by ``createdAt``.
 
-    **Run state is ignored.** A W&B run executes nothing: it is only the record
-    ``emit_event`` writes for a job's lineage, so every run is indexed with the
-    inputs and outputs it carries.
+    **Running runs are pending.** A W&B run executes nothing, but ``emit_event``
+    creates it with ``wandb.init`` and only then logs its artifacts and job_id,
+    asynchronously until ``finish()``. Indexing it in that window would record
+    some of its edges, or none, and move the checkpoint past it; so a run still
+    ``running`` stops the scan, up to ``_WANDB_RUNNING_MAX_AGE_S``.
 
     **Several runs, one job.** The W&B sink writes one run per output artifact, all
     carrying the target's ``job_id``. Each is indexed on its own and adds its own
@@ -865,19 +891,29 @@ class WandBLineageIndexer(JobLineageIndexer):
     ) -> None:
         super().__init__(monitoring_interval=monitoring_interval, sink=sink, rows=rows)
         self._api = api
+        self._logged_in = False
 
     def _wandb_api(self) -> Any:
-        if self._api is None:
-            import wandb
+        """A fresh ``wandb.Api`` per scan, unless one was injected.
 
-            from gbserver.types.constants import (
-                GBSERVER_WANDB_API_KEY,
-                GBSERVER_WANDB_BASE_URL,
-            )
+        ``Api.runs`` caches its result per path, filters and order and returns the
+        cached list on a repeat call, so a long-lived Api re-iterates the same runs
+        once the checkpoint stops moving and never sees new ones. It also keeps
+        every list it built, so memory would grow with each checkpoint.
+        """
+        if self._api is not None:
+            return self._api
+        import wandb
 
+        from gbserver.types.constants import (
+            GBSERVER_WANDB_API_KEY,
+            GBSERVER_WANDB_BASE_URL,
+        )
+
+        if not self._logged_in:
             wandb.login(key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL)
-            self._api = wandb.Api()
-        return self._api
+            self._logged_in = True
+        return wandb.Api()
 
     @staticmethod
     def _project_path() -> str:
@@ -896,6 +932,16 @@ class WandBLineageIndexer(JobLineageIndexer):
     def _item_id(self, job: Any) -> str:
         # Per run: the runs of one job share its job_id but fail independently.
         return job.id
+
+    def _is_pending(self, job: Any) -> bool:
+        if getattr(job, "state", None) != "running":
+            return False
+        # W&B's createdAt is zoneless UTC; read it as such, not as local time.
+        created = datetime.fromisoformat(self._timestamp(job).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - created
+        return age.total_seconds() < _WANDB_RUNNING_MAX_AGE_S
 
     def _jobs_since(
         self, storage: SingletonAdminStorage, timestamp: Optional[str]

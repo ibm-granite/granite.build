@@ -16,8 +16,8 @@
 
 """Unit tests for per-run access filtering in the OpenLineage-backed routes.
 
-POST /lineage/search and POST /lineage/artifact both query an external
-lineage backend that is not itself space-scoped, so each returned run is
+POST /lineage/search queries an external lineage backend that is not
+itself space-scoped, so each returned run is
 filtered by has_space_member_access using the owner/space_name recovered
 from that run's own facets (see gbserver.api.lineage for exactly how those
 are recovered from each backend's response shape). These tests stub the
@@ -35,7 +35,6 @@ from fastapi import HTTPException
 
 from gbserver.api import lineage as lineage_mod
 from gbserver.lineage.openlineage_models import (
-    ArtifactGraphRequest,
     LineageQueryRequest,
     TagSearchRequest,
 )
@@ -254,120 +253,6 @@ def test_search_lineage_events_redacts_step_config_and_metadata():
     assert step["metadata"]["api_key"] == "<redacted>"
 
 
-# ---------------------------------------------------------------- artifact graph
-
-
-def _fake_graph_result(nodes, edges=None):
-    return {
-        "root_id": nodes[0]["id"] if nodes else "",
-        "truncated": False,
-        "nodes": nodes,
-        "edges": edges or [],
-    }
-
-
-def test_get_artifact_graph_excludes_cross_space_run():
-    nodes = [
-        _graph_node("run-mine", MY_SPACE, "someone_else@example.com"),
-        _graph_node("run-other", OTHER_SPACE, "someone_else@example.com"),
-    ]
-    fake_service = SimpleNamespace(
-        get_artifact_graph=lambda **kw: _fake_graph_result(nodes)
-    )
-    is_admin, is_member = _member_of(MY_SPACE)
-    with (
-        is_admin,
-        is_member,
-        patch.object(
-            lineage_mod, "_get_openlineage_service", return_value=fake_service
-        ),
-    ):
-        resp = lineage_mod.get_artifact_graph(
-            _fake_request("member", "member@example.com"),
-            ArtifactGraphRequest(artifact_name="dataset-x", direction="both"),
-        )
-    namespaces = [r.job_namespace for r in resp.runs]
-    assert namespaces == [f"{MY_SPACE}/some-build"], namespaces
-
-
-def test_get_artifact_graph_includes_owned_run_from_any_space():
-    # owner is compared against the caller's login (not email) — see
-    # has_space_member_access's owner shortcut.
-    nodes = [_graph_node("run-owned", OTHER_SPACE, "member")]
-    fake_service = SimpleNamespace(
-        get_artifact_graph=lambda **kw: _fake_graph_result(nodes)
-    )
-    is_admin, is_member = _member_of(MY_SPACE)  # not a member of OTHER_SPACE
-    with (
-        is_admin,
-        is_member,
-        patch.object(
-            lineage_mod, "_get_openlineage_service", return_value=fake_service
-        ),
-    ):
-        resp = lineage_mod.get_artifact_graph(
-            _fake_request("member", "member@example.com"),
-            ArtifactGraphRequest(artifact_name="dataset-x", direction="both"),
-        )
-    assert len(resp.runs) == 1, "owner should see their own run regardless of space"
-
-
-def test_get_artifact_graph_redacts_job_input_params():
-    """The artifact-graph read path masks job_input_params like search does.
-
-    Both endpoints are member-readable, so redaction must be applied on each or a
-    secret the write-side missed leaks on one path but not the other. Asserts the
-    returned ArtifactRunEntry carries the masked value, not the raw secret.
-    """
-    node = _graph_node("run-mine", MY_SPACE, "someone_else@example.com")
-    node["metadata"]["job_input_params"] = {"SECRET": "should-not-leak"}
-    fake_service = SimpleNamespace(
-        get_artifact_graph=lambda **kw: _fake_graph_result([node])
-    )
-    is_admin, is_member = _member_of(MY_SPACE)
-    with (
-        is_admin,
-        is_member,
-        patch.object(
-            lineage_mod, "_get_openlineage_service", return_value=fake_service
-        ),
-    ):
-        resp = lineage_mod.get_artifact_graph(
-            _fake_request("member", "member@example.com"),
-            ArtifactGraphRequest(artifact_name="dataset-x", direction="both"),
-        )
-    assert "should-not-leak" not in str(resp.runs)
-    assert resp.runs[0].job_input_params == {"SECRET": "<redacted>"}
-
-
-def test_get_artifact_graph_excludes_run_with_no_owner_or_namespace():
-    """Fail closed: a run missing both signals must never be returned."""
-    nodes = [
-        {
-            "id": "run-unknown",
-            "node_type": "run",
-            "name": "mystery",
-            "metadata": {},
-        }
-    ]
-    fake_service = SimpleNamespace(
-        get_artifact_graph=lambda **kw: _fake_graph_result(nodes)
-    )
-    is_admin, is_member = _member_of(MY_SPACE)
-    with (
-        is_admin,
-        is_member,
-        patch.object(
-            lineage_mod, "_get_openlineage_service", return_value=fake_service
-        ),
-    ):
-        resp = lineage_mod.get_artifact_graph(
-            _fake_request("member", "member@example.com"),
-            ArtifactGraphRequest(artifact_name="dataset-x", direction="both"),
-        )
-    assert resp.runs == []
-
-
 def _db_service(**kwargs):
     """A stub that passes the endpoint's isinstance(DBLineageService) check."""
     from gbserver.lineage.db_service import DBLineageService
@@ -480,11 +365,7 @@ def test_query_graph_passes_every_filter_through():
 
 
 def test_query_graph_does_not_404_on_an_empty_graph():
-    """ "Nothing recorded" is a real answer and must not read as an error.
-
-    This is the difference from ``POST /artifact``, whose ``None`` becomes the 404 the
-    frontend renders as "lineage is not available".
-    """
+    """ "Nothing recorded" is a real answer and must not read as an error."""
     service = _db_service(
         query_graph=lambda **_kw: {
             "root_id": "",
@@ -684,10 +565,9 @@ def test_graph_provenance_is_complete_across_a_space_boundary():
 def test_graph_keeps_a_run_with_no_provenance():
     """No space check means an unattributed run is not dropped either.
 
-    ``POST /artifact`` and ``POST /search`` fail closed on a run with neither
-    namespace nor owner because they authorize per run. This route does not authorize
-    per node at all, so there is nothing to fail closed about -- worth pinning, since
-    the two routes now differ.
+    ``POST /search`` fails closed on a run with neither namespace nor owner because
+    it authorizes per run. This route does not authorize per node at all, so there is
+    nothing to fail closed about -- worth pinning, since the two routes differ.
     """
     graph = {
         "root_id": "a1",
@@ -700,45 +580,6 @@ def test_graph_keeps_a_run_with_no_provenance():
     }
     resp = _query_graph_as_member_of(MY_SPACE, graph)
     assert {n.id for n in resp.nodes} == {"a1", "run:anon"}
-
-
-def test_artifact_graph_still_filters_per_space():
-    """The contrast: POST /artifact DOES filter, and must keep doing so.
-
-    It re-projects into run-centred entries and has always applied the per-run space
-    check. Only the node/edge routes are cross-space, so a change to one must not be
-    assumed to apply to the other.
-    """
-    my_run = _graph_node("run:mine", MY_SPACE, "someone_else@example.com")
-    other_run = _graph_node("run:theirs", OTHER_SPACE, "someone_else@example.com")
-    fake_service = SimpleNamespace(
-        get_artifact_graph=lambda **_kw: {
-            "root_id": "a1",
-            "nodes": [
-                {"id": "a1", "node_type": "artifact", "name": "a"},
-                my_run,
-                other_run,
-            ],
-            "edges": [
-                {"source": "a1", "target": "run:mine"},
-                {"source": "a1", "target": "run:theirs"},
-            ],
-            "truncated": False,
-        }
-    )
-    is_admin, is_member = _member_of(MY_SPACE)
-    with (
-        is_admin,
-        is_member,
-        patch.object(
-            lineage_mod, "_get_openlineage_service", return_value=fake_service
-        ),
-    ):
-        resp = lineage_mod.get_artifact_graph(
-            _fake_request("member", "member@example.com"),
-            ArtifactGraphRequest(artifact_url="a1"),
-        )
-    assert [r.job_namespace.split("/", 1)[0] for r in resp.runs] == [MY_SPACE]
 
 
 # ----------------------------------------------------------- GET /lineage/jobs
@@ -831,3 +672,27 @@ def test_jobs_reports_the_total_so_a_caller_can_page():
     assert resp.total == 68906
     assert resp.jobs[0].inputs == resp.jobs[0].outputs == ["s3://b/x"]
     assert resp.jobs[0].job["name"] == "append"
+
+
+def test_search_lineage_events_reports_a_backend_failure():
+    """dmg-ng reads this route: a DB failure must not look like "no matches"."""
+    import pytest
+    from fastapi import HTTPException
+
+    def boom(tags, limit, offset):
+        raise ConnectionError("db down")
+
+    fake_service = SimpleNamespace(search_lineage_by_tags=boom)
+    is_admin, is_member = _member_of(MY_SPACE)
+    with (
+        is_admin,
+        is_member,
+        patch.object(
+            lineage_mod, "_get_openlineage_service", return_value=fake_service
+        ),
+        pytest.raises(HTTPException) as caught,
+    ):
+        lineage_mod.search_lineage_events(
+            _fake_request("member", "member@example.com"), TagSearchRequest(tags=[])
+        )
+    assert caught.value.status_code == 503

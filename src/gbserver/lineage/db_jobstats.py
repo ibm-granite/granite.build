@@ -38,9 +38,10 @@ re-deriving it here would fork that logic and let them drift. Only the module
 functions are reused, never ``WandBLineageStore`` itself, so nothing here needs
 ``wandb`` installed or configured.
 
-Dedup is by presence of ``job_id``, not by count: a record is written whole, so
-there is no partial state for a count to detect. The reconciler's
-``expected_counts`` is therefore accepted and ignored.
+Dedup is by presence of ``job_id``, not by count: a target's entries (one per
+output) are written in one record write, so there is no partial state for a
+count to detect. The reconciler's ``expected_counts`` is therefore accepted and
+ignored.
 """
 
 import logging
@@ -63,8 +64,9 @@ from gbserver.storage.stored_target_run import StoredTargetRun
 
 logger = logging.getLogger(__name__)
 
-# Longest tag kept. Tags live in a JSON blob, so this is no column's width; it
-# only keeps a runaway value out of a job's record.
+# Longest tag kept, to keep a runaway value out of a job's record. The joined
+# list is also the ``tags`` column, which is Text for that reason (see
+# SQLLineageJobStorage), so no cap on the joined length is needed.
 MAX_TAG_LENGTH = 256
 
 
@@ -218,15 +220,19 @@ class DBLineageStore(ILineageStore):
             return
 
         events, _ = self.create_jobstats_for_target(storage, target, build)
-        for job in events:
-            # The build's own tags are the user's; they are not in the job entry,
-            # which the shared builder shapes for W&B, so they are passed alongside.
-            self._write_job(
-                job,
-                build_id=build.uuid,
-                target_run_uuid=target.uuid,
-                extra_tags=build.tags,
-            )
+        if not events:
+            return
+        # All of the target's events (one per output) in ONE write: presence of
+        # the job_id is what marks the target recorded, so writing them one by one
+        # would leave a target whose later outputs failed looking done forever.
+        # The build's own tags are the user's; they are not in the job entry,
+        # which the shared builder shapes for W&B, so they are passed alongside.
+        self._write_events(
+            events,
+            build_id=build.uuid,
+            target_run_uuid=target.uuid,
+            extra_tags=build.tags,
+        )
 
     def write_job(
         self,
@@ -265,54 +271,73 @@ class DBLineageStore(ILineageStore):
         extra_tags: Optional[List[str]] = None,
         job_store: JobStore = JobStore.TARGETS,
     ) -> None:
-        """Record one job entry into ``gb_lineage_job``.
-
-        The entry is kept verbatim under :data:`ENTRY_ATTRIBUTE` so the lineage
-        indexer can derive the index rows from it later; this store writes no
-        rows itself.
-
-        A job that cannot be decomposed is logged and skipped rather than aborting
-        the scan: one unrecordable target must not stop the rest of a build's
-        lineage from landing. The reason is logged with it -- a bare "skipping"
-        makes lineage loss undiagnosable. The decomposition is discarded here and
-        redone by the indexer; it runs as a *gate*, so an entry that could never
-        become rows is rejected at the door rather than stored to fail on every
-        later scan.
+        """Record one job entry into ``gb_lineage_job``; see :meth:`_write_events`.
 
         ``job_store`` is accepted for interface symmetry with :meth:`write_job`
         and is not stored: where a job's full data lives is a property of the
         index row, which the indexer sets when it derives one.
         """
-        try:
-            to_lineage_rows(_normalized_job(job))
-        except LineageDecomposeError as exc:
-            logger.warning(
-                "Job entry could not be decomposed into lineage rows; skipping "
-                "(build=%s, target_run=%s): %s",
-                build_id,
-                target_run_uuid,
-                exc,
-            )
-            return
+        self._write_events(
+            [job],
+            build_id=build_id,
+            target_run_uuid=target_run_uuid,
+            extra_tags=extra_tags,
+        )
 
+    def _write_events(
+        self,
+        events: List[dict],
+        build_id: str,
+        target_run_uuid: str,
+        extra_tags: Optional[List[str]] = None,
+    ) -> None:
+        """Record the job entries of one execution as one ``gb_lineage_job`` write.
+
+        The entries are kept verbatim under :data:`ENTRY_ATTRIBUTE` so the lineage
+        indexer can derive the index rows from them later; this store writes no
+        rows itself. They share a ``job_id`` (one entry per output artifact).
+
+        An entry that cannot be decomposed into rows (a job with several inputs
+        AND several outputs, say) is still recorded: this table is the record of
+        the execution under the ``db`` provider, and nothing else could recover
+        it. Only the index lacks its edges; the indexer logs that once and moves
+        on. The reason is logged here too, so the gap is diagnosable.
+        """
+        for job in events:
+            try:
+                to_lineage_rows(_normalized_job(job))
+            except LineageDecomposeError as exc:
+                logger.warning(
+                    "Job entry has no index form; recording the job without "
+                    "index rows (build=%s, target_run=%s): %s",
+                    build_id,
+                    target_run_uuid,
+                    exc,
+                )
+
+        tags: Set[str] = set()
+        for job in events:
+            # The same set the index rows carry, derived once here so a tag search
+            # over this table and a tag filter over the rows agree.
+            tags.update(
+                job_tags(
+                    job,
+                    build_id=build_id,
+                    target_run_uuid=target_run_uuid,
+                    extra_tags=extra_tags,
+                )
+            )
         self._add_job(
-            _normalized_job(job),
+            _normalized_job(events[0]),
             build_id=build_id,
             target_run_uuid=target_run_uuid,
             entry={
-                "events": [job],
+                "events": list(events),
                 "build_id": build_id,
                 "target_run_uuid": target_run_uuid,
                 "extra_tags": list(extra_tags or []),
             },
-            # The same set the index rows carry, derived once here so a tag search
-            # over this table and a tag filter over the rows agree.
-            tags=job_tags(
-                job,
-                build_id=build_id,
-                target_run_uuid=target_run_uuid,
-                extra_tags=extra_tags,
-            ),
+            tags=sorted(tags),
         )
 
     def _add_job(
@@ -367,38 +392,27 @@ class DBLineageStore(ILineageStore):
         if entry is not None:
             job.attributes[ENTRY_ATTRIBUTE] = entry
         job.tags = sorted(set(tags or []))
-        try:
-            result = upsert_job(storage, job)
-            if result == ADDED or entry is None:
-                return
-            stored = storage.get_job(job.job_id)
-            if stored is None:
-                return
-            merged = _merge_entry((stored.attributes or {}).get(ENTRY_ATTRIBUTE), entry)
-            fields: dict = {}
-            if merged != (stored.attributes or {}).get(ENTRY_ATTRIBUTE):
-                attributes = dict(stored.attributes or {})
-                attributes[ENTRY_ATTRIBUTE] = merged
-                fields["attributes"] = attributes
-            # Tags accumulate with the events they came from: a second entry for
-            # the same execution can carry tags the first did not, and a search
-            # must find the job by either.
-            all_tags = sorted(set(stored.tags or []) | set(job.tags))
-            if all_tags != sorted(set(stored.tags or [])):
-                fields["tags"] = all_tags
-            if fields or result == UPDATED:
-                fields["recorded_at"] = utc_now_iso()
-                storage.update_fields(stored.uuid, fields)
-        except Exception:
-            # A warning, and the only trace: the record is all this store writes,
-            # so a failure here means the execution went unrecorded entirely and
-            # the index will have nothing to derive from. The next scan retries it
-            # (see _has_job_record), which is why this does not raise.
-            logger.warning(
-                "Lineage job could not be added or merged (job=%s)",
-                job.job_id,
-                exc_info=True,
-            )
+        result = upsert_job(storage, job)
+        if result == ADDED or entry is None:
+            return
+        stored = storage.get_job(job.job_id)
+        if stored is None:
+            return
+        merged = _merge_entry((stored.attributes or {}).get(ENTRY_ATTRIBUTE), entry)
+        fields: dict = {}
+        if merged != (stored.attributes or {}).get(ENTRY_ATTRIBUTE):
+            attributes = dict(stored.attributes or {})
+            attributes[ENTRY_ATTRIBUTE] = merged
+            fields["attributes"] = attributes
+        # Tags accumulate with the events they came from: a second entry for
+        # the same execution can carry tags the first did not, and a search
+        # must find the job by either.
+        all_tags = sorted(set(stored.tags or []) | set(job.tags))
+        if all_tags != sorted(set(stored.tags or [])):
+            fields["tags"] = all_tags
+        if fields or result == UPDATED:
+            fields["recorded_at"] = utc_now_iso()
+            storage.update_fields(stored.uuid, fields)
 
     # -- Building (delegated, so both sinks agree on what lineage is) --------
 

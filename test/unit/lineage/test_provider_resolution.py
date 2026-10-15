@@ -180,3 +180,19 @@ class TestDbProviderWiring:
             assert type(jobstats.get_lineage_store()).__name__ != "WandBLineageStore"
         finally:
             jobstats.reset_lineage_store()
+
+
+def test_db_provider_does_not_import_wandb(monkeypatch):
+    """The db provider must work without the thirdparty extra (no wandb)."""
+    import sys
+
+    from gbserver.lineage.openlineage_service import LineageServiceFactory
+
+    monkeypatch.setattr(LineageServiceFactory, "_registry", {})
+    monkeypatch.delitem(sys.modules, "gbserver.lineage.wandb_service", raising=False)
+    monkeypatch.setitem(sys.modules, "wandb", None)  # any `import wandb` raises
+
+    service = LineageServiceFactory.create("db")
+
+    assert type(service).__name__ == "DBLineageService"
+    assert "gbserver.lineage.wandb_service" not in sys.modules

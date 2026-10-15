@@ -50,7 +50,11 @@ from gbserver.lineage.attributes import ORIGIN, ORIGIN_SYSTEM
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
-from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
+from gbserver.storage.stored_lineage_row import (
+    MAX_JOB_ID_LENGTH,
+    TERMINAL,
+    StoredLineageRow,
+)
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -60,6 +64,7 @@ ADDED = "added"
 UPDATED = "updated"
 UNCHANGED = "unchanged"
 SUPERSEDED = "superseded"
+REJECTED = "rejected"
 
 # Which producer's provenance wins when two describe one execution. Only
 # granite.build is listed: it ran its own jobs, every other source is a copy.
@@ -134,6 +139,8 @@ def merge_job(existing: StoredLineageJob, incoming: StoredLineageJob) -> Dict[st
 
 def upsert_job(storage: ILineageJobStorage, job: StoredLineageJob) -> str:
     """Add ``job``, or merge it into the record already stored under its ``job_id``."""
+    if _job_id_too_long(job.job_id):
+        return REJECTED
     existing = storage.get_job(job.job_id)
     if existing is None:
         try:
@@ -158,6 +165,8 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
     terminal row is not added when the job already has a real edge on its endpoint,
     and a real edge removes the terminal rows it supersedes.
     """
+    if _job_id_too_long(row.job_id):
+        return REJECTED
     job_rows = storage.get_rows_by_job(row.job_id)
     for stored in job_rows:
         if stored.input == row.input and stored.output == row.output:
@@ -185,6 +194,19 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
     return ADDED
 
 
+def _job_id_too_long(job_id: str) -> bool:
+    if len(job_id or "") <= MAX_JOB_ID_LENGTH:
+        return False
+    logger.warning(
+        "Lineage job_id is %d chars, over the %d the column holds; not stored "
+        "(job_id=%.80s...)",
+        len(job_id),
+        MAX_JOB_ID_LENGTH,
+        job_id,
+    )
+    return True
+
+
 def rows_to_add(rows: List[StoredLineageRow]) -> List[StoredLineageRow]:
     """The rows of jobs with nothing stored yet, deduplicated for one bulk add.
 
@@ -194,6 +216,8 @@ def rows_to_add(rows: List[StoredLineageRow]) -> List[StoredLineageRow]:
     """
     by_key: Dict[Tuple[str, str, str], StoredLineageRow] = {}
     for row in rows:
+        if _job_id_too_long(row.job_id):
+            continue
         key = (row.job_id, row.input, row.output)
         stored = by_key.get(key)
         if stored is None:

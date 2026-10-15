@@ -23,7 +23,12 @@ from sqlalchemy import (
     select,
     text,
 )
-from sqlalchemy.exc import IntegrityError, NoSuchTableError, SQLAlchemyError
+from sqlalchemy.exc import (
+    DataError,
+    IntegrityError,
+    NoSuchTableError,
+    SQLAlchemyError,
+)
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 from tenacity import (
     retry,
@@ -136,6 +141,11 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     composite_indexes: list[tuple[str, ...]] = []
     """Non-unique multi-column indexes, e.g. ``[("input", "output")]``. Created with the
     table and, idempotently, on every schema adjust, so an existing table gains them too."""
+
+    text_columns: list[str] = []
+    """Columns stored as unbounded ``Text`` instead of the inferred ``String(256)``.
+    Per table, unlike ``_WIDE_STRING_COLUMNS``; for unindexed values with no natural
+    width, e.g. a comma-joined tag list."""
 
     exact_liked_list_columns: dict[str, str] = {}
     """Enables exact matching of a list of strings against a named column during get_by_where(dict) calls.
@@ -301,6 +311,8 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             ):
                 # This one needs to be longer than 256, sometimes.
                 column = Column(String(1024), nullable=True, index=indexed)
+            elif key in self.text_columns:
+                column = Column(Text, nullable=True)
             elif lower_key in _WIDE_STRING_COLUMNS:
                 # Normalized lineage URIs. Exact-match, not a substring test, so
                 # only the two columns the graph traversal joins on are widened.
@@ -600,7 +612,9 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(10),
-        retry=retry_if_not_exception_type(IntegrityError),
+        # DataError (value too long, bad type) is deterministic: retrying it only
+        # stalls the caller for ~47s before the same failure.
+        retry=retry_if_not_exception_type((IntegrityError, DataError)),
         reraise=True,
     )
     def _add_item_dicts(self, items: list[dict[str, Any]]):

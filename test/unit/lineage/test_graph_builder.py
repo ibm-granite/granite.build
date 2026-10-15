@@ -253,9 +253,9 @@ class TestNodeIdentity:
 
 
 class TestRunMetadata:
-    def test_job_namespace_survives_for_the_authorization_filter(self):
-        # The API handler splits this on "/" to recover the space and drop runs the
-        # caller cannot see, so losing it would fail every run closed.
+    def test_owner_and_namespace_are_not_in_the_cross_space_graph(self):
+        # The graph is not filtered per space, so what identifies who ran a job and
+        # where is left to GET /lineage/jobs/{id}, which checks access first.
         result = build_graph_dict(
             graph_of(
                 row(
@@ -268,8 +268,8 @@ class TestRunMetadata:
             A,
         )
         run = nodes_by_type(result, "run")[0]
-        assert run["metadata"]["job_namespace"] == "my-space/my-build"
-        assert run["metadata"]["owner"] == "alice"
+        assert "job_namespace" not in run["metadata"]
+        assert "owner" not in run["metadata"]
 
     def test_run_name_comes_from_job_name_when_present(self):
         result = build_graph_dict(
@@ -287,13 +287,14 @@ class TestRunMetadata:
         )
         assert "surprise" not in nodes_by_type(result, "run")[0]["metadata"]
 
-    def test_build_provenance_is_exposed(self):
+    def test_build_provenance_is_not_exposed(self):
         result = build_graph_dict(
             graph_of(row("J1", A, B, build_id="BLD", target_run_uuid="TR")), A
         )
         metadata = nodes_by_type(result, "run")[0]["metadata"]
-        assert metadata["gb_build_id"] == "BLD"
-        assert metadata["gb_target_run_uuid"] == "TR"
+        for key in ("gb_build_id", "release_id", "gb_target_run_uuid"):
+            assert key not in metadata
+        assert metadata["job_id"] == "J1"
 
 
 class TestTruncation:
@@ -394,19 +395,6 @@ class TestSelfLoopCollapse:
         runs = nodes_by_type(result, "run")
         assert {r["id"] for r in runs} == {"run:J1", "run:J2"}
         assert all("collapsed" not in r["metadata"] for r in runs)
-
-    def test_the_namespace_survives_for_authorization(self):
-        """POST /artifact filters runs per space, so a collapsed node needs it.
-
-        Without it the collapsed node fails closed and vanishes from that route.
-        """
-        result = build_graph_dict(
-            graph_of(row("J1", A, A, metadata={"job_namespace": "sp/build"})),
-            root_uri=A,
-        )
-        assert (
-            nodes_by_type(result, "run")[0]["metadata"]["job_namespace"] == "sp/build"
-        )
 
 
 class TestSameSignatureGrouping:
@@ -588,23 +576,21 @@ class TestSlimRows:
         kinds = {n["id"]: n["artifact_type"] for n in nodes_by_type(result, "artifact")}
         assert kinds == {A: "dataset", B: "model"}
 
-    def test_run_node_carries_auth_fields_status_and_times(self):
+    def test_run_node_carries_only_global_fields(self):
         result = build_graph_dict(graph_of(self._slim()), A)
         (run,) = nodes_by_type(result, "run")
         metadata = run["metadata"]
-        assert metadata["job_namespace"] == "space-a/proj"
-        assert metadata["owner"] == "a@x.com"
         assert metadata["job_status"] == "COMPLETED"
         assert metadata["job_started_at"] == "t0"
         assert metadata["job_completed_at"] == "t1"
-        assert metadata["gb_build_id"] == "BLD"
-        assert metadata["gb_target_run_uuid"] == "TR"
+        for key in ("job_namespace", "owner", "gb_build_id", "gb_target_run_uuid"):
+            assert key not in metadata
         assert "source_system" not in metadata
 
     def test_old_rows_still_read(self):
         old = row("J1", A, B, source_kind="dataset", build_id="BLD")
         result = build_graph_dict(graph_of(old), A)
         (run,) = nodes_by_type(result, "run")
-        assert run["metadata"]["gb_build_id"] == "BLD"
+        assert run["metadata"]["job_id"] == "J1"
         kinds = {n["id"]: n["artifact_type"] for n in nodes_by_type(result, "artifact")}
         assert kinds[A] == "dataset"

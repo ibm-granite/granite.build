@@ -49,6 +49,7 @@ import pytest
 # Imported for its test bodies, not to be collected twice -- same aliasing trick
 # the sqlite suite uses in the other direction.
 import unit.storage.sqlite.test_sqlite_lineage_row_storage as HIDE_FROM_PYTEST
+from sqlalchemy.exc import IntegrityError
 
 from gbserver.storage.sql.storage_factory import SQLStorageFactory
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
@@ -82,6 +83,30 @@ def sql_storage_fixture():
         storage.delete_table()
     except Exception:  # pragma: no cover - best-effort cleanup
         pass
+
+
+def _schema(storage):
+    """The configured GBSERVER_SQL_SCHEMA, or None for the connection's default."""
+    return storage._db_schema or None
+
+
+def _qualified(storage) -> str:
+    schema = _schema(storage)
+    return f"{schema}.{storage.table_name}" if schema else storage.table_name
+
+
+def _index_definitions(table, engine, schema) -> list[str]:
+    from sqlalchemy import text
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT indexdef FROM pg_indexes WHERE tablename = :table "
+                "AND schemaname = coalesce(:schema, current_schema())"
+            ),
+            {"table": table, "schema": schema},
+        ).fetchall()
+    return [definition for (definition,) in rows]
 
 
 def _seeded(storage) -> int:
@@ -171,35 +196,37 @@ class TestPostgresSchema:
 
     @classmethod
     def _index_definitions(cls, storage) -> list[str]:
-        rows = cls._query(
-            storage,
-            "SELECT indexdef FROM pg_indexes WHERE tablename = :table",
-            {"table": storage.table_name},
-        )
-        return [definition for (definition,) in rows]
+        return _index_definitions(storage.table_name, storage._engine, _schema(storage))
 
-    @pytest.mark.parametrize(
-        "column",
-        ["input", "output", "job_id", "recorded_at"],
-    )
+    @pytest.mark.parametrize("column", ["job_id", "job_store", "recorded_at"])
     def test_column_is_indexed(self, storage, column):
         definitions = " ".join(self._index_definitions(storage))
         assert f"({column})" in definitions, f"{column} is not indexed: {definitions}"
 
+    @pytest.mark.parametrize("columns", ["(input, output)", "(output, input)"])
+    def test_composite_hop_index_exists(self, storage, columns):
+        """The hops use these; they replaced single-column input/output indexes."""
+        definitions = self._index_definitions(storage)
+        assert any(
+            columns in d and "UNIQUE" not in d.upper() for d in definitions
+        ), definitions
+
     def test_composite_unique_exists(self, storage):
         """It can only be created with the table, never added later."""
         definitions = self._index_definitions(storage)
-        unique = [d for d in definitions if "UNIQUE" in d.upper() and "job_id" in d]
-        assert unique, definitions
-        assert "(job_id, input, output)" in unique[0]
+        assert any(
+            "UNIQUE" in d.upper() and "(job_id, input, output)" in d
+            for d in definitions
+        ), definitions
 
     def test_traversal_columns_are_text(self, storage):
         """``get_by_where`` only builds an ``IN`` clause for string columns."""
         rows = self._query(
             storage,
             "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_name = :table",
-            {"table": storage.table_name},
+            "WHERE table_name = :table "
+            "AND table_schema = coalesce(:schema, current_schema())",
+            {"table": storage.table_name, "schema": _schema(storage)},
         )
         columns = {name: kind for name, kind in rows}
         for column in ("input", "output", "job_id"):
@@ -234,24 +261,16 @@ class TestPostgresIndexNameLimit:
             storage.add(row(job_id="J", input="a", output="b"))
 
             # The guard still holds under the hashed name.
-            with pytest.raises(Exception):
+            with pytest.raises(IntegrityError):
                 storage.add(row(job_id="J", input="a", output="b"))
 
-            from sqlalchemy import text
-
-            with storage._engine.connect() as connection:
-                definitions = [
-                    definition
-                    for (definition,) in connection.execute(
-                        text(
-                            "SELECT indexdef FROM pg_indexes WHERE tablename = :table"
-                        ),
-                        {"table": table},
-                    ).fetchall()
-                ]
-            unique = [d for d in definitions if "UNIQUE" in d.upper()]
+            definitions = _index_definitions(table, storage._engine, _schema(storage))
+            unique = [
+                d
+                for d in definitions
+                if "UNIQUE" in d.upper() and "(job_id, input, output)" in d
+            ]
             assert unique, definitions
-            assert "(job_id, input, output)" in unique[0]
             for definition in definitions:
                 # Every emitted identifier must be within postgres's limit.
                 name = definition.split(" ON ")[0].split()[-1].strip('"')
@@ -279,7 +298,7 @@ class TestPostgresTerminalSentinel:
 
     def test_duplicate_creation_row_is_rejected(self, storage):
         storage.add(row(job_id="C", input=TERMINAL, output="x"))
-        with pytest.raises(Exception):
+        with pytest.raises(IntegrityError):
             storage.add(row(job_id="C", input=TERMINAL, output="x"))
 
     def test_sentinel_is_stored_as_empty_string_not_null(self, storage):
@@ -289,7 +308,7 @@ class TestPostgresTerminalSentinel:
         with storage._engine.connect() as connection:
             nulls = connection.execute(
                 text(
-                    f"SELECT count(*) FROM {storage.table_name} "
+                    f"SELECT count(*) FROM {_qualified(storage)} "
                     "WHERE input IS NULL OR output IS NULL"
                 )
             ).scalar()

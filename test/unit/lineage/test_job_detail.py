@@ -183,7 +183,8 @@ def test_a_failing_store_degrades_rather_than_raising():
 
     result = detail([index_row("j1", JobStore.WANDB)], wandb_runs=boom)
     assert result["detail_available"] is False
-    assert "wandb is down" in result["detail_error"]
+    # The store's own error text stays in the log: it can carry SQL or W&B internals.
+    assert result["detail_error"] == "Could not read wandb"
 
 
 def test_other_store_returns_the_index_entry_only():
@@ -223,3 +224,37 @@ def test_wandb_store_withholds_a_job_outside_the_callers_spaces():
         authorize_entry=lambda entry: False,
     )
     assert result["detail_available"] is False
+
+
+_SPACE_GATED = ("job_namespace", "space_name", "owner", "tags", "origin")
+
+
+def test_an_unauthorized_detail_returns_only_the_global_fields():
+    """The listing entry carries owner, namespace, tags and origin ids; a caller
+    who fails the space check gets the trace fields and nothing else."""
+    result = detail(
+        [index_row("j1", JobStore.LINEAGE_JOB)],
+        jobs={"j1": StoredLineageJob(job_id="j1")},
+        authorize_entry=lambda entry: False,
+    )
+    assert result["job_id"] == "j1"
+    assert result["job"] == {"status": "success"}
+    for key in _SPACE_GATED:
+        assert key not in result
+
+
+def test_an_unavailable_store_returns_only_the_global_fields():
+    result = detail([index_row("j1", JobStore.OTHER)])
+    for key in _SPACE_GATED:
+        assert key not in result
+
+
+def test_an_authorized_detail_returns_the_full_entry():
+    result = detail(
+        [index_row("j1", JobStore.LINEAGE_JOB)],
+        jobs={"j1": StoredLineageJob(job_id="j1")},
+        authorize_entry=lambda entry: True,
+    )
+    assert result["detail_available"] is True
+    assert result["job_namespace"] == "space/build"
+    assert result["space_name"] == "space"

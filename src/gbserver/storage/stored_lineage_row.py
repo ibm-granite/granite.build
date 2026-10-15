@@ -87,6 +87,11 @@ TERMINAL = ""
 # is visible and fixable; that is not.
 MAX_LINEAGE_URI_LENGTH = 512
 
+# ``job_id`` is a promoted String(256) on both lineage tables. Postgres rejects a
+# longer value, so a writer drops the record up front (logged) rather than send it
+# to fail; SQLite would accept it, so without this the backends would disagree.
+MAX_JOB_ID_LENGTH = 256
+
 
 class JobStore(str, Enum):
     """Where a row's full job data lives; the index itself only carries labels.

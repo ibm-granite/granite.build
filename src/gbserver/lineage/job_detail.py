@@ -39,6 +39,7 @@ from gbserver.lineage.attributes import (
     RETRIEVE,
     payload_detail,
 )
+from gbserver.lineage.db_responses import global_job_entry
 from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.utils.redaction import redact_sensitive
 
@@ -239,8 +240,12 @@ def fetch_job_detail(
     retrieve = dict((first.attributes or {}).get(RETRIEVE) or {})
     ctx = _Context(admin_storage, authorize_build, wandb_runs or _default_wandb_runs)
 
+    # Fail closed: the global fields only, until a store has been read with the
+    # caller's access checked. The full entry (owner, namespace, tags, origin ids)
+    # describes a granite.build job beyond a lineage trace, so it is added only
+    # once the detail was fetched authorized.
     detail: Dict[str, Any] = {
-        **entry,
+        **global_job_entry(entry),
         "job_store": job_store.value,
         "detail_available": True,
         "detail_error": None,
@@ -254,6 +259,24 @@ def fetch_job_detail(
             detail_available=False, detail_error="Not authorized to read this job"
         )
         return detail
+    try:
+        fetched = _FETCHERS[job_store](entry["job_id"], retrieve, ctx)
+    except JobDetailUnavailable as e:
+        detail.update(detail_available=False, detail_error=str(e))
+        return detail
+    except Exception:  # pylint: disable=broad-except
+        logger.exception(
+            "Fetching detail of job %s from %s failed", entry["job_id"], job_store.value
+        )
+        # The exception text can carry SQL or W&B internals; it stays in the log.
+        detail.update(
+            detail_available=False,
+            detail_error=f"Could not read {job_store.value}",
+        )
+        return detail
+    detail.update(entry)
+    detail.update(fetched)
+    return detail
     try:
         detail.update(_FETCHERS[job_store](entry["job_id"], retrieve, ctx))
     except JobDetailUnavailable as e:

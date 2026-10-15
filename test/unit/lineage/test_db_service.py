@@ -182,7 +182,7 @@ class TestProviderRegistration:
 
 
 class TestRootResolution:
-    """One indexed lookup, not a scan.
+    """One indexed lookup, not a scan (via ``query_graph``).
 
     This used to page the whole table on every request, because the indexed columns
     held canonical identifiers while a request carries a URL. Normalizing the
@@ -190,7 +190,7 @@ class TestRootResolution:
     """
 
     def test_resolves_by_uri(self):
-        result = service(row("J1", A, B)).get_artifact_graph(artifact_url=A)
+        result = service(row("J1", A, B)).query_graph(uri=A)
         assert result is not None and result["root_id"] == A
 
     def test_converges_alternate_spellings_of_one_uri(self):
@@ -207,51 +207,17 @@ class TestRootResolution:
             "https://huggingface.co/org/repo",
             "hf://huggingface.co/models/org/repo/main",
         ):
-            result = svc.get_artifact_graph(artifact_url=spelling)
+            result = svc.query_graph(uri=spelling)
             assert result is not None, spelling
             assert result["root_id"] == hf, spelling
 
     def test_resolves_a_target_endpoint_too(self):
-        result = service(row("J1", A, B)).get_artifact_graph(artifact_url=B)
+        result = service(row("J1", A, B)).query_graph(uri=B)
         assert result is not None and result["root_id"] == B
 
-    def test_a_uri_in_the_name_field_still_resolves(self):
-        """A caller that passes a URI as the name is not punished for it."""
-        result = service(row("J1", A, B)).get_artifact_graph(artifact_url=A)
-        assert result is not None and result["root_id"] == A
-
-    def test_a_bare_name_is_none(self):
-        """A name is not an identity, and a scheme is not guessed for it.
-
-        The index keys on URIs. Inventing a scheme for "my-artifact" would resolve
-        to an artifact that may not exist -- an invented identity, which is the one
-        failure worth returning nothing to avoid.
-        """
-        assert (
-            service(row("J1", A, B, source_name="my-artifact")).get_artifact_graph(
-                artifact_name="my-artifact"
-            )
-            is None
-        )
-
-    def test_an_unidentifiable_uri_is_none(self):
-        # The 404 case: the request names nothing this index can key on.
-        assert (
-            service(row("J1", A, B)).get_artifact_graph(artifact_url="bogus://x")
-            is None
-        )
-
-    def test_no_identifier_at_all_is_none(self):
-        assert service(row("J1", A, B)).get_artifact_graph() is None
-
     def test_an_absent_but_valid_uri_is_a_graph_not_a_404(self):
-        """A resolvable URI with no rows yields its own node, not None.
-
-        The distinction matters at the API boundary: ``None`` becomes the 404 the
-        frontend renders as "lineage is not available", so it must mean "cannot key
-        on this", never "nothing recorded yet".
-        """
-        result = service().get_artifact_graph(artifact_url=A)
+        """A resolvable URI with no rows yields its own node, not an empty graph."""
+        result = service().query_graph(uri=A)
         assert result is not None
         assert result["root_id"] == A
         assert [n["id"] for n in result["nodes"]] == [A]
@@ -260,13 +226,13 @@ class TestRootResolution:
 class TestGraphContent:
     def test_descendants_walk_from_the_root(self):
         svc = service(row("J1", A, B), row("J2", B, C))
-        result = svc.get_artifact_graph(artifact_url=A, direction="downstream")
+        result = svc.query_graph(uri=A, direction="downstream")
         ids = {n["id"] for n in result["nodes"] if n["node_type"] == "artifact"}
         assert ids == {A, B, C}
 
     def test_upstream_walks_toward_ancestors(self):
         svc = service(row("J1", A, B), row("J2", B, C))
-        result = svc.get_artifact_graph(artifact_url=C, direction="upstream")
+        result = svc.query_graph(uri=C, direction="upstream")
         ids = {n["id"] for n in result["nodes"] if n["node_type"] == "artifact"}
         assert ids == {A, B, C}
 
@@ -274,37 +240,35 @@ class TestGraphContent:
         # Pins the wire mapping: downstream is used_by(), toward descendants, which
         # is what the live W&B backend and the frontend already mean by it.
         svc = service(row("J1", A, B), row("J2", B, C))
-        result = svc.get_artifact_graph(artifact_url=B, direction="downstream")
+        result = svc.query_graph(uri=B, direction="downstream")
         ids = {n["id"] for n in result["nodes"] if n["node_type"] == "artifact"}
         assert ids == {B, C}
         assert A not in ids
 
     def test_upstream_does_not_walk_forward(self):
         svc = service(row("J1", A, B), row("J2", B, C))
-        result = svc.get_artifact_graph(artifact_url=B, direction="upstream")
+        result = svc.query_graph(uri=B, direction="upstream")
         ids = {n["id"] for n in result["nodes"] if n["node_type"] == "artifact"}
         assert ids == {A, B}
         assert C not in ids
 
     def test_both_reaches_each_side(self):
         svc = service(row("J1", A, B), row("J2", B, C))
-        result = svc.get_artifact_graph(artifact_url=B, direction="both")
+        result = svc.query_graph(uri=B, direction="both")
         ids = {n["id"] for n in result["nodes"] if n["node_type"] == "artifact"}
         assert ids == {A, B, C}
 
     def test_an_artifact_with_no_edges_is_a_graph_not_a_404(self):
         # It IS in the index -- as a creation with no input -- so the answer is a
-        # graph with its own node, never None.
+        # graph rooted at its own node.
         svc = service(row("J1", TERMINAL, A))
-        result = svc.get_artifact_graph(artifact_url=A, direction="upstream")
+        result = svc.query_graph(uri=A, direction="upstream")
         assert result is not None
         assert result["root_id"] == A
 
     def test_max_depth_truncates_and_says_so(self):
         svc = service(row("J1", A, B), row("J2", B, C))
-        result = svc.get_artifact_graph(
-            artifact_url=A, direction="downstream", max_depth=1
-        )
+        result = svc.query_graph(uri=A, direction="downstream", max_depth=1)
         assert result["truncated"] is True
 
 
@@ -312,24 +276,13 @@ class TestValidation:
     def test_an_unknown_direction_raises(self):
         # The API layer maps ValueError to a 400.
         with pytest.raises(ValueError):
-            service(row("J1", A, B)).get_artifact_graph(
-                artifact_url=A, direction="sideways"
-            )
-
-    def test_a_contradicted_artifact_type_raises(self):
-        svc = service(row("J1", A, B, source_kind="table"))
-        with pytest.raises(ValueError):
-            svc.get_artifact_graph(artifact_url=A, artifact_type="model")
-
-    def test_a_matching_artifact_type_is_accepted(self):
-        svc = service(row("J1", A, B, source_kind="table"))
-        assert svc.get_artifact_graph(artifact_url=A, artifact_type="table")
+            service(row("J1", A, B)).query_graph(uri=A, direction="sideways")
 
     def test_direction_is_validated_before_the_root_lookup(self):
-        # Otherwise an unknown artifact would 404 on a request that is also a bad
-        # request, hiding the client's actual mistake.
+        # Otherwise an unknown artifact would answer an empty graph on a request
+        # that is also a bad request, hiding the client's actual mistake.
         with pytest.raises(ValueError):
-            service().get_artifact_graph(artifact_name="nope", direction="sideways")
+            service().query_graph(uri="nope", direction="sideways")
 
 
 class TestWritePathIsInert:
@@ -359,12 +312,10 @@ class TestWritePathIsInert:
 
 
 class TestQueryGraph:
-    """The general entry point: every filter optional, and it never returns None.
+    """The general entry point: it never returns None.
 
-    ``get_artifact_graph`` returns ``None`` for "cannot key on this", which the API
-    turns into a 404. A query endpoint cannot do that: asking with no filters is
-    legitimate, and an empty index is a legitimate answer, so "nothing recorded" must
-    come back as an empty graph rather than as an error.
+    An empty index is a legitimate answer, so "nothing recorded" must come back as an
+    empty graph rather than as an error.
     """
 
     def test_by_uri(self):
@@ -422,7 +373,6 @@ class TestQueryGraph:
             service(row("J1", A, B)).query_graph()
 
     def test_an_unmatchable_uri_is_an_empty_graph_not_none(self):
-        """The distinction from get_artifact_graph, which would return None here."""
         result = service(row("J1", A, B)).query_graph(uri="bogus://x")
         assert result is not None
         assert result["nodes"] == []

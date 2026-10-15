@@ -56,7 +56,6 @@ export function indexGraphToElk(
     const runCount = isRun && typeof n.metadata?.run_count === 'number' ? n.metadata.run_count : undefined
     const stackCount = runCount !== undefined && runCount > 1 ? runCount : undefined
     const title = n.name || n.id
-    const buildId = n.metadata?.gb_build_id
     return {
       id: rename(n.id),
       title,
@@ -65,7 +64,6 @@ export function indexGraphToElk(
       height: 64,
       labels: [{ text: title }],
       indexNode: n,
-      buildId: typeof buildId === 'string' ? buildId : undefined,
       stackCount,
     }
   })

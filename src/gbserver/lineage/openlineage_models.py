@@ -133,14 +133,6 @@ class GraphEdge(BaseModel):
     target: str
 
 
-class ArtifactGraphRequest(BaseModel):
-    artifact_name: Optional[str] = None
-    artifact_url: Optional[str] = None
-    artifact_type: Optional[str] = None
-    max_depth: int = Field(default=10, ge=1, le=50)
-    direction: str = "both"
-
-
 class LineageQueryRequest(BaseModel):
     """A lineage query seeded by an artifact, a job, or both.
 
@@ -254,41 +246,3 @@ class LineageJobsResponse(BaseModel):
     total: int = 0
     limit: int = 100
     offset: int = 0
-
-
-class LineageNodeRef(BaseModel):
-    node_type: str
-    name: str = ""
-    uri: Optional[str] = None
-    url: Optional[str] = None
-    run_id: Optional[str] = None
-    job_name: Optional[str] = None
-
-
-class ArtifactRunEntry(BaseModel):
-    job_name: str = ""
-    job_namespace: str = ""
-    job_type: str = ""
-    run_id: str = ""
-    created_at: str = ""
-    status: str = ""
-    tags: List[str] = Field(default_factory=list)
-    inputs: List[LineageNodeRef] = Field(default_factory=list)
-    outputs: List[LineageNodeRef] = Field(default_factory=list)
-    job_id: str = ""
-    job_status: str = ""
-    job_started_at: str = ""
-    job_completed_at: str = ""
-    release_id: str = ""
-    category: str = ""
-    owner: str = ""
-    source_code_details: Dict[str, Any] = Field(default_factory=dict)
-    job_input_params: Dict[str, Any] = Field(default_factory=dict)
-    execution_stats: Dict[str, Any] = Field(default_factory=dict)
-    job_output_stats: Dict[str, Any] = Field(default_factory=dict)
-
-
-class ArtifactGraphResponse(BaseModel):
-    root_id: str
-    runs: List[ArtifactRunEntry]
-    truncated: bool = False

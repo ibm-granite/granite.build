@@ -97,6 +97,11 @@ class SQLLineageJobStorage(
         # here so a caller passing {"tags": [...]} cannot silently get the
         # column == [list] degradation instead of a filter.
         kwargs["exact_liked_list_columns"] = {"tags": "tags"}
+        # The joined tag list has no natural width: build and target-run uuids,
+        # username, space and user labels together pass 256 routinely, which
+        # Postgres rejects (SQLite ignores VARCHAR lengths, so only Postgres
+        # loses the record). Unindexed, so Text costs nothing.
+        kwargs["text_columns"] = ["tags"]
         kwargs["default_pagination_sort_by_column"] = "recorded_at"
         super().__init__(**kwargs)
 

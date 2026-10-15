@@ -121,7 +121,7 @@ _URI_KEYS = ("uri",)
 _FACET_URI_KEYS = ("artifact_uri", "gb-artifact-uri")
 URI_ALIASES = "uri_aliases"
 
-# Job keys. These mirror what the API handler needs to build an ArtifactRunEntry;
+# Job keys, describing one job execution (see the job listing and job detail);
 # the names drop the redundant ``job_`` prefix they had when the blob was flat.
 JOB_NAME = "name"
 JOB_TYPE = "type"

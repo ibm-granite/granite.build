@@ -55,7 +55,9 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
   const { data: job, isLoading, error } = useJobDetail(jobId)
 
   const title = node.title || node.id
-  const buildId = job?.build_id ?? str(meta.gb_build_id) ?? (job ? buildIdOf(job) : undefined)
+  // Graph nodes carry no build id (the graph crosses spaces); the access-checked
+  // detail does.
+  const buildId = job?.build_id ?? (job ? buildIdOf(job) : undefined)
   // The build's own target run when this server has it; otherwise one rebuilt from
   // what the lineage index captured, so both render through the same drawer.
   const target = job?.target ?? (job ? targetFromJob(job, title) : undefined)
@@ -90,7 +92,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
           <Field label="Shape">In-place rewrite (reads and writes the same artifact)</Field>
         </Section>
       )}
-      {fromIndex && <JobIndexSections job={job} target={target} meta={meta} jobId={jobId} buildId={buildId} />}
+      {fromIndex && <JobIndexSections job={job} target={target} jobId={jobId} buildId={buildId} />}
       {job && <JobPayloadSections job={job} />}
     </StepDrawer>
   )
@@ -211,10 +213,9 @@ const NA = 'N/A'
  * execution, so it shows even with no steps), and its identity and endpoints.
  * Shared by the single-job fallback and each row of a grouped node.
  */
-function JobIndexSections({ job, target, meta = {}, jobId, buildId }: {
+function JobIndexSections({ job, target, jobId, buildId }: {
   job: LineageJobEntry | undefined
   target: BuildTargetRun | undefined
-  meta?: Record<string, unknown>
   jobId?: string
   buildId?: string
 }) {
@@ -227,10 +228,12 @@ function JobIndexSections({ job, target, meta = {}, jobId, buildId }: {
       )}
       <Section title="Lineage">
         <CodeField label="Build ID" value={buildId} />
-        <CodeField label="Target run" value={str(meta.gb_target_run_uuid)} />
+        <CodeField label="Target run" value={job ? tagValue(job, 'target_run_uuid') : undefined} />
         <CodeField label="Job ID" value={job?.job_id ?? jobId} />
-        <Field label="Namespace">{orNA(job?.job_namespace || str(job?.job.namespace) || str(meta.job_namespace))}</Field>
-        <Field label="Owner">{orNA(job?.owner || str(job?.job.owner) || str(meta.owner))}</Field>
+        {/* Owner and namespace come only from the access-checked detail; the graph
+            node and the listing entry do not carry them. */}
+        <Field label="Namespace">{orNA(job?.job_namespace || str(job?.job.namespace))}</Field>
+        <Field label="Owner">{orNA(job?.owner || str(job?.job.owner))}</Field>
         {job && <UriField label="Inputs" uris={job.inputs} />}
         {job && <UriField label="Outputs" uris={job.outputs} />}
         {job && <UriField label="Tags" uris={job.tags} />}
@@ -386,5 +389,9 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
 }
 
 function buildIdOf(job: LineageJobEntry): string | undefined {
-  return job.tags.find((t) => t.startsWith('build_id='))?.slice('build_id='.length)
+  return tagValue(job, 'build_id')
+}
+
+function tagValue(job: LineageJobEntry, key: string): string | undefined {
+  return (job.tags ?? []).find((t) => t.startsWith(`${key}=`))?.slice(key.length + 1)
 }

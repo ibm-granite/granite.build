@@ -17,30 +17,22 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Optional
-from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import has_space_member_access
-from gbserver.lineage.openlineage_models import (
-    ArtifactGraphRequest,
-    ArtifactGraphResponse,
-    ArtifactRunEntry,
-)
 from gbserver.lineage.openlineage_models import LineageEvent as OpenLineageEvent
 from gbserver.lineage.openlineage_models import (
     LineageGraphResponse,
     LineageJobDetail,
     LineageJobsResponse,
-    LineageNodeRef,
     LineageQueryRequest,
     PaginatedResponse,
     TagSearchRequest,
 )
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
-from gbserver.lineage.openlineage_utils import parse_hf_url
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -57,36 +49,17 @@ _SEARCH_SCAN_BACKEND_PAGE_SIZE = 100
 _SEARCH_SCAN_MAX_BACKEND_ITEMS = 2000
 
 
-def _uri_from_url(url: Optional[str]) -> Optional[str]:
-    """Derive an hf:// URI from a huggingface.co URL.
-
-    Kept for ``POST /lineage/artifact``: its clients match the returned URIs against
-    the artifact registry's ``hf://`` form, so this route keeps that shape.
-    """
-    if not url:
-        return None
-    try:
-        parsed = urlparse(url)
-        host = parsed.hostname or "huggingface.co"
-        org, name, artifact_type = parse_hf_url(url)
-        type_part = f"{artifact_type}s/" if artifact_type != "model" else ""
-        return f"hf://{host}/{type_part}{org}/{name}"
-    except Exception:
-        return url
-
-
 def get_redacted_job_input_params(source: dict) -> dict:
     """Read ``job_input_params`` from a run mapping, redacted for the read path.
 
-    Both member-readable lineage read endpoints (``search_lineage_events`` and
-    ``get_artifact_graph``) must mask this facet unconditionally: the write-side
-    builder (``wandb_jobstats._build_events_for_target``) already masks secret-named
-    keys, but going through this single accessor guarantees the two paths stay
-    consistent and also protects any row persisted before that write-side masking
-    landed. Non-secret step data (e.g. a ``commit_hash``) surfaces intact;
+    The member-readable ``search_lineage_events`` endpoint must mask this facet
+    unconditionally: the write-side builder
+    (``wandb_jobstats._build_events_for_target``) already masks secret-named keys,
+    but going through this single accessor also protects any row persisted before
+    that write-side masking landed. Non-secret step data (e.g. a ``commit_hash``) surfaces intact;
     ``redact_sensitive`` is idempotent, so re-masking an already-masked row is safe.
 
-    :param source: a run's facets (search path) or metadata (graph path) mapping.
+    :param source: a run's facets mapping.
     :returns: the ``job_input_params`` mapping with secret-named values redacted,
         or an empty dict when the key is absent/empty.
     """
@@ -297,9 +270,16 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
                 body.tags,
             )
             break
-        backend_total, page_results = service.search_lineage_by_tags(
-            body.tags, _SEARCH_SCAN_BACKEND_PAGE_SIZE, backend_offset
-        )
+        try:
+            backend_total, page_results = service.search_lineage_by_tags(
+                body.tags, _SEARCH_SCAN_BACKEND_PAGE_SIZE, backend_offset
+            )
+        except Exception as exc:
+            logger.exception("Lineage tag search failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Lineage search is unavailable",
+            ) from exc
         if not page_results:
             break
         for result in page_results:
@@ -312,8 +292,7 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
             if not has_access:
                 continue
             # Redact on the read path via the shared accessor (see
-            # get_redacted_job_input_params) so this and the artifact-graph path
-            # stay consistent.
+            # get_redacted_job_input_params).
             run_facets["job_input_params"] = get_redacted_job_input_params(run_facets)
             accessible.append(result)
         backend_offset += len(page_results)
@@ -325,159 +304,6 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
         limit=body.limit,
         offset=body.offset,
         runs=page,
-    )
-
-
-@lineage_api.post("/artifact", tags=["lineage store"])
-def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
-    """Get the lineage DAG for an artifact, traversing downstream or upstream.
-
-    Runs are looked up by artifact name/url in the external lineage backend,
-    which is not itself space-scoped, so results can span multiple spaces —
-    each run is filtered below to the caller's own runs or spaces they belong
-    to, rather than gating the whole request on a single space.
-    """
-    if body.direction not in ("downstream", "upstream", "both"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="direction must be 'downstream', 'upstream', or 'both'",
-        )
-
-    if not body.artifact_name and not body.artifact_url:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either artifact_name or artifact_url must be provided",
-        )
-
-    service = _get_openlineage_service()
-    try:
-        result = service.get_artifact_graph(
-            artifact_name=body.artifact_name,
-            artifact_url=body.artifact_url,
-            artifact_type=body.artifact_type,
-            max_depth=body.max_depth,
-            direction=body.direction,
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-    if result is None:
-        identifier = body.artifact_name or body.artifact_url
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Artifact not found: {identifier}",
-        )
-
-    nodes = result.get("nodes", [])
-    edges = result.get("edges", [])
-
-    nodes_by_id = {node["id"]: node for node in nodes}
-    run_nodes = [n for n in nodes if n.get("node_type") == "run"]
-
-    runs: list[ArtifactRunEntry] = []
-    for run in run_nodes:
-        node_id = run["id"]
-        metadata = run.get("metadata") or {}
-        tags = run.get("tags") or []
-
-        inputs: list[LineageNodeRef] = []
-        outputs: list[LineageNodeRef] = []
-        for edge in edges:
-            if edge["target"] == node_id:
-                source_node = nodes_by_id.get(edge["source"], {})
-                node_type = source_node.get("node_type", "")
-                if node_type == "artifact":
-                    source_meta = source_node.get("metadata") or {}
-                    uri = source_meta.get("uri") or _uri_from_url(
-                        source_meta.get("url")
-                    )
-                    inputs.append(
-                        LineageNodeRef(
-                            node_type="artifact",
-                            name=source_node.get("name", edge["source"]),
-                            uri=uri,
-                            url=source_meta.get("url"),
-                        )
-                    )
-                elif node_type == "run":
-                    source_meta = source_node.get("metadata") or {}
-                    inputs.append(
-                        LineageNodeRef(
-                            node_type="run",
-                            name=source_node.get("name", ""),
-                            run_id=source_meta.get("run_id"),
-                            job_name=source_meta.get("job_name"),
-                        )
-                    )
-            elif edge["source"] == node_id:
-                target_node = nodes_by_id.get(edge["target"], {})
-                node_type = target_node.get("node_type", "")
-                if node_type == "artifact":
-                    target_meta = target_node.get("metadata") or {}
-                    uri = target_meta.get("uri") or _uri_from_url(
-                        target_meta.get("url")
-                    )
-                    outputs.append(
-                        LineageNodeRef(
-                            node_type="artifact",
-                            name=target_node.get("name", edge["target"]),
-                            uri=uri,
-                            url=target_meta.get("url"),
-                        )
-                    )
-                elif node_type == "run":
-                    target_meta = target_node.get("metadata") or {}
-                    outputs.append(
-                        LineageNodeRef(
-                            node_type="run",
-                            name=target_node.get("name", ""),
-                            run_id=target_meta.get("run_id"),
-                            job_name=target_meta.get("job_name"),
-                        )
-                    )
-
-        entry = ArtifactRunEntry(
-            job_name=metadata.get("job_name") or run.get("name", ""),
-            job_namespace=metadata.get("job_namespace") or "",
-            job_type=metadata.get("job_type") or "",
-            run_id=metadata.get("run_id") or "",
-            created_at=metadata.get("created_at") or "",
-            status=metadata.get("state") or "",
-            tags=tags,
-            inputs=inputs,
-            outputs=outputs,
-            job_id=metadata.get("job_id") or "",
-            job_status=metadata.get("job_status") or "",
-            job_started_at=metadata.get("job_started_at") or "",
-            job_completed_at=metadata.get("job_completed_at") or "",
-            release_id=metadata.get("release_id") or "",
-            category=metadata.get("category") or "",
-            owner=metadata.get("owner") or "",
-            source_code_details=metadata.get("source_code_details") or {},
-            # Redact on the read path via the shared accessor, matching
-            # search_lineage_events above (both endpoints are member-readable).
-            job_input_params=get_redacted_job_input_params(metadata),
-            execution_stats=metadata.get("execution_stats") or {},
-            job_output_stats=metadata.get("job_output_stats") or {},
-        )
-        # job_namespace is written as f"{space_name}/{build_name}" (see
-        # wandb_jobstats._build_events_for_target); split on the first "/"
-        # to recover the space and drop runs from spaces the caller can't
-        # access. Runs missing both an owner and a namespace fail closed.
-        run_space_name = entry.job_namespace.split("/", 1)[0]
-        has_access, _ = has_space_member_access(
-            request, username_on_target=entry.owner, space_name=run_space_name
-        )
-        if has_access:
-            runs.append(entry)
-
-    return ArtifactGraphResponse(
-        root_id=result["root_id"],
-        runs=runs,
-        truncated=result["truncated"],
     )
 
 

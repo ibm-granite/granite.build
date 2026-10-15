@@ -595,42 +595,6 @@ export async function getArtifactModelCard(artifactId: string): Promise<string> 
   return data.content ?? ''
 }
 
-// ── Artifact lineage ──────────────────────────────────────────────────────────
-
-export interface ArtifactLineageNodeRef {
-  node_type: string
-  name: string
-  uri?: string
-  url?: string
-}
-
-export interface ArtifactRunEntry {
-  job_name: string
-  run_id: string
-  status: string
-  inputs: ArtifactLineageNodeRef[]
-  outputs: ArtifactLineageNodeRef[]
-}
-
-export interface ArtifactLineageResult {
-  root_id: string
-  runs: ArtifactRunEntry[]
-  truncated: boolean
-}
-
-export interface GetArtifactLineageParams {
-  artifact_name?: string
-  artifact_url?: string
-  artifact_type?: string
-  max_depth?: number
-  direction?: string
-}
-
-export async function getArtifactLineage(params: GetArtifactLineageParams): Promise<ArtifactLineageResult> {
-  const { data } = await client.post<ArtifactLineageResult>('/lineage/artifact', params, { timeout: 45_000 })
-  return data
-}
-
 // ── Full lineage graph (GET /lineage/graph) ─────────────────────────────────────
 
 export interface LineageGraphNode {

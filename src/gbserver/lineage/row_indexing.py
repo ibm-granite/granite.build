@@ -40,6 +40,8 @@ checkpoint reset writes nothing new rather than duplicating.
 import logging
 from typing import List, Optional
 
+from pydantic import ValidationError
+
 from gbserver.lineage.attributes import (
     JOB,
     JOB_COMPLETED_AT,
@@ -110,21 +112,11 @@ class LineageRowIndexer:
             # Already-built rows, from an importer whose source is one row per
             # edge (Lakehouse): written as given, nothing to decompose.
             for data in entry["rows"]:
-                try:
-                    row = StoredLineageRow.model_validate(data)
-                    row.job_store = JobStore.LINEAGE_JOB
-                    fill_job_from_record(row, record)
+                row = self._prebuilt_row(record, data)
+                if row is not None:
+                    # Storage errors propagate: the indexer must not move its
+                    # checkpoint past a record whose rows were not written.
                     upsert_row(self.row_storage, row)
-                except Exception:
-                    # Warning, not debug: the checkpoint moves past this record, so
-                    # the row is not retried -- the log is the only trace of it.
-                    logger.warning(
-                        "Lineage row from job record could not be added or merged "
-                        "(job=%s, row=%r)",
-                        record.job_id,
-                        data,
-                        exc_info=True,
-                    )
             return True
         events = _entry_events(entry)
         if not events:
@@ -156,6 +148,29 @@ class LineageRowIndexer:
             indexed = True
         return indexed
 
+    @staticmethod
+    def _prebuilt_row(
+        record: StoredLineageJob, data: dict
+    ) -> Optional[StoredLineageRow]:
+        """Validate one prebuilt row of a record; None (logged) if it is invalid.
+
+        Only validation is caught: an invalid row would fail on every scan, so it
+        is skipped, while a storage error is the caller's to propagate.
+        """
+        try:
+            row = StoredLineageRow.model_validate(data)
+        except ValidationError:
+            logger.warning(
+                "Invalid lineage row in job record; skipping (job=%s, row=%r)",
+                record.job_id,
+                data,
+                exc_info=True,
+            )
+            return None
+        row.job_store = JobStore.LINEAGE_JOB
+        fill_job_from_record(row, record)
+        return row
+
     def index_job_records(self, records: List[StoredLineageJob]) -> int:
         """Batched :meth:`index_job_record`; return how many records had an entry.
 
@@ -174,18 +189,9 @@ class LineageRowIndexer:
                 continue
             indexed += 1
             for data in entry["rows"]:
-                try:
-                    row = StoredLineageRow.model_validate(data)
-                    row.job_store = JobStore.LINEAGE_JOB
-                    fill_job_from_record(row, record)
+                row = self._prebuilt_row(record, data)
+                if row is not None:
                     prebuilt.append(row)
-                except Exception:
-                    logger.debug(
-                        "Invalid lineage row in job record (job=%s, row=%r)",
-                        record.job_id,
-                        data,
-                        exc_info=True,
-                    )
         if not prebuilt:
             return indexed
 
@@ -208,17 +214,7 @@ class LineageRowIndexer:
                 )
                 merging.extend(fresh)
         for row in merging:
-            try:
-                upsert_row(self.row_storage, row)
-            except Exception:
-                logger.warning(
-                    "Lineage row could not be added or merged "
-                    "(job=%s, input=%r, output=%r)",
-                    row.job_id,
-                    row.input,
-                    row.output,
-                    exc_info=True,
-                )
+            upsert_row(self.row_storage, row)
         return indexed
 
     def index_job_entry(
@@ -310,16 +306,9 @@ class LineageRowIndexer:
         )
         if tags:
             row.attributes.setdefault("job", {})["tags"] = tags_to_map(tags)
-        try:
-            upsert_row(self.row_storage, row)
-        except Exception:
-            logger.debug(
-                "Lineage row could not be added or merged "
-                "(job=%s, input=%r, output=%r)",
-                row.job_id,
-                row.input,
-                row.output,
-            )
+        # Storage errors propagate: swallowing them let the indexer advance its
+        # checkpoint past rows that were never written.
+        upsert_row(self.row_storage, row)
 
 
 def fill_job_from_record(row: StoredLineageRow, record: StoredLineageJob) -> None:

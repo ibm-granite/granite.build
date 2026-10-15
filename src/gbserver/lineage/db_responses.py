@@ -44,10 +44,14 @@ Two conversions, because the endpoints ask two different questions:
 from typing import Any, Dict, List
 
 from gbserver.lineage.attributes import (
+    JOB_CATEGORY,
+    JOB_COMPLETED_AT,
+    JOB_NAME,
     JOB_NAMESPACE,
     JOB_OWNER,
     JOB_STARTED_AT,
     JOB_STATUS,
+    JOB_TYPE,
     PAYLOAD,
     PAYLOAD_EXECUTION_STATS,
     PAYLOAD_INPUT_PARAMS,
@@ -91,6 +95,38 @@ def job_listing_entry(job_id: str, rows: List, tags: List[str]) -> Dict:
         "job": job,
         "origin": origin_detail(attributes),
     }
+
+
+# What any caller may see of a job, whatever its space: the fields a lineage trace
+# needs to draw and label a run. ``GET /lineage/graph`` crosses spaces by design,
+# and ``GET /lineage/jobs`` only expands a graph node, so both are held to this set.
+# Owner, namespace/space, tags and the origin's ids describe a granite.build job
+# beyond the trace and are returned only behind the space check, by
+# ``GET /lineage/jobs/{id}``.
+GLOBAL_JOB_FIELDS = (
+    "job_id",
+    "source_system",
+    "status",
+    "started_at",
+    "inputs",
+    "outputs",
+)
+GLOBAL_JOB_GROUP_KEYS = (
+    JOB_NAME,
+    JOB_TYPE,
+    JOB_STATUS,
+    JOB_STARTED_AT,
+    JOB_COMPLETED_AT,
+    JOB_CATEGORY,
+)
+
+
+def global_job_entry(entry: Dict) -> Dict:
+    """``entry`` trimmed to :data:`GLOBAL_JOB_FIELDS`, for a cross-space reader."""
+    trimmed = {key: entry[key] for key in GLOBAL_JOB_FIELDS if key in entry}
+    job = entry.get("job") or {}
+    trimmed["job"] = {key: job[key] for key in GLOBAL_JOB_GROUP_KEYS if key in job}
+    return trimmed
 
 
 def job_search_event(job: StoredLineageJob) -> Dict:

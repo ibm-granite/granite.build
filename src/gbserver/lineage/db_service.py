@@ -16,35 +16,27 @@
 
 """Serve artifact lineage out of the local index instead of W&B.
 
-``POST /lineage/artifact`` delegates to a :class:`LineageService` and returns 404
-when that service returns ``None`` -- which is what ``NoopLineageService`` does for
-everything, so standalone shows "Lineage is not available" for every artifact
-today. This implementation answers the same question from the lineage table, so a
-deployment with no W&B still has lineage.
+``GET /lineage/graph`` delegates to :meth:`DBLineageService.query_graph`, which
+answers from the lineage table, so a deployment with no W&B still has lineage.
 
 Only the graph is implemented here. The event-emission and tag-search methods of
 the interface belong to the W&B-shaped write path (this service reads an index
 another writer populates), so they are explicit no-ops rather than pretending to
 succeed -- see each method for why its degenerate value is the safe one.
 
-Root resolution is the part worth reading. The request identifies an artifact the
-way a UI can -- a name, or a URL -- while the index is keyed by canonical
-identifier. Rather than reconstruct an identifier from a name (which cannot be done:
-the identifier needs a namespace and a type the request does not carry), the lookup
-goes the other way and matches against what rows already store. That makes lineage
-imported from a source with no uuid reachable, which was the point of keying the
-index by identifier in the first place.
+Seeds are URIs. A request may spell an artifact however it holds it -- a browser
+URL or the runtime's own URI -- and it is normalized to the identity the index
+columns store, so the root resolves in one indexed lookup.
 """
 
 import logging
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from gbserver.lineage.attributes import (
-    INPUT,
-    OUTPUT,
-    endpoint_kind,
+from gbserver.lineage.db_responses import (
+    global_job_entry,
+    job_listing_entry,
+    job_search_event,
 )
-from gbserver.lineage.db_responses import job_listing_entry, job_search_event
 from gbserver.lineage.graph_builder import build_graph_dict
 from gbserver.lineage.job_detail import fetch_job_detail
 from gbserver.lineage.openlineage_service import LineageService
@@ -137,98 +129,6 @@ class DBLineageService(LineageService):
                 return None
         return self._job_storage
 
-    def get_artifact_graph(
-        self,
-        artifact_name: Optional[str] = None,
-        artifact_url: Optional[str] = None,
-        artifact_type: Optional[str] = None,
-        max_depth: int = 10,
-        direction: str = "downstream",
-    ) -> Optional[Dict]:
-        """Return the lineage graph for one artifact, or ``None`` if unknown.
-
-        The root resolves in **one indexed lookup**. This used to be a paged full
-        scan of the table on every request, and not by oversight: the indexed
-        columns held canonical identifiers while a request carries a URL, so there
-        was nothing to match on. With the URI as the identity, normalizing the
-        request's URL produces exactly the value those columns hold.
-
-        Args:
-            artifact_name: the artifact's name. Only usable as a URI -- see below.
-            artifact_url: the artifact's URI, in any spelling; it is normalized
-                here, so a browser URL and the runtime's own URI resolve alike.
-            artifact_type: when given, the resolved root must have this type, and a
-                mismatch is an error rather than a miss -- the caller asserted
-                something about the artifact that turned out to be false.
-            max_depth: how many hops to expand.
-            direction: ``downstream``, ``upstream`` or ``both``, in wire terms.
-
-        Returns:
-            ``{root_id, nodes, edges, truncated, unexpanded}``, or ``None`` when the
-            request names nothing this index can key on. ``None`` becomes the 404 the
-            frontend shows as "not available", so it must mean "unknown here", never
-            "no lineage": an artifact that normalizes fine but has no edges yet
-            returns a graph with just its own node.
-
-        Raises:
-            ValueError: if ``direction`` is not a wire direction, or if
-                ``artifact_type`` contradicts the resolved root. The API layer maps
-                this to a 400.
-        """
-        walk_direction = _WIRE_DIRECTIONS.get(direction)
-        if walk_direction is None:
-            raise ValueError(
-                f"direction must be one of {sorted(_WIRE_DIRECTIONS)}, got {direction!r}"
-            )
-
-        # A name is not an identity. The index keys on URIs, and a bare name has no
-        # scheme, so it can only be resolved if it already *is* one -- which is why
-        # the URL is tried first and a name is only a fallback for a caller that
-        # passed a URI in the name field. Guessing a scheme for a bare name would
-        # invent an artifact that may not exist.
-        root_uri = normalize_uri(artifact_url or "") or normalize_uri(
-            artifact_name or ""
-        )
-        if not root_uri:
-            return None
-
-        graph = walk_lineage(
-            storage=self.storage,
-            seeds=[root_uri],
-            direction=walk_direction,
-            max_depth=max_depth,
-            max_nodes_per_level=DEFAULT_MAX_NODES_PER_LEVEL,
-            collapse_self_loops=True,
-        )
-
-        if artifact_type:
-            root_kind = self._kind_of(graph, root_uri)
-            if root_kind and artifact_type != root_kind:
-                raise ValueError(
-                    f"Artifact type mismatch: expected {artifact_type!r}, but "
-                    f"{root_uri!r} has type {root_kind!r}"
-                )
-
-        return build_graph_dict(graph, root_uri=root_uri)
-
-    @staticmethod
-    def _kind_of(graph, uri: str) -> str:
-        """The artifact type recorded for ``uri`` in a walked graph, if any.
-
-        A URI has one type by decision, so the first row mentioning it settles the
-        answer and there is nothing to reconcile.
-        """
-        for row in graph.rows:
-            if row.input == uri:
-                kind = endpoint_kind(row.attributes, INPUT)
-                if kind:
-                    return kind
-            if row.output == uri:
-                kind = endpoint_kind(row.attributes, OUTPUT)
-                if kind:
-                    return kind
-        return ""
-
     def query_graph(
         self,
         uri: Optional[str] = None,
@@ -253,9 +153,8 @@ class DBLineageService(LineageService):
         arbitrary slice of unrelated chains. The job listing answers "what ran
         lately" instead.
 
-        Never returns ``None``: unlike :meth:`get_artifact_graph` there is nothing to
-        report as "unknown", because an artifact with no lineage recorded is a
-        legitimate answer. An empty graph means "nothing recorded", which the caller
+        Never returns ``None``: there is nothing to report as "unknown", because an
+        artifact with no lineage recorded is a legitimate answer. An empty graph means "nothing recorded", which the caller
         must not render as an error.
 
         Args:
@@ -474,11 +373,14 @@ class DBLineageService(LineageService):
         for row in self.storage.get_rows_by_jobs(job_ids):
             rows_by_job.setdefault(row.job_id, []).append(row)
             tags_by_job.setdefault(row.job_id, set()).update(tag_strings(row_tags(row)))
+        # Cross-space listing: only the global fields (see GLOBAL_JOB_FIELDS).
         return [
-            job_listing_entry(
-                job_id,
-                rows_by_job.get(job_id, []),
-                sorted(tags_by_job.get(job_id, ())),
+            global_job_entry(
+                job_listing_entry(
+                    job_id,
+                    rows_by_job.get(job_id, []),
+                    sorted(tags_by_job.get(job_id, ())),
+                )
             )
             for job_id in job_ids
         ]
@@ -534,11 +436,9 @@ class DBLineageService(LineageService):
         storage = self.job_storage
         if storage is None:
             return 0, []
-        try:
-            total, jobs = storage.search_by_tags(tags, limit=limit, offset=offset)
-        except Exception:
-            logger.exception("Lineage tag search failed")
-            return 0, []
+        # A storage error propagates: an empty result would be indistinguishable
+        # from "no job has these tags", and dmg-ng reads this route.
+        total, jobs = storage.search_by_tags(tags, limit=limit, offset=offset)
         return total, [job_search_event(job) for job in jobs]
 
     def count_events_by_tags(

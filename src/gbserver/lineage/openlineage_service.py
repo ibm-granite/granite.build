@@ -68,17 +68,6 @@ class LineageService(ABC):
         """
         pass
 
-    @abstractmethod
-    def get_artifact_graph(
-        self,
-        artifact_name: Optional[str] = None,
-        artifact_url: Optional[str] = None,
-        artifact_type: Optional[str] = None,
-        max_depth: int = 10,
-        direction: str = "downstream",
-    ) -> Optional[Dict]:
-        pass
-
 
 class NoopLineageService(LineageService):
 
@@ -108,16 +97,6 @@ class NoopLineageService(LineageService):
     ) -> set[str]:
         return target_ids
 
-    def get_artifact_graph(
-        self,
-        artifact_name: Optional[str] = None,
-        artifact_url: Optional[str] = None,
-        artifact_type: Optional[str] = None,
-        max_depth: int = 10,
-        direction: str = "downstream",
-    ) -> Optional[Dict]:
-        return None
-
 
 class LineageServiceFactory:
     _registry: Dict[str, Type[LineageService]] = {}
@@ -133,14 +112,17 @@ class LineageServiceFactory:
         """
         if service_type == "none":
             return NoopLineageService()
-        if not LineageServiceFactory._registry:
-            from gbserver.lineage.db_service import DBLineageService
-            from gbserver.lineage.wandb_service import WandBLineageService
+        if service_type not in LineageServiceFactory._registry:
+            # Import per provider: wandb_service imports wandb at module scope,
+            # and the db provider must work without the thirdparty extra.
+            if service_type == "db":
+                from gbserver.lineage.db_service import DBLineageService
 
-            LineageServiceFactory._registry["wandb"] = WandBLineageService
-            # Serves the graph from the local lineage index, so a deployment with
-            # no W&B answers POST /lineage/artifact instead of 404-ing.
-            LineageServiceFactory._registry["db"] = DBLineageService
+                LineageServiceFactory._registry["db"] = DBLineageService
+            elif service_type == "wandb":
+                from gbserver.lineage.wandb_service import WandBLineageService
+
+                LineageServiceFactory._registry["wandb"] = WandBLineageService
         if service_type not in LineageServiceFactory._registry:
             raise ValueError(f"Unsupported lineage provider: {service_type}")
         return LineageServiceFactory._registry[service_type]()

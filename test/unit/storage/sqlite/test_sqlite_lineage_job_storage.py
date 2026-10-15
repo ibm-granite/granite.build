@@ -352,8 +352,11 @@ class TestSchema:
             for name, kind in columns.items()
             # "json" is the blob; it is never a query predicate. (There is no
             # autoincrement "index" column -- uuid is the primary key.)
-            if name != "json" and not kind.startswith("VARCHAR")
+            if name != "json" and not kind.startswith(("VARCHAR", "TEXT"))
         }
+        # The joined tag list has no natural width, so it is unbounded text: on
+        # Postgres a VARCHAR(256) rejected realistic tag sets and lost the record.
+        assert columns["tags"] == "TEXT", columns["tags"]
         assert not non_text, f"a non-text promoted column is a latent bug: {non_text}"
 
     def test_started_at_is_text_not_a_timestamp(self, storage):

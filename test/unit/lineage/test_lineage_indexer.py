@@ -767,3 +767,117 @@ def test_standalone_indexer_honours_a_seeded_and_a_forced_checkpoint():
         assert ix.seed_if_absent(storage, _ts(1), force=True) is True
         rows.index_job_entry.reset_mock()
         assert ix.scan_once(storage) == 3
+
+
+# -- review fixes: settle grace, running runs, fresh Api, storage errors ------
+
+
+def _event(job_id, sources, targets):
+    return {
+        "job": {"namespace": "space/build", "name": "t"},
+        "job_details": {"job_id": job_id},
+        "sources": [{"uri": u} for u in sources],
+        "targets": [{"uri": u} for u in targets],
+    }
+
+
+def test_unsettled_job_is_not_taken_so_checkpoint_stays_behind():
+    """A job newer than the grace is left for later: rows older than it may still
+    commit, and a checkpoint moved past them would skip them for good."""
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(hours=1)).isoformat()
+    fresh = now.isoformat()
+    jobs = [_job_record("j1", old), _job_record("j2", fresh)]
+    storage, kv = _admin_with_jobs(jobs)
+    rows = MagicMock()
+    rows.index_job_records.side_effect = len
+    ix = idx.LineageJobIndexer(sink=MagicMock(), rows=rows)
+    with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
+        assert ix.scan_once(storage) == 1
+    assert kv["lineage_index_checkpoint:gb_lineage_job"]["timestamp"] == old
+
+
+def test_running_wandb_run_is_pending_until_it_finishes_or_ages_out():
+    ix, _, _ = _indexer([])
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert ix._is_pending(_run("r", now.isoformat(), state="running"))
+    assert not ix._is_pending(_run("r", now.isoformat(), state="finished"))
+    stale = (now - timedelta(hours=7)).isoformat()
+    assert not ix._is_pending(_run("r", stale, state="running"))
+
+
+def test_wandb_api_is_fresh_per_scan(monkeypatch):
+    """wandb.Api.runs caches by path+filters+order, so one long-lived Api would
+    re-iterate the same cached list once caught up and never see new runs."""
+    import sys
+
+    created = []
+    fake = SimpleNamespace(
+        login=MagicMock(), Api=lambda: created.append(object()) or created[-1]
+    )
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+    ix = idx.WandBLineageIndexer(sink=MagicMock())
+    first, second = ix._wandb_api(), ix._wandb_api()
+    assert first is not second
+    fake.login.assert_called_once()
+
+
+def test_row_storage_error_propagates_instead_of_advancing():
+    from gbserver.lineage.row_indexing import LineageRowIndexer
+
+    rows = MagicMock()
+    rows.get_rows_by_job.return_value = []
+    rows.add.side_effect = ConnectionError("db down")
+    indexer = LineageRowIndexer(storage=rows)
+    with pytest.raises(ConnectionError):
+        indexer.index_job_record(_job_record("j1", "2026-01-01T00:00:00+00:00"))
+
+
+def test_job_store_error_propagates():
+    from gbserver.lineage.db_jobstats import DBLineageStore
+
+    jobs = MagicMock()
+    jobs.get_job.return_value = None
+    jobs.add.side_effect = ConnectionError("db down")
+    store = DBLineageStore(job_storage=jobs)
+    with pytest.raises(ConnectionError):
+        store.write_job(_event("j1", ["s3://b/in"], ["s3://b/out"]), "b1", "j1")
+
+
+def test_target_events_are_recorded_in_one_write():
+    """Presence of the job_id marks a target recorded, so all its outputs must
+    land together; one write per output could leave the rest missing forever."""
+    from gbserver.lineage.db_jobstats import DBLineageStore
+
+    jobs = MagicMock()
+    jobs.get_job.return_value = None
+    store = DBLineageStore(job_storage=jobs)
+    events = [
+        _event("t1", ["s3://b/in"], ["s3://b/out1"]),
+        _event("t1", ["s3://b/in"], ["s3://b/out2"]),
+    ]
+    store._write_events(events, build_id="b1", target_run_uuid="t1")
+    (added,) = [c.args[0] for c in jobs.add.call_args_list]
+    assert added.attributes["entry"]["events"] == events
+
+
+def test_many_to_many_job_is_still_recorded():
+    """No index form is an index gap, not a reason to lose the job record."""
+    from gbserver.lineage.db_jobstats import DBLineageStore
+
+    jobs = MagicMock()
+    jobs.get_job.return_value = None
+    store = DBLineageStore(job_storage=jobs)
+    store.write_job(
+        _event("j1", ["s3://b/a", "s3://b/b"], ["s3://b/c", "s3://b/d"]), "b1", "j1"
+    )
+    jobs.add.assert_called_once()
+
+
+def test_over_long_job_id_is_rejected_before_the_db():
+    from gbserver.lineage.merge import REJECTED, upsert_job
+    from gbserver.storage.stored_lineage_job import StoredLineageJob
+
+    jobs = MagicMock()
+    assert upsert_job(jobs, StoredLineageJob(job_id="x" * 257)) == REJECTED
+    jobs.add.assert_not_called()

@@ -257,25 +257,19 @@ class TestOneHop:
 
     def test_downstream_reaches_the_model(self, storage):
         self.record(storage, self.build.uuid)
-        graph = self.service.get_artifact_graph(
-            artifact_url=self.raw.uri, direction="downstream"
-        )
+        graph = self.service.query_graph(uri=self.raw.uri, direction="downstream")
         assert graph is not None
         assert normalize_uri(self.model.uri) in artifact_ids(graph)
 
     def test_upstream_reaches_the_raw_table(self, storage):
         self.record(storage, self.build.uuid)
-        graph = self.service.get_artifact_graph(
-            artifact_url=self.model.uri, direction="upstream"
-        )
+        graph = self.service.query_graph(uri=self.model.uri, direction="upstream")
         assert graph is not None
         assert normalize_uri(self.raw.uri) in artifact_ids(graph)
 
     def test_the_served_graph_reports_the_registered_uri(self, storage):
         self.record(storage, self.build.uuid)
-        graph = self.service.get_artifact_graph(
-            artifact_url=self.raw.uri, direction="downstream"
-        )
+        graph = self.service.query_graph(uri=self.raw.uri, direction="downstream")
         node = next(n for n in graph["nodes"] if n["id"] == normalize_uri(self.raw.uri))
         assert node["metadata"]["uri"] == self.raw.uri
 
@@ -291,20 +285,14 @@ class TestOneHop:
     def test_an_unrecorded_target_is_reported(self, storage):
         assert self.sink.filter_unrecorded({self.output.uuid}) == {self.output.uuid}
 
-    def test_an_unidentifiable_uri_is_not_found(self, storage):
-        """``None`` means "cannot key on this", never "nothing recorded".
-
-        It becomes the 404 the frontend renders as "lineage is not available", so a
-        URI that resolves but has no rows must return its own node instead.
-        """
+    def test_an_unidentifiable_uri_is_an_empty_graph(self, storage):
+        """A URI this index cannot key on matches nothing, not even its own node."""
         self.record(storage, self.build.uuid)
-        assert self.service.get_artifact_graph(artifact_url="bogus://x") is None
+        assert self.service.query_graph(uri="bogus://x")["nodes"] == []
 
     def test_a_valid_uri_with_no_rows_is_an_empty_graph(self, storage):
         self.record(storage, self.build.uuid)
-        graph = self.service.get_artifact_graph(
-            artifact_url="lh://prod/ns/tables/absent"
-        )
+        graph = self.service.query_graph(uri="lh://prod/ns/tables/absent")
         assert graph is not None
         assert artifact_ids(graph) == {"lh://prod/ns/tables/absent"}
 
@@ -360,7 +348,7 @@ class TestFanOutRows:
         record_and_index(storage, build.uuid)
 
         service = DBLineageService(storage=storage.lineage_row_storage)
-        graph = service.get_artifact_graph(artifact_url=out_a.uri, direction="upstream")
+        graph = service.query_graph(uri=out_a.uri, direction="upstream")
         runs = [n for n in graph["nodes"] if n["node_type"] == "run"]
         assert len(runs) == 1
         assert artifact_ids(graph) >= {
@@ -393,9 +381,7 @@ class TestChainAcrossBuilds:
         record_and_index(storage, build2.uuid)
 
         service = DBLineageService(storage=storage.lineage_row_storage)
-        graph = service.get_artifact_graph(
-            artifact_url=raw.uri, direction="downstream", max_depth=10
-        )
+        graph = service.query_graph(uri=raw.uri, direction="downstream", max_depth=10)
         assert artifact_ids(graph) >= {
             normalize_uri(raw.uri),
             normalize_uri(mid.uri),
