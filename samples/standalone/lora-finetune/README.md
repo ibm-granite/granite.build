@@ -1,7 +1,7 @@
 # Sample: `lora-finetune`
 
 Train a small **LoRA adapter** on a base model, then run inference with base + adapter — all
-in the local **bash** environment (no GPU/container required). Two targets wired together by
+in the local **bash** environment. Two targets wired together by
 a **cross-target binding**:
 
 1. **`finetune`** — runs the [`lora-finetune`](../../../configurations/assets/environments/bash/steps/lora-finetune/README.md)
