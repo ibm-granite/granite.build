@@ -308,7 +308,10 @@ def test_first_scan_reads_from_the_beginning():
     assert api.runs.call_args.kwargs["filters"] == {}
 
 
-def test_running_run_is_indexed_and_does_not_stop_scan():
+def test_a_stale_running_run_is_indexed_and_does_not_stop_scan():
+    """A run still "running" long past the age cap is a writer that died before
+    finish(); waiting on it would pin the scan forever. (A fresh one is pending:
+    see test_running_wandb_run_is_pending_until_it_finishes_or_ages_out.)"""
     storage = _storage()
     ix, _, _ = _indexer(
         [

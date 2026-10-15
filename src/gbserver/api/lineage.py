@@ -230,6 +230,17 @@ def _get_index_service():
 
 @lineage_api.post("/", tags=["lineage store"])
 def ingest_lineage_event(event: OpenLineageEvent):
+    """Write one OpenLineage event to the configured lineage store.
+
+    **Known risk: no authorization.** Any caller who reaches the API can write an
+    event, and nothing ties its namespace, owner or tags to the caller. Under the
+    ``wandb`` provider the event becomes a W&B run, and the W&B lineage indexer
+    reads every run of the project, so an injected event shows up in the global
+    ``GET /lineage/graph`` trace (which is not filtered per space by design). It
+    cannot reach space-gated detail: ``GET /lineage/jobs/{id}`` checks the
+    caller's access before returning owner, namespace or tags. Gating this route
+    (e.g. to service accounts) is tracked as follow-up work.
+    """
     service = _get_openlineage_service()
     service.emit_event(event.model_dump())
     return {"status": "accepted"}

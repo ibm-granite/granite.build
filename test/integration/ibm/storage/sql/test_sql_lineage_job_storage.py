@@ -1,0 +1,99 @@
+# Copyright LLM.build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""``gb_lineage_job`` against postgres: the widths SQLite does not enforce.
+
+SQLite ignores VARCHAR lengths, so a value too long for a column is stored there
+and rejected by postgres -- where the job record is the only record of the
+execution under the ``db`` provider, so a rejected write loses it for good.
+
+Marked ``ibm`` and gated on ``SKIP_SQL_ADMIN_TESTS`` like every other test in this
+directory: it needs a reachable postgres and creates real tables.
+"""
+
+import os
+import uuid as uuid_module
+
+import pytest
+
+from gbserver.lineage.merge import ADDED, REJECTED, upsert_job
+from gbserver.storage.sql.storage_factory import SQLStorageFactory
+from gbserver.storage.stored_lineage_job import StoredLineageJob
+from gbserver.storage.stored_lineage_row import MAX_JOB_ID_LENGTH
+
+pytestmark = pytest.mark.ibm
+
+_SKIP_ADMIN = pytest.mark.skipif(
+    os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
+    reason="Don't want to run this in CICD.",
+)
+
+# The tags a real target carries, joined: ~300 chars, past the old VARCHAR(256).
+_REALISTIC_TAGS = [
+    f"build_id={uuid_module.uuid4()}",
+    f"target_run_uuid={uuid_module.uuid4()}",
+    f"target_id={uuid_module.uuid4()}",
+    "username=someone.with.a.long.name@example.com",
+    "space_name=a-fairly-long-space-name",
+    f"output_id={uuid_module.uuid4()}",
+    "team=data-platform",
+    "purpose=evaluation-sweep",
+]
+
+
+@pytest.fixture(name="storage")
+def sql_storage_fixture():
+    table = f"t_ljob_{uuid_module.uuid4().hex[:8]}"
+    storage = SQLStorageFactory().create_lineage_job_storage(table_name=table)
+    yield storage
+    try:
+        storage.delete_table()
+    except Exception:  # pragma: no cover - best-effort cleanup
+        pass
+
+
+@_SKIP_ADMIN
+def test_a_realistic_tag_set_is_stored(storage):
+    assert len(",".join(_REALISTIC_TAGS)) > 256
+    assert upsert_job(storage, StoredLineageJob(job_id="J", tags=_REALISTIC_TAGS)) == (
+        ADDED
+    )
+    stored = storage.get_job("J")
+    assert stored is not None
+    assert sorted(stored.tags) == sorted(_REALISTIC_TAGS)
+
+
+@_SKIP_ADMIN
+def test_tags_column_is_unbounded_text(storage):
+    from sqlalchemy import text
+
+    storage.add(StoredLineageJob(job_id="seed"))
+    schema = storage._db_schema or None
+    with storage._engine.connect() as connection:
+        kind = connection.execute(
+            text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = :table AND column_name = 'tags' "
+                "AND table_schema = coalesce(:schema, current_schema())"
+            ),
+            {"table": storage.table_name, "schema": schema},
+        ).scalar()
+    assert kind == "text"
+
+
+@_SKIP_ADMIN
+def test_an_over_long_job_id_is_rejected_before_the_db(storage):
+    job_id = "x" * (MAX_JOB_ID_LENGTH + 1)
+    assert upsert_job(storage, StoredLineageJob(job_id=job_id)) == REJECTED
+    assert storage.get_job(job_id) is None
