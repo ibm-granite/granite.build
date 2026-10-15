@@ -122,7 +122,7 @@ assetstores:
     pull:
       - mode: default
         config:
-          cache_path: /tmp/hf_cache
+          cache_path: /proj/data-eng/llmb-read-write/hfcache 
     push:
       - mode: default
         config: {}
