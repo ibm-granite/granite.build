@@ -34,7 +34,7 @@ class UserRoleUpdate(BaseModel):
     """Request body for ``PATCH /users/{user_id}`` — a role change, nothing else.
 
     Email is an identity key linked to the auth provider and is deliberately not
-    editable here (design spec, decision 4).
+    editable here.
     """
 
     model_config = ConfigDict(extra="forbid")

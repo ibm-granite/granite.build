@@ -176,9 +176,9 @@ class Settings(BaseSettings):
     # *new* connection pays a full TLS + caching_sha2_password handshake worth
     # seconds. SQLite's async engine uses a non-queue pool and ignores the sizing
     # knobs (see db/session.build_pool_kwargs), so these are inert for local dev
-    # and the test suite. See docs/operations/database.md — the connection-pool
-    # tuning was added after prod GET /configurations and /jobs latencies of
-    # 7-8s traced to cold reconnects and pool contention with the reconcile loop.
+    # and the test suite. Settings: docs/operations/database.md. The pool tuning
+    # was added after prod GET /configurations and /jobs latencies of 7-8s traced
+    # to cold reconnects and pool contention with the reconcile loop.
     database_pool_size: int = Field(default=10, ge=1)
     """Connections kept open and reused per worker process (``QueuePool`` base size).
 
@@ -256,8 +256,8 @@ class Settings(BaseSettings):
     dataset_storage_dir: Path = Path("artifacts/datasets")
     """Root for persisted local dataset files; staging lives under ``.staging``.
 
-    Its relationship to ``artifact_dir`` is deliberately loose (see the design
-    spec's open item): today a sibling default under ``artifacts/``.
+    Its relationship to ``artifact_dir`` is deliberately loose and still an open
+    question: today a sibling default under ``artifacts/``.
     """
 
     dataset_upload_max_bytes: int = Field(default=5 * 1024**3, ge=1)
@@ -677,8 +677,8 @@ class Settings(BaseSettings):
 
     Two properties are load-bearing and enforced in ``api/deps.get_principal`` /
     ``SqlAlchemyUserRepository.provision``: a provisioned row is always
-    ``role='user'`` (never admin — see the design spec's no-privilege-escalation
-    rule), and creation is race-safe (a concurrent first request loses the
+    ``role='user'`` (never admin, so provisioning can never escalate privilege),
+    and creation is race-safe (a concurrent first request loses the
     ``UNIQUE(email)`` insert and re-reads the winner rather than erroring). Note
     this makes even a ``GET`` write to the database on a caller's first request —
     the deliberate cost of JIT, which is why it is opt-in. See CLAUDE.md open
@@ -710,7 +710,7 @@ class Settings(BaseSettings):
 
     Off by default, so a production deployment that forgets to configure a real
     provider fails fast at startup rather than silently serving every caller as
-    the standalone system owner (see the design spec). Set it only for a
+    the standalone system owner. Set it only for a
     deliberate single-tenant deployment that genuinely wants no authentication;
     ``create_app`` logs a loud warning when it takes effect.
     """

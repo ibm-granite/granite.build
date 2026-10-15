@@ -130,10 +130,18 @@ id, and take the `id_token` field from the token response, not `access_token`.
 Keep the token out of stdout, shell history and `ps` output:
 
 - Put it on the clipboard (`pbcopy`), so nothing touches disk. Clear it afterwards
-  with `pbcopy </dev/null`.
-- Or write it to a `0600` file for `curl -H "Authorization: Bearer $(cat FILE)"`.
-  Delete the file when done — an `id_token` is a live bearer credential for two
-  hours.
+  with `pbcopy </dev/null`. On Linux replace `pbcopy` with
+  `xclip -selection clipboard` or `wl-copy`, and clear with `wl-copy --clear`.
+- Or write the whole header to a file only you can read, which `curl -H @FILE`
+  (curl 7.55+) reads below. Passing `-H "Authorization: Bearer …"` instead would
+  put the token in curl's arguments, where `ps` shows it. Delete the file when
+  done — an `id_token` is a live bearer credential for two hours.
+
+```bash
+read -rs TOKEN    # paste the id_token; it is not echoed or saved to history
+(umask 077; printf 'Authorization: Bearer %s\n' "$TOKEN" > id_token.header)
+unset TOKEN
+```
 
 **If the client's redirect URI is on port 8000, that port must be free**, because
 the client's local listener binds the exact redirect URI registered for it. If
@@ -150,7 +158,7 @@ make dev
 ```
 
 ```bash
-curl -i -H "Authorization: Bearer <the-id-token>" http://localhost:8000/api/v1/jobs
+curl -i -H @id_token.header http://localhost:8000/api/v1/jobs
 ```
 
 Startup refuses `"oidc"` unless all three are set, and names whichever is

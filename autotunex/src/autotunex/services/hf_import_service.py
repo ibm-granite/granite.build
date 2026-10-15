@@ -88,7 +88,7 @@ def _viewer_split(split: str) -> str:
     picker name would 404 there for exactly the biggest datasets. Translated here,
     at the one call site that talks to the viewer, rather than in the picker --
     grouping the parts upstream would also change which shards an *import* reads,
-    which is a separate decision (see the design spec).
+    which is a separate decision.
     """
     return _PARTITIONED_SPLIT.sub("", split)
 
