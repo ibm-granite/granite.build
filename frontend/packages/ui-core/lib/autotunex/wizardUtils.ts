@@ -331,8 +331,9 @@ export function overlayColumnMapping(rows: ParsedDataRow[], mapping: ColumnMappi
  * the value is handed to the tuning runner verbatim as --model_name_or_path, so
  * a relative path would resolve against the runner's working directory rather
  * than against anything the user had in mind.
- * `tuned_model` needs no extra rule: the picker leaves the model empty until
- * the pick passes its loadability check.
+ * `tuned_model` needs no extra rule here: the picker leaves the model empty until
+ * the pick passes its loadability check. A remount re-check keeps the model, and
+ * the wizard holds Next for it separately (tunedCheckPending).
  */
 export function isModelSelectionValid(source: WizardModelSource, model: string): boolean {
   const trimmed = model.trim()

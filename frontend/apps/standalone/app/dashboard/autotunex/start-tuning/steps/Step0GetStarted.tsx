@@ -80,6 +80,7 @@ interface Step0GetStartedProps {
   setSelectedModel: (v: string) => void
   modelSource: WizardModelSource
   setModelSource: (v: WizardModelSource) => void
+  onTunedCheckPendingChange: (pending: boolean) => void
   prefetchedModels: string[] | null
 }
 
@@ -92,6 +93,7 @@ export function Step0GetStarted({
   setSelectedModel,
   modelSource,
   setModelSource,
+  onTunedCheckPendingChange,
   prefetchedModels,
 }: Step0GetStartedProps) {
   const [models, setModels] = useState<string[]>([])
@@ -115,9 +117,9 @@ export function Step0GetStarted({
   // "My tuned models": the list (with its loading/error status and the last
   // search term), the item the user picked, and its loadability check.
   // `selectedModel` is cleared for a fresh pick until its check passes, and
-  // kept during a remount re-check unless that check fails -- either way
-  // it's what keeps Next/Launch disabled (isModelSelectionValid) without any
-  // new wizard state.
+  // kept during a remount re-check unless that check fails. A fresh pick's
+  // empty model keeps Next/Launch disabled (isModelSelectionValid); the kept
+  // one needs onTunedCheckPendingChange to hold Next while it is re-checked.
   const [tunedModels, setTunedModels] = useState<TunedModel[]>([])
   const [tunedListStatus, setTunedListStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [tunedQuery, setTunedQuery] = useState('')
@@ -311,9 +313,18 @@ export function Step0GetStarted({
   useEffect(
     () => () => {
       tunedCheckTokenRef.current++
+      onTunedCheckPendingChange(false)
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   )
+
+  // The remount re-check keeps the earlier pick in selectedModel, so the wizard
+  // needs this to hold Next until it settles. A check left 'checking' by a source
+  // change is discarded (its token was bumped), hence the source guard.
+  useEffect(() => {
+    onTunedCheckPendingChange(modelSource === 'tuned_model' && tunedCheck === 'checking')
+  }, [modelSource, tunedCheck, onTunedCheckPendingChange])
 
   function handleComboBoxInputChange(inputValue: string) {
     clearTimeout(debounceRef.current)

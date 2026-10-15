@@ -138,6 +138,10 @@ export function StartTuningWizard() {
   const [selectedAlgorithm, setSelectedAlgorithm] = useState('lora')
   const [selectedModel, setSelectedModel] = useState('ibm-granite/granite-4.0-h-micro')
   const [modelSource, setModelSource] = useState<WizardModelSource>('huggingface')
+  // Step 0's tuned-model check, while it runs. After Back, the remount re-check
+  // keeps the earlier pick in selectedModel, so the model alone left Next enabled
+  // and a click carried the pick on before the check had passed it again.
+  const [tunedCheckPending, setTunedCheckPending] = useState(false)
   const [autotuneEnabled, setAutotuneEnabled] = useState(true)
 
   // Step 1: Dataset
@@ -288,7 +292,12 @@ export function StartTuningWizard() {
   const isStepValid = useCallback((step: number) => {
     switch (step) {
       case 0:
-        return selectedGoal !== null && selectedAlgorithm !== '' && isModelSelectionValid(modelSource, selectedModel)
+        return (
+          selectedGoal !== null &&
+          selectedAlgorithm !== '' &&
+          isModelSelectionValid(modelSource, selectedModel) &&
+          !tunedCheckPending
+        )
       case 1: {
         const requiredCols = getRequiredColumnsFromTypes(selectedAlgorithm, datasetTypes ?? {})
         // The HF form's own gate (canImport) already checked name, mapping and the
@@ -356,6 +365,7 @@ export function StartTuningWizard() {
     selectedAlgorithm,
     selectedModel,
     modelSource,
+    tunedCheckPending,
     existingDatasetId,
     parsedData.length,
     datasetForm.name,
@@ -964,6 +974,7 @@ export function StartTuningWizard() {
             setSelectedModel={setSelectedModel}
             modelSource={modelSource}
             setModelSource={setModelSource}
+            onTunedCheckPendingChange={setTunedCheckPending}
             prefetchedModels={prefetchedModels ?? null}
           />
         )}
