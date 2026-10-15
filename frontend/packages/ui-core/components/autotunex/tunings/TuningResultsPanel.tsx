@@ -82,12 +82,15 @@ export function TuningResultsPanel({ jobId, jobStatus }: Props) {
 
   if (isError) {
     const status = axios.isAxiosError(error) ? error.response?.status : undefined
+    // Only a completed job is fetched (`enabled`), and AutoTuneX records the
+    // tuning task's output before it marks the job completed, so a 409 here will
+    // not clear by waiting -- the job finished without recorded output artifacts.
     if (status === 409) {
       return (
         <InlineNotification
           kind="info"
-          title="Results aren't ready yet"
-          subtitle="The job's output artifacts are still being finalized. Try again shortly."
+          title="No results recorded"
+          subtitle="This job completed, but no output artifacts were recorded for it."
           hideCloseButton
         />
       )

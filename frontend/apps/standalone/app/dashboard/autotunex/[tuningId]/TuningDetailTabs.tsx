@@ -114,13 +114,17 @@ interface Props {
 }
 
 export function TuningDetailTabs({ job }: Props) {
+  // Output assets only exist once the job completes, so the Results tab waits for
+  // that, as on the build page (BuildDetails). The detail page polls an active job,
+  // so the tab appears on an open page when the run finishes.
+  const showResults = job.status === 'completed'
   return (
     <div style={{ padding: '0 1.5rem 2rem' }}>
       <Tabs>
         <TabList aria-label="Tuning detail tabs">
           <Tab>Details</Tab>
           {job.autotune && <Tab>Hyperparameters</Tab>}
-          <Tab>Results</Tab>
+          {showResults && <Tab>Results</Tab>}
         </TabList>
         <TabPanels>
           <TabPanel>
@@ -131,9 +135,11 @@ export function TuningDetailTabs({ job }: Props) {
               <TrialsTable job={job} />
             </TabPanel>
           )}
-          <TabPanel>
-            <TuningResultsPanel jobId={job.id} jobStatus={job.status} />
-          </TabPanel>
+          {showResults && (
+            <TabPanel>
+              <TuningResultsPanel jobId={job.id} jobStatus={job.status} />
+            </TabPanel>
+          )}
         </TabPanels>
       </Tabs>
     </div>
