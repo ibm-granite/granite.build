@@ -1,0 +1,27 @@
+# YAML-driven spec for test_bash_autotune.py (located by the test/ <-> test-data/
+# helper, so this pairing holds in both test modes; see steps/README.md).
+#
+# One target runs the autotune step (space://steps/autotune), which builds a venv
+# against the vendored fm-tune, runs a single short LoRA training pass
+# (NO_AUTOTUNE), and registers the output dir via its GB_ARTIFACT_ID marker.
+targets:
+  - autotune-run
+target_expectations:
+  - target_name: autotune-run
+    # A single workload: one model + one dataset input, one output artifact
+    # registered by run.py's marker (the step sets skip_finding_output_artifacts,
+    # so the marker is the ONLY source of the output binding -- which is exactly
+    # what this test is here to prove).
+    step_count: 1
+    input_artifact_count: 2
+    output_artifact_count: 1
+    jobstats_count: 1
+space_uri: ../../../../../configurations/spaces/local
+tests:
+  - runner
+# A clean run with no injected failure: a failed venv build, missing ray, or an
+# unmatched artifact marker all fail the build, so SUCCESS proves the step ran
+# end to end AND that the marker was scraped.
+simulate_step_failure: false
+# Generous: the first run builds a venv and pip-installs torch + ray.
+timeout_minutes: 45
