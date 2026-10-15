@@ -25,6 +25,7 @@ import {
   TabPanels,
   TabPanel,
   CodeSnippet,
+  Layer,
   Button,
   InlineNotification,
   InlineLoading,
@@ -537,14 +538,22 @@ export function TrialsTable({ job }: Props) {
                               <Tab>Configuration</Tab>
                               <Tab>Metrics</Tab>
                             </TabList>
+                            {/* A contained tab panel is already layer-01, the same
+                                `--cds-layer` the log and .cds--snippet paint with, so
+                                both blended into it. <Layer> moves them to layer-02,
+                                as in DefinitionPanel. */}
                             <TabPanels>
                               <TabPanel>
-                                <TrialLogViewer jobId={jobId} trialId={trial.id} status={trial.status} scope={scope} />
+                                <Layer>
+                                  <TrialLogViewer jobId={jobId} trialId={trial.id} status={trial.status} scope={scope} />
+                                </Layer>
                               </TabPanel>
                               <TabPanel>
-                                <CodeSnippet type="multi" wrapText>
-                                  {JSON.stringify(trial.config, null, 2)}
-                                </CodeSnippet>
+                                <Layer>
+                                  <CodeSnippet type="multi" wrapText>
+                                    {JSON.stringify(trial.config, null, 2)}
+                                  </CodeSnippet>
+                                </Layer>
                               </TabPanel>
                               <TabPanel>
                                 <TrialMetricsPanel
