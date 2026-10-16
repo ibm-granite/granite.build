@@ -78,12 +78,14 @@ config="${nemo_rl_root}/examples/configs/${config_name}"
 if [ ! -f "$driver" ]; then
   echo "nemo-rl: ERROR no driver for algorithm '${algorithm}': ${driver} not found." >&2
   echo "nemo-rl: available drivers in the image:" >&2
+  # shellcheck disable=SC2012
   ls -1 "${nemo_rl_root}/examples/" 2>/dev/null | sed -n 's/^run_\(.*\)\.py$/nemo-rl:   \1/p' >&2 || true
   exit 1
 fi
 if [ ! -f "$config" ]; then
   echo "nemo-rl: ERROR config '${config_name}' not found at ${config}." >&2
   echo "nemo-rl: available configs in the image:" >&2
+  # shellcheck disable=SC2012
   ls -1 "${nemo_rl_root}/examples/configs/" 2>/dev/null | sed 's/^/nemo-rl:   /' >&2 || true
   exit 1
 fi

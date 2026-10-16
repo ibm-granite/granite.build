@@ -13,7 +13,7 @@ Switching algorithm is a change to the build.yaml, never to the step. There is n
 Dockerfile to own: the step runs inside the NGC release image, which bundles the
 NeMo-RL source and prefetched environments.
 
-> **Developing or testing this step?** See `steps/train/nemo-rl/skypilot/README.md`
+> **Developing or testing this step?** See `steps/README.md`
 > in the granite.build repository for how the step is generated, tested, and published.
 
 ## Referencing the step

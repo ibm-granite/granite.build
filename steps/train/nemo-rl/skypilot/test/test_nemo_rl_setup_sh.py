@@ -22,7 +22,6 @@ rather than deferring to a confusing run-phase failure.
 
 import pathlib
 import shutil
-import stat
 import subprocess
 
 import pytest

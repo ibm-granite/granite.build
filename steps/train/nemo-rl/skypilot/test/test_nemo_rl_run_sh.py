@@ -21,7 +21,6 @@ passthrough order), checkpoint discovery, the converter invocation, and the
 artifact marker. The real training is Mode-2's job.
 """
 
-import os
 import pathlib
 import stat
 import subprocess
