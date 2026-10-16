@@ -86,11 +86,12 @@ def test_a_failed_forced_seed_keeps_the_existing_checkpoint(env):
     assert env.kv_pair_storage.values[KEY]["timestamp"] == D1
 
 
-def test_rebuild_drops_the_index_and_reseeds_at_all(env):
+def test_rebuild_deletes_the_rows_and_reseeds_at_all(env):
     env.kv_pair_storage.set_value(KEY, {"timestamp": D1})
     result = _run("--rebuild")
     assert result.exit_code == 0, result.output
-    env.lineage_row_storage.delete_table.assert_called_once()
+    env.lineage_row_storage.delete_all_rows.assert_called_once()
+    env.lineage_row_storage.delete_table.assert_not_called()
     assert env.kv_pair_storage.values[KEY]["timestamp"] == "1970-01-01T00:00:00Z"
 
 
@@ -100,7 +101,7 @@ def test_rebuild_drops_the_index_and_reseeds_at_all(env):
 def test_rebuild_rejects_a_conflicting_flag(env, args):
     result = _run(*args)
     assert result.exit_code != 0
-    env.lineage_row_storage.delete_table.assert_not_called()
+    env.lineage_row_storage.delete_all_rows.assert_not_called()
     assert env.kv_pair_storage.values == {}
 
 

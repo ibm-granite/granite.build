@@ -620,3 +620,18 @@ class TestGroupedEdges:
     def test_unknown_direction_is_rejected(self, storage):
         with pytest.raises(ValueError):
             storage.grouped_edges(["x"], "sideways")
+
+
+def test_delete_all_rows_keeps_the_table_for_a_second_handle(storage):
+    """--rebuild empties the index under a running process that already resolved
+    the table: that process must still read and write it afterwards."""
+    other = SqliteStorageFactory().create_lineage_row_storage(
+        table_name=storage.table_name
+    )
+    other.add(row(job_id="J1"))
+    assert other.get_rows_by_job("J1")
+    assert storage.delete_all_rows() == 1
+    assert not other.get_rows_by_job("J1")
+    other.add(row(job_id="J2"))
+    assert [r.job_id for r in other.get_rows_by_job("J2")] == ["J2"]
+    assert storage.delete_all_rows() == 1

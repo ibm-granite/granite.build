@@ -479,3 +479,26 @@ def test_unknown_lh_host_is_kept_lowercased():
         normalize_uri("lh://Some-Lakehouse.ibm.com/ns/tables/t")
         == "lh://some-lakehouse.ibm.com/ns/tables/t"
     )
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("hf:///o/m//x", "https://huggingface.co/o/m/tree/main/x"),
+        ("hf:///o/m//x//y", "https://huggingface.co/o/m/tree/main/x/y"),
+        ("hf:///datasets/o/d//x", "https://huggingface.co/datasets/o/d/tree/main/x"),
+    ],
+)
+def test_hf_empty_revision_is_the_default_not_the_next_segment(raw, expected):
+    """``//`` after the repo is HfURI's empty (default) revision; collapsing it
+    must not move the path into the revision slot and merge it with ``/o/m/x``."""
+    assert normalize_uri(raw) == expected
+    assert normalize_uri(raw) != normalize_uri(
+        raw.replace("//", "/").replace(":/", "://")
+    )
+
+
+def test_hf_bucket_has_no_revision_so_a_doubled_slash_just_collapses():
+    assert (
+        normalize_uri("hf:///buckets/o/b//x") == "https://huggingface.co/buckets/o/b/x"
+    )

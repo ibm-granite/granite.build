@@ -33,8 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gbserver lineage-index-init --base-timestamp all --force` instead. URI
   normalization also changed (bucket paths, LH revisions and hosts, git refs and
   subdirectories, trailing slashes), so an existing index must be rebuilt once, with
-  the indexer stopped, by `gbserver lineage-index-init --rebuild` (drops the index rows
-  and re-seeds at `all`; `--force` alone would keep the old-form rows beside the new).
+  the indexer stopped, by `gbserver lineage-index-init --rebuild` (deletes the index rows,
+  keeping the table, and re-seeds at `all`; `--force` alone would keep the old-form rows
+  beside the new). A running gbserver keeps working on the emptied table; a scan already
+  in progress when the rows are deleted may write a few old-form rows back.
 - **Lineage API (#470).** `POST /lineage/artifact` is removed; use `GET /lineage/graph`.
   `POST /lineage/search` is deprecated (flagged in the OpenAPI schema): it stays for
   existing external callers and will be removed once they move to
@@ -44,8 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-level node ceiling. Nodes carry only cross-space fields; build and target-run
   ids appear on a run node only for callers who can read that job's space.
   `GET /lineage/jobs` answers 422 for `limit` outside 1–1000 or a negative `offset`, and
-  503 when the index cannot be read. `GET /artifacts/?uri=` also matches an artifact by
-  its normalized lineage URI, and each artifact carries a derived `lineage_uri`.
+  503 when the index cannot be read. `GET /artifacts/?uri=...&match_lineage_uri=true`
+  also matches an artifact by its normalized lineage URI (opt-in; without it `uri` is
+  matched exactly), and each artifact, including `GET /artifacts/{id}`, carries a derived
+  `lineage_uri`. `GET /lineage/jobs/{id}` adds `detail_denied`, true when the detail was
+  withheld for lack of access rather than a store failure. `POST /lineage/graph` takes the
+  same query as a body, for a `job_ids` list too long for a URL; the UI uses it to expand
+  a grouped node in one walk.
   `GET /lineage/graph` answers 422 (was 400) for out-of-range input, and both
   `GET /lineage/graph` and `GET /lineage/jobs` answer 503 rather than an empty 200 when
   the index cannot be read. `GET /lineage/jobs` caps `job_ids` at 1000, as the graph does.
@@ -53,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wandb` re-seeds at `all`, so the indexer back-fills the whole shared W&B project, not
   just this deployment's runs. A new `--empty-from-beginning` flag, used by the Helm chart,
   makes a fresh install with no history index its first jobs instead of skipping them.
+  The chart's indexer pod now fails (and restarts) when seeding fails, e.g. an unreachable
+  database or a bad `seedOnStart`; before, the failure was ignored and the indexer started
+  with no checkpoint.
+- **`gb_targets` indexes (#470).** Schema adjust adds a `(status, finished_at)` index
+  and, on SQLite 3.20+, an expression index on the JSON `finished_at`, so the standalone
+  lineage indexer pages successful targets by keyset instead of scanning the table. On
+  Postgres the index is built `CONCURRENTLY`, one process at a time. Index-only: no row
+  is rewritten.
 - **Lineage job owner and namespace (#470).** A job's owner and namespace are taken only
   when every index row of the job agrees; a job with conflicting (e.g. forged) rows has
   neither, and its detail fails closed.

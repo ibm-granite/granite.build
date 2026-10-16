@@ -296,6 +296,10 @@ class SqliteLineageRowStorage(SqliteStorageOverrides, SQLLineageRowStorage):
     def _hop_rows(self, *args, **kwargs) -> list:
         return _locked_per_attempt(self, super()._hop_rows, *args, **kwargs)
 
+    def delete_all_rows(self) -> int:
+        with self._db_file_lock:
+            return super().delete_all_rows()
+
 
 class SqliteLineageJobStorage(SqliteStorageOverrides, SQLLineageJobStorage):
     """Sqlite storage for lineage job records."""

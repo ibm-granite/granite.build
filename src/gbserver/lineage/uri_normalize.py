@@ -212,6 +212,15 @@ def _normalize_hf(candidate: str, parsed) -> str:
     from gbcommon.uri.hf import HfType, HfURI
 
     netloc = parsed.netloc or ""
+    # ``/o/m//x`` is HfURI's empty revision -- the default -- with ``x`` in the
+    # repo. Read that before collapsing, which would shift ``x`` into the revision
+    # slot and merge it with ``/o/m/x`` (revision ``x``).
+    raw = HfURI.parse(candidate)
+    default_revision_path = (
+        _collapse_slashes(raw.get_path_in_repo() or "").strip("/")
+        if raw.get_revision() == "" and raw.get_path_in_repo()
+        else None
+    )
     path = _collapse_slashes(parsed.path or "")
     if netloc.lower() in _HF_TYPE_SEGMENTS:
         # Re-spell as the three-slash form the author meant, then canonicalize.
@@ -240,6 +249,8 @@ def _normalize_hf(candidate: str, parsed) -> str:
     hf_type = hf.get_hf_type()
     revision = hf.get_revision()
     path_in_repo = hf.get_path_in_repo()
+    if default_revision_path and hf_type != HfType.BUCKET:
+        revision, path_in_repo = DEFAULT_REVISION, default_revision_path
     segments = []
     if hf_type != HfType.MODEL:
         segments.append(HF_TYPE_TO_SEGMENT[hf_type])

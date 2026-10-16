@@ -280,6 +280,23 @@ class SQLLineageRowStorage(
         finally:
             session.close()
 
+    def delete_all_rows(self) -> int:
+        """One ``DELETE`` in one transaction; the table and its indexes stay."""
+        if not self._ensure_table_without_retry():
+            return 0
+        session = self._get_session_without_retry()
+        try:
+            deleted = session.query(self._sql_alchemy_model).delete(
+                synchronize_session=False
+            )
+            session.commit()
+            return int(deleted or 0)
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     @property
     def _job_id(self):
         return self._sql_alchemy_model.job_id

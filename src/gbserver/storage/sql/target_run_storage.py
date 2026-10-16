@@ -45,7 +45,6 @@ class SQLTargetRunStorage(
         # scan with an early stop is most of the win.
         kwargs["composite_indexes"] = [("status", "finished_at")]
         super().__init__(**kwargs)
-        self._keyset_checked = False
 
     @retry_read
     def get_successful_finished_since(
@@ -88,12 +87,17 @@ class SQLTargetRunStorage(
             # relation to the column's value, and OR-ing them back in would scan
             # anyway. The index still serves status and the order, so a page stops
             # at its LIMIT; only a sparse tail past the cutoff reads to the end.
-            raw = func.json_extract(getattr(model, JSON_COLUMN_NAME), "$.finished_at")
+            raw: Any = literal_column(self._SQLITE_FINISHED_RAW)
             recorded = func.julianday(raw)
-            since = or_(
-                recorded >= func.julianday(cutoff_utc.isoformat()),
-                recorded.is_(None),
-                ~or_(raw.like("%Z"), raw.op("GLOB")("*[+-][0-9][0-9]:[0-9][0-9]")),
+            # A malformed blob cannot be rebuilt into an item, so it is left out
+            # rather than failing the whole page.
+            since = and_(
+                func.json_valid(getattr(model, JSON_COLUMN_NAME)),
+                or_(
+                    recorded >= func.julianday(cutoff_utc.isoformat()),
+                    recorded.is_(None),
+                    ~or_(raw.like("%Z"), raw.op("GLOB")("*[+-][0-9][0-9]:[0-9][0-9]")),
+                ),
             )
         else:
             since = or_(model.finished_at >= cutoff_utc, model.finished_at.is_(None))
@@ -125,10 +129,14 @@ class SQLTargetRunStorage(
     # query matches the expression index (:meth:`_finished_key_index_ddl`)
     # exactly; SQLite never matches one against a bound parameter. ``json_valid``
     # keeps a malformed blob from failing every write to the table once indexed.
-    _SQLITE_FINISHED_KEY = (
-        f"julianday(CASE WHEN json_valid({JSON_COLUMN_NAME}) "
+    _SQLITE_FINISHED_RAW = (
+        f"(CASE WHEN json_valid({JSON_COLUMN_NAME}) "
         f"THEN json_extract({JSON_COLUMN_NAME}, '$.finished_at') END)"
     )
+    _SQLITE_FINISHED_KEY = f"julianday{_SQLITE_FINISHED_RAW}"
+    # The widest UTC offset, in days: how far ``julianday`` can misplace a value
+    # with no offset suffix, which it reads as UTC.
+    _MAX_OFFSET_DAYS = 14 / 24
 
     def _finished_key_index_ddl(self) -> str:
         """The SQLite expression index the keyset read seeks on.
@@ -174,33 +182,44 @@ class SQLTargetRunStorage(
         success = model.status == Status.SUCCESS.name
         if dialect == "sqlite":
             key: Any = literal_column(self._SQLITE_FINISHED_KEY)
-            raw = func.json_extract(getattr(model, JSON_COLUMN_NAME), "$.finished_at")
-            unplaceable = and_(
-                success,
-                raw.isnot(None),
-                or_(
-                    key.is_(None),
-                    ~or_(raw.like("%Z"), raw.op("GLOB")("*[+-][0-9][0-9]:[0-9][0-9]")),
-                ),
-            )
+            raw: Any = literal_column(self._SQLITE_FINISHED_RAW)
             cutoff_key: Any = (
                 func.julianday(cutoff_utc.isoformat()) if cutoff_utc else None
             )
+            offset_less = ~or_(
+                raw.like("%Z"), raw.op("GLOB")("*[+-][0-9][0-9]:[0-9][0-9]")
+            )
+            # Two probes, each seeking on the expression index: a value SQLite
+            # cannot parse (null key), and one with no offset that julianday may
+            # misplace by up to the widest offset -- only near or past the cutoff,
+            # since one further back is behind it under any reading. A malformed
+            # blob reads as no value at all (``raw`` is null): it cannot be rebuilt
+            # into an item either way, so it is passed over, not a reason to stop.
+            near = (
+                key >= cutoff_key - self._MAX_OFFSET_DAYS
+                if cutoff_key is not None
+                else key.isnot(None)
+            )
+            unplaceable = [
+                and_(success, key.is_(None), raw.isnot(None)),
+                and_(success, near, offset_less),
+            ]
         else:
             key = model.finished_at
-            unplaceable = and_(success, model.finished_at.is_(None))
+            unplaceable = [and_(success, model.finished_at.is_(None))]
             cutoff_key = cutoff_utc
         session = self._get_session_without_retry()
         try:
-            if not self._keyset_checked:
-                # Once per storage: every writer stamps an aware finished_at, so a
-                # row that cannot be placed is legacy and does not appear later.
-                if session.query(uuid_col).filter(unplaceable).first() is not None:
-                    raise NotImplementedError(
-                        "successful targets with a completion time that cannot be "
-                        "ordered in SQL"
-                    )
-                self._keyset_checked = True
+            if after is None:
+                # On every scan's first page, not once per process: a row written
+                # later that cannot be placed would otherwise be passed over for
+                # good. Each probe is an index seek, so this stays cheap.
+                for probe in unplaceable:
+                    if session.query(uuid_col).filter(probe).first() is not None:
+                        raise NotImplementedError(
+                            "successful targets with a completion time that cannot "
+                            "be ordered in SQL"
+                        )
             query = session.query(model, key).filter(success, key.isnot(None))
             if cutoff_key is not None:
                 query = query.filter(key >= cutoff_key)

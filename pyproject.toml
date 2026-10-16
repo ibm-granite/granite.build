@@ -59,7 +59,7 @@ dependencies = [
     "regex",
     # Utilities
     "dateparser",
-    "filelock",
+    "filelock>=3.13.0",  # FileLock(is_singleton=True)
     "humanize",
     "openai",
     "packaging",

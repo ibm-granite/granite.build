@@ -295,6 +295,8 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
             backend_total, page_results = service.search_lineage_by_tags(
                 body.tags, _SEARCH_SCAN_BACKEND_PAGE_SIZE, backend_offset
             )
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.exception("Lineage tag search failed")
             raise HTTPException(
@@ -328,11 +330,11 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
     )
 
 
-# The only route in this file taking query params. A GET with filters is what a UI
-# wants for a shareable, bookmarkable lineage view, and every filter here maps to an
-# indexed text column, so there is no shape a caller can ask for that forces a scan.
-# There is no POST form: the filters are a handful of scalars, so a body would carry
-# nothing a query string cannot, at the cost of an unbookmarkable URL.
+# A GET with filters is what a UI wants for a shareable, bookmarkable lineage view,
+# and every filter here maps to an indexed text column, so there is no shape a
+# caller can ask for that forces a scan. The POST form below exists only for
+# ``job_ids``: a grouped node of a few hundred runs overruns proxy URL limits in a
+# query string.
 @lineage_api.get("/graph", tags=["lineage-index"])
 def query_lineage_graph_get(
     request: Request,
@@ -364,6 +366,17 @@ def query_lineage_graph_get(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=exc.errors(include_url=False, include_context=False),
         ) from exc
+    return query_lineage_graph(request, body)
+
+
+@lineage_api.post("/graph", tags=["lineage-index"])
+def query_lineage_graph_post(
+    request: Request, body: LineageQueryRequest
+) -> LineageGraphResponse:
+    """The GET form with the query in a body, for a ``job_ids`` list too long for
+    a URL. One walk over every id, so the runs are grouped across the whole set and
+    the per-level cap and ``job_ids`` limit apply to the expansion as a whole.
+    """
     return query_lineage_graph(request, body)
 
 
@@ -475,6 +488,10 @@ def query_lineage_graph(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(e),
         ) from e
+    except HTTPException:
+        # Raised on purpose (e.g. from the authorization callback): not a storage
+        # failure, so it keeps its own status.
+        raise
     except Exception as e:
         logger.exception("Lineage graph query failed")
         raise HTTPException(
@@ -570,6 +587,10 @@ def list_lineage_jobs(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
         ) from e
+    except HTTPException:
+        # Raised on purpose (e.g. from the authorization callback): not a storage
+        # failure, so it keeps its own status.
+        raise
     except Exception as e:
         logger.exception("Lineage job listing failed")
         raise HTTPException(

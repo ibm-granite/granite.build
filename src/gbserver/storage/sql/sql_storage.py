@@ -458,47 +458,81 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 else "CREATE INDEX"
             )
             with engine.connect() as connection:
-                invalid = (
-                    self.__invalid_postgres_indexes(connection) if concurrent else set()
-                )
-                for columns in self.composite_indexes:
-                    for col in columns:
-                        _validate_sql_identifier(col, "column name")
-                    col_suffix = "_".join(columns)
-                    full_name = f"ix_{self.table_name}_{col_suffix}"
-                    if len(full_name) > 63:
-                        name_hash = hashlib.sha1(full_name.encode()).hexdigest()[:7]
-                        full_name = f"ix_{name_hash}_{col_suffix}"[:63]
-                    if full_name in invalid:
-                        self.logger.warning(
-                            f"Index {full_name} on {self.table_name} is invalid (an "
-                            "interrupted concurrent build); dropping and rebuilding it."
-                        )
-                        index_ref = (
-                            f"{self._db_schema}.{full_name}"
-                            if self._db_schema
-                            else full_name
-                        )
-                        connection.execute(
-                            text(f"DROP INDEX CONCURRENTLY IF EXISTS {index_ref};")
-                        )
-                    elif full_name in existing:
-                        continue
-                    connection.execute(
-                        text(
-                            f"{create} {full_name} ON "
-                            f"{self.__get_sql_table_name_reference()} ({', '.join(columns)});"
-                        )
+                if concurrent and not self.__try_index_build_lock(connection):
+                    # Another process (a replica starting alongside) is checking or
+                    # building this table's indexes. Its in-progress build reads
+                    # as INVALID, so going on would drop it and build it twice.
+                    self.logger.info(
+                        f"Composite indexes on {self.table_name} are being built by "
+                        "another process; skipped here."
                     )
-                connection.commit()
+                    return
+                try:
+                    invalid = (
+                        self.__invalid_postgres_indexes(connection)
+                        if concurrent
+                        else set()
+                    )
+                    for columns in self.composite_indexes:
+                        for col in columns:
+                            _validate_sql_identifier(col, "column name")
+                        col_suffix = "_".join(columns)
+                        full_name = f"ix_{self.table_name}_{col_suffix}"
+                        if len(full_name) > 63:
+                            name_hash = hashlib.sha1(full_name.encode()).hexdigest()[:7]
+                            full_name = f"ix_{name_hash}_{col_suffix}"[:63]
+                        if full_name in invalid:
+                            self.logger.warning(
+                                f"Index {full_name} on {self.table_name} is invalid (an "
+                                "interrupted concurrent build); dropping and rebuilding it."
+                            )
+                            index_ref = (
+                                f"{self._db_schema}.{full_name}"
+                                if self._db_schema
+                                else full_name
+                            )
+                            connection.execute(
+                                text(f"DROP INDEX CONCURRENTLY IF EXISTS {index_ref};")
+                            )
+                        elif full_name in existing:
+                            continue
+                        connection.execute(
+                            text(
+                                f"{create} {full_name} ON "
+                                f"{self.__get_sql_table_name_reference()} ({', '.join(columns)});"
+                            )
+                        )
+                    connection.commit()
+                finally:
+                    # A session-level lock outlives the transaction and stays with
+                    # the pooled connection, so release it on every exit.
+                    if concurrent:
+                        connection.execute(
+                            text("SELECT pg_advisory_unlock(hashtext(:key))"),
+                            {"key": self.__index_build_lock_key()},
+                        )
         except Exception as e:
             self.logger.warning(f"Error creating composite indexes: {e}")
+
+    def __index_build_lock_key(self) -> str:
+        return f"gb_composite_indexes:{self._db_schema or ''}.{self.table_name}"
+
+    def __try_index_build_lock(self, connection: Any) -> bool:
+        """Take this table's index-build advisory lock (session level), or ``False``
+        when another session holds it. Never waits: a concurrent build itself
+        waits on other sessions' snapshots, so waiting here could deadlock."""
+        return bool(
+            connection.execute(
+                text("SELECT pg_try_advisory_lock(hashtext(:key))"),
+                {"key": self.__index_build_lock_key()},
+            ).scalar()
+        )
 
     def __invalid_postgres_indexes(self, connection: Any) -> set[str]:
         """Names of this table's indexes Postgres marks ``INVALID``.
 
-        An in-progress concurrent build is invalid too; dropping it makes that
-        build fail and this one replace it, so the index still ends up valid.
+        Read under the index-build lock, so no other process's build is in
+        progress: an invalid index here is a leftover of an interrupted one.
         """
         rows = connection.execute(
             text(

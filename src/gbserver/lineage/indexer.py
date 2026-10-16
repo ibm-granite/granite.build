@@ -793,7 +793,9 @@ def _finished_after_page(
         after,
         _SCAN_PAGE_SIZE,
     )
-    return [(key, t) for key, t in page if isinstance(t, StoredTargetRun)]
+    # Not filtered by item type here: the caller's page-size stop and cursor
+    # must see the page as the storage returned it.
+    return page
 
 
 def _in_instant_order(targets: List[StoredTargetRun]) -> List[StoredTargetRun]:
@@ -929,6 +931,8 @@ class TargetLineageIndexer(JobLineageIndexer):
         held_key: Any = None
         while page:
             for key, target in page:
+                if not isinstance(target, StoredTargetRun):
+                    continue
                 if held and key != held_key:
                     yield from _in_instant_order(held)
                     held = []

@@ -864,3 +864,42 @@ def test_job_detail_carries_detail_denied():
             _fake_request("member", "member@example.com"), "J1"
         )
     assert detail.detail_denied is True
+
+
+def test_query_graph_post_form_walks_every_job_id_at_once():
+    """A grouped node's ids go in one walk, so grouping spans the whole set."""
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return {"root_id": "", "nodes": [], "edges": []}
+
+    ids = [f"J{i}" for i in range(300)]
+    service = _db_service(query_graph=fake)
+    with (
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+        patch.object(lineage_mod, "is_super_admin", return_value=False),
+    ):
+        lineage_mod.query_lineage_graph_post(
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(job_ids=ids, direction="upstream"),
+        )
+    assert seen["job_ids"] == ids
+    assert seen["direction"] == "upstream"
+
+
+def test_query_graph_keeps_an_http_error_raised_inside_the_walk():
+    """An HTTPException from the auth callback is not an index failure (503)."""
+
+    def fake(**kwargs):
+        raise HTTPException(status_code=403, detail="nope")
+
+    service = _db_service(query_graph=fake)
+    with (
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+        pytest.raises(HTTPException) as caught,
+    ):
+        lineage_mod.query_lineage_graph_get(
+            _fake_request("member", "member@example.com"), uri="s3://b/x"
+        )
+    assert caught.value.status_code == 403

@@ -162,6 +162,16 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         """Return which of ``job_ids`` already have rows."""
         raise NotImplementedError
 
+    def delete_all_rows(self) -> int:
+        """Delete every row, keeping the table; return how many were deleted.
+
+        Not ``delete_table``: a process that already resolved the table (a running
+        gbserver or indexer) keeps its cached model and never recreates a dropped
+        table, so its reads would see an empty index and its writes fail until a
+        restart.
+        """
+        raise NotImplementedError
+
     def get_tags(self, job_ids: List[str]) -> Dict[str, List[str]]:
         """Return each job's tags as sorted ``k=v`` strings, keyed by ``job_id``."""
         raise NotImplementedError

@@ -69,7 +69,8 @@ from gbserver.types.context import CliEnvironment, pass_environment
         "Drop every gb_lineage_index row and re-seed the checkpoint at 'all', so "
         "the next scan rebuilds the index from scratch. Needed after a URI "
         "normalization change: --force alone re-indexes on top of the old rows, "
-        "which keep their old-form URIs. Stop the indexer first. Implies "
+        "which keep their old-form URIs. Stop the indexer first, or a scan in "
+        "progress may write old rows back. Implies "
         "--base-timestamp all --force."
     ),
 )
@@ -163,10 +164,11 @@ def cli(
 
     assert base_timestamp is not None
     if rebuild:
-        # Drop before seeding: seeding 'all' cannot fail, and a dropped table is
-        # recreated on the next write.
-        storage.lineage_row_storage.delete_table()
-        click.echo("Dropped every gb_lineage_index row.")
+        # Rows are deleted, not the table dropped: a running gbserver or indexer
+        # keeps its cached table model and would not recreate a dropped one.
+        # Deleted before seeding, since seeding 'all' cannot fail.
+        deleted = storage.lineage_row_storage.delete_all_rows()
+        click.echo(f"Deleted {deleted} gb_lineage_index row(s).")
     try:
         wrote = indexer.seed_if_absent(
             storage,

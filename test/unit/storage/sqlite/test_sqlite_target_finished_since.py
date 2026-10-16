@@ -224,3 +224,36 @@ def test_a_malformed_blob_still_writes_once_indexed(targets):
             text(f"UPDATE {table} SET json = '{{' WHERE uuid = :u"), {"u": uuid}
         )
     _add(storage, "next", CUTOFF)
+
+
+def test_a_malformed_blob_is_passed_over_not_a_stop(targets):
+    """A blob SQLite cannot parse must not fail every scan: it is read as no value
+    and skipped, and the rest are still paged by keyset."""
+    storage, table = targets
+    bad = _add(storage, "bad", CUTOFF)
+    _add(storage, "good", CUTOFF + timedelta(hours=1))
+    with storage._engine.begin() as conn:  # pylint: disable=protected-access
+        conn.execute(
+            text(f"UPDATE {table} SET json = '{{' WHERE uuid = :u"), {"u": bad}
+        )
+    assert _keyset_names(storage) == ["good"]
+    assert _names(storage) == {"good"}
+
+
+def test_an_unplaceable_row_written_later_still_falls_back(targets):
+    """The probe runs on every scan's first page, not once per process."""
+    storage, table = targets
+    _add(storage, "t", CUTOFF)
+    assert _keyset_names(storage, cutoff=CUTOFF) == ["t"]
+    uuid = _add(storage, "legacy", CUTOFF + timedelta(hours=1))
+    _rewrite(storage, table, uuid, json_value="2026-09-25T19:00:00")
+    with pytest.raises(NotImplementedError):
+        storage.get_successful_finished_after(CUTOFF, None, 10)
+
+
+def test_an_offset_less_row_far_behind_the_cutoff_does_not_stop_the_keyset(targets):
+    storage, table = targets
+    uuid = _add(storage, "old", CUTOFF - timedelta(days=3))
+    _rewrite(storage, table, uuid, json_value="2026-09-22T18:00:00")
+    _add(storage, "new", CUTOFF + timedelta(hours=1))
+    assert _keyset_names(storage, cutoff=CUTOFF) == ["new"]
