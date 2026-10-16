@@ -249,7 +249,8 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   Non-image (public-image) steps have no `IMAGE_REF`, so the check is skipped.
   A step whose Makefile sets `override STEP_PUBLISHABLE := false` (an exemplar kept
   only as a template, e.g. [`eval/example/skypilot`](eval/example/skypilot/README.md))
-  refuses `publish-step` outright, before writing anything.
+  refuses `publish-step` outright, before writing anything. The guard fails closed:
+  only the exact value `true` (the default) publishes; any other value blocks.
 * **`check-published`** — verify the committed generated artifacts still match a
   fresh render of the current source (see
   [Generated artifacts and drift](#generated-artifacts-and-drift)). Re-renders
