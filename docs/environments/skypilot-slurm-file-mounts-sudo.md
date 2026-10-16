@@ -79,7 +79,7 @@ Four behaviors compose into the failure. None is individually a bug.
 
 ### 1. The step must ship files, at a destination it cannot move
 
-`configurations/assets/environments/skypilot/steps/data/dpk/step.yaml:189` declares:
+`configurations/assets/environments/skypilot/steps/dpk/step.yaml:189` (at `b9df4dd`; the step now lives at `steps/data/dpk`) declares:
 
 ```yaml
 file_mounts:

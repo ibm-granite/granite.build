@@ -696,7 +696,7 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 
    ```bash
    AWS_PROFILE=gb-skypilot make -C steps/data/dpk/skypilot test TEST_DIR=test/aws-tok
-   # or byoc, and the heavier dpk pii fixture:
+   # or the heavier pii fixture:
    AWS_PROFILE=gb-skypilot make -C steps/data/dpk/skypilot test TEST_DIR=test/aws-pii
    ```
 
