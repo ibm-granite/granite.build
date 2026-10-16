@@ -710,9 +710,9 @@ class Settings(BaseSettings):
 
     Off by default, so a production deployment that forgets to configure a real
     provider fails fast at startup rather than silently serving every caller as
-    the standalone system owner. Set it only for a
-    deliberate single-tenant deployment that genuinely wants no authentication;
-    ``create_app`` logs a loud warning when it takes effect.
+    the standalone system owner. Set it only for a deliberate single-tenant
+    deployment that genuinely wants no authentication; ``create_app`` logs a
+    loud warning when it takes effect.
     """
 
     oidc_issuer: str | None = None
