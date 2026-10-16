@@ -6,7 +6,7 @@ Granite.build space.
 
 Subdirectories contain step implementations (`eval`, `byoc`, etc.), each with
 per-compute-environment subdirectories (`skypilot`, `lsf`, `k8s`, ...). For
-example, `steps/eval/skypilot` holds the eval step's SkyPilot implementation.
+example, `steps/eval/example/skypilot` holds the eval step's SkyPilot implementation.
 
 > **Audience:** step *developers* authoring and publishing step implementations.
 > If you are instead *using* steps in a `build.yaml` (referencing, configuring, or
@@ -141,7 +141,7 @@ Present or absent depending on what the step needs:
   `testpaths`). Cluster-specific build tests live in a **per-cluster subdir**
   (`test/<cluster>/`, e.g. `test/slurm/`, `test/docker/`) so each cluster's test
   is self-contained; cluster-agnostic unit tests for `src/` can stay at `test/`'s
-  root (see `eval/skypilot/test/test_eval.py`). It sits beside `src/` but is
+  root (see `eval/example/skypilot/test/test_eval.py`). It sits beside `src/` but is
   **not** bundled into the deployable step.
 * **`test-data/`** — fixtures for the tests in `test/`, mirrored into
   the **same per-cluster subdir** (`test-data/<cluster>/`, e.g. a build test's
@@ -151,7 +151,7 @@ Present or absent depending on what the step needs:
 * **`README.md`** — the **development-oriented** doc: how the step is
   generated/built/published, its test modes, drift, and framework framing, plus a
   prominent pointer to `USAGE.md` (see [`byoc/skypilot`](byoc/skypilot/README.md) and
-  [`eval/skypilot`](eval/skypilot/README.md) for the two step-type examples). Unlike
+  [`eval/example/skypilot`](eval/example/skypilot/README.md) for the two step-type examples). Unlike
   `USAGE.md`, this authoring README is **not** published — `publish-step` ships
   `USAGE.md` as the released step's `README.md` instead. Conventional for every step,
   though not needed to build or render one.
@@ -247,6 +247,9 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   manifest inspect`) and needs no credentials for a public image. Bypass it with
   `make publish-step PUBLISH_REQUIRE_IMAGE=false` (offline/local publishing).
   Non-image (public-image) steps have no `IMAGE_REF`, so the check is skipped.
+  A step whose Makefile sets `override STEP_PUBLISHABLE := false` (an exemplar kept
+  only as a template, e.g. [`eval/example/skypilot`](eval/example/skypilot/README.md))
+  refuses `publish-step` outright, before writing anything.
 * **`check-published`** — verify the committed generated artifacts still match a
   fresh render of the current source (see
   [Generated artifacts and drift](#generated-artifacts-and-drift)). Re-renders
@@ -391,10 +394,10 @@ Two worked examples, one per step type, each in a per-cluster subdir:
   so the test's `space_uri` resolves. End-to-end execution needs a real SkyPilot
   cluster (see the local `make slurm-setup`).
 * **Custom-image step on SkyPilot/aws** — the `eval` build test at
-  [`eval/skypilot/test/aws/test_skypilot_aws_eval.py`](eval/skypilot/test/aws/test_skypilot_aws_eval.py),
+  [`eval/example/skypilot/test/aws/test_skypilot_aws_eval.py`](eval/example/skypilot/test/aws/test_skypilot_aws_eval.py),
   driven by its fixtures in
-  [`eval/skypilot/test-data/aws/`](eval/skypilot/test-data/aws/). Run it with
-  `make -C steps/eval/skypilot test`, which renders the Space (`make space`) first
+  [`eval/example/skypilot/test-data/aws/`](eval/example/skypilot/test-data/aws/). Run it with
+  `make -C steps/eval/example/skypilot test`, which renders the Space (`make space`) first
   so the test's `space_uri` resolves. End-to-end execution provisions a real EC2
   instance via SkyPilot, which **pulls the eval image from its registry** by the
   reference frozen into the step's `image_id` — so the image must be **published
@@ -501,7 +504,7 @@ resolves the step differs (the `space_uri`):
 copies **together**, so a committed `test/steps/<step>/<env>/` always has a matching
 published step to resolve against. Only per-cluster build tests (`test/<cluster>/`
 subdirs) are copied — `src/` and cluster-agnostic unit tests at `test/`'s root (e.g.
-[`eval/skypilot/test/test_eval.py`](eval/skypilot/test/test_eval.py)) stay Mode-1
+[`eval/example/skypilot/test/test_eval.py`](eval/example/skypilot/test/test_eval.py)) stay Mode-1
 only.
 
 > **Image steps: keep the published image tag and your local build in sync.** For a

@@ -42,6 +42,11 @@
 #                no-op default so there is no "overriding recipe" warning. A step
 #                with test infrastructure sets this and delegates to the repo-root
 #                Makefile, e.g.  test-setup:  $(MAKE) -C $(REPO_ROOT) slurm-setup
+#   STEP_PUBLISHABLE  (optional, default `true`) set to `false` for a step that must
+#                never be promoted into the committed assets tree (e.g. an exemplar
+#                kept only as a template). `publish-step` then refuses to run;
+#                `space`, `image` and `test` are unaffected. Use `override
+#                STEP_PUBLISHABLE := false` so a command-line value cannot re-enable it.
 #
 # Whether a step builds a custom image is auto-detected: if a Dockerfile sits
 # next to the including Makefile, `image`/`publish-image` are real and the
@@ -251,6 +256,9 @@ MODE2_SPACE_URI  ?= $(MODE2_DOTDOT)configurations/spaces/local
 # non-image steps, whose IMAGE_REF is empty (see require-image-published).
 PUBLISH_REQUIRE_IMAGE ?= true
 
+# STEP_PUBLISHABLE gates `publish-step` (see the includer variables above).
+STEP_PUBLISHABLE ?= true
+
 .PHONY: all help image publish-image space publish-step check-published test test-setup clean
 
 # ---- Default goal ----------------------------------------------------------
@@ -270,7 +278,7 @@ help:
 	@echo
 	@echo "Targets:"
 	@echo "  space          render step.yaml + a space.yaml into the Space $(SPACE_DIR)/ (offline)"
-	@echo "  publish-step   render the step into the assets tree (+ USAGE.md as README.md) + copy build tests into test/steps/ (not in all; image steps: image must be published first, override with PUBLISH_REQUIRE_IMAGE=false)"
+	@echo "  publish-step   $(if $(filter false,$(STEP_PUBLISHABLE)),[DISABLED for this step: STEP_PUBLISHABLE=false] ,)render the step into the assets tree (+ USAGE.md as README.md) + copy build tests into test/steps/ (not in all; image steps: image must be published first, override with PUBLISH_REQUIRE_IMAGE=false)"
 	@echo "  check-published  re-render to a temp dir and diff against the committed artifacts; exit 1 on drift"
 	@echo "  image          build the image from $(DOCKERFILE) for $(PLATFORM)  (no-op when no Dockerfile is present)"
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
@@ -358,6 +366,16 @@ define guard-publish-paths
 				echo "[publish-step] refusing: publish path resolves to '$$d' (too broad to rm -rf)"; exit 1;; \
 		esac; \
 	done
+endef
+
+# require-publishable — fail publish-step before it writes anything when the step has
+# opted out of publishing (STEP_PUBLISHABLE=false), so an exemplar/template step can
+# never land in the committed assets tree.
+define require-publishable
+	@if [ "$(STEP_PUBLISHABLE)" = "false" ]; then \
+		echo "[publish-step] refusing: step '$(STEP_NAME)' is not publishable (STEP_PUBLISHABLE=false in its Makefile)."; \
+		exit 1; \
+	fi
 endef
 
 # require-image-published — for custom-image steps, fail publish-step unless the step's
@@ -448,6 +466,7 @@ space:
 # configurations/spaces/local instead of the local space/. Deliberately NOT part
 # of `all`: publish-step writes the committed assets tree.
 publish-step:
+	$(call require-publishable)
 	$(call require-image-published)
 	$(call guard-publish-paths)
 	@mkdir -p $(PUBLISH_STEP_DIR)
