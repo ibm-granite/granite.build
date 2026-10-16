@@ -110,6 +110,25 @@ config:
         account: grp_granite_dot_build
         qos: grp_granite_dot_build_medium
         gpus: "h200:1"
+        # Without this, pyxis's own NVIDIA hook (/etc/enroot/hooks.d/98-nvidia.sh)
+        # sees NVIDIA_VISIBLE_DEVICES unset (defaults to "void") and exits before
+        # injecting the host driver libraries into the container at all — nvidia-smi
+        # still works (device nodes are visible via SLURM's own --gres allocation,
+        # a separate mechanism), but libcuda.so.1 is missing, so anything that
+        # actually loads the CUDA driver (vLLM, torch.cuda) fails fast ("vLLM exited
+        # with code 1 before becoming ready" / ImportError: libcuda.so.1). Confirmed
+        # fixed via direct sbatch+pyxis testing: --export on the #SBATCH line alone
+        # (no srun-level override needed) correctly propagates into the container.
+        #
+        # LD_LIBRARY_PATH is separately needed: the hook puts the driver libs in
+        # /usr/lib/x86_64-linux-gnu (confirmed present, both libcuda.so.1 and the
+        # libcuda.so symlink), but the container's LD_LIBRARY_PATH is empty, so
+        # torch's Inductor JIT compiler can't find libcuda.so when it shells out
+        # for CUDA codegen ("torch._inductor.exc.InductorError: AssertionError:
+        # libcuda.so cannot found!") even though vLLM's own direct dlopen of
+        # libcuda.so.1 succeeds. Confirmed fixed via a direct torch.cuda tensor op
+        # inside the container (CUDA: True, real add succeeded) with this set.
+        export: "ALL,NVIDIA_VISIBLE_DEVICES=all,NVIDIA_DRIVER_CAPABILITIES=all,LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu,TRITON_LIBCUDA_PATH=/usr/lib/x86_64-linux-gnu"
         # NODE EXCLUSIONS: the LSF bluevela environment excludes several hosts
         # known to fail (CUDA init errors, missing /opt/nvme) via bsub's -R
         # select[]. The SLURM equivalent is `exclude` (comma-separated hostnames,
