@@ -292,11 +292,19 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > runtime (`torch.compile`/Inductor, raw Triton kernels, FlashInfer's JIT sampler) fails with
 > `libcuda.so cannot found!` or `Could not find nvcc`. Build your step's image `FROM` the shared
 > [`images/cuda-devel-base`](../../images/cuda-devel-base/README.md) instead. That image's own README
-> covers two residual gaps it does NOT solve: pip/uv can still shadow the toolkit at the package level,
-> and — specific to this SLURM/pyxis backend — the container's NVIDIA driver libraries are injected at
-> launch time, after the image is built, so Triton's own driver discovery (which checks `ldconfig -p`
-> before falling back to `LD_LIBRARY_PATH`) needs an `ldconfig` refresh run as root at container
-> start, not something an image can bake in ahead of time.
+> covers two residual gaps it does NOT solve, split across two different layers:
+> this environment's `sbatch_options.export` already sets `NVIDIA_VISIBLE_DEVICES`/
+> `NVIDIA_DRIVER_CAPABILITIES` so pyxis actually injects the host's driver libraries into the
+> container (without it, pyxis's NVIDIA hook sees `NVIDIA_VISIBLE_DEVICES` unset, defaults to
+> `"void"`, and skips injection entirely — no `ldconfig` can fix a library that was never injected);
+> but once injected, the container's own `/etc/ld.so.cache` is still stale (built at image time, never
+> refreshed), so Triton's driver discovery (`ldconfig -p` first, `LD_LIBRARY_PATH` only as a fallback)
+> still won't find it until a step's own launch script runs `ldconfig` as root at container start —
+> that part stays a genuine per-consumer concern, pip/uv can also still shadow the toolkit at the
+> package level regardless of either fix.
+>
+> Enroot's image cache is confirmed per-node (local NVMe, not shared) — the first job to land on a
+> given node after an image changes pays a real cold-import cost; that's expected, not a hang.
 
 ### `slurm_image_cache` — shared `.sqsh` image cache
 

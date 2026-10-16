@@ -69,12 +69,40 @@ library that doesn't exist yet at build time. Triton's own driver discovery
 at container launch breaks Triton driver discovery regardless of toolkit
 presence.
 
-This stays a **runtime, per-consumer concern**: your step's own launch script
-must run `ldconfig` as root after the container starts, before launching
-anything that touches Triton's driver discovery. See granite-evals'
-`serving.py` (`_refresh_libcuda_cache()`) for the pattern already applied
-there. Not confirmed whether LSF's enroot/pyxis setup has the same gap —
-treat as unverified, not assumed-same.
+This has two parts, split across two different places on purpose:
+
+- **Driver injection itself** is a SLURM-environment-level concern, already
+  handled centrally — not something each step repeats. The granite.build
+  SLURM `environment.yaml` files (`configurations/assets/environments/skypilot/slurm/*/environment.yaml`)
+  set `sbatch_options.export` to `NVIDIA_VISIBLE_DEVICES=all,NVIDIA_DRIVER_CAPABILITIES=all,...`
+  — without this, pyxis's own NVIDIA hook sees it unset, defaults to `"void"`,
+  and skips driver injection entirely (`libcuda.so.1` is then simply absent
+  from the container, no amount of `ldconfig` fixes that). If you're deploying
+  a GPU step to a **new** environment (a different SLURM cluster, or LSF —
+  not confirmed to need the same fix, see below), you need this set there
+  too; see `docs/environments/skypilot-slurm.md`'s GPU-steps callout.
+- **The `ldconfig` cache refresh**, once the driver *is* injected, stays a
+  **runtime, per-consumer concern** your step's own launch script must do:
+  run `ldconfig` as root after the container starts, before launching
+  anything that touches Triton's driver discovery. See granite-evals'
+  `serving.py` (`_refresh_libcuda_cache()`) for the pattern already applied
+  there. Not confirmed whether LSF's enroot/pyxis setup has the same gap —
+  treat as unverified, not assumed-same.
+
+Both are specific to **this cluster's pyxis/enroot setup**, not something
+this image (or any image) can fix once for every deployment target — a
+different SLURM cluster or container runtime may not need either.
+
+### Note: enroot's image cache is per-node, confirmed
+
+Each compute node caches imported images under its own local NVMe
+(`/opt/nvme/enroot/enroot-cache/user-$(id -u)`, confirmed as node-local XFS
+on a local block device, not a shared/network filesystem). The first job that
+lands on a given node after this image changes pays a real cold-import cost
+(downloading layers, converting whiteouts, building the squashfs — tens of
+minutes for a multi-GB CUDA devel image); a job that happens to land on a
+node that already imported this exact tag is fast. This is expected
+behavior, not a bug — don't mistake a slow cold-import for a hang.
 
 ## Version
 
