@@ -58,7 +58,8 @@ of them).
 out to change a hand-authored step under `configurations/assets/.../steps/*`, prefer
 migrating it into `steps/` first (add a `step-template.yaml` + `Makefile`, move any
 code into `src/`, then let `make publish-step` regenerate the asset) rather than
-editing the released asset in place.
+editing the released asset in place. To start a new step, see
+[Creating a new step with Claude Code](#creating-a-new-step-with-claude-code).
 
 ### What promotion does — and what the framework is *for*
 
@@ -105,6 +106,61 @@ So the value is **not** "less YAML to maintain." It is:
 place, bypassing the source, its tests, and the sync — the same reason you don't patch
 a build artifact instead of its source. Change the step in `steps/` and re-run
 `make publish-step`.
+
+## Creating a new step with Claude Code
+
+The repo ships a Claude Code skill,
+[`create-framework-step`](../.claude/skills/create-framework-step/SKILL.md), that
+generates the skeleton of a new step in this framework. In Claude Code, run
+`/create-framework-step`, or just ask to create a new framework step.
+
+It asks two rounds of questions, skipping any your request already answers:
+
+1. **What the step is:** its name, its category, and comma-separated lists of input
+   and output names. The category is `eval`, `train`, `tune`, `data`, or one you
+   type, and it becomes the directory under `steps/`: the step lands at
+   `steps/<category>/<name>/<env>/` and is referenced as
+   `space://steps/<category>/<name>` (see [Nested steps](#nested-steps)).
+2. **Where it runs:** the environment (`skypilot`, `docker` or `bash`), a public or
+   custom image (see [Two step types](#two-step-types)), and which clusters get
+   build tests.
+
+It then writes the whole skeleton:
+
+* **`Makefile`**: `STEP_NAME`, the include of `common.mk`, `test-setup` targets for the
+  local clusters chosen, and `REGISTRY` for a custom image.
+* **`step-template.yaml`**: each input and output with `type: dataset` by default, an
+  empty step-specific config block for you to fill in, and a launcher whose `run:`
+  passes every input and output to `src/run.sh`.
+* **`src/setup.sh` and `src/run.sh`**: comment-only stubs that say what each script is
+  for and how `step-template.yaml` calls it. The skill implements nothing.
+* **`Dockerfile`**, for a custom image: a buildable Debian-slim skeleton with a
+  non-root user.
+* **One build test per chosen cluster**, in `test/<cluster>/`, with fixtures in
+  `test-data/<cluster>/`. A test whose `space_uri` is an IBM `github.ibm.com` space is
+  marked `ibm` (see [Two test modes](#two-test-modes)). Fixture outputs are `hf://`
+  datasets that `HfPushCleanupMixin` names per run and deletes afterwards.
+* **`USAGE.md` and `README.md`** outlines.
+
+Everything still to decide is marked `FIXME`, so `grep -rn FIXME steps/<category>/<name>`
+lists it. The skill runs nothing (no `make`, tests or builds) and commits nothing. It
+finishes with your next steps, in order:
+
+1. Check the input and output types.
+2. Describe the configuration you want; you can tell Claude, and it fills it in.
+3. Set the image.
+4. Implement `src/setup.sh` and `src/run.sh`.
+5. Choose test data.
+6. Write the docs.
+7. Run `make space` and `make test`.
+8. `make publish-step` once no `FIXME` remains.
+
+The build tests can't pass until `run.sh` prints the artifact marker (see
+[Emitting data from a step](#emitting-data-from-a-step-stdout-markers)).
+
+**Existing steps.** `byoc`, `dpk` and `eval` predate the category layout and sit one
+level up, at `steps/<name>/<env>/`. `steps/eval/` is still a step itself, so a new step
+in the `eval` category nests inside it until `eval` is moved under a name of its own.
 
 ## Layout of a step/environment directory
 
@@ -523,6 +579,18 @@ published step to resolve against. Only per-cluster build tests (`test/<cluster>
 subdirs) are copied — `src/` and cluster-agnostic unit tests at `test/`'s root (e.g.
 [`eval/eval-example/skypilot/test/test_eval.py`](eval/eval-example/skypilot/test/test_eval.py)) stay Mode-1
 only.
+
+**Remote-space (IBM) build tests.** A cluster that only an IBM space defines (e.g.
+BlueVela SLURM, `space://environments/skypilot/slurm/bluevela`) needs a fixture whose
+`space_uri` is that remote git space, e.g.
+`git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config`. Mark such a
+test `pytestmark = pytest.mark.ibm`. `publish-step` copies a **remote** `space_uri`
+(any `<scheme>://` URI other than `file://`, such as `git://`, `git+ssh://` or
+`https://`, or the scp-like `user@host:path` form) through **unchanged**. It rewrites
+only local ones: a bare path or a `file://` URI. In both modes, a remote-space test resolves
+`space://steps/<name>` from the remote space, so it exercises the step that space
+has, **not** your local source: publish the step to that space's assets before relying
+on it.
 
 > **Image steps: keep the published image tag and your local build in sync.** For a
 > custom-image step, `make publish-step` freezes a concrete image reference into the

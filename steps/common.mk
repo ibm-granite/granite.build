@@ -255,6 +255,18 @@ space := $(empty) $(empty)
 MODE2_PARENTS := test-data steps $(subst /, ,$(STEP_PATH)) $(STEP_ENV) cluster
 MODE2_DOTDOT  := $(subst $(space),,$(foreach s,$(MODE2_PARENTS),../))
 MODE2_SPACE_URI  ?= $(MODE2_DOTDOT)configurations/spaces/local
+# Which buildtest.yaml space_uris publish-step rewrites. LOCAL means a bare path or
+# a file:// URI, as libgbtest's _resolve_space_uri reads them; it is rewritten.
+# REMOTE means any other <scheme>:// URI (git://, git+ssh://, https://, ...) or the
+# scp-like user@host:path form; it is copied unchanged. An ERE can't say "any scheme
+# except file", so file:// lines are rewritten first (FILE_...), then every line
+# not matching REMOTE_... is. Both anchor the URI right after blanks and at most one
+# opening quote, so a local path containing `@`, `:` or `://` (../../a@b:c/space)
+# stays local. The RE is pasted into a single-quoted sed program, so the `'` in the
+# quote class is written as the shell's '"'"'.
+SPACE_URI_VALUE_RE  := ^space_uri:[[:space:]]*["'"'"']?
+FILE_SPACE_URI_RE   := $(SPACE_URI_VALUE_RE)file://
+REMOTE_SPACE_URI_RE := $(SPACE_URI_VALUE_RE)([a-zA-Z][a-zA-Z0-9+.-]*://|[a-zA-Z0-9_][a-zA-Z0-9._-]*@[a-zA-Z0-9.-]+:)
 
 # publish-step refuses to publish a custom-image step until its IMAGE_REF exists on
 # the registry — a step.yaml/build test referencing an unpublished image is broken
@@ -472,7 +484,10 @@ space:
 # itself are intentionally NOT copied; those stay Mode-1 only (run via `make
 # test`). The copied buildtest.yaml files have their space_uri rewritten to
 # $(MODE2_SPACE_URI) so the Mode-2 tests resolve the PUBLISHED step via
-# configurations/spaces/local instead of the local space/. Deliberately NOT part
+# configurations/spaces/local instead of the local space/. Only LOCAL space_uris
+# are rewritten. A REMOTE one (see REMOTE_SPACE_URI_RE, e.g. the IBM
+# git+ssh://github.ibm.com space used by tests marked `ibm`) is copied unchanged:
+# it already resolves the step from that remote space in both modes. Deliberately NOT part
 # of `all`: publish-step writes the committed assets tree.
 publish-step:
 	$(call require-publishable)
@@ -509,7 +524,10 @@ publish-step:
 	@find "$(PUBLISH_STEP_DIR)" "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)" \
 		-name __pycache__ -type d -prune -exec rm -rf {} +
 	@find "$(PUBLISH_TESTDATA_DIR)" -name buildtest.yaml -exec \
-		sed -i.bak 's#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#' {} \; -exec rm -f {}.bak \;
+		sed -E -i.bak \
+			-e '\#$(FILE_SPACE_URI_RE)#s#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#' \
+			-e '\#$(REMOTE_SPACE_URI_RE)#!s#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#' \
+			{} \; -exec rm -f {}.bak \;
 	@echo "[$(STEP_NAME)] published step -> $(PUBLISH_STEP_DIR)"
 	@echo "[$(STEP_NAME)] copied build tests -> $(PUBLISH_TEST_DIR)"
 	@echo "[$(STEP_NAME)] copied fixtures   -> $(PUBLISH_TESTDATA_DIR) (space_uri -> $(MODE2_SPACE_URI))"
