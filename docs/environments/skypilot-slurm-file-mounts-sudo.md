@@ -10,7 +10,7 @@ SSH user is not root. **Containerized steps are NOT affected** — see
 which is why PR #401's containerized filemount test passes on this same environment.
 Today the exposed steps are
 **two steps, both with `src: src`** — `dpk` and **`byoc`**
-(`configurations/assets/environments/skypilot/steps/{dpk,byoc}/step.yaml`, and their
+(`configurations/assets/environments/skypilot/steps/{data/dpk,byoc}/step.yaml`, and their
 `step-template.yaml` sources under `steps/`). `byoc` has the same exposure and has simply
 not been run on BlueVela SLURM yet.
 **First hit by:** `test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_dpk_pii.py`

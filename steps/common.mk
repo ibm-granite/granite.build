@@ -75,7 +75,7 @@
 # ---- Required / defaulted inputs -------------------------------------------
 
 ifndef STEP_NAME
-$(error STEP_NAME must be set by the including Makefile before 'include ../../common.mk')
+$(error STEP_NAME must be set by the including Makefile before its 'include .../common.mk' line)
 endif
 
 # A step builds a custom image iff a Dockerfile is present next to its Makefile.

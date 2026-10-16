@@ -40,9 +40,10 @@ target_expectations:
 # one chain, so no test-local space is needed:
 #   * space://environments/skypilot/slurm/bluevela -> gb-test itself
 #   * space://steps/dpk -> gb-test's own base_uri, the assets repo
-#     (assets.git@gbspace-config-dev), at steps/skypilot/dpk. The URI stays the
-#     deprecated space://steps/dpk on purpose: the assets repo keeps the step
-#     there, not under a data/ category.
+#     (assets.git@gbspace-config-dev), at steps/skypilot/dpk. The URI is
+#     space://steps/dpk, not this repo's space://steps/data/dpk, on purpose: in
+#     the assets repo `skypilot` is an env-partition dir, so `dpk` is the step's
+#     real name there. The assets repo has no data/ category.
 space_uri: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
 # Happy-path run only. The workload is short, so there is no stable RUNNING window to
 # cancel in; cancellation on this environment is covered by test_1step.py.

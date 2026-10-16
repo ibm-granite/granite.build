@@ -636,7 +636,7 @@ pytest -s -m extended --strict-markers \
 
 ## Quickstart: run the aws step tests for the first time
 
-The per-cluster **step tests** (`steps/{byoc,eval,dpk}/skypilot/test/aws/…`) provision a real
+The per-cluster **step tests** (`steps/{byoc,eval}/skypilot/test/aws/…` and `steps/data/dpk/skypilot/test/aws-{tok,pii}/…`) provision a real
 EC2 instance and are gated so they never launch without credentials. Starting from just an AWS
 access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 

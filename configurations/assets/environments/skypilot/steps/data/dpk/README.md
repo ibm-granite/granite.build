@@ -23,11 +23,10 @@ steps:
   - step_uri: space://steps/data/dpk
 ```
 
-> **Deprecated URI: `space://steps/dpk`.** The step used to live at `steps/dpk` and now
-> lives in the `data` category. The old URI still resolves while a build is running
-> because the resolver's env-class match searches `steps/**/dpk/step.yaml`. It is kept
-> for compatibility only and will stop working once another step named `dpk` exists in a
-> different category. Use `space://steps/data/dpk` in new builds.
+> **Moved from `space://steps/dpk`.** The step now lives in the `data` category. The old
+> URI is no longer supported: update builds to `space://steps/data/dpk`. A build that
+> still uses the old URI may happen to resolve, but nothing guarantees which copy of the
+> step it gets.
 
 ## Config contract (`dpk_config`)
 
@@ -351,7 +350,7 @@ being decided invisibly on a node. `gb build start --dry-run` prints the fully r
 build.yaml if you want to check what a run will actually use.
 
 If you need genuine shell logic — a computed path, a conditional, a pipeline — that is not
-this step's job. Use the [`byoc`](../../../byoc/skypilot/USAGE.md) step or the built-in
+this step's job. Use the `byoc` (`steps/byoc/skypilot/USAGE.md`) step or the built-in
 `command` step, either of which runs an arbitrary command alongside your DPK targets.
 
 ## Example build.yaml
@@ -461,4 +460,4 @@ handoff: the consumer may run on a different node or pod and read an absent dire
   but not `args` keys — see [Transform flags](#transform-flags).
 - **One transform per step.** To chain transforms, declare one target per transform and bind
   each output to the next target's input. For work that is not a DPK transform, use
-  [`byoc`](../../../byoc/skypilot/USAGE.md) or the built-in `command` step.
+  `byoc` (`steps/byoc/skypilot/USAGE.md`) or the built-in `command` step.
