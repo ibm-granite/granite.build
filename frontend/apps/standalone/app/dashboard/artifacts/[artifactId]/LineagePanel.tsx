@@ -1,172 +1,226 @@
 'use client'
 
 import * as React from 'react'
-import { Button, InlineLoading, Loading } from '@carbon/react'
-import { CenterSquare, ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
+import { Button, InlineLoading, Loading, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { ArrowLeft, ArrowRight, Launch, ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
+import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
-import { isAxiosError } from 'axios'
-import type { ElkExtendedEdge } from 'elkjs'
 import type { Artifact } from '@granite-build/ui-core/types'
-import { getBuild, getBuildStatus, getArtifactLineage } from '@granite-build/ui-core/api/gbserver'
-import type { ArtifactRunEntry } from '@granite-build/ui-core/api/gbserver'
+import { getBuild, getBuildStatus, getLineageGraph, listArtifacts } from '@granite-build/ui-core/api/gbserver'
 import BuildLineagePanel from '../../builds/[buildId]/LineagePanel'
-import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
+import styles from '../../builds/[buildId]/LineagePanel.module.scss'
+import JobDrawer from '../../builds/[buildId]/JobDrawer'
+import Graph, { type GraphHandle } from '@granite-build/ui-core/components/LineageGraph/Graph'
+import { depthForNextLevel, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import { useLineageExpansion } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
+import { artifactUriSpellings, lineageUri } from '@granite-build/ui-core/lib/artifactUri'
 
-function artifactTypeToNodeType(artifactType: string): NodeType {
-  switch (artifactType.toUpperCase()) {
-    case 'MODEL':   return 'Model'
-    case 'DATASET': return 'Dataset'
-    case 'FILESET': return 'Fileset'
-    case 'BUCKET':  return 'Bucket'
-    default:        return 'Fileset'
-  }
+// ── URI-based artifact lineage panel (lineage index) ──────────────────────────
+
+// Levels loaded each way around the artifact before any Upstream/Downstream click.
+const INITIAL_DEPTH = 3
+
+function levelText(level: { depth: number; exhausted: boolean }) {
+  const n = `${level.depth} ${level.depth === 1 ? 'level' : 'levels'}`
+  if (level.exhausted) return level.depth ? `${n} (all)` : 'none'
+  return n
 }
 
-function buildLineageGraph(
-  artifact: Artifact,
-  runs: ArtifactRunEntry[],
-): { nodes: ElkNodeEx[]; links: ElkExtendedEdge[] } {
-  const nodes: ElkNodeEx[] = []
-  const links: ElkExtendedEdge[] = []
-  const seenNodes = new Set<string>()
-  const seenEdges = new Set<string>()
-
-  const addNode = (node: ElkNodeEx) => {
-    if (!seenNodes.has(node.id)) {
-      seenNodes.add(node.id)
-      nodes.push(node)
-    }
-  }
-
-  const addEdge = (edge: ElkExtendedEdge) => {
-    if (!seenEdges.has(edge.id)) {
-      seenEdges.add(edge.id)
-      links.push(edge)
-    }
-  }
-
-  addNode({
-    id: artifact.uuid,
-    title: artifact.name,
-    type: artifactTypeToNodeType(artifact.artifact_type),
-    width: 224,
-    height: 64,
-    labels: [{ text: artifact.name }],
-  })
-
-  for (const run of runs) {
-    const runId = `run-${run.run_id}`
-    addNode({
-      id: runId,
-      title: run.job_name || run.run_id,
-      type: 'Build',
-      width: 192,
-      height: 64,
-      labels: [{ text: run.job_name || run.run_id }],
-    })
-
-    for (const ref of run.inputs) {
-      const refId = ref.uri ?? `ref-${ref.name}`
-      addNode({
-        id: refId,
-        title: ref.name,
-        type: 'Fileset',
-        width: 224,
-        height: 64,
-        labels: [{ text: ref.name }],
-      })
-      addEdge({ id: `${refId}→${runId}`, sources: [`${refId}-output`], targets: [`${runId}-input`] })
-    }
-
-    for (const ref of run.outputs) {
-      const refId = ref.uri ?? `ref-${ref.name}`
-      addNode({
-        id: refId,
-        title: ref.name,
-        type: 'Fileset',
-        width: 224,
-        height: 64,
-        labels: [{ text: ref.name }],
-      })
-      addEdge({ id: `${runId}→${refId}`, sources: [`${runId}-output`], targets: [`${refId}-input`] })
-    }
-  }
-
-  return { nodes, links }
-}
-
-// ── HF / URI-based artifact lineage panel ─────────────────────────────────────
-
-function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
+function ArtifactLineageGraph({ artifact, groupRuns }: { artifact: Artifact; groupRuns: boolean }) {
   const graphRef = React.useRef<GraphHandle>(null)
   const [rendered, setRendered] = React.useState(false)
+  const [focusNodeId, setFocusNodeId] = React.useState<string | null>(null)
+  const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
+  // The index keys HF repos by their https web URL, not the registry's hf://.
+  const uri = lineageUri(artifact.uri!)
   const { data, isLoading, error } = useQuery({
-    queryKey: ['artifact-lineage', artifact.uri],
-    queryFn: () => getArtifactLineage({ artifact_url: artifact.uri, direction: 'downstream', max_depth: 3 }),
+    queryKey: ['lineage-graph', uri, groupRuns],
+    queryFn: () => getLineageGraph({ uri, direction: 'both', depth: INITIAL_DEPTH, group_runs: groupRuns }),
     retry: false,
     staleTime: 5 * 60 * 1000,
   })
 
-  const { nodes, links } = React.useMemo(
-    () => (data ? buildLineageGraph(artifact, data.runs) : { nodes: [], links: [] }),
-    [artifact, data],
-  )
+  const expansion = useLineageExpansion(undefined, groupRuns)
 
-  // The current artifact's own node is always highlighted — not click-driven.
-  const currentArtifactNode = React.useMemo(
-    () => nodes.find((n) => n.id === artifact.uuid),
-    [nodes, artifact.uuid],
-  )
+  const base = React.useMemo(() => (data ? indexGraphToElk(data) : { nodes: [], links: [] }), [data])
+  const merged = React.useMemo(() => mergeElkGraphs(base, expansion.extra), [base, expansion.extra])
 
-  // gbserver returns 404 for every artifact when no lineage provider is
-  // configured (the standalone default) — that's an expected "not available"
-  // state, not a failure worth alarming the user about.
-  const notAvailable = !isLoading && isAxiosError(error) && error.response?.status === 404
-  const realError = !isLoading && error && !notAvailable
-  const noLineage = !isLoading && !error && nodes.length === 0
+  // The index keys artifacts by normalized URI, so the root is root_id, not the UUID.
+  const rootId = data?.root_id || uri
+  // The artifact the graph is about keeps an outline even once another node is selected.
+  const nodes = React.useMemo(
+    () => merged.nodes.map((n) => (n.id === rootId ? { ...n, highlight: true } : n)),
+    [merged.nodes, rootId],
+  )
+  const links = merged.links
+  const activeId = focusNodeId ?? rootId
+
+  // The node the buttons expand from is the one highlighted: the artifact itself
+  // until another node is clicked.
+  const activeNode = React.useMemo(() => nodes.find((n) => n.id === activeId), [nodes, activeId])
+  const activeName = activeNode?.title || activeId
+
+  // Levels are read off the graph on screen, so they stay right whichever node
+  // was expanded to get there; a click asks for one level past that.
+  const levelOf = (direction: 'upstream' | 'downstream') => ({
+    depth: visibleLevels(activeId, links, direction),
+    exhausted: expansion.isExhausted(activeId, direction),
+  })
+  const up = levelOf('upstream')
+  const down = levelOf('downstream')
+  // After an expansion the selected node is centered, so the new nodes are in view.
+  const expand = (direction: 'upstream' | 'downstream') => {
+    graphRef.current?.centerOnNodeAfterLayout(activeId)
+    return expansion.expand(activeId, direction, depthForNextLevel(activeId, (direction === 'upstream' ? up : down).depth), { nodes, links })
+  }
+
+  const unexpanded = expansion.extra.nodes.length
+    ? expansion.unexpanded
+    : (data?.truncated ? data.unexpanded ?? 0 : 0)
+  // GET /lineage/graph never 404s: an empty graph means nothing was recorded.
+  const noLineage = !isLoading && !error && nodes.length <= 1
+  const busy = expansion.loading !== null
+
+  // A job (run) node opens its details (see JobDrawer).
+  const [jobNodeId, setJobNodeId] = React.useState<string | null>(null)
+  const jobNode = React.useMemo(
+    () => (jobNodeId ? (nodes.find((n) => n.id === jobNodeId) as IndexElkNode | undefined) : undefined),
+    [nodes, jobNodeId]
+  )
+  const drawerRef = React.useRef<HTMLDivElement | null>(null)
+  React.useEffect(() => {
+    if (!jobNodeId) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && drawerRef.current?.contains(document.activeElement)) setJobNodeId(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [jobNodeId])
+
+  // Index nodes are keyed by normalized URI, not UUID: the artifact page is
+  // found by the raw URI the index keeps in metadata, which the registry filters
+  // on exactly. The artifact itself is already open.
+  const router = useRouter()
+  const [opening, setOpening] = React.useState(false)
+  const [openError, setOpenError] = React.useState<string | null>(null)
+  const canOpenArtifact = Boolean(activeNode && activeNode.type !== 'Build' && activeId !== rootId)
+  const openArtifact = async () => {
+    const raw = (activeNode as IndexElkNode | undefined)?.indexNode?.metadata?.uri
+    const uri = typeof raw === 'string' ? raw : activeId
+    setOpening(true)
+    setOpenError(null)
+    try {
+      // The registry filters on the exact URI, and may hold the hf:// spelling of
+      // an https index node (or the reverse), so every spelling is tried.
+      let match
+      for (const spelling of artifactUriSpellings(uri)) {
+        match = (await listArtifacts({ uri: spelling })).items[0]
+        if (match) break
+      }
+      if (match) router.push(`/dashboard/artifacts/_/?id=${match.uuid}`)
+      else setOpenError(`${activeName} is not in the artifact registry.`)
+    } catch (e) {
+      setOpenError(`Failed to open ${activeName}: ${String(e)}`)
+    } finally {
+      setOpening(false)
+    }
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        height: '2rem',
-        background: 'var(--cds-layer-01)',
-        borderBottom: '1px solid var(--cds-border-subtle-01)',
-        flexShrink: 0,
-      }}>
-        <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
-          iconDescription="Zoom In (+10%)" renderIcon={ZoomIn}
-          onClick={() => graphRef.current?.zoomIn()} />
-        <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
-          iconDescription="Reset Zoom" renderIcon={ZoomFit}
-          onClick={() => graphRef.current?.resetZoom()} />
-        <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
-          iconDescription="Zoom Out (-10%)" renderIcon={ZoomOut}
-          onClick={() => graphRef.current?.zoomOut()} />
-        <Button size="sm" kind="ghost"
-          renderIcon={CenterSquare}
-          onClick={() => graphRef.current?.centerOnNode(artifact.uuid)}
-        >
-          Focus Node
-        </Button>
+      {/* Same toolbar as the build lineage panel. */}
+      {/* Any toolbar button closes the open drawer. Capture runs before the
+          button's own handler, which still sees this render's selection. */}
+      <div
+        className={styles.toolbar}
+        onClickCapture={(e) => {
+          if ((e.target as HTMLElement).closest('button')) setJobNodeId(null)
+        }}
+      >
+        <div className={styles.toolbarLeft}>
+          <Button size="sm" kind="ghost" renderIcon={ArrowLeft}
+            disabled={busy || noLineage || up.exhausted}
+            title={up.exhausted ? `Nothing more upstream of ${activeName}` : `Load level ${up.depth + 1} upstream of ${activeName}`}
+            onClick={() => expand('upstream')}>
+            Upstream
+          </Button>
+          <Button size="sm" kind="ghost" renderIcon={ArrowRight}
+            disabled={busy || noLineage || down.exhausted}
+            title={down.exhausted ? `Nothing more downstream of ${activeName}` : `Load level ${down.depth + 1} downstream of ${activeName}`}
+            onClick={() => expand('downstream')}>
+            Downstream
+          </Button>
+          {!noLineage && !isLoading && (
+            <span className={styles.levelIndicator}>
+              From <strong>{activeName}</strong> · ← {levelText(up)} · {levelText(down)} →
+            </span>
+          )}
+
+          <div className={styles.toolbarDivider} />
+
+          <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
+            iconDescription="Zoom In (+10%)" renderIcon={ZoomIn}
+            onClick={() => graphRef.current?.zoomIn()} />
+          <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
+            iconDescription="Reset Zoom" renderIcon={ZoomFit}
+            onClick={() => graphRef.current?.resetZoom(rootId)} />
+          <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
+            iconDescription="Zoom Out (-10%)" renderIcon={ZoomOut}
+            onClick={() => graphRef.current?.zoomOut()} />
+
+          <div className={styles.toolbarDivider} />
+
+          <OverflowMenu size="sm" selectorPrimaryFocus=".overflow-item" aria-label="More options">
+            <OverflowMenuItem
+              className="overflow-item"
+              itemText="Reset view"
+              onClick={() => { setFocusNodeId(null); setJobNodeId(null); expansion.reset(); graphRef.current?.resetView() }}
+            />
+            <OverflowMenuItem
+              className="overflow-item"
+              itemText={showBuildInfo ? 'Hide build IDs' : 'Show build IDs'}
+              onClick={() => setShowBuildInfo((v) => !v)}
+            />
+          </OverflowMenu>
+
+          <div className={styles.toolbarDivider} />
+
+          <Button size="sm" kind="ghost" renderIcon={Launch}
+            disabled={!canOpenArtifact || opening}
+            title={canOpenArtifact ? `Open ${activeName}` : 'Select another artifact to open it'}
+            onClick={openArtifact}>
+            Open artifact
+          </Button>
+        </div>
       </div>
 
-      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+      {(busy || Boolean(expansion.error) || unexpanded > 0 || Boolean(openError)) && (
+        <div className={styles.expansionStatus}>
+          {busy && <InlineLoading description={`Loading ${expansion.loading} lineage…`} />}
+          {Boolean(expansion.error) && (
+            <span className={styles.expansionError}>Failed to expand lineage: {String(expansion.error)}</span>
+          )}
+          {openError && <span className={styles.expansionError}>{openError}</span>}
+          {!busy && unexpanded > 0 && <span>{unexpanded} nodes not expanded.</span>}
+        </div>
+      )}
+
+      <div className={styles.graphRow}>
+      <div className={styles.graphArea}>
         {isLoading && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
             <Loading withOverlay={false} description="Loading lineage…" />
           </div>
         )}
-        {realError && (
+        {!isLoading && Boolean(error) && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--cds-support-error)', fontSize: '0.875rem', padding: '1rem', textAlign: 'center' }}>
             Failed to load lineage: {String(error)}
           </div>
         )}
-        {!isLoading && (notAvailable || noLineage) && (
+        {noLineage && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--cds-text-secondary)', fontSize: '0.875rem' }}>
-            {notAvailable ? 'Lineage is not available for this artifact.' : 'No lineage data available for this artifact.'}
+            No lineage recorded for this artifact.
           </div>
         )}
         {!isLoading && !error && !noLineage && (
@@ -180,20 +234,33 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             <Graph
               ref={graphRef}
               graphKey={artifact.uuid}
+              centerNodeId={rootId}
               nodes={nodes}
               links={links}
               allLinks={links}
-              selectedNode={currentArtifactNode}
+              selectedNode={activeNode}
+              onClick={(node) => {
+                setFocusNodeId(node.id)
+                setJobNodeId(node.type === 'Build' ? node.id : null)
+              }}
+              showBuildInfo={showBuildInfo}
               onSvgRendered={() => setRendered(true)}
             />
           </>
         )}
       </div>
+
+      {jobNode && (
+        <div className={styles.drawerSlot}>
+          <JobDrawer node={jobNode} onClose={() => setJobNodeId(null)} drawerRef={drawerRef} />
+        </div>
+      )}
+      </div>
     </div>
   )
 }
 
-// ── Build-linked lineage panel (existing behavior) ────────────────────────────
+// ── Build-linked lineage panel (artifacts without a URI) ──────────────────────
 
 function BuildLinkedLineage({ artifact, artifactLoading }: { artifact: Artifact; artifactLoading: boolean }) {
   const buildId = artifact.build_id!
@@ -234,7 +301,9 @@ function BuildLinkedLineage({ artifact, artifactLoading }: { artifact: Artifact;
 
 // ── Public component ──────────────────────────────────────────────────────────
 
-export function LineagePanel({ artifact, loading }: { artifact: Artifact | undefined; loading: boolean }) {
+// `groupRuns: false` draws the extended graph: one node per job instead of one per
+// distinct input/output pair.
+export function LineagePanel({ artifact, loading, groupRuns = true }: { artifact: Artifact | undefined; loading: boolean; groupRuns?: boolean }) {
   if (loading || !artifact) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
@@ -243,21 +312,14 @@ export function LineagePanel({ artifact, loading }: { artifact: Artifact | undef
     )
   }
 
-  const isHf = artifact.uri?.startsWith('hf://')
-
-  // HF artifacts: use the artifact lineage API (no build_id on these)
-  if (isHf) {
-    return <ArtifactLineageGraph artifact={artifact} />
+  // Any artifact with a URI reads the lineage index, which covers build outputs
+  // and external artifacts alike, whatever the configured provider.
+  if (artifact.uri) {
+    return <ArtifactLineageGraph artifact={artifact} groupRuns={groupRuns} />
   }
 
-  // Build-produced artifacts: use the build-based lineage graph
   if (artifact.build_id) {
     return <BuildLinkedLineage artifact={artifact} artifactLoading={loading} />
-  }
-
-  // Other artifacts with a non-HF URI: try artifact lineage API as best-effort
-  if (artifact.uri) {
-    return <ArtifactLineageGraph artifact={artifact} />
   }
 
   return (

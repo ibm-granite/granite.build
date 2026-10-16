@@ -16,6 +16,7 @@ interface NodeItemProps {
   onClick?: (node: ElkNodeEx) => void
   onMouseHover?: (node: ElkNodeEx | null) => void
   selectedNode?: ElkNodeEx
+  showBuildInfo?: boolean
 }
 
 function getNodeConfig(type: string | undefined) {
@@ -47,7 +48,7 @@ function SkeletonNode({ direction }: { direction: 'left' | 'right' }) {
   )
 }
 
-export default function GraphNode({ node, onClick, onMouseHover, selectedNode }: NodeItemProps) {
+export default function GraphNode({ node, onClick, onMouseHover, selectedNode, showBuildInfo }: NodeItemProps) {
   const { x, y, height, width, type, title } = node
 
   if (type === 'skeleton-source') {
@@ -73,6 +74,8 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode }:
   const subtitle = node.subtitle || subtitleLabel
   const isSelected = selectedNode?.id === node.id
   const isHighlighted = node.highlight
+  // Short form fits the node; the full id is in the tooltip.
+  const buildInfo = showBuildInfo && type === 'Build' && node.buildId ? `build ${node.buildId.slice(0, 8)}` : undefined
 
   const nodeWrapperClass = [
     styles.nodeWrapper,
@@ -80,6 +83,7 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode }:
     isSelected ? styles.nodeWrapperSelected : '',
     isHighlighted ? styles.nodeWrapperHighlighted : '',
     node.planned ? styles.nodeWrapperPlanned : '',
+    node.stackCount ? styles.nodeWrapperStacked : '',
   ].filter(Boolean).join(' ')
 
   return (
@@ -89,7 +93,20 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode }:
       width={width}
       className={styles.foreignObjectOverflow}
     >
-      <div className={nodeWrapperClass} style={isSelected ? { '--node-selected-bg': bgColor } as React.CSSProperties : undefined}>
+      <div
+        className={nodeWrapperClass}
+        style={isSelected || isHighlighted
+          // The root keeps a stronger tint of its type color than a plain selection.
+          ? { '--node-selected-bg': isHighlighted ? bgColor.replace(/[\d.]+\)$/, '0.35)') : bgColor } as React.CSSProperties
+          : undefined}
+      >
+        {/* A grouped node: the cards of the other jobs peek out behind it. */}
+        {node.stackCount && (
+          <>
+            <div className={`${styles.stackLayer} ${styles.stackLayerBack}`} aria-hidden />
+            <div className={styles.stackLayer} aria-hidden />
+          </>
+        )}
         <CardNode
           color={color}
           onClick={() => onClick && onClick(node)}
@@ -118,15 +135,10 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode }:
             </CardNodeTitle>
             {subtitle && (
               <CardNodeSubtitle
-                style={{
-                  fontSize: '0.75rem',
-                  color: 'var(--cds-text-secondary)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
+                style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                title={buildInfo ? node.buildId : undefined}
               >
-                {subtitle}
+                {buildInfo ? `${subtitle} · ${buildInfo}` : subtitle}
               </CardNodeSubtitle>
             )}
           </CardNodeColumn>

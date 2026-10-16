@@ -74,6 +74,14 @@ function ArtifactDetailContent() {
     enabled: Boolean(artifactId),
   })
 
+  // The static export renders with no ?id (so not loading), while the client's
+  // first render already has one (so loading): the two trees differ above the
+  // tabs, which shifts every useId under them (Carbon's tab/panel ids) and trips
+  // a hydration mismatch. Render the export's fallback until mounted.
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+  if (!mounted) return <ArtifactDetailFallback />
+
   if (error) {
     return (
       <div style={{ padding: '1rem 1.5rem' }}>

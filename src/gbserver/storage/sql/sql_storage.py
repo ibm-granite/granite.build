@@ -43,6 +43,7 @@ from gbserver.storage.storage import (
     QueryControl,
     SortOrder,
 )
+from gbserver.storage.stored_lineage_row import MAX_LINEAGE_URI_LENGTH
 from gbserver.types.constants import (
     GBSERVER_SQL_DBNAME,
     GBSERVER_SQL_HOST,
@@ -62,6 +63,14 @@ _CLASS_NAME_INDEX = AtomicInteger()
 
 # Regex pattern for valid SQL identifiers (alphanumeric + underscore, cannot start with digit)
 _VALID_SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+# Promoted string columns that hold a normalized lineage URI rather than a name or
+# a label. The width is the lineage row's limit, imported rather than restated so
+# the DB column and the guard that keeps a URI inside it cannot drift. It is
+# narrower than the 1024 the other URI columns get, because these two are indexed
+# AND both sit in the ``(job_id, input, output)`` unique index -- see
+# MAX_LINEAGE_URI_LENGTH for why that matters.
+_WIDE_STRING_COLUMNS = frozenset({"input", "output"})
 
 
 def _validate_sql_identifier(name: str, identifier_type: str = "identifier") -> str:
@@ -123,6 +132,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
 
     indexed_columns: list[str] = []
     """ A list of columns names (returned in _get_column_values()) that should be indexed."""
+
+    composite_indexes: list[tuple[str, ...]] = []
+    """Non-unique multi-column indexes, e.g. ``[("input", "output")]``. Created with the
+    table and, idempotently, on every schema adjust, so an existing table gains them too."""
 
     exact_liked_list_columns: dict[str, str] = {}
     """Enables exact matching of a list of strings against a named column during get_by_where(dict) calls.
@@ -288,6 +301,16 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             ):
                 # This one needs to be longer than 256, sometimes.
                 column = Column(String(1024), nullable=True, index=indexed)
+            elif lower_key in _WIDE_STRING_COLUMNS:
+                # Normalized lineage URIs. Exact-match, not a substring test, so
+                # only the two columns the graph traversal joins on are widened.
+                # Kept in lockstep with
+                # ``gbserver.storage.stored_lineage_row.MAX_LINEAGE_URI_LENGTH``,
+                # which drops an over-long URI before it reaches the DB -- a
+                # truncated URI would merge two distinct artifacts.
+                column = Column(
+                    String(MAX_LINEAGE_URI_LENGTH), nullable=True, index=indexed
+                )
             elif isinstance(value, str):
                 column = Column(String(256), nullable=True, index=indexed)
             elif isinstance(value, bool):
@@ -338,6 +361,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     f"Table '{self._sql_alchemy_model.__tablename__}' created successfully."
                 )
                 self.__create_unique_indexes()
+                self.__create_composite_indexes()
             except SQLAlchemyError as e:
                 self.logger.error(f"Error creating table: {e}")
                 raise e
@@ -357,6 +381,43 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 connection.commit()
         except Exception as e:
             self.logger.warning(f"Error creating unique indexes: {e}")
+
+    def __create_composite_indexes(self):
+        """Create the ``composite_indexes`` that do not exist yet.
+
+        Idempotent: existing indexes are read from the inspector first, so this is safe
+        to run on every schema adjust. Like the unique indexes, a failure only warns.
+        """
+        if not self.composite_indexes:
+            return
+        try:
+            self._inspector.clear_cache()
+            existing = {
+                index["name"]
+                for index in self._inspector.get_indexes(
+                    self.table_name, schema=self._db_schema or None
+                )
+            }
+            with self._engine.connect() as connection:
+                for columns in self.composite_indexes:
+                    for col in columns:
+                        _validate_sql_identifier(col, "column name")
+                    col_suffix = "_".join(columns)
+                    full_name = f"ix_{self.table_name}_{col_suffix}"
+                    if len(full_name) > 63:
+                        name_hash = hashlib.sha1(full_name.encode()).hexdigest()[:7]
+                        full_name = f"ix_{name_hash}_{col_suffix}"[:63]
+                    if full_name in existing:
+                        continue
+                    connection.execute(
+                        text(
+                            f"CREATE INDEX {full_name} ON "
+                            f"{self.__get_sql_table_name_reference()} ({', '.join(columns)});"
+                        )
+                    )
+                connection.commit()
+        except Exception as e:
+            self.logger.warning(f"Error creating composite indexes: {e}")
 
     def __get_unique_index_statement(
         self, column_key: Union[str, tuple[str, ...]], exception_value: Optional[Any]
@@ -488,6 +549,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 self.__add_column(
                     col_name, col_type, is_indexed, is_unique, uniqueness_exception
                 )
+
+        if len(existing_columns) > 0:
+            # An existing table only gets new indexes here; creation covers new tables.
+            self.__create_composite_indexes()
 
     def __get_sql_table_name_reference(self) -> str:
         """Get the name of the schema, if any, concatenated with the table name for using in SQL statements.
@@ -774,6 +839,18 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             raise_exception=False
         )  # returns [] if tables is not present
         return len(columns) > 0
+
+    def _ensure_table(self) -> bool:
+        """Initialize the model if needed; whether the table exists to query.
+
+        For a subclass running its own SQL. ``__initialize_storage`` is name-mangled
+        private, so this does the same through the protected API: like any first
+        read, it may create or adjust the table to match the item's columns.
+        """
+        if self._sql_alchemy_model is None:
+            sample = self._convert_item_to_row_dict(self._get_sample_item())
+            self._create_or_adjust_schema_item_dict(sample)
+        return self._does_table_exist()
 
     def __get_db_item_by_uuid(
         self, session: Any, uuid: str

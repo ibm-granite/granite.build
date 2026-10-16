@@ -336,14 +336,13 @@ class WandBLineageService(LineageService):
         outputs: List[Dict] = []
 
         for artifact in run.used_artifacts():
-            # Should we filter out WandB system artifacts here? For now, we include all artifacts to ensure we capture Hugging Face references, but we might want to revisit this logic in the future
-            # if self._is_wandb_system_artifact(artifact):
-            #     continue
+            if self._is_wandb_system_artifact(artifact):
+                continue
             inputs.append(self._artifact_to_openlineage_dataset(artifact))
 
         for artifact in run.logged_artifacts():
-            # if self._is_wandb_system_artifact(artifact):
-            #     continue
+            if self._is_wandb_system_artifact(artifact):
+                continue
             outputs.append(self._artifact_to_openlineage_dataset(artifact))
 
         config = run.config or {}
@@ -400,7 +399,10 @@ class WandBLineageService(LineageService):
 
     @staticmethod
     def _is_wandb_system_artifact(artifact: wandb.Artifact) -> bool:
-        return artifact.type.startswith("wandb-") or artifact.name.startswith("run-")
+        # By type, not name: wandb attaches these to any run (e.g. wandb-history
+        # once someone opens its charts), and gbserver never logs these types, so
+        # a model/dataset/bucket -- HF references included -- is never dropped.
+        return artifact.type.startswith("wandb-") or artifact.type == "run_table"
 
     @staticmethod
     def _artifact_to_openlineage_dataset(artifact: wandb.Artifact) -> Dict:

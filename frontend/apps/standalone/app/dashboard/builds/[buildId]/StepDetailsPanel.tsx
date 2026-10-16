@@ -5,7 +5,7 @@ import { CopyButton, Link } from '@carbon/react'
 import styles from './LineagePanel.module.scss'
 import type { BuildStepRun, BuildTargetRun } from '@granite-build/ui-core/types'
 import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
-import { formatDateTime } from './stepDrawerSummary'
+import { formatDateTime, parseTimestamp } from './stepDrawerSummary'
 
 export { stepDrawerSummary } from './stepDrawerSummary'
 
@@ -14,8 +14,8 @@ const NOT_RECORDED = 'Not recorded'
 /** `10:51:22` — the clock time alone, for the compact Execution row. */
 function formatClock(value: string | undefined): string {
   if (!value) return '—'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
+  const parsed = parseTimestamp(value)
+  if (!parsed) return value
   return parsed.toLocaleTimeString([], { hour12: false })
 }
 
@@ -253,7 +253,7 @@ function groupLabel(key: string): string {
 }
 
 /** `num_gpus_per_node` → `Num gpus per node`. */
-function humanizeKey(key: string): string {
+export function humanizeKey(key: string): string {
   const spaced = key.replace(/[_-]+/g, ' ').trim()
   return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }
@@ -263,7 +263,7 @@ function humanizeKey(key: string): string {
  * strings and null are treated as "no value" and dropped so the UI shows only
  * the keys the step actually set, not blank placeholder rows.
  */
-function hasValue(value: unknown): boolean {
+export function hasValue(value: unknown): boolean {
   if (value === null || value === undefined) return false
   if (typeof value === 'string') return value.trim() !== ''
   return typeof value === 'number' || typeof value === 'boolean'
@@ -355,7 +355,7 @@ function metadataRows(
 }
 
 /** Row of a definition list; renders `—` for absent values rather than collapsing. */
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className={styles.stepField}>
       <span className={styles.stepFieldLabel}>{label}</span>
@@ -365,7 +365,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 /** A titled block within the drawer — the drawer's only structural divider. */
-function Section({
+export function Section({
   title,
   children,
   action,
@@ -390,7 +390,7 @@ function Section({
  * the drawer header already reads "Completed in 6s", so repeating it here would
  * be the third copy of the same number.
  */
-function ExecutionSummary({ step }: { step: BuildStepRun }) {
+export function ExecutionSummary({ step }: { step: BuildStepRun }) {
   const started = step.started_at
   const finished = finishedAt(step)
   return (

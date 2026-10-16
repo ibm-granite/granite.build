@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from gbserver.lineage.walk import ABSOLUTE_MAX_NODES_PER_LEVEL
+
 
 class RunState(str, Enum):
     START = "START"
@@ -103,11 +105,26 @@ class GraphNodeType(str, Enum):
 
 
 class GraphNode(BaseModel):
+    """One node of a walked graph.
+
+    ``id`` is the artifact's normalized URI, or ``run:<job_id>`` for a run node --
+    prefixed so a job id can never collide with an artifact URI in the shared id
+    space that ``GraphEdge`` references.
+    """
+
     id: str
     node_type: GraphNodeType
     name: str
     artifact_type: Optional[str] = None
     is_root: bool = False
+    depth: Optional[int] = Field(
+        default=None,
+        description=(
+            "Hops from the nearest seed, shortest path; 0 for a seed. None for a "
+            "run node, which hangs off an edge rather than being walked to, and for "
+            "an artifact the walk did not reach."
+        ),
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -122,6 +139,121 @@ class ArtifactGraphRequest(BaseModel):
     artifact_type: Optional[str] = None
     max_depth: int = Field(default=10, ge=1, le=50)
     direction: str = "both"
+
+
+class LineageQueryRequest(BaseModel):
+    """A lineage query seeded by an artifact, a job, or both.
+
+    One entry point so a caller can ask however it happens to hold the artifact:
+    by URI in any spelling, or by the job that produced it. Each field is optional
+    on its own, but one of the two is required -- the route answers 422 otherwise.
+    Both map to an indexed text column, so either combination is one predicate.
+
+    There is deliberately no ``build_id`` filter: the index has no such column
+    (a build is granite.build's own concept, empty on every imported row), and a
+    build-scoped view goes through ``POST /lineage/build``, which resolves the build
+    outside the index and seeds this same walk.
+    """
+
+    uri: Optional[str] = Field(
+        default=None,
+        description=(
+            "The artifact's URI in any spelling; it is normalized server-side, so a "
+            "browser URL and the runtime's own URI resolve to one artifact."
+        ),
+    )
+    job_id: Optional[str] = Field(
+        default=None,
+        description="Seed from every endpoint of this job execution.",
+    )
+    max_depth: int = Field(default=10, ge=1, le=50)
+    direction: str = "both"
+    max_nodes_per_level: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=ABSOLUTE_MAX_NODES_PER_LEVEL,
+        description=(
+            "Raise the per-level frontier ceiling for this one request, for an "
+            "explicit 'show the full graph' action. Omit for the server default. "
+            "Still bounded: a hub artifact's closure is unbounded in practice, so "
+            "there is no value meaning 'no limit'."
+        ),
+    )
+    group_runs: bool = Field(
+        default=True,
+        description=(
+            "Fold the jobs with the same input and output (an in-place rewrite, or a "
+            "repeated A -> B step) into one node with a run_count. False returns one "
+            "node per job; beware that a heavily rewritten artifact can then be large."
+        ),
+    )
+
+
+class LineageGraphResponse(BaseModel):
+    """The walked graph.
+
+    ``root_id`` is the URI the query resolved to, or ``""`` when the query named no
+    single artifact (a job-seeded or unfiltered query has several roots, so no node
+    is flagged ``is_root``).
+    """
+
+    root_id: str = ""
+    nodes: List[GraphNode] = Field(default_factory=list)
+    edges: List[GraphEdge] = Field(default_factory=list)
+    truncated: bool = False
+    unexpanded: int = 0
+
+
+class LineageJobEntry(BaseModel):
+    """One job execution in the job listing, with what it read and wrote."""
+
+    job_id: str
+    job_namespace: str = ""
+    space_name: str = ""
+    owner: str = ""
+    source_system: str = ""
+    status: str = ""
+    started_at: str = ""
+    tags: List[str] = Field(default_factory=list)
+    inputs: List[str] = Field(default_factory=list)
+    outputs: List[str] = Field(default_factory=list)
+    job: Dict[str, Any] = Field(default_factory=dict)
+    # Which system recorded the job and its own ids for it.
+    origin: Dict[str, Any] = Field(default_factory=dict)
+
+
+class LineageJobDetail(LineageJobEntry):
+    """One job with its full content, fetched from the store its index rows name.
+
+    ``job_store`` says where that was: ``lineage_job``, ``targets``, ``wandb`` or
+    ``other``. ``detail`` holds the large payloads (step configs redacted); ``build``
+    and ``target`` are the granite.build build and target run, in the shape
+    ``GET /builds/{id}/status`` uses, when this server has them. When the store could
+    not answer, ``detail_available`` is false and ``detail_error`` says why -- the
+    index fields above are still there.
+    """
+
+    job_store: str = ""
+    detail: Dict[str, Any] = Field(default_factory=dict)
+    build_id: Optional[str] = None
+    build: Optional[Dict[str, Any]] = None
+    target: Optional[Dict[str, Any]] = None
+    origin_url: str = ""
+    detail_available: bool = False
+    detail_error: Optional[str] = None
+
+
+class LineageJobsResponse(BaseModel):
+    """A page of the jobs matching a filter.
+
+    ``total`` is the unpaged count of distinct jobs, so a caller can tell how much is
+    left rather than guessing from a short page.
+    """
+
+    jobs: List[LineageJobEntry] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 100
+    offset: int = 0
 
 
 class LineageNodeRef(BaseModel):
