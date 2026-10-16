@@ -1816,6 +1816,33 @@ def _build_skypilot_mounts(
     return file_mounts, storage_mounts
 
 
+def _hf_step_compute_override(store_config: Any) -> Dict[str, Any]:
+    """The ``compute_config`` an assetstore pull/push entry sets for its hf step.
+
+    The builtin ``hfpull``/``hfpush`` steps request ``total_memory_per_node:
+    10Gi``, which SLURM/LSF ignore but Kubernetes reserves for the pod, so on a
+    small node the steps queue one at a time. An environment can size them with
+    a ``compute_config`` in its ``space://assetstores/hf`` ``pull``/``push``
+    entry's ``config``, merged over the step's own (like ``step_uri``, which
+    replaces the step).
+
+    :param store_config: The ``StoreLoad``/``StorePush`` entry, or ``None``.
+    :returns: ``{"compute_config": {...}}`` to merge into the queued step's
+        config, or ``{}`` when the entry sets none.
+    :raises ValueError: If ``compute_config`` is set but is not a mapping.
+    """
+    cfg = getattr(store_config, "config", None)
+    if not isinstance(cfg, dict) or cfg.get("compute_config") is None:
+        return {}
+    compute = cfg["compute_config"]
+    if not isinstance(compute, dict):
+        raise ValueError(
+            "assetstore hf pull/push 'compute_config' must be a mapping, got "
+            f"{type(compute).__name__}"
+        )
+    return {"compute_config": dict(compute)}
+
+
 def aws_credentials_present() -> bool:
     """Return True when boto3 would resolve AWS credentials from the environment.
 
@@ -4879,6 +4906,7 @@ class Skypilot(Environment):
             config={
                 "hfpull_config": hfpull_config,
                 "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
+                **_hf_step_compute_override(storeload_config),
             },
         )
         return binding_config, pull_step_config
@@ -4966,6 +4994,7 @@ class Skypilot(Environment):
             config={
                 "hfpush_config": hfpush_config,
                 "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
+                **_hf_step_compute_override(storepush_config),
             },
         )
 
