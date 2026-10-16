@@ -63,6 +63,7 @@ import libgbtest.local_postgres  # noqa: E402  # isort: skip
 
 import libgbtest
 import libgbtest.constants
+from libgbtest import abort_cleanup
 from libgbtest.constants import BUILD_ID_PATTERN
 
 import gbserver.types.constants
@@ -544,9 +545,35 @@ def _arm_stall_watchdog() -> None:
     )
 
 
+# Handlers SIGTERM / SIGHUP had before pytest_configure mapped them to SIGINT's.
+_PREVIOUS_SIGNAL_HANDLERS: dict = {}
+
+
 def pytest_configure(config):
-    """Arm the stall watchdog (controller and each xdist worker)."""
+    """Arm the stall watchdog and SIGTERM-as-SIGINT (controller and each xdist worker).
+
+    SIGTERM / SIGHUP otherwise kill pytest without running teardown, leaking the
+    remote resources tests clean up there; see libgbtest.abort_cleanup.
+    """
     _arm_stall_watchdog()
+    _PREVIOUS_SIGNAL_HANDLERS.update(abort_cleanup.map_termination_signals_to_sigint())
+
+
+def pytest_unconfigure(config):
+    """Restore the signal handlers pytest_configure replaced."""
+    abort_cleanup.restore_signal_handlers(_PREVIOUS_SIGNAL_HANDLERS)
+    _PREVIOUS_SIGNAL_HANDLERS.clear()
+
+
+@pytest.hookimpl(tryfirst=True, optionalhook=True)
+def pytest_timeout_set_timer(item, settings):
+    """Record when pytest-timeout fires for ``item``, as it starts the timer.
+
+    Build tests use it to keep their own waits shorter and to clean up before the
+    thread method's ``os._exit`` (see libgbtest.abort_cleanup). Returns None so
+    pytest-timeout's own hook still sets the timer.
+    """
+    abort_cleanup.record_timeout_deadline(item, settings)
 
 
 def pytest_runtest_logreport(report):
