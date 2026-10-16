@@ -519,7 +519,8 @@ publish-step:
 # reference already committed (extracted from the published step.yaml via
 # IMAGE_REF), so only genuine content drift — an edited template/src/test that
 # was never re-published — is reported, not the per-commit IMAGE_TAG churn (see
-# the eval README's "tag coupling" note). It also passes PUBLISH_REQUIRE_IMAGE=false to
+# the "keep the published image tag and your local build in sync" note under "Two
+# test modes" in steps/README.md). It also passes PUBLISH_REQUIRE_IMAGE=false to
 # the re-render so drift-checking stays offline (it never queries the registry — the
 # image-existence guard applies only to a real `make publish-step`). Exit 0 = in sync
 # (or nothing published yet); exit 1 = drift, so re-run `make publish-step` and commit it,
