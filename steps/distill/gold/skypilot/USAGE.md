@@ -461,22 +461,38 @@ fails loudly if it emitted **zero** checkpoints.
 ### Resume
 
 The checkpoint directory is under `GB_BUILD_WORKDIR`, which is new for every build **and**
-every retry, so the trainer's own auto-resume (`gold.py` resumes when its `output_dir` already
-holds a `checkpoint-*`) never finds anything. `resume_from_checkpoint_dir` names the
-`<run_name>_node<N>` directory of an earlier run, e.g.
+target run, so the trainer's own auto-resume (`gold.py` resumes when its `output_dir` already
+holds a `checkpoint-*`) never finds an earlier run's checkpoints. `resume_from_checkpoint_dir`
+names the `<run_name>_node<N>` directory of an earlier run, e.g.
 `/proj/.../builds/<build>/runs/<run>/checkpoints/<run_name>_node2`. Before the trainer
-starts, rank 0 hardlinks every **complete** `checkpoint-*` from there into this run's
-checkpoint directory (falling back to a copy across filesystems; incomplete ones are skipped)
-and the trainer resumes from the highest — weights, optimizer, scheduler, RNG and data
-position. The other ranks wait up to 900 s for rank 0 to finish. The step records
-`resumed_from` step metadata. Hardlinks, not copies: no data is duplicated and the source is
-never modified.
+starts, rank 0 hardlinks every **complete** `checkpoint-<N>` from there into this run's
+checkpoint directory (falling back to a copy across filesystems; incomplete ones, and names
+HF never loads such as `checkpoint-final`, are skipped) and the trainer resumes from the
+highest `checkpoint-<N>` there — weights, optimizer, scheduler, RNG and data position. The
+other ranks wait for rank 0 to finish, and stop at once if it fails (at most 900 s if it
+dies outright). The step records `resumed_from` step metadata: the source's highest complete
+checkpoint. Hardlinks, not copies: no data is duplicated and the source is never modified.
 
 - **The world size must match the source's.** A ZeRO-3 checkpoint holds one optimizer shard
   per rank, so the step refuses a source saved by a different number of training ranks rather
   than letting DeepSpeed fail after allocation.
 - **The schedule must match too** (`max_steps`, batch sizes, learning rate). The trainer
   restores the scheduler's state, not its shape; nothing checks this.
+- **The save and logging grid are this run's.** HF Trainer restores `trainer_state.json`
+  whole, `save_steps` and `logging_steps` included, so a run seeded from a source saved every
+  1000 steps would save every 1000 whatever its own `save_steps`. Rank 0 rewrites both in the
+  resumed checkpoint's `trainer_state.json` and logs each change. That one file is replaced
+  rather than edited, so it is no longer a hardlink and the source keeps its own.
+- **An automatic retry of a resumed run resumes from its own progress.** A `retry_workload`
+  relaunch reuses `GB_BUILD_WORKDIR`, so the checkpoint directory still holds what the
+  failed attempt wrote, and HF resumes from its highest `checkpoint-<N>`, not necessarily
+  the source's. The world-size check and the rewrite apply to that one. A checkpoint the
+  failed attempt was still writing (rank 0's files missing, or fewer ZeRO shards than
+  ranks) is moved aside to `incomplete-checkpoint-<N>.<timestamp>`, so the retry resumes
+  from the highest complete one rather than failing on it; the per-run workdir, and these
+  with it, is reaped when the target run tears down. This all happens only when
+  `resume_from_checkpoint_dir` is set: a retry of a run without it goes straight to
+  `gold.py`'s own resume.
 - **No complete checkpoint is an error,** not a fresh start: starting from step 0 would
   silently spend the whole schedule again.
 - **With `emit_checkpoint_artifacts` on,** every seeded checkpoint is emitted as

@@ -1,6 +1,6 @@
 # Front reverse proxy for the all-in-one image, with the granite.build dashboard
 # gated on the AutoTuneX OIDC login session. Opt-in alternative to ./Caddyfile — see
-# docs/superpowers/specs/2026-09-25-aio-dashboard-session-gate-design.md.
+# docker/aio/README.md#optional-require-login-for-the-granitebuild-dashboard.
 #
 # Requires AutoTuneX running with AUTOTUNEX_AUTH_PROVIDERS=["session"] and
 # AUTOTUNEX_PUBLIC_BASE_URL=http://localhost:8080 (so the OIDC callback lands on

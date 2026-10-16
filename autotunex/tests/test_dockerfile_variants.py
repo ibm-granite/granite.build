@@ -7,8 +7,7 @@ Nothing in CI builds the container, so that mistake would ship unnoticed.
 
 These read the Dockerfile as text on purpose: building it needs a daemon, a
 multi-GB pull, and — for the CUDA base — linux/amd64 hardware, none of which the
-unit suite has. The trade is deliberate; the real build verification is manual and
-recorded in ``docs/superpowers/specs/2026-09-16-cuda-container-image-design.md``.
+unit suite has. The trade is deliberate; the real build verification is manual.
 """
 
 from __future__ import annotations

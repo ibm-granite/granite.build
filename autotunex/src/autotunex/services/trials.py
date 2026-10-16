@@ -11,8 +11,7 @@ the job is visible, then page the children — and this module mirrors
 
 They were previously nested in the job detail response, which made every read of
 a job (and every poll tick while it ran) pay for the whole trial list plus its
-one-to-one ``results`` rows. See
-``docs/superpowers/specs/2026-09-01-job-trials-endpoint-split-design.md``.
+one-to-one ``results`` rows.
 """
 
 from __future__ import annotations
