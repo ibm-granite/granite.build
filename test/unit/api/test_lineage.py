@@ -903,3 +903,102 @@ def test_query_graph_keeps_an_http_error_raised_inside_the_walk():
             _fake_request("member", "member@example.com"), uri="s3://b/x"
         )
     assert caught.value.status_code == 403
+
+
+# -- POST /lineage/: attribution, space namespaces, no takeover ----------------
+
+from gbserver.api import utils as _api_utils  # noqa: E402
+from gbserver.lineage.openlineage_models import LineageEvent  # noqa: E402
+from gbserver.storage.stored_lineage_row import StoredLineageRow  # noqa: E402
+
+# Captured at import, before conftest's mock-mode bypass patches it per test.
+_REAL_HAS_WRITE = _api_utils._has_existing_item_write_access
+
+
+def _event(namespace="ext-system/pipeline", job_id="EXT-1", owner=None, **facets):
+    details = {"job_id": job_id}
+    if owner:
+        details["owner"] = owner
+    details.update(facets)
+    return LineageEvent(
+        eventType="COMPLETE",
+        eventTime="2026-10-16T00:00:00Z",
+        run={"runId": "r1", "facets": {"job_details": details}},
+        job={"namespace": namespace, "name": "j"},
+        producer="external",
+    )
+
+
+def _ingest(event, login="alice", spaces=(), member_of=(), rows=(), admin=False):
+    emitted = []
+    storage = SimpleNamespace(
+        space_storage=SimpleNamespace(
+            get_by_name=lambda name: object() if name in spaces else None
+        ),
+        lineage_row_storage=SimpleNamespace(
+            get_rows_by_job=lambda job_id: [r for r in rows if r.job_id == job_id]
+        ),
+    )
+    service = SimpleNamespace(emit_event=emitted.append)
+    with (
+        patch.object(lineage_mod, "get_admin_storage", return_value=storage),
+        patch.object(lineage_mod, "_get_openlineage_service", return_value=service),
+        patch.object(_api_utils, "_has_existing_item_write_access", _REAL_HAS_WRITE),
+        patch.object(_api_utils, "is_super_admin", return_value=admin),
+        patch.object(_api_utils, "is_space_admin", return_value=admin),
+        patch.object(
+            _api_utils,
+            "space_access_check",
+            side_effect=lambda username, space: space in member_of,
+        ),
+    ):
+        lineage_mod.ingest_lineage_event(
+            _fake_request(login, f"{login}@example.com"), event
+        )
+    return emitted
+
+
+def _row(job_id, submitted_by=None):
+    job = {"submitted_by": submitted_by} if submitted_by else {}
+    return StoredLineageRow(
+        job_id=job_id, input="s3://b/a", output="s3://b/b", attributes={"job": job}
+    )
+
+
+def test_ingest_stamps_the_caller_as_submitter_over_what_the_event_claims():
+    (emitted,) = _ingest(_event(submitted_by="mallory"), login="alice")
+    assert emitted["run"]["facets"]["job_details"]["submitted_by"] == "alice"
+
+
+def test_ingest_accepts_an_external_namespace_from_anyone():
+    assert _ingest(_event(namespace="ext-system/pipeline"), spaces=("team",))
+
+
+def test_ingest_into_a_space_requires_membership():
+    with pytest.raises(HTTPException) as caught:
+        _ingest(_event(namespace="team/build"), spaces=("team",), member_of=())
+    assert caught.value.status_code == 401
+    assert _ingest(
+        _event(namespace="team/build"), spaces=("team",), member_of=("team",)
+    )
+
+
+def test_ingest_into_a_space_cannot_claim_another_owner():
+    with pytest.raises(HTTPException) as caught:
+        _ingest(
+            _event(namespace="team/build", owner="bob"),
+            spaces=("team",),
+            member_of=("team",),
+        )
+    assert caught.value.status_code == 401
+
+
+def test_ingest_refuses_a_job_id_already_recorded_by_another_source():
+    for existing in (_row("J1"), _row("J1", submitted_by="bob")):
+        with pytest.raises(HTTPException) as caught:
+            _ingest(_event(job_id="J1"), login="alice", rows=[existing])
+        assert caught.value.status_code == 409
+
+
+def test_ingest_lets_the_same_submitter_extend_its_own_job():
+    assert _ingest(_event(job_id="J1"), login="alice", rows=[_row("J1", "alice")])

@@ -22,7 +22,12 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gbserver.api.build_files_paths import authorize_build_read_access
-from gbserver.api.utils import has_space_member_access, is_super_admin
+from gbserver.api.utils import (
+    confirm_can_add_to_space,
+    has_space_member_access,
+    is_super_admin,
+)
+from gbserver.lineage.attributes import JOB, JOB_SUBMITTED_BY
 from gbserver.lineage.openlineage_models import LineageEvent as OpenLineageEvent
 from gbserver.lineage.openlineage_models import (
     LineageGraphResponse,
@@ -234,20 +239,76 @@ def _get_index_service():
 
 
 @lineage_api.post("/", tags=["lineage store"])
-def ingest_lineage_event(event: OpenLineageEvent):
+def ingest_lineage_event(request: Request, event: OpenLineageEvent):
     """Write one OpenLineage event to the configured lineage store.
 
-    **Known risk: no authorization.** Any caller who reaches the API can write an
-    event, and nothing ties its namespace, owner or tags to the caller. Under the
-    ``wandb`` provider the event becomes a W&B run, and the W&B lineage indexer
-    reads every run of the project, so an injected event shows up in the global
-    ``GET /lineage/graph`` trace (which is not filtered per space by design). It
-    cannot reach space-gated detail: ``GET /lineage/jobs/{id}`` checks the
-    caller's access before returning owner, namespace or tags.
+    For external emitters: an event need not belong to any build, and its
+    namespace need not be a granite.build space. Every caller is authenticated
+    (``AuthMiddleware``); on top of that:
+
+    - **Attribution.** The caller's login is stored as the job's ``submitted_by``,
+      set here and never taken from the event.
+    - **Namespaces of a space.** When ``job.namespace`` starts with an existing
+      space (``<space>/...``), the caller must be able to add to that space, as
+      themselves unless an admin -- the check new builds and artifacts pass. Any
+      other namespace is external and accepted.
+    - **An existing job is not taken over.** If the index already holds the
+      event's ``job_id`` and any of its rows was not submitted by this caller (a
+      build's job, or another emitter's), the event is refused with 409. The check
+      reads the index, so it does not see a job the indexer has not reached yet.
+
+    Injected nodes and edges from an external namespace still appear in the
+    cross-space ``GET /lineage/graph``, attributed to their submitter;
+    ``GET /lineage/jobs/{id}`` checks access before returning owner, namespace or
+    tags.
     """
+    user = request.state.data["user"]
+    payload = event.model_dump()
+    run_facets = payload.setdefault("run", {}).setdefault("facets", {})
+    job_details = run_facets.get("job_details")
+    if not isinstance(job_details, dict):
+        job_details = {}
+        run_facets["job_details"] = job_details
+    _authorize_event_namespace(request, payload, job_details)
+    _refuse_job_takeover(str(job_details.get("job_id") or ""), user.login)
+    job_details[JOB_SUBMITTED_BY] = user.login
     service = _get_openlineage_service()
-    service.emit_event(event.model_dump())
+    service.emit_event(payload)
     return {"status": "accepted"}
+
+
+def _authorize_event_namespace(
+    request: Request, payload: dict, job_details: dict
+) -> None:
+    """Require add access to the space a ``<space>/...`` namespace names, if any."""
+    namespace = str((payload.get("job") or {}).get("namespace") or "")
+    space_name = namespace.split("/", 1)[0] if "/" in namespace else ""
+    if not space_name:
+        return
+    if get_admin_storage().space_storage.get_by_name(space_name) is None:
+        return  # not a granite.build space: an external namespace
+    owner = str(job_details.get("owner") or "") or request.state.data["user"].login
+    confirm_can_add_to_space(request, username_on_target=owner, space_name=space_name)
+
+
+def _refuse_job_takeover(job_id: str, login: str) -> None:
+    """409 when the index already holds ``job_id`` with rows not from ``login``."""
+    if not job_id:
+        return
+    rows = get_admin_storage().lineage_row_storage.get_rows_by_job(job_id)
+    others = [
+        row
+        for row in rows
+        if ((row.attributes or {}).get(JOB) or {}).get(JOB_SUBMITTED_BY) != login
+    ]
+    if others:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Job {job_id} is already recorded by another source; emit under a "
+                "job_id of your own"
+            ),
+        )
 
 
 @lineage_api.post("/search", tags=["lineage store"], deprecated=True)

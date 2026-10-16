@@ -62,6 +62,8 @@ JOB_METADATA_KEYS = (
     "job_started_at",
     "job_completed_at",
     "job_status",
+    # Set by POST /lineage/ from the authenticated caller; absent on build lineage.
+    "submitted_by",
     "job_input_params",
     "execution_stats",
     "job_output_stats",

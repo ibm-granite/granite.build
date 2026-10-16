@@ -181,6 +181,7 @@ _JOB_DETAIL_KEYS = (
     "job_completed_at",
     "release_id",
     "owner",
+    "submitted_by",
     "job_output_stats",
 )
 _PASSTHROUGH_FACET_KEYS = ("job_input_params", "execution_stats")

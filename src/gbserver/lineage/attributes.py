@@ -131,6 +131,9 @@ JOB_NAMESPACE = "namespace"
 JOB_STARTED_AT = "started_at"
 JOB_COMPLETED_AT = "completed_at"
 JOB_CATEGORY = "category"
+# The authenticated user who sent the event to ``POST /lineage/``, set by the server
+# (never taken from the event): who to attribute an externally emitted job to.
+JOB_SUBMITTED_BY = "submitted_by"
 
 # Origin keys.
 ORIGIN_SYSTEM = "system"
@@ -175,6 +178,7 @@ _JOB_KEY_FROM_FLAT = {
     "job_started_at": JOB_STARTED_AT,
     "job_completed_at": JOB_COMPLETED_AT,
     "category": JOB_CATEGORY,
+    "submitted_by": JOB_SUBMITTED_BY,
 }
 
 # Three of those keys -- ``job_status``, ``owner`` and ``job_namespace`` -- are ALSO

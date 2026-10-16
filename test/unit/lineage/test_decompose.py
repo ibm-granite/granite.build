@@ -385,3 +385,14 @@ class TestRowIdentity:
             ),
         )
         assert len({row.key() for row in rows}) == len(rows)
+
+
+def test_submitted_by_reaches_the_rows_job_group():
+    """POST /lineage/ stamps the caller; the index rows must carry it, since the
+    takeover check reads it from them."""
+    from gbserver.lineage.attributes import build_attributes
+    from gbserver.lineage.decompose import JOB_METADATA_KEYS
+
+    assert "submitted_by" in JOB_METADATA_KEYS
+    blob = build_attributes(job_metadata={"submitted_by": "alice"})
+    assert blob["job"]["submitted_by"] == "alice"
