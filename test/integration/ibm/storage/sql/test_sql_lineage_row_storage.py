@@ -211,6 +211,32 @@ class TestPostgresSchema:
             columns in d and "UNIQUE" not in d.upper() for d in definitions
         ), definitions
 
+    def test_invalid_composite_index_is_rebuilt(self, storage):
+        """An interrupted CONCURRENTLY build leaves an INVALID index; it is redone."""
+        validity = (
+            "SELECT ic.relname, i.indisvalid FROM pg_index i "
+            "JOIN pg_class ic ON ic.oid = i.indexrelid "
+            "JOIN pg_class t ON t.oid = i.indrelid "
+            r"WHERE t.relname = :table AND ic.relname LIKE 'ix\_%\_input\_output'"
+        )
+        ((name, valid),) = self._query(storage, validity, {"table": storage.table_name})
+        assert valid
+        from sqlalchemy import text
+
+        # What an interrupted build leaves behind (needs a superuser).
+        with storage._engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE pg_index SET indisvalid = false WHERE indexrelid = "
+                    "(SELECT oid FROM pg_class WHERE relname = :name)"
+                ),
+                {"name": name},
+            )
+        storage._BaseSQLItemStorage__create_composite_indexes()
+        assert self._query(storage, validity, {"table": storage.table_name}) == [
+            (name, True)
+        ]
+
     def test_composite_unique_exists(self, storage):
         """It can only be created with the table, never added later."""
         definitions = self._index_definitions(storage)

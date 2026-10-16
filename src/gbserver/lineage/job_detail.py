@@ -70,6 +70,10 @@ class JobDetailUnavailable(Exception):
     """The store has no detail for this job; the message says why."""
 
 
+class JobDetailDenied(JobDetailUnavailable):
+    """The caller may not read this job's detail; reported as ``detail_denied``."""
+
+
 def _payload(source: Dict[str, Any]) -> Dict[str, Any]:
     """The four payloads from ``source``, with step configs redacted.
 
@@ -109,7 +113,7 @@ def _fetch_target(job_id: str, retrieve: Dict[str, Any], ctx: "_Context"):
     try:
         ctx.authorize_build(build)
     except Exception as e:
-        raise JobDetailUnavailable("Not authorized to read this build") from e
+        raise JobDetailDenied("Not authorized to read this build") from e
     if target is None:
         raise JobDetailUnavailable(
             f"Target run {target_run_uuid} is not on this server"
@@ -249,6 +253,7 @@ def fetch_job_detail(
         "job_store": job_store.value,
         "detail_available": True,
         "detail_error": None,
+        "detail_denied": False,
     }
     if (
         job_store in _ENTRY_GATED_STORES
@@ -256,13 +261,19 @@ def fetch_job_detail(
         and not authorize_entry(entry)
     ):
         detail.update(
-            detail_available=False, detail_error="Not authorized to read this job"
+            detail_available=False,
+            detail_error="Not authorized to read this job",
+            detail_denied=True,
         )
         return detail
     try:
         fetched = _FETCHERS[job_store](entry["job_id"], retrieve, ctx)
     except JobDetailUnavailable as e:
-        detail.update(detail_available=False, detail_error=str(e))
+        detail.update(
+            detail_available=False,
+            detail_error=str(e),
+            detail_denied=isinstance(e, JobDetailDenied),
+        )
         return detail
     except Exception:  # pylint: disable=broad-except
         logger.exception(

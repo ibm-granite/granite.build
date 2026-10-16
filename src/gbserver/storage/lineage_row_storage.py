@@ -250,9 +250,12 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         wanted = self._batchable(inputs)
         if not wanted:
             return []
-        return _keep_self_loops(self.get_by_where({"input": wanted}), self_loops)[
-            :limit
-        ]
+        rows = _keep_self_loops(self.get_by_where({"input": wanted}), self_loops)
+        if limit is None:
+            return rows
+        # The SQL backend's order, so a cut keeps the same rows on both.
+        rows.sort(key=lambda r: (r.input, r.output, r.job_id))
+        return rows[:limit]
 
     def get_rows_by_output(
         self, outputs: List[str], self_loops: bool = True, limit: Optional[int] = None
@@ -264,9 +267,12 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         wanted = self._batchable(outputs)
         if not wanted:
             return []
-        return _keep_self_loops(self.get_by_where({"output": wanted}), self_loops)[
-            :limit
-        ]
+        rows = _keep_self_loops(self.get_by_where({"output": wanted}), self_loops)
+        if limit is None:
+            return rows
+        # The SQL backend's order, so a cut keeps the same rows on both.
+        rows.sort(key=lambda r: (r.output, r.input, r.job_id))
+        return rows[:limit]
 
     def grouped_self_loops(self, uris: List[str]) -> List[GroupedEdge]:
         """Fold each artifact's self-loops into one edge, in Python.

@@ -55,8 +55,8 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
   const { data: job, isLoading, error } = useJobDetail(jobId)
 
   const title = node.title || node.id
-  // Graph nodes carry no build id (the graph crosses spaces); the access-checked
-  // detail does.
+  // Graph run nodes carry metadata.gb_build_id only where the caller may read the
+  // build; the access-checked detail is the authority here.
   const buildId = job?.build_id ?? (job ? buildIdOf(job) : undefined)
   // The build's own target run when this server has it; otherwise one rebuilt from
   // what the lineage index captured, so both render through the same drawer.
@@ -211,9 +211,12 @@ const NA = 'N/A'
 const NO_ACCESS = 'N/A — no access to this job\'s space'
 
 // GET /lineage/jobs/{id} answers 200 with detail_available false when the caller may
-// not read the job (see job_detail.fetch_job_detail).
+// not read the job (see job_detail.fetch_job_detail), flagged by detail_denied. The
+// message match is a fallback for a server that does not send the flag.
 function isAccessDenied(job: LineageJobDetail | undefined): boolean {
-  return Boolean(job && !job.detail_available && /not authorized/i.test(job.detail_error ?? ''))
+  if (!job || job.detail_available) return false
+  if (typeof job.detail_denied === 'boolean') return job.detail_denied
+  return /not authorized/i.test(job.detail_error ?? '')
 }
 
 /**

@@ -74,6 +74,15 @@ from gbserver.types.context import CliEnvironment, pass_environment
     ),
 )
 @click.option(
+    "--empty-from-beginning",
+    is_flag=True,
+    default=False,
+    help=(
+        "With --base-timestamp from-latest, seed 'all' instead of failing when the "
+        "source has no job yet (a fresh install), so its first jobs are indexed."
+    ),
+)
+@click.option(
     "--show",
     is_flag=True,
     default=False,
@@ -88,6 +97,7 @@ def cli(
     base_timestamp: Optional[str],
     force: bool,
     rebuild: bool,
+    empty_from_beginning: bool,
     show: bool,
 ) -> None:
     """Seed the lineage indexer checkpoint (gb_kv_pairs) without running it."""
@@ -158,7 +168,12 @@ def cli(
         storage.lineage_row_storage.delete_table()
         click.echo("Dropped every gb_lineage_index row.")
     try:
-        wrote = indexer.seed_if_absent(storage, base_timestamp.strip(), force=force)
+        wrote = indexer.seed_if_absent(
+            storage,
+            base_timestamp.strip(),
+            force=force,
+            empty_from_beginning=empty_from_beginning,
+        )
     except LineageSeedError as exc:
         raise click.ClickException(str(exc)) from exc
 

@@ -458,6 +458,21 @@ def test_normalization_is_idempotent_for_every_spelling(raw):
     assert normalize_uri(once) == once
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "hf:///api/r",
+        "hf:///papers/o",
+        "hf:///docs/x",
+        "hf:///datasets/api/r",
+        "hf://huggingface.co/models/API/r",
+    ],
+)
+def test_hf_owner_reserved_by_the_web_spelling_is_refused(raw):
+    """An owner the https spelling refuses is refused on hf:// too, never ``""`` on the second pass."""
+    assert normalize_uri(raw) == ""
+
+
 def test_unknown_lh_host_is_kept_lowercased():
     """An unknown lakehouse host stays as written (lowercased), never prod."""
     assert (

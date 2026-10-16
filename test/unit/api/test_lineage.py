@@ -806,3 +806,61 @@ def test_list_jobs_answers_422_for_an_invalid_page():
                 _fake_request("member", "member@example.com"), uri="s3://b/x"
             )
     assert caught.value.status_code == 422
+
+
+def test_query_graph_answers_422_for_a_service_value_error():
+    """Out-of-range input the service rejects is a 422, as the route documents."""
+
+    def refuse(**_kw):
+        raise ValueError("direction must be one of ...")
+
+    service = _db_service(query_graph=refuse)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.query_lineage_graph(
+                _fake_request("member", "member@example.com"),
+                LineageQueryRequest(uri="s3://b/x"),
+            )
+    assert caught.value.status_code == 422
+
+
+def test_query_graph_answers_503_when_the_index_cannot_be_read():
+    """A failing job_id seed is a 503, never an empty graph that reads as "nothing"."""
+
+    def broken(**_kw):
+        raise RuntimeError("database is locked")
+
+    service = _db_service(query_graph=broken)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.query_lineage_graph_get(
+                _fake_request("member", "member@example.com"), job_id="J1"
+            )
+    assert caught.value.status_code == 503
+
+
+def test_list_jobs_caps_job_ids_like_the_graph():
+    service = _db_service(list_jobs=lambda **_kw: AssertionError("not reached"))
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.list_lineage_jobs(
+                _fake_request("member", "member@example.com"),
+                job_ids=[f"J{i}" for i in range(1001)],
+            )
+    assert caught.value.status_code == 422
+
+
+def test_job_detail_carries_detail_denied():
+    """The response model must not drop detail_denied, or a denial reads as unavailable."""
+    service = _db_service(
+        get_job_detail=lambda job_id, **_kw: {
+            "job_id": job_id,
+            "detail_available": False,
+            "detail_denied": True,
+        }
+    )
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        detail = lineage_mod.get_lineage_job_detail(
+            _fake_request("member", "member@example.com"), "J1"
+        )
+    assert detail.detail_denied is True

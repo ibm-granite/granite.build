@@ -323,6 +323,44 @@ class TestValidation:
             assert "owner" not in metadata and "job_namespace" not in metadata
         assert sorted(checked) == ["mine", "theirs"]
 
+    def test_a_forged_row_under_the_job_id_does_not_pass_the_check(self):
+        """On W&B anyone can post a row under a real job id with themselves as
+        owner; rows that disagree on owner/namespace must fail closed, whichever
+        row comes first."""
+        real = self._origin_row("J1", "victim", "theirs/b")
+        forged = row(
+            "J1",
+            A,
+            C,
+            attributes={"job": {"owner": "attacker", "namespace": "mine/b"}},
+        )
+        for rows in ([forged, real], [real, forged]):
+            checked = []
+
+            def authorize(entry):
+                checked.append((entry["owner"], entry["space_name"]))
+                return entry["owner"] == "attacker" or entry["space_name"] == "mine"
+
+            result = service(*rows).query_graph(
+                uri=A, group_runs=False, authorize_job=authorize
+            )
+            assert all("gb_build_id" not in n["metadata"] for n in result["nodes"])
+            assert checked == [("", "")]
+
+    def test_a_row_with_no_owner_does_not_hide_the_others(self):
+        """A blank grants nothing, so it is not a disagreement."""
+        svc = service(
+            self._origin_row("J1", "me", "mine/b"),
+            row("J1", A, C, attributes={"job": {}}),
+        )
+        result = svc.query_graph(
+            uri=A,
+            group_runs=False,
+            authorize_job=lambda entry: entry["space_name"] == "mine",
+        )
+        runs = {n["id"]: n["metadata"] for n in result["nodes"]}
+        assert runs["run:J1"]["gb_build_id"] == "build-J1"
+
     def test_without_a_check_no_run_node_gets_origin_ids(self):
         svc = service(self._origin_row("J1", "me", "mine/b"))
         result = svc.query_graph(uri=A, group_runs=False)
@@ -338,7 +376,7 @@ class TestValidation:
         assert all("gb_build_id" not in n["metadata"] for n in result["nodes"])
 
     def test_an_unknown_direction_raises(self):
-        # The API layer maps ValueError to a 400.
+        # The API layer maps ValueError to a 422.
         with pytest.raises(ValueError):
             service(row("J1", A, B)).query_graph(uri=A, direction="sideways")
 
@@ -356,16 +394,18 @@ class TestWritePathIsInert:
         assert service().emit_event({"anything": True}) is None
 
     def test_tag_searches_with_no_job_table(self):
-        """The search raises (the route answers 503) rather than an empty 200 that
-        reads as "no matches"; the counts stay 0. See TestTagSearch for the answers
+        """The search and the counts raise (the route answers 503) rather than an
+        empty answer that reads as "no matches". See TestTagSearch for the answers
         when the table is there.
         """
         svc = DBLineageService(storage=FakeStorage([]), job_storage=None)
         with patch.object(DBLineageService, "job_storage", property(lambda self: None)):
             with pytest.raises(RuntimeError):
                 svc.search_lineage_by_tags(["t"])
-            assert svc.count_events_by_tags(["t"]) == 0
-            assert svc.count_runs_by_tags(["t"]) == 0
+            with pytest.raises(RuntimeError):
+                svc.count_events_by_tags(["t"])
+            with pytest.raises(RuntimeError):
+                svc.count_runs_by_tags(["t"])
 
     def test_filter_unrecorded_fails_toward_rerecording(self):
         # The interface requires this: recording is idempotent, so returning the
@@ -471,10 +511,11 @@ class TestQueryGraph:
         with pytest.raises(ValueError):
             service(row("J1", A, B)).query_graph(uri=A, direction="sideways")
 
-    def test_a_storage_failure_does_not_raise(self):
-        """A job lookup that fails costs its seeds, not the request."""
+    def test_a_storage_failure_raises(self):
+        """A failing job lookup propagates; the route answers 503, not an empty graph."""
         svc = service(row("J1", A, B), fail=True)
-        assert svc.query_graph(job_id="J1") is not None
+        with pytest.raises(Exception):
+            svc.query_graph(job_id="J1")
 
 
 class TestListJobs:

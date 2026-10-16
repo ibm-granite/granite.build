@@ -143,7 +143,7 @@ class LineageQueryRequest(BaseModel):
 
     There is deliberately no ``build_id`` filter: the index has no such column
     (a build is granite.build's own concept, empty on every imported row), and a
-    build-scoped view goes through ``POST /lineage/build``, which resolves the build
+    build-scoped view goes through ``GET /lineage/build/{id}``, which resolves the build
     outside the index and seeds this same walk.
     """
 
@@ -230,7 +230,9 @@ class LineageJobDetail(LineageJobEntry):
     and ``target`` are the granite.build build and target run, in the shape
     ``GET /builds/{id}/status`` uses, when this server has them. When the store could
     not answer, ``detail_available`` is false and ``detail_error`` says why -- the
-    index fields above are still there.
+    index fields above are still there. ``detail_denied`` is true when the caller
+    may not read the job's space-gated content, so a client can tell "denied" from
+    "unavailable".
     """
 
     job_store: str = ""
@@ -241,6 +243,7 @@ class LineageJobDetail(LineageJobEntry):
     origin_url: str = ""
     detail_available: bool = False
     detail_error: Optional[str] = None
+    detail_denied: bool = False
 
 
 class LineageJobsResponse(BaseModel):

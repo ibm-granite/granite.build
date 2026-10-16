@@ -78,16 +78,22 @@ def job_listing_entry(job_id: str, rows: List, tags: List[str]) -> Dict:
 
     Flat on purpose: the routes that read this take it as-is. Only the tag search
     needs the nested envelope -- see :func:`job_search_event`.
+
+    Owner and namespace decide who may read the job, so they are taken only when
+    every row agrees; rows that disagree give empty ones, which the access check
+    fails closed on. On W&B anyone can post an event under an existing job id
+    (``POST /lineage/`` is unauthenticated), so trusting the first row would let a
+    forged row with the poster as owner unlock the real job's detail.
     """
     attributes = rows[0].attributes if rows else {}
     job = job_detail(attributes)
-    namespace = str(job.get(JOB_NAMESPACE, "") or "")
+    namespace = _agreed(rows, JOB_NAMESPACE)
     return {
         "job_id": job_id,
         "job_namespace": namespace,
         # The space is the namespace's first segment, as the access filter reads it.
         "space_name": namespace.split("/", 1)[0] if namespace else "",
-        "owner": str(job.get(JOB_OWNER, "") or ""),
+        "owner": _agreed(rows, JOB_OWNER),
         "source_system": origin_system(attributes),
         "status": str(job.get(JOB_STATUS, "") or ""),
         "started_at": str(job.get(JOB_STARTED_AT, "") or ""),
@@ -99,6 +105,16 @@ def job_listing_entry(job_id: str, rows: List, tags: List[str]) -> Dict:
         "job": job,
         "origin": origin_detail(attributes),
     }
+
+
+def _agreed(rows: List, key: str) -> str:
+    """The ``job`` group's ``key`` when every row that sets it agrees, else ``""``.
+
+    A row that leaves it blank does not count against the others: blanks grant
+    nothing, and the merge fills them in only on a later write.
+    """
+    values = {str(job_detail(r.attributes).get(key, "") or "") for r in rows} - {""}
+    return values.pop() if len(values) == 1 else ""
 
 
 # What any caller may see of a job, whatever its space: the fields a lineage trace

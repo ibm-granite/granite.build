@@ -335,6 +335,34 @@ class TestUnexpandedFrontier:
         assert graph.truncated
         assert graph.unexpanded == 2
 
+    def test_a_row_limited_hop_counts_the_nodes_it_cut(self):
+        """A hop cut by its row limit leaves its last node and unread ones unexpanded."""
+        rows = [row(f"J{i}", "a", "x") for i in range(2 * ROWS_PER_NODE)]
+        rows.append(row("K", "b", "y"))
+        storage = FakeStorage(rows)
+        graph = walk_lineage(
+            storage,
+            ["a", "b"],
+            Direction.DESCENDANTS,
+            max_depth=1,
+            max_nodes_per_level=2,
+        )
+        # "a" was read only up to the limit; "b"'s rows were never reached.
+        assert graph.truncated
+        assert graph.unexpanded == 2
+
+    def test_a_row_limited_depth_probe_counts_the_nodes_it_never_checked(self):
+        rows = [row("S1", "s", "m1"), row("S2", "s", "m2")]
+        rows += [row(f"J{i}", "m1", "z") for i in range(2 * ROWS_PER_NODE)]
+        rows.append(row("K", "m2", "w"))
+        storage = FakeStorage(rows)
+        graph = walk_lineage(
+            storage, ["s"], Direction.DESCENDANTS, max_depth=1, max_nodes_per_level=2
+        )
+        # The probe filled its limit on "m1" alone, so "m2" is unknown, not a leaf.
+        assert graph.truncated
+        assert graph.unexpanded == 2
+
     def test_a_terminal_frontier_is_not_unexpanded(self):
         """Reaching the end of the graph is not truncation, even at the depth limit."""
         storage = FakeStorage(chain("a", "b"))

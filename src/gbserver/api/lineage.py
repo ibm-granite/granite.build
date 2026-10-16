@@ -50,6 +50,8 @@ _SEARCH_SCAN_BACKEND_PAGE_SIZE = 100
 _SEARCH_SCAN_MAX_BACKEND_ITEMS = 2000
 # The deepest walk a caller who is not a super admin may ask for on /graph.
 _USER_MAX_DEPTH = 20
+# The same cap LineageQueryRequest.job_ids applies to the graph.
+_MAX_JOB_IDS = 1000
 
 
 def get_redacted_job_input_params(source: dict) -> dict:
@@ -385,7 +387,8 @@ def query_lineage_graph(
 
     This returns the node/edge graph directly, with a ``depth`` per node. It also
     never 404s: an empty graph means "nothing recorded", which is a real answer, and a
-    caller must not render it as an error.
+    caller must not render it as an error. A storage failure is a 503, never an
+    empty graph.
 
     There is no ``build_id`` filter. The index has no such column -- a build is a
     granite.build process concept, absent from every imported row -- and a
@@ -404,7 +407,10 @@ def query_lineage_graph(
     - run nodes: ``id``, ``name`` and, in ``metadata``, ``job_id``, ``job_name``,
       ``job_type``, ``job_status``, ``job_started_at``, ``job_completed_at``,
       ``category`` and ``source_system``; grouped nodes add ``run_count`` and
-      ``jobs_query``;
+      ``jobs_query``, ``representative_job_id``, ``source_uri`` and ``target_uri``
+      (the first input and output, the terminal marker for an empty side); a node grouping
+      jobs with the same inputs and outputs also adds ``source_uris`` and
+      ``target_uris``;
     - the edges.
 
     Owner, namespace and tags are never on the graph. A single run node gets
@@ -466,8 +472,14 @@ def query_lineage_graph(
         )
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(e),
+        ) from e
+    except Exception as e:
+        logger.exception("Lineage graph query failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The lineage index could not be read",
         ) from e
 
     return LineageGraphResponse(
@@ -517,7 +529,8 @@ def list_lineage_jobs(
     ids are returned by ``GET /lineage/jobs/{id}`` behind the space check. A tag
     search is ``POST /lineage/search``.
 
-    ``limit`` is ``1..1000`` and ``offset`` ``>= 0`` (422 otherwise). A storage
+    ``limit`` is ``1..1000``, ``offset`` ``>= 0`` and ``job_ids`` at most 1000 ids
+    -- the cap ``LineageQueryRequest`` applies to the graph (422 otherwise). A storage
     failure is a 503, never an empty page that would read as "no jobs".
 
     A GET because every filter is a scalar or a flat list; there is nothing a body
@@ -534,6 +547,11 @@ def list_lineage_jobs(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="One of 'uri', 'job_id' or 'job_ids' is required",
+        )
+    if job_ids and len(job_ids) > _MAX_JOB_IDS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"job_ids must list at most {_MAX_JOB_IDS} ids",
         )
     service = _get_index_service()
 

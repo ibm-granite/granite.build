@@ -431,7 +431,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         On Postgres the index is built ``CONCURRENTLY`` (outside a transaction, so
         on an autocommit connection): it is added on schema adjust to tables that
         already hold data -- ``gb_targets`` -- and a plain ``CREATE INDEX`` would
-        block their writes for the whole build.
+        block their writes for the whole build. A concurrent build that was
+        interrupted (pod killed during startup, deadlock) leaves an ``INVALID``
+        index under the name, which ``IF NOT EXISTS`` would skip forever and the
+        planner never uses; such an index is dropped and built again.
         """
         if not self.composite_indexes:
             return
@@ -455,6 +458,9 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 else "CREATE INDEX"
             )
             with engine.connect() as connection:
+                invalid = (
+                    self.__invalid_postgres_indexes(connection) if concurrent else set()
+                )
                 for columns in self.composite_indexes:
                     for col in columns:
                         _validate_sql_identifier(col, "column name")
@@ -463,7 +469,20 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     if len(full_name) > 63:
                         name_hash = hashlib.sha1(full_name.encode()).hexdigest()[:7]
                         full_name = f"ix_{name_hash}_{col_suffix}"[:63]
-                    if full_name in existing:
+                    if full_name in invalid:
+                        self.logger.warning(
+                            f"Index {full_name} on {self.table_name} is invalid (an "
+                            "interrupted concurrent build); dropping and rebuilding it."
+                        )
+                        index_ref = (
+                            f"{self._db_schema}.{full_name}"
+                            if self._db_schema
+                            else full_name
+                        )
+                        connection.execute(
+                            text(f"DROP INDEX CONCURRENTLY IF EXISTS {index_ref};")
+                        )
+                    elif full_name in existing:
                         continue
                     connection.execute(
                         text(
@@ -474,6 +493,25 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 connection.commit()
         except Exception as e:
             self.logger.warning(f"Error creating composite indexes: {e}")
+
+    def __invalid_postgres_indexes(self, connection: Any) -> set[str]:
+        """Names of this table's indexes Postgres marks ``INVALID``.
+
+        An in-progress concurrent build is invalid too; dropping it makes that
+        build fail and this one replace it, so the index still ends up valid.
+        """
+        rows = connection.execute(
+            text(
+                "SELECT ic.relname FROM pg_index i "
+                "JOIN pg_class ic ON ic.oid = i.indexrelid "
+                "JOIN pg_class t ON t.oid = i.indrelid "
+                "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                "WHERE NOT i.indisvalid AND t.relname = :table "
+                "AND n.nspname = COALESCE(:schema, current_schema())"
+            ),
+            {"table": self.table_name, "schema": self._db_schema or None},
+        )
+        return {row[0] for row in rows}
 
     def __get_unique_index_statement(
         self, column_key: Union[str, tuple[str, ...]], exception_value: Optional[Any]
@@ -946,6 +984,14 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         read, it may create or adjust the table to match the item's columns. Retried
         like a read, since the DDL can hit ``database is locked`` just the same.
         """
+        return self._ensure_table_without_retry()
+
+    def _ensure_table_without_retry(self) -> bool:
+        """:meth:`_ensure_table` for a caller that is itself ``@retry_read``.
+
+        Nesting the retrying variant would multiply the attempts and, on SQLite,
+        sleep its backoff while the caller holds the file lock.
+        """
         if self._sql_alchemy_model is None:
             sample = self._convert_item_to_row_dict(self._get_sample_item())
             self._create_or_adjust_schema_item_dict(sample)
@@ -1172,7 +1218,8 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(10),
-        retry=retry_if_not_exception_type((ValueError, IntegrityError)),
+        # DataError is deterministic, as in _add_item_dicts.
+        retry=retry_if_not_exception_type((ValueError, IntegrityError, DataError)),
         reraise=True,
     )
     def update_fields(

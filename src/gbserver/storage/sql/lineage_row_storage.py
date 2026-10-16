@@ -178,7 +178,7 @@ class SQLLineageRowStorage(
         67 MB of JSON that the graph collapses into one node anyway.
         """
         wanted = self._batchable(uris)
-        if not wanted or not self._ensure_table():
+        if not wanted or not self._ensure_table_without_retry():
             return []
         session = self._get_session_without_retry()
         try:
@@ -212,19 +212,27 @@ class SQLLineageRowStorage(
         self_loops: bool,
         limit: Optional[int],
     ) -> List[StoredLineageRow]:
-        """One hop's rows, deserializing only those it returns."""
+        """One hop's rows, deserializing only those it returns.
+
+        Ordered by the matched side, then the neighbour, then ``job_id``, so a
+        ``limit`` that cuts a hub keeps the same rows every time; the matching
+        ``(input, output)`` / ``(output, input)`` index yields the first two keys
+        already in order.
+        """
         wanted = self._batchable(frontier)
-        if not wanted or not self._ensure_table():
+        if not wanted or not self._ensure_table_without_retry():
             return []
         session = self._get_session_without_retry()
         try:
             model = self._sql_alchemy_model
-            side = model.input if direction == DOWNSTREAM else model.output
+            downstream = direction == DOWNSTREAM
+            side = model.input if downstream else model.output
+            neighbour = model.output if downstream else model.input
             query = session.query(model.json).filter(side.in_(wanted))
             if not self_loops:
                 query = query.filter(model.input != model.output)
             if limit is not None:
-                query = query.limit(limit)
+                query = query.order_by(side, neighbour, model.job_id).limit(limit)
             return [
                 self._convert_row_dict_to_item({JSON_COLUMN_NAME: blob})
                 for (blob,) in query.all()
@@ -244,7 +252,7 @@ class SQLLineageRowStorage(
         if direction not in (DOWNSTREAM, UPSTREAM):
             raise ValueError(f"Unknown direction: {direction!r}")
         wanted = self._batchable(frontier)
-        if not wanted or not self._ensure_table():
+        if not wanted or not self._ensure_table_without_retry():
             return []
         session = self._get_session_without_retry()
         try:
@@ -290,7 +298,7 @@ class SQLLineageRowStorage(
         backend answers from both indexes (bitmap OR, index merge, OR-by-union)
         rather than by a scan.
         """
-        if not uri or uri == TERMINAL or not self._ensure_table():
+        if not uri or uri == TERMINAL or not self._ensure_table_without_retry():
             yield None
             return
         session = self._get_session_without_retry()

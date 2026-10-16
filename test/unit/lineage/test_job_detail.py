@@ -153,12 +153,14 @@ def test_targets_store_withholds_a_build_the_caller_may_not_read():
     assert result["detail_available"] is False
     assert "target" not in result
     assert "Not authorized" in result["detail_error"]
+    assert result["detail_denied"] is True
 
 
 def test_targets_store_reports_a_build_not_on_this_server():
     result = detail([index_row("j1", JobStore.TARGETS, **TARGETS)])
     assert result["detail_available"] is False
     assert "not on this server" in result["detail_error"]
+    assert result["detail_denied"] is False
 
 
 def test_wandb_store_reads_the_run_config():
@@ -185,6 +187,7 @@ def test_a_failing_store_degrades_rather_than_raising():
     assert result["detail_available"] is False
     # The store's own error text stays in the log: it can carry SQL or W&B internals.
     assert result["detail_error"] == "Could not read wandb"
+    assert result["detail_denied"] is False
 
 
 def test_other_store_returns_the_index_entry_only():
@@ -211,6 +214,7 @@ def test_lineage_job_store_withholds_a_job_outside_the_callers_spaces():
     )
     assert seen == ["space"]
     assert result["detail_available"] is False
+    assert result["detail_denied"] is True
     assert "detail" not in result
 
 
@@ -224,6 +228,7 @@ def test_wandb_store_withholds_a_job_outside_the_callers_spaces():
         authorize_entry=lambda entry: False,
     )
     assert result["detail_available"] is False
+    assert result["detail_denied"] is True
 
 
 _SPACE_GATED = ("job_namespace", "space_name", "owner", "tags", "origin")

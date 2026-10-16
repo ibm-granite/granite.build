@@ -502,8 +502,35 @@ def _ts(minutes):
     return (T0 + timedelta(minutes=minutes)).isoformat()
 
 
+def _no_keyset_read(storage, cutoff, after):
+    raise NotImplementedError("these tests drive the listed-keys read")
+
+
+@pytest.fixture(autouse=True)
+def _listed_keys_read():
+    """Every test here drives the listed-keys read; the keyset read has its own."""
+    with patch.object(idx, "_finished_after_page", side_effect=_no_keyset_read):
+        yield
+
+
+# Every target built by _target, by uuid: the scan lists keys, then loads the
+# targets by uuid, which _load_targets_from_registry serves from here.
+_TARGETS = {}
+
+
+@pytest.fixture(autouse=True)
+def _load_targets_from_registry():
+    _TARGETS.clear()
+    with patch.object(
+        idx,
+        "_targets_by_uuid",
+        side_effect=lambda storage, uuids: [_TARGETS.get(u) for u in uuids],
+    ):
+        yield
+
+
 def _target(uuid, minutes, build_id="b1", artifacts=True):
-    return StoredTargetRun(
+    target = StoredTargetRun(
         uuid=uuid,
         build_id=build_id,
         environment_uri="env",
@@ -511,6 +538,8 @@ def _target(uuid, minutes, build_id="b1", artifacts=True):
         input_artifacts={"in": "a-in"} if artifacts else {},
         output_artifacts={"out": ["a-out"]} if artifacts else {},
     )
+    _TARGETS[uuid] = target
+    return target
 
 
 def _target_indexer(targets, indexed=()):
@@ -720,13 +749,13 @@ def test_a_scan_with_a_checkpoint_reads_only_targets_since_it_in_utc():
     with patch.object(idx, "_successful_targets_page", side_effect=AssertionError):
         selected = idx.TargetLineageIndexer(
             sink=MagicMock(), rows=MagicMock()
-        )._jobs_since(
+        )._keys_since(
             storage,
             (T0 + timedelta(minutes=60))
             .astimezone(timezone(timedelta(hours=-3)))
             .isoformat(),
         )
-    assert [t.uuid for t in selected] == ["after"]
+    assert [uuid for _, uuid in selected] == ["after"]
     cutoff, page_index, _ = (
         storage.target_storage.get_successful_finished_since.call_args.args
     )
@@ -740,7 +769,7 @@ def test_a_first_scan_reads_every_successful_target():
     with patch.object(
         idx, "_successful_targets_page", side_effect=lambda storage, i: []
     ) as full:
-        idx.TargetLineageIndexer(sink=MagicMock(), rows=MagicMock())._jobs_since(
+        idx.TargetLineageIndexer(sink=MagicMock(), rows=MagicMock())._keys_since(
             storage, None
         )
     full.assert_called_once()

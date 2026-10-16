@@ -162,7 +162,8 @@ def walk_lineage(
             keeping the shorter depth for a node reachable both ways.
         max_depth: how many levels to expand. 0 returns an empty graph.
         max_nodes_per_level: ceiling on the nodes one level adds. A level that
-            reaches more keeps the first ones (in row order) and drops the rest,
+            reaches more keeps the first ones (in the hop's deterministic order:
+            matched node, neighbour, job) and drops the rest,
             with their rows, marking the result truncated. Seeds beyond it are
             not walked at all.
         collapse_self_loops: read one sample row per self-looping artifact and
@@ -268,6 +269,7 @@ def _walk_one_direction(
                 row_limit,
             )
             graph.truncated = True
+            unexpanded.update(_cut_off(rows, frontier, direction))
         if self_loops_checked is not None:
             rows += _self_loop_samples(storage, frontier, graph, self_loops_checked)
 
@@ -339,14 +341,14 @@ def _walk_one_direction(
         # N-queries-per-level cost that _hop exists to avoid.
         held = set(frontier)
         remainder = set()
+        probe_limit = max_nodes_per_level * ROWS_PER_NODE
         # Self-loops are skipped below, so there is no reason to read them.
-        for r in _hop(
-            storage,
-            frontier,
-            direction,
-            self_loops=False,
-            limit=max_nodes_per_level * ROWS_PER_NODE,
-        ):
+        probed = _hop(storage, frontier, direction, self_loops=False, limit=probe_limit)
+        if len(probed) >= probe_limit:
+            # The probe was cut too: the nodes it never reached are unknown, so
+            # count them rather than call them leaves.
+            remainder.update(_cut_off(probed, frontier, direction))
+        for r in probed:
             reached = _continuation(r, direction)
             # Same stopping rules the main loop applies, so a frontier node whose only
             # rows are terminals or self-loops is correctly not counted as more graph.
@@ -362,6 +364,20 @@ def _walk_one_direction(
         if remainder:
             graph.truncated = True
             unexpanded.update(remainder)
+
+
+def _cut_off(rows: list, frontier: list, direction: Direction) -> set:
+    """The frontier nodes a row-limited hop may not have read in full.
+
+    The hop is ordered by the matched node, so the last row's node may be partly
+    read; those with no row at all may be leaves, or may sort after the cut. Which
+    of the two cannot be told without the collation, so both count as unexpanded.
+    """
+    matched = {_matched_on(row, direction) for row in rows}
+    cut = {node for node in frontier if node not in matched}
+    if rows:
+        cut.add(_matched_on(rows[-1], direction))
+    return cut
 
 
 def _hop(

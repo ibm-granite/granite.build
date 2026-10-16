@@ -224,9 +224,14 @@ def _normalize_hf(candidate: str, parsed) -> str:
     hf = HfURI.parse(candidate)
     if (hf.get_host() or "").lower() != HF_HOST:
         return str(hf)
-    if (hf.get_owner() or "").lower() in _HF_TYPE_SEGMENTS:
+    owner = (hf.get_owner() or "").lower()
+    if owner in _HF_TYPE_SEGMENTS:
         # The Hub reserves these as owner names; read as one, the web URL would be
         # another type's repo (``models/spaces/m`` -> the Space ``spaces/m``).
+        return ""
+    if owner in _HF_WEB_RESERVED:
+        # The web spelling refuses these owners as site pages, so keeping one here
+        # would give an id that does not normalize to itself.
         return ""
 
     # The web URL omits the type segment for a model (the one difference from the

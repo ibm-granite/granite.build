@@ -154,3 +154,73 @@ def test_the_scan_reads_the_status_finished_at_index(targets):
     assert f"ix_{table}_status_finished_at" in indexes
     assert f"ix_{table}_status_finished_at" in plan
     assert "TEMP B-TREE" not in plan
+
+
+# -- get_successful_finished_after: the keyset read ----------------------------
+
+
+def _keyset_names(storage, cutoff=None, page_size=2):
+    """Every page of the keyset read, followed to the end."""
+    names, after = [], None
+    while True:
+        page = storage.get_successful_finished_after(cutoff, after, page_size)
+        names.extend(t.name for _, t in page)
+        if len(page) < page_size:
+            return names
+        key, last = page[-1]
+        after = (key, last.uuid)
+
+
+def test_keyset_read_follows_the_instant_across_offsets(targets):
+    storage, _ = targets
+    minus3 = timezone(timedelta(hours=-3))
+    _add(storage, "second", datetime(2026, 9, 25, 16, 0, tzinfo=minus3))  # 19:00Z
+    _add(storage, "first", datetime(2026, 9, 25, 18, 30, tzinfo=timezone.utc))
+    _add(storage, "third", datetime(2026, 9, 25, 21, 0, tzinfo=timezone.utc))
+    _add(storage, "failed", CUTOFF, status=Status.FAILED)
+    assert _keyset_names(storage) == ["first", "second", "third"]
+
+
+def test_keyset_read_keeps_the_cutoff_and_drops_what_is_before(targets):
+    storage, _ = targets
+    _add(storage, "before", CUTOFF - timedelta(seconds=1))
+    _add(storage, "at", CUTOFF)
+    _add(storage, "after", CUTOFF + timedelta(hours=1))
+    assert _keyset_names(storage, cutoff=CUTOFF) == ["at", "after"]
+
+
+def test_keyset_read_seeks_on_the_expression_index(targets):
+    storage, table = targets
+    _add(storage, "t", CUTOFF)
+    storage.get_successful_finished_after(CUTOFF, None, 10)
+    sql = (
+        f"EXPLAIN QUERY PLAN SELECT uuid FROM {table} WHERE status = 'SUCCESS' "
+        f"AND {storage._SQLITE_FINISHED_KEY} >= julianday('2026-01-01') "
+        f"ORDER BY {storage._SQLITE_FINISHED_KEY}, uuid LIMIT 10"
+    )
+    with storage._engine.connect() as conn:  # pylint: disable=protected-access
+        plan = " ".join(str(row[-1]) for row in conn.execute(text(sql)))
+    assert f"ix_{table}_status_finished_key" in plan, plan
+    assert "TEMP B-TREE" not in plan, plan
+
+
+def test_a_row_the_key_cannot_place_falls_back(targets):
+    """An offset-less JSON time reads as UTC in SQL but local in Python."""
+    storage, table = targets
+    uuid = _add(storage, "legacy", CUTOFF)
+    _rewrite(storage, table, uuid, json_value="2026-09-25T18:00:00")
+    with pytest.raises(NotImplementedError):
+        storage.get_successful_finished_after(None, None, 10)
+
+
+def test_a_malformed_blob_still_writes_once_indexed(targets):
+    """json_valid in the indexed expression: a bad blob gives a null key, not an
+    error on every write to the table."""
+    storage, table = targets
+    uuid = _add(storage, "t", CUTOFF)
+    storage.get_successful_finished_after(None, None, 10)  # builds the index
+    with storage._engine.begin() as conn:  # pylint: disable=protected-access
+        conn.execute(
+            text(f"UPDATE {table} SET json = '{{' WHERE uuid = :u"), {"u": uuid}
+        )
+    _add(storage, "next", CUTOFF)

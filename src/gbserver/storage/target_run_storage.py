@@ -15,7 +15,7 @@
 # limitations under the License.
 
 from datetime import datetime
-from typing import Self
+from typing import Any, List, Optional, Self, Tuple
 
 from gbserver.storage.storage import (
     BaseItemStorage,
@@ -40,6 +40,28 @@ class IStoredTargetRunStorage(IItemStorage[StoredTargetRun]):
         before the cutoff (this base form returns every successful target), and the
         caller re-checks each ``finished_at``. It must never drop a row at or after
         the cutoff, nor one whose time it cannot read.
+        """
+        raise NotImplementedError
+
+    def get_successful_finished_after(
+        self,
+        cutoff_utc: Optional[datetime],
+        after: Optional[Tuple[Any, str]],
+        page_size: int,
+    ) -> List[Tuple[Any, StoredTargetRun]]:
+        """One page of successful targets in completion order, oldest first.
+
+        Keyset paging: each entry is ``(key, target)`` ordered by ``(key, uuid)``,
+        where ``key`` is an opaque sort key of the completion instant that never
+        orders two instants against their true order (it may tie them, e.g. at a
+        coarser precision). Pass the last entry's ``(key, target.uuid)`` as
+        ``after`` for the next page. ``cutoff_utc`` drops targets finished before
+        it; ties of ``key`` with it are kept for the caller's exact check.
+
+        Raises:
+            NotImplementedError: When this backend cannot order by instant in SQL,
+                or holds a row it cannot place in that order; the caller then
+                reads with :meth:`get_successful_finished_since` instead.
         """
         raise NotImplementedError
 

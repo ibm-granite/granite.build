@@ -57,7 +57,7 @@ import os
 import sys
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.lineage.db_jobstats import DBLineageStore
@@ -131,6 +131,10 @@ _WANDB_PAGE_SIZE = 200
 # logs them asynchronously until finish()), so it is waited on -- but only this
 # long, so a run whose writer died without finishing does not pin the scan.
 _WANDB_RUNNING_MAX_AGE_S = 6 * 3600
+# How long one running lineage run may hold the scan before it is warned about
+# (once per run): past this its writer has likely died, and every W&B run after
+# it waits until _WANDB_RUNNING_MAX_AGE_S.
+_WANDB_PINNED_WARN_AFTER_S = 30 * 60
 # wandb_service.LINEAGE_RUN_JOB_TYPE, restated so this module does not import wandb.
 _WANDB_LINEAGE_RUN_JOB_TYPE = "gb-lineage-event"
 
@@ -533,17 +537,25 @@ class JobLineageIndexer:
         except (TypeError, ValueError):
             return False
 
-    def _resolve_seed(self, storage: SingletonAdminStorage, spec: str) -> str:
+    def _resolve_seed(
+        self,
+        storage: SingletonAdminStorage,
+        spec: str,
+        empty_from_beginning: bool = False,
+    ) -> str:
         """The checkpoint timestamp ``spec`` names, in this source's form.
 
         Raises:
-            LineageSeedError: When ``from-latest`` finds no job, or ``spec`` is
-                not a timestamp.
+            LineageSeedError: When ``from-latest`` finds no job (unless
+                ``empty_from_beginning``), or ``spec`` is not a timestamp.
         """
         if spec == SEED_ALL:
             return self._format_timestamp(FROM_BEGINNING)
         if spec == SEED_FROM_LATEST:
             job = self._latest_job(storage)
+            if job is None and empty_from_beginning:
+                # Nothing to skip yet: every job written from now on is indexed.
+                return self._format_timestamp(FROM_BEGINNING)
             if job is None:
                 raise LineageSeedError(
                     "No job found in the source; nothing to anchor a checkpoint at."
@@ -559,7 +571,11 @@ class JobLineageIndexer:
         return self._format_timestamp(instant)
 
     def seed_if_absent(
-        self, storage: SingletonAdminStorage, spec: str, force: bool = False
+        self,
+        storage: SingletonAdminStorage,
+        spec: str,
+        force: bool = False,
+        empty_from_beginning: bool = False,
     ) -> bool:
         """Place the checkpoint at a timestamp, by default only when there is none.
 
@@ -575,12 +591,16 @@ class JobLineageIndexer:
         in place. Moving it back re-indexes (deduplicated, not free); moving it
         forward skips jobs for good.
 
+        ``empty_from_beginning`` makes ``from-latest`` on a source with no job
+        write the :data:`FROM_BEGINNING` mark instead of raising, so a fresh
+        install indexes its first jobs rather than waiting for a seed by hand.
+
         Scans read from the checkpoint inclusively, so a job at exactly the
         seeded instant is indexed.
 
         Raises:
-            LineageSeedError: When ``from-latest`` finds no job, or ``spec`` is
-                not a timestamp.
+            LineageSeedError: When ``from-latest`` finds no job (unless
+                ``empty_from_beginning``), or ``spec`` is not a timestamp.
         """
         key = self._get_checkpoint_key()
         existing = self.read_checkpoint(storage)
@@ -593,7 +613,7 @@ class JobLineageIndexer:
                 spec,
             )
             return False
-        timestamp = self._resolve_seed(storage, spec)
+        timestamp = self._resolve_seed(storage, spec, empty_from_beginning)
         self._write_timestamp(storage, timestamp)
         if existing is not None:
             logger.warning(
@@ -660,11 +680,7 @@ class JobLineageIndexer:
     _seeds_when_standalone = False
 
     def _seed_latest_in_standalone(self, storage: SingletonAdminStorage) -> None:
-        try:
-            self.seed_if_absent(storage, SEED_FROM_LATEST)
-        except LineageSeedError:
-            # Nothing in the source yet: index from the beginning, which is empty.
-            self._write_timestamp(storage, self._format_timestamp(FROM_BEGINNING))
+        self.seed_if_absent(storage, SEED_FROM_LATEST, empty_from_beginning=True)
         logger.info(
             "No lineage index checkpoint under %s; seeded it from the latest job "
             "rather than back-filling the whole shared project. Run gbserver "
@@ -762,8 +778,50 @@ def _targets_page(
     return [t for t in page if isinstance(t, StoredTargetRun)]
 
 
+def _finished_after_page(
+    storage: SingletonAdminStorage,
+    cutoff: Optional[datetime],
+    after: Optional[Tuple[Any, str]],
+) -> List[Tuple[Any, StoredTargetRun]]:
+    """One keyset page of successful targets, oldest finished first.
+
+    Raises:
+        NotImplementedError: When the storage cannot order by instant in SQL.
+    """
+    page = storage.target_storage.get_successful_finished_after(
+        as_aware(cutoff).astimezone(timezone.utc) if cutoff else None,
+        after,
+        _SCAN_PAGE_SIZE,
+    )
+    return [(key, t) for key, t in page if isinstance(t, StoredTargetRun)]
+
+
+def _in_instant_order(targets: List[StoredTargetRun]) -> List[StoredTargetRun]:
+    """``targets`` (all finished) sorted by the exact ``(instant, uuid)``."""
+
+    def key(target: StoredTargetRun) -> Tuple[datetime, str]:
+        assert target.finished_at is not None
+        return as_aware(target.finished_at), target.uuid
+
+    return sorted(targets, key=key)
+
+
+def _targets_by_uuid(
+    storage: SingletonAdminStorage, uuids: List[str]
+) -> List[Optional[StoredTargetRun]]:
+    """The targets for ``uuids``, in that order; ``None`` where one is gone."""
+    found = storage.target_storage.get_by_uuid(list(uuids))
+    assert isinstance(found, list)  # a list in gives a list out
+    return [t if isinstance(t, StoredTargetRun) else None for t in found]
+
+
 class TargetLineageIndexer(JobLineageIndexer):
     """Standalone source: successful ``gb_targets`` rows by ``finished_at``.
+
+    Where the storage can order by instant in SQL (SQLite through an expression
+    index, Postgres through the column), targets are read by keyset a page at a
+    time (:meth:`_keyset_targets`). Otherwise, and the rest of this describes
+    that fallback, every key since the checkpoint is listed first:
 
     Past the first scan, the storage narrows the read to targets finished at or
     after the checkpoint (see :func:`_targets_page`). Every page of that is read,
@@ -788,11 +846,20 @@ class TargetLineageIndexer(JobLineageIndexer):
     def _item_id(self, job: StoredTargetRun) -> str:
         return job.uuid
 
-    def _jobs_since(
+    def _keys_since(
         self, storage: SingletonAdminStorage, timestamp: Optional[str]
-    ) -> List[StoredTargetRun]:
+    ) -> List[Tuple[datetime, str]]:
+        """``(instant, uuid)`` of every successful target finished at or after
+        ``timestamp`` (all when ``None``), oldest first.
+
+        Only the keys are kept, not the targets: a first ``all`` scan lists the
+        whole table, and a target carries its full artifacts. Each page is dropped
+        once its keys are taken; :meth:`_jobs_since` loads the targets a batch at
+        a time. A target listed twice (paging by offset while rows are added) is
+        kept once.
+        """
         cutoff = _parse_ts(timestamp) if timestamp else None
-        selected: List[StoredTargetRun] = []
+        keys: Dict[str, datetime] = {}
         page_index = 0
         while True:
             page = _targets_page(storage, page_index, cutoff)
@@ -802,16 +869,80 @@ class TargetLineageIndexer(JobLineageIndexer):
                 # Unfinished rows are skipped, never a stop: NULLs can interleave.
                 if target.finished_at is None:
                     continue
-                if cutoff is not None and as_aware(target.finished_at) < cutoff:
+                instant = as_aware(target.finished_at)
+                if cutoff is not None and instant < cutoff:
                     continue
-                selected.append(target)
+                keys.setdefault(target.uuid, instant)
             if len(page) < _SCAN_PAGE_SIZE:
                 break
             page_index += 1
         # The DB sort can disagree with instant order (SQLite stores wall-clock
         # text), so order by the aware instant here; uuid only makes ties stable.
-        selected.sort(key=lambda t: (as_aware(t.finished_at), t.uuid))
-        return selected
+        return sorted((instant, uuid) for uuid, instant in keys.items())
+
+    def _jobs_since(
+        self, storage: SingletonAdminStorage, timestamp: Optional[str]
+    ) -> Iterator[StoredTargetRun]:
+        """The targets of :meth:`_keys_since`, loaded ``_CHECKPOINT_EVERY`` at a
+        time and only as the scan reaches them, so memory is bounded by a batch
+        and a scan that stops early (an unsettled or failing job) loads no more.
+        """
+        cutoff = _parse_ts(timestamp) if timestamp else None
+        try:
+            # Probe the first page here, so a backend without the keyset read
+            # falls back before anything is yielded.
+            first = _finished_after_page(storage, cutoff, None)
+        except NotImplementedError as exc:
+            if not self._keyset_fallback_logged:
+                logger.info(
+                    "Lineage index scan of gb_targets lists every key first: %s", exc
+                )
+                self._keyset_fallback_logged = True
+        else:
+            yield from self._keyset_targets(storage, cutoff, first)
+            return
+        keys = self._keys_since(storage, timestamp)
+        for start in range(0, len(keys), _CHECKPOINT_EVERY):
+            uuids = [uuid for _, uuid in keys[start : start + _CHECKPOINT_EVERY]]
+            for target in _targets_by_uuid(storage, uuids):
+                # Deleted, or no longer finished, since it was listed.
+                if target is not None and target.finished_at is not None:
+                    yield target
+
+    _keyset_fallback_logged = False
+
+    def _keyset_targets(
+        self,
+        storage: SingletonAdminStorage,
+        cutoff: Optional[datetime],
+        page: List[Tuple[Any, StoredTargetRun]],
+    ) -> Iterator[StoredTargetRun]:
+        """Targets at or after ``cutoff`` in exact instant order, a page at a time.
+
+        Memory is one page and one run of equal keys, never the whole range. The
+        storage key never orders two instants against their true order but may tie
+        them (SQLite keeps milliseconds), and the scan skips any job behind the
+        last one it took, so the targets of one key are held until the key changes
+        and then released sorted by the exact ``(instant, uuid)``.
+        """
+        held: List[StoredTargetRun] = []
+        held_key: Any = None
+        while page:
+            for key, target in page:
+                if held and key != held_key:
+                    yield from _in_instant_order(held)
+                    held = []
+                held_key = key
+                if target.finished_at is None:
+                    continue
+                if cutoff is not None and as_aware(target.finished_at) < cutoff:
+                    continue
+                held.append(target)
+            if len(page) < _SCAN_PAGE_SIZE:
+                break
+            last_key, last = page[-1]
+            page = _finished_after_page(storage, cutoff, (last_key, last.uuid))
+        yield from _in_instant_order(held)
 
     def _index(self, storage: SingletonAdminStorage, job: StoredTargetRun) -> bool:
         if not job.input_artifacts and not any(job.output_artifacts.values()):
@@ -1174,6 +1305,8 @@ class WandBLineageIndexer(JobLineageIndexer):
         super().__init__(monitoring_interval=monitoring_interval, sink=sink, rows=rows)
         self._api = api
         self._logged_in = False
+        # Run ids already warned about as pinning the scan, so it is said once.
+        self._pinned_warned: set = set()
 
     def _wandb_api(self) -> Any:
         """A fresh ``wandb.Api`` per scan, unless one was injected.
@@ -1232,7 +1365,21 @@ class WandBLineageIndexer(JobLineageIndexer):
         ):
             return False
         age = datetime.now(timezone.utc) - self._parse_job_ts(self._timestamp(job))
-        return age.total_seconds() < _WANDB_RUNNING_MAX_AGE_S
+        age_s = age.total_seconds()
+        if age_s >= _WANDB_RUNNING_MAX_AGE_S:
+            self._pinned_warned.discard(job.id)
+            return False
+        if age_s >= _WANDB_PINNED_WARN_AFTER_S and job.id not in self._pinned_warned:
+            self._pinned_warned.add(job.id)
+            logger.warning(
+                "W&B lineage run %s has been running for %.0f minutes and holds "
+                "back all W&B lineage indexing; its writer may have died. It is "
+                "waited on for %.0f more minutes, then indexed as it is.",
+                job.id,
+                age_s / 60,
+                (_WANDB_RUNNING_MAX_AGE_S - age_s) / 60,
+            )
+        return True
 
     def _jobs_since(
         self, storage: SingletonAdminStorage, timestamp: Optional[str]

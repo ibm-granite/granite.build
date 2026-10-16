@@ -138,3 +138,26 @@ def test_a_source_with_no_indexer_says_so():
         result = _run("--base-timestamp", "all")
     assert result.exit_code != 0
     assert "has no indexer" in result.output
+
+
+def test_from_latest_on_an_empty_source_fails_without_the_flag(env):
+    indexer = command_lineage_index_init.create_indexer("lineage_store")
+    with patch.object(indexer, "_latest_job", return_value=None):
+        result = _run("--base-timestamp", "from-latest")
+    assert result.exit_code != 0
+    assert KEY not in env.kv_pair_storage.values
+
+
+def test_from_latest_on_an_empty_source_seeds_all_with_the_flag(env):
+    """A fresh install (no job yet) indexes its first jobs instead of none."""
+    indexer = command_lineage_index_init.create_indexer("lineage_store")
+    with patch.object(indexer, "_latest_job", return_value=None):
+        result = _run("--empty-from-beginning", "--base-timestamp", "from-latest")
+    assert result.exit_code == 0, result.output
+    assert env.kv_pair_storage.values[KEY]["timestamp"] == "1970-01-01T00:00:00Z"
+
+
+def test_empty_from_beginning_does_not_change_a_non_empty_source(env):
+    result = _run("--empty-from-beginning", "--base-timestamp", "from-latest")
+    assert result.exit_code == 0, result.output
+    assert env.kv_pair_storage.values[KEY]["timestamp"] == "2026-03-01T00:00:00Z"

@@ -696,6 +696,9 @@ export interface LineageJobDetail extends LineageJobEntry {
   origin_url: string
   detail_available: boolean
   detail_error: string | null
+  // True when the detail was withheld because the caller may not read the job or
+  // its build, as opposed to the store failing to answer.
+  detail_denied?: boolean
 }
 
 export async function getLineageJobDetail(jobId: string): Promise<LineageJobDetail> {
@@ -708,11 +711,17 @@ export async function getLineageJobDetail(jobId: string): Promise<LineageJobDeta
   }
 }
 
+// Job ids per GET /lineage/graph request. Ids ride in the query string, so a grouped
+// node of a few hundred runs in one request overruns proxy URL limits (414); 50
+// UUID-sized ids keep a request near 2.5 KB.
+const GRAPH_JOB_IDS_PER_REQUEST = 50
+
 export async function getLineageGraph(params: {
   uri?: string
   job_id?: string
   // Seed from exactly these jobs -- the runs behind a grouped node
-  // (metadata.jobs_query.job_ids). Sent repeated (`job_ids=a&job_ids=b`).
+  // (metadata.jobs_query.job_ids). Sent repeated (`job_ids=a&job_ids=b`), split
+  // across several requests when long and merged here.
   job_ids?: string[]
   direction?: string
   depth?: number
@@ -720,10 +729,40 @@ export async function getLineageGraph(params: {
   // false returns one node per job.
   group_runs?: boolean
 }): Promise<LineageGraphResult> {
-  const { data } = await client.get<LineageGraphResult>('/lineage/graph', {
-    params,
-    paramsSerializer: { indexes: null },
-    timeout: 45_000,
-  })
-  return data
+  const fetchOne = async (p: typeof params) => {
+    const { data } = await client.get<LineageGraphResult>('/lineage/graph', {
+      params: p,
+      paramsSerializer: { indexes: null },
+      timeout: 45_000,
+    })
+    return data
+  }
+  const jobIds = params.job_ids ?? []
+  if (jobIds.length <= GRAPH_JOB_IDS_PER_REQUEST) return fetchOne(params)
+  const chunks: string[][] = []
+  for (let i = 0; i < jobIds.length; i += GRAPH_JOB_IDS_PER_REQUEST) {
+    chunks.push(jobIds.slice(i, i + GRAPH_JOB_IDS_PER_REQUEST))
+  }
+  const results = await Promise.all(chunks.map((ids) => fetchOne({ ...params, job_ids: ids })))
+  return mergeLineageGraphResults(results)
+}
+
+// Union of several walks: a node or edge seen by more than one keeps its first copy.
+function mergeLineageGraphResults(results: LineageGraphResult[]): LineageGraphResult {
+  const nodes = new Map<string, LineageGraphNode>()
+  const edges = new Map<string, LineageGraphEdge>()
+  for (const r of results) {
+    for (const n of r.nodes) if (!nodes.has(n.id)) nodes.set(n.id, n)
+    for (const e of r.edges) {
+      const key = `${e.source}|${e.target}`
+      if (!edges.has(key)) edges.set(key, e)
+    }
+  }
+  return {
+    root_id: results[0]?.root_id ?? '',
+    nodes: Array.from(nodes.values()),
+    edges: Array.from(edges.values()),
+    truncated: results.some((r) => r.truncated),
+    unexpanded: results.reduce((sum, r) => sum + (r.unexpanded ?? 0), 0),
+  }
 }

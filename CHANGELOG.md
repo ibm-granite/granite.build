@@ -46,6 +46,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /lineage/jobs` answers 422 for `limit` outside 1–1000 or a negative `offset`, and
   503 when the index cannot be read. `GET /artifacts/?uri=` also matches an artifact by
   its normalized lineage URI, and each artifact carries a derived `lineage_uri`.
+  `GET /lineage/graph` answers 422 (was 400) for out-of-range input, and both
+  `GET /lineage/graph` and `GET /lineage/jobs` answer 503 rather than an empty 200 when
+  the index cannot be read. `GET /lineage/jobs` caps `job_ids` at 1000, as the graph does.
+- **Lineage index init (#470).** `gbserver lineage-index-init --rebuild` with provider
+  `wandb` re-seeds at `all`, so the indexer back-fills the whole shared W&B project, not
+  just this deployment's runs. A new `--empty-from-beginning` flag, used by the Helm chart,
+  makes a fresh install with no history index its first jobs instead of skipping them.
+- **Lineage job owner and namespace (#470).** A job's owner and namespace are taken only
+  when every index row of the job agrees; a job with conflicting (e.g. forged) rows has
+  neither, and its detail fails closed.
+- **Step drawer timestamps (#470).** `parseTimestamp` reads a zoneless ISO timestamp as
+  UTC, so displayed times shift for users outside UTC.
 
 - **Published steps declare named inputs and read them from bindings (#453).** Every
   `step.yaml` under `configurations/assets/` now has an `inputs:` block. A target that

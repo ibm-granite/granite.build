@@ -446,12 +446,11 @@ class DBLineageService(LineageService):
 
         One indexed query on ``job_id``, which is the only identifier every lineage
         source has -- so this works for imported rows too, where no process id does.
+
+        A storage error propagates (the route answers 503): swallowing it would
+        return an empty graph, indistinguishable from "this job recorded nothing".
         """
-        try:
-            rows = self.storage.get_rows_by_job(job_id)
-        except Exception:
-            logger.exception("Could not read rows for job %s", job_id)
-            return set()
+        rows = self.storage.get_rows_by_job(job_id)
         seeds: set = set()
         for row in rows:
             for endpoint in (row.input, row.output):
@@ -513,17 +512,16 @@ class DBLineageService(LineageService):
     def count_runs_by_tags(
         self, tags: List[str], required_tags: Optional[List[str]] = None
     ) -> int:
-        """How many jobs carry any of ``tags`` and all of ``required_tags``."""
+        """How many jobs carry any of ``tags`` and all of ``required_tags``.
+
+        A missing job table or a storage error raises, as for
+        :meth:`search_lineage_by_tags`: a 0 would read as "no such job" and let a
+        caller re-record or report nothing on what is really an outage.
+        """
         storage = self.job_storage
         if storage is None:
-            return 0
-        try:
-            total, _ = storage.search_by_tags(
-                tags, all_of=required_tags, limit=0, offset=0
-            )
-        except Exception:
-            logger.exception("Lineage tag count failed")
-            return 0
+            raise RuntimeError("No lineage job storage available for tag count")
+        total, _ = storage.search_by_tags(tags, all_of=required_tags, limit=0, offset=0)
         return total
 
     def filter_unrecorded(

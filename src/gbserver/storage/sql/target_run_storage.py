@@ -15,9 +15,9 @@
 # limitations under the License.
 
 from datetime import datetime
-from typing import Self
+from typing import Any, List, Optional, Self, Tuple
 
-from sqlalchemy import desc, func, or_
+from sqlalchemy import and_, desc, func, literal_column, or_, tuple_
 
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
 from gbserver.storage.storage import JSON_COLUMN_NAME, UUID_COLUMN_NAME
@@ -45,6 +45,7 @@ class SQLTargetRunStorage(
         # scan with an early stop is most of the win.
         kwargs["composite_indexes"] = [("status", "finished_at")]
         super().__init__(**kwargs)
+        self._keyset_checked = False
 
     @retry_read
     def get_successful_finished_since(
@@ -77,10 +78,16 @@ class SQLTargetRunStorage(
             return super().get_successful_finished_since(
                 cutoff_utc, page_index, page_size
             )
-        if not self._ensure_table():
+        if not self._ensure_table_without_retry():
             return []
         model = self._sql_alchemy_model
         if dialect == "sqlite":
+            # Not bounded on the finished_at column: a margin of the widest UTC
+            # offset would cover the local-wall-clock spelling, but the rows kept
+            # for the caller (null, unparseable or offset-less JSON) carry no
+            # relation to the column's value, and OR-ing them back in would scan
+            # anyway. The index still serves status and the order, so a page stops
+            # at its LIMIT; only a sparse tail past the cutoff reads to the end.
             raw = func.json_extract(getattr(model, JSON_COLUMN_NAME), "$.finished_at")
             recorded = func.julianday(raw)
             since = or_(
@@ -108,6 +115,107 @@ class SQLTargetRunStorage(
                     {key: getattr(row, key) for key in self._column_types}
                 )
                 for row in rows
+            ]
+        finally:
+            session.close()
+
+    # The instant a target finished, as SQLite orders it: ``julianday`` of the JSON
+    # blob's offset-carrying ``finished_at`` (the column cannot be compared, see
+    # get_successful_finished_since). Literal SQL, not a bound expression, so a
+    # query matches the expression index (:meth:`_finished_key_index_ddl`)
+    # exactly; SQLite never matches one against a bound parameter. ``json_valid``
+    # keeps a malformed blob from failing every write to the table once indexed.
+    _SQLITE_FINISHED_KEY = (
+        f"julianday(CASE WHEN json_valid({JSON_COLUMN_NAME}) "
+        f"THEN json_extract({JSON_COLUMN_NAME}, '$.finished_at') END)"
+    )
+
+    def _finished_key_index_ddl(self) -> str:
+        """The SQLite expression index the keyset read seeks on.
+
+        Only an index: no row is rewritten, and dropping it restores the table as
+        it was. ``uuid`` is in it so the keyset's tie-break is served too.
+        """
+        return (
+            f"CREATE INDEX IF NOT EXISTS ix_{self.table_name}_status_finished_key "
+            f"ON {self.table_name} (status, {self._SQLITE_FINISHED_KEY}, "
+            f"{UUID_COLUMN_NAME})"
+        )
+
+    @retry_read
+    def get_successful_finished_after(
+        self,
+        cutoff_utc: Optional[datetime],
+        after: Optional[Tuple[Any, str]],
+        page_size: int,
+    ) -> List[Tuple[Any, StoredTargetRun]]:
+        """Keyset page of successful targets, oldest finished first.
+
+        SQLite: the key is :data:`_SQLITE_FINISHED_KEY`, read from the same JSON
+        value the item is rebuilt from, so it follows the item's instant; SQLite
+        holds times to the millisecond, so instants within one millisecond tie and
+        the caller orders them. A row whose JSON time SQLite cannot place (null key
+        while a value is present, or a value with no offset, which ``julianday``
+        reads as UTC but Python as local time) would be misordered, so while any
+        exists this raises and the caller reads the old way.
+
+        Postgres: the key is the ``finished_at`` timestamp column. A successful
+        row with no column value (written before the column existed) cannot be
+        placed, and raises the same way.
+        """
+        assert self._engine is not None
+        dialect = self._engine.dialect.name
+        if dialect not in ("sqlite", "postgresql"):
+            raise NotImplementedError(f"no keyset read on {dialect}")
+        if not self._ensure_table_without_retry():
+            return []
+        model = self._sql_alchemy_model
+        uuid_col = getattr(model, UUID_COLUMN_NAME)
+        success = model.status == Status.SUCCESS.name
+        if dialect == "sqlite":
+            key: Any = literal_column(self._SQLITE_FINISHED_KEY)
+            raw = func.json_extract(getattr(model, JSON_COLUMN_NAME), "$.finished_at")
+            unplaceable = and_(
+                success,
+                raw.isnot(None),
+                or_(
+                    key.is_(None),
+                    ~or_(raw.like("%Z"), raw.op("GLOB")("*[+-][0-9][0-9]:[0-9][0-9]")),
+                ),
+            )
+            cutoff_key: Any = (
+                func.julianday(cutoff_utc.isoformat()) if cutoff_utc else None
+            )
+        else:
+            key = model.finished_at
+            unplaceable = and_(success, model.finished_at.is_(None))
+            cutoff_key = cutoff_utc
+        session = self._get_session_without_retry()
+        try:
+            if not self._keyset_checked:
+                # Once per storage: every writer stamps an aware finished_at, so a
+                # row that cannot be placed is legacy and does not appear later.
+                if session.query(uuid_col).filter(unplaceable).first() is not None:
+                    raise NotImplementedError(
+                        "successful targets with a completion time that cannot be "
+                        "ordered in SQL"
+                    )
+                self._keyset_checked = True
+            query = session.query(model, key).filter(success, key.isnot(None))
+            if cutoff_key is not None:
+                query = query.filter(key >= cutoff_key)
+            if after is not None:
+                query = query.filter(tuple_(key, uuid_col) > tuple_(*after))
+            rows = query.order_by(key, uuid_col).limit(page_size).all()
+            assert self._column_types is not None
+            return [
+                (
+                    row_key,
+                    self._convert_row_dict_to_item(
+                        {name: getattr(row, name) for name in self._column_types}
+                    ),
+                )
+                for row, row_key in rows
             ]
         finally:
             session.close()

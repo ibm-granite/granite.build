@@ -17,13 +17,14 @@
 
 import multiprocessing
 import os
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Generic, Optional, TypeVar, Union
 
 from filelock import FileLock
 from pydantic import BaseModel
-from sqlalchemy import Integer
+from sqlalchemy import Integer, text
 
 from gbcommon.types.constants import get_gb_home_dir
 from gbserver.storage.sql.artifact_registry import SQLArtifactRegistry
@@ -82,7 +83,10 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
         ):  # Extra safety in case this method is called more than once.
             self._db_path = self._get_db_file_path()
             lock_file = f"{self._db_path.absolute()}.lck"
-            self._db_file_lock = FileLock(lock_file)
+            # One FileLock per path, shared by every storage in the process, so
+            # its (per-thread) re-entrancy holds across storages too: two
+            # instances on the same .lck would otherwise block each other.
+            self._db_file_lock = FileLock(lock_file, is_singleton=True)
         db_url = f"sqlite:///{str(self._db_path.absolute())}"
         db_obfuscated_url = db_url
         connect_args = {}  # type: ignore[var-annotated]
@@ -126,6 +130,9 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
     ) -> list[BASE_ITEM_TYPE]:
         with self._db_file_lock:
             return super().get_by_where(where, query_control)  # type: ignore[misc]
+
+    def _ensure_table(self) -> bool:
+        return _locked_per_attempt(self, super()._ensure_table)  # type: ignore[misc]
 
     def delete_table(self):
         with self._db_file_lock:
@@ -179,10 +186,55 @@ class SqliteStepRunStorage(SqliteStorageOverrides, SQLStepRunStorage):
         super().__init__(**kwargs)
 
 
+# Indexes on expressions using date functions need SQLite 3.20; an older library
+# opening a file that holds one fails on its schema, so it is never created there.
+_EXPRESSION_INDEX_MIN_SQLITE = (3, 20, 0)
+
+
 class SqliteTargetRunStorage(SqliteStorageOverrides, SQLTargetRunStorage):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        self._finished_key_indexed = False
+
+    def get_successful_finished_after(
+        self,
+        cutoff_utc: Optional[datetime],
+        after: Optional[tuple[Any, str]],
+        page_size: int,
+    ) -> list[tuple[Any, StoredTargetRun]]:
+        if sqlite3.sqlite_version_info < _EXPRESSION_INDEX_MIN_SQLITE:
+            raise NotImplementedError(
+                f"SQLite {sqlite3.sqlite_version} cannot index the completion time"
+            )
+        if not self._finished_key_indexed:
+            self._create_finished_key_index()
+        return _locked_per_attempt(
+            self,
+            super().get_successful_finished_after,
+            cutoff_utc,
+            after,
+            page_size,
+        )
+
+    def _create_finished_key_index(self) -> None:
+        """Build the keyset read's expression index, once per process.
+
+        A failure is logged and the read goes on unindexed (slow, still correct);
+        it is retried by the next process.
+        """
+        self._finished_key_indexed = True
+        try:
+            with self._db_file_lock:  # pylint: disable=protected-access
+                if not self._ensure_table_without_retry():
+                    return
+                assert self._engine is not None
+                with self._engine.begin() as connection:
+                    connection.execute(text(self._finished_key_index_ddl()))
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.warning(
+                f"Could not create the completion-time index on {self.table_name}: {e}"
+            )
 
     def get_successful_finished_since(
         self, cutoff_utc: datetime, page_index: int, page_size: int
@@ -223,8 +275,10 @@ class SqliteLineageRowStorage(SqliteStorageOverrides, SQLLineageRowStorage):
     opens its sessions directly rather than through ``get_by_where``, so it takes
     the file lock here, like every other read; otherwise a read during a long
     indexer write sees ``database is locked``. The lock is taken per retry attempt
-    (``_locked_per_attempt``) and is re-entrant, so methods that call one another
-    under it do not deadlock.
+    (``_locked_per_attempt``), and those methods call the non-retrying
+    ``_ensure_table_without_retry`` so no backoff sleeps under it. The lock is one
+    ``FileLock`` per path for the whole process and re-entrant per thread, so
+    methods that call one another under it do not deadlock.
     """
 
     def count_jobs_touching(self, *args, **kwargs) -> int:

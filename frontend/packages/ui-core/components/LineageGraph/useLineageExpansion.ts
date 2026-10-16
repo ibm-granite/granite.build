@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { getLineageGraph } from '../../api/gbserver'
+import { getLineageGraph, type LineageGraphResult } from '../../api/gbserver'
 import { expansionSeed, indexGraphToElk, mergeElkGraphs, type ElkGraph } from './indexGraph'
 
 export type ExpandDirection = 'upstream' | 'downstream'
@@ -10,8 +10,15 @@ const EMPTY: ElkGraph = { nodes: [], links: [] }
 // The caller says how deep to ask -- one level past what is already on screen for
 // that node (see visibleLevels) -- so the count follows the graph, not the clicks.
 // `groupRuns: false` asks for one node per job, matching an ungrouped base graph.
+// Responses are kept as the index returned them and renamed on render, so a node
+// fetched before `rename` knew its id (a build artifact whose registry lookup was
+// still pending) folds onto the build's node once it does.
 export function useLineageExpansion(rename?: (id: string) => string, groupRuns = true) {
-  const [extra, setExtra] = React.useState<ElkGraph>(EMPTY)
+  const [results, setResults] = React.useState<LineageGraphResult[]>([])
+  const extra = React.useMemo(
+    () => results.reduce<ElkGraph>((acc, r) => mergeElkGraphs(acc, indexGraphToElk(r, rename)), EMPTY),
+    [results, rename]
+  )
   const [loading, setLoading] = React.useState<ExpandDirection | null>(null)
   const [error, setError] = React.useState<unknown>(null)
   const [unexpanded, setUnexpanded] = React.useState(0)
@@ -56,7 +63,7 @@ export function useLineageExpansion(rename?: (id: string) => string, groupRuns =
         setExhausted((prev) => new Set(prev).add(key))
       }
       setUnexpanded(result.truncated ? result.unexpanded ?? 0 : 0)
-      setExtra((prev) => mergeElkGraphs(prev, incoming))
+      setResults((prev) => [...prev, result])
     } catch (e) {
       if (current()) setError(e)
     } finally {
@@ -73,7 +80,7 @@ export function useLineageExpansion(rename?: (id: string) => string, groupRuns =
     inFlight.current = 0
     setLoading(null)
     setExhausted(new Set())
-    setExtra(EMPTY)
+    setResults([])
     setUnexpanded(0)
     setError(null)
   }, [])
