@@ -10,8 +10,8 @@ container image), installing the transform's dependencies with `uv` during `setu
 custom image is built or published for this step.
 
 It is the public-image counterpart of the custom-image
-[eval](../../eval/eval-example/skypilot/README.md) step, and is closely modelled on
-[byoc](../../byoc/skypilot/README.md). It is *generated* from the sources in this directory
+[eval](../../../eval/eval-example/skypilot/README.md) step, and is closely modelled on
+[byoc](../../../byoc/skypilot/README.md). It is *generated* from the sources in this directory
 by the shared Makefile conventions — see the framework overview:
 [steps/README.md](../../../README.md).
 
