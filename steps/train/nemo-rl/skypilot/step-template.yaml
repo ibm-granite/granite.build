@@ -1,0 +1,146 @@
+name: nemo-rl
+version: 1.0.0
+type: exec
+config:
+  nemo_rl_config:
+    # Selects examples/run_<algorithm>.py in the image (sft/dpo/grpo/ppo/rm/...).
+    # REQUIRED.
+    algorithm: ""
+    # A named YAML under examples/configs/, e.g. sft.yaml. REQUIRED. The algorithm
+    # and the config are DECOUPLED on purpose: run_grpo.py has many configs
+    # (grpo_math_1B.yaml, grpo_math_8B.yaml, ...), so the step cannot derive one
+    # from the other.
+    config_name: ""
+    # Hydra overrides, rendered after `--` as `key=value`, one argv word each.
+    # Values are shell-quoted; booleans render lowercased (Hydra/OmegaConf want
+    # true/false); null values are omitted. A per-run value is written with the
+    # build.yaml's own Jinja or a $${PARAM}, both resolved at render time.
+    overrides: {}
+    # Name of the declared target output (type model) to register. REQUIRED. Stays
+    # a NAME because the artifact marker needs the id, not a path.
+    output: ""
+    # Public NGC release image: bundles the NeMo-RL source (examples/) and
+    # prefetched venvs. PIN TO A DIGEST before production use. The step adds
+    # SkyPilot's `docker:` scheme marker.
+    image_id: "nvcr.io/nvidia/nemo-rl:v0.7.0.prefetched_venvs"
+    # Where the bundled NeMo-RL source lives inside the image. uv runs with cwd
+    # here so it resolves the prefetched project environment.
+    nemo_rl_root: "/opt/nemo-rl"
+    # Hydra key a BOUND dataset's path is injected under (e.g. data.train.input_file).
+    # NeMo-RL data configs have no single universal path field, so the build names
+    # it. Leave empty to use the config's built-in dataset (do NOT bind `dataset`).
+    dataset_override_key: ""
+    # ClearML tracking: auto (on iff CLEARML_* server creds are present in env),
+    # true (force on), or false (hard off — clearml never imported, no uv --with).
+    clearml_enabled: "auto"
+    clearml_project: ""
+    clearml_task_name: ""
+    # Optional push target for the converted HF model (huggingface-cli upload).
+    hf_output_repo: ""
+  compute_config:
+    # Iteration 1 is single-node, multi-GPU only; the guard rejects num_nodes != 1.
+    num_nodes: 1
+    num_gpus_per_node: 8
+
+# I/O schema, validated against the build.yaml target at build time. Inputs are
+# bindings (portable across envs), not file_mounts; hf:// inputs auto-download in
+# setup. allow_unknown stays true so a recipe can bind extra inputs to order
+# targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The base model to train. Read at runtime as the binding's staged path.
+    base_model:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # Optional training dataset. Omit to use the config's built-in dataset.
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+
+environment_configs:
+  Skypilot:
+    # No `subtypes:` restriction, so this step resolves on every SkyPilot endpoint
+    # that can provide the GPUs (aws first; slurm/kubernetes/lsf are additive).
+    default_launcher: nemo_rl
+    launchers:
+      nemo_rl:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # The one value deliberately NOT shell-escaped: it never enters a shell.
+          # skypilot.py passes it to sky.Resources(image_id=...) as a python value.
+          image_id: '{{ "docker:" ~ config.nemo_rl_config.image_id }}'
+          # The build supplies cpus/memory/accelerators via launcher_config.resources.
+          resources: {}
+          # Bundled scripts land at ./src, relative to the step's working dir.
+          file_mounts:
+            src: src
+          # setup runs ONCE per cluster. The launcher prepends `hf download` here
+          # for any hf:// input binding. The guard runs FIRST (setup is expensive),
+          # then the setup script verifies the image and makes output dirs.
+          setup: |
+            set -eu
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- set nrl = config.nemo_rl_config %}
+            {%- set base_model = bindings.base_model.binding.path if (bindings is defined and "base_model" in bindings) else "" %}
+            {%- set dataset_bound = bindings is defined and "dataset" in bindings %}
+            {%- set dataset = bindings.dataset.binding.path if dataset_bound else "" %}
+            bash ./src/nemo_rl_guard.sh \
+              --algorithm '{{ q(nrl.algorithm) }}' \
+              --config-name '{{ q(nrl.config_name) }}' \
+              --output '{{ q(nrl.output) }}' \
+              --num-nodes '{{ q(config.compute_config.num_nodes) }}' \
+              --base-model '{{ q(base_model) }}' \
+              --dataset '{{ q(dataset) }}' \
+              --dataset-key '{{ q(nrl.dataset_override_key) }}'
+            bash ./src/nemo_rl_setup.sh --nemo-rl-root '{{ q(nrl.nemo_rl_root) }}'
+          # run starts in the same working directory as setup.
+          run: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- set nrl = config.nemo_rl_config %}
+            {%- set base_model = bindings.base_model.binding.path if (bindings is defined and "base_model" in bindings) else "" %}
+            {%- set dataset_bound = bindings is defined and "dataset" in bindings %}
+            {%- set dataset = bindings.dataset.binding.path if dataset_bound else "" %}
+            {%- set ce = nrl.clearml_enabled | string | lower %}
+            {%- set clearml_mode = "on" if ce in ["true", "on", "1"] else ("off" if ce in ["false", "off", "0"] else "auto") %}
+            bash ./src/nemo_rl_guard.sh \
+              --algorithm '{{ q(nrl.algorithm) }}' \
+              --config-name '{{ q(nrl.config_name) }}' \
+              --output '{{ q(nrl.output) }}' \
+              --num-nodes '{{ q(config.compute_config.num_nodes) }}' \
+              --base-model '{{ q(base_model) }}' \
+              --dataset '{{ q(dataset) }}' \
+              --dataset-key '{{ q(nrl.dataset_override_key) }}'
+            bash ./src/nemo_rl_run.sh \
+              --algorithm '{{ q(nrl.algorithm) }}' \
+              --config-name '{{ q(nrl.config_name) }}' \
+              --nemo-rl-root '{{ q(nrl.nemo_rl_root) }}' \
+              --base-model '{{ q(base_model) }}' \
+              {%- if dataset_bound %}
+              --dataset '{{ q(dataset) }}' \
+              --dataset-key '{{ q(nrl.dataset_override_key) }}' \
+              {%- endif %}
+              --artifact-id '{{ q(nrl.output) }}' \
+              --clearml-mode '{{ clearml_mode }}' \
+              {%- if nrl.clearml_project %}
+              --clearml-project '{{ q(nrl.clearml_project) }}' \
+              {%- endif %}
+              {%- if nrl.clearml_task_name %}
+              --clearml-task '{{ q(nrl.clearml_task_name) }}' \
+              {%- endif %}
+              {%- if nrl.hf_output_repo %}
+              --hf-output-repo '{{ q(nrl.hf_output_repo) }}' \
+              {%- endif %}
+              -- {% for k, v in nrl.overrides.items() %}{% if v is not none %}'{{ q(k) }}={{ (v | lower) if (v is sameas true or v is sameas false) else q(v) }}' {% endif %}{% endfor %}
+    monitors:
+      # Standard artifact/status convention from the shipped monitor library.
+      skypilot_monitor:
+        ref: space://monitors/skypilot
